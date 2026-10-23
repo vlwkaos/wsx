@@ -204,6 +204,80 @@ const page = (n) => `#/p/${project}/t/${n}`;
 
 // The tabs: each one link in the bar, inside the first screen. Home lists the projects.
 const TABS = "Home,Sessions,Settings";
+// Motion (docs/web-client.md "Motion"): the animated elements carry their animations, and with
+// prefers-reduced-motion: reduce none of them move. The page's own store is driven through its
+// modules; the frames are captures of the same states.
+async function motion() {
+  const w = size[0];
+  const pageModule = (name) => `import(new URL(${JSON.stringify(name)}, [...document.scripts].find((script) => script.type === 'module').src))`;
+  const names = (selector) => evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].map((node) => getComputedStyle(node).animationName)`);
+  const expectAll = async (label, selector, name) => {
+    const seen = await names(selector);
+    if (!seen.length || seen.some((item) => item !== name)) await fail(`motion at ${w}px: ${label} (${selector}) animates ${JSON.stringify(seen)}, not ${name}`);
+  };
+  const run = (reduced) => evaluate(`(async () => {
+    const { state, update } = await ${pageModule("store.js")};
+    const { toast } = await ${pageModule("ui.js")};
+    const { render, html, Loading } = await ${pageModule("lib.js")};
+    const ui = state.projects.find((project) => project.name === 'ui').id;
+    const calm = state.projects.find((project) => project.name === 'calm');
+    const rows = () => [...document.querySelectorAll('.home-rows > .row')];
+    const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+    // The manager of ui runs a turn: typing dots on its row.
+    update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], busy: true } } });
+    await frames();
+    const typing = document.querySelectorAll('.home-row .row-typing .typing-dot').length;
+    toast('Saved the page');
+    await frames();
+    const notice = !!document.querySelector('.notice .notice-timer');
+    // calm becomes the newest: it moves up; then it goes: its row fades out where it was.
+    const before = rows().map((row) => row.dataset.key);
+    update({ tasks: { ...state.tasks, [calm.id]: { ...state.tasks[calm.id], last_unix_ms: Date.now() + 1e7 } } });
+    await frames();
+    const moved = rows().map((row) => row.dataset.key).join() !== before.join();
+    const glides = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row')
+      && String(animation.effect.getKeyframes()[0].transform ?? '').startsWith('translateY')).length;
+    const projects = state.projects;
+    update({ projects: projects.filter((project) => project !== calm) });
+    await frames();
+    const ghosts = document.querySelectorAll('.home-rows > [data-ghost]').length;
+    update({ projects });
+    const holder = document.body.appendChild(document.createElement('div'));
+    render(html\`<\${Loading} />\`, holder);
+    return { typing, notice, moved, glides, ghosts, loading: holder.querySelector('.loading')?.getAttribute('role'), reduced: ${reduced} };
+  })()`);
+  const seen = await run(false);
+  if (seen.typing !== 3 || !seen.notice || !seen.moved || seen.glides < 1 || seen.ghosts !== 1 || seen.loading !== "status") await fail(`motion at ${w}px: ${JSON.stringify(seen)}`);
+  await expectAll("typing dots", ".row-typing .typing-dot", "pulse");
+  await expectAll("a working row", ".home-row .pulse", "pulse");
+  await expectAll("the count badge", ".home-row .count", "pop");
+  await expectAll("the status line", ".home-row .row-context:not([data-loading])", "arrive");
+  await expectAll("the notice", ".notice", "slide-down");
+  await expectAll("the toast timer", ".notice-timer", "drain");
+  await expectAll("the loading placeholder", ".skeleton", "shimmer");
+  await capture(`${w}-motion-home-typing`);
+  await pause(60);
+  await capture(`${w}-motion-home-toast`);
+  // Reduced motion: the same states, no animation and no script-driven motion.
+  await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+  const still = await evaluate(`(async () => {
+    const { state, update } = await ${pageModule("store.js")};
+    const calm = state.projects.find((project) => project.name === 'calm');
+    const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+    update({ tasks: { ...state.tasks, [calm.id]: { ...state.tasks[calm.id], last_unix_ms: 1 } } });
+    await frames();
+    return document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row')).length;
+  })()`);
+  if (still) await fail(`motion at ${w}px: ${still} row animations run with reduced motion`);
+  for (const selector of [".row-typing .typing-dot", ".home-row .pulse", ".home-row .count", ".home-row .row-context", ".notice", ".notice-timer", ".skeleton"]) {
+    const seen = await names(selector);
+    if (seen.some((item) => item !== "none")) await fail(`motion at ${w}px: ${selector} animates with reduced motion: ${JSON.stringify(seen)}`);
+  }
+  await capture(`${w}-motion-home-reduced`);
+  await send("Emulation.setEmulatedMedia", { features: [] });
+  await evaluate("document.querySelectorAll('body > div:not(.app):not(#app)').forEach((node) => node.remove())");
+  await until("!document.querySelector('.notice')", "the toast did not clear itself", 120);
+}
 async function tabsInView() {
   const bar = phone() ? ".tabbar a" : ".rail-tabs a";
   if ((await text(bar)).join() !== TABS) await fail(`the tabs at ${size[0]}x${size[1]} are ${await text(bar)}`);
@@ -247,6 +321,11 @@ await oneWorkingColor("home", 1);
 // ^ The server runs this page's build: no new-version pill.
 if (await count(".build-pill")) await fail("the new-version pill shows on the same build");
 await shot("home");
+await motion();
+await resize([1280, 800, 1]);
+await motion();
+await resize([390, 844, 2]);
+await go("#/");
 // Sessions, one tap from home: the session inbox, without task workers and the manager, with
 // the plain worktree's session.
 await click(".tabbar a[href='#/sessions']");

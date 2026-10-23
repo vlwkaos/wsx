@@ -2,7 +2,7 @@
 // file with a mermaid graph that the manager keeps up to date with the Edit tool, shown in the
 // sheet over the chat (docs/tasks.md "Project page", docs/web-client-tasks.md "Project page").
 import { api } from "./api.js";
-import { ago, html, Icon, useEffect, useNow, useRef, useState } from "./lib.js";
+import { ago, html, Icon, Loading, useEffect, useNow, useRef, useState } from "./lib.js";
 import { events, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { withChips } from "./tasks.js";
@@ -39,7 +39,7 @@ export function ProjectPage({ project, onClose, grip }) {
       <div class="scroll project-page">
         <${ProjectFacts} project=${project} overview=${overview} />
         ${failure ? html`<p class="error empty" role="alert">${failure}</p>`
-          : !page ? html`<p class="empty">Loading…</p>`
+          : !page ? html`<${Loading} />`
           : page.text == null ? html`<p class="empty">No page yet. The manager writes it once it starts.</p>`
           : html`<div class="task-body"><${Markdown} text=${page.text} words=${withChips(project)} prose /></div>`}
       </div>

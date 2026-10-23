@@ -328,8 +328,35 @@ div.steps .steps-summary { cursor: default; }
   .typing-dot:nth-child(4) { animation-delay: calc(var(--motion-duration) * 4); }
   .reservoir-head .icon { transition: transform var(--motion-duration) var(--motion-easing); }
   .steps .icon { transition: transform var(--motion-duration) var(--motion-easing); }
+  /* Purposeful motion (docs/web-client.md "Motion"): something arrives, changes or leaves.
+     Reduced motion keeps the static page; script-driven motion (lib.js `motion`) is off too. */
+  .scroll > :is(.rows, .group, .check-list, .task-body, .file-markdown, .file-source), .project-page > .task-body { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
+    .skeleton { background-image: linear-gradient(90deg, transparent, var(--color-raised), transparent); background-size: 200% 100%; animation: shimmer calc(var(--motion-duration) * 10) linear infinite; }
+  .row-context[data-loading] { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
+  .row-context { animation: arrive var(--motion-duration) var(--motion-easing); }
+  .row-typing .typing-dot:nth-child(2) { animation-delay: calc(var(--motion-duration) * 2); }
+  .row-typing .typing-dot:nth-child(3) { animation-delay: calc(var(--motion-duration) * 4); }
+  .count { animation: pop calc(var(--motion-duration) * 2) var(--motion-easing); }
+  .working-count { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
+  .working { animation: slide-up calc(var(--motion-duration) * 1.5) var(--motion-easing); }
+  .message-user:not([data-pending]) { animation: settle calc(var(--motion-duration) * 3) var(--motion-easing); }
+  .bubble-box, [data-tone], .bar-state { transition: color calc(var(--motion-duration) * 3) var(--motion-easing), background-color calc(var(--motion-duration) * 3) var(--motion-easing); }
+  .jump { animation: arrive var(--motion-duration) var(--motion-easing); }
+  .jump[data-leaving] { opacity: 0; transition: opacity var(--motion-duration) var(--motion-easing); pointer-events: none; }
+  [data-uploading] .note { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
+  .notice { animation: slide-down calc(var(--motion-duration) * 1.5) var(--motion-easing); }
+  .notice[data-offline] { animation: slide-down calc(var(--motion-duration) * 1.5) var(--motion-easing), pulse calc(var(--motion-duration) * 12) ease-in-out calc(var(--motion-duration) * 1.5) infinite; }
+  .notice[data-leaving] { opacity: 0; transform: translateY(calc(var(--space-2) * -1)); transition: opacity var(--motion-duration) var(--motion-easing), transform var(--motion-duration) var(--motion-easing); pointer-events: none; }
+  .notice-timer { display: block; position: absolute; left: 0; bottom: 0; height: calc(var(--border-width) * 2); width: 100%; background: var(--color-faint); transform-origin: left; animation: drain calc(var(--motion-duration) * 25) linear forwards; }
 }
 @keyframes pulse { 50% { opacity: var(--opacity-disabled); } }
+@keyframes arrive { from { opacity: 0; } }
+@keyframes pop { from { opacity: 0; transform: scale(0.5); } 60% { transform: scale(1.15); } }
+@keyframes slide-up { from { opacity: 0; transform: translateY(var(--space-2)); } }
+@keyframes slide-down { from { opacity: 0; transform: translateY(calc(var(--space-2) * -1)); } }
+@keyframes settle { from { color: var(--color-muted); } }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes drain { to { transform: scaleX(0); } }
 .jump {
   position: absolute; bottom: var(--space-3); left: 50%; transform: translateX(-50%);
   min-height: var(--size-control); padding: 0 var(--space-3); display: inline-flex; align-items: center; gap: var(--space-1);
@@ -578,6 +605,15 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 }
 .app[data-wide] .task-sheet[data-fit] { margin: 0; height: 100%; max-height: none; transform: none; }
 /* Home: one row per project, what needs the owner first. */
+/* Hook: .loading — the one placeholder for a screen that waits for data. */
+.loading { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
+.skeleton { display: block; height: var(--space-3); border-radius: var(--radius-key); background-color: var(--color-surface); }
+.skeleton:first-of-type { width: 60%; }
+.skeleton:last-of-type { width: 40%; }
+.notice-timer { display: none; }
+.home-rows { position: relative; }
+.home-rows > [data-ghost] { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
+.row-typing { display: inline-flex; align-items: center; gap: var(--space-1); margin-inline-end: var(--space-2); vertical-align: middle; }
 .count {
   flex: 0 0 auto; min-width: calc(var(--space-4) * 1.25); padding: 0 var(--space-1); border-radius: var(--space-4);
   text-align: center; font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); font-variant-numeric: tabular-nums;
@@ -695,7 +731,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
   width: min(calc(100% - 2 * var(--space-4)), var(--size-prose)); pointer-events: none;
 }
 .notice {
-  display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); pointer-events: auto;
+  position: relative; overflow: hidden; display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); pointer-events: auto;
   font-size: var(--font-size-sm); background: var(--color-raised); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
 }
 .notice-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }

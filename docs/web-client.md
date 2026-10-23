@@ -126,6 +126,20 @@ The page is a set of ES modules served as written: Preact 10.29.7 and htm 3.1.1 
 - `api/session` sends `build`: `version` (wsx), `commit` (the git commit the binary was built from, or `null` for a build without git), `id` and `started_unix`. Settings shows them under "Version". The commit is `HEAD` when the binary was built; changes not committed then are not in it, but they change the page files' id.
 - The `workspace` event carries `build`, and a new event stream gets it first. When it differs from the page's own build, a small "New version · Reload" pill shows over the top of the screen until it is tapped; nothing shows while the build is the same, and Settings keeps its Reload beside the version only then. The page never reloads by itself. A tap asks the service worker for the new files, waits at most 3 s, and reloads at the same route; the manager and task drafts are kept on the device.
 
+## Motion
+
+Motion shows that something arrived, changed or left; nothing moves for its own sake. It reads `--motion-duration` and `--motion-easing` ([web-themes.md](web-themes.md)). Every rule sits in `app.css` inside `@media (prefers-reduced-motion: no-preference)`, so with `reduce` the page is the static one; script-driven motion (`motion()` in `lib.js`) is off there too.
+
+| State | Motion |
+|---|---|
+| Loading | One placeholder (`Loading` in `lib.js`, two shimmering bars; the words "Loading…" are for a screen reader) replaces the static line on every screen that waits for data. The content that arrives fades in. |
+| Home row | Typing dots (the manager's turn runs: `busy` of `GET api/tasks/<project>`) before the status line; a pulse dot while the project has a working task or session; the status line fades in when its text changes. The `.count` badge pops in and again when the number changes; "N working" fades in. The list reorders with FLIP (`useFlip`): rows glide, new rows fade in, a row that goes fades out where it was. |
+| Chat | The working bar slides in; a sent message eases from the muted pending color; Jump to latest fades in and out; "Uploading…" pulses. |
+| Notices | A notice slides and fades in and out. A toast shows a thin bar that drains over its 4 s; the offline notice pulses slowly. |
+| State words | A working session's word in the top row has a pulse dot; a tone change fades in color. |
+
+`scripts/web-tasks-check.mjs` (`motion()`) checks the animation names on the home row, count, notice, timer and placeholder, the FLIP glide and ghost, and that none of them runs under `reduce`; it captures phone and desktop frames.
+
 ## Notices
 
 `Notices` in `ui.js`. One notice at a time lies over the screen under the top row and takes no layout, so showing one moves nothing. "Connection lost. Reconnecting…" stays until the stream is back. An outcome (a saved file, an add, a steer, a start, a landing that rebased) clears itself after 4 s. A failure the owner acts on stays, with *Dismiss*, and a later outcome does not hide it; today that is an approved action that did not run ("Land #6 did not run: failed: …"), noticed when a new decision arrives, never for decisions from before the page loaded; and a failed upgrade of the running `wsxd` into this build ("wsxd upgrade failed: <reason>; sessions keep running", `docs/daemon-live-upgrade.md` "A failed automatic upgrade"), from `api/session`'s `upgrade_failed` and the `daemon` event, said once per reason. An action whose outcome the chat already shows as a status line (approve, deny, allow, a landing) gives no notice. Errors of a form stay beside the form.
