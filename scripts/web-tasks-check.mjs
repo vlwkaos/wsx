@@ -462,6 +462,19 @@ await until("/Ship the chat/.test(document.querySelector('.project-page')?.textC
 await key("Escape", 27);
 await until("!document.querySelector('dialog.task-sheet')", "Escape did not close the page");
 
+// --- A new conversation (BIG passes the manager's rotateTokens) shows once: it has no id, so
+// the reads after it return it again until the next message.
+const newConversations = "[...document.querySelectorAll('.log .note')].filter((node) => node.textContent.startsWith('New conversation')).length";
+const shownBefore = await evaluate(newConversations);
+await typeInto(".composer-field", "BIG");
+await click(".composer-send");
+await until(`${newConversations} > ${shownBefore}`, "the new conversation after BIG does not show", 60);
+await typeInto(".composer-field", "STATUS after the rotation");
+await click(".composer-send");
+await until("[...document.querySelectorAll('.log .bubble[data-side=out]')].some((node) => node.textContent.includes('STATUS after the rotation')) && !document.querySelector('.log .typing')", "the message after the rotation got no answer", 60);
+await pause(1500);
+if (await evaluate(newConversations) !== shownBefore + 1) await fail(`the new conversation shows ${(await evaluate(newConversations)) - shownBefore} times`);
+
 // --- The task sheet: a chip or a reservoir row opens it over the chat, and the chat does not
 // scroll; Escape, Back and a swipe down close it, the composer keeps its draft and gets the
 // focus back.
