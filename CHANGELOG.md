@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- The manager chat shows "New conversation" once. The line has no id, so each read of the chat while the manager worked returned it again, and the page added another copy each time.
 - On iOS the terminal's key row no longer blurs the terminal, so the keyboard does not flicker on each `^J`, Enter or arrow.
 - In the web chat, the first message of a new conversation no longer shows above its "New conversation" line.
 - A task check with more than 8 KiB of output (a test run) runs to its end; the task host keeps the last 8 KiB.

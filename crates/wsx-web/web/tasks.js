@@ -609,7 +609,11 @@ export function Manager({ project: id, task, page, checks }) {
         again.current = false;
         const last = shown.current.findLast((entry) => entry.id != null)?.id;
         const next = await api(`api/tasks/${id}/chat`, { query: last != null ? { after: last } : undefined });
-        const all = [...shown.current, ...next.entries];
+        // ^ A rotation or a stop has no id, so every read after the last id returns it again
+        // until the next message: it joins once.
+        const known = (entry) => entry.id == null
+          && shown.current.some((seen) => seen.id == null && seen.kind === entry.kind && seen.unix_ms === entry.unix_ms);
+        const all = [...shown.current, ...next.entries.filter((entry) => !known(entry))];
         if (next.skipped || all.length > 400) cut.current = true;
         shown.current = all.slice(-400);
         setChat({ ...next, entries: shown.current });
