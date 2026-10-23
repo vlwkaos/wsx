@@ -38,7 +38,20 @@ let version = 0;
 export function update(patch) {
   Object.assign(state, patch);
   version += 1;
+  showBadge();
   for (const listener of listeners) listener();
+}
+// ^ The app badge counts what needs the owner, as the server does for a push: blocked agent
+// sessions of the lists and every project's task needs (docs/web-client.md "PWA and push").
+// The count changes when the data loads and when an opened item is answered.
+let badge = null;
+function showBadge() {
+  if (!state.loaded || !("setAppBadge" in navigator)) return;
+  const blocked = listedSessions(state.sessions).filter((session) => isAgent(session) && stateOf(session).key === "blocked").length;
+  const count = blocked + Object.values(state.tasks).reduce((sum, overview) => sum + (overview?.needs?.length ?? 0), 0);
+  if (count === badge) return;
+  badge = count;
+  (count ? navigator.setAppBadge(count) : navigator.clearAppBadge()).catch(() => {});
 }
 export function useStore() {
   const [, renew] = useState(0);

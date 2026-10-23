@@ -1086,6 +1086,77 @@ pub fn activity(target: &Target) -> String {
     activity_of(agent, timeline.items.iter())
 }
 
+/// One line of the agent's current turn for a notification (docs/web-client.md "PWA and
+/// push"): the call a blocked agent waits on (a question names itself), the call that
+/// failed, else its last reply. Only items after the last user message count, so an
+/// earlier turn's reply is never said again. Tool titles are one line built from the
+/// call's input, never its output.
+pub fn notice_line(target: &Target, state: AgentState) -> Option<String> {
+    let agent = target.pane.agent.as_ref()?;
+    let timeline = Reader::default().read_timeline(
+        &agent.provider,
+        agent.session_ref.as_ref(),
+        TIMELINE_ITEMS,
+        TIMELINE_BYTES,
+    );
+    let start = timeline
+        .items
+        .iter()
+        .rposition(|item| item.kind == ItemKind::User)
+        .map_or(0, |index| index + 1);
+    let turn = &timeline.items[start..];
+    let tool = |status: ToolStatus| {
+        turn.iter()
+            .rev()
+            .find_map(|item| item.tool.as_ref().filter(|tool| tool.status == status))
+            .map(|tool| tool.title.clone())
+    };
+    let reply = || {
+        turn.iter()
+            .rev()
+            .filter(|item| item.kind == ItemKind::Assistant)
+            .find_map(|item| item.text.as_deref())
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    match state {
+        AgentState::Blocked => tool(ToolStatus::Running).or_else(reply),
+        AgentState::Error => tool(ToolStatus::Error).or_else(reply),
+        _ => reply(),
+    }
+    .map(|line| wsx_core::task::view::clip(&line, NOTICE_CHARS))
+}
+const NOTICE_CHARS: usize = 120;
+
+/// How many sessions wait for the owner's input, as the page counts them: an attached
+/// agent that is blocked, in a session the lists show (store.js `listedSessions`).
+pub fn blocked_count(targets: &[Target]) -> usize {
+    targets
+        .iter()
+        .filter(|target| {
+            let task = matches!(
+                target
+                    .pane
+                    .agent
+                    .as_ref()
+                    .map(|agent| agent.provider.as_str()),
+                Some("task" | "manager")
+            ) || target
+                .label
+                .strip_prefix("task-")
+                .is_some_and(|rest| rest == "manager" || rest.parse::<u32>().is_ok());
+            !task
+                && !target.pane.exited
+                && target
+                    .pane
+                    .agent
+                    .as_ref()
+                    .is_some_and(|agent| agent.attached && agent.state == AgentState::Blocked)
+        })
+        .count()
+}
+
 /// How long a queued message waits before the timeline shows the end of the screen.
 const HELD_MS: u64 = 10_000;
 const HELD_ROWS: usize = 8;
