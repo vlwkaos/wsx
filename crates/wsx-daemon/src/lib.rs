@@ -6444,8 +6444,19 @@ fn terminal_agent_environment(pane_id: PaneId, runtime_generation: &str) -> Vec<
             .to_string_lossy()
             .into_owned(),
     ));
+    // ^ docs/terminal-context.md "Claude in a pane": Claude's inline renderer leaves a full
+    // copy of a tall reply in the scrollback on every resize (anthropics/claude-code#103181),
+    // and a phone and a desktop resize a pane often. Its full-screen renderer draws on the
+    // alternate screen instead. An owner's own value, here or set later by the shell, wins.
+    if std::env::var_os(CLAUDE_FULLSCREEN_ENV).is_none() {
+        environment.push((CLAUDE_FULLSCREEN_ENV.into(), "1".into()));
+    }
     environment
 }
+
+/// Claude Code's switch to its full-screen renderer for one process
+/// (https://code.claude.com/docs/en/fullscreen).
+const CLAUDE_FULLSCREEN_ENV: &str = "CLAUDE_CODE_NO_FLICKER";
 
 fn runtime_notify(
     daemon: &Arc<Daemon>,

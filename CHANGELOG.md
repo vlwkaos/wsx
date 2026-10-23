@@ -13,6 +13,7 @@
 
 ### Changed
 
+- Claude started in a wsx pane uses its full-screen renderer (`CLAUDE_CODE_NO_FLICKER=1`, unless you set the variable), so a phone or window resize no longer leaves copies of a tall reply in the scrollback (anthropics/claude-code#103181). The conversation scrolls inside Claude; `Ctrl+O` then `[` puts it in the scrollback.
 - The web chat's **Send now** puts a waiting message into a working Claude's turn: Claude takes it at its next step (wsxd `AgentSteer`, daemon revision 33). A message typed into Claude while it works shows in the chat as the person's message.
 - The manager writes the owner a recap after an hour with no message and no turn, once per quiet period and only when something happened (`tasks.manager.recapMinutes`, default 60, 0 off). The web tags it "Recap".
 - Web: the terminal rows of a held chat are closed under "What the terminal shows" and run edge to edge when opened; waiting messages, decision rows, session Remove and notice Dismiss use icons, so their text keeps the row.
