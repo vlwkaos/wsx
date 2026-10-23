@@ -42,10 +42,10 @@ trace.with_suffix('.pid').write_text(str(os.getpid()))
 conversation = os.environ.get('WSX_FIXTURE_CONVERSATION', 'fixture')
 cooked = termios.tcgetattr(0)
 tty.setraw(0)
-draft, pending, leaf, sequence, dialog, taken = '', b'', None, 0, None, None
+draft, pending, leaf, sequence, dialog, taken, working = '', b'', None, 0, None, None, False
 def report(state, attached=True, compacting=False):
  # ^ As Claude's hook does, the first Working report of a turn says which prompt it took.
- global taken
+ global taken, working
  with socket.socket(socket.AF_UNIX) as client:
   client.connect(os.environ['WSX_SOCKET']); stream = client.makefile('rb')
   client.sendall(b'{"method":"hello","params":{"protocol":@PROTOCOL@}}\n'); stream.readline()
@@ -57,12 +57,18 @@ def report(state, attached=True, compacting=False):
   if compacting: params['compacting'] = True
   client.sendall(json.dumps({'method':'agent_report','params':params}).encode()+b'\n')
   assert json.loads(stream.readline())['type'] == 'ack'
+ if working != (state == 'working'):
+  working = state == 'working'; paint()
 def paint():
  if dialog:
   # A provider dialog owns the screen until it is answered.
   sys.stdout.write('\x1b[?2004h\x1b[2J\x1b[H'+'\r\n'.join(dialog)); sys.stdout.flush(); return
+ # Claude Code 2.1.308's layout: the working line, the editor between two borders, the footer.
+ lines = ('❯ '+draft).split('\n')
+ box = (['✻ Sautéing… (esc to interrupt)', ''] if working else []) + ['─'*40, lines[0]] + ['  '+line for line in lines[1:]] \
+   + ['─'*40, '  [S] fixture>main | 3.0%', '  ⏵⏵ auto mode on (shift+tab to cycle)']
  rows = os.get_terminal_size().lines
- sys.stdout.write('\x1b[?2004h\x1b]2;✳ fixture\x07\x1b[2J\x1b['+str(max(1,rows-2))+';1H❯ '+draft+'\x1b[J')
+ sys.stdout.write('\x1b[?2004h\x1b]2;✳ fixture\x07\x1b[2J\x1b['+str(max(1,rows-len(box)+1))+';1H'+'\r\n'.join(box)+'\x1b[J')
  sys.stdout.flush()
 def record(kind, content, **extra):
  global leaf, sequence
@@ -1696,7 +1702,9 @@ capabilities = ["terminal_view"]
         assert [item['text'] for item in timeline()['queue']] == ['queued one', 'queued two']
         # ^ A message held for more than 10 s brings the end of the screen (docs/web-client-chat.md "Timeline").
         screen = wait(lambda: timeline()['screen'], 'screen of a held message', timeout=15)
-        assert 0 < len(screen) <= 8 and any(row.startswith('❯') for row in screen), screen
+        # ^ What is above Claude's editor: its working line, not the editor or the footer.
+        assert 0 < len(screen) <= 8 and screen[-1].startswith('✻ Sautéing'), screen
+        assert not any(row.startswith(('❯', '─')) or 'auto mode' in row for row in screen), screen
         open_gate('result')
         open_gate('answer')
         wait(lambda: delivered()[-2:] == ['queued one', 'queued two'], 'queued messages delivered in order', timeout=20)

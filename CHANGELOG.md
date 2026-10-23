@@ -8,6 +8,7 @@
 - In the web chat, the first message of a new conversation no longer shows above its "New conversation" line.
 - A task check with more than 8 KiB of output (a test run) runs to its end; the task host keeps the last 8 KiB.
 - A web chat message to an idle Claude with a draft is delivered again. Claude Code 2.1.3xx draws up to seven footer rows under its editor, and wsxd looked for the editor only in the last eight rows, so it answered "Claude input editor is not visibly idle" or "fresh empty input was not observed".
+- The web chat's "The terminal shows:" rows are the rows above Claude's editor, such as what it is working on, instead of the editor and its footer.
 
 ### Changed
 
