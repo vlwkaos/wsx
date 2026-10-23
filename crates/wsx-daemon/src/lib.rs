@@ -5148,16 +5148,28 @@ fn claude_editor(observation: &AgentTerminalObservation) -> Option<&str> {
         return None;
     }
     let lines: Vec<_> = observation.text.lines().collect();
-    let (index, input) = lines
-        .iter()
-        .enumerate()
-        .rev()
-        .take(8)
-        .find_map(|(index, line)| {
-            line.trim_start()
-                .strip_prefix('❯')
-                .map(|input| (index, input.trim()))
-        })?;
+    let border = |line: &str| {
+        let line = line.trim();
+        !line.is_empty() && line.chars().all(|character| matches!(character, '─' | '━'))
+    };
+    // ^ Claude Code 2.1.3xx draws up to seven footer rows under the editor's bottom border
+    // (status line, mode, update notice, background agents): look above that border.
+    let prompt = |line: &&str| line.trim_start().starts_with('❯');
+    let end = match lines.iter().rposition(|line| border(line)) {
+        Some(bottom) if !lines[bottom + 1..].iter().any(prompt) => bottom,
+        _ => lines.len(),
+    };
+    let (index, input) =
+        lines[..end]
+            .iter()
+            .enumerate()
+            .rev()
+            .take(8)
+            .find_map(|(index, line)| {
+                line.trim_start()
+                    .strip_prefix('❯')
+                    .map(|input| (index, input.trim()))
+            })?;
     // ^ A blank first line is not an empty multiline editor. Stop at Claude's
     // horizontal input border, not its footer. Ambiguous placeholder UI is refused.
     if input.starts_with("Try ") {
@@ -5167,12 +5179,11 @@ fn claude_editor(observation: &AgentTerminalObservation) -> Option<&str> {
         return Some(input);
     }
     for line in &lines[index + 1..] {
-        let line = line.trim();
-        if !line.is_empty() && line.chars().all(|character| matches!(character, '─' | '━')) {
+        if border(line) {
             break;
         }
-        if !line.is_empty() {
-            return Some(line);
+        if !line.trim().is_empty() {
+            return Some(line.trim());
         }
     }
     Some("")

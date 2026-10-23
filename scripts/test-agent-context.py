@@ -24,6 +24,11 @@ trace.with_suffix('.generation').write_text(generation)
 tty.setraw(0)
 draft, stash, pending = '\nunsent draft', '', b''
 broken_stash_binding = False
+# ^ Claude Code 2.1.3xx draws the editor between two borders, with up to seven footer rows
+# under it (status line, mode, update notice, branch, background agents).
+tall_footer = False
+FOOTER = ['  [S] wsx>main(+0,-0) | 23.0%', '  Opus 5.5 medium | 5h 3%', '  auto mode on · 1 shell',
+          '               ✔ Update installed · Restart to update', '', '  main', '  general-purpose  Checking · 6m 47s']
 pause_completion, pending_completion, receipt_capable = False, False, False
 leaf, sequence, idle_chrome = 'answer', 0, True
 def report(state):
@@ -43,7 +48,12 @@ def paint(fragmented=False):
  rows = os.get_terminal_size().lines
  title = '✳ fixture' if idle_chrome else 'fixture'
  marker = '❯ ' if idle_chrome else 'editor hidden '
- sys.stdout.write('\x1b[?2004h\x1b]2;'+title+'\x07\x1b[2J\x1b['+str(max(1,rows-2))+';1H'+marker+draft+'\x1b[J')
+ if tall_footer:
+  lines = (marker+draft).split('\n')
+  box = ['─'*40, lines[0]] + ['  '+line for line in lines[1:]] + ['─'*40] + FOOTER
+  sys.stdout.write('\x1b[?2004h\x1b]2;'+title+'\x07\x1b[2J\x1b['+str(max(1,rows-len(box)))+';1H'+'\r\n'.join(box)+'\x1b[J')
+ else:
+  sys.stdout.write('\x1b[?2004h\x1b]2;'+title+'\x07\x1b[2J\x1b['+str(max(1,rows-2))+';1H'+marker+draft+'\x1b[J')
  sys.stdout.flush()
 report('idle'); paint()
 while True:
@@ -65,6 +75,8 @@ while True:
    idle_chrome = not idle_chrome; paint()
   elif char == b'\x11':
    broken_stash_binding = not broken_stash_binding
+  elif char == b'\x06':
+   tall_footer = not tall_footer; paint()
   elif char == b'\x13':
    # Mirrors the documented Claude prompt stash, including empty-input restore.
    if broken_stash_binding: continue
@@ -875,6 +887,9 @@ def main():
         assert json.loads(receipt('completed',bound=True).stdout)['exchange']['revision'] == completed['revision']
         cli('session','send-text',claude,'\x13','--no-enter')
         wait(lambda: 'unsent draft' in cli('session','peek',claude,'--trim').stdout,'restore draft before continuation')
+        # Claude's own layout: the two-line draft sits above seven footer rows.
+        cli('session','send-text',claude,'\x06','--no-enter')
+        wait(lambda: 'general-purpose' in cli('session','peek',claude,'--trim').stdout,'tall footer drawn')
         continued = json.loads(cli('agent','continue',exchange['id'],'follow up','--stash-draft','--json').stdout)['exchange']
         wait(lambda: len(traces('claude')) == 2,'fragmented follow-up delivery')
         assert continued['round'] == 2 and continued.get('native_input_id') is None
@@ -888,6 +903,7 @@ def main():
         wait(lambda: len(traces('claude')) == 3,'empty-editor continuation')
         assert traces('claude')[2]['received'].endswith('\nempty editor follow up')
         assert traces('claude')[2]['stash'] == '\nunsent draft', 'empty editor restored or lost the prior stash'
+        cli('session','send-text',claude,'\x06','--no-enter')
         context = json.loads(cli('agent','context',claude,'--json').stdout)['candidates'][0]
         assert context['memory']['messages'][-1]['text'].endswith('\nempty editor follow up')
         wait(lambda: call('agent_exchange_get',{'exchange_id':exchange['id']})['data']['exchange']['state'] == 'done_observed','empty-editor done')

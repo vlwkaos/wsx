@@ -1,7 +1,7 @@
 // Chat: the agent's own saved conversation as a typed timeline, what the agent does
 // now, the messages that wait for it, and the composer (docs/web-client-chat.md).
 import { api, resolve } from "./api.js";
-import { bytes, elapsed, Fold, html, Icon, useCallback, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
+import { bytes, elapsed, html, Icon, useCallback, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, events, readMap, shows, stateOf, state, touch, writeMap } from "./store.js";
 import { Markdown } from "./markdown.js";
 
@@ -191,13 +191,13 @@ function Steps({ items, live }) {
     </details>`;
 }
 
-// A compaction summary, where the conversation was compacted. Its start stays open, so
-// a session continued after a compaction still says what it is about.
+// A compaction summary, where the conversation was compacted, so a session continued after
+// a compaction still says what it is about.
 function Summary({ id, text }) {
   return html`
     <section class="summary" aria-labelledby=${`${id}-label`}>
       <p class="summary-label" id=${`${id}-label`}>Summary of the earlier conversation</p>
-      <${Fold} id=${`${id}-body`} kind="summary-body" more="Show full summary"><${Markdown} text=${text} /></${Fold}>
+      <div class="summary-body" id=${`${id}-body`}><${Markdown} text=${text} /></div>
     </section>`;
 }
 
@@ -608,7 +608,7 @@ export function Chat({ session, onModel }) {
           : html`
             <article key=${block.id} class=${block.kind === "user" ? "message message-user" : "message"} data-kind=${block.kind}>
               ${block.text && (block.kind === "user" ? html`<p class="prose">${block.text}</p>`
-                : html`<${Fold} id=${`message-${block.id}`}><${Markdown} text=${block.text} files=${block.attachments} /></${Fold}>`)}
+                : html`<${Markdown} text=${block.text} files=${block.attachments} />`)}
               <${Attachments} files=${block.attachments} />
               ${block === lastUserBlock && delivery && !sent.length ? html`<p class="note" role="status">${delivery}</p>` : null}
             </article>`)}

@@ -2737,7 +2737,7 @@ def task_journey(args):
             js('task', 'say', 'RUN wsx task land 3 -p ui --json\nRUN wsx task close 4 --discard -p ui --json', '-p', 'ui')
             wait(lambda: len(json.loads(cli('task', 'ledger', '-p', 'ui').stdout)['approvals'] or []) == 2,
                  'approval requests in ui', timeout=30)
-            # #5: a long report the manager hears of (one worker bubble, folded), then closed.
+            # #5: a long report the manager hears of (one worker bubble, whole), then closed.
             # #6: works until the run ends; its prompt opens as the manager's prompts do.
             long_report = 'WORK c.txt\n' + '\n\n'.join('line %d of the report' % n for n in range(1, 41))
             assert js('task', 'new', long_report, '-p', 'ui')['id'] == 5
