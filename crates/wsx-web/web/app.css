@@ -208,7 +208,8 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 /* The conversation's width, for blocks that leave the reading column (.markdown below). */
 .log-wrap { position: relative; container-type: inline-size; }
 .log {
-  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  /* Positioned: a row's offsetTop is in the log (useFollowEnd in lib.js). */
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; position: relative;
   padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
   padding-inline: var(--column-inset);
   /* The end of the conversation stands well clear of the composer; the jump button fits in the gap. */

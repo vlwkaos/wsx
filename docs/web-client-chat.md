@@ -33,6 +33,16 @@ The chat panel of the hosted web client ([web-client.md](web-client.md)): a remo
 - A blocked agent shows a provider dialog. The chat refuses to send a message into it. With `chat_answer` the page shows the dialog and sends keys ("Answering"); without it the answer is given in the terminal panel or on the host.
 - `screen` is `null`, or the last 8 rows of the terminal above Claude's editor box (its borders, the editor and the footer under it are left out; a screen without that box gives its last 8 rows) when something holds the chat that it cannot name: a blocked agent with no readable `question`, or a message that has waited in the queue for more than 10 s. Only a site with `terminal_view` gets it. The page shows "The terminal shows:" with the rows and **Open terminal** where the composer or the attention row was.
 
+# Following the end
+
+The session chat and the manager chat share one rule (`useFollowEnd` in `crates/wsx-web/web/lib.js`):
+
+- A reader within 80 px of the end stays at the end. A reader farther up is not moved; "Jump to latest" shows instead. Only that button and the reader's own send go to the end.
+- The log watches its own box and each of its rows. A row that grows after it shows (a diagram that draws, an image that loads, an entry animation), a row added or removed, and a box that moves or changes size (the "Since you left" line above it, the reservoir or the keyboard below it) settle the view before the browser paints: at the end it stays at the end; farther up, the first row that starts in view keeps its distance from the top of the screen.
+- The row's position is its layout position (`offsetTop` in the positioned `.log`), so a transform in an entry animation does not count as a move.
+- Chrome and Firefox also anchor the scroll with CSS (`overflow-anchor`); iOS Safari does not. The log's own anchor runs after the browser's and decides: where the browser already kept the row in place, it finds nothing to move. The anchor is not the row cut by the top edge: when that row grows inside, the part the reader sees is below the growth and moves with the next row.
+- Checked in a real browser (`scripts/test-web-client.py --browser`): a session whose diagrams draw after it opens stays at its end at 320, 390 and 1280 px; in the manager chat at 390 and 1280 px a late diagram keeps the end, a reader scrolled up keeps the bubble in view within 2 px through a reply below, the "Since you left" line above and rows added and removed above, with CSS anchoring on and off; on a phone the composer with the keyboard up keeps the end.
+
 # Markdown
 
 An agent's message and the summary of an earlier conversation are rendered as CommonMark with GFM tables, strikethrough, task-list marks and autolinks. The person's own messages and waiting messages stay plain text.

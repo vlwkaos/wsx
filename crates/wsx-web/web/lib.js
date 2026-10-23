@@ -83,47 +83,79 @@ export function useNow(active) {
   return now;
 }
 
-// A conversation log that keeps its reader at the end only while the reader is at the end.
-// `log` is the scroller's ref callback; `atEnd` is a ref the page may set (a sent message goes
-// to the end); `away` shows the jump button. The log is also pinned when its own box changes
-// size (the reservoir under it opens, the keyboard opens): that fires no scroll event.
+// A conversation log that keeps its reader at the end only while the reader is at the end,
+// and otherwise keeps the row the reader reads where it is on the screen
+// (docs/web-client-chat.md "Following the end"). `log` is the scroller's ref callback; `toEnd`
+// goes to the end and follows it (the jump button, the reader's own send); `away` shows the
+// jump button. Nothing else moves a reader who scrolled up.
+// ^ Rows change size after they render (a diagram draws, an image loads, an entry animates),
+// rows come and go above the reader, and the box itself moves or changes size (the
+// "Since you left" line, the reservoir, the keyboard): none of these fires a scroll event, and
+// iOS Safari has no CSS scroll anchoring. So the log watches its box and each row, and settles
+// after every change, before the browser paints.
 export function useFollowEnd() {
   const node = useRef(null);
   const atEnd = useRef(true);
-  const watcher = useRef(null);
-  const [away, setAway] = useState(false);
+  const watchers = useRef([]);
+  // The first row that starts in view and its distance from the top of the screen.
+  const anchor = useRef(null);
   const height = useRef(0);
-  const pin = () => { if (atEnd.current && node.current) node.current.scrollTop = node.current.scrollHeight; };
+  const [away, setAway] = useState(false);
+  // ^ Layout positions, not getBoundingClientRect: a row's entry animation moves it with a
+  // transform, which must not count as a move. `.log` is positioned, so offsetTop is in the log.
+  const onScreen = (row) => node.current.getBoundingClientRect().top + row.offsetTop - node.current.scrollTop;
+  const mark = () => {
+    const element = node.current;
+    // ^ Not the row cut by the top edge: when that row grows inside (its diagram draws), what
+    // the reader sees of it is below the growth, and Chrome's CSS anchor there moves it too.
+    const rows = [...element.children];
+    const row = rows.find((child) => child.offsetTop >= element.scrollTop) ?? rows.at(-1);
+    anchor.current = row ? { row, top: onScreen(row) } : null;
+  };
+  const settle = () => {
+    const element = node.current;
+    // A change may still arrive after the view closed.
+    if (!element) return;
+    height.current = element.clientHeight;
+    if (atEnd.current) element.scrollTop = element.scrollHeight;
+    else if (anchor.current?.row.isConnected) {
+      const moved = onScreen(anchor.current.row) - anchor.current.top;
+      // ^ Smaller moves add up against the same mark until they come to a pixel.
+      if (Math.abs(moved) < 1) return;
+      element.scrollTop += moved;
+    }
+    mark();
+  };
   const scrolled = () => {
     const element = node.current;
-    // A scroll event may still arrive after the view closed.
     if (!element) return;
-    // ^ A box that changed height (a panel opened under it) scrolls without the reader:
-    // a log at its end stays there. The event can come before the resize observer.
-    if (element.clientHeight !== height.current) {
-      height.current = element.clientHeight;
-      if (atEnd.current) {
-        pin();
-        return;
-      }
-    }
+    // ^ A box that changed height scrolls without the reader. The event can come before the
+    // resize observer.
+    if (element.clientHeight !== height.current) return settle();
     atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
     setAway(!atEnd.current);
+    mark();
   };
   const log = useCallback((element) => {
-    watcher.current?.disconnect();
-    watcher.current = null;
+    for (const watcher of watchers.current) watcher.disconnect();
+    watchers.current = [];
     node.current = element;
     if (!element) return;
     height.current = element.clientHeight;
-    watcher.current = new ResizeObserver(() => {
-      if (!atEnd.current) return scrolled();
-      height.current = element.clientHeight;
-      pin();
+    const sizes = new ResizeObserver(settle);
+    sizes.observe(element);
+    for (const row of element.children) sizes.observe(row);
+    const rows = new MutationObserver((changes) => {
+      for (const change of changes) {
+        for (const row of change.addedNodes) if (row.nodeType === Node.ELEMENT_NODE) sizes.observe(row);
+        for (const row of change.removedNodes) if (row.nodeType === Node.ELEMENT_NODE) sizes.unobserve(row);
+      }
+      settle();
     });
-    watcher.current.observe(element);
+    rows.observe(element, { childList: true });
+    watchers.current = [sizes, rows];
   }, []);
-  const toEnd = () => { atEnd.current = true; pin(); setAway(false); };
-  useLayoutEffect(pin);
-  return { log, atEnd, away, scrolled, toEnd };
+  const toEnd = () => { atEnd.current = true; setAway(false); settle(); };
+  useLayoutEffect(settle);
+  return { log, away, scrolled, toEnd };
 }
