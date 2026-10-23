@@ -14,6 +14,7 @@
 
 ### Changed
 
+- `tasks.env` sets environment variables for a task's worker and its checks alike. wsx's own config sets `CARGO_INCREMENTAL=0`: incremental rebuilds on macOS left every rebuild's object files in the task copy (one copy grew to 14 GB), and a copy now stays about 2.5 GB with its dependencies still warm. wsx's `minFreeGb` drops to 3, and workers may write Zig's cache, which a cold build of `wsx-terminal` needs ([docs/tasks.md](docs/tasks.md) "Config").
 - Manager mode tells pipeline work from work the owner wants to be sure of. A held task (`wsx task new --hold`, `wsx task hold`, *Hold for me* in the web) never lands by itself. `wsx task trial` (*Try live*) rebases its revision, checks it and puts it on the live site before it lands; other deploys wait and hosts keep their binary until the trial ends. *Pass and land* lands it without To check items, and End, a message to the worker or a failed deploy put the default branch back ([docs/tasks.md](docs/tasks.md) "Hold and trial").
 - Claude started in a wsx pane uses its full-screen renderer (`CLAUDE_CODE_NO_FLICKER=1`, unless you set the variable), so a phone or window resize no longer leaves copies of a tall reply in the scrollback (anthropics/claude-code#103181). The conversation scrolls inside Claude; `Ctrl+O` then `[` puts it in the scrollback.
 - The web chat's **Send now** puts a waiting message into a working Claude's turn: Claude takes it at its next step (wsxd `AgentSteer`, daemon revision 33). A message typed into Claude while it works shows in the chat as the person's message.

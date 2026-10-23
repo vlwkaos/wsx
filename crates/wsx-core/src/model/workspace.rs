@@ -72,6 +72,8 @@ pub struct TaskConfig {
     pub owner_skills: bool,
     pub workflow: TaskWorkflow,
     pub checks: Vec<String>,
+    /// `tasks.env`: set for the worker's commands and for the checks, the same in both.
+    pub env: std::collections::BTreeMap<String, String>,
     /// Seconds one check may run before its process group is killed.
     pub check_timeout_secs: u64,
     /// Free disk a task needs before an agent turn or its checks; below it the task waits
@@ -180,6 +182,7 @@ impl Default for TaskConfig {
             owner_skills: false,
             workflow: TaskWorkflow::default(),
             checks: Vec::new(),
+            env: Default::default(),
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
             min_free_gb: 5,
             land_approve: false,

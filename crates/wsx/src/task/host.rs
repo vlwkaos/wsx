@@ -9,7 +9,7 @@ use super::claude::{new_session_id, AgentLine, ClaudeAgent, Launch, TurnResult};
 use super::hosting;
 use super::trial;
 use anyhow::{bail, Context, Result};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -959,11 +959,12 @@ impl Host {
         }
         let timeout = Duration::from_secs(self.record.check_timeout_secs);
         let working_copy = self.record.working_copy.clone();
+        let env = self.record.env.clone();
         let events = self.events.clone();
         std::thread::spawn(move || {
             let results: Vec<CheckResult> = picked
                 .iter()
-                .map(|(_, command)| run_check(&working_copy, command, timeout))
+                .map(|(_, command)| run_check(&working_copy, command, &env, timeout))
                 .collect();
             let mut stdout = String::new();
             for ((index, _), check) in picked.iter().zip(&results) {
@@ -1009,11 +1010,12 @@ impl Host {
         let checks = self.record.checks.clone();
         let timeout = Duration::from_secs(self.record.check_timeout_secs);
         let working_copy = self.record.working_copy.clone();
+        let env = self.record.env.clone();
         let events = self.events.clone();
         std::thread::spawn(move || {
             let results = checks
                 .iter()
-                .map(|command| run_check(&working_copy, command, timeout))
+                .map(|command| run_check(&working_copy, command, &env, timeout))
                 .collect();
             let _ = events.send(Event::ChecksDone(results));
         });
@@ -1548,7 +1550,13 @@ fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
 }
 
-fn run_check(working_copy: &Path, command: &str, timeout: Duration) -> CheckResult {
+/// `env`: `tasks.env`, as the worker's commands have it. ref: docs/tasks.md "Config"
+fn run_check(
+    working_copy: &Path,
+    command: &str,
+    env: &BTreeMap<String, String>,
+    timeout: Duration,
+) -> CheckResult {
     let mut process = std::process::Command::new("/bin/sh");
     process
         .args(["-c", command])
@@ -1559,6 +1567,7 @@ fn run_check(working_copy: &Path, command: &str, timeout: Duration) -> CheckResu
             process.env_remove(name);
         }
     }
+    process.envs(env);
     // ^ The tail: a long check output (a test run) ends with its failures and summary.
     match output_with_timeout_tail(&mut process, timeout, CHECK_OUTPUT_BYTES) {
         Ok(output) => {

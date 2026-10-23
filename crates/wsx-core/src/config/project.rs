@@ -3,6 +3,7 @@
 
 use crate::model::workspace::{DefaultSessionConfig, ProjectConfig, TaskConfig, TaskSandbox};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -96,6 +97,8 @@ struct TasksFile {
     check_timeout_seconds: Option<u64>,
     #[serde(rename = "minFreeGb", skip_serializing_if = "Option::is_none")]
     min_free_gb: Option<u64>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    env: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     land: Option<TaskLandFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -398,6 +401,7 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         text(workflow.idle, "idle", &mut config.workflow.idle)?;
     }
     config.checks = validate_list(file.checks, "tasks.checks", MAX_DEFAULT_COMMAND_BYTES)?;
+    config.env = validate_env(file.env)?;
     if let Some(preview) = file.preview {
         config.preview = Some(preview_config(preview)?);
     }
@@ -612,6 +616,35 @@ fn validate_sandbox(file: TaskSandboxFile) -> Result<TaskSandbox, String> {
         allowed_domains,
         allow_write,
     })
+}
+
+/// `tasks.env`: names a shell can set, never one wsx sets itself (`PATH`, `GIT_EDITOR`,
+/// `WSX_*`); values are one line of text. ref: docs/tasks.md "Config"
+fn validate_env(env: BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
+    if env.len() > MAX_TASK_LIST_ITEMS {
+        return Err(format!(
+            "tasks.env has more than {MAX_TASK_LIST_ITEMS} entries"
+        ));
+    }
+    for (name, value) in &env {
+        let mut chars = name.chars();
+        let word = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !word || name.len() > MAX_TASK_WORD_BYTES {
+            return Err(format!("tasks.env: {name:?} is not a variable name"));
+        }
+        if matches!(name.as_str(), "PATH" | "GIT_EDITOR") || name.starts_with("WSX_") {
+            return Err(format!("tasks.env: wsx sets {name} itself"));
+        }
+        if value.len() > MAX_DEFAULT_COMMAND_BYTES || value.chars().any(char::is_control) {
+            return Err(format!(
+                "tasks.env.{name} must be at most {MAX_DEFAULT_COMMAND_BYTES} bytes on one line"
+            ));
+        }
+    }
+    Ok(env)
 }
 
 fn validate_list(
