@@ -23,7 +23,14 @@ pub fn classify(title: &str, text: &str) -> Option<TerminalEvidence> {
         .into_iter()
         .rev()
         .collect::<Vec<_>>();
-    let lower = recent.join("\n").to_ascii_lowercase();
+    // ^ A narrow pane wraps Claude's hint line ("… Esc" / "to cancel" at 40 columns,
+    // Claude Code 2.1.309): match the words across rows.
+    let lower = recent
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
     let visible_choice = lower.contains("enter to confirm")
         || lower.contains("enter to select")
         || lower.contains("arrow keys to navigate")
