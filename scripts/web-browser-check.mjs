@@ -273,7 +273,7 @@ async function chats() {
   await openSession("working");
   // ^ The top row's model comes from the chat's data one render after the working row.
   await until("!!document.querySelector('.working') && !!document.querySelector('.queued') && !!document.querySelector('.bar-model')", "the working row, the queue or the model did not show");
-  const working = await evaluate(`({ state: document.querySelector('.bar-state').firstChild.textContent, model: document.querySelector('.bar-model')?.textContent ?? '', activity: document.querySelector('.working-activity').textContent,
+  const working = await evaluate(`({ state: [...document.querySelector('.bar-state').childNodes].find((node) => node.nodeType === 3).textContent, model: document.querySelector('.bar-model')?.textContent ?? '', activity: document.querySelector('.working-activity').textContent,
     live: [...document.querySelectorAll('.steps[data-live] .step')].map((step) => step.textContent.trim().replace(/\\s+/g, ' ')),
     send: document.querySelector('.composer .button-primary').textContent, stop: [...document.querySelectorAll('.working button')].map((b) => b.textContent).join(),
     queued: document.querySelector('.queued-text').textContent, switch: [...document.querySelectorAll('.switch a')].map((a) => a.textContent.trim() + (a.getAttribute('aria-current') ? '*' : '')).join(),
@@ -387,7 +387,7 @@ async function chats() {
         composer: !!document.querySelector('.composer, .attention'), bottom: Math.round(innerHeight - box(sheet).bottom), log: Math.round(box(document.querySelector('.log')).height),
         screen: { rows: screen.textContent.split('\\n').length, font: getComputedStyle(screen).fontFamily.split(',')[0], space: getComputedStyle(screen).whiteSpace,
           wide: screen.scrollWidth > screen.clientWidth, cursor: screen.textContent.includes('❯ 1.'), high: box(screen).height },
-        under: box(document.querySelector('.bar-state')).top >= box(document.querySelector('.bar-label')).bottom - 1, state: document.querySelector('.bar-state').firstChild.textContent }; })()`);
+        under: box(document.querySelector('.bar-state')).top >= box(document.querySelector('.bar-label')).bottom - 1, state: [...document.querySelector('.bar-state').childNodes].find((node) => node.nodeType === 3).textContent }; })()`);
     if (asked.title !== title || asked.choices.join("|") !== choices.join("|") || asked.heights.some((height) => height < 44) || asked.widths.some((width) => width !== 0)
       || asked.filled || asked.focused || asked.composer || asked.keys !== "Enter,Escape,Up,Down" || asked.actions !== "Type an answer,Open terminal" || !asked.terminal.endsWith("/terminal")
       || (phone() && asked.capHeights.some((height) => height < 44))) {
