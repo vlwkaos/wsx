@@ -167,12 +167,80 @@ pub fn list(provider: &str, worktree: &Path) -> Listing {
     listing
 }
 
+/// The owner's skills a manager gets as `owner:<name>` (`$CLAUDE_CONFIG_DIR/skills`, else
+/// `~/.claude/skills`), for the manager composer's `/` list. Skills only, same bounds as `list`.
+/// ref: docs/tasks.md "Manager"
+pub fn owner_skills() -> Listing {
+    let mut listing = Listing {
+        listed: true,
+        commands: Vec::new(),
+        truncated: false,
+        skipped: 0,
+    };
+    let mut found = Vec::new();
+    if let Some(home) = claude_home() {
+        scan_skills(&home, "", Source::User, &mut found, &mut listing.skipped);
+    }
+    let mut seen = HashSet::new();
+    for (name, description, source) in found {
+        if !seen.insert(name.to_ascii_lowercase()) {
+            continue;
+        }
+        if listing.commands.len() == MAX_COMMANDS {
+            listing.truncated = true;
+            break;
+        }
+        listing.commands.push(Command {
+            name,
+            description,
+            source,
+        });
+    }
+    listing
+}
+
 /// `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
 fn claude_home() -> Option<PathBuf> {
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))
+}
+
+/// `skills/<name>/SKILL.md` under `root`.
+fn scan_skills(
+    root: &Path,
+    prefix: &str,
+    source: Source,
+    found: &mut Vec<(String, String, Source)>,
+    skipped: &mut usize,
+) {
+    let real = source == Source::Project;
+    let is = |path: &Path, dir: bool| {
+        let meta = if real {
+            fs::symlink_metadata(path)
+        } else {
+            fs::metadata(path)
+        };
+        meta.is_ok_and(|meta| if dir { meta.is_dir() } else { meta.is_file() })
+    };
+    let skills = root.join("skills");
+    let skill_entries = match !real || is(&skills, true) {
+        true => entries(&skills),
+        false => Vec::new(),
+    };
+    for (stem, path) in skill_entries {
+        let file = path.join("SKILL.md");
+        if !is(&path, true) || !is(&file, false) {
+            continue;
+        }
+        match read_head(&file).and_then(|head| parse(&head, &stem)) {
+            Some((name, description)) => {
+                found.push((format!("{prefix}{name}"), description, source))
+            }
+            None => *skipped += 1,
+        }
+    }
 }
 
 /// `skills/<name>/SKILL.md` and `commands/[<folder>/]<name>.md` under `root`.
@@ -198,23 +266,7 @@ fn scan(
     if real && !is(root, true) {
         return;
     }
-    let skills = root.join("skills");
-    let skill_entries = match !real || is(&skills, true) {
-        true => entries(&skills),
-        false => Vec::new(),
-    };
-    for (stem, path) in skill_entries {
-        let file = path.join("SKILL.md");
-        if !is(&path, true) || !is(&file, false) {
-            continue;
-        }
-        match read_head(&file).and_then(|head| parse(&head, &stem)) {
-            Some((name, description)) => {
-                found.push((format!("{prefix}{name}"), description, source))
-            }
-            None => *skipped += 1,
-        }
-    }
+    scan_skills(root, prefix, source, found, skipped);
     let commands = root.join("commands");
     if real && !is(&commands, true) {
         return;

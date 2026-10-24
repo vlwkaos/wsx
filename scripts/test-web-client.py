@@ -2709,6 +2709,9 @@ def task_journey(args):
         home, state, project, other, calm, plans, bin_dir, tmp = (work / name for name in ('h', 's', 'demo', 'ui', 'calm', 'plans', 'bin', 't'))
         for folder in (home, state, project, other, calm, plans, bin_dir, tmp):
             folder.mkdir(mode=0o700)
+        # ^ The owner's skill the manager composer's `/` list shows (docs/web-client-tasks.md).
+        (home / '.claude/skills/fixture-skill').mkdir(parents=True)
+        (home / '.claude/skills/fixture-skill/SKILL.md').write_text('---\nname: fixture-skill\ndescription: Fixture skill for the manager\n---\nBODY-SECRET\n')
         project, other, calm, plans = project.resolve(), other.resolve(), calm.resolve(), plans.resolve()
         session_projects = [(work / name) for name in (('busy', 'quiet', 'gone') if args.browser else ())]
         for folder in session_projects:
@@ -3082,6 +3085,15 @@ digest_max_seconds = 6
         assert steady(owner, 'POST', '/api/tasks/%d/approvals/a2/deny' % demo, {})[0] == 409
         assert steady(owner, 'POST', '/api/tasks/%d/approvals/a2/maybe' % demo, {})[0] == 404
         assert task_state(1) == 'ready'
+        # The manager composer's lists: the owner's skills (name and description, never the body)
+        # and the other registered projects with their manager's set name.
+        mentions = steady(owner, 'GET', '/api/tasks/%d/mentions' % ids['plans'])[1]
+        assert [(skill['name'], skill['description']) for skill in mentions['skills']] == [('fixture-skill', 'Fixture skill for the manager')], mentions
+        assert 'BODY-SECRET' not in json.dumps(mentions) and mentions['truncated'] is False, mentions
+        by_name = {item['name']: item for item in mentions['projects']}
+        assert 'plans' not in by_name and by_name['demo']['manager'] is None and 'ui' in by_name, mentions['projects']
+        assert not args.browser or by_name['ui']['manager'] == 'Atlas', mentions['projects']
+        assert steady(owner, 'GET', '/api/tasks/%d/mentions' % 999999)[0] == 404
         since = steady(owner, 'GET', '/api/tasks/%d/since?after=1' % demo)[1]
         assert since['tasks']['landed'] == [2, 3] and since['tasks']['started'] == [1, 2, 3, 4] and since['replies'] >= 3, since
         # What was settled, newest first, one line each; the home row's last reply and activity.
