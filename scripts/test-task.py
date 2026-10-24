@@ -1537,7 +1537,10 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text(LAND_CONFIG + '  futureSetting: { on: true }\nfutureTop: 1\n')
     git('commit', '-q', '-am', 'a newer config')
     warned = cli('task', 'ledger', '--json')
-    assert 'ignored: tasks.futureSetting, futureTop' in warned.stderr and 'wsx.config.yml' in warned.stderr, warned.stderr
+    assert 'unknown keys ignored: tasks.futureSetting, futureTop' in warned.stderr and 'wsx.config.yml' in warned.stderr, warned.stderr
+    # ^ The TUI shows it as the project notice, not on stderr over its screen.
+    notice = tui_text(wsx, env, project, r'futureTop')
+    assert 'unknown keys ignored' in notice and 'tasks.futureSetting' in notice, notice[-3000:]
     assert warned.stderr.count('warning:') == 1, warned.stderr
     newer = cli('task', 'new', 'WORK newer.txt', '--json')
     assert 'tasks.futureSetting' in newer.stderr, newer.stderr

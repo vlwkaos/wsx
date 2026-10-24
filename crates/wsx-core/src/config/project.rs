@@ -349,8 +349,9 @@ fn parse_yaml(path: &Path, text: &str) -> Result<ProjectConfig, String> {
         if ignored.len() > MAX_IGNORED_KEYS {
             keys.push_str(&format!(" and {} more", ignored.len() - MAX_IGNORED_KEYS));
         }
+        // ^ The first line is the TUI notice's title, the second its body.
         config.notice = Some(format!(
-            "warning: {} has keys this wsx does not know, ignored: {keys}",
+            "warning: unknown keys ignored: {keys}\nin {}",
             path.display()
         ));
     }
