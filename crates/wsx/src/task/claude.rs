@@ -415,10 +415,13 @@ fn check_run_note(record: &TaskRecord) -> String {
         .map(|(index, check)| format!("{}. `{check}`", index + 1))
         .collect();
     format!(
-        "After your result wsx runs the project's checks: {}. Before you report done, run \
-         `wsx task check-run` (all) or `wsx task check-run 2 3` (by number): the task host runs \
-         them outside your sandbox exactly as it will after your result, so a test that needs \
-         a terminal or a browser works there. Fix what fails first. ",
+        "After your result wsx runs the project's checks: {}. `wsx task check-run 2 3` runs \
+         checks by number and `wsx task check-run` runs all: the task host runs them outside \
+         your sandbox exactly as it will after your result, so a test that needs a terminal \
+         or a browser works there. While you work, run focused checks; run all of them once, \
+         at the end, before you report done: a full run waits for the machine's one check \
+         slot. Fix what fails first. A check that fails the same way on the default branch \
+         is not yours to fix: name it in your summary instead. ",
         listed.join(" ")
     )
 }

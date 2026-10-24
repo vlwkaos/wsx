@@ -8,6 +8,7 @@ mod hosting;
 mod ledger;
 pub mod manager;
 mod preview;
+mod slot;
 mod trial;
 
 use crate::cli::{

@@ -69,6 +69,9 @@ pub enum WaitOn {
     /// The owner works in the working copy; nothing runs until `handback`.
     /// ref: docs/tasks.md "By hand"
     Hand,
+    /// The machine's check slot: a `checking` task, or a worker's `check-run`, waits for the
+    /// check runs ahead of it. ref: docs/tasks.md "Checks, revisions and report"
+    CheckSlot,
 }
 
 impl WaitOn {
@@ -78,6 +81,7 @@ impl WaitOn {
             Self::Permission => "permission",
             Self::Disk => "disk",
             Self::Hand => "hand",
+            Self::CheckSlot => "check_slot",
         }
     }
 }
@@ -196,7 +200,7 @@ pub struct TaskRecord {
     /// ref: docs/tasks.md "Hold and trial"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<String>,
-    /// Set exactly while the state is `waiting`.
+    /// Set while the state is `waiting`, and on `check_slot` while checks wait for the slot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<Waiting>,
     pub created_unix_ms: u64,
@@ -294,6 +298,10 @@ pub enum LogEvent {
     DiskWait {
         free_mb: u64,
         min_gb: u64,
+    },
+    /// The checks wait for the machine's check slot (docs/tasks.md "Checks, revisions and report").
+    CheckQueued {
+        reason: String,
     },
     /// A preview of the task answers at `url` (docs/tasks.md "Preview").
     Preview {
