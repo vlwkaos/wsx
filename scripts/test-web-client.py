@@ -1953,9 +1953,10 @@ capabilities = ["terminal_view"]
         stuck = root_queue()
         assert [item['id'] for item in stuck] == [expired] and stuck[0]['failed'].startswith('an attachment expired'), stuck
         settle('owner')
-        # A new message to an idle agent goes at once past the failed one.
+        # A new message to an idle agent goes past the failed one: at once, or queued until wsxd
+        # sees the agent at its wait boundary a moment later.
         status, direct = via_root('past the stuck one')
-        assert status == 200 and direct['exchange'], direct
+        assert status == 200 and (direct['exchange'] or (direct['queued'] and not direct['queued']['failed'])), direct
         wait(lambda: delivered()[-1] == 'past the stuck one', 'a new message past the failed one')
         assert [item['id'] for item in root_queue()] == [expired]
         assert steady(root, 'DELETE', chat + '/queue/%d' % expired)[0] == 200
