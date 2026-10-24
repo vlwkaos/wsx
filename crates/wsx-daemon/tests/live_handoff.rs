@@ -2,6 +2,7 @@
 
 use std::{
     fs,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -43,7 +44,6 @@ impl Fixture {
             ));
         fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
-        use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         // Handoff binaries have their own namespace: XDG_STATE_HOME/wsx is a directory.
         fs::create_dir(root.join("bin")).unwrap();
@@ -97,7 +97,10 @@ impl Drop for Fixture {
 fn wait_for_socket(path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if path.exists() {
+        // ^ wsxd binds the socket, then restricts it to its owner: a client that connects
+        // between the two steps is refused (client.rs `validate_socket`). Wait for the
+        // restricted socket, as a client that retries would.
+        if fs::symlink_metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o077 == 0) {
             return;
         }
         thread::sleep(Duration::from_millis(20));
