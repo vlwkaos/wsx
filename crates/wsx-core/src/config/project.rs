@@ -55,6 +55,8 @@ const MAX_TASK_WORD_BYTES: usize = 256;
 /// `tasks.manager.name`: one short line the owner reads as the manager's name.
 const MAX_MANAGER_NAME_BYTES: usize = 64;
 const MAX_TASK_LIST_ITEMS: usize = 64;
+/// Unknown keys named in one warning, and distinct warnings one process prints.
+const MAX_IGNORED_KEYS: usize = 8;
 const MAX_CHECK_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 const MIN_ROTATE_TOKENS: u64 = 1_000;
 /// One day: a recap after a longer quiet would come after the owner is back.
@@ -72,7 +74,7 @@ enum PublishMode {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct ProjectConfigFile {
     hooks: HookConfig,
     copy: CopyConfig,
@@ -84,7 +86,7 @@ struct ProjectConfigFile {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct TasksFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<TaskAgentFile>,
@@ -119,7 +121,7 @@ struct TasksFile {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct TaskWorkflowFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     build: Option<String>,
@@ -132,7 +134,7 @@ struct TaskWorkflowFile {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct TaskPreviewFile {
     command: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,7 +145,7 @@ struct TaskPreviewFile {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct TaskSandboxFile {
     #[serde(rename = "allowedDomains", skip_serializing_if = "Vec::is_empty")]
     allowed_domains: Vec<String>,
@@ -152,7 +154,7 @@ struct TaskSandboxFile {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct TaskManagerFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
@@ -171,7 +173,7 @@ struct TaskManagerFile {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct TaskCommandFile {
     command: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -185,7 +187,7 @@ struct TaskCommandFile {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct TaskLandFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     approve: Option<bool>,
@@ -194,7 +196,7 @@ struct TaskLandFile {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct TaskAgentFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     adapter: Option<String>,
@@ -205,14 +207,14 @@ struct TaskAgentFile {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct HookConfig {
     #[serde(rename = "postCreate", skip_serializing_if = "Option::is_none")]
     post_create: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct CopyConfig {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     include: Vec<String>,
@@ -221,14 +223,14 @@ struct CopyConfig {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct GitConfig {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     subtrees: Vec<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct WorktreeConfig {
     #[serde(rename = "branchPrefix", skip_serializing_if = "Option::is_none")]
     branch_prefix: Option<String>,
@@ -243,7 +245,7 @@ impl WorktreeConfig {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 struct DefaultSessionFile {
     enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -323,7 +325,7 @@ fn load_yaml(path: &Path) -> ProjectConfig {
             };
         }
     };
-    parse_yaml(&text).unwrap_or_else(|error| ProjectConfig {
+    parse_yaml(path, &text).unwrap_or_else(|error| ProjectConfig {
         notice: Some(format!(
             "Could not parse {} (using defaults): {error}",
             path.display()
@@ -332,10 +334,38 @@ fn load_yaml(path: &Path) -> ProjectConfig {
     })
 }
 
-fn parse_yaml(text: &str) -> Result<ProjectConfig, String> {
-    let file =
-        yaml_serde::from_str::<ProjectConfigFile>(text).map_err(|error| error.to_string())?;
-    validate_project_file(file)
+/// Unknown keys are ignored, so a wsx older than the file still reads it; `notice` names
+/// them. Known keys with a wrong type or value still fail. ref: docs/tasks.md "Config"
+fn parse_yaml(path: &Path, text: &str) -> Result<ProjectConfig, String> {
+    let mut ignored = Vec::new();
+    let file: ProjectConfigFile =
+        serde_ignored::deserialize(yaml_serde::Deserializer::from_str(text), |key| {
+            ignored.push(key.to_string())
+        })
+        .map_err(|error| error.to_string())?;
+    let mut config = validate_project_file(file)?;
+    if !ignored.is_empty() {
+        let mut keys = ignored[..ignored.len().min(MAX_IGNORED_KEYS)].join(", ");
+        if ignored.len() > MAX_IGNORED_KEYS {
+            keys.push_str(&format!(" and {} more", ignored.len() - MAX_IGNORED_KEYS));
+        }
+        config.notice = Some(format!(
+            "warning: {} has keys this wsx does not know, ignored: {keys}",
+            path.display()
+        ));
+    }
+    Ok(config)
+}
+
+/// Print a warning on stderr once per process: hosts and the web server reread the config.
+fn warn_once(warning: String) {
+    static WARNED: std::sync::Mutex<std::collections::BTreeSet<String>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let mut warned = WARNED.lock().unwrap_or_else(|poison| poison.into_inner());
+    if warned.len() < MAX_IGNORED_KEYS && !warned.contains(&warning) {
+        eprintln!("{warning}");
+        warned.insert(warning);
+    }
 }
 
 /// The task settings of a project. Unlike `load_project_config`, a file that
@@ -347,8 +377,13 @@ pub fn load_task_config(repo_path: &Path) -> Result<TaskConfig, String> {
     }
     let text = read_bounded(&canonical)
         .map_err(|error| format!("cannot read {}: {error}", canonical.display()))?;
-    parse_yaml(&text)
-        .map(|config| config.tasks)
+    parse_yaml(&canonical, &text)
+        .map(|config| {
+            if let Some(warning) = config.notice {
+                warn_once(warning);
+            }
+            config.tasks
+        })
         .map_err(|error| format!("cannot parse {}: {error}", canonical.display()))
 }
 

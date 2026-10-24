@@ -224,8 +224,8 @@ def run(wsx, wsxd, work, owned):
         (project / 'wsx.config.yml').write_text('tasks:\n  manager:\n    name: %s\n' % name)
         refused = cli('task', 'new', 'WORK a.txt', ok=False).stderr
         assert 'tasks.manager.name' in refused and word in refused, refused
-    # ^ The brief and the pr policy are gone; tasks.skills and tasks.workflow are checked.
-    for bad, word in (('  brief: true\n', 'unknown field `brief`'), ('  land: { policy: pr }\n', 'unknown field `policy`'),
+    # ^ A known key with a wrong type still fails; tasks.skills and tasks.workflow are checked.
+    for bad, word in (('  minFreeGb: lots\n', 'invalid type: string "lots"'), ('  land: { auto: maybe }\n', 'invalid type'),
                       ('  skills: everyone\n', 'tasks.skills must be owner or none'),
                       ('  workflow: { build: "a\\u0007b" }\n', 'tasks.workflow.build must be'),
                       ('  workflow: { idle: "a\\u0007b" }\n', 'tasks.workflow.idle must be'),
@@ -1532,6 +1532,21 @@ def run(wsx, wsxd, work, owned):
     fresh = manager_launches()[-1]
     assert not fresh['resume'] and str(granted) not in writes(fresh), fresh
     assert 'grants' not in json.loads((manager_log.parent / 'state.json').read_text())
+    # 32b. A wsx older than its config (docs/tasks.md "Config"): unknown keys at any level are
+    # ignored with one warning that names them, so the ledger, a new task and its land work.
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG + '  futureSetting: { on: true }\nfutureTop: 1\n')
+    git('commit', '-q', '-am', 'a newer config')
+    warned = cli('task', 'ledger', '--json')
+    assert 'ignored: tasks.futureSetting, futureTop' in warned.stderr and 'wsx.config.yml' in warned.stderr, warned.stderr
+    assert warned.stderr.count('warning:') == 1, warned.stderr
+    newer = cli('task', 'new', 'WORK newer.txt', '--json')
+    assert 'tasks.futureSetting' in newer.stderr, newer.stderr
+    newer = json.loads(newer.stdout)['id']
+    assert wait_state(newer, 'ready', 'failed')['state'] == 'ready'
+    assert land(newer)['ok'] and main_has('newer.txt')
+    wait_closed(newer)
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+    git('commit', '-q', '-am', 'config as before')
 
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     # ledger and messages its manager, which answers once; nothing else crosses projects.
