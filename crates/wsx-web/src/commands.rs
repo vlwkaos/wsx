@@ -106,81 +106,46 @@ fn builtins(provider: &str) -> &'static [(&'static str, &'static str)] {
 
 /// The commands of `provider` in a session whose worktree is `worktree`.
 pub fn list(provider: &str, worktree: &Path) -> Listing {
-    let mut listing = Listing {
-        listed: provider == "claude",
-        commands: Vec::new(),
-        truncated: false,
-        skipped: 0,
-    };
-    let mut seen = HashSet::new();
-    let mut add = |listing: &mut Listing, name: String, description: String, source| {
-        if !seen.insert(name.to_ascii_lowercase()) {
-            return;
-        }
-        if listing.commands.len() == MAX_COMMANDS {
-            listing.truncated = true;
-            return;
-        }
-        listing.commands.push(Command {
-            name,
-            description,
-            source,
-        });
-    };
-    for (name, description) in builtins(provider) {
-        add(
-            &mut listing,
-            (*name).into(),
-            (*description).into(),
-            Source::Builtin,
-        );
-    }
-    if provider != "claude" {
-        return listing;
-    }
-    let home = claude_home();
-    let mut found = Vec::new();
-    let project = worktree.join(".claude");
-    scan(
-        &project,
-        "",
-        Source::Project,
-        &mut found,
-        &mut listing.skipped,
-    );
-    if let Some(home) = &home {
-        scan(home, "", Source::User, &mut found, &mut listing.skipped);
-        for (plugin, path) in plugins(home, worktree) {
-            scan(
-                &path,
-                &format!("{plugin}:"),
-                Source::Plugin,
-                &mut found,
-                &mut listing.skipped,
-            );
+    let mut found: Vec<_> = builtins(provider)
+        .iter()
+        .map(|&(name, description)| (name.into(), description.into(), Source::Builtin))
+        .collect();
+    let mut skipped = 0;
+    if provider == "claude" {
+        // Project first, so a project's command wins over a user's of the same name.
+        let project = worktree.join(".claude");
+        scan(&project, "", Source::Project, &mut found, &mut skipped);
+        if let Some(home) = claude_home() {
+            scan(&home, "", Source::User, &mut found, &mut skipped);
+            for (plugin, path) in plugins(&home, worktree) {
+                let prefix = format!("{plugin}:");
+                scan(&path, &prefix, Source::Plugin, &mut found, &mut skipped);
+            }
         }
     }
-    // Project first, so a project's command wins over a user's of the same name.
-    for (name, description, source) in found {
-        add(&mut listing, name, description, source);
-    }
-    listing
+    listing(provider == "claude", found, skipped)
 }
 
 /// The owner's skills a manager gets as `owner:<name>` (`$CLAUDE_CONFIG_DIR/skills`, else
 /// `~/.claude/skills`), for the manager composer's `/` list. Skills only, same bounds as `list`.
 /// ref: docs/tasks.md "Manager"
 pub fn owner_skills() -> Listing {
+    let mut found = Vec::new();
+    let mut skipped = 0;
+    if let Some(home) = claude_home() {
+        scan_skills(&home, "", Source::User, &mut found, &mut skipped);
+    }
+    listing(true, found, skipped)
+}
+
+/// `found` with the first of each name (any case), at most `MAX_COMMANDS`.
+fn listing(listed: bool, found: Vec<(String, String, Source)>, skipped: usize) -> Listing {
     let mut listing = Listing {
-        listed: true,
+        listed,
         commands: Vec::new(),
         truncated: false,
-        skipped: 0,
+        skipped,
     };
-    let mut found = Vec::new();
-    if let Some(home) = claude_home() {
-        scan_skills(&home, "", Source::User, &mut found, &mut listing.skipped);
-    }
     let mut seen = HashSet::new();
     for (name, description, source) in found {
         if !seen.insert(name.to_ascii_lowercase()) {
@@ -207,6 +172,19 @@ fn claude_home() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))
 }
 
+/// Whether `path` is a folder (`dir`) or a file; with `real`, a symlink is neither.
+/// ^ A repository's own `.claude` may hold symlinks to any file of the user, and a listed
+/// description goes to paired devices: there only real files and folders count. The
+/// user's and the plugins' folders are the user's own and often linked.
+fn is(path: &Path, dir: bool, real: bool) -> bool {
+    let meta = if real {
+        fs::symlink_metadata(path)
+    } else {
+        fs::metadata(path)
+    };
+    meta.is_ok_and(|meta| if dir { meta.is_dir() } else { meta.is_file() })
+}
+
 /// `skills/<name>/SKILL.md` under `root`.
 fn scan_skills(
     root: &Path,
@@ -216,22 +194,13 @@ fn scan_skills(
     skipped: &mut usize,
 ) {
     let real = source == Source::Project;
-    let is = |path: &Path, dir: bool| {
-        let meta = if real {
-            fs::symlink_metadata(path)
-        } else {
-            fs::metadata(path)
-        };
-        meta.is_ok_and(|meta| if dir { meta.is_dir() } else { meta.is_file() })
-    };
     let skills = root.join("skills");
-    let skill_entries = match !real || is(&skills, true) {
-        true => entries(&skills),
-        false => Vec::new(),
-    };
-    for (stem, path) in skill_entries {
+    if real && !is(&skills, true, real) {
+        return;
+    }
+    for (stem, path) in entries(&skills) {
         let file = path.join("SKILL.md");
-        if !is(&path, true) || !is(&file, false) {
+        if !is(&path, true, real) || !is(&file, false, real) {
             continue;
         }
         match read_head(&file).and_then(|head| parse(&head, &stem)) {
@@ -251,18 +220,8 @@ fn scan(
     found: &mut Vec<(String, String, Source)>,
     skipped: &mut usize,
 ) {
-    // ^ A repository's own `.claude` may hold symlinks to any file of the user, and a listed
-    // description goes to paired devices: there only real files and folders count. The
-    // user's and the plugins' folders are the user's own and often linked.
     let real = source == Source::Project;
-    let is = |path: &Path, dir: bool| {
-        let meta = if real {
-            fs::symlink_metadata(path)
-        } else {
-            fs::metadata(path)
-        };
-        meta.is_ok_and(|meta| if dir { meta.is_dir() } else { meta.is_file() })
-    };
+    let is = |path: &Path, dir: bool| is(path, dir, real);
     if real && !is(root, true) {
         return;
     }

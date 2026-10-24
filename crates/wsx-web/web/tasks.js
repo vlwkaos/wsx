@@ -7,7 +7,7 @@ import { html, Icon, useEffect, useFollowEnd, useLayoutEffect, useRef, useState 
 import { can, events, leaveFor, readMap, shows, state, touch, update, useStore, writeMap } from "./store.js";
 import { Back, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, pasteFiles, release, Suggestions, uploadFiles } from "./chat.js";
-import { Bubble, conversation, StatusLine, Typing } from "./bubbles.js";
+import { Bubble, conversation, Dots, StatusLine, Typing } from "./bubbles.js";
 import { TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
 import { ChecksPage } from "./checks.js";
@@ -41,18 +41,18 @@ function useLeaving(list, keyOf) {
   return rows;
 }
 
-// True while `flag` holds and for LEAVE_MS after, so a thing can fade out.
-function useLingering(flag) {
-  const [lingers, setLingers] = useState(false);
+// True for `ms` after `flag` stops holding, so a thing can play its exit.
+function useAfter(flag, ms) {
+  const [after, setAfter] = useState(false);
   const was = useRef(flag);
   useEffect(() => {
     if (was.current && !flag && !calm()) {
-      setLingers(true);
-      setTimeout(() => setLingers(false), LEAVE_MS);
+      setAfter(true);
+      setTimeout(() => setAfter(false), ms);
     }
     was.current = flag;
   }, [flag]);
-  return flag || lingers;
+  return after;
 }
 
 // Every granted project's overview, or one project's. `missing` reads one project only when
@@ -96,16 +96,7 @@ export function TaskChip({ project, id }) {
   const task = store.tasks[project]?.tasks.find((candidate) => candidate.id === id);
   // ^ A task that stops running settles its dot once instead of snapping from the pulse.
   const live = running(task);
-  const was = useRef(live);
-  const [settle, setSettle] = useState(false);
-  useEffect(() => {
-    const stopped = was.current && !live;
-    was.current = live;
-    if (stopped && !calm()) {
-      setSettle(true);
-      setTimeout(() => setSettle(false), LEAVE_MS * 3);
-    }
-  }, [live]);
+  const settle = useAfter(live, LEAVE_MS * 3);
   if (!task) return html`<a class="task-chip" href=${taskLink(project, id)}>#${id}</a>`;
   const [word, tone] = taskStage(task);
   return html`
@@ -494,11 +485,15 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
     loadMentions(project).then((value) => { if (current) setMentions(value); }, () => {});
     return () => { current = false; };
   }, [project, mark === "/" || mark === "@"]);
-  // ^ `#` lists tasks, `@` the other projects, `/` the owner's skills the manager can use.
+  // ^ `#` lists tasks, `@` the other projects, `/` the owner's skills the manager can use. A
+  // skill is asked for in words: the manager is headless and takes no slash command.
   const options = !typed ? null
-    : mark === "#" ? tasks.filter((task) => String(task.id).startsWith(typed.query) || task.title.toLowerCase().includes(typed.query)).slice(0, 50).map((task) => ({ task }))
-    : mark === "@" ? within(mentions?.projects ?? [], typed.query, (other) => other.name).map((other) => ({ other }))
-    : within(mentions?.skills ?? [], typed.query, (skill) => skill.name).map((skill) => ({ skill }));
+    : mark === "#" ? tasks.filter((task) => String(task.id).startsWith(typed.query) || task.title.toLowerCase().includes(typed.query)).slice(0, 50)
+      .map((task) => ({ key: task.id, name: `#${task.id}`, description: task.title, source: taskStage(task)[0], tone: taskStage(task)[1], insert: `#${task.id} ` }))
+    : mark === "@" ? within(mentions?.projects ?? [], typed.query, (other) => other.name)
+      .map((other) => ({ key: other.id, name: `@${other.name}`, description: other.manager ?? "", source: "project", insert: `@${other.name} ` }))
+    : within(mentions?.skills ?? [], typed.query, (skill) => skill.name)
+      .map((skill) => ({ key: skill.name, name: `/${skill.name}`, description: skill.description, source: "skill", insert: `Use owner:${skill.name}: ` }));
   const listOpen = Boolean(options);
   useLayoutEffect(() => { field.current.value = text; grow(field.current); }, [project]);
   useLayoutEffect(() => { if (listOpen) document.getElementById(`slash-${active}`)?.scrollIntoView({ block: "nearest" }); }, [active, listOpen]);
@@ -511,10 +506,8 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
     keepDraft(project, node.value);
     grow(node);
   };
-  const pick = (option) => {
+  const pick = ({ insert }) => {
     const node = field.current;
-    // ^ A skill is asked for in words: the manager is headless and takes no slash command.
-    const insert = option.task ? `#${option.task.id} ` : option.other ? `@${option.other.name} ` : `Use owner:${option.skill.name}: `;
     node.value = text.slice(0, typed.start) + insert + text.slice(caret);
     const at = typed.start + insert.length;
     node.focus();
@@ -574,10 +567,7 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
       <${FileChips} files=${files} onRemove=${(item) => { files.attachments = files.attachments.filter((other) => other !== item); filesChanged(); }} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
       ${listOpen && html`<${Suggestions} label=${LIST_LABELS[mark]} active=${active} onHover=${setActive} onPick=${pick}
-        options=${options.map((option) => option.task ? { key: option.task.id, name: `#${option.task.id}`, description: option.task.title,
-          source: taskStage(option.task)[0], tone: taskStage(option.task)[1], ...option }
-          : option.other ? { key: option.other.id, name: `@${option.other.name}`, description: option.other.manager ?? "", source: "project", ...option }
-          : { key: option.skill.name, name: `/${option.skill.name}`, description: option.skill.description, source: "skill", ...option })}
+        options=${options}
         notes=${[!options.length && emptyNote(mark, tasks, mentions)]} />`}
       <div class="composer-row" onPointerDown=${focusField}>
         <${AttachButton} onFiles=${upload} />
@@ -796,7 +786,7 @@ export function Manager({ project: id, task, page, checks }) {
   }
   const typing = Boolean(chat?.busy);
   // ^ The typing bubble fades out as the reply replaces it.
-  const typingShown = useLingering(typing);
+  const typingShown = useAfter(typing, LEAVE_MS) || typing;
   // ^ Rows that arrive after the first read slide in; the ones of the first read, and the
   // message this device just sent, do not.
   const known = useRef(null);
@@ -820,7 +810,7 @@ export function Manager({ project: id, task, page, checks }) {
         <div class="bar-title">
           <span class="bar-label">${project.name}</span>
           ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing
-            ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span></span>`
+            ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`
             : managerWord}</span>`}
         </div>
         <div class="bar-tools"><${More} project=${project} /></div>
