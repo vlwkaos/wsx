@@ -266,7 +266,8 @@ export function terminalView(mount, current, tools) {
           break;
         case "error":
           explained = true;
-          if (RETRYABLE.has(message.code)) retryLater("wsx is restarting on the host. Reconnecting…");
+          if (message.code === "lease_lost") retryLater("Connection lost. Reconnecting…");
+          else if (RETRYABLE.has(message.code)) retryLater("wsx is restarting on the host. Reconnecting…");
           else {
             setState("failed");
             say(message.message, ["Try again", () => connect({ takeover: canType })]);
