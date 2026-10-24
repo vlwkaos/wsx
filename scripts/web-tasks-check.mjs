@@ -1013,20 +1013,23 @@ if (JSON.stringify(listed) !== JSON.stringify([["#7", "open the file", "Passes i
 if (await sheetState() !== "3 open") await fail(`the list's top row reads ${await sheetState()}`);
 // ^ Each item says what its task did; #8's says where to look and shows its capture. Three short
 // items fit: the sheet is as high as its rows, on the bottom, with no empty band under them.
-const context = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [node.querySelector('.check-task')?.textContent ?? '', [...node.querySelectorAll('.check-pass')].map((line) => line.textContent).join('|')])");
+const context = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [(node.querySelector('.check-task')?.textContent ?? '').replace(node.querySelector('.task-chip').textContent, '').trim(), [...node.querySelectorAll('.check-pass')].map((line) => line.textContent).join('|')])");
 if (!context.every(([did]) => did.startsWith("did: WORK")) || context[1][1] !== "Passes if it has text|Look at /#/x") await fail(`the items' context reads ${JSON.stringify(context)}`);
 await until("document.querySelector('.check-capture img')?.naturalWidth === 1", "#8's capture did not load");
 if (await count(".check-capture") !== 1) await fail("an item without a capture shows one");
 await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
 const fitted = await evaluate("(() => { const sheet = document.querySelector('dialog.task-sheet').getBoundingClientRect(); const last = [...document.querySelectorAll('.check-item')].pop().getBoundingClientRect(); return [Math.round(innerHeight - sheet.bottom), Math.round(sheet.bottom - last.bottom), Math.round(sheet.height / innerHeight * 100)]; })()");
 if (Math.abs(fitted[0]) > 1 || fitted[1] > 48 || fitted[2] >= 85) await fail(`the To check sheet does not fit its rows: ${JSON.stringify(fitted)}`);
-// ^ On a phone the item words use the list's width: Try, Fail and Pass share the chip's row, All
-// passed is in the top bar and no intro sentence takes a row.
-const room = await evaluate(`(() => { const item = document.querySelector('.check-item'); const chip = item.querySelector('.task-chip').getBoundingClientRect();
+// ^ On a phone the item words use the list's width and no row of the item holds only the chip
+// and buttons: the chip starts the first line of words, Try, Fail and Pass float at its right
+// and the words below them take the full width. All passed is in the top bar.
+const room = await evaluate(`(() => { const item = document.querySelector('.check-item'); const chip = item.querySelector('.task-chip');
   const pass = item.querySelector('.check-act[title="Pass"]').getBoundingClientRect(); const list = document.querySelector('.check-list').getBoundingClientRect();
-  return { row: pass.top >= chip.top - 12 && pass.top <= chip.bottom, share: Math.round(item.querySelector('.check-what').getBoundingClientRect().width / list.width * 100),
+  const words = item.querySelector('.check-words').getBoundingClientRect(); const first = chip.closest('p').getBoundingClientRect();
+  return { inline: chip.closest('p') === item.querySelector('.check-words > p'), beside: first.top < pass.bottom && first.right > pass.left,
+    under: Math.round(words.bottom - pass.bottom), share: Math.round(item.querySelector('.check-what').getBoundingClientRect().width / list.width * 100),
     all: !!document.querySelector('dialog.task-sheet header.bar .check-all'), intro: !!document.querySelector('.check-intro') }; })()`);
-if (!room.row || room.share < 85 || !room.all || room.intro) await fail(`the To check items waste room on a phone: ${JSON.stringify(room)}`);
+if (!room.inline || !room.beside || room.under < 0 || room.share < 85 || !room.all || room.intro) await fail(`the To check items waste room on a phone: ${JSON.stringify(room)}`);
 await shot("to-check", ".composer-send");
 const firstItem = "document.querySelector('.check-item')";
 // ^ Try starts the preview of the item's task and becomes a link to it (docs/tasks.md "Preview").
