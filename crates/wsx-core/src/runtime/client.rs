@@ -260,12 +260,21 @@ impl Client {
     }
 
     fn connect(&self) -> io::Result<UnixStream> {
-        validate_socket(&self.socket)?;
-        let stream = UnixStream::connect(&self.socket)?;
-        stream.set_read_timeout(Some(IO_TIMEOUT))?;
-        stream.set_write_timeout(Some(IO_TIMEOUT))?;
-        validate_peer_owner(&stream)?;
-        Ok(stream)
+        // ^ macOS refuses the peer token (EINVAL) of a connection that a closing listener
+        // dropped, as the old wsxd's does during a handoff: connect again, to the successor.
+        for attempt in 1.. {
+            validate_socket(&self.socket)?;
+            let stream = UnixStream::connect(&self.socket)?;
+            stream.set_read_timeout(Some(IO_TIMEOUT))?;
+            stream.set_write_timeout(Some(IO_TIMEOUT))?;
+            match validate_peer_owner(&stream) {
+                Err(error) if error.raw_os_error() == Some(libc::EINVAL) && attempt < 5 => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                result => return result.map(|()| stream),
+            }
+        }
+        unreachable!("the loop returns on its last attempt")
     }
 }
 
