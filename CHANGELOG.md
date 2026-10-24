@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- A file or a screenshot pasted into the web chat's or the manager chat's text box is attached, as with the attach button. Before, a pasted screenshot on iPhone or desktop was dropped without a word. A pasted image without a useful name gets one with the time, such as `pasted-20261024153012.png`; a text paste is unchanged.
 - Opening the terminal of an exited pane no longer fails now and then on macOS with "Invalid argument". The pane sends its last screen and closes the stream, and macOS refuses a socket option on a stream its peer has already closed.
 - The web chat and the manager chat no longer jump. A diagram or an image that draws after its message shows keeps a reader at the end, and a reader who scrolled up stays on the same message when rows arrive below, the "Since you left" line opens above, or the keyboard opens. Only *Jump to latest* and the reader's own send go to the end.
 - A wsx older than its project's `wsx.config.yml` keeps working. An unknown key is now a warning that names its path and the file, not an error that refused the whole file: when a land added `tasks.workflow.idle` or `tasks.env`, the installed wsx refused the config, so the auto-deploy after that land failed and every later land, ledger and `task new` failed until a deploy by hand. A known key with a wrong type or value still fails ([docs/tasks.md](docs/tasks.md) "Config").

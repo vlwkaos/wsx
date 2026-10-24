@@ -6,7 +6,7 @@ import { api } from "./api.js";
 import { html, Icon, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, events, leaveFor, readMap, shows, state, touch, update, useStore, writeMap } from "./store.js";
 import { Back, toast } from "./ui.js";
-import { AttachButton, FileChips, grow, isolate, release, Suggestions, uploadFiles } from "./chat.js";
+import { AttachButton, FileChips, grow, isolate, pasteFiles, release, Suggestions, uploadFiles } from "./chat.js";
 import { Bubble, conversation, StatusLine, Typing } from "./bubbles.js";
 import { TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
@@ -563,6 +563,7 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
     event.preventDefault();
     send();
   };
+  const upload = (picked) => { setError(""); uploadFiles(picked, files, filesChanged, setError); };
   const focusField = (event) => {
     if (event.target.closest("button, textarea, input")) return;
     event.preventDefault();
@@ -579,12 +580,12 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
           : { key: option.skill.name, name: `/${option.skill.name}`, description: option.skill.description, source: "skill", ...option })}
         notes=${[!options.length && emptyNote(mark, tasks, mentions)]} />`}
       <div class="composer-row" onPointerDown=${focusField}>
-        <${AttachButton} onFiles=${(picked) => { setError(""); uploadFiles(picked, files, filesChanged, setError); }} />
+        <${AttachButton} onFiles=${upload} />
         <div class="composer-input">
           <textarea class="composer-field" ref=${field} rows="1" aria-label="Message to the manager"
             placeholder="Message · # task @ project / skill" role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
             aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && options.length ? `slash-${active}` : null}
-            onInput=${changed} onKeyDown=${keydown} onKeyUp=${() => setCaret(field.current.selectionStart)}
+            onInput=${changed} onKeyDown=${keydown} onPaste=${pasteFiles(upload)} onKeyUp=${() => setCaret(field.current.selectionStart)}
             onClick=${() => setCaret(field.current.selectionStart)} onFocus=${isolate} onBlur=${release}></textarea>
         </div>
         <button class="button button-primary composer-send" type="button" aria-label=${thinking ? "Queue" : "Send"}

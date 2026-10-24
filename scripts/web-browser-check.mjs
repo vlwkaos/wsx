@@ -84,6 +84,20 @@ async function steadyOnFocus(selector, label) {
 // Type into the composer as an input event does.
 const typeInto = (value) => evaluate(`(() => { const field = document.querySelector('.composer-field'); field.focus();
   field.value = ${JSON.stringify(value)}; field.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+// Paste into a text box: a ClipboardEvent that carries a DataTransfer, as a browser sends it.
+// "image" is a small PNG named "image.png", as iOS and Chrome name a pasted screenshot; any
+// other value is plain text. It returns false when the page cancelled the paste.
+const pasteInto = (selector, what) => evaluate(`(async () => {
+  const data = new DataTransfer();
+  if (${JSON.stringify(what)} === 'image') {
+    const canvas = Object.assign(document.createElement('canvas'), { width: 8, height: 8 });
+    canvas.getContext('2d').fillRect(0, 0, 4, 4);
+    data.items.add(new File([await new Promise((done) => canvas.toBlob(done, 'image/png'))], 'image.png', { type: 'image/png' }));
+  } else data.setData('text/plain', ${JSON.stringify(what)});
+  const field = document.querySelector(${JSON.stringify(selector)});
+  field.focus();
+  return field.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+})()`);
 async function pair(url, pairingCode) {
   await send("Page.navigate", { url });
   await until("!!document.querySelector('#pair-code')", "pairing form did not render");
@@ -1044,6 +1058,26 @@ await typeInto("");
 const left = await evaluate(`(JSON.parse(localStorage.getItem('wsx-drafts')) ?? {})['${ids.done}']`);
 if (left?.text || left?.attachments.length) await fail(`an emptied draft was kept on the device: ${JSON.stringify(left)}`);
 console.log(`photo of ${original} bytes and 3000 px sent as ${sent.size} bytes and ${sent.edge} px`);
+
+// A pasted screenshot attaches as the attach button does, with a name of its own, and Send
+// carries it. A text paste stays the browser's: a synthetic paste inserts nothing, so the
+// check is that the page did not cancel it and added no file.
+if (!(await pasteInto(".composer-field", "pasted words"))) await fail("a text paste was cancelled");
+await pause(300);
+if (await evaluate("document.querySelectorAll('.chips li').length")) await fail("a text paste added a file");
+if (await pasteInto(".composer-field", "image")) await fail("a pasted image was left to the text box");
+await until("document.querySelectorAll('.chips li').length === 1 && !document.querySelector('.chips [data-uploading]')", "the pasted image did not upload", 100);
+const pasted = await evaluate(`JSON.parse(localStorage.getItem('wsx-drafts'))['${ids.done}'].attachments[0]`);
+if (!/^pasted-\d{14}\.(png|jpg)$/.test(pasted.name)) await fail(`the pasted image is named ${pasted.name}`);
+await evaluate(`(() => { window.sentBodies = []; const original = window.fetch;
+  window.fetch = (url, init) => { if (String(url).includes('/send')) sentBodies.push(JSON.parse(init.body)); return original(url, init); }; })()`);
+await typeInto("a pasted screenshot");
+const beforePaste = await round();
+await evaluate("document.querySelector('.composer .button-primary').click()");
+await until(`fetch(new URL('api/chat/${ids.done}/timeline', document.baseURI)).then((r) => r.json()).then((data) => data.exchange.round === ${beforePaste + 1})`, "the message with a pasted image was not sent");
+const carried = await evaluate("window.sentBodies");
+if (carried.length !== 1 || JSON.stringify(carried[0].attachments) !== JSON.stringify([pasted.hash])) await fail(`Send carried ${JSON.stringify(carried)}, not ${pasted.hash}`);
+await until("!document.querySelector('.chips li')", "the sent pasted image stayed in the composer");
 
 // Sub-path surfaces as the browser resolved them.
 const facts = await evaluate(`(async () => {

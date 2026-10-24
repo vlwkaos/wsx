@@ -40,6 +40,20 @@ const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(se
 const typeInto = (selector, value) => evaluate(`(() => { const field = document.querySelector(${JSON.stringify(selector)}); field.focus();
   field.value = ${JSON.stringify(value)}; field.setSelectionRange(field.value.length, field.value.length);
   field.dispatchEvent(new Event('input', { bubbles: true })); field.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true })); })()`);
+// Paste into a text box: a ClipboardEvent that carries a DataTransfer, as a browser sends it.
+// "image" is a small PNG named "image.png", as iOS and Chrome name a pasted screenshot; any
+// other value is plain text. It returns false when the page cancelled the paste.
+const pasteInto = (selector, what) => evaluate(`(async () => {
+  const data = new DataTransfer();
+  if (${JSON.stringify(what)} === 'image') {
+    const canvas = Object.assign(document.createElement('canvas'), { width: 8, height: 8 });
+    canvas.getContext('2d').fillRect(0, 0, 4, 4);
+    data.items.add(new File([await new Promise((done) => canvas.toBlob(done, 'image/png'))], 'image.png', { type: 'image/png' }));
+  } else data.setData('text/plain', ${JSON.stringify(what)});
+  const field = document.querySelector(${JSON.stringify(selector)});
+  field.focus();
+  return field.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+})()`);
 // The keyboard up: the visual viewport shrinks, the layout viewport does not (iOS).
 const keyboard = (height) => evaluate(`(() => {
   const viewport = window.visualViewport;
@@ -964,10 +978,14 @@ await evaluate(`(() => { const input = document.querySelector('.composer input[t
   files.items.add(new File(['notes for the manager'], 'notes.txt', { type: 'text/plain' })); input.files = files.files;
   input.dispatchEvent(new Event('change', { bubbles: true })); })()`);
 await until("document.querySelectorAll('.composer .chips li').length === 1 && !document.querySelector('.composer .chips [data-uploading]')", "the file did not upload in the manager chat", 100);
+// A pasted screenshot attaches the same way; a text paste is left to the browser.
+if (!(await pasteInto(".composer-field", "pasted words"))) await fail("a text paste was cancelled in the manager chat");
+if (await pasteInto(".composer-field", "image")) await fail("a pasted image was left to the manager's text box");
+await until("document.querySelectorAll('.composer .chips li').length === 2 && !document.querySelector('.composer .chips [data-uploading]')", "the pasted image did not upload in the manager chat", 100);
 await shot("manager-attach", ".composer-send");
 await typeInto(".composer-field", "Here are the notes");
 await click(".composer-send");
-const sentWithFile = "[...document.querySelectorAll('.log .bubble[data-side=out]')].some((node) => /Here are the notes/.test(node.textContent) && (node.querySelector('.attachments a')?.textContent ?? '').startsWith('notes.txt'))";
+const sentWithFile = "[...document.querySelectorAll('.log .bubble[data-side=out]')].some((node) => /Here are the notes/.test(node.textContent) && [...node.querySelectorAll('.attachments a')].some((link) => link.textContent.startsWith('notes.txt')) && [...node.querySelectorAll('.attachments img')].some((image) => /^pasted-\\d{14}\\.(png|jpg)$/.test(image.alt)))";
 await until(`${sentWithFile} || !!document.querySelector('.composer .error')`, "the sent message shows no attachment", 100);
 if (!(await evaluate(sentWithFile))) await fail(`the message with a file was not sent: ${await evaluate("document.querySelector('.composer .error')?.textContent ?? ''")}; bubbles ${JSON.stringify(await bubbles())}`);
 if (await count(".composer .chips li")) await fail("the sent file stayed in the composer");
