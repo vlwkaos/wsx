@@ -1662,8 +1662,10 @@ capabilities = ["terminal_view"]
             opened = time.monotonic()
             open_gate('result')
             events.expect('history', lambda data: data['session_id'] == sessions['owner'], timeout=3)
-            assert time.monotonic() - opened < 1.6, time.monotonic() - opened
-            finished = timeline()
+            # ^ An earlier change of the session can signal first: the result must show soon after.
+            finished = wait(lambda: (lambda data: data if data['items'][-1]['tool']['status'] != 'running' else None)(timeline()),
+                            'tool result in the timeline', timeout=2)
+            assert time.monotonic() - opened < 2, time.monotonic() - opened
             assert finished['items'][-1]['tool']['status'] == ('error' if broken else 'ok'), finished['items'][-1]
             assert 'tool output text' not in json.dumps(finished)
             assert finished['working']['activity'] == 'Working'
