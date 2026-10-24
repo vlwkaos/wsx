@@ -142,6 +142,20 @@ export async function uploadFiles(picked, files, changed, fail) {
   }
 }
 
+// onPaste for a text box: pasted files go where the attach button sends them; a paste
+// without files stays a native text paste. A pasted screenshot comes as "image.png" or with
+// no name, so it gets a name with the time and the extension of its type.
+export const pasteFiles = (onFiles) => can("media_upload") ? (event) => {
+  const clipboard = event.clipboardData;
+  let picked = [...(clipboard?.files ?? [])];
+  if (!picked.length) picked = [...(clipboard?.items ?? [])].filter((item) => item.kind === "file").map((item) => item.getAsFile()).filter(Boolean);
+  if (!picked.length) return;
+  event.preventDefault();
+  const time = new Date().toISOString().slice(0, 19).replace(/\D/g, "");
+  onFiles(picked.map((file, index) => file.name && !/^image\.\w+$/.test(file.name) ? file
+    : new File([file], `pasted-${time}${index ? `-${index}` : ""}.${(file.type.split("/")[1] ?? "").split("+")[0] || "bin"}`, { type: file.type })));
+} : null;
+
 // The files a message will carry, each with Remove, and the ones still uploading.
 export const FileChips = ({ files, onRemove }) => files.attachments.length || files.uploads.length ? html`
   <ul class="chips" aria-label="Files to send">
@@ -431,7 +445,7 @@ function Composer({ session, working, onSent }) {
           disabled=${!ready} role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
           aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && matches.length ? `slash-${active}` : null}
           onInput=${() => { changed(field.current.value); grow(field.current); }} onKeyDown=${keydown}
-          onFocus=${isolate} onBlur=${release}></textarea>
+          onPaste=${pasteFiles(upload)} onFocus=${isolate} onBlur=${release}></textarea>
         </div>
         <button class="button button-primary composer-send" type="button" aria-label=${working ? "Queue" : "Send"}
           disabled=${busy || !ready || draft.uploads.length > 0} onClick=${send}>
