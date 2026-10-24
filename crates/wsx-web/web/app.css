@@ -319,7 +319,9 @@ div.steps .steps-summary { cursor: default; }
 .step-state { flex: 0 0 auto; }
 .working { display: flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-sm); color: var(--color-muted); }
 .working-activity { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The only looping motion, and only while an agent works or writes. */
+/* Motion only under no-preference: the pulse and the typing dots loop, and only while an agent
+   works or writes, and the closed reservoir turns through the running tasks on a timer; the
+   rest plays once on entry or exit. Under reduce none of it is there (docs/web-client-tasks.md "Motion"). */
 .pulse { flex: 0 0 auto; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-working); }
 @media (prefers-reduced-motion: no-preference) {
   .pulse, .mark[data-running] { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
@@ -348,7 +350,29 @@ div.steps .steps-summary { cursor: default; }
   .notice[data-offline] { animation: slide-down calc(var(--motion-duration) * 1.5) var(--motion-easing), pulse calc(var(--motion-duration) * 12) ease-in-out calc(var(--motion-duration) * 1.5) infinite; }
   .notice[data-leaving] { opacity: 0; transform: translateY(calc(var(--space-2) * -1)); transition: opacity var(--motion-duration) var(--motion-easing), transform var(--motion-duration) var(--motion-easing); pointer-events: none; }
   .notice-timer { display: block; position: absolute; left: 0; bottom: 0; height: calc(var(--border-width) * 2); width: 100%; background: var(--color-faint); transform-origin: left; animation: drain calc(var(--motion-duration) * 25) linear forwards; }
+  /* The manager screen. A state dot settles once when it stops running (its color change is the [data-tone] transition above). */
+  .mark[data-settle] { animation: mark-settle calc(var(--motion-duration) * 4) var(--motion-easing); }
+  .bar-state { animation: arrive var(--motion-duration) var(--motion-easing); }
+  .tick { animation: tick-in var(--motion-duration) var(--motion-easing); }
+  .ticker-item { animation: ticker-in calc(var(--motion-duration) * 2) var(--motion-easing); }
+  .reservoir-reveal { animation: reveal var(--motion-duration) var(--motion-easing); }
+  .reservoir-reveal[data-closing] { animation-direction: reverse; animation-fill-mode: forwards; }
+  .reservoir .need { animation: slide-up var(--motion-duration) var(--motion-easing); }
+  .reservoir .need[data-leaving], .bubble[data-leaving] { animation: row-out calc(var(--motion-duration) * 1.25) var(--motion-easing) forwards; }
+  .bubble[data-fresh], .status-line[data-fresh] { animation: slide-up calc(var(--motion-duration) * 1.5) var(--motion-easing); }
+  .since { animation: since-in var(--motion-duration) var(--motion-easing); }
+  .task-sheet[open] { animation: sheet-in calc(var(--motion-duration) * 2) var(--motion-easing); }
+  .app[data-wide] .task-sheet[open] { animation-name: sheet-in-side; }
+  .task-sheet[open]::backdrop { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
 }
+@keyframes tick-in { from { opacity: 0; transform: translateY(-40%); } }
+@keyframes ticker-in { from { opacity: 0; transform: translateY(70%); } }
+@keyframes row-out { to { opacity: 0; transform: translateY(calc(-1 * var(--space-1))); } }
+@keyframes mark-settle { from { opacity: 0.5; transform: scale(1.9); } }
+@keyframes reveal { from { grid-template-rows: 0fr; opacity: 0; } to { grid-template-rows: 1fr; opacity: 1; } }
+@keyframes since-in { from { max-height: 0; opacity: 0; overflow: hidden; } to { max-height: calc(var(--size-control) * 2); opacity: 1; overflow: hidden; } }
+@keyframes sheet-in { from { translate: 0 100%; } }
+@keyframes sheet-in-side { from { translate: 100% 0; } }
 @keyframes pulse { 50% { opacity: var(--opacity-disabled); } }
 @keyframes arrive { from { opacity: 0; } }
 @keyframes pop { from { opacity: 0; transform: scale(0.5); } 60% { transform: scale(1.15); } }
@@ -554,7 +578,14 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .reservoir-words { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-2); font-weight: var(--font-weight-medium); white-space: nowrap; }
 .reservoir-sep { color: var(--color-faint); }
 .reservoir-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.reservoir-more { flex: 0 0 auto; color: var(--color-muted); }
+.reservoir-more { flex: 0 0 auto; color: var(--color-muted); font-variant-numeric: tabular-nums; }
+/* The running slot: the chip and the title of one task, the title cut with an ellipsis. */
+.ticker-item { min-width: 0; display: flex; align-items: center; gap: var(--space-2); }
+.tick { display: inline-block; font-variant-numeric: tabular-nums; }
+.reservoir-head .icon { margin-left: auto; flex: 0 0 auto; }
+.typing-dots { display: inline-flex; align-items: center; gap: var(--space-1); }
+/* The list opens and closes by its height (a grid row from 0fr to 1fr). */
+.reservoir-reveal { flex: 0 1 auto; min-height: 0; display: grid; grid-template-rows: 1fr; overflow: hidden; }
 .reservoir-checks { flex: 0 0 auto; font-weight: var(--font-weight-medium); white-space: nowrap; }
 .reservoir[data-open] .reservoir-head .icon { transform: rotate(90deg); }
 .reservoir-head:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }

@@ -802,12 +802,14 @@ def run(wsx, wsxd, work, owned):
     assert 'Edit(/%s/**)' % project in launch['settings']['permissions']['deny'], launch['settings']
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     assert launch['git_optional_locks'] == '0', launch
-    # Its rules: talk and size first, a complete prompt, parallel only on different files, a
+    # Its rules: talk and size first, a complete prompt, parallel on different files or a small overlap, a
     # lean review without rebase send-backs, and one housekeeping task after a request lands.
     for rule in ('Talk before work', 'Then ask whether to go', 'Start tasks only after the owner agrees',
                  'own section with a mermaid diagram', 'complete on its own, since a worker cannot ask',
-                 'Run tasks at once only when they change different files', '`overlaps` names open tasks',
+                 'Run tasks at once when they change different files', '`overlaps` names open tasks',
                  'in every task new', 'never delete a worktree yourself',
+                 'you decide the orchestration and say it in one line', 'run it in parallel when the overlap is small',
+                 'Never ask the owner to hold off or wait', "When an owner message has '@<project>'",
                  'for lean code', 'Never send a task back to rebase', 'Check the fixture rule.',
                  'start one housekeeping task', 'Fold the fixture tasks.',
                  '`sonnet` may do', 'critical fix or heavy, complex work',

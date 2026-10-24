@@ -12,6 +12,49 @@ import { TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
 import { ChecksPage } from "./checks.js";
 
+// Motion only where the user allows it (the no-preference block of app.css); under reduce,
+// nothing moves and nothing waits for an animation to end.
+const calm = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+const TICK_MS = 3500;
+const LEAVE_MS = 200;
+
+// A count that ticks: it is a new element when it changes, which plays its entry.
+const Tick = ({ value }) => html`<span class="tick" key=${value}>${value}</span>`;
+
+// `list` with the items that just left kept in place for LEAVE_MS, to play their exit:
+// `[{ item, key, leaving }]`.
+function useLeaving(list, keyOf) {
+  const [ghosts, setGhosts] = useState([]);
+  const last = useRef(list);
+  useEffect(() => {
+    const keys = new Set(list.map(keyOf));
+    const gone = calm() ? [] : last.current.filter((item) => !keys.has(keyOf(item))).map((item) => ({ item, key: keyOf(item), at: last.current.indexOf(item), leaving: true }));
+    last.current = list;
+    setGhosts((now) => {
+      const kept = now.filter((entry) => !keys.has(entry.key));
+      return kept.length === now.length && !gone.length ? now : [...kept, ...gone];
+    });
+    if (gone.length) setTimeout(() => setGhosts((now) => now.filter((entry) => !gone.includes(entry))), LEAVE_MS);
+  }, [list.map(keyOf).join()]);
+  const rows = list.map((item) => ({ item, key: keyOf(item), leaving: false }));
+  for (const ghost of ghosts) rows.splice(Math.min(ghost.at, rows.length), 0, ghost);
+  return rows;
+}
+
+// True while `flag` holds and for LEAVE_MS after, so a thing can fade out.
+function useLingering(flag) {
+  const [lingers, setLingers] = useState(false);
+  const was = useRef(flag);
+  useEffect(() => {
+    if (was.current && !flag && !calm()) {
+      setLingers(true);
+      setTimeout(() => setLingers(false), LEAVE_MS);
+    }
+    was.current = flag;
+  }, [flag]);
+  return flag || lingers;
+}
+
 // Every granted project's overview, or one project's. `missing` reads one project only when
 // the read of every project (at the stream's open) ended without it.
 let readingAll = null;
@@ -51,11 +94,23 @@ export const running = (task) => task?.stage === "working";
 export function TaskChip({ project, id }) {
   const store = useStore();
   const task = store.tasks[project]?.tasks.find((candidate) => candidate.id === id);
+  // ^ A task that stops running settles its dot once instead of snapping from the pulse.
+  const live = running(task);
+  const was = useRef(live);
+  const [settle, setSettle] = useState(false);
+  useEffect(() => {
+    const stopped = was.current && !live;
+    was.current = live;
+    if (stopped && !calm()) {
+      setSettle(true);
+      setTimeout(() => setSettle(false), LEAVE_MS * 3);
+    }
+  }, [live]);
   if (!task) return html`<a class="task-chip" href=${taskLink(project, id)}>#${id}</a>`;
   const [word, tone] = taskStage(task);
   return html`
     <a class="task-chip" href=${taskLink(project, id)} title=${task.title} aria-label=${`#${id}, ${word}`}>
-      <span class="mark" data-tone=${tone} data-running=${running(task) ? "" : null} aria-hidden="true"></span>#${id}
+      <span class="mark" data-tone=${tone} data-running=${live ? "" : null} data-settle=${settle ? "" : null} aria-hidden="true"></span>#${id}
     </a>`;
 }
 
@@ -138,7 +193,7 @@ async function act(project, item, action, body = {}) {
 // title and what it waits for, with its one action. The title opens the task's sheet, where the
 // other actions are. `onActing` says an action started, `onFailed` that it failed: the
 // reservoir moves the focus on when the row leaves, before or after the action's answer.
-function NeedRow({ project, item, index, onActing, onFailed }) {
+function NeedRow({ project, item, index, onActing, onFailed, leaving }) {
   const key = `${project}/${itemKey(item)}`;
   const draft = actionOf(key);
   const [, renew] = useState(0);
@@ -228,7 +283,7 @@ function NeedRow({ project, item, index, onActing, onFailed }) {
     <span class="row-label">${label}</span>
     ${context && html`<span class="row-context">${context}</span>`}`;
   return html`
-    <li class="need" data-key=${itemKey(item)}>
+    <li class="need" data-key=${itemKey(item)} data-leaving=${leaving ? "" : null} inert=${Boolean(leaving)}>
       <div class="row-link">
         ${item.task != null && item.kind !== "approval" ? html`<${TaskChip} project=${project} id=${item.task} />`
           : html`<span class="mark" data-tone=${KIND_TONE[item.kind]} aria-hidden="true"></span>`}
@@ -252,8 +307,8 @@ function NeedRow({ project, item, index, onActing, onFailed }) {
 const workingWords = (task) => task.conflict ? "resolving a conflict" : task.waiting?.on === "hand" ? "by hand" : "";
 
 // A working task in the reservoir: its chip and title; the chip pulses.
-const RunningRow = ({ project, task }) => html`
-  <li class="need">
+const RunningRow = ({ project, task, leaving }) => html`
+  <li class="need" data-leaving=${leaving ? "" : null} inert=${Boolean(leaving)}>
     <div class="row-link">
       <${TaskChip} project=${project} id=${task.id} />
       <a class="row-main row-open" href=${taskLink(project, task.id)}><span class="row-label">${task.title}</span>
@@ -272,18 +327,34 @@ const CheckingRow = ({ project, count }) => html`
   </li>`;
 
 // The decision list, pinned over the composer (docs/web-client-tasks.md "Project screen"). Closed it
-// is one line: "2 need you · #6 <title> +1 more · 5 to check". Open, every item that waits for
-// the owner in the server's order, each with its one action, then the tasks that run and the
-// To check row. Done tasks are not in it, and with nothing in it there is no list. A cleared
-// row leaves and the focus moves to the next row's action, or to the composer after the last
-// one. It never moves the chat.
+// is one line: "2 need you · #6 <title> · 5 to check", the running slot turning through the
+// running tasks. Open, the line gives way to the chevron alone, in the same place, and every
+// item that waits for the owner shows in the server's order, each with its one action, then
+// the tasks that run and the To check row. Done tasks are not in it, and with nothing in it
+// there is no list. A cleared row leaves and the focus moves to the next row's action, or to
+// the composer after the last one. It never moves the chat.
 function Reservoir({ project, items, tasks, checking }) {
   const [open, setOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [turn, setTurn] = useState(0);
   const node = useRef();
   // ^ The row whose action runs: a `tasks` event may remove it long before the answer comes.
   const cleared = useRef(null);
   const working = tasks.filter(running);
   const keys = items.map(itemKey);
+  const needRows = useLeaving(items, itemKey);
+  const runRows = useLeaving(working, (task) => `run-${task.id}`);
+  const expanded = open && !closing;
+  // ^ With more than one task running, the closed line turns through them every TICK_MS; it
+  // waits while the pointer or the focus is on it and while the page is hidden, and under
+  // reduced motion it keeps the newest and counts the rest.
+  const rotates = working.length > 1 && !expanded && !calm();
+  useEffect(() => {
+    if (!rotates || paused) return undefined;
+    const timer = setInterval(() => { if (document.visibilityState === "visible") setTurn((count) => count + 1); }, TICK_MS);
+    return () => clearInterval(timer);
+  }, [rotates, paused]);
   useLayoutEffect(() => {
     const done = cleared.current;
     if (!done || keys.includes(done.key)) return;
@@ -311,36 +382,52 @@ function Reservoir({ project, items, tasks, checking }) {
   if (!shown) return null;
   const onActing = (key, index) => { cleared.current = { key, index }; };
   const onFailed = (key) => { if (cleared.current?.key === key) cleared.current = null; };
-  // ^ The newest running task is the one with the highest number: stable while it works.
-  const newest = working.reduce((last, task) => (!last || task.id > last.id ? task : last), null);
-  const need = items.length ? `${items.length} ${items.length === 1 ? "needs" : "need"} you` : "";
+  // ^ The newest running task, the one with the highest number, comes first and stays while it works.
+  const lineup = [...working].sort((left, right) => right.id - left.id);
+  const current = lineup[rotates ? turn % lineup.length : 0];
+  const need = items.length ? html`<${Tick} value=${items.length} /> ${items.length === 1 ? "needs" : "need"} you` : "";
+  // ^ Closing plays the body's exit, then unmounts it; under reduced motion it is at once.
+  const toggle = () => {
+    if (closing) setClosing(false);
+    else if (open && !calm()) setClosing(true);
+    else setOpen(!open);
+  };
+  const revealed = (event) => {
+    if (closing && event.target === event.currentTarget) { setClosing(false); setOpen(false); }
+  };
   return html`
-    <section class="reservoir" ref=${node} aria-label="Needs you and running" data-open=${open ? "" : null}>
-      <button class="reservoir-head" type="button" aria-expanded=${open} aria-controls="reservoir-list" onClick=${() => setOpen(!open)}>
-        ${items.length || checking ? html`<span class="mark" data-tone="attention" aria-hidden="true"></span>` : null}
-        <span class="reservoir-words">
-          ${need}
-          ${newest && html`
-            ${need && html`${" "}<span class="reservoir-sep" aria-hidden="true">·</span>${" "}`}
-            <span class="task-chip"><span class="mark" data-tone="working" data-running="" aria-hidden="true"></span>#${newest.id}</span>${" "}
-            <span class="reservoir-title">${newest.title}</span>`}
-        </span>
-        ${working.length > 1 && html`${" "}<span class="reservoir-more">+${working.length - 1} more</span>`}
-        ${checking ? html`${need || newest ? html`${" "}<span class="reservoir-sep" aria-hidden="true">·</span>${" "}` : null}<span class="reservoir-checks">${checking} to check</span>` : null}
+    <section class="reservoir" ref=${node} aria-label="Needs you and running" data-open=${expanded ? "" : null}>
+      <button class="reservoir-head" type="button" aria-expanded=${expanded} aria-controls="reservoir-list" aria-label=${expanded ? "Hide the list" : null} onClick=${toggle}
+        onPointerEnter=${() => setPaused(true)} onPointerLeave=${() => setPaused(false)} onFocus=${() => setPaused(true)} onBlur=${() => setPaused(false)}>
+        ${!expanded && html`
+          ${items.length || checking ? html`<span class="mark" data-tone="attention" aria-hidden="true"></span>` : null}
+          <span class="reservoir-words">
+            ${need}
+            ${current && html`
+              ${need && html`${" "}<span class="reservoir-sep" aria-hidden="true">·</span>${" "}`}
+              <span class="ticker-item" key=${current.id}>
+                <span class="task-chip"><span class="mark" data-tone="working" data-running="" aria-hidden="true"></span>#${current.id}</span>${" "}
+                <span class="reservoir-title">${current.title}</span>
+              </span>`}
+          </span>
+          ${working.length > 1 && html`${" "}<span class="reservoir-more">${rotates ? html`${turn % lineup.length + 1}/${lineup.length}` : `+${working.length - 1} more`}</span>`}
+          ${checking ? html`${need || current ? html`${" "}<span class="reservoir-sep" aria-hidden="true">·</span>${" "}` : null}<span class="reservoir-checks"><${Tick} value=${checking} /> to check</span>` : null}`}
         <${Icon} name="chevron" />
       </button>
       ${open && (items.length || working.length || checking) ? html`
-        <div class="reservoir-body" id="reservoir-list">
-          ${items.length ? html`
-            <ul class="reservoir-list" aria-label="Needs you">
-              ${items.map((item, index) => html`<${NeedRow} key=${itemKey(item)} project=${project} item=${item} index=${index} onActing=${onActing} onFailed=${onFailed} />`)}
-            </ul>` : null}
-          ${working.length ? html`
-            <h2 class="label reservoir-label">Running</h2>
-            <ul class="reservoir-list reservoir-running" aria-label="Running">
-              ${working.map((task) => html`<${RunningRow} key=${`run-${task.id}`} project=${project} task=${task} />`)}
-            </ul>` : null}
-          ${checking ? html`<ul class="reservoir-list" aria-label="To check"><${CheckingRow} project=${project} count=${checking} /></ul>` : null}
+        <div class="reservoir-reveal" data-closing=${closing ? "" : null} onAnimationEnd=${revealed}>
+          <div class="reservoir-body" id="reservoir-list">
+            ${items.length || needRows.length ? html`
+              <ul class="reservoir-list" aria-label="Needs you">
+                ${needRows.map(({ item, key, leaving }) => html`<${NeedRow} key=${key} project=${project} item=${item} index=${items.indexOf(item)} onActing=${onActing} onFailed=${onFailed} leaving=${leaving} />`)}
+              </ul>` : null}
+            ${working.length || runRows.length ? html`
+              <h2 class="label reservoir-label">Running</h2>
+              <ul class="reservoir-list reservoir-running" aria-label="Running">
+                ${runRows.map(({ item, key, leaving }) => html`<${RunningRow} key=${key} project=${project} task=${item} leaving=${leaving} />`)}
+              </ul>` : null}
+            ${checking ? html`<ul class="reservoir-list" aria-label="To check"><${CheckingRow} project=${project} count=${checking} /></ul>` : null}
+          </div>
         </div>` : null}
     </section>`;
 }
@@ -355,15 +442,35 @@ function keepDraft(project, text) {
   writeMap(DRAFTS_KEY, all);
 }
 
-// While the word at the caret is `#` and digits or letters: the tasks that match it.
-function taskQuery(text, caret) {
-  const typed = /(^|\s)#(\w*)$/.exec(text.slice(0, caret));
-  return typed ? { query: typed[2].toLowerCase(), start: caret - typed[2].length - 1 } : null;
+// While the word at the caret starts with `#` (a task), `@` (another project) or, as the whole
+// text so far, `/` (one of the owner's skills): what it names so far.
+function wordQuery(text, caret) {
+  const before = text.slice(0, caret);
+  const typed = /(?:^|\s)([#@])([\w.-]*)$/.exec(before) ?? /^(\/)([\w:.-]*)$/.exec(before);
+  return typed ? { mark: typed[1], query: typed[2].toLowerCase(), start: caret - typed[2].length - 1 } : null;
 }
-function matchingTasks(tasks, query) {
-  const hits = tasks.filter((task) => String(task.id).startsWith(query) || task.title.toLowerCase().includes(query));
-  return hits.slice(0, 50);
+const within = (names, query, pick) => {
+  const starts = names.filter((item) => pick(item).toLowerCase().startsWith(query));
+  return [...starts, ...names.filter((item) => !starts.includes(item) && pick(item).toLowerCase().includes(query))].slice(0, 50);
+};
+
+// The owner's skills and the other projects, read once per project while the page is open.
+const mentionLists = new Map();
+function loadMentions(project) {
+  if (!mentionLists.has(project)) {
+    mentionLists.set(project, api(`api/tasks/${project}/mentions`).catch((failure) => {
+      mentionLists.delete(project);
+      throw failure;
+    }));
+  }
+  return mentionLists.get(project);
 }
+
+const LIST_LABELS = { "#": "Tasks", "@": "Projects", "/": "Skills" };
+const emptyNote = (mark, tasks, mentions) => mark === "#" ? (tasks.length ? "No task matches that." : "This project has no task yet.")
+  : !mentions ? "Loading…"
+  : mark === "@" ? (mentions.projects.length ? "No project matches that." : "There is no other project.")
+  : (mentions.skills.length ? "No skill matches that." : "You have no skills to lend the manager.");
 
 function ManagerComposer({ project, busy: thinking, onSent, field }) {
   const store = useStore();
@@ -378,8 +485,20 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
   const [, renew] = useState(0);
   const filesChanged = () => renew((count) => count + 1);
   const tasks = store.tasks[project]?.tasks ?? [];
-  const typed = closed === text ? null : taskQuery(text, caret);
-  const options = typed ? matchingTasks(tasks, typed.query) : null;
+  const typed = closed === text ? null : wordQuery(text, caret);
+  const [mentions, setMentions] = useState(null);
+  const mark = typed?.mark;
+  useEffect(() => {
+    if (mark !== "/" && mark !== "@") return undefined;
+    let current = true;
+    loadMentions(project).then((value) => { if (current) setMentions(value); }, () => {});
+    return () => { current = false; };
+  }, [project, mark === "/" || mark === "@"]);
+  // ^ `#` lists tasks, `@` the other projects, `/` the owner's skills the manager can use.
+  const options = !typed ? null
+    : mark === "#" ? tasks.filter((task) => String(task.id).startsWith(typed.query) || task.title.toLowerCase().includes(typed.query)).slice(0, 50).map((task) => ({ task }))
+    : mark === "@" ? within(mentions?.projects ?? [], typed.query, (other) => other.name).map((other) => ({ other }))
+    : within(mentions?.skills ?? [], typed.query, (skill) => skill.name).map((skill) => ({ skill }));
   const listOpen = Boolean(options);
   useLayoutEffect(() => { field.current.value = text; grow(field.current); }, [project]);
   useLayoutEffect(() => { if (listOpen) document.getElementById(`slash-${active}`)?.scrollIntoView({ block: "nearest" }); }, [active, listOpen]);
@@ -394,7 +513,8 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
   };
   const pick = (option) => {
     const node = field.current;
-    const insert = `#${option.task.id} `;
+    // ^ A skill is asked for in words: the manager is headless and takes no slash command.
+    const insert = option.task ? `#${option.task.id} ` : option.other ? `@${option.other.name} ` : `Use owner:${option.skill.name}: `;
     node.value = text.slice(0, typed.start) + insert + text.slice(caret);
     const at = typed.start + insert.length;
     node.focus();
@@ -430,7 +550,7 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
       }
       if ((event.key === "Tab" || event.key === "Enter") && !event.shiftKey && options[active]) {
         event.preventDefault();
-        pick({ task: options[active] });
+        pick(options[active]);
         return;
       }
       if (event.key === "Escape") {
@@ -452,15 +572,17 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
     <div class="composer">
       <${FileChips} files=${files} onRemove=${(item) => { files.attachments = files.attachments.filter((other) => other !== item); filesChanged(); }} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
-      ${listOpen && html`<${Suggestions} label="Tasks" active=${active} onHover=${setActive} onPick=${pick}
-        options=${options.map((task) => ({ key: task.id, name: `#${task.id}`, description: task.title,
-          source: taskStage(task)[0], tone: taskStage(task)[1], task }))}
-        notes=${[!options.length && (tasks.length ? "No task matches that." : "This project has no task yet.")]} />`}
+      ${listOpen && html`<${Suggestions} label=${LIST_LABELS[mark]} active=${active} onHover=${setActive} onPick=${pick}
+        options=${options.map((option) => option.task ? { key: option.task.id, name: `#${option.task.id}`, description: option.task.title,
+          source: taskStage(option.task)[0], tone: taskStage(option.task)[1], ...option }
+          : option.other ? { key: option.other.id, name: `@${option.other.name}`, description: option.other.manager ?? "", source: "project", ...option }
+          : { key: option.skill.name, name: `/${option.skill.name}`, description: option.skill.description, source: "skill", ...option })}
+        notes=${[!options.length && emptyNote(mark, tasks, mentions)]} />`}
       <div class="composer-row" onPointerDown=${focusField}>
         <${AttachButton} onFiles=${(picked) => { setError(""); uploadFiles(picked, files, filesChanged, setError); }} />
         <div class="composer-input">
           <textarea class="composer-field" ref=${field} rows="1" aria-label="Message to the manager"
-            placeholder="Message the manager · # for a task" role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
+            placeholder="Message · # task @ project / skill" role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
             aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && options.length ? `slash-${active}` : null}
             onInput=${changed} onKeyDown=${keydown} onKeyUp=${() => setCaret(field.current.selectionStart)}
             onClick=${() => setCaret(field.current.selectionStart)} onFocus=${isolate} onBlur=${release}></textarea>
@@ -671,6 +793,20 @@ export function Manager({ project: id, task, page, checks }) {
     rows.push({ kind: "bubble", key: "sending", author: "owner", at: Date.now(), first: !grouped, last: true, pending: true, entry: { text: sent.text } });
   }
   const typing = Boolean(chat?.busy);
+  // ^ The typing bubble fades out as the reply replaces it.
+  const typingShown = useLingering(typing);
+  // ^ Rows that arrive after the first read slide in; the ones of the first read, and the
+  // message this device just sent, do not.
+  const known = useRef(null);
+  const fresh = useRef(new Set());
+  if (chat) {
+    if (!known.current) known.current = new Set(rows.map((row) => row.key));
+    for (const row of rows) {
+      if (known.current.has(row.key)) continue;
+      known.current.add(row.key);
+      if (!(sent && row.entry?.id === sent.id) && row.key !== "sending") fresh.current.add(row.key);
+    }
+  }
   const names = { manager: chat?.manager.name, peers: chat?.peers };
   const stopped = chat && !chat.running && entries.at(-1)?.kind === "stopped";
   // ^ The manager's state only when it matters: typing or stopped (docs/web-client-tasks.md "Project screen").
@@ -681,7 +817,9 @@ export function Manager({ project: id, task, page, checks }) {
         <${Back} fallback="#/" />
         <div class="bar-title">
           <span class="bar-label">${project.name}</span>
-          ${managerWord && html`<span class="bar-state" data-tone=${typing ? "working" : "danger"}>${managerWord}</span>`}
+          ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing
+            ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span></span>`
+            : managerWord}</span>`}
         </div>
         <div class="bar-tools"><${More} project=${project} /></div>
       </header>
@@ -691,10 +829,10 @@ export function Manager({ project: id, task, page, checks }) {
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation with the manager" tabindex="0">
             ${cut.current ? html`<p class="note">Older messages are not shown.</p>` : null}
             ${chat && !rows.length ? html`<p class="empty">No messages yet. Ask the manager for a task or a status; it answers from the ledger.</p>` : null}
-            ${rows.map((row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} />`
-              : row.kind === "line" ? html`<${StatusLine} key=${row.key} parts=${row.parts} words=${words} />`
+            ${rows.map((row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${fresh.current.has(row.key)} />`
+              : row.kind === "line" ? html`<${StatusLine} key=${row.key} parts=${row.parts} words=${words} fresh=${fresh.current.has(row.key)} />`
               : html`<${Note} key=${row.key} entry=${row.entry} />`)}
-            ${typing && html`<${Typing} name=${names.manager} />`}
+            ${typingShown && html`<${Typing} name=${names.manager} leaving=${!typing} />`}
           </div>
           ${away && html`<button class="jump" type="button" onClick=${toEnd}><${Icon} name="down" />Jump to latest</button>`}
         </div>

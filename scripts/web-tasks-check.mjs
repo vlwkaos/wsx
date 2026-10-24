@@ -51,6 +51,8 @@ const keyboard = (height) => evaluate(`(() => {
 // Layout rules of every screen: nothing past the right edge, no raw null, one scroll container
 // besides the bounded strip and the suggestion list, and the page itself never scrolls.
 async function sound(label) {
+  // ^ A sheet that is still sliding in passes the edge.
+  await until("(document.querySelector('dialog.task-sheet')?.getAnimations().length ?? 0) === 0", `${label}: the sheet kept moving`);
   const seen = await evaluate(`(() => {
     const free = (node) => node.closest('.code-block pre, .table-wrap, .diagram, .since p');
     const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
@@ -400,6 +402,7 @@ await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${proj
 await go(chat);
 await until("!!document.querySelector('.log .bubble')", "the chat shows no bubble");
 await comeBack();
+if ((await evaluate("getComputedStyle(document.querySelector('.since')).animationName")) !== "since-in") await fail("the since line does not expand in");
 const sinceBox = await evaluate("(() => { const line = document.querySelector('.since'); const p = line.querySelector('p').getBoundingClientRect(), b = line.querySelector('button').getBoundingClientRect();"
   + " return { height: line.getBoundingClientRect().height, inline: b.top < p.bottom && b.bottom > p.top }; })()");
 if (sinceBox.height > 40 || !sinceBox.inline) await fail(`the since line is not one compact line: ${JSON.stringify(sinceBox)}`);
@@ -413,6 +416,27 @@ await until("!document.querySelector('.since')", "Dismiss did not close the line
 await go("#/");
 await go(chat);
 await until("!!document.querySelector('.log .bubble') && !!document.querySelector('.reservoir-head')", "the chat did not come back");
+
+// --- Mentions in the composer (docs/web-client-tasks.md "Project screen"): `/` lists the owner's
+// skills and inserts a request to use one (the manager takes no slash command), `@` lists the
+// other projects; no row of the first read slid in.
+if (await count(".log [data-fresh]")) await fail("rows of the first read play the entry");
+const optionNamed = (name) => `[...document.querySelectorAll('.slash-option')].find((node) => node.querySelector('.slash-name')?.textContent === ${JSON.stringify(name)})`;
+await typeInto(".composer-field", "/fixture");
+await until(`!!${optionNamed("/fixture-skill")}`, "the / list does not show the fixture skill", 30);
+const skillOption = await evaluate(`(() => { const node = ${optionNamed("/fixture-skill")}; return { description: node.querySelector('.slash-description').textContent, source: node.querySelector('.slash-source').textContent,
+  label: document.querySelector('.slash-list').getAttribute('aria-label') }; })()`);
+if (skillOption.description !== "Fixture skill for the manager" || skillOption.source !== "skill" || skillOption.label !== "Skills") await fail(`the skill option reads ${JSON.stringify(skillOption)}`);
+await shot("mentions-skills", ".composer-send");
+await evaluate(`${optionNamed("/fixture-skill")}.click()`);
+if ((await evaluate("document.querySelector('.composer-field').value")) !== "Use owner:fixture-skill: ") await fail(`a picked skill reads ${await evaluate("document.querySelector('.composer-field').value")}`);
+await typeInto(".composer-field", "Ask @pla");
+await until(`!!${optionNamed("@plans")}`, "the @ list does not show the second project", 30);
+await shot("mentions-projects", ".composer-send");
+await evaluate(`${optionNamed("@plans")}.click()`);
+if ((await evaluate("document.querySelector('.composer-field').value")) !== "Ask @plans ") await fail(`a picked project reads ${await evaluate("document.querySelector('.composer-field').value")}`);
+await typeInto(".composer-field", "");
+await until("!document.querySelector('.slash')", "the list stayed over an empty field");
 
 // --- The chat reads like a messaging app: no cards, no tray, no strip, no Explain; the
 // header names the manager only when it matters.
@@ -465,8 +489,64 @@ if (await count(".reservoir-list")) await fail("the reservoir is open before a t
 await chipsOnLine("the closed reservoir line", ".reservoir-head .task-chip", [".reservoir-head", ".reservoir-title"]);
 const closedSize = await evaluate("getComputedStyle(document.querySelector('.reservoir-title')).fontSize");
 await oneWorkingColor("the closed reservoir and the chat's chips", 1);
+
+// Motion of the closed line (docs/web-client-tasks.md "Motion"): with three running tasks the
+// running slot shows each in turn, waits while it has the focus, and under reduced motion keeps
+// the newest and counts the rest. The store is changed in the page, as an event would.
+const inStore = (body) => evaluate(`(async () => { const { state, update } = await import(new URL('store.js', document.querySelector('script[type=module]').src)); ${body} })()`);
+const original = await inStore(`return JSON.parse(JSON.stringify(state.tasks[${project}]))`);
+const runners = () => inStore(`const ov = state.tasks[${project}], base = ov.tasks.find((task) => task.stage === 'working');
+  update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: [...ov.tasks, { ...base, id: 91, title: 'second runner' }, { ...base, id: 92, title: 'third runner' }] } } })`);
+const restored = () => inStore(`update({ tasks: { ...state.tasks, [${project}]: ${JSON.stringify(original)} } })`);
+const slot = () => evaluate("document.querySelector('.reservoir-head .ticker-item .task-chip')?.textContent.trim() ?? ''");
+const slotMotion = () => evaluate("getComputedStyle(document.querySelector('.reservoir-head .ticker-item')).animationName");
+await runners();
+await until("!!document.querySelector('.reservoir-head .ticker-item')", "the closed line has no running slot");
+const turned = new Set();
+for (let at = 0; at < 80 && turned.size < 3; at++) {
+  turned.add(await slot());
+  await pause(500);
+}
+if ([...turned].sort().join() !== "#6,#91,#92") await fail(`the running slot showed ${[...turned]}, not each of the three tasks`);
+if ((await slotMotion()) !== "ticker-in") await fail(`the running slot enters with ${await slotMotion()}`);
+if (!/^\d\/3$/.test(await evaluate("document.querySelector('.reservoir-more')?.textContent ?? ''"))) await fail("the closed line has no place count");
+await capture(`${size[0]}x${size[1]}-ticker`);
+await evaluate("document.querySelector('.reservoir-head').focus()");
+const held = await slot();
+await pause(5000);
+if ((await slot()) !== held) await fail("the running slot turned while it had the focus");
+await evaluate("document.querySelector('.reservoir-head').blur()");
+if (!(await evaluate("!!document.querySelector('.reservoir-words .tick')"))) await fail("the counts do not tick");
+// Reduced motion: no animation, the newest task and the count of the others.
+await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+await go("#/");
+await go(chat);
+await until("!!document.querySelector('.reservoir-head')", "the chat did not come back for reduced motion");
+await restored();
+await runners();
+await until("!!document.querySelector('.reservoir-head .ticker-item')", "no running slot under reduced motion");
+const calmSlot = await slot();
+await pause(4500);
+const calmNow = await evaluate(`({ slot: document.querySelector('.reservoir-head .ticker-item .task-chip').textContent.trim(), more: document.querySelector('.reservoir-more').textContent,
+  item: getComputedStyle(document.querySelector('.reservoir-head .ticker-item')).animationName, tick: getComputedStyle(document.querySelector('.reservoir-words .tick')).animationName,
+  mark: getComputedStyle(document.querySelector('.reservoir-head .mark')).transitionDuration, pulse: getComputedStyle(document.querySelector('.reservoir-head .mark[data-running]')).animationName })`);
+if (calmSlot !== "#92" || calmNow.slot !== "#92" || calmNow.more !== "+2 more") await fail(`under reduced motion the slot reads ${JSON.stringify({ calmSlot, ...calmNow })}`);
+if (calmNow.item !== "none" || calmNow.tick !== "none" || calmNow.mark !== "0s" || calmNow.pulse !== "none") await fail(`reduced motion still animates: ${JSON.stringify(calmNow)}`);
+await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "no-preference" }] });
+await restored();
+await until("!document.querySelector('.reservoir-more')", "the closed line kept the extra tasks");
+
+// Open, the summary line is gone and the chevron has not moved in its row.
+const chevron = () => evaluate(`(() => { const head = document.querySelector('.reservoir-head'), box = head.getBoundingClientRect(), icon = head.querySelector('.icon').getBoundingClientRect();
+  return { right: Math.round(box.right - (icon.left + icon.width / 2)), down: Math.round(icon.top + icon.height / 2 - box.top), height: Math.round(box.height) }; })()`);
+const chevronClosed = await chevron();
 await openReservoir();
-await pause(300);
+await pause(400);
+const chevronOpen = await chevron();
+if (JSON.stringify(chevronClosed) !== JSON.stringify(chevronOpen)) await fail(`the chevron moved: closed ${JSON.stringify(chevronClosed)}, open ${JSON.stringify(chevronOpen)}`);
+if (await count(".reservoir-words, .reservoir-more, .reservoir-checks")) await fail("the open reservoir still shows the closed summary");
+if (!(await evaluate("document.querySelector('.reservoir-head').getAttribute('aria-label') === 'Hide the list'"))) await fail("the open head has no name");
+await shot("reservoir-open-head", ".composer-send");
 if (!(await evaluate(atEnd))) await fail(`opening the reservoir took the chat off its end: ${JSON.stringify(await evaluate("(() => { const log = document.querySelector('.log'); return { top: log.scrollTop, height: log.scrollHeight, client: log.clientHeight, jump: !!document.querySelector('.jump') }; })()"))}`);
 const listedRows = await rows();
 const rowWords = listedRows.map((row) => `${row[0]} ${row[3]}`);
@@ -566,6 +646,8 @@ await typeInto(".composer-field", "PAGE Goal Ship the chat");
 await click(".composer-send");
 await until("document.querySelector('.composer-field').value === ''", "the second message was not sent");
 await until("!!document.querySelector('.log .typing') && document.querySelector('.manager .bar-state')?.textContent === 'typing'", "no typing bubble while the manager's turn runs", 30);
+const headDots = await evaluate("[...document.querySelectorAll('.manager .bar-state .typing-dot')].map((dot) => getComputedStyle(dot).animationName + ' ' + getComputedStyle(dot).animationDelay)");
+if (headDots.join() !== "pulse 0s,pulse 0.32s,pulse 0.64s") await fail(`the header's typing dots are ${headDots}`);
 const typing = await evaluate("({ author: document.querySelector('.log .typing').closest('.bubble').querySelector('.bubble-author').textContent, said: document.querySelector('.log .typing .visually-hidden').textContent })");
 if (typing.author !== "Atlas" || typing.said !== "Atlas is typing") await fail(`the typing bubble reads ${JSON.stringify(typing)}`);
 if (await evaluate("document.querySelector('.log .bubble:last-child .typing') === null")) await fail("the typing bubble is not the last message");
@@ -574,6 +656,8 @@ await shot("typing", ".composer-send");
 const sentPair = (await bubbles()).filter((bubble) => bubble.side === "out").slice(-2);
 if (sentPair.length !== 2 || sentPair[0].last || sentPair[1].first || !sentPair[1].last) await fail(`two owner messages did not group: ${JSON.stringify(sentPair)}`);
 await until("[...document.querySelectorAll('.log .bubble[data-side=in]')].some((node) => !!node.querySelector('.table-wrap'))", "the reply with a table did not arrive", 60);
+if ((await evaluate("[...document.querySelectorAll('.log .bubble[data-fresh]')].map((node) => getComputedStyle(node).animationName).join()")) === "") await fail("the reply did not slide in");
+if (await evaluate("[...document.querySelectorAll('.log .bubble[data-fresh]')].some((node) => getComputedStyle(node).animationName !== 'slide-up')")) await fail("a new bubble does not play row-in");
 const tableReply = "[...document.querySelectorAll('.log .bubble[data-side=in]')].find((node) => !!node.querySelector('.table-wrap'))";
 const inside = await evaluate(`(() => { const bubble = ${tableReply}.querySelector('.bubble-box').getBoundingClientRect(), table = ${tableReply}.querySelector('.table-wrap');
   const box = table.getBoundingClientRect(); return { right: box.right <= bubble.right + 0.5, scrolls: table.scrollWidth > table.clientWidth }; })()`);
@@ -614,6 +698,8 @@ const top0 = await logTop();
 await openReservoir();
 await evaluate(`${rowOf("#2")}.querySelector('.row-open').click()`);
 await until(`location.hash === '#/p/${project}/t/2' && !!document.querySelector('dialog.task-sheet[open] .story')`, "a reservoir row did not open the task sheet");
+const phoneSheet = await evaluate("({ sheet: getComputedStyle(document.querySelector('dialog.task-sheet')).animationName, backdrop: getComputedStyle(document.querySelector('dialog.task-sheet'), '::backdrop').animationName })");
+if (phoneSheet.sheet !== "sheet-in" || phoneSheet.backdrop !== "arrive") await fail(`the sheet enters with ${JSON.stringify(phoneSheet)}`);
 if (await logTop() !== top0) await fail(`a row moved the chat from ${top0} to ${await logTop()}`);
 await key("Escape", 27);
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the sheet a row opened");
@@ -629,6 +715,7 @@ await until(atEnd, "Jump to latest did not return to the end");
 await typeInto(".composer-field", "a draft that stays");
 await evaluate("[...document.querySelectorAll('.log .task-chip')].find((chip) => chip.textContent.trim() === '#2').click()");
 await until(`location.hash === '#/p/${project}/t/2' && !!document.querySelector('dialog.task-sheet[open] .story')`, "a chip did not open the task sheet");
+await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
 const sheetBox = await evaluate("(() => { const r = document.querySelector('dialog.task-sheet').getBoundingClientRect(); return { top: Math.round(r.top), height: Math.round(r.height) }; })()");
 if (Math.abs(sheetBox.height - 844 * 0.85) > 2 || Math.abs(sheetBox.top - 844 * 0.15) > 2) await fail(`the sheet is not 85% high: ${JSON.stringify(sheetBox)}`);
 await key("Escape", 27);
@@ -641,6 +728,7 @@ await evaluate("document.querySelector('.task-sheet .bar .icon-button').click()"
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Back did not close the sheet");
 await go(page(2));
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the sheet did not open a third time");
+await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
 const grip = await evaluate("(() => { const r = document.querySelector('.task-sheet-top').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()");
 await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: grip.x, y: grip.y }] });
 for (let step = 1; step <= 6; step++) await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: grip.x, y: grip.y + step * 30 }] });
@@ -899,6 +987,7 @@ const context = await evaluate("[...document.querySelectorAll('.check-item')].ma
 if (!context.every(([did]) => did.startsWith("did: WORK")) || context[1][1] !== "Passes if it has text|Look at /#/x") await fail(`the items' context reads ${JSON.stringify(context)}`);
 await until("document.querySelector('.check-capture img')?.naturalWidth === 1", "#8's capture did not load");
 if (await count(".check-capture") !== 1) await fail("an item without a capture shows one");
+await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
 const fitted = await evaluate("(() => { const sheet = document.querySelector('dialog.task-sheet').getBoundingClientRect(); const last = document.querySelector('.check-all').getBoundingClientRect(); return [Math.round(innerHeight - sheet.bottom), Math.round(sheet.bottom - last.bottom), Math.round(sheet.height / innerHeight * 100)]; })()");
 if (Math.abs(fitted[0]) > 1 || fitted[1] > 48 || fitted[2] >= 85) await fail(`the To check sheet does not fit its rows: ${JSON.stringify(fitted)}`);
 await shot("to-check", ".composer-send");
@@ -1021,6 +1110,8 @@ await shot("project", ".composer-send");
 await followEnd("1280 px");
 await go(page(3));
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the sheet did not open on a wide screen");
+if ((await evaluate("getComputedStyle(document.querySelector('dialog.task-sheet')).animationName")) !== "sheet-in-side") await fail("the wide sheet does not come in from the right");
+await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
 const panel = await evaluate("(() => { const r = document.querySelector('dialog.task-sheet').getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height) }; })()");
 if (panel.right !== 1280 || panel.left < 640 || panel.height !== 800) await fail(`on a wide screen the sheet is ${JSON.stringify(panel)}`);
 await shot("sheet");

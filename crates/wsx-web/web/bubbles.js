@@ -98,7 +98,7 @@ const authorName = (author, names) => author === "owner" ? "You" : author === "m
   : author.startsWith("peer:") ? names.peers[author.slice(5)] : `#${author.slice(7)} worker`;
 
 // One message. `words` turns its text runs into task chips.
-export function Bubble({ project, row, words, names }) {
+export function Bubble({ project, row, words, names, fresh }) {
   const out = row.author === "owner";
   const id = `bubble-${row.key}`;
   const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${names.peers[row.to]}` : row.tag;
@@ -114,7 +114,7 @@ export function Bubble({ project, row, words, names }) {
     body = html`<div class="bubble-body" id=${id}><${Markdown} text=${row.entry.text} words=${words} prose /></div>`;
   }
   return html`
-    <article class="bubble" data-side=${out ? "out" : "in"} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null}
+    <article class="bubble" data-side=${out ? "out" : "in"} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}
       data-at=${row.pending ? null : row.at}
       data-pending=${row.pending ? "" : null} aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}`}>
       ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${authorName(row.author, names)}</p>`}
@@ -124,8 +124,8 @@ export function Bubble({ project, row, words, names }) {
 }
 
 // The manager writes: three dots, still where the user asked for less motion.
-export const Typing = ({ name }) => html`
-  <article class="bubble" data-side="in" data-first="" data-last="" role="status">
+export const Typing = ({ name, leaving }) => html`
+  <article class="bubble" data-side="in" data-first="" data-last="" role="status" data-leaving=${leaving ? "" : null}>
     <p class="bubble-author" aria-hidden="true">${name}</p>
     <div class="bubble-box typing"><span class="visually-hidden">${name} is typing</span>
       <span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span>
@@ -133,5 +133,5 @@ export const Typing = ({ name }) => html`
   </article>`;
 
 // Task changes in one muted line: "#2 ready · #4 ready".
-export const StatusLine = ({ parts, words }) => html`
-  <p class="status-line">${parts.map((part, index) => html`${index ? " · " : ""}${words(part)}`)}</p>`;
+export const StatusLine = ({ parts, words, fresh }) => html`
+  <p class="status-line" data-fresh=${fresh ? "" : null}>${parts.map((part, index) => html`${index ? " · " : ""}${words(part)}`)}</p>`;

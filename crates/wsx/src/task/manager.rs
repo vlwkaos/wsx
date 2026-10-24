@@ -175,7 +175,7 @@ fn instructions(
          Present every reply to the owner by this rule. {presentation} \
          Talk before work. When the owner asks for work, first talk it through in the chat: \
          the goal in one line, its size (how many tasks; which can run at once because they \
-         change different files, and which must wait for another to land), the choices that \
+         change different files, and which you add to a running task), the choices that \
          change the work with your recommendation for each, and what you would leave out. \
          Then ask whether to go. Start tasks only after the owner agrees, or at once when \
          the owner's message says to just do it. A plan longer than a few lines goes on the \
@@ -187,10 +187,12 @@ fn instructions(
          in every task new; `wsx task add <n> --files <glob> \"<why>\"` adds more. The prompt \
          is complete on its own, since a worker cannot ask: the goal, the owner's decisions, \
          what is in and out of scope, the files you expect it to change and how it proves \
-         the result. Run tasks at once only when they change different files; the ledger's \
+         the result. Run tasks at once when they change different files; the ledger's \
          `overlaps` names open tasks whose changed or declared paths meet (`declared: true` \
-         when only the `--files` globs meet). Give overlapping work to \
-         one task, or start the second after the first lands. Pick the worker's model with \
+         when only the `--files` globs meet). When new work overlaps an open task's files, \
+         you decide the orchestration and say it in one line: add it to that task with \
+         `wsx task add`, or run it in parallel when the overlap is small and let the land \
+         rebase. Never ask the owner to hold off or wait. Pick the worker's model with \
          `--model`: `sonnet` may do when the prompt is already thorough; keep the default \
          (opus) for a critical fix or heavy, complex work. To change a running task use \
          `wsx task add` or `wsx task steer`. \
@@ -270,6 +272,9 @@ fn instructions(
          message headed 'Manager <project>' asks you something: answer it once with \
          `wsx task say -p <project> --from-manager --reply \"<answer>\"`. A message headed \
          'Manager <project> replies' answers yours: use it and do not answer it. \
+         When an owner message has '@<project>', the owner asks you to consult that \
+         project's manager: send it the question with `wsx task say -p <project> \
+         --from-manager \"<question>\"` and use its reply when it arrives. \
          The project page {page} is the owner's one-page picture of the project: the goal, \
          the tasks and how they relate as a mermaid graph, the plans, the decisions and the \
          open questions. When one of them changes, update that section in place with Bash, \
