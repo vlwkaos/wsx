@@ -328,8 +328,8 @@ const CheckingRow = ({ project, count }) => html`
 
 // The decision list, pinned over the composer (docs/web-client-tasks.md "Project screen"). Closed it
 // is one line: "2 need you · #6 <title> · 5 to check", the running slot turning through the
-// running tasks. Open, the line gives way to the chevron alone, in the same place, and every
-// item that waits for the owner shows in the server's order, each with its one action, then
+// running tasks. Open, the line gives way to the chevron alone, at the right end of the list's
+// first row (app.css), and every item that waits for the owner shows in the server's order, each with its one action, then
 // the tasks that run and the To check row. Done tasks are not in it, and with nothing in it
 // there is no list. A cleared row leaves and the focus moves to the next row's action, or to
 // the composer after the last one. It never moves the chat.

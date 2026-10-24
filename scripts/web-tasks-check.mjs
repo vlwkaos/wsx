@@ -554,14 +554,22 @@ await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-m
 await restored();
 await until("!document.querySelector('.reservoir-more')", "the closed line kept the extra tasks");
 
-// Open, the summary line is gone and the chevron has not moved in its row.
-const chevron = () => evaluate(`(() => { const head = document.querySelector('.reservoir-head'), box = head.getBoundingClientRect(), icon = head.querySelector('.icon').getBoundingClientRect();
-  return { right: Math.round(box.right - (icon.left + icon.width / 2)), down: Math.round(icon.top + icon.height / 2 - box.top), height: Math.round(box.height) }; })()`);
-const chevronClosed = await chevron();
+// Open, the summary line is gone and the chevron has no row of its own: it is at the right
+// end of the list's first row (the first label, or the first item row), which shows whole at
+// the reservoir's top. One row is the closed line's height.
+const lineHeight = await evaluate("document.querySelector('.reservoir-head').getBoundingClientRect().height");
+async function chevronInFirstRow(where) {
+  const seen = await evaluate(`(() => { const box = document.querySelector('.reservoir').getBoundingClientRect(), body = document.querySelector('.reservoir-body');
+    const first = body.firstElementChild.matches('.reservoir-label') ? body.firstElementChild : body.querySelector('.need');
+    const row = first.getBoundingClientRect(), icon = document.querySelector('.reservoir-head .icon').getBoundingClientRect(), middle = icon.top + icon.height / 2;
+    return { first: first.textContent.trim().slice(0, 20), down: Math.round(row.top - box.top), inside: row.top >= box.top && row.bottom <= box.bottom && row.left >= box.left && row.right <= box.right + 0.5 && body.scrollTop === 0,
+      sameRow: middle > row.top && middle < row.bottom, right: Math.round(innerWidth - icon.right) }; })()`);
+  if (seen.down > lineHeight || !seen.inside || !seen.sameRow) await fail(`${where}: the open reservoir's first row or its chevron is off: ${JSON.stringify(seen)}`);
+  return seen;
+}
 await openReservoir();
 await pause(400);
-const chevronOpen = await chevron();
-if (JSON.stringify(chevronClosed) !== JSON.stringify(chevronOpen)) await fail(`the chevron moved: closed ${JSON.stringify(chevronClosed)}, open ${JSON.stringify(chevronOpen)}`);
+await chevronInFirstRow("with items that need the owner");
 if (await count(".reservoir-words, .reservoir-more, .reservoir-checks")) await fail("the open reservoir still shows the closed summary");
 if (!(await evaluate("document.querySelector('.reservoir-head').getAttribute('aria-label') === 'Hide the list'"))) await fail("the open head has no name");
 await shot("reservoir-open-head", ".composer-send");
@@ -1043,6 +1051,20 @@ await key("Escape", 27);
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the To check list");
 await until("[...document.querySelectorAll('.status-line')].some((node) => /#7 failed a check; #\\d+ fixes it/.test(node.textContent))", "the chat does not say which task fixes the failed check", 60);
 await until("!/to check/.test(document.querySelector('.reservoir-words')?.textContent ?? '')", "the reservoir still counts items to check", 60);
+// ^ With #4 and the fix task landed (a pending approval denied) only Running is left: its label
+// is the first row, whole at the reservoir's top, with the chevron at its right end.
+await openReservoir();
+const runningFirst = "document.querySelector('.reservoir-body')?.firstElementChild?.matches('.reservoir-label')";
+for (let attempt = 0; attempt < 600 && !(await evaluate(runningFirst)); attempt++) {
+  if (await evaluate("!!document.querySelector('.reservoir:not([data-open])')")) await click(".reservoir-head");
+  if (attempt % 40 === 0) await evaluate("document.querySelector('.reservoir-list:first-child .need:not([data-leaving]) :is(.need-action[title=Land], .need-action[title=Deny])')?.click()");
+  await pause(100);
+}
+if (!(await evaluate(runningFirst))) await fail(`Running is not the first row of the open reservoir: ${JSON.stringify(await rows())}`);
+await pause(400);
+if ((await chevronInFirstRow("with only running tasks")).first !== "Running") await fail("the first row is not the Running label");
+await shot("reservoir-running-first", ".composer-send");
+await closeReservoir();
 
 // --- A deep link to a task opens the chat with the sheet over it; Back closes the sheet, then
 // the chat is the first entry, so the next Back leaves the page.
