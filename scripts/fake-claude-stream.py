@@ -31,6 +31,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   TABLE          answer with a wide markdown table that names #4 twice and #2
   DIAGRAM        answer with a tall mermaid diagram, drawn after the bubble shows
   PAGE <section> <words>  replace that section of the project page (its sandbox entry names it)
+  WRITE <path>   write <path> when an allowWrite entry and no denyWrite entry holds it, as Bash would
   STATUS         answer from `wsx task ledger`
   SLOW           take about 3 s
   BIG            a last model call of 200k tokens, so the host rotates the conversation
@@ -177,6 +178,18 @@ def edit_page(settings, section, words):
         out.write(text[:start] + words + text[end:])
 
 
+def sandbox_write(settings, path):
+    filesystem = settings['sandbox']['filesystem']
+    holds = lambda entries: any(os.path.realpath(path) == os.path.realpath(os.path.expanduser(entry))
+                                or os.path.realpath(path).startswith(os.path.realpath(os.path.expanduser(entry)) + '/')
+                                for entry in entries)
+    if not holds(filesystem.get('allowWrite', [])) or holds(filesystem.get('denyWrite', [])):
+        return '%s: Operation not permitted' % path
+    with open(path, 'w') as out:
+        out.write('written\n')
+    return 'wrote %s' % path
+
+
 def manager_turn(text, project, settings):
     replies = []
     if 'SLOW' in text.split():
@@ -188,6 +201,9 @@ def manager_turn(text, project, settings):
         if line.startswith('RUN '):
             done = subprocess.run(line[4:], shell=True, capture_output=True, text=True)
             replies.append('ran: %s -> %d %s' % (line[4:], done.returncode, (done.stdout + done.stderr).strip()[:300]))
+    for line in text.splitlines():
+        if line.startswith('WRITE '):
+            replies.append(sandbox_write(settings, line[6:]))
     for line in text.splitlines():
         if line.startswith('PAGE '):
             _, section, words = line.split(' ', 2)

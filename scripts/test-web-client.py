@@ -2807,6 +2807,8 @@ def task_journey(args):
                  'ui heard plans', timeout=30)
             js('task', 'say', 'RUN wsx task say -p plans --from-manager --reply "ui is fine" --json', '-p', 'ui')
             wait(lambda: any(e['kind'] == 'sent' for e in js('task', 'chat', '-p', 'ui')['entries']), 'ui answered plans', timeout=30)
+            # The owner let ui's manager write a folder for two hours: a settled line in its chat.
+            assert js('task', 'allow', 'manager', '--path', str(work / 'granted'), '--until', '2h', '-p', 'ui')['ok']
             # A deploy of the default branch tip: the brief says it is up to date until a task lands.
             assert js('task', 'deploy', '-p', 'ui')['exit'] == 0
             # Sessions without tasks, oldest first: an agent that exited (`gone`), one done

@@ -1476,6 +1476,60 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
     git('commit', '-q', '-am', 'no trial')
 
+    # The manager's write grant (docs/tasks.md "Permissions"): only the owner widens the
+    # manager's Bash writes. Between turns its agent restarts into the same conversation with
+    # the path; the grant ends at --until, or without it with the conversation.
+    granted, elsewhere, expired = (base / name for name in ('granted', 'elsewhere', 'expired'))
+    for folder in (granted, elsewhere, expired):
+        folder.mkdir(mode=0o700)
+
+    def manager_launches():
+        return [t for t in traces() if t.get('launch') and t.get('manager')]
+
+    def writes(launch):
+        return launch['settings']['sandbox']['filesystem']['allowWrite']
+
+    # ^ A turn first, so a rotation the config change brings happens before the grant.
+    reply_to(js('task', 'say', 'STATUS')['id'])
+    before = manager_launches()[-1]
+    refused = subprocess.run([str(wsx), 'task', 'allow', 'manager', '--path', str(granted)], cwd=project,
+                             env=manager_env, capture_output=True, text=True)
+    assert refused.returncode != 0 and 'only the owner widens' in refused.stderr, refused.stderr
+    brokered = js('task', 'say', 'RUN wsx task allow manager --path %s --json' % granted)
+    assert 'only the owner widens' in reply_to(brokered['id'])['text']
+    assert 'main checkout' in cli('task', 'allow', 'manager', '--path', project / 'src', ok=False).stderr
+    assert "manager's own state" in cli('task', 'allow', 'manager', '--path', state, ok=False).stderr
+    assert 'HH:MM' in cli('task', 'allow', 'manager', '--path', granted, '--until', '25:00', ok=False).stderr
+    assert '--path <dir> alone' in cli('task', 'allow', 'manager', '--host', 'crates.io', ok=False).stderr
+    assert '--until is for' in cli('task', 'allow', '1', '--path', granted, '--until', '1h', ok=False).stderr
+    assert not any(e['kind'] == 'granted' for e in manager_entries())
+    assert js('task', 'allow', 'manager', '--path', granted)['ok']
+    assert js('task', 'allow', 'manager', '--path', expired, '--until', '2s')['ok']
+    time.sleep(2.5)
+    probes = [granted / 'a.txt', elsewhere / 'b.txt', expired / 'c.txt', project / 'd.txt']
+    asked = js('task', 'say', '\n'.join('WRITE %s' % path for path in probes))
+    said = reply_to(asked['id'])['text']
+    after = manager_launches()[-1]
+    assert after['resume'] and after['session'] == before['session'] and after['pid'] != before['pid'], (before, after)
+    assert str(granted) in writes(after) and str(expired) not in writes(after), writes(after)
+    assert writes(after)[:2] == writes(before), (writes(before), writes(after))
+    assert 'The owner lets your Bash also write, for a limited time: %s.' % granted in turn_with('WRITE %s' % probes[0])['message']
+    assert [path.exists() for path in probes] == [True, False, False, False], said
+    assert said.count('Operation not permitted') == 3, said
+    grants = [e for e in manager_entries() if e['kind'] == 'granted']
+    assert [(e['access'], e['by'], 'until_ms' in e) for e in grants] == [
+        ({'kind': 'write', 'path': str(granted)}, 'owner', False),
+        ({'kind': 'write', 'path': str(expired)}, 'owner', True)], grants
+    manager_state = json.loads((manager_log.parent / 'state.json').read_text())
+    assert manager_state['grants'] == [{'path': str(granted)}], manager_state['grants']
+    # ^ A new conversation ends the grant without --until.
+    reply_to(js('task', 'say', 'BIG')['id'])
+    again = js('task', 'say', 'WRITE %s' % (granted / 'e.txt'))
+    assert 'Operation not permitted' in reply_to(again['id'])['text']
+    fresh = manager_launches()[-1]
+    assert not fresh['resume'] and str(granted) not in writes(fresh), fresh
+    assert 'grants' not in json.loads((manager_log.parent / 'state.json').read_text())
+
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     # ledger and messages its manager, which answers once; nothing else crosses projects.
     other = base / 'other'

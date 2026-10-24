@@ -412,6 +412,8 @@ const done = await evaluate(`({ head: ${workerBubble(7)}.querySelector('.bubble-
   body: ${workerBubble(7)}.querySelector('.bubble-body').textContent.trim(), more: !!${workerBubble(7)}.querySelector('button.link-action') })`);
 if (done.head !== "#7 · done" || !done.body.startsWith("did: WORK d.txt HV done.") || !/More words follow/.test(done.body) || done.more) await fail(`the done bubble reads ${JSON.stringify(done)}`);
 if (await evaluate("[...document.querySelectorAll('.status-line')].some((node) => /#[78] (landed|done)/.test(node.textContent))")) await fail("a muted line repeats a landing");
+// ^ The owner's write grant for the manager is a settled line (docs/tasks.md "Permissions").
+await until("[...document.querySelectorAll('.status-line')].some((node) => /Allowed by the owner: the manager writes \\S+\\/granted until /.test(node.textContent))", "the manager's grant left no muted line", 30);
 
 // --- The reservoir: one line over the composer that names the running task (its pulsing chip
 // and its title without "Owner asked:") and the items to check; a tap opens the decision list,

@@ -18,12 +18,14 @@ use wsx_core::model::workspace::TaskWorkflow;
 use wsx_core::runtime;
 use wsx_core::task::manager::{instructions_digest, pending_approvals, ApprovalLine};
 use wsx_core::task::manager::{
-    Author, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState, Seen,
+    Author, ManagerEvent, ManagerGrant, ManagerRequest, ManagerResponse, ManagerState, Seen,
 };
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
-use wsx_core::task::{checks, ledger, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES};
+use wsx_core::task::{
+    checks, ledger, now_unix_ms, Access, Actor, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
+};
 
 use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -121,6 +123,8 @@ struct Manager {
     binary: Option<hosting::Binary>,
     reexec: bool,
     owed: Owed,
+    /// The granted paths the running agent was started with.
+    granted: Vec<String>,
 }
 
 /// Tools the manager has beyond `Read Glob Grep`, so it loads context as a worker does and
@@ -298,7 +302,9 @@ pub fn run(project_id: &str) -> Result<()> {
     let dir = ManagerDir::open(project_id)?;
     let listener = hosting::bind(&dir.socket_path())?;
     let brokered = hosting::bind(&dir.broker_path())?;
-    let state = dir.read_state()?;
+    let mut state = dir.read_state()?;
+    // ^ A grant without --until ends when the host restarts (docs/tasks.md "Permissions").
+    state.grants.retain(|grant| grant.until_ms.is_some());
     let (events, receiver) = channel();
     let mut manager = Manager {
         dir,
@@ -328,6 +334,7 @@ pub fn run(project_id: &str) -> Result<()> {
         binary: hosting::Binary::capture(),
         reexec: false,
         owed: Owed::default(),
+        granted: Vec::new(),
     };
     manager.restore()?;
     let requests = events.clone();
@@ -405,6 +412,7 @@ impl Manager {
                 Event::Sent { to, text, reply } => self.log(ManagerEvent::Sent { to, text, reply }),
             }
             if self.turn.is_none() {
+                self.apply_grants();
                 self.flush_events();
                 self.next_turn();
             } else {
@@ -427,6 +435,18 @@ impl Manager {
                 busy,
                 message: format!("{} message(s) waiting", self.queue.len()),
             },
+            ManagerRequest::Grant { path, until_ms } => {
+                let (ok, message) = match self.grant(path, until_ms) {
+                    Ok(message) => (true, message),
+                    Err(error) => (false, format!("{error:#}")),
+                };
+                ManagerResponse {
+                    ok,
+                    id: None,
+                    busy,
+                    message,
+                }
+            }
             ManagerRequest::Say { text, from } => {
                 match self.accept(from.unwrap_or(Author::Owner), text) {
                     Ok(id) => ManagerResponse {
@@ -446,6 +466,69 @@ impl Manager {
                         message: format!("{error:#}"),
                     },
                 }
+            }
+        }
+    }
+
+    /// The owner's write grant: logged and kept; the agent restarts with it between turns.
+    fn grant(&mut self, path: String, until_ms: Option<u64>) -> Result<String> {
+        Access::Write { path: path.clone() }
+            .check()
+            .map_err(anyhow::Error::msg)?;
+        // ^ The sandbox's denyWrite on the main checkout beats any allowWrite: refuse a path
+        // there rather than grant what stays denied.
+        let expanded = real_path(&path);
+        if expanded.starts_with(real_path(&self.main)) {
+            anyhow::bail!(
+                "{path} is in the main checkout, which the manager never writes; nothing was granted"
+            );
+        }
+        // ^ Its own state (the grants among it) stays out of its reach.
+        if real_path(&self.dir.path).starts_with(&expanded) {
+            anyhow::bail!("{path} holds the manager's own state folder; nothing was granted");
+        }
+        if until_ms.is_some_and(|until| until <= now_unix_ms()) {
+            anyhow::bail!("--until is already past; nothing was granted");
+        }
+        self.state.grants.retain(|grant| grant.path != path);
+        self.state.grants.push(ManagerGrant {
+            path: path.clone(),
+            until_ms,
+        });
+        self.save();
+        self.log(ManagerEvent::Granted {
+            access: Access::Write { path: path.clone() },
+            by: Actor::Owner,
+            until_ms,
+        });
+        Ok(match self.turn {
+            Some(_) => format!("the manager may write {path} from the end of its turn"),
+            None => format!("the manager may write {path} from its next turn"),
+        })
+    }
+
+    fn live_grants(&self) -> Vec<String> {
+        let now = now_unix_ms();
+        self.state
+            .grants
+            .iter()
+            .filter(|grant| grant.live(now))
+            .map(|grant| grant.path.clone())
+            .collect()
+    }
+
+    /// Between turns, end an agent whose granted paths changed (a new grant or one past its
+    /// --until): settings apply at each start, so the next turn resumes the conversation
+    /// with the current ones.
+    fn apply_grants(&mut self) {
+        let now = now_unix_ms();
+        if self.state.grants.iter().any(|grant| !grant.live(now)) {
+            self.state.grants.retain(|grant| grant.live(now));
+            self.save();
+        }
+        if self.live_grants() != self.granted {
+            if let Some(agent) = self.agent.take() {
+                agent.stop();
             }
         }
     }
@@ -927,7 +1010,8 @@ impl Manager {
         let mut text = text.to_string();
         let model = self.turn_model(events_only);
         if self.agent.is_none() {
-            let launch = self.launch()?;
+            self.granted = self.live_grants();
+            let mut launch = self.launch()?;
             let digest = instructions_digest(&launch.instructions);
             // ^ Claude keeps the system prompt a conversation began with, also on resume:
             // new instructions need a new conversation (docs/tasks.md "Manager").
@@ -935,6 +1019,9 @@ impl Manager {
                 && self.state.instructions.as_deref() != Some(&digest)
             {
                 self.rotate(0, Some("the manager's instructions changed".into()));
+                // ^ The rotation ended the grants of that conversation.
+                self.granted = self.live_grants();
+                launch = self.launch()?;
             }
             let (session, resume) = match &self.state.agent_session {
                 Some(session) => (session.clone(), true),
@@ -951,6 +1038,12 @@ impl Manager {
             }
             self.state.instructions = Some(digest);
             self.save();
+            if !self.granted.is_empty() {
+                text = format!(
+                    "{text}\n\nThe owner lets your Bash also write, for a limited time: {}.",
+                    self.granted.join(", ")
+                );
+            }
             self.generation += 1;
             let generation = self.generation;
             let launch = Launch {
@@ -981,8 +1074,8 @@ impl Manager {
         agent.send(text.trim_end())
     }
 
-    /// The manager's Bash writes only its notes folder; its `wsx task` commands leave the
-    /// sandbox. ref: docs/tasks.md "Permissions"
+    /// The manager's Bash writes only its notes folder, the page and the owner's grants; its
+    /// `wsx task` commands leave the sandbox. ref: docs/tasks.md "Permissions"
     fn launch(&self) -> Result<Launch> {
         let exe = std::env::current_exe().context("cannot find the wsx binary")?;
         let notes = self.dir.notes()?;
@@ -991,10 +1084,16 @@ impl Manager {
         let page = store::ensure_page(&self.dir.project_id, &self.project)?;
         // ^ Claude resolves symlinks such as /tmp → /private/tmp before it matches a rule.
         let page = page.canonicalize().unwrap_or(page);
+        let mut writes = vec![notes.display().to_string(), page.display().to_string()];
+        writes.extend(
+            self.granted
+                .iter()
+                .map(|path| real_path(path).display().to_string()),
+        );
         let boundary = Boundary {
             cwd: self.main.clone(),
             // ^ The page is one file: Bash may rewrite it in place, never beside it.
-            writes: vec![notes.display().to_string(), page.display().to_string()],
+            writes,
             deny_writes: vec![self.main.display().to_string()],
             domains: Vec::new(),
             unix_sockets: vec![broker_socket.display().to_string()],
@@ -1086,6 +1185,8 @@ impl Manager {
         }
         self.state.agent_session = None;
         self.state.instructions = None;
+        // ^ A grant without --until lasts for its conversation.
+        self.state.grants.retain(|grant| grant.until_ms.is_some());
         self.state.turn_seen = None;
         self.state.handover = true;
         self.save();
@@ -1224,6 +1325,16 @@ fn new_task(exe: &Path, project: &str, prompt: &str) -> Result<u32, String> {
 
 /// The end of a notes file, at most `MAX_NOTES_READ` bytes: the newest lines are last.
 /// A link, a missing file or text that is not UTF-8 reads as empty.
+/// A granted path as the sandbox matches it: `~/` expanded, symlinks resolved when it exists.
+fn real_path(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    let path = match (path.strip_prefix("~"), dirs::home_dir()) {
+        (Ok(rest), Some(home)) => home.join(rest),
+        _ => path.to_path_buf(),
+    };
+    path.canonicalize().unwrap_or(path)
+}
+
 fn read_note(path: &Path) -> String {
     use std::io::{Read, Seek, SeekFrom};
     use std::os::unix::fs::OpenOptionsExt;
