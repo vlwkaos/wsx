@@ -188,7 +188,12 @@ fn send_inner(
     let mut data = serde_json::to_vec(request).map_err(|e| RoutineError::Corrupt(e.to_string()))?;
     data.push(b'\n');
     stream.write_all(&data).map_err(map_io)?;
-    stream.shutdown(std::net::Shutdown::Write).map_err(map_io)?;
+    // ^ The daemon answers once it reads the newline and may close first. macOS then refuses
+    // the shutdown (ENOTCONN) and a socket option (EINVAL); the answer is still buffered.
+    match stream.shutdown(std::net::Shutdown::Write) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotConnected => {}
+        result => result.map_err(map_io)?,
+    }
     let frame = if timeout_is_unavailable {
         read_response_frame(
             BufReader::new(DeadlineReader { stream, deadline }),
@@ -218,7 +223,11 @@ impl Read for DeadlineReader {
                 "daemon response deadline elapsed",
             ));
         }
-        self.stream.set_read_timeout(Some(remaining))?;
+        match self.stream.set_read_timeout(Some(remaining)) {
+            // ^ A closed peer: the read returns the buffered answer or EOF at once.
+            Err(error) if error.raw_os_error() == Some(libc::EINVAL) => {}
+            result => result?,
+        }
         self.stream.read(bytes)
     }
 }
