@@ -408,7 +408,11 @@ const sinceBox = await evaluate("(() => { const line = document.querySelector('.
 if (sinceBox.height > 40 || !sinceBox.inline) await fail(`the since line is not one compact line: ${JSON.stringify(sinceBox)}`);
 await shot("since");
 await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
-await until("!document.querySelector('.since')", "the since line stayed after the newest reply was on screen");
+for (let attempt = 0; attempt < 100 && (await count(".since")); attempt++) await pause(100);
+if (await count(".since")) {
+  await fail(`the since line stayed after the newest reply was on screen: ${await evaluate(`(() => { const log = document.querySelector('.log'), list = [...log.querySelectorAll('.bubble[data-side=in]')], last = list.at(-1), box = log.getBoundingClientRect(), at = last?.getBoundingClientRect();
+    return JSON.stringify({ top: log.scrollTop, height: log.scrollHeight, client: log.clientHeight, at: last?.dataset.at ?? null, bubbleTop: at && Math.round(at.top - box.top), bubbleBottom: at && Math.round(at.bottom - box.top), bubbles: list.length, attrs: list.map((n) => n.dataset.at ?? '-').join() }); })()`)}`);
+}
 await comeBack();
 await evaluate("[...document.querySelectorAll('.since button')].find((node) => node.title === 'Dismiss').click()");
 await until("!document.querySelector('.since')", "Dismiss did not close the line");
