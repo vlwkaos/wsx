@@ -22,14 +22,16 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::checks::{self, CheckItem};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
-use wsx_core::task::manager::{ApprovalAction, ApprovalLine, GrantAsk, ManagerEvent};
+use wsx_core::task::manager::{
+    ApprovalAction, ApprovalLine, GrantAsk, ManagerEvent, ManagerRequest, ManagerResponse,
+};
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{
     checked_files, overlaps, project_tasks, task_summary, MAX_RESULT_READ_BYTES,
 };
 use wsx_core::task::{
-    call_host, copy, now_unix_ms,
+    call_host, call_socket, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
     Access, Actor, DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind,
     TaskRecord, TaskState, MAX_MESSAGE_BYTES,
@@ -105,11 +107,17 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Let a task reach a host, write a folder or use a tool (never Bash), and resume it when blocked
+    /// Let a task reach a host, write a folder or use a tool (never Bash), and resume it when blocked;
+    /// `allow manager --path <dir>` lets the project's manager write a folder
     Allow {
+        /// A task number, or `manager`
         task: String,
         #[command(flatten)]
         access: AccessArgs,
+        /// For `allow manager`: until this duration (30m, 2h, 1d) or local time (18:00) passes;
+        /// without it, until the manager's conversation ends
+        #[arg(long)]
+        until: Option<String>,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -429,9 +437,16 @@ pub fn run(command: TaskCmd) -> Result<()> {
         TaskCmd::Allow {
             task,
             access,
+            until,
             project,
             json,
         } => {
+            if task == "manager" {
+                return allow_manager(project.as_deref(), access, until.as_deref(), json);
+            }
+            if until.is_some() {
+                bail!("--until is for `wsx task allow manager`");
+            }
             let dir = open(project.as_deref(), &task)?;
             let (access, project_wide) = access.into_access();
             // ^ The manager grants a host or a path for one task alone; the project and
@@ -1787,6 +1802,9 @@ fn chat(project: Option<&str>, after: Option<u64>, json: bool) -> Result<()> {
                 println!("(new conversation after {tokens} tokens)")
             }
             ManagerEvent::Stopped { reason } => println!("(manager stopped: {reason})"),
+            ManagerEvent::Granted { access, .. } => {
+                println!("(the owner let the manager {})", access.describe())
+            }
             _ => {}
         }
     }
@@ -1836,6 +1854,89 @@ impl AccessArgs {
         };
         (access, self.project_wide)
     }
+}
+
+/// The owner lets the manager's Bash write one more folder; it applies from the manager's
+/// next turn. ref: docs/tasks.md "Permissions"
+fn allow_manager(
+    project: Option<&str>,
+    access: AccessArgs,
+    until: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    // ^ The manager never widens its own boundary, also through its broker.
+    if acting_as_manager() {
+        bail!("only the owner widens the manager's boundary; ask the owner");
+    }
+    let (Access::Write { path }, false) = access.into_access() else {
+        bail!("`wsx task allow manager` takes --path <dir> alone");
+    };
+    let until_ms = until.map(until_unix_ms).transpose()?;
+    let (_, dir) = ensure_manager(project)?;
+    let response: ManagerResponse = call_socket(
+        &dir.socket_path(),
+        &ManagerRequest::Grant { path, until_ms },
+        HOST_TIMEOUT,
+    )?;
+    if json {
+        print_json(&serde_json::to_value(&response)?)?;
+    } else {
+        println!("{}", response.message);
+    }
+    if !response.ok {
+        bail!("{}", response.message);
+    }
+    Ok(())
+}
+
+/// `--until`: a duration from now (`90s`, `30m`, `2h`, `1d`) or the next local `HH:MM`.
+fn until_unix_ms(text: &str) -> Result<u64> {
+    let now = now_unix_ms();
+    if let Some((hour, minute)) = text.split_once(':') {
+        let (Ok(hour), Ok(minute)) = (hour.parse::<i32>(), minute.parse::<i32>()) else {
+            bail!("--until {text:?}: a time is HH:MM, such as 18:00");
+        };
+        if !(0..24).contains(&hour) || !(0..60).contains(&minute) {
+            bail!("--until {text:?}: a time is HH:MM, such as 18:00");
+        }
+        let seconds = (now / 1000) as libc::time_t;
+        let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
+        // SAFETY: localtime_r fills the tm it is given; mktime reads and normalizes it.
+        let at = unsafe {
+            libc::localtime_r(&seconds, local.as_mut_ptr());
+            let mut local = local.assume_init();
+            local.tm_hour = hour;
+            local.tm_min = minute;
+            local.tm_sec = 0;
+            local.tm_isdst = -1;
+            libc::mktime(&mut local)
+        };
+        let mut at = u64::try_from(at).context("--until: the local time is out of range")? * 1000;
+        if at <= now {
+            at += 24 * 3600 * 1000;
+        }
+        return Ok(at);
+    }
+    let last = text.chars().last().unwrap_or_default();
+    let split = text.len().saturating_sub(last.len_utf8());
+    let unit = match last {
+        's' => 1000,
+        'm' => 60 * 1000,
+        'h' => 3600 * 1000,
+        'd' => 24 * 3600 * 1000,
+        _ => {
+            bail!("--until {text:?}: give a duration such as 30m, 2h, 1d, or a time such as 18:00")
+        }
+    };
+    let count: u64 = text[..split]
+        .parse()
+        .ok()
+        .filter(|count| *count > 0)
+        .with_context(|| format!("--until {text:?}: the duration needs a count above 0"))?;
+    count
+        .checked_mul(unit)
+        .and_then(|span| now.checked_add(span))
+        .context("--until: the duration is too long")
 }
 
 /// Record an approval request instead of acting, and say that the owner was asked.
