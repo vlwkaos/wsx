@@ -274,6 +274,10 @@ fn notify(app: &Arc<App>, target: &chat::Target, state: AgentState, badge: usize
         AgentState::Error => (Topic::Error, "Stopped with an error"),
         _ => return,
     };
+    // ^ The notice reads the agent's saved conversation: not for a site without push.
+    if app.push.is_none() {
+        return;
+    }
     let session = target.session_id.0;
     let clip = |text: &str| wsx_core::task::view::clip(text, 60);
     let title = format!(
