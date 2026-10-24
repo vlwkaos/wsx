@@ -3300,13 +3300,17 @@ digest_max_seconds = 6
         assert digest[0]['body'] == '2 ready (#%d, #%d)' % (first, second) and digest[0]['tag'].endswith('-digest'), digest
         baseline += 1
         # The cap: a task finishes every 2 s, so the 3 s quiet time never comes; the digest
-        # goes out 6 s after the first, with what came until then.
+        # goes out 6 s after the first, with what came until then. The tasks start first and
+        # wait at a gate each, so a slow `task new` cannot stretch the gap past the quiet time.
+        gates = [work / ('steady-gate-%d' % k) for k in range(6)]
+        steady_ids = [js('task', 'new', 'WAIT %s NOOP' % gate, '-p', 'demo')['id'] for gate in gates]
+        wait(lambda: all(str(gate) in (work / 'fake-claude.trace').read_text() for gate in gates),
+             'every steady worker waits at its gate', timeout=60)
         started_at = time.monotonic()
-        steady_ids = []
-        for _ in range(6):
-            steady_ids.append(js('task', 'new', 'NOOP', '-p', 'demo')['id'])
-            wait_state(steady_ids[-1], 'ready')
-            time.sleep(max(0, 2 * len(steady_ids) - (time.monotonic() - started_at)))
+        for k, gate in enumerate(gates):
+            gate.write_text('open')
+            wait_state(steady_ids[k], 'ready')
+            time.sleep(max(0, 2 * (k + 1) - (time.monotonic() - started_at)))
         capped = new_pushes(1, 'capped digest')
         first_ready = capped[0]['body']
         assert re.match(r'[2-5] ready \(', first_ready) and '#%d' % steady_ids[0] in first_ready, capped

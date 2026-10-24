@@ -124,7 +124,10 @@ def run(wsx, wsxd, work, owned):
         'resume_agents_on_restore = false\n[[projects]]\nname = "demo"\npath = '
         + json.dumps(str(project)) + '\n')
     fake = bin_dir / 'claude'
-    fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(ROOT / 'scripts/fake-claude-stream.py') + ' "$@"\n')
+    # ^ A copy per run: the leftover checks then see this run's fake workers, not another run's.
+    fake_script = bin_dir / 'fake-claude-stream.py'
+    shutil.copy(ROOT / 'scripts/fake-claude-stream.py', fake_script)
+    fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(fake_script) + ' "$@"\n')
     fake.chmod(0o755)
     daemon_socket = work / 'd.sock'
     env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
@@ -390,7 +393,7 @@ def run(wsx, wsxd, work, owned):
     assert closed['discarded'] and closed['state'] == 'closed', closed
     assert not copy.exists() and not git('branch', '--list', 'wsx/t1')
     assert not git('for-each-ref', 'refs/wsx/task/1/')
-    assert not leftovers('task host ' + project_id) and not leftovers(str(ROOT / 'scripts/fake-claude-stream.py'))
+    assert not leftovers('task host ' + project_id) and not leftovers(str(fake_script))
     sessions = daemon_call('snapshot')['data']['sessions']
     assert not [s for s in sessions if s['label'].startswith('task-')], sessions
     assert 'worktree' not in git('worktree', 'list', '--porcelain').replace('worktree ' + str(project), '')
@@ -543,6 +546,8 @@ def run(wsx, wsxd, work, owned):
     git('worktree', 'prune')
     git('branch', '-D', 'stray-merged', 'stray-dirty', 'stray-gone')
     assert js('task', 'ledger')['stray_worktrees'] == []
+    # ^ Open the gate first: a waiting worker ends at once instead of polling for 10 minutes.
+    gate.write_text('open')
     for n in (d1, d2, d3):
         js('task', 'close', n, '--discard')
 
