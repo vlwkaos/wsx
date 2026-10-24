@@ -13,7 +13,9 @@ use std::{
 use wsx_core::runtime::{AgentCapabilities, AgentState, Client, PaneId, Request, Response};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
-const TIMEOUT: Duration = Duration::from_secs(5);
+// ^ Each wait returns on its signal (a socket answer, a log line, an exit); the bound only
+// decides when a broken run fails. Under parallel checks a debug wsxd took over 5 s.
+const TIMEOUT: Duration = Duration::from_secs(20);
 
 static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
 
