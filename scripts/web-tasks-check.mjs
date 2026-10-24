@@ -579,7 +579,8 @@ async function followEnd(where) {
   // (a) At the end, a reply whose diagram draws after it shows: still at the end.
   await toLatest(where);
   await diagramReply();
-  if (await fromEnd() > 2) await fail(`${where}: a diagram that drew late left the chat ${await fromEnd()} px above its end`);
+  const lateDiagram = await fromEnd();
+  if (lateDiagram > 2) await fail(`${where}: a diagram that drew late left the chat ${lateDiagram} px above its end`);
   for (let more = 0; more < 4 && await evaluate("(() => { const log = document.querySelector('.log'); return log.scrollHeight < log.clientHeight * 3; })()"); more++) await diagramReply();
   // (b, c) Scrolled up: rows below, a late diagram below, the "Since you left" line above, rows
   // inserted above (as older messages would be) and removed again keep the bubble in view where it is.
@@ -618,7 +619,8 @@ async function followEnd(where) {
     if (await evaluate(atEnd) || !(await count(".jump"))) drift.push(`${anchoring}: the reader was moved to the end`);
   }
   await evaluate("document.querySelector('.log').style.overflowAnchor = ''");
-  console.log(`following the end, ${where}: ${drift.join(", ")}`);
+  // ^ A passing check prints only its last line: the measures are kept beside the captures.
+  fs.appendFileSync(path.join(captures, "follow-end.txt"), `following the end, ${where}: late diagram ${lateDiagram} px from the end, ${drift.join(", ")}\n`);
   if (drift.some((line) => !/ -?[0-2]$/.test(line))) await fail(`${where}: the bubble in view moved: ${drift.join(", ")}`);
   // (d) On a phone with the composer focused and the keyboard up: a late diagram keeps the end.
   await toLatest(where);
