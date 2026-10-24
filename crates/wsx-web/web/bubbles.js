@@ -124,12 +124,11 @@ export function Bubble({ project, row, words, names, fresh }) {
 }
 
 // The manager writes: three dots, still where the user asked for less motion.
+export const Dots = () => html`<span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span>`;
 export const Typing = ({ name, leaving }) => html`
   <article class="bubble" data-side="in" data-first="" data-last="" role="status" data-leaving=${leaving ? "" : null}>
     <p class="bubble-author" aria-hidden="true">${name}</p>
-    <div class="bubble-box typing"><span class="visually-hidden">${name} is typing</span>
-      <span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span>
-    </div>
+    <div class="bubble-box typing"><span class="visually-hidden">${name} is typing</span><${Dots} /></div>
   </article>`;
 
 // Task changes in one muted line: "#2 ready · #4 ready".

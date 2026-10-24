@@ -570,7 +570,9 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .page-link { color: var(--color-accent); }
 /* What needs the owner and what runs, pinned over the composer: one line, a tap opens the
    decision list. */
-.reservoir { flex: 0 0 auto; max-height: calc(100% * var(--strip-share)); position: relative; display: flex; flex-direction: column; border-top: var(--border-width) solid var(--color-hairline); }
+.reservoir {
+  --reservoir-chevron: calc(var(--size-control) + var(--column-inset, var(--space-4)));
+  flex: 0 0 auto; max-height: calc(100% * var(--strip-share)); position: relative; display: flex; flex-direction: column; border-top: var(--border-width) solid var(--color-hairline); }
 .reservoir-head {
   flex: 0 0 auto; width: 100%; min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-2);
   padding: 0 var(--column-inset, var(--space-4)); border: 0; background: none; cursor: pointer; text-align: left; font-size: var(--font-size-sm);
@@ -599,7 +601,6 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .reservoir-label { padding: var(--space-3) var(--column-inset, var(--space-4)) var(--space-1); }
 /* Open, the chevron has no row of its own: it sits at the right end of the list's first row
    (the first label, or the first item row), which keeps room for it. */
-.reservoir { --reservoir-chevron: calc(var(--size-control) + var(--column-inset, var(--space-4))); }
 .reservoir[data-open] .reservoir-head { position: absolute; top: 0; right: 0; z-index: 1; width: var(--reservoir-chevron); }
 .reservoir[data-open]:has(.reservoir-body > .reservoir-list:first-child) .reservoir-head { min-height: var(--size-row); }
 .reservoir[data-open] .reservoir-body > .reservoir-label:first-child { min-height: var(--size-control); display: flex; align-items: center; padding-block: 0; padding-right: var(--reservoir-chevron); }
