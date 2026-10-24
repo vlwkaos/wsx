@@ -40,9 +40,9 @@ function Place({ where }) {
     : where}</p>`;
 }
 
-// One item: its task and what the task did, the check, where to look, its capture and when it
-// passes, with Try, Fail and Pass as icons. A fail needs a note, which goes to the task that
-// fixes it. `revision` is the task's current one: an item of an older revision names its own.
+// One item: its task chip with Try, Fail and Pass as icons in one row, then the full width for
+// what the task did, the check, where to look, its capture and when it passes. A fail needs a
+// note, which goes to the task that fixes it. `revision` is the task's current one: an item of an older revision names its own.
 export function CheckRow({ project, item, revision, onChanged }) {
   const [failing, setFailing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -73,7 +73,17 @@ export function CheckRow({ project, item, revision, onChanged }) {
   return html`
     <li class="check-item" data-state=${item.state}>
       <div class="check-line">
-        <${TaskChip} project=${project} id=${item.task} />
+        <div class="check-head">
+          <${TaskChip} project=${project} id=${item.task} />
+          ${acting && !failing && html`
+            <span class="check-acts">
+              <${TryButton} project=${project} task=${item.task} icon />
+              <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy} title="Fail"
+                aria-label=${`Fail: ${item.check}`} onClick=${() => setFailing(true)}><${Icon} name="fail" /></button>
+              <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Pass"
+                aria-label=${`Pass: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
+            </span>`}
+        </div>
         <div class="check-words">
           ${(item.did ?? item.title) && html`<p class="check-task">${item.did ?? item.title}</p>`}
           <p class="check-what">${item.check}${older}</p>
@@ -86,14 +96,6 @@ export function CheckRow({ project, item, revision, onChanged }) {
           ${item.state === "failed" && html`<p class="check-pass">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
           ${item.state === "passed" && html`<p class="check-pass">Passed</p>`}
         </div>
-        ${acting && !failing && html`
-          <span class="check-acts">
-            <${TryButton} project=${project} task=${item.task} icon />
-            <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy} title="Fail"
-              aria-label=${`Fail: ${item.check}`} onClick=${() => setFailing(true)}><${Icon} name="fail" /></button>
-            <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Pass"
-              aria-label=${`Pass: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
-          </span>`}
       </div>
       ${failing && html`
         <form class="need-form" onSubmit=${fail}>
@@ -106,7 +108,7 @@ export function CheckRow({ project, item, revision, onChanged }) {
     </li>`;
 }
 
-// Every open item of the project in its sheet, oldest first, with All passed.
+// Every open item of the project in its sheet, oldest first, with All passed in the top bar.
 export function ChecksPage({ project, onClose, grip }) {
   const store = useStore();
   const [items, setItems] = useState(null);
@@ -143,20 +145,19 @@ export function ChecksPage({ project, onClose, grip }) {
           <span class="bar-label">To check</span>
           ${items && html`<span class="bar-state">${items.length ? `${items.length} open` : "nothing open"}</span>`}
         </div>
+        ${items?.length > 0 && can("task_act") && html`
+          <div class="bar-tools">
+            <button class="button check-all" type="button" disabled=${busy} onClick=${passAll}>${busy ? "Passing…" : "All passed"}</button>
+          </div>`}
       </header>
       <div class="scroll">
-        <p class="check-intro">What only a person can check of the tasks that landed. A release waits for these; a fail starts a task that fixes it.</p>
         ${failure && html`<p class="error" role="alert">${failure}</p>`}
         ${!items ? (!failure && html`<${Loading} />`)
           : !items.length ? html`<p class="empty">Nothing to check.</p>`
           : html`
             <ul class="check-list" aria-label="Items to check">
               ${items.map((item) => html`<${CheckRow} key=${item.id} project=${project} item=${item} onChanged=${read} />`)}
-            </ul>
-            ${can("task_act") && html`
-              <div class="actions check-all">
-                <button class="button" type="button" disabled=${busy} onClick=${passAll}>${busy ? "Passing…" : "All passed"}</button>
-              </div>`}`}
+            </ul>`}
       </div>
     </div>`;
 }

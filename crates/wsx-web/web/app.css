@@ -680,16 +680,16 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 /* A closed fold says what it holds: "4 checks passed", "2 open". */
 .fold-note { font-weight: normal; color: var(--color-muted); }
 /* Hook: .check-list — the To check list (docs/web-client-tasks.md "To check"): each item with its
-   task, the check and when it passes, then Pass and Fail. */
-.check-intro { padding: var(--space-3) var(--column-inset, var(--space-4)) 0; font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
+   task chip and Try, Fail and Pass in one row, then the check and when it passes at full width. */
 .check-list { list-style: none; margin: 0; padding: 0; }
 .check-item + .check-item { border-top: var(--border-width) solid var(--color-hairline); }
-.check-line { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3) var(--column-inset, var(--space-4)); }
-.check-words { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); overflow-wrap: anywhere; }
+.check-line { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); }
+.check-head { display: flex; align-items: center; gap: var(--space-3); }
+.check-words { min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); overflow-wrap: anywhere; }
 .check-task, .check-pass { font-size: var(--font-size-sm); color: var(--color-muted); }
 .check-what { font-weight: var(--font-weight-medium); }
 /* Try, Fail and Pass: icons with their names in the label and a tooltip, at the row's top. */
-.check-acts { flex: 0 0 auto; display: flex; gap: var(--space-1); margin-top: calc(-1 * var(--space-2)); }
+.check-acts { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-1); }
 .check-act { background: var(--color-raised); color: var(--color-text); }
 .check-capture { display: block; margin-top: var(--space-1); }
 .check-capture img {
@@ -697,7 +697,8 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
   border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
 }
 .check-item[data-state="passed"] .check-what, .check-item[data-state="failed"] .check-what { color: var(--color-muted); }
-.check-all { justify-content: flex-end; padding: var(--space-3) var(--column-inset, var(--space-4)); }
+/* All passed, in the top bar, lines up with the items' buttons. */
+.check-all { margin-right: var(--space-2); }
 .task-overlaps { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
 .fold-head { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; min-height: var(--size-control); padding-block: 0; }
 .fold-head::-webkit-details-marker { display: none; }
