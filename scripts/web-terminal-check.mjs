@@ -197,6 +197,9 @@ async function glyphs(name) {
   // The grid still matches the pane: a line of exactly as many characters as stty reports
   // columns fills one row and does not wrap.
   await run("printf '\\033[2J\\033[H'; c=$(stty size | cut -d' ' -f2); printf '%*s' $c '' | tr ' ' '#'; echo; echo cols=$c", "cols=");
+  // ^ The typed command has "cols=" too: wait for its output, the ruler and the count.
+  await until(`(() => { const rows = [...document.querySelectorAll('.xterm-rows > div')].map((row) => row.textContent.trimEnd());
+    return rows.some((row) => /^#+$/.test(row)) && rows.some((row) => /^cols=\\d+/.test(row)); })()`, "the ruler and its column count did not draw");
   const grid = await evaluate(`(() => {
     const rows = [...document.querySelectorAll('.xterm-rows > div')];
     const rulers = rows.filter((row) => /^#+$/.test(row.textContent.trimEnd()));
