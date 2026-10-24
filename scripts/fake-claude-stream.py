@@ -18,6 +18,7 @@ Each user message is a small script of words:
   CAPTURE      (with HV) the item has a page path and a small PNG capture
   CMDHV        return a Human Verify item that names a command
   WAIT <file>  keep working until <file> exists, at most 10 minutes
+  CHECKRUN_AGAIN  start `wsx task check-run`, kill it after 1 s, run it again and trace that answer
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
 conflict with the line "resolved".
 Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE, and each
@@ -354,6 +355,14 @@ def main():
             ran = subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True)
             other = subprocess.run(['wsx', 'task', 'list'], capture_output=True, text=True)
             trace({'check_run': [ran.returncode, ran.stdout + ran.stderr], 'check_run_other': [other.returncode, other.stderr]})
+        if 'CHECKRUN_AGAIN' in words:
+            # ^ A client that gives up (a Bash timeout) and asks again joins the run it left.
+            first = subprocess.Popen(['wsx', 'task', 'check-run'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1)
+            first.kill()
+            first.wait()
+            again = subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True)
+            trace({'check_run_again': [again.returncode, again.stdout + again.stderr]})
         try_edit(words, allowed, disallowed, denials)
         stopped = sandbox_stops(words, json.loads(options.get('--settings', '{}')))
         blocked = (bool(denials) and 'NEEDS' in words) or stopped

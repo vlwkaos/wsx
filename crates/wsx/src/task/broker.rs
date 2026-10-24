@@ -33,7 +33,7 @@ pub struct Request {
     cwd: PathBuf,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Response {
     pub stdout: String,
     pub stderr: String,
