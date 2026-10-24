@@ -89,7 +89,10 @@ fn forward(socket: &Path, argv: Vec<String>) -> Result<i32> {
     let mut stream = UnixStream::connect(socket)
         .with_context(|| format!("the host does not answer on {}", socket.display()))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-    stream.set_read_timeout(Some(RUN_LIMIT + Duration::from_secs(30)))?;
+    // ^ A worker's check-run waits for the machine's check slot as long as the queue is, then
+    // for its checks' own timeouts; its host always answers or closes the socket.
+    let check_run = argv.get(1).is_some_and(|sub| sub == "check-run");
+    stream.set_read_timeout((!check_run).then_some(RUN_LIMIT + Duration::from_secs(30)))?;
     stream.write_all(&serde_json::to_vec(&Request { argv, stdin, cwd })?)?;
     stream.shutdown(std::net::Shutdown::Write)?;
     let response: Response =

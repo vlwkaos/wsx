@@ -7,6 +7,7 @@
 use super::broker;
 use super::claude::{new_session_id, AgentLine, ClaudeAgent, Launch, TurnResult};
 use super::hosting;
+use super::slot::{self, Priority};
 use super::trial;
 use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, VecDeque};
@@ -45,6 +46,10 @@ enum Event {
     /// The worker's `wsx task check-run` through the broker, and its results to log.
     CheckRun(Vec<String>, Sender<broker::Response>),
     CheckRunDone(Vec<CheckResult>),
+    /// Checks wait for the machine's check slot, for this reason.
+    CheckQueued(String),
+    /// Checks took the slot, or run without it after this error.
+    CheckSlot(Option<String>),
 }
 
 /// What waits for free disk, resumed once `tasks.minFreeGb` is free again.
@@ -225,6 +230,8 @@ impl Host {
                 Event::ChecksDone(results) => self.on_checks(results),
                 Event::CheckRun(argv, reply) => self.check_run(&argv, reply),
                 Event::CheckRunDone(results) => self.log(LogEvent::CheckRun { results }),
+                Event::CheckQueued(reason) => self.check_queued(reason),
+                Event::CheckSlot(error) => self.check_slot(error),
             }
             if self.reexec {
                 std::thread::sleep(Duration::from_millis(200));
@@ -914,10 +921,10 @@ impl Host {
         self.set_state(TaskState::Waiting);
     }
 
-    /// "ready", or "waiting (the owner works on it by hand)".
+    /// "ready", "waiting (the owner works on it by hand)" or "checking (queued for ...)".
     fn state_words(&self) -> String {
         match &self.record.waiting {
-            Some(waiting) => format!("waiting ({})", waiting.reason),
+            Some(waiting) => format!("{} ({})", self.record.state.as_str(), waiting.reason),
             None => self.record.state.as_str().into(),
         }
     }
@@ -962,15 +969,12 @@ impl Host {
         if let Some((free_mb, min_gb)) = self.low_disk() {
             return refuse(disk_full(free_mb, min_gb));
         }
-        let timeout = Duration::from_secs(self.record.check_timeout_secs);
-        let working_copy = self.record.working_copy.clone();
-        let env = self.record.env.clone();
+        // ^ A run of checks that only format or compile is light: it takes no slot.
+        let priority =
+            (!picked.iter().all(|(_, command)| light(command))).then_some(Priority::Normal);
+        let commands = picked.iter().map(|(_, command)| command.clone()).collect();
         let events = self.events.clone();
-        std::thread::spawn(move || {
-            let results: Vec<CheckResult> = picked
-                .iter()
-                .map(|(_, command)| run_check(&working_copy, command, &env, timeout))
-                .collect();
+        self.spawn_checks(priority, commands, move |results| {
             let mut stdout = String::new();
             for ((index, _), check) in picked.iter().zip(&results) {
                 let ended = match (check.timed_out, check.exit) {
@@ -1012,18 +1016,77 @@ impl Host {
             return;
         }
         self.set_state(TaskState::Checking);
-        let checks = self.record.checks.clone();
+        let priority = match self.after_rebase {
+            Some(AfterRebase::Land { .. }) => Priority::Land,
+            _ => Priority::Normal,
+        };
+        let events = self.events.clone();
+        self.spawn_checks(Some(priority), self.record.checks.clone(), move |results| {
+            let _ = events.send(Event::ChecksDone(results));
+        });
+    }
+
+    /// Run `commands` in a thread, holding the machine's check slot unless `priority` is
+    /// `None`; each check's timeout counts from the slot. ref: docs/tasks.md "Checks, revisions and report"
+    fn spawn_checks(
+        &self,
+        priority: Option<Priority>,
+        commands: Vec<String>,
+        done: impl FnOnce(Vec<CheckResult>) + Send + 'static,
+    ) {
         let timeout = Duration::from_secs(self.record.check_timeout_secs);
         let working_copy = self.record.working_copy.clone();
         let env = self.record.env.clone();
         let events = self.events.clone();
+        let label = format!("{} t{}", self.record.project, self.record.id);
         std::thread::spawn(move || {
-            let results = checks
-                .iter()
-                .map(|command| run_check(&working_copy, command, &env, timeout))
-                .collect();
-            let _ = events.send(Event::ChecksDone(results));
+            let results = {
+                let _slot = priority.and_then(|priority| {
+                    let taken = slot::take(priority, &label, |reason| {
+                        let _ = events.send(Event::CheckQueued(reason));
+                    });
+                    let error = taken.as_ref().err().map(ToString::to_string);
+                    let _ = events.send(Event::CheckSlot(error));
+                    taken.ok()
+                });
+                commands
+                    .iter()
+                    .map(|command| run_check(&working_copy, command, &env, timeout))
+                    .collect()
+            };
+            done(results);
         });
+    }
+
+    /// The checks wait for the slot: the record shows it while the task works or checks.
+    fn check_queued(&mut self, reason: String) {
+        if self.record.state == TaskState::Waiting {
+            return;
+        }
+        if !self.record.waits_on(WaitOn::CheckSlot) {
+            self.log(LogEvent::CheckQueued {
+                reason: reason.clone(),
+            });
+        }
+        self.say(&reason);
+        self.record.waiting = Some(Waiting {
+            on: WaitOn::CheckSlot,
+            reason,
+        });
+        self.save();
+    }
+
+    fn check_slot(&mut self, error: Option<String>) {
+        if let Some(error) = error {
+            self.say(&format!(
+                "no check slot, so the checks run unqueued: {error}"
+            ));
+        }
+        if self.record.waits_on(WaitOn::CheckSlot) {
+            self.say("took the check slot");
+            self.record.waiting = None;
+            self.save();
+        }
     }
 
     fn on_checks(&mut self, results: Vec<CheckResult>) {
@@ -1553,6 +1616,18 @@ fn check_message(text: &str) -> Result<()> {
 
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
+}
+
+/// Checks a worker's `check-run` runs without the slot: one plain command that only formats
+/// or compiles, so no timing test meets the load of another task's checks.
+fn light(command: &str) -> bool {
+    const LIGHT: [&str; 3] = ["cargo fmt", "cargo build", "cargo check"];
+    let plain = !command.contains(['&', '|', ';', '\n', '`', '$', '(', '<', '>']);
+    let words: Vec<&str> = command.split_whitespace().take(2).collect();
+    plain
+        && LIGHT
+            .iter()
+            .any(|light| light.split(' ').eq(words.iter().copied()))
 }
 
 /// `env`: `tasks.env`, as the worker's commands have it. ref: docs/tasks.md "Config"

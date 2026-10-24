@@ -1550,6 +1550,72 @@ def run(wsx, wsxd, work, owned):
     wait_closed(newer)
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
     git('commit', '-q', '-am', 'config as before')
+    # 32c. The check slot (docs/tasks.md "Checks, revisions and report"): one check run at a
+    # time on the machine. The run that waits shows queued; a killed holder frees the slot.
+    spans, release = base / 'slot-spans.log', base / 'slot-release'
+    slot_check = base / 'slot-check.py'
+    slot_check.write_text(
+        'import os, sys, time\n'
+        'def mark(what):\n'
+        '    with open(%r, "a") as out:\n'
+        '        out.write("%%s %%s %%.3f\\n" %% (os.path.basename(os.getcwd()), what, time.time()))\n'
+        'mark("start")\n'
+        'deadline = time.time() + float(sys.argv[1])\n'
+        'while time.time() < deadline and not os.path.exists(%r):\n'
+        '    time.sleep(0.05)\n'
+        'mark("end")\n' % (str(spans), str(release)))
+
+    def slot_config(seconds):
+        (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace(
+            '"test ! -e broken.txt"', '"%s %s %d"' % (sys.executable, slot_check, seconds)))
+        git('commit', '-q', '-am', 'slot checks %d' % seconds)
+
+    def slot_marks():
+        marks = {}
+        for line in spans.read_text().splitlines() if spans.exists() else []:
+            copy_name, what, at = line.split()
+            marks.setdefault(copy_name, {})[what] = float(at)
+        return marks
+
+    def copy_name(n):
+        return Path(show(n)['record']['working_copy']).name
+
+    def queued_row(pair):
+        rows = [r for r in js('task', 'ledger')['open'] if r['id'] in pair]
+        return next((r for r in rows if r['state'] == 'checking' and (r['waiting'] or {}).get('on') == 'check_slot'), None)
+
+    slot_config(3)
+    pair = [js('task', 'new', 'WORK slot%d.txt' % i)['id'] for i in (1, 2)]
+    queued = wait(lambda: queued_row(pair), 'a queued check run', 30)
+    assert queued['waiting']['reason'].startswith('queued for the check slot behind demo t'), queued
+    for n in pair:
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
+        assert 'waiting' not in show(n)['record']
+    assert [e['reason'] for e in log(queued['id']) if e['kind'] == 'check_queued'], log(queued['id'])
+    first, second = sorted((slot_marks()[copy_name(n)] for n in pair), key=lambda span: span['start'])
+    assert first['end'] <= second['start'], (first, second)
+    for n in pair:
+        js('task', 'close', n, '--discard')
+    spans.unlink()
+    slot_config(60)
+    pair = [js('task', 'new', 'WORK slot%d.txt' % i)['id'] for i in (3, 4)]
+    holder_copy = wait(lambda: next(iter(slot_marks()), None), 'the first check run starts', 30)
+    holder = next(n for n in pair if copy_name(n) == holder_copy)
+    waiter = next(n for n in pair if n != holder)
+    assert wait(lambda: queued_row(pair), 'the second run queued', 30)['id'] == waiter
+    project_id = show(holder)['record']['project_id']
+    host_pid = next(int(line.split()[0]) for line in leftovers('task host %s %d' % (project_id, holder))
+                    if line.endswith('task host %s %d' % (project_id, holder)))
+    os.kill(host_pid, 9)
+    killed = time.time()
+    started = wait(lambda: slot_marks().get(copy_name(waiter), {}).get('start'), 'the next run after the holder died', 15)
+    assert started - killed < 5 and 'end' not in slot_marks()[holder_copy], slot_marks()
+    release.touch()
+    assert wait_state(waiter, 'ready', 'failed')['state'] == 'ready'
+    for n in pair:
+        js('task', 'close', n, '--discard')
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+    git('commit', '-q', '-am', 'no slot checks')
 
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     # ledger and messages its manager, which answers once; nothing else crosses projects.
