@@ -7678,7 +7678,10 @@ mod tests {
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
+        // ^ A save-failure test puts a directory here; one killed before its cleanup leaves it
+        // for a later process with the same pid.
         let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&path);
         let daemon = Arc::new(Daemon {
             state: Mutex::new(State {
                 persisted,
