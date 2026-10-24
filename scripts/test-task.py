@@ -1614,6 +1614,26 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(waiter, 'ready', 'failed')['state'] == 'ready'
     for n in pair:
         js('task', 'close', n, '--discard')
+    # A worker's check-run waits for the slot with no client timeout; a client that gave up and
+    # asks again joins the run it left, so the checks run once, never beside each other.
+    spans.unlink()
+    release.unlink()
+    holder = js('task', 'new', 'WORK slot5.txt')['id']
+    wait(lambda: copy_name(holder) in slot_marks(), 'the holder runs its checks', 30)
+    again = js('task', 'new', 'CHECKRUN_AGAIN WORK slot6.txt')['id']
+    wait(lambda: [e for e in log(again) if e['kind'] == 'check_queued'], 'the check-run queued', 30)
+    # ^ The first client is killed 1 s after it started, while its run waits.
+    time.sleep(2)
+    release.touch()
+    assert wait_state(again, 'ready', 'failed')['state'] == 'ready'
+    code, said = next(t for t in traces() if 'check_run_again' in t)['check_run_again']
+    assert code == 0 and ': exit 0' in said, said
+    assert len([e for e in log(again) if e['kind'] == 'check_run']) == 1, log(again)
+    # ^ One start for the check-run and one for the checks after the result.
+    starts = [line for line in spans.read_text().splitlines() if line.startswith(copy_name(again) + ' start')]
+    assert len(starts) == 2, spans.read_text()
+    for n in (holder, again):
+        js('task', 'close', n, '--discard')
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
     git('commit', '-q', '-am', 'no slot checks')
 

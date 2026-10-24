@@ -45,7 +45,7 @@ enum Event {
     ChecksDone(Vec<CheckResult>),
     /// The worker's `wsx task check-run` through the broker, and its results to log.
     CheckRun(Vec<String>, Sender<broker::Response>),
-    CheckRunDone(Vec<CheckResult>),
+    CheckRunDone(Vec<CheckResult>, broker::Response),
     /// Checks wait for the machine's check slot, for this reason.
     CheckQueued(String),
     /// Checks took the slot, or run without it after this error.
@@ -92,6 +92,9 @@ struct Host {
     /// A `land` or a `trial` waits for the checks of its rebased revision.
     after_rebase: Option<AfterRebase>,
     disk_wait: Option<DiskWait>,
+    /// The worker's running `check-run`: its check indexes and every call that waits for its
+    /// answer. A repeat call (a client that timed out and asks again) joins it.
+    check_run: Option<(Vec<usize>, Vec<Sender<broker::Response>>)>,
     /// The Human Verify items of the revision whose landing conflicted: the turn that
     /// resolves it rarely repeats them, and they still need a person.
     carried_verify: Vec<wsx_core::task::HumanVerify>,
@@ -134,6 +137,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         reexec: false,
         after_rebase: None,
         disk_wait: None,
+        check_run: None,
         carried_verify: Vec::new(),
         started: Instant::now(),
     };
@@ -229,7 +233,12 @@ impl Host {
                 Event::Agent(..) => {}
                 Event::ChecksDone(results) => self.on_checks(results),
                 Event::CheckRun(argv, reply) => self.check_run(&argv, reply),
-                Event::CheckRunDone(results) => self.log(LogEvent::CheckRun { results }),
+                Event::CheckRunDone(results, response) => {
+                    for reply in self.check_run.take().map(|run| run.1).unwrap_or_default() {
+                        let _ = reply.send(response.clone());
+                    }
+                    self.log(LogEvent::CheckRun { results });
+                }
                 Event::CheckQueued(reason) => self.check_queued(reason),
                 Event::CheckSlot(error) => self.check_slot(error),
             }
@@ -966,9 +975,24 @@ impl Host {
             Ok(picked) => picked,
             Err(message) => return refuse(message),
         };
+        // ^ Never two runs in one working copy: the same checks join, other ones wait.
+        let indexes: Vec<usize> = picked.iter().map(|(index, _)| *index).collect();
+        if let Some((running, replies)) = &mut self.check_run {
+            if *running != indexes {
+                let numbers: Vec<String> = running.iter().map(|i| (i + 1).to_string()).collect();
+                return refuse(format!(
+                    "a check-run of checks {} still runs; run it again to wait for its answer",
+                    numbers.join(" ")
+                ));
+            }
+            replies.push(reply);
+            self.say("check-run: joined the run of the same checks");
+            return;
+        }
         if let Some((free_mb, min_gb)) = self.low_disk() {
             return refuse(disk_full(free_mb, min_gb));
         }
+        self.check_run = Some((indexes, vec![reply]));
         // ^ A run of checks that only format or compile is light: it takes no slot.
         let priority =
             (!picked.iter().all(|(_, command)| light(command))).then_some(Priority::Normal);
@@ -999,12 +1023,12 @@ impl Host {
             } else {
                 1
             };
-            let _ = reply.send(broker::Response {
+            let response = broker::Response {
                 stdout,
                 stderr: String::new(),
                 code,
-            });
-            let _ = events.send(Event::CheckRunDone(results));
+            };
+            let _ = events.send(Event::CheckRunDone(results, response));
         });
     }
 
