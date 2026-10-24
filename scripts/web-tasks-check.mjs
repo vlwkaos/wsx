@@ -219,6 +219,7 @@ async function motion() {
     const { state, update } = await ${pageModule("store.js")};
     const { toast } = await ${pageModule("ui.js")};
     const { render, html, Loading } = await ${pageModule("lib.js")};
+    globalThis.motionKept = { tasks: state.tasks, projects: state.projects };
     const ui = state.projects.find((project) => project.name === 'ui').id;
     const calm = state.projects.find((project) => project.name === 'calm');
     const rows = () => [...document.querySelectorAll('.home-rows > .row')];
@@ -266,7 +267,9 @@ async function motion() {
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     update({ tasks: { ...state.tasks, [calm.id]: { ...state.tasks[calm.id], last_unix_ms: 1 } } });
     await frames();
-    return document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row')).length;
+    const rows = document.getAnimations().filter((animation) => animation.effect?.target?.matches?.('.home-rows > .row')).length;
+    update(globalThis.motionKept);
+    return rows;
   })()`);
   if (still) await fail(`motion at ${w}px: ${still} row animations run with reduced motion`);
   for (const selector of [".row-typing .typing-dot", ".home-row .pulse", ".home-row .count", ".home-row .row-context", ".notice", ".notice-timer", ".skeleton"]) {
