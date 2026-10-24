@@ -100,6 +100,8 @@ export function useFollowEnd() {
   // The first row that starts in view and its distance from the top of the screen.
   const anchor = useRef(null);
   const height = useRef(0);
+  // The scroll position after the last settle or scroll.
+  const top = useRef(0);
   const [away, setAway] = useState(false);
   // ^ Layout positions, not getBoundingClientRect: a row's entry animation moves it with a
   // transform, which must not count as a move. `.log` is positioned, so offsetTop is in the log.
@@ -111,6 +113,7 @@ export function useFollowEnd() {
     const rows = [...element.children];
     const row = rows.find((child) => child.offsetTop >= element.scrollTop) ?? rows.at(-1);
     anchor.current = row ? { row, top: onScreen(row) } : null;
+    top.current = element.scrollTop;
   };
   const settle = () => {
     const element = node.current;
@@ -132,6 +135,9 @@ export function useFollowEnd() {
     // ^ A box that changed height scrolls without the reader. The event can come before the
     // resize observer.
     if (element.clientHeight !== height.current) return settle();
+    // ^ Only the reader scrolling up leaves the end. The event of the log's own pin can come
+    // after a row grew again (a diagram drew), before the resize observer pins once more.
+    if (atEnd.current && element.scrollTop >= top.current - 1) return settle();
     atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
     setAway(!atEnd.current);
     mark();

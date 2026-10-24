@@ -478,7 +478,12 @@ impl<M: TerminalStreamMessage> TerminalStream<M> {
                 ))
             }
         }
-        stream.set_read_timeout(None)?;
+        // ^ macOS answers EINVAL to setsockopt on a socket whose peer already closed: an exited
+        // pane sends its last screen and ends the stream. The reader still reads what was sent.
+        match stream.set_read_timeout(None) {
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
+            result => result?,
+        }
         let socket = stream.try_clone()?;
         let write_stream = stream.try_clone()?;
         let (input_tx, input_rx) = mpsc::sync_channel(TERMINAL_INPUT_QUEUE);
