@@ -373,6 +373,8 @@ if (await count(".adopted")) await fail("the project chat shows the Adopted list
 
 // "Since you left": this device left the project two hours ago; the line names what happened.
 await go("#/");
+// ^ The chat notes the time it closes at: set the earlier time after home replaced it.
+await until("!!document.querySelector('.home-row') && !document.querySelector('.composer-field')", "home did not replace the chat");
 await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 }))`);
 await go(chat);
 await until("/Since you left: .*#1 #2 #3 #4.* started.* repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')", "no since-you-left line");
@@ -504,10 +506,15 @@ if (!/^Updated /.test(await sheetState())) await fail(`the page's top row reads 
 const pageHeads = await text(".project-page h2");
 if (pageHeads.join() !== "Goal,Tasks,Decisions,Open questions") await fail(`the page's sections are ${pageHeads}`);
 // ^ The deploy and the main checkout moved here from the reservoir, above the markdown. They
-// come from a separate brief request, which can answer after the page has drawn.
-await until("!!document.querySelector('.project-page .facts-line')", "the page's facts line did not show", 30);
-const facts = (await text(".project-page .facts-line"))[0] ?? "";
-if (!/^Deploy: [0-9a-f]{8}, (up to date with main|\d+ commits? behind main)\./.test(facts) || !/Main checkout on main, /.test(facts)) await fail(`the page's facts read ${facts}`);
+// come from a separate brief request, which can answer after the page has drawn and again as
+// tasks change: wait for the words, not only the line.
+const factsRead = (facts) => /^Deploy: [0-9a-f]{8}, (up to date with main|\d+ commits? behind main)\./.test(facts) && /Main checkout on main, /.test(facts);
+let facts = "";
+for (let attempt = 0; attempt < 300 && !factsRead(facts); attempt++) {
+  if (attempt) await pause(100);
+  facts = (await text(".project-page .facts-line"))[0] ?? "";
+}
+if (!factsRead(facts)) await fail(`the page's facts read ${facts}`);
 await shot("page");
 await key("Escape", 27);
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the page");
