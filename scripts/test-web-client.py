@@ -3027,6 +3027,9 @@ digest_max_seconds = 6
         wait_state(4, 'ready')
         # By hand (docs/tasks.md "By hand"): the owner's own pane in the task's copy; the
         # worker gets nothing until Hand back, which checks the work as a new revision.
+        # ^ A steer that reaches the worker before its turn reads steers runs as a turn of its
+        # own, so the revision before hand is 1 or 2; hand back adds one.
+        before_hand = steady(owner, 'GET', '/api/tasks/%d/t/4' % demo)[1]['revision']
         status, body = act(4, 'hand', {})
         assert status == 200 and body['state'] == 'waiting' and body['session'] == 'task-4-hand', body
         handed = steady(owner, 'GET', '/api/tasks/%d/t/4' % demo)[1]
@@ -3037,7 +3040,7 @@ digest_max_seconds = 6
         status, body = act(4, 'handback', {})
         assert status == 200 and len(body['sessions_closed']) == 1, body
         wait_state(4, 'ready')
-        assert steady(owner, 'GET', '/api/tasks/%d/t/4' % demo)[1]['revision'] == 2
+        assert steady(owner, 'GET', '/api/tasks/%d/t/4' % demo)[1]['revision'] == before_hand + 1
         ok('actions: no verdict route, land refused then landed with its item to check, allow resumes, add reaches the worker, steer reaches the turn, hand and hand back')
 
         # --- The manager: say starts it, the reply arrives in the chat, events follow.
