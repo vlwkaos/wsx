@@ -566,7 +566,9 @@ listener_session = call("session_create", {
 })
 assert listener_session["type"] == "created", listener_session
 listener_session_id = listener_session["data"]["id"]
-deadline = time.monotonic() + 6
+# ^ wsxd scans listeners with lsof every 2 s and drops a scan that raced a session change;
+# on a loaded machine one scan can take seconds, so allow several scans.
+deadline = time.monotonic() + 20
 listener_port = None
 listener_snapshot = None
 listener_record = None
