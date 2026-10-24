@@ -632,7 +632,8 @@ function SinceLine({ project, reply, sent }) {
   const left = since?.left;
   useEffect(() => {
     if (!left || !reply || reply <= left) return undefined;
-    const bubble = document.querySelector(`.log .bubble[data-side="in"][data-at="${reply}"]`);
+    // ^ Bubbles of one entry share a time: the newest is the last of them.
+    const bubble = [...document.querySelectorAll(`.log .bubble[data-side="in"][data-at="${reply}"]`)].at(-1);
     if (!bubble) return undefined;
     const watch = new IntersectionObserver((seen) => { if (seen.some((one) => one.isIntersecting)) setSince(null); }, { root: bubble.closest(".log") });
     watch.observe(bubble);
