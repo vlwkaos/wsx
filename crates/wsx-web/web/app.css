@@ -688,16 +688,19 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 /* A closed fold says what it holds: "4 checks passed", "2 open". */
 .fold-note { font-weight: normal; color: var(--color-muted); }
 /* Hook: .check-list — the To check list (docs/web-client-tasks.md "To check"): each item with its
-   task chip and Try, Fail and Pass in one row, then the check and when it passes at full width. */
+   task chip starting its first line and Try, Fail and Pass floated at its top right, so the words
+   flow beside them and take the full width below; no row of its own for the chip and buttons. */
 .check-list { list-style: none; margin: 0; padding: 0; }
 .check-item + .check-item { border-top: var(--border-width) solid var(--color-hairline); }
-.check-line { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); }
-.check-head { display: flex; align-items: center; gap: var(--space-3); }
-.check-words { min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); overflow-wrap: anywhere; }
+/* ^ Block flow, not flex: a flex box beside a float stays a narrow column instead of wrapping
+   under it (https://www.w3.org/TR/CSS2/visuren.html#floats). */
+.check-line { display: flow-root; padding: var(--space-3) var(--column-inset, var(--space-4)); }
+.check-words { overflow-wrap: anywhere; }
+.check-words > * + * { margin-top: var(--space-1); }
 .check-task, .check-pass { font-size: var(--font-size-sm); color: var(--color-muted); }
 .check-what { font-weight: var(--font-weight-medium); }
-/* Try, Fail and Pass: icons with their names in the label and a tooltip, at the row's top. */
-.check-acts { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-1); }
+/* Try, Fail and Pass: icons with their names in the label and a tooltip, at the item's top right. */
+.check-acts { float: right; display: flex; gap: var(--space-1); margin: calc(-1 * var(--space-1)) 0 0 var(--space-2); }
 .check-act { background: var(--color-raised); color: var(--color-text); }
 .check-capture { display: block; margin-top: var(--space-1); }
 .check-capture img {
