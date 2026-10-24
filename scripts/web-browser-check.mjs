@@ -166,8 +166,9 @@ if (mode === "restart") {
     await send("Page.reload");
     await alone("a wide reload after a server restart");
   }
-  // The restart cuts the open event stream once; the page reconnects by itself.
-  const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/ERR_INCOMPLETE_CHUNKED_ENCODING \S+\/api\/events(\?page=\S+)?$/.test(problem));
+  // The restart cuts the open event stream once; the page reconnects by itself. A request that
+  // the open chat sends while the server is down is refused once (ERR_CONNECTION_REFUSED).
+  const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/ERR_INCOMPLETE_CHUNKED_ENCODING \S+\/api\/events(\?page=\S+)?$/.test(problem) && !/ERR_CONNECTION_REFUSED \S+\/api\/\S+$/.test(problem));
   if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
   console.log("paired page reloaded with its service worker, on two screens, after a server restart and wide: the app alone in the page root");
   await cleanup();
