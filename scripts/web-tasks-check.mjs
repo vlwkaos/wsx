@@ -557,8 +557,11 @@ await resize([390, 844, 2]);
 
 // --- Following the end (docs/web-client-chat.md "Following the end"). A reply arrives the way
 // another device's message does (not the composer, which goes to the end).
-const say = (words) => evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ text: ${JSON.stringify(words)} }) }).then((response) => response.status)`);
+// ^ Each one spends the task-action budget (10 at once, 20 a minute, crates/wsx-web/src/http.rs
+// act_budget); followEnd gives back what it spent, so the actions after it are not refused.
+let said = 0;
+const say = (words) => (said += 1, evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ text: ${JSON.stringify(words)} }) }).then((response) => response.status)`));
 const fromEnd = () => evaluate("(() => { const log = document.querySelector('.log'); return Math.round(log.scrollHeight - log.scrollTop - log.clientHeight); })()");
 const drawnDiagrams = "document.querySelectorAll('.log .bubble .diagram img').length";
 // The manager answers with a diagram; the bubble shows "Drawing the diagram…" first.
@@ -576,6 +579,7 @@ const toLatest = async (where) => {
 // The probe is the first bubble wholly in view; its distance from the screen's top must not change.
 const probe = "document.querySelector('[data-follow-probe]').getBoundingClientRect().top";
 async function followEnd(where) {
+  said = 0;
   // (a) At the end, a reply whose diagram draws after it shows: still at the end.
   await toLatest(where);
   await diagramReply();
@@ -635,6 +639,7 @@ async function followEnd(where) {
     await keyboard(null);
     if (keyboardUp > 2 || replied > 2) await fail(`${where}: with the keyboard up the chat is ${keyboardUp} px, after a reply ${replied} px above its end`);
   }
+  await pause(said * 3000);
 }
 await followEnd("390 px");
 

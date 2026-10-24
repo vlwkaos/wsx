@@ -37,7 +37,7 @@ The chat panel of the hosted web client ([web-client.md](web-client.md)): a remo
 
 The session chat and the manager chat share one rule (`useFollowEnd` in `crates/wsx-web/web/lib.js`):
 
-- A reader within 80 px of the end stays at the end. A reader farther up is not moved; "Jump to latest" shows instead. Only that button and the reader's own send go to the end.
+- A reader within 80 px of the end stays at the end. Only scrolling up leaves it: content that grows under a reader at the end is followed, also when it grows between the page's own scroll and its scroll event. A reader farther up is not moved; "Jump to latest" shows instead. Only that button and the reader's own send go to the end.
 - The log watches its own box and each of its rows. A row that grows after it shows (a diagram that draws, an image that loads, an entry animation), a row added or removed, and a box that moves or changes size (the "Since you left" line above it, the reservoir or the keyboard below it) settle the view before the browser paints: at the end it stays at the end; farther up, the first row that starts in view keeps its distance from the top of the screen.
 - The row's position is its layout position (`offsetTop` in the positioned `.log`), so a transform in an entry animation does not count as a move.
 - Chrome and Firefox also anchor the scroll with CSS (`overflow-anchor`); iOS Safari does not. The log's own anchor runs after the browser's and decides: where the browser already kept the row in place, it finds nothing to move. The anchor is not the row cut by the top edge: when that row grows inside, the part the reader sees is below the growth and moves with the next row.
