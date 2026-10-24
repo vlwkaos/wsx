@@ -1010,8 +1010,15 @@ if (!context.every(([did]) => did.startsWith("did: WORK")) || context[1][1] !== 
 await until("document.querySelector('.check-capture img')?.naturalWidth === 1", "#8's capture did not load");
 if (await count(".check-capture") !== 1) await fail("an item without a capture shows one");
 await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
-const fitted = await evaluate("(() => { const sheet = document.querySelector('dialog.task-sheet').getBoundingClientRect(); const last = document.querySelector('.check-all').getBoundingClientRect(); return [Math.round(innerHeight - sheet.bottom), Math.round(sheet.bottom - last.bottom), Math.round(sheet.height / innerHeight * 100)]; })()");
+const fitted = await evaluate("(() => { const sheet = document.querySelector('dialog.task-sheet').getBoundingClientRect(); const last = [...document.querySelectorAll('.check-item')].pop().getBoundingClientRect(); return [Math.round(innerHeight - sheet.bottom), Math.round(sheet.bottom - last.bottom), Math.round(sheet.height / innerHeight * 100)]; })()");
 if (Math.abs(fitted[0]) > 1 || fitted[1] > 48 || fitted[2] >= 85) await fail(`the To check sheet does not fit its rows: ${JSON.stringify(fitted)}`);
+// ^ On a phone the item words use the list's width: Try, Fail and Pass share the chip's row, All
+// passed is in the top bar and no intro sentence takes a row.
+const room = await evaluate(`(() => { const item = document.querySelector('.check-item'); const chip = item.querySelector('.task-chip').getBoundingClientRect();
+  const pass = item.querySelector('.check-act[title="Pass"]').getBoundingClientRect(); const list = document.querySelector('.check-list').getBoundingClientRect();
+  return { row: pass.top >= chip.top - 12 && pass.top <= chip.bottom, share: Math.round(item.querySelector('.check-what').getBoundingClientRect().width / list.width * 100),
+    all: !!document.querySelector('dialog.task-sheet header.bar .check-all'), intro: !!document.querySelector('.check-intro') }; })()`);
+if (!room.row || room.share < 85 || !room.all || room.intro) await fail(`the To check items waste room on a phone: ${JSON.stringify(room)}`);
 await shot("to-check", ".composer-send");
 const firstItem = "document.querySelector('.check-item')";
 // ^ Try starts the preview of the item's task and becomes a link to it (docs/tasks.md "Preview").
@@ -1029,7 +1036,7 @@ await evaluate(`${firstItem}.querySelector('.need-form').requestSubmit()`);
 await until("document.querySelectorAll('.check-item').length === 2", "the failed item stayed in the list", 60);
 await evaluate(`${firstItem}.querySelector('.check-act[title="Pass"]').click()`);
 await until("document.querySelectorAll('.check-item').length === 1", "the passed item stayed in the list", 60);
-await evaluate("document.querySelector('.check-all button').click()");
+await evaluate("document.querySelector('.check-all').click()");
 await until("(document.querySelector('dialog.task-sheet .empty')?.textContent ?? '') === 'Nothing to check.'", "All passed did not empty the list", 60);
 await shot("to-check-done");
 await key("Escape", 27);
