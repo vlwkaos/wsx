@@ -84,7 +84,9 @@ fn frames(message: TerminalRawServerMessage, input: bool) -> Vec<Frame> {
         TerminalRawServerMessage::ClipboardWrite(_) => Vec::new(),
         TerminalRawServerMessage::Exited => vec![Frame::End(json!({ "type": "exited" }))],
         TerminalRawServerMessage::Error(error) => vec![Frame::End(match error.code.as_str() {
-            "lease_transferred" | "lease_lost" => json!({ "type": "control_lost" }),
+            // ^ Only a takeover moves control. A lease that ran out (a heartbeat came too late)
+            // or a stopping wsxd is an error the page reconnects after, without a takeover.
+            "lease_transferred" => json!({ "type": "control_lost" }),
             code => error_frame(code, &error.message),
         })],
     }
