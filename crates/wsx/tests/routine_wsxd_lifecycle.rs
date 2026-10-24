@@ -30,6 +30,9 @@ use std::{
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 const POLL_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
+// ^ Runs start only by hand: a schedule that came due mid-test would start the same routine
+// and refuse `routine run` as already running. February 31 parses and never comes.
+const NEVER_DUE: &str = "0 0 31 2 *";
 
 struct IsolatedInstall {
     root: PathBuf,
@@ -152,7 +155,7 @@ fn assert_success(output: &Output, operation: &str) {
     );
 }
 
-fn wait_for_logs(install: &IsolatedInstall, routine: &str, expected: &str) -> String {
+fn wait_for_logs(install: &IsolatedInstall, routine: &str, expected: &str, run: &Output) -> String {
     let deadline = Instant::now() + POLL_TIMEOUT;
     let mut last = String::new();
     while Instant::now() < deadline {
@@ -175,7 +178,12 @@ fn wait_for_logs(install: &IsolatedInstall, routine: &str, expected: &str) -> St
         last = text;
         thread::sleep(POLL_INTERVAL);
     }
-    panic!("timed out waiting for {routine} logs to contain {expected:?}; last output:\n{last}");
+    panic!(
+        "timed out waiting for {routine} logs to contain {expected:?}; last output:\n{last}\nrun {:?}:\n{}{}",
+        run.status,
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
 }
 
 fn wait_for_socket_removal(socket: &Path) {
@@ -239,7 +247,7 @@ fn routine_cli_starts_adjacent_wsxd_without_asched_and_cleans_up() {
             "--project",
             project,
             "--cron",
-            "* * * * *",
+            NEVER_DUE,
             "--arg",
             "/usr/bin/printf",
             "--arg",
@@ -257,7 +265,7 @@ fn routine_cli_starts_adjacent_wsxd_without_asched_and_cleans_up() {
             "--project",
             project,
             "--cron",
-            "* * * * *",
+            NEVER_DUE,
             "--arg",
             "/usr/bin/false",
         ]),
@@ -271,11 +279,9 @@ fn routine_cli_starts_adjacent_wsxd_without_asched_and_cleans_up() {
         "routine list omitted created routines:\n{listed}"
     );
 
-    assert_success(
-        &install.wsx(&["routine", "run", "succeeds", "--project", project]),
-        "run successful routine",
-    );
-    let successful_logs = wait_for_logs(&install, "succeeds", "succeeded");
+    let run = install.wsx(&["routine", "run", "succeeds", "--project", project]);
+    assert_success(&run, "run successful routine");
+    let successful_logs = wait_for_logs(&install, "succeeds", "succeeded", &run);
     assert!(
         successful_logs.contains(literal),
         "routine argv was not preserved as a literal direct argument:\n{successful_logs}"
@@ -283,8 +289,8 @@ fn routine_cli_starts_adjacent_wsxd_without_asched_and_cleans_up() {
 
     // A failed child is a run result, not a scheduler failure. Some CLIs return a
     // nonzero status for this command; the durable run record is the contract.
-    let _ = install.wsx(&["routine", "run", "fails", "--project", project]);
-    wait_for_logs(&install, "fails", "failed");
+    let run = install.wsx(&["routine", "run", "fails", "--project", project]);
+    wait_for_logs(&install, "fails", "failed", &run);
     assert_success(
         &install.wsx(&["routine", "list", "--project", project, "--json"]),
         "routine list after failed run",
