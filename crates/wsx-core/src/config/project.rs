@@ -340,7 +340,7 @@ fn parse_yaml(path: &Path, text: &str) -> Result<ProjectConfig, String> {
     let mut ignored = Vec::new();
     let file: ProjectConfigFile =
         serde_ignored::deserialize(yaml_serde::Deserializer::from_str(text), |key| {
-            ignored.push(key.to_string())
+            ignored.push(key_path(&key))
         })
         .map_err(|error| error.to_string())?;
     let mut config = validate_project_file(file)?;
@@ -356,6 +356,25 @@ fn parse_yaml(path: &Path, text: &str) -> Result<ProjectConfig, String> {
         ));
     }
     Ok(config)
+}
+
+/// `tasks.env`: serde_ignored's own form writes `tasks.?.env` for an `Option` field.
+fn key_path(path: &serde_ignored::Path) -> String {
+    use serde_ignored::Path;
+    let (parent, key) = match path {
+        Path::Root => return String::new(),
+        Path::Seq { parent, index } => (parent, index.to_string()),
+        Path::Map { parent, key } => (parent, key.clone()),
+        Path::Some { parent }
+        | Path::NewtypeStruct { parent }
+        | Path::NewtypeVariant { parent } => {
+            return key_path(parent);
+        }
+    };
+    match key_path(parent) {
+        prefix if prefix.is_empty() => key,
+        prefix => format!("{prefix}.{key}"),
+    }
 }
 
 /// Print a warning on stderr once per process: hosts and the web server reread the config.
