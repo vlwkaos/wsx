@@ -1185,6 +1185,8 @@ assert replacement["data"]["live_runtimes"] >= 1, replacement
 assert call("snapshot")["type"] == "snapshot"
 process.kill()
 process.wait(timeout=5)
+# ^ As start() does: the killed wsxd's lock can outlive it for a moment.
+wait_singleton_released()
 bootstrap_env = env | {"WSX_DAEMON_BIN": str(DAEMON)}
 # ^ Preserve captured bootstrap diagnostics instead of an opaque CalledProcessError.
 recovered = subprocess.run(
