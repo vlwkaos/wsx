@@ -419,7 +419,9 @@ await until("!!document.querySelector('.project-page .diagram img')", "the page'
 if (!/^Updated /.test(await sheetState())) await fail(`the page's top row reads ${await sheetState()}`);
 const pageHeads = await text(".project-page h2");
 if (pageHeads.join() !== "Goal,Tasks,Decisions,Open questions") await fail(`the page's sections are ${pageHeads}`);
-// ^ The deploy and the main checkout moved here from the reservoir, above the markdown.
+// ^ The deploy and the main checkout moved here from the reservoir, above the markdown. They
+// come from a separate brief request, which can answer after the page has drawn.
+await until("!!document.querySelector('.project-page .facts-line')", "the page's facts line did not show", 30);
 const facts = (await text(".project-page .facts-line"))[0] ?? "";
 if (!/^Deploy: [0-9a-f]{8}, (up to date with main|\d+ commits? behind main)\./.test(facts) || !/Main checkout on main, /.test(facts)) await fail(`the page's facts read ${facts}`);
 await shot("page");
