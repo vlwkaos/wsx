@@ -22,6 +22,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 yaml_serde = "=0.10.7"
+serde_ignored = "=0.1.14"
 thiserror = "2"
 anyhow = "=1.0.103"
 dirs = "5"
