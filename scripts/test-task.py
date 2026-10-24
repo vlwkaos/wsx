@@ -1489,9 +1489,6 @@ def run(wsx, wsxd, work, owned):
     def writes(launch):
         return launch['settings']['sandbox']['filesystem']['allowWrite']
 
-    # ^ A turn first, so a rotation the config change brings happens before the grant.
-    reply_to(js('task', 'say', 'STATUS')['id'])
-    before = manager_launches()[-1]
     refused = subprocess.run([str(wsx), 'task', 'allow', 'manager', '--path', str(granted)], cwd=project,
                              env=manager_env, capture_output=True, text=True)
     assert refused.returncode != 0 and 'only the owner widens' in refused.stderr, refused.stderr
@@ -1503,14 +1500,20 @@ def run(wsx, wsxd, work, owned):
     assert '--path <dir> alone' in cli('task', 'allow', 'manager', '--host', 'crates.io', ok=False).stderr
     assert '--until is for' in cli('task', 'allow', '1', '--path', granted, '--until', '1h', ok=False).stderr
     assert not any(e['kind'] == 'granted' for e in manager_entries())
-    assert js('task', 'allow', 'manager', '--path', granted)['ok']
+    # ^ A grant restarts the agent between turns; one that expired before the start is not
+    # applied. This start also takes the rotation the earlier config changes bring.
     assert js('task', 'allow', 'manager', '--path', expired, '--until', '2s')['ok']
     time.sleep(2.5)
+    reply_to(js('task', 'say', 'STATUS')['id'])
+    before = manager_launches()[-1]
+    assert str(expired) not in writes(before), writes(before)
+    assert js('task', 'allow', 'manager', '--path', granted)['ok']
     probes = [granted / 'a.txt', elsewhere / 'b.txt', expired / 'c.txt', project / 'd.txt']
     asked = js('task', 'say', '\n'.join('WRITE %s' % path for path in probes))
     said = reply_to(asked['id'])['text']
     after = manager_launches()[-1]
-    assert after['resume'] and after['session'] == before['session'] and after['pid'] != before['pid'], (before, after)
+    restart = [(launch['resume'], launch['session'], launch['pid']) for launch in (before, after)]
+    assert after['resume'] and after['session'] == before['session'] and after['pid'] != before['pid'], (restart, said)
     assert str(granted) in writes(after) and str(expired) not in writes(after), writes(after)
     assert writes(after)[:2] == writes(before), (writes(before), writes(after))
     assert 'The owner lets your Bash also write, for a limited time: %s.' % granted in turn_with('WRITE %s' % probes[0])['message']
@@ -1518,8 +1521,8 @@ def run(wsx, wsxd, work, owned):
     assert said.count('Operation not permitted') == 3, said
     grants = [e for e in manager_entries() if e['kind'] == 'granted']
     assert [(e['access'], e['by'], 'until_ms' in e) for e in grants] == [
-        ({'kind': 'write', 'path': str(granted)}, 'owner', False),
-        ({'kind': 'write', 'path': str(expired)}, 'owner', True)], grants
+        ({'kind': 'write', 'path': str(expired)}, 'owner', True),
+        ({'kind': 'write', 'path': str(granted)}, 'owner', False)], grants
     manager_state = json.loads((manager_log.parent / 'state.json').read_text())
     assert manager_state['grants'] == [{'path': str(granted)}], manager_state['grants']
     # ^ A new conversation ends the grant without --until.
