@@ -52,8 +52,9 @@ LAND_CONFIG = '''tasks:
 
 
 def tui_run(wsx, env, cwd, done, cols=120, seconds=15):
-    """The real TUI in a private PTY (`cols`x40). `done(output, write)` sees all output so far
-    after each read and may write keys; the TUI quits when it returns true or the time is up."""
+    """The real TUI in a private PTY (`cols`x40). `done(output, write, idle)` sees all output so
+    far after each read, and with `idle` true after 0.1 s without output, and may write keys; the
+    TUI quits when it returns true or the time is up."""
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, cols, 0, 0))
     proc = subprocess.Popen([str(wsx)], cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave,
@@ -61,10 +62,11 @@ def tui_run(wsx, env, cwd, done, cols=120, seconds=15):
     output, deadline = bytearray(), time.monotonic() + seconds
     try:
         while time.monotonic() < deadline and proc.poll() is None:
-            if select.select([master], [], [], 0.1)[0]:
+            idle = not select.select([master], [], [], 0.1)[0]
+            if not idle:
                 output += os.read(master, 65536)
-                if done(output, lambda keys: os.write(master, keys)):
-                    break
+            if done(output, lambda keys: os.write(master, keys), idle):
+                break
     finally:
         if proc.poll() is None:
             os.write(master, b'\x01q')
@@ -81,7 +83,7 @@ def tui_text(wsx, env, cwd, until, seconds=15):
     """The TUI's output as text without escapes, read until `until` (a regex) matches."""
     text = ''
 
-    def done(output, _write):
+    def done(output, _write, _idle):
         nonlocal text
         # ^ Cells of one style are written in one run; escapes split the runs.
         text = re.sub(r'\x1b(\[[0-9;?<>=]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[()][0-9A-Za-z]|.)', '\n',
@@ -133,12 +135,15 @@ def screen(output, cols, rows=40):
 
 
 def tui_screens(wsx, env, cwd, steps, cols=120):
-    """For each `(regex, keys)` step: wait until the screen matches, keep it, send the keys.
-    Returns the kept screens."""
+    """For each `(regex, keys)` step: wait until the drawn screen matches, keep it, send the
+    keys. Returns the kept screens. A screen counts once output pauses: a frame can arrive in
+    several reads."""
     screens, shown = [], ''
 
-    def done(output, write):
+    def done(output, write, idle):
         nonlocal shown
+        if not idle:
+            return False
         shown = screen(output, cols)
         if re.search(steps[len(screens)][0], shown):
             screens.append(shown)
