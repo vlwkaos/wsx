@@ -2,11 +2,11 @@
 // the owner, then the report folded (Changes, Evidence, To check, Left open), the messages to
 // the worker and its history (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
-import { clock, html, Icon, Loading, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
-import { can, events, readMap, useStore, writeMap } from "./store.js";
+import { clock, html, Icon, Loading, readMap, useEffect, useLayoutEffect, useRef, useState, writeMap } from "./lib.js";
+import { can, events, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { grow, isolate, release } from "./chat.js";
-import { announce, askWords, grantBody, loadTasks, taskStage, TaskChip, withChips } from "./tasks.js";
+import { announce, askWords, grantBody, loadTasks, taskStage, TaskChip, TaskTitle, withChips } from "./tasks.js";
 import { Bubble } from "./bubbles.js";
 import { TaskStory } from "./story.js";
 import { CheckRow, TryButton } from "./checks.js";
@@ -206,7 +206,7 @@ export function TaskPage({ project, task, onClose, grip }) {
     <header class="bar" onPointerDown=${grip?.down} onPointerMove=${grip?.move} onPointerUp=${grip?.up} onPointerCancel=${grip?.up}>
       <button class="icon-button" type="button" aria-label="Back to the chat" onClick=${onClose}><${Icon} name="back" /></button>
       <div class="bar-title">
-        <span class="bar-label">#${task}${detail?.title ? ` ${detail.title}` : ""}</span>
+        ${detail?.title ? html`<${TaskTitle} title=${detail.title} id=${task} />` : html`<span class="bar-label">#${task}</span>`}
         ${detail && html`<span class="bar-state" data-tone=${taskStage(detail)[1]}>${taskStage(detail)[0]}</span>`}
       </div>
     </header>`;
@@ -216,8 +216,10 @@ export function TaskPage({ project, task, onClose, grip }) {
   const trial = detail.trial;
   const acting = can("task_act");
   const busy = Boolean(act.busy);
-  const button = (label, onClick, extra = {}) => html`
-    <button class="button" type="button" disabled=${busy} onClick=${onClick} ...${extra}>${label}</button>`;
+  // ^ With an icon, a phone shows the icon alone and its words stay the name (app.css).
+  const button = (label, onClick, extra = {}, icon = null) => html`
+    <button class="button" type="button" disabled=${busy} title=${icon ? label : null} onClick=${onClick} ...${extra}>
+      ${icon && html`<${Icon} name=${icon} />`}<span class="button-words">${label}</span></button>`;
   // ^ What the block asks for, never a command; one grant per ask, the last one resumes the task.
   const asks = detail.asks ?? [];
   const grant = async (project_wide) => {
@@ -229,17 +231,17 @@ export function TaskPage({ project, task, onClose, grip }) {
   const buttons = acting ? [
     ...detail.approvals.map((request) => html`
       ${detail.approvals.length > 1 && html`<p class="task-approval">${request.label}</p>`}
-      ${button("Deny", () => act.run("deny", `api/tasks/${project}/approvals/${request.id}/deny`, {}, null, request.label), { "aria-label": `Deny: ${request.label}` })}
-      ${button("Approve", () => act.run("approve", `api/tasks/${project}/approvals/${request.id}/approve`, {}, null, request.label), { "aria-label": request.label })}`),
+      ${button("Deny", () => act.run("deny", `api/tasks/${project}/approvals/${request.id}/deny`, {}, null, request.label), { "aria-label": `Deny: ${request.label}` }, "fail")}
+      ${button("Approve", () => act.run("approve", `api/tasks/${project}/approvals/${request.id}/approve`, {}, null, request.label), { "aria-label": request.label }, "pass")}`),
     actions.includes("allow") && asks.length > 0 && html`
-      ${button("Allow", () => grant(false), { "aria-label": `Allow #${task} to ${askWords(asks)}` })}
+      ${button("Allow", () => grant(false), { "aria-label": `Allow #${task} to ${askWords(asks)}` }, "pass")}
       ${button("Allow for project", () => grant(true), { "aria-label": `Allow every task of this project to ${askWords(asks)}` })}`,
     // ^ A trial: this revision on the live site before it lands (docs/tasks.md "Hold and trial").
     // Pass lands it; a message to the worker fails it; End only frees the live site.
     trial && html`<p class="task-approval" role="status">${TRIAL_WORDS[trial.stage]}</p>`,
-    trial?.stage === "live" && actions.includes("land") && button(act.busy === "pass" ? "Landing…" : "Pass and land", () => act.run("pass", `api/tasks/${project}/t/${task}/pass`, {})),
+    trial?.stage === "live" && actions.includes("land") && button(act.busy === "pass" ? "Landing…" : "Pass and land", () => act.run("pass", `api/tasks/${project}/t/${task}/pass`, {}), {}, "pass"),
     trial && button(act.busy === "trial_end" ? "Ending…" : "End trial", () => act.run("trial_end", `api/tasks/${project}/t/${task}/trial_end`, {})),
-    !trial && actions.includes("land") && button(act.busy === "land" ? "Landing…" : "Land", () => act.run("land", `api/tasks/${project}/t/${task}/land`, {})),
+    !trial && actions.includes("land") && button(act.busy === "land" ? "Landing…" : "Land", () => act.run("land", `api/tasks/${project}/t/${task}/land`, {}), {}, "land"),
     // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
     actions.includes("hand") && button(act.busy === "hand" ? "Opening…" : "Work by hand", () => act.run("hand", `api/tasks/${project}/t/${task}/hand`, {})),
     actions.includes("handback") && button(act.busy === "handback" ? "Handing back…" : "Hand back", () => act.run("handback", `api/tasks/${project}/t/${task}/handback`, {})),

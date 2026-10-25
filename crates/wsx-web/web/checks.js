@@ -25,9 +25,9 @@ export function TryButton({ project, task, icon = false }) {
   return html`
     ${state.url
       ? html`<a class=${label} href=${state.url} target="_blank" rel="noopener" title="Open the preview"
-          aria-label=${`Open the preview of #${task}`}>${icon ? html`<${Icon} name="open" />` : "Open"}</a>`
+          aria-label=${`Open the preview of #${task}`}><${Icon} name="open" />${!icon && html`<span class="button-words">Open</span>`}</a>`
       : html`<button class=${label} type="button" disabled=${state.busy} onClick=${start} title="Try it on a preview"
-          aria-label=${`Try #${task} on a preview`}>${icon ? html`<${Icon} name="play" />` : state.busy ? "Starting…" : "Try"}</button>`}
+          aria-label=${`Try #${task} on a preview`}><${Icon} name="play" />${!icon && html`<span class="button-words">${state.busy ? "Starting…" : "Try"}</span>`}</button>`}
     ${state.error && html`<span class="error" role="alert">${state.error}</span>`}`;
 }
 

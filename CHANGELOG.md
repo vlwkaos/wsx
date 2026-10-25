@@ -24,6 +24,11 @@
 
 ### Changed
 
+- The web chats read better on a phone. The session chat and the manager chat open at the first reply this device has not read, under a "New" line, with "↓ 3 new" to go to the end; with nothing unread they open where you left them. Scrolled up, a new reply does not move the chat and the button counts it.
+- Reply to one message in either chat: swipe it right, or long-press it (right-click on a computer) and choose Reply. The quote shows over the text box with ×, the message goes out starting with `> <its first line>`, and a tap on that quote in the chat goes to the quoted message.
+- On a phone, a table's columns narrow and their words wrap. A table of more than three columns keeps the first two and shows the others as `Header: value` lines in the second cell; only a word that cannot wrap, such as a long path, still scrolls it sideways.
+- On a phone, the task sheet's buttons with an icon (Approve, Deny, Allow, Land, Try) show the icon alone, so the sentence beside them keeps the row; the waiting messages' icons sit closer together.
+- Task lists (the reservoir, the `#` picker and the task sheet's top row) put the title first and the number after it, small and muted. The `#` picker folds away tasks done or closed more than a day ago until you type a number or a word.
 - A task's checks run fewer times. A worker runs only the checks its change touches and never the full set, which wsx runs once after its result; a worker's `wsx task check-run` of a check that already ran on the same clean tree answers from the stored result. A land whose rebase keeps the tree whose checks passed lands without running them again; a land after the default branch moved runs them as before ([docs/tasks.md](docs/tasks.md) "Checks, revisions and report", "Landing").
 - A task's checks are the main checkout's `tasks.checks` at the time they run, not the ones the task started with. A task started before the checks changed lands through the current gate.
 - The web's task buttons are only *Land*, *Answer*, *Work by hand* and *Try*. *Try live*, *Hold for me* and *Release hold* are gone; the manager still holds a task or starts a trial when it cannot judge a change itself. A working row says when the task waits to run checks or runs them.

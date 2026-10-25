@@ -157,6 +157,17 @@ const workerBubble = (n) => `[...document.querySelectorAll('.log .bubble')].find
 // The sheet's action buttons, under its top.
 const nextButtons = () => text(".task-sheet .task-next button");
 const clickNext = (label) => evaluate(`[...document.querySelectorAll('.task-sheet .task-next button')].find((node) => node.textContent === ${JSON.stringify(label)}).click()`);
+// Button room (docs/web-client-tasks.md "Task sheet"): each button as wide as its words; on a
+// phone a button with an icon shows the icon alone and keeps its words as its name.
+async function buttonRoom(where) {
+  const buttons = await evaluate(`[...document.querySelectorAll('.task-sheet .task-next .button')].map((node) => ({
+    name: node.getAttribute('aria-label') || node.textContent.trim(), icon: !!node.querySelector('.icon'), width: Math.round(node.getBoundingClientRect().width),
+    words: Math.round(node.querySelector('.button-words')?.getBoundingClientRect().width ?? 0), cut: node.scrollWidth > node.clientWidth + 1,
+    control: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--size-control')) }))`);
+  const wrong = buttons.filter((button) => !button.name || button.cut || (button.icon && (phone() ? button.width > button.control + 1 || button.words > 1 : button.words < 10)));
+  if (!buttons.some((button) => button.icon) || wrong.length) await fail(`${where}: the buttons do not size to their words: ${JSON.stringify(buttons)}`);
+  fs.appendFileSync(path.join(captures, "button-room.txt"), `${where} at ${size[0]} px: ${buttons.map((button) => `${button.name} ${button.width}`).join(", ")}\n`);
+}
 // Nothing the new sheet replaced: no steps and no Review row.
 async function lean(where) {
   if (await count(".task-sheet .story-steps")) await fail(`${where} still has the steps`);
@@ -164,20 +175,20 @@ async function lean(where) {
 }
 // The sheet's open sections, by heading.
 const openSections = () => evaluate("[...document.querySelectorAll('.task-sheet .scroll > .task-section:not(.task-fold):not(.timeline) > .task-heading')].map((node) => node.textContent.trim())");
-// The reservoir's rows: [chip, title, context, actions], in the order shown.
+// The reservoir's rows: [number, title, context, actions], in the order shown.
 const rows = () => evaluate(`[...document.querySelectorAll('.reservoir-list .need')].map((row) => [
-  row.querySelector('.task-chip')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, row.querySelector('.row-context')?.textContent ?? '',
+  row.querySelector('.task-number')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, row.querySelector('.row-context')?.textContent ?? '',
   [...row.querySelectorAll('.need-action')].map((node) => node.title).join('+')])`);
-const rowOf = (label) => `[...document.querySelectorAll('.reservoir-list .need')].find((row) => ((row.querySelector('.task-chip')?.textContent.trim() ?? '') + ' ' + row.querySelector('.row-label').textContent).trim().startsWith(${JSON.stringify(label)}))`;
+const rowOf = (label) => `[...document.querySelectorAll('.reservoir-list .need')].find((row) => ((row.querySelector('.task-number')?.textContent.trim() ?? '') + ' ' + row.querySelector('.row-label').textContent).trim().startsWith(${JSON.stringify(label)}))`;
 // The closed line as read: "6 need you · #6 <title> +1 more".
 const reservoirWords = () => evaluate("document.querySelector('.reservoir-head')?.textContent.trim().replace(/\\s+/g, ' ') ?? ''");
 async function openReservoir() {
   if (!(await evaluate("!!document.querySelector('.reservoir[data-open]')"))) await click(".reservoir-head");
   await until("!!document.querySelector('.reservoir-list')", "the reservoir did not open");
 }
-// The focus after a row cleared: [chip, label] of the row whose action has it, or the head.
+// The focus after a row cleared: [number, label] of the row whose action has it, or the head.
 const focused = () => evaluate(`(() => { const node = document.activeElement; const row = node?.closest('.reservoir .need');
-  if (row) return [row.querySelector('.task-chip')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, node.title || node.textContent.trim()];
+  if (row) return [row.querySelector('.task-number')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, node.title || node.textContent.trim()];
   if (node?.classList.contains('reservoir-head')) return ['head'];
   return node?.matches('.chat .composer-field') ? ['composer'] : [node?.tagName ?? 'none']; })()`);
 // One action in a row, then that row leaves and the focus is on the next row's action (on the
@@ -430,8 +441,11 @@ if (await count(".since")) {
 await comeBack();
 await evaluate("[...document.querySelectorAll('.since button')].find((node) => node.title === 'Dismiss').click()");
 await until("!document.querySelector('.since')", "Dismiss did not close the line");
-// ^ The chat opens at its end again for what follows.
+// ^ The chat opens where it was left: at its end again for what follows.
+await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
+await pause(300);
 await go("#/");
+await until("!!document.querySelector('.home-row') && !document.querySelector('.composer-field')", "home did not replace the chat");
 await go(chat);
 await until("!!document.querySelector('.log .bubble') && !!document.querySelector('.reservoir-head')", "the chat did not come back");
 
@@ -491,7 +505,9 @@ if (!(await evaluate(`/line 30 of the report/.test(${report}.textContent) && !${
 await managerWidth("the phone chat");
 await shot("project", ".composer-send");
 // The chat opens at its newest message; scrolled up, it shows Jump to latest.
-await until(atEnd, "the manager chat did not open at its end");
+for (let attempt = 0; attempt < 100 && !(await evaluate(atEnd)); attempt++) await pause(100);
+if (!(await evaluate(atEnd))) await fail(`the manager chat did not open at its end: ${await evaluate(`JSON.stringify({ top: document.querySelector('.log').scrollTop,
+  height: document.querySelector('.log').scrollHeight, client: document.querySelector('.log').clientHeight, read: localStorage.getItem('wsx-read'), visible: document.visibilityState })`)}`);
 await evaluate("document.querySelector('.log').scrollTop = 0");
 await until("!!document.querySelector('.jump')", "no jump button after scrolling the manager chat up");
 await click(".jump");
@@ -597,19 +613,25 @@ if (listedRows[0][2] !== "needs to reach crates.io" || listedRows[2][1] !== "App
   || listedRows[4][2] !== "ready to land" || listedRows[7][1] !== "2 to check") await fail(`the reservoir rows read ${JSON.stringify(listedRows)}`);
 if (!/^keep a worker busy WAIT /.test(listedRows[6][1])) await fail(`the running task's title is ${listedRows[6][1]}`);
 if ((await text(".reservoir-label")).join() !== "Running" || !(await evaluate(`!!document.querySelector('.reservoir-list[aria-label=Running]').contains(${rowOf("#6")})`))) await fail("#6 is not under Running");
-if (!(await evaluate(`${rowOf("#6")}.querySelector('.task-chip .mark[data-running]')`))) await fail("the running task's chip does not pulse");
+if (!(await evaluate(`${rowOf("#6")}.querySelector('.mark[data-running]')`))) await fail("the running task's dot does not pulse");
+// ^ A task row reads title first, then its number, small, muted and never cut (docs/web-client-tasks.md "Project screen").
+const titleFirst = await evaluate(`[...document.querySelectorAll('.reservoir-list .row-title')].map((title) => { const number = title.querySelector('.task-number');
+  return title.firstElementChild.classList.contains('row-label') && number.previousElementSibling === title.firstElementChild && /^#\\d+$/.test(number.textContent)
+    && number.scrollWidth <= number.clientWidth && parseFloat(getComputedStyle(number).fontSize) < parseFloat(getComputedStyle(title.firstElementChild).fontSize) + 0.5; })`);
+if (!titleFirst.length || titleFirst.includes(false)) await fail(`a reservoir row does not read title, then number: ${JSON.stringify(titleFirst)}`);
 // ^ Open, the running row reads like the closed line: the same small size, rows close together.
 const runningRow = await evaluate(`(() => { const row = ${rowOf("#6")}, link = row.querySelector('.row-link'), style = getComputedStyle(link);
-  return { label: getComputedStyle(row.querySelector('.row-label')).fontSize, chip: getComputedStyle(row.querySelector('.task-chip')).fontSize,
+  return { label: getComputedStyle(row.querySelector('.row-label')).fontSize, chip: getComputedStyle(row.querySelector('.task-number')).fontSize,
     gap: parseFloat(style.paddingTop) + parseFloat(style.paddingBottom), minHeight: style.minHeight }; })()`);
 if (runningRow.label !== closedSize || runningRow.chip !== closedSize || runningRow.gap > 8 || !["0px", "auto"].includes(runningRow.minHeight)) {
   await fail(`the open running row does not match the closed line (${closedSize}): ${JSON.stringify(runningRow)}`);
 }
-await chipsOnLine("a running row", ".reservoir-running .task-chip", [".row-link", ".row-label"]);
-const chipName = await evaluate(`${rowOf("#1")}.querySelector('.task-chip').getAttribute('aria-label')`);
-if (chipName !== "#1, needs you") await fail(`a chip's accessible name is ${chipName}`);
-const runningName = await evaluate(`${rowOf("#6")}.querySelector('.task-chip').getAttribute('aria-label')`);
-if (runningName !== "#6, working") await fail(`a working chip's accessible name is ${runningName}`);
+await chipsOnLine("a running row", ".reservoir-running .task-number", [".row-link", ".row-label"]);
+// ^ The state the dot shows is in the row's words for a screen reader.
+const chipName = await evaluate(`${rowOf("#1")}.querySelector('.row-title').textContent`);
+if (!chipName.endsWith("#1, needs you")) await fail(`a row's words are ${chipName}`);
+const runningName = await evaluate(`${rowOf("#6")}.querySelector('.row-title').textContent`);
+if (!runningName.endsWith("#6, working")) await fail(`a working row's words are ${runningName}`);
 if (await count(".reservoir .facts-line")) await fail("the reservoir still shows the deploy facts");
 await shot("reservoir-open", ".composer-send");
 await resize([390, 420, 2]);
@@ -702,8 +724,9 @@ if ((await evaluate("[...document.querySelectorAll('.log .bubble[data-fresh]')].
 if (await evaluate("[...document.querySelectorAll('.log .bubble[data-fresh]')].some((node) => getComputedStyle(node).animationName !== 'slide-up')")) await fail("a new bubble does not play row-in");
 const tableReply = "[...document.querySelectorAll('.log .bubble[data-side=in]')].find((node) => !!node.querySelector('.table-wrap'))";
 const inside = await evaluate(`(() => { const bubble = ${tableReply}.querySelector('.bubble-box').getBoundingClientRect(), table = ${tableReply}.querySelector('.table-wrap');
-  const box = table.getBoundingClientRect(); return { right: box.right <= bubble.right + 0.5, scrolls: table.scrollWidth > table.clientWidth }; })()`);
-if (!inside.right || !inside.scrolls) await fail(`the table does not stay inside its bubble: ${JSON.stringify(inside)}`);
+  const box = table.getBoundingClientRect(); return { right: box.right <= bubble.right + 0.5, scrolls: table.scrollWidth > table.clientWidth + 1 }; })()`);
+// ^ On a phone its long cells wrap, so it fits without scrolling sideways (docs/web-client-chat.md "Markdown").
+if (!inside.right || inside.scrolls) await fail(`the table does not fit inside its bubble: ${JSON.stringify(inside)}`);
 await chipsOnLine("the chat's bubbles", ".log .bubble .task-chip");
 const replyChips = await evaluate(`[...${tableReply}.querySelectorAll('.task-chip')].map((chip) => chip.textContent.trim())`);
 if (replyChips.filter((chip) => chip === "#4").length !== 2 || replyChips.some((chip) => !/^#\d+$/.test(chip))) await fail(`the reply's chips read ${JSON.stringify(replyChips)}`);
@@ -793,6 +816,23 @@ await typeInto(".composer-field", "#qqq");
 await until("(document.querySelector('.slash-note')?.textContent ?? '') === 'No task matches that.'", "no note for a picker without matches");
 await key("Escape", 27);
 await until("!document.querySelector('.slash')", "Escape did not close the picker");
+// A task option reads its title, then its number. Tasks done more than a day ago fold away
+// until the text names them; #7 and #8 landed, so the store backdates them in the page.
+await typeInto(".composer-field", "#");
+await until(`document.querySelectorAll('.slash-option').length === ${taskCount}`, "the picker did not reopen for its order");
+const optionOrder = await evaluate("[...document.querySelectorAll('.slash-option')].map((node) => node.querySelector('.slash-name').nextElementSibling?.className + ' ' + node.querySelector('.task-number')?.textContent)");
+if (optionOrder.some((line) => !/^task-number #\d+$/.test(line))) await fail(`a task option does not read title, then number: ${JSON.stringify(optionOrder)}`);
+const fresh = await inStore(`return JSON.parse(JSON.stringify(state.tasks[${project}]))`);
+await inStore(`const ov = state.tasks[${project}];
+  update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: ov.tasks.map((task) => task.stage === 'done' ? { ...task, updated_unix_ms: Date.now() - 2 * 86400000 } : task) } } })`);
+const doneCount = fresh.tasks.filter((task) => task.stage === "done").length;
+await typeInto(".composer-field", "#");
+await until(`document.querySelectorAll('.slash-option').length === ${taskCount - doneCount}`, "the picker did not fold the old done tasks");
+const foldNote = await text(".slash-note");
+if (!doneCount || foldNote.join() !== `${doneCount} done more than a day ago: type a number or a word to find them.`) await fail(`the fold note reads ${JSON.stringify(foldNote)} for ${doneCount} done tasks`);
+await typeInto(".composer-field", "#7");
+await until("[...document.querySelectorAll('.slash-option .task-number')].some((node) => node.textContent === '#7')", "a folded task is not found by its number");
+await inStore(`update({ tasks: { ...state.tasks, [${project}]: ${JSON.stringify(fresh)} } })`);
 await typeInto(".composer-field", "#");
 await until(`document.querySelectorAll('.slash-option').length === ${taskCount}`, "the picker did not reopen");
 // With the keyboard up: the picker keeps to 3.5 rows above the composer, the reservoir steps aside.
@@ -900,6 +940,121 @@ async function followEnd(where) {
 }
 await followEnd("390 px");
 
+// --- Opening a chat and replying (docs/web-client-chat.md "Opening a chat", "Replies"). This
+// device keeps how far it read each chat and where it left it.
+const jumpWords = () => evaluate("document.querySelector('.jump')?.textContent.trim() ?? ''");
+const replyCount = "document.querySelectorAll('.log > .bubble[data-in]').length";
+const fiveColumns = "[...document.querySelectorAll('.log > .bubble[data-in]')].findLast((node) => node.dataset.quote === 'Five columns:')";
+// The first named row that starts in view, and its distance from the log's top.
+const rowInView = () => evaluate(`(() => { const top = document.querySelector('.log').getBoundingClientRect().top;
+  const row = [...document.querySelectorAll('.log > [data-key]')].find((node) => node.getBoundingClientRect().top >= top);
+  return row ? { key: row.dataset.key, down: Math.round(row.getBoundingClientRect().top - top) } : null; })()`);
+const rowAt = (key) => evaluate(`(() => { const top = document.querySelector('.log').getBoundingClientRect().top;
+  const row = [...document.querySelectorAll('.log > [data-key]')].find((node) => node.dataset.key === ${JSON.stringify(key)});
+  return row ? Math.round(row.getBoundingClientRect().top - top) : null; })()`);
+async function reopen(where) {
+  await go("#/");
+  await until("!!document.querySelector('.home-row') && !document.querySelector('.composer-field')", `${where}: home did not replace the chat`);
+  await go(chat);
+  await until("!!document.querySelector('.log > .bubble') && !!document.querySelector('.reservoir-head')", `${where}: the chat did not come back`);
+  await pause(500);
+}
+// A touch swipe from `from` by `dx` px to the right, or a press held for `hold` ms.
+async function touch(from, dx, hold = 0) {
+  await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: from.x, y: from.y }] });
+  if (hold) await pause(hold);
+  for (let step = 1; step <= 5; step++) await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: from.x + (dx * step) / 5, y: from.y }] });
+  await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+}
+// Where to press a bubble: its first line of text, clear of tables and links.
+const pressPoint = (bubble) => evaluate(`(() => { const first = ${bubble}.querySelector('.bubble-body p'); first.scrollIntoView({ block: 'center' }); const rect = first.getBoundingClientRect();
+  return { x: Math.round(rect.left + 12), y: Math.round(rect.top + 8) }; })()`);
+async function readAndReply(where) {
+  said = 0;
+  await toLatest(where);
+  // (a) Scrolled up: a reply below moves nothing, and the button counts it.
+  await evaluate("document.querySelector('.log').scrollTop = 0");
+  await pause(300);
+  const held = await rowInView();
+  const before = await evaluate(replyCount);
+  if (await say("TABLE5") !== 200) await fail(`${where}: the message for a table reply was not taken`);
+  await until(`${replyCount} > ${before} && !!${fiveColumns} && !document.querySelector('.log .typing')`, `${where}: the table reply did not arrive`, 60);
+  await pause(300);
+  const drift = (await rowAt(held.key)) - held.down;
+  if (Math.abs(drift) > 2) await fail(`${where}: a reply below moved the row in view by ${drift} px`);
+  if (await jumpWords() !== "1 new") await fail(`${where}: scrolled up, the button reads "${await jumpWords()}", not "1 new"`);
+  // (b) Left with that reply unread: the chat opens at a New line over it, at the top of the
+  // screen, and the button still counts it.
+  await reopen(where);
+  const line = await evaluate(`(() => { const line = document.querySelector('.log > .log-new'), log = document.querySelector('.log'); if (!line) return null;
+    return { down: Math.round(line.getBoundingClientRect().top - log.getBoundingClientRect().top), padding: parseFloat(getComputedStyle(log).paddingTop),
+      next: line.nextElementSibling?.dataset.quote ?? '', words: line.textContent.trim() }; })()`);
+  if (!line || Math.abs(line.down - line.padding) > 2 || line.next !== "Five columns:" || line.words !== "New") await fail(`${where}: the chat did not open at the New line: ${JSON.stringify(line)}`);
+  if (await jumpWords() !== "1 new") await fail(`${where}: opened at the New line, the button reads "${await jumpWords()}"`);
+  await shot("chat-unread", ".composer-send");
+  // (c) The table: on a phone two columns, the others as "Header: value" lines in the second,
+  // nothing left out and no sideways scroll; on a wide screen five columns.
+  const table = await evaluate(`(() => { const wrap = ${fiveColumns}.querySelector('.table-wrap'), cells = [...wrap.querySelectorAll('tbody td')];
+    const second = wrap.querySelector('tbody td:nth-child(2)').getBoundingClientRect(), third = wrap.querySelector('tbody td:nth-child(3)').getBoundingClientRect();
+    return { fold: wrap.hasAttribute('data-fold'), heads: [...wrap.querySelectorAll('th')].filter((node) => node.getBoundingClientRect().width > 0).map((node) => node.textContent),
+      sideways: wrap.scrollWidth > wrap.clientWidth + 1, hidden: cells.filter((cell) => !cell.textContent.trim() || cell.getBoundingClientRect().width === 0).length, cells: cells.length,
+      named: wrap.querySelector('tbody td:nth-child(5)').dataset.head, under: Math.abs(third.left - second.left) < 1 && third.top >= second.bottom - 1 }; })()`);
+  const tableOk = phone() ? table.fold && table.heads.join() === "Name,State" && table.under && table.named === "Note"
+    : table.heads.join() === "Name,State,Owner,Since,Note" && !table.under;
+  if (!tableOk || table.sideways || table.hidden || table.cells !== 20) await fail(`${where}: the five-column table reads ${JSON.stringify(table)}`);
+  await capture(`${size[0]}x${size[1]}-table-five`, await evaluate(`(() => { const r = ${fiveColumns}.querySelector('.table-wrap').getBoundingClientRect(); return { x: Math.max(0, r.left - 8), y: Math.max(0, r.top - 8), width: Math.min(innerWidth, r.width + 16), height: Math.min(innerHeight - r.top, r.height + 16), scale: 1 }; })()`));
+  await toLatest(where);
+  if (await count(".jump")) await fail(`${where}: the button stayed at the end`);
+  // (d) Nothing unread: the chat opens where it was left, without a New line.
+  await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = Math.round((log.scrollHeight - log.clientHeight) / 2); })()");
+  await pause(300);
+  const left = await rowInView();
+  await reopen(where);
+  const back = await rowAt(left.key);
+  if (back === null || Math.abs(back - left.down) > 2 || await count(".log-new") || await jumpWords() !== "Jump to latest") {
+    await fail(`${where}: the chat did not open where it was left: ${JSON.stringify({ left, back, line: await count(".log-new"), jump: await jumpWords() })}`);
+  }
+  // (e) Reply: a swipe right on a phone, the menu of a right click on a wide screen. × removes
+  // the quote; a long press opens the menu too.
+  const point = await pressPoint(fiveColumns);
+  const quote = "(document.querySelector('.composer .reply-quote-text')?.textContent ?? '').replace('Replying to: ', '')";
+  if (phone()) await touch(point, 90);
+  else {
+    await evaluate(`${fiveColumns}.querySelector('.bubble-body p').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: ${point.x}, clientY: ${point.y}, button: 2 }))`);
+    await until("!!document.querySelector('.reply-menu')", `${where}: a right click opened no menu`);
+    await shot("reply-menu");
+    await evaluate("[...document.querySelectorAll('.reply-menu button')].find((node) => node.textContent.trim() === 'Reply').click()");
+  }
+  await until(`${quote} === 'Five columns:'`, `${where}: the reply shows no quote over the composer`);
+  if (await evaluate(`${fiveColumns}.style.translate`)) await fail(`${where}: the swiped bubble did not come back`);
+  await evaluate("document.querySelector('.composer .reply-quote button').click()");
+  await until("!document.querySelector('.composer .reply-quote')", `${where}: × did not remove the quote`);
+  if (phone()) {
+    await touch(await pressPoint(fiveColumns), 0, 700);
+    await until("!!document.querySelector('.reply-menu')", `${where}: a long press opened no menu`);
+    await evaluate("[...document.querySelectorAll('.reply-menu button')].find((node) => node.textContent.trim() === 'Reply').click()");
+    await until(`${quote} === 'Five columns:'`, `${where}: Reply in the menu shows no quote`);
+  }
+  if (await evaluate("document.activeElement?.matches('.composer-field')") !== true) await fail(`${where}: the reply did not focus the composer`);
+  await shot("reply-quote", ".composer-send");
+  await typeInto(".composer-field", "my answer");
+  said += 1;
+  await click(".composer-send");
+  const sentReply = "[...document.querySelectorAll('.log > .bubble[data-side=out]:not([data-pending])')].findLast((node) => node.querySelector('.quote')?.textContent === 'Five columns:')";
+  await until(`!!${sentReply} && ${sentReply}.querySelector('.prose').textContent === 'my answer' && !document.querySelector('.composer .reply-quote')`, `${where}: the reply was not sent with its quote`, 60);
+  const stored = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => data.entries.filter((entry) => entry.kind === 'message' && entry.from === 'owner').map((entry) => entry.text).at(-1))`);
+  if (stored !== "> Five columns:\n\nmy answer") await fail(`${where}: the manager got ${JSON.stringify(stored)}`);
+  // (f) A tap on the quote goes to the quoted message.
+  await evaluate("document.querySelector('.log').scrollTop = 0");
+  await pause(300);
+  await evaluate(`${sentReply}.querySelector('.quote').click()`);
+  await until(`(() => { const log = document.querySelector('.log').getBoundingClientRect(), box = ${fiveColumns}.getBoundingClientRect();
+    return ${fiveColumns}.hasAttribute('data-found') && box.top < log.bottom && box.bottom > log.top; })()`, `${where}: the quote did not go to its message`);
+  await toLatest(where);
+  await pause(said * 3000);
+}
+await readAndReply("390 px");
+
 // --- The task sheet of #2: the stage, one sentence of what changed and the one action; the
 // report folded (Changes, Evidence, To check, Left open) and History folded. No verdict, no
 // Asked, no revision number. Land, then its item is live under To check.
@@ -908,6 +1063,9 @@ await until("document.querySelectorAll('.task-sheet .task-fold').length >= 4", "
 let told = await story();
 if (told.steps || told.summary !== "did: WORK a.txt HV" || told.next !== "Land it to put it on main.") await fail(`the top of a ready task reads ${JSON.stringify(told)}`);
 if (await sheetState() !== "needs you") await fail(`a ready task's state reads ${await sheetState()}`);
+// ^ The top row reads the title first, then the number, small and muted.
+const sheetTitle = await evaluate("(() => { const title = document.querySelector('.task-sheet .bar .row-title'); return title && [title.firstElementChild.className, title.querySelector('.task-number').textContent]; })()");
+if (!sheetTitle || sheetTitle[0] !== "row-label" || sheetTitle[1] !== "#2") await fail(`the sheet's top row reads ${JSON.stringify(sheetTitle)}`);
 const folds = await text(".task-sheet .task-fold > .fold-head");
 if (folds.join("|") !== "Changes|Evidence · 1 check passed|To check · 1 after it lands|Left open · 1") await fail(`the folds read ${JSON.stringify(folds)}`);
 const sheetWords = await evaluate("document.querySelector('dialog.task-sheet').innerText");
@@ -946,6 +1104,10 @@ if (told.next !== "The manager asks: Approve discard #4." || await sheetState() 
 // ^ No Shared files outside a conflict.
 if ((await openSections()).includes("Shared files")) await fail("a task that is not in conflict shows Shared files");
 await shot("task-blocked", ".composer-send");
+await buttonRoom("#4's sheet");
+await resize([1280, 800, 1]);
+await buttonRoom("#4's sheet");
+await resize([390, 844, 2]);
 await evaluate("[...document.querySelectorAll('.task-next button')].find((node) => node.textContent === 'Deny').click()");
 await until("!document.querySelector('.task-next button[aria-label=\"Approve discard #4\"]')", "the denied approval stayed", 300);
 told = await story();
@@ -1121,7 +1283,7 @@ await openReservoir();
 await until(`!!${rowOf("#1")}`, "the waiting task has no reservoir row");
 const waitRow = (await rows()).find((row) => row[0] === "#1");
 if (waitRow[2] !== "needs an answer" || waitRow[3] !== "Answer") await fail(`the waiting row reads ${JSON.stringify(waitRow)}`);
-await evaluate(`${rowOf("#1")}.querySelector('.task-chip').click()`);
+await evaluate(`${rowOf("#1")}.querySelector('.row-open').click()`);
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the waiting task's sheet did not open");
 await lean("the waiting sheet");
 told = await story();
@@ -1183,6 +1345,7 @@ await resize([1280, 800, 1]);
 await managerWidth("the wide chat");
 await shot("project", ".composer-send");
 await followEnd("1280 px");
+await readAndReply("1280 px");
 await go(page(3));
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the sheet did not open on a wide screen");
 if ((await evaluate("getComputedStyle(document.querySelector('dialog.task-sheet')).animationName")) !== "sheet-in-side") await fail("the wide sheet does not come in from the right");

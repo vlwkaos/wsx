@@ -37,11 +37,23 @@ The chat panel of the hosted web client ([web-client.md](web-client.md)): a remo
 
 The session chat and the manager chat share one rule (`useFollowEnd` in `crates/wsx-web/web/lib.js`):
 
-- A reader within 80 px of the end stays at the end. Only scrolling up leaves it: content that grows under a reader at the end is followed, also when it grows between the page's own scroll and its scroll event. A reader farther up is not moved; "Jump to latest" shows instead. Only that button and the reader's own send go to the end.
+- A reader within 80 px of the end stays at the end. Only scrolling up leaves it: content that grows under a reader at the end is followed, also when it grows between the page's own scroll and its scroll event. A reader farther up is not moved; "Jump to latest" shows instead, or "↓ 3 new" while replies below it were not read. Only that button and the reader's own send go to the end.
 - The log watches its own box and each of its rows. A row that grows after it shows (a diagram that draws, an image that loads, an entry animation), a row added or removed, and a box that moves or changes size (the "Since you left" line above it, the reservoir or the keyboard below it) settle the view before the browser paints: at the end it stays at the end; farther up, the first row that starts in view keeps its distance from the top of the screen.
 - The row's position is its layout position (`offsetTop` in the positioned `.log`), so a transform in an entry animation does not count as a move.
 - Chrome and Firefox also anchor the scroll with CSS (`overflow-anchor`); iOS Safari does not. The log's own anchor runs after the browser's and decides: where the browser already kept the row in place, it finds nothing to move. The anchor is not the row cut by the top edge: when that row grows inside, the part the reader sees is below the growth and moves with the next row.
 - Checked in a real browser (`scripts/test-web-client.py --browser`): a session whose diagrams draw after it opens stays at its end at 320, 390 and 1280 px; in the manager chat at 390 and 1280 px a late diagram keeps the end, a reader scrolled up keeps the bubble in view within 2 px through a reply below, the "Since you left" line above and rows added and removed above, with CSS anchoring on and off; on a phone the composer with the keyboard up keeps the end.
+
+# Opening a chat
+
+Each device keeps, per chat (`wsx-read` in local storage, the newest 200 chats), the time of the newest reply that was on a visible screen and where the reader left the chat: the first named row in view and its distance from the top, or the end.
+
+- With replies newer than that time, the chat opens with a "New" line over the first of them, the line at the top of the screen. Without, it opens where the reader left it, or at the end. A chat opened for the first time on a device opens at the end with nothing unread.
+- A reply is read once its end was on screen while the page was visible, so a long reply opened under the line counts as new until the reader reaches its end. Replies are the agent's messages in a session, and the manager's, other managers' and workers' bubbles in the manager chat; the owner's own messages and status lines never count.
+- The place is kept when the chat closes and when the page goes to the background, so a phone that drops the page keeps it too. Rows are the log's children: `data-key` names a row, `data-in` and `data-at` mark a reply and its time (`useFollowEnd` in `lib.js`).
+
+# Replies
+
+Both chats: a swipe right on a message (64 px, on a touch screen), or a long press (450 ms) or a right click and **Reply**, puts its first line (its own quote left out, at most 120 characters) over the composer with × to remove it. The menu also has **Copy**, since a long press on a message does not select its text on a touch screen. The sent message starts with `> <that line>` and an empty line. The page shows such a message's quote as one muted line; a tap on it scrolls to the newest message above it that starts with that line, or says that the message is no longer in the conversation shown. `#` and `@` stay in the manager chat only (`web/reply.js`).
 
 # Markdown
 
@@ -51,6 +63,7 @@ An agent's message and the summary of an earlier conversation are rendered as Co
 - A link is made only for `http`, `https` and `mailto`, and opens in a new tab with `rel="noopener noreferrer"`. Any other scheme and a relative address stay text. Text becomes a link by itself only when it has a scheme, so `main.rs` is not a link.
 - A message cannot load a remote resource. An image is shown only when its file name is one of the files the server already granted for that message ([web-client.md](web-client.md) "Media"); any other image is its alt text.
 - Prose keeps its reading width. A table, a code block and a diagram may be as wide as the conversation minus the gutter (16 px each side in the default theme), centered on the reading column; a narrower one keeps the column's width. The page reads the conversation's width as a container size (`container-type` on `.log-wrap`), so no script measures it. Content wider than that scrolls inside its own block: a code block sideways with a Copy action, a table both ways with its header row in view. Nothing widens the page.
+- On a phone a table is as wide as its block and its cells wrap their words, so only a word that cannot wrap (a long path or code) scrolls it sideways. A table of more than three columns keeps the first two as columns; each further value is a line "Header: value" in the second cell, so nothing is left out. A wide screen is unchanged.
 - Code is colored by highlight.js for rust, typescript, javascript, python, bash, json, toml, yaml, diff, html, css, sql and go. The page reads the highlighter's token tree and uses the theme's role colors (accent, attention, muted, danger), so no color is added to the theme contract. Blocks above 40,000 characters stay uncolored.
 - A message is parsed once per text. A timeline refresh that brings the same text reuses the nodes. Measured in headless Chrome with the processor slowed four times: a 204 KB message with 145 code blocks takes about 0.2 seconds.
 - Task text (the task sheet, the manager chat's bubbles and the project page) is read as prose: markdown-it's indented-code rule is off there, so a paragraph that a model indented by four spaces stays a paragraph. A fenced block (```) is still code. A session's chat keeps the rule.

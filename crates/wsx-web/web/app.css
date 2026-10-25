@@ -101,6 +101,9 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .row-label, .row-context, .row-activity { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-label { font-weight: var(--font-weight-medium); }
+/* A task: its title first, cut with an ellipsis, then its number, small and muted, never cut. */
+.row-title { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; }
+.task-number { flex: 0 0 auto; font-size: var(--font-size-sm); font-weight: normal; color: var(--color-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* The work a session row is for: project › worktree, each with its own look; the session under it. */
 .row-work { display: flex; align-items: baseline; gap: var(--space-1); min-width: 0; }
 .row-work > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -145,6 +148,13 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 }
 .button-primary { background: var(--color-accent); color: var(--color-accent-text); }
 .button-danger { color: var(--color-danger); }
+/* Buttons take the width of their words. A button with an icon shows the icon alone on a phone
+   and keeps its words as its accessible name, so the text beside it gets the row. */
+.button:has(> .icon) { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); text-decoration: none; }
+.app:not([data-wide]) .button:has(> .icon) { width: var(--size-control); padding: 0; }
+.app:not([data-wide]) .button:has(> .icon) > .button-words {
+  position: absolute; width: var(--border-width); height: var(--border-width); overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
 .button:disabled, .link-action:disabled, .icon-button:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
 .link-action {
   flex: 0 0 auto; padding: 0; border: 0; background: none; color: var(--color-text); cursor: pointer;
@@ -290,6 +300,23 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .table-wrap tr:last-child > td { border-bottom: 0; }
 .table-wrap [data-align="right"] { text-align: right; font-variant-numeric: tabular-nums; }
 .table-wrap [data-align="center"] { text-align: center; }
+/* On a phone the columns narrow and their words wrap, so most tables fit; only a word that
+   cannot wrap (a long path, code) still scrolls the table sideways. A table of more than three
+   columns (data-fold) keeps the first two; each further value is a "Header: value" line in
+   the second cell, under one grid for the whole table, so the columns still line up. */
+.app:not([data-wide]) .table-wrap table { width: 100%; }
+.app:not([data-wide]) .table-wrap td { max-width: none; }
+.app:not([data-wide]) .table-wrap th { white-space: normal; }
+.app:not([data-wide]) .table-wrap[data-fold] table { display: grid; grid-template-columns: fit-content(40%) minmax(min-content, 1fr); }
+.app:not([data-wide]) .table-wrap[data-fold] :is(thead, tbody) { display: contents; }
+.app:not([data-wide]) .table-wrap[data-fold] tr { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; border-bottom: var(--border-width) solid var(--color-hairline); }
+.app:not([data-wide]) .table-wrap[data-fold] tbody tr:last-child { border-bottom: 0; }
+.app:not([data-wide]) .table-wrap[data-fold] :is(th, td) { border-bottom: 0; }
+.app:not([data-wide]) .table-wrap[data-fold] th:nth-child(n+3) { display: none; }
+.app:not([data-wide]) .table-wrap[data-fold] td:nth-child(n+3) { grid-column: 2; padding-top: 0; text-align: left; }
+.app:not([data-wide]) .table-wrap[data-fold] td:nth-child(2) { padding-bottom: var(--space-1); }
+.app:not([data-wide]) .table-wrap[data-fold] td:nth-child(n+3):not(:last-child) { padding-bottom: var(--space-1); }
+.app:not([data-wide]) .table-wrap[data-fold] td:nth-child(n+3)::before { content: attr(data-head) ": "; color: var(--color-muted); }
 .prose { white-space: pre-wrap; overflow-wrap: anywhere; line-height: var(--line-height-prose); }
 /* The person's message: a block on the surface, to the right. The agent's text has no bubble. */
 .message-user {
@@ -344,6 +371,8 @@ div.steps .steps-summary { cursor: default; }
   .message-user:not([data-pending]) { animation: settle calc(var(--motion-duration) * 3) var(--motion-easing); }
   .bubble-box, [data-tone], .bar-state { transition: color calc(var(--motion-duration) * 3) var(--motion-easing), background-color calc(var(--motion-duration) * 3) var(--motion-easing); }
   .jump { animation: arrive var(--motion-duration) var(--motion-easing); }
+  /* A swiped message springs back. */
+  .log > [data-quote]:not([data-swiping]) { transition: translate var(--motion-duration) var(--motion-easing); }
   .jump[data-leaving] { opacity: 0; transition: opacity var(--motion-duration) var(--motion-easing); pointer-events: none; }
   [data-uploading] .note { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
   .notice { animation: slide-down calc(var(--motion-duration) * 1.5) var(--motion-easing); }
@@ -388,9 +417,39 @@ div.steps .steps-summary { cursor: default; }
   background: var(--color-raised); color: var(--color-text); font-size: var(--font-size-sm); cursor: pointer; white-space: nowrap;
 }
 .chat-error { padding: var(--space-1) var(--space-4); }
+/* Hook: .log-new, .quote, .reply-quote, .reply-menu — reading and replying
+   (docs/web-client-chat.md "Opening a chat", "Replies"). The New line over the first unread reply. */
+.log-new { display: flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); color: var(--color-accent); }
+.log-new::before, .log-new::after { content: ""; flex: 1; border-top: var(--border-width) solid var(--color-accent); }
+/* A quote, in a sent message and over the composer: one muted line after an accent edge. */
+.quote, .reply-quote-text {
+  display: block; min-width: 0; padding-left: var(--space-2); border-left: calc(var(--border-width) * 2) solid var(--color-accent);
+  font-size: var(--font-size-sm); color: var(--color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.quote { width: 100%; margin-bottom: var(--space-1); border-block: 0; border-right: 0; background: none; text-align: left; cursor: pointer; font-family: inherit; }
+.reply-quote { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1); }
+.reply-quote-text { flex: 1; }
+.reply-quote .icon-button { margin-block: calc(-1 * var(--space-2)); }
+.reply-menu {
+  position: fixed; z-index: 3; min-width: calc(var(--size-rail) / 2); padding: var(--space-1) 0;
+  display: flex; flex-direction: column; border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); background: var(--color-surface);
+}
+.reply-menu button {
+  min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-4);
+  border: 0; background: none; text-align: left; cursor: pointer;
+}
+.reply-menu button:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
+/* A message under a finger: a swipe right moves it; a long press opens the menu, not the
+   system's text selection (the menu has Copy). */
+@media (pointer: coarse) {
+  .log > [data-quote] { touch-action: pan-y; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+}
+.log > [data-found] { outline: var(--focus-width) solid var(--color-accent); outline-offset: var(--space-1); border-radius: var(--radius-control); }
 .queue { list-style: none; margin: 0; padding: 0 var(--column-inset); border-top: var(--border-width) solid var(--color-hairline); background: var(--color-surface); }
 .queued { display: flex; align-items: center; gap: var(--space-3); min-height: var(--size-key); font-size: var(--font-size-sm); }
 .queued + .queued { border-top: var(--border-width) solid var(--color-hairline); }
+/* The icons sit hit area to hit area, so the message keeps the rest of the row. */
+.queued > .icon-button + .icon-button { margin-left: calc(-1 * var(--space-3)); }
 .queued-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); }
 /* A message that was not delivered: its reason on a line of its own, in the danger colour,
    so it is not missed on a phone. Later messages go past it. */
@@ -417,6 +476,7 @@ div.steps .steps-summary { cursor: default; }
 .slash-name { flex: 0 0 auto; font-family: var(--font-terminal); color: var(--color-text); }
 .slash-description { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-muted); }
 .slash-source { flex: 0 0 auto; color: var(--color-faint); font-size: var(--font-size-label); }
+.slash-name[data-title] { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: inherit; }
 .slash-note {
   margin: 0; padding: var(--space-1) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -466,6 +526,10 @@ div.steps .steps-summary { cursor: default; }
 .app:not([data-wide]) .slash-name { grid-area: name; }
 .app:not([data-wide]) .slash-source { grid-area: source; }
 .app:not([data-wide]) .slash-description { grid-area: description; }
+/* A task: its title, its number and its state on one line. */
+.app:not([data-wide]) .slash-option:has(.task-number) { grid-template-columns: minmax(0, auto) auto minmax(0, 1fr) auto; grid-template-areas: "name number . source"; }
+.app:not([data-wide]) .slash-option .task-number { grid-area: number; }
+.app:not([data-wide]) .slash-option:has(.task-number) .slash-description { display: none; }
 body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-control) * 3.5); }
 /* A blocked agent takes its answer in the terminal: this row stands where the composer was. */
 .attention {

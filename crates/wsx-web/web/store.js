@@ -1,7 +1,7 @@
 // One shared state for the page. Views read it through `useStore` and never keep
 // their own copy. The event stream is its only writer after the first load.
 import { api } from "./api.js";
-import { useEffect, useState } from "./lib.js";
+import { readMap, useEffect, useState, writeMap } from "./lib.js";
 
 export const state = {
   site: null,
@@ -114,14 +114,6 @@ export function stateOf(session) {
 export const sessionLink = (session, tab) =>
   `#/s/${session.id}/${tab ?? (isAgent(session) && shows("chat") ? "chat" : "terminal")}`;
 
-// A map kept per device. A private window, cleared site data or a broken value reads as
-// empty, and a write that fails keeps the page working without it.
-export function readMap(key) {
-  try { return JSON.parse(localStorage.getItem(key)) ?? {}; } catch { return {}; }
-}
-export function writeMap(key, map) {
-  try { localStorage.setItem(key, JSON.stringify(map)); } catch { /* kept in memory only */ }
-}
 
 // "Seen" is per device: the state a session had when its chat was last opened here.
 const SEEN_KEY = "wsx-seen";

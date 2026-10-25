@@ -71,6 +71,15 @@ export function firstSentence(text) {
   return sentence.length > 200 ? `${sentence.slice(0, 199).trimEnd()}…` : sentence;
 }
 
+// A map kept per device. A private window, cleared site data or a broken value reads as
+// empty, and a write that fails keeps the page working without it.
+export function readMap(key) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? {}; } catch { return {}; }
+}
+export function writeMap(key, map) {
+  try { localStorage.setItem(key, JSON.stringify(map)); } catch { /* kept in memory only */ }
+}
+
 // The present time, renewed every second while `active` is true.
 export function useNow(active) {
   const [now, setNow] = useState(Date.now());
@@ -83,6 +92,19 @@ export function useNow(active) {
   return now;
 }
 
+// Where this device read each chat to and where it left it (docs/web-client-chat.md "Opening
+// a chat"), by the hook's `name`: `read` is the time of the newest incoming message that was
+// on screen, `place` the first row in view and its distance from the log's top, or null at the end.
+const READ_KEY = "wsx-read";
+const READ_KEPT = 200;
+function keepRead(name, entry) {
+  const all = readMap(READ_KEY);
+  // ^ The newest entries last; the oldest go first once there are too many.
+  delete all[name];
+  all[name] = entry;
+  writeMap(READ_KEY, Object.fromEntries(Object.entries(all).slice(-READ_KEPT)));
+}
+
 // A conversation log that keeps its reader at the end only while the reader is at the end,
 // and otherwise keeps the row the reader reads where it is on the screen
 // (docs/web-client-chat.md "Following the end"). `log` is the scroller's ref callback; `toEnd`
@@ -93,7 +115,12 @@ export function useNow(active) {
 // "Since you left" line, the reservoir, the keyboard): none of these fires a scroll event, and
 // iOS Safari has no CSS scroll anchoring. So the log watches its box and each row, and settles
 // after every change, before the browser paints.
-export function useFollowEnd() {
+// `name` keeps the reading per chat. Once `ready` (the first read is in), the log opens at its
+// `.log-new` row when the component shows one, else where the reader left it, else at the end.
+// Rows are the log's children: `data-key` names a row, `data-in` and `data-at` mark an incoming
+// message and its time. `since` is the read time at opening, for the component's `.log-new`
+// row; `unread` counts the incoming messages below the screen.
+export function useFollowEnd(name, ready) {
   const node = useRef(null);
   const atEnd = useRef(true);
   const watchers = useRef([]);
@@ -103,9 +130,27 @@ export function useFollowEnd() {
   // The scroll position after the last settle or scroll.
   const top = useRef(0);
   const [away, setAway] = useState(false);
+  const [opened] = useState(() => readMap(READ_KEY)[name] ?? null);
+  const placed = useRef(false);
+  // ^ The observers keep the first render's functions: they read the props through refs.
+  const loaded = useRef(ready);
+  loaded.current = ready;
+  const read = useRef(opened?.read ?? null);
+  const [unread, setUnread] = useState(0);
   // ^ Layout positions, not getBoundingClientRect: a row's entry animation moves it with a
   // transform, which must not count as a move. `.log` is positioned, so offsetTop is in the log.
   const onScreen = (row) => node.current.getBoundingClientRect().top + row.offsetTop - node.current.scrollTop;
+  const incoming = () => [...node.current.children].filter((row) => row.dataset.in != null && row.dataset.at);
+  // ^ A message counts as read once its end was on a visible screen.
+  const seen = () => {
+    const element = node.current;
+    const bottom = element.scrollTop + element.clientHeight + 1;
+    const rows = incoming();
+    if (document.visibilityState === "visible") {
+      for (const row of rows) if (row.offsetTop + row.offsetHeight <= bottom) read.current = Math.max(read.current ?? 0, Number(row.dataset.at));
+    }
+    setUnread(rows.filter((row) => Number(row.dataset.at) > read.current).length);
+  };
   const mark = () => {
     const element = node.current;
     // ^ Not the row cut by the top edge: when that row grows inside (its diagram draws), what
@@ -114,12 +159,37 @@ export function useFollowEnd() {
     const row = rows.find((child) => child.offsetTop >= element.scrollTop) ?? rows.at(-1);
     anchor.current = row ? { row, top: onScreen(row) } : null;
     top.current = element.scrollTop;
+    if (placed.current) seen();
+  };
+  // ^ Read from the log as it is: a chat that closes still has its rows when its hooks clean up.
+  const keep = () => {
+    const element = node.current;
+    if (!placed.current || !element) return;
+    const named = !atEnd.current && [...element.children].find((child) => child.dataset.key && child.offsetTop >= element.scrollTop);
+    keepRead(name, { read: read.current, place: named ? { key: named.dataset.key, offset: named.offsetTop - element.scrollTop } : null });
+  };
+  // The first placement, once the first read is in.
+  const open = () => {
+    const element = node.current;
+    placed.current = true;
+    // ^ A chat opened for the first time on this device has nothing unread.
+    if (read.current == null) read.current = Math.max(0, ...incoming().map((row) => Number(row.dataset.at)));
+    const fresh = element.querySelector(":scope > .log-new");
+    const place = opened?.place;
+    const left = place && [...element.children].find((row) => row.dataset.key === place.key);
+    if (fresh) element.scrollTop = fresh.offsetTop - parseFloat(getComputedStyle(element).paddingTop);
+    else if (left) element.scrollTop = left.offsetTop - place.offset;
+    else element.scrollTop = element.scrollHeight;
+    atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    setAway(!atEnd.current);
+    mark();
   };
   const settle = () => {
     const element = node.current;
     // A change may still arrive after the view closed.
     if (!element) return;
     height.current = element.clientHeight;
+    if (!placed.current && loaded.current) return open();
     if (atEnd.current) element.scrollTop = element.scrollHeight;
     else if (anchor.current?.row.isConnected) {
       const moved = onScreen(anchor.current.row) - anchor.current.top;
@@ -163,7 +233,22 @@ export function useFollowEnd() {
   }, []);
   const toEnd = () => { atEnd.current = true; setAway(false); settle(); };
   useLayoutEffect(settle);
-  return { log, away, scrolled, toEnd };
+  // ^ Kept when the chat closes or the page goes to the background (a phone may drop it then);
+  // a page that shows again counts what is on screen as read.
+  useEffect(() => {
+    const shown = () => {
+      if (document.visibilityState === "hidden") keep();
+      else if (node.current && placed.current) seen();
+    };
+    document.addEventListener("visibilitychange", shown);
+    addEventListener("pagehide", keep);
+    return () => {
+      document.removeEventListener("visibilitychange", shown);
+      removeEventListener("pagehide", keep);
+      keep();
+    };
+  }, []);
+  return { log, away, unread, since: opened?.read ?? null, scrolled, toEnd };
 }
 
 // Motion that script drives (a list that reorders, a view that leaves) reads the same tokens

@@ -115,6 +115,9 @@ function task(children) {
   return match[1] !== " ";
 }
 
+// The words of rendered inline nodes, for a header named in another cell.
+const plain = (nodes) => [nodes].flat(Infinity).map((node) => typeof node === "string" ? node : plain(node?.props?.children ?? "")).join("");
+
 function blocks(tokens, files, words) {
   const stack = [{ children: [] }];
   const push = (...nodes) => stack.at(-1).children.push(...nodes);
@@ -125,7 +128,8 @@ function blocks(tokens, files, words) {
       // The closing token carries no attributes: keep the opening one.
       stack.push({ open: token, children: [] });
     } else if (token.nesting === -1) {
-      const { open, children } = stack.pop();
+      const frame = stack.pop();
+      const { open, children } = frame;
       const tag = open.tag;
       if (tag === "p") {
         // A tight list hides its paragraphs.
@@ -138,9 +142,16 @@ function blocks(tokens, files, words) {
       } else if (tag === "ol") {
         push(h("ol", { start: open.attrGet("start") ?? undefined }, children));
       } else if (tag === "table") {
-        push(html`<div class="table-wrap" tabindex="0"><table>${children}</table></div>`);
+        // ^ On a phone a table of more than three columns keeps two; the others are lines of the
+        // second cell, each named by its header (app.css, docs/web-client-chat.md "Markdown").
+        const fold = (frame.heads?.length ?? 0) > 3 ? "" : null;
+        push(html`<div class="table-wrap" tabindex="0" data-fold=${fold}><table>${children}</table></div>`);
       } else if (tag === "th" || tag === "td") {
-        push(h(tag, { "data-align": ALIGN.exec(open.attrGet("style") ?? "")?.[1] }, children));
+        const row = stack.at(-1);
+        const table = stack.findLast((other) => other.open?.tag === "table");
+        const column = row.cells = (row.cells ?? 0) + 1;
+        if (tag === "th") (table.heads ??= []).push(plain(children));
+        push(h(tag, { "data-align": ALIGN.exec(open.attrGet("style") ?? "")?.[1], "data-head": tag === "td" && column > 2 ? table.heads?.[column - 1] : undefined }, children));
       } else {
         push(h(tag, null, children));
       }
