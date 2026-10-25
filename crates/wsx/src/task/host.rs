@@ -964,7 +964,7 @@ impl Host {
     /// Resume once there is space. Tasks resume one at a time, oldest wait first: resumed at
     /// once, they would fill the disk again. ref: docs/tasks.md "Checks, revisions and report"
     fn resume_after_disk(&mut self) {
-        if self.disk_wait.is_none() || self.low_disk().is_some() {
+        if self.low_disk().is_some() {
             return;
         }
         if let Some(queue) = &self.disk_queue {
