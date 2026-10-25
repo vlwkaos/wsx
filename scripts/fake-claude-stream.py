@@ -19,6 +19,7 @@ Each user message is a small script of words:
   CMDHV        return a Human Verify item that names a command
   WAIT <file>  keep working until <file> exists, at most 10 minutes
   CHECKRUN_AGAIN  start `wsx task check-run`, kill it after 1 s, run it again and trace that answer
+  CHECKRUN_TWICE  run `wsx task check-run` twice on the same tree and trace both answers
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
 conflict with the line "resolved".
 Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE, and each
@@ -363,6 +364,9 @@ def main():
             first.wait()
             again = subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True)
             trace({'check_run_again': [again.returncode, again.stdout + again.stderr]})
+        if 'CHECKRUN_TWICE' in words:
+            answers = [subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True) for _ in range(2)]
+            trace({'check_run_twice': [[ran.returncode, ran.stdout + ran.stderr] for ran in answers]})
         try_edit(words, allowed, disallowed, denials)
         stopped = sandbox_stops(words, json.loads(options.get('--settings', '{}')))
         blocked = (bool(denials) and 'NEEDS' in words) or stopped

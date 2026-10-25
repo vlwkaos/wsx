@@ -22,6 +22,7 @@
 
 ### Changed
 
+- A task's checks run fewer times. A worker runs only the checks its change touches and never the full set, which wsx runs once after its result; a worker's `wsx task check-run` of a check that already ran on the same clean tree answers from the stored result. A land whose rebase keeps the tree whose checks passed lands without running them again; a land after the default branch moved runs them as before ([docs/tasks.md](docs/tasks.md) "Checks, revisions and report", "Landing").
 - A task's checks are the main checkout's `tasks.checks` at the time they run, not the ones the task started with. A task started before the checks changed lands through the current gate.
 - The web's task buttons are only *Land*, *Answer*, *Work by hand* and *Try*. *Try live*, *Hold for me* and *Release hold* are gone; the manager still holds a task or starts a trial when it cannot judge a change itself. A working row says when the task waits to run checks or runs them.
 - The web's To check list leaves more room for the items on a phone. The item's words use the full width from its first line, which the task chip starts, and Try, Fail and Pass end its "Passes if" line (under it when that line is long), so no words wrap in a narrow column beside the buttons; *All passed* moved into the top bar, and the intro sentence is gone.
