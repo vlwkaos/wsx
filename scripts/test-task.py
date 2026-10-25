@@ -1879,6 +1879,33 @@ def run(wsx, wsxd, work, owned):
     assert 'checks run on the new revision' in land(moved)['message']
     assert wait_state(moved, 'landed', 'failed')['state'] == 'landed' and checks_logged(moved) == ran + 1, log(moved)
     wait_closed(moved)
+    # 32d. The disk queue (docs/tasks.md "Checks, revisions and report"): tasks that wait for
+    mark('32d')
+    # disk resume one at a time, oldest first, so they do not fill the freed space at once.
+    release.unlink()
+    slot_config(120)
+    roomy = (project / 'wsx.config.yml').read_text()
+    (project / 'wsx.config.yml').write_text(roomy.replace('minFreeGb: 0', 'minFreeGb: 100000'))
+    git('commit', '-q', '-am', 'no disk for two')
+    older, newer = [js('task', 'new', 'WORK disk%d.txt' % i)['id'] for i in (1, 2)]
+    for n in (older, newer):
+        wait(lambda: (show(n)['record'].get('waiting') or {}).get('on') == 'disk', 't%s disk wait' % n)
+    (project / 'wsx.config.yml').write_text(roomy)
+    git('commit', '-q', '-am', 'disk for one at a time')
+    # ^ The older one's checks run until `release`; the newer one waits for its turn.
+    wait(lambda: show(older)['state'] in ('working', 'checking'), 'the older disk wait resumed', 45)
+    queued = wait(lambda: (w := show(newer)['record'].get('waiting') or {}).get('reason', '').startswith('queued') and w,
+                  'the newer disk wait queued', 45)
+    assert queued == {'on': 'disk', 'reason': 'queued for disk behind demo t%s' % older}, queued
+    assert show(newer)['state'] == 'waiting' and show(older)['state'] in ('working', 'checking')
+    release.touch()
+    assert wait_state(older, 'ready', 'failed')['state'] == 'ready'
+    assert wait(lambda: (current := show(newer))['state'] in ('ready', 'failed') and current,
+                'the newer disk wait resumed', 60)['state'] == 'ready'
+    for n in (older, newer):
+        js('task', 'close', n, '--discard')
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+    git('commit', '-q', '-am', 'disk as before')
 
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     mark('33')
