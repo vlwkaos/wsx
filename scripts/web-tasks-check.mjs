@@ -1011,28 +1011,33 @@ await openReservoir();
 await until(`!!${rowOf("3 to check")}`, "the reservoir has no To check row", 60);
 await evaluate(`${rowOf("3 to check")}.querySelector('.row-open').click()`);
 await until(`location.hash === '#/p/${project}/checks' && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open");
-const listed = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [node.querySelector('.task-chip').textContent.trim(), node.querySelector('.check-what').textContent, node.querySelector('.check-pass').textContent])");
+const listed = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [node.querySelector('.task-chip').textContent.trim(), node.querySelector('.check-what').textContent, node.querySelector('.check-end .check-pass').textContent])");
 if (JSON.stringify(listed) !== JSON.stringify([["#7", "open the file", "Passes if it has text"], ["#8", "open the file", "Passes if it has text"], ["#2", "open the file", "Passes if it has text"]])) await fail(`the To check list reads ${JSON.stringify(listed)}`);
 if (await sheetState() !== "3 open") await fail(`the list's top row reads ${await sheetState()}`);
 // ^ Each item says what its task did; #8's says where to look and shows its capture. Three short
 // items fit: the sheet is as high as its rows, on the bottom, with no empty band under them.
 const context = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [(node.querySelector('.check-task')?.textContent ?? '').replace(node.querySelector('.task-chip').textContent, '').trim(), [...node.querySelectorAll('.check-pass')].map((line) => line.textContent).join('|')])");
-if (!context.every(([did]) => did.startsWith("did: WORK")) || context[1][1] !== "Passes if it has text|Look at /#/x") await fail(`the items' context reads ${JSON.stringify(context)}`);
+if (!context.every(([did]) => did.startsWith("did: WORK")) || context[1][1] !== "Look at /#/x|Passes if it has text") await fail(`the items' context reads ${JSON.stringify(context)}`);
 await until("document.querySelector('.check-capture img')?.naturalWidth === 1", "#8's capture did not load");
 if (await count(".check-capture") !== 1) await fail("an item without a capture shows one");
 await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
 const fitted = await evaluate("(() => { const sheet = document.querySelector('dialog.task-sheet').getBoundingClientRect(); const last = [...document.querySelectorAll('.check-item')].pop().getBoundingClientRect(); return [Math.round(innerHeight - sheet.bottom), Math.round(sheet.bottom - last.bottom), Math.round(sheet.height / innerHeight * 100)]; })()");
 if (Math.abs(fitted[0]) > 1 || fitted[1] > 48 || fitted[2] >= 85) await fail(`the To check sheet does not fit its rows: ${JSON.stringify(fitted)}`);
-// ^ On a phone the item words use the list's width and no row of the item holds only the chip
-// and buttons: the chip starts the first line of words, Try, Fail and Pass float at its right
-// and the words below them take the full width. All passed is in the top bar.
-const room = await evaluate(`(() => { const item = document.querySelector('.check-item'); const chip = item.querySelector('.task-chip');
-  const pass = item.querySelector('.check-act[title="Pass"]').getBoundingClientRect(); const list = document.querySelector('.check-list').getBoundingClientRect();
-  const words = item.querySelector('.check-words').getBoundingClientRect(); const first = chip.closest('p').getBoundingClientRect();
-  return { inline: chip.closest('p') === item.querySelector('.check-words > p'), beside: first.top < pass.bottom && first.right > pass.left,
-    under: Math.round(words.bottom - pass.bottom), share: Math.round(item.querySelector('.check-what').getBoundingClientRect().width / list.width * 100),
+// ^ On a phone the item's words use the list's width: the chip starts the first line, nothing
+// sits beside the words above the pass line, and Try, Fail and Pass end that line when it is short
+// (#2's "Passes if it has text"). A long pass line takes its row whole and the buttons wrap under it.
+// All passed is in the top bar.
+await evaluate(`document.querySelectorAll('.check-item')[2].querySelector('.check-end .check-pass').append(' and the words of the page'.repeat(4))`);
+const room = await evaluate(`(() => { const list = document.querySelector('.check-list').getBoundingClientRect(); const box = (node) => node.getBoundingClientRect();
+  const item = (index) => document.querySelectorAll('.check-item')[index]; const chip = item(0).querySelector('.task-chip');
+  const above = (node) => [...node.querySelector('.check-line').children].filter((child) => !child.matches('.check-end'));
+  const [short, long] = [item(0), item(2)].map((node) => ({ pass: box(node.querySelector('.check-end .check-pass')), acts: box(node.querySelector('.check-acts')) }));
+  return { inline: chip.closest('p') === item(0).querySelector('.check-line > p'),
+    full: [item(0), item(2)].every((node) => above(node).every((child) => box(child).width / list.width > 0.85 && box(child).bottom <= box(node.querySelector('.check-acts')).top)),
+    shared: short.pass.right <= short.acts.left && short.pass.top < short.acts.bottom && short.acts.top < short.pass.bottom,
+    wrapped: long.acts.top >= long.pass.bottom && long.pass.width / list.width > 0.85,
     all: !!document.querySelector('dialog.task-sheet header.bar .check-all'), intro: !!document.querySelector('.check-intro') }; })()`);
-if (!room.inline || !room.beside || room.under < 0 || room.share < 85 || !room.all || room.intro) await fail(`the To check items waste room on a phone: ${JSON.stringify(room)}`);
+if (!room.inline || !room.full || !room.shared || !room.wrapped || !room.all || room.intro) await fail(`the To check items waste room on a phone: ${JSON.stringify(room)}`);
 await shot("to-check", ".composer-send");
 const firstItem = "document.querySelector('.check-item')";
 // ^ Try starts the preview of the item's task and becomes a link to it (docs/tasks.md "Preview").

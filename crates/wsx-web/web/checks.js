@@ -40,8 +40,9 @@ function Place({ where }) {
     : where}</p>`;
 }
 
-// One item: Try, Fail and Pass as icons at its top right, and the words flowing around them: the
-// task chip starting what the task did, the check, where to look, its capture and when it passes.
+// One item at the full width: the task chip starting what the task did, the check, where to
+// look and its capture, then when it passes with Try, Fail and Pass as icons at its right end;
+// a long pass line takes the whole row and the icons wrap under it, so no words wrap beside them.
 // A fail needs a note, which goes to the task that fixes it. `revision` is the task's current one: an item of an older revision names its own.
 export function CheckRow({ project, item, revision, onChanged }) {
   const [failing, setFailing] = useState(false);
@@ -75,26 +76,26 @@ export function CheckRow({ project, item, revision, onChanged }) {
   return html`
     <li class="check-item" data-state=${item.state}>
       <div class="check-line">
-        ${acting && !failing && html`
-          <span class="check-acts">
-            <${TryButton} project=${project} task=${item.task} icon />
-            <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy} title="Fail"
-              aria-label=${`Fail: ${item.check}`} onClick=${() => setFailing(true)}><${Icon} name="fail" /></button>
-            <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Pass"
-              aria-label=${`Pass: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
-          </span>`}
-        <div class="check-words">
-          ${did && html`<p class="check-task">${chip} ${did}</p>`}
-          <p class="check-what">${!did && html`${chip} `}${item.check}${older}</p>
+        ${did && html`<p class="check-task">${chip} ${did}</p>`}
+        <p class="check-what">${!did && html`${chip} `}${item.check}${older}</p>
+        <${Place} where=${item.where} />
+        ${item.capture && html`
+          <a class="check-capture" href=${capture} target="_blank" rel="noopener" aria-label=${`Capture of: ${item.check}`}>
+            <img src=${capture} alt="" loading="lazy" />
+          </a>`}
+        <div class="check-end">
           <p class="check-pass">Passes if ${item.pass_if}</p>
-          <${Place} where=${item.where} />
-          ${item.capture && html`
-            <a class="check-capture" href=${capture} target="_blank" rel="noopener" aria-label=${`Capture of: ${item.check}`}>
-              <img src=${capture} alt="" loading="lazy" />
-            </a>`}
-          ${item.state === "failed" && html`<p class="check-pass">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
-          ${item.state === "passed" && html`<p class="check-pass">Passed</p>`}
+          ${acting && !failing && html`
+            <span class="check-acts">
+              <${TryButton} project=${project} task=${item.task} icon />
+              <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy} title="Fail"
+                aria-label=${`Fail: ${item.check}`} onClick=${() => setFailing(true)}><${Icon} name="fail" /></button>
+              <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Pass"
+                aria-label=${`Pass: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
+            </span>`}
         </div>
+        ${item.state === "failed" && html`<p class="check-pass">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
+        ${item.state === "passed" && html`<p class="check-pass">Passed</p>`}
       </div>
       ${failing && html`
         <form class="need-form" onSubmit=${fail}>
