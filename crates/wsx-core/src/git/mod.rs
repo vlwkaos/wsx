@@ -23,7 +23,7 @@ pub fn git_cmd(repo: &Path) -> Command {
 
 /// Spawn `cmd` in its own process group with piped stdout/stderr.
 /// Kills the entire group on timeout so ssh + credential helpers are also reaped.
-/// Joins reader threads after kill to prevent thread leaks.
+/// After the process ends, waits at most `STREAM_GRACE` for its output streams to close.
 pub fn output_with_timeout(
     cmd: &mut Command,
     timeout: std::time::Duration,
@@ -59,6 +59,11 @@ enum Bound {
     Tail(usize),
 }
 
+/// ^ Once the process has ended, its output streams get this long to close. A process that
+/// left the group (a daemon a test run started) can hold them open for hours; then the output
+/// read so far is the result, and the reader thread ends with that process.
+const STREAM_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 fn output_with_timeout_inner(
     cmd: &mut Command,
     timeout: std::time::Duration,
@@ -66,109 +71,127 @@ fn output_with_timeout_inner(
 ) -> std::io::Result<std::process::Output> {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
+    use std::time::Instant;
 
     // ! own process group so killpg doesn't hit the parent
     cmd.process_group(0);
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let child_pgid = child.id() as libc::pid_t;
 
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+    let stdout = Stream::read(child.stdout.take(), bound);
+    let stderr = Stream::read(child.stderr.take(), bound);
 
-    let stdout_thread = std::thread::spawn(move || read_bounded(stdout, bound));
-    let stderr_thread = std::thread::spawn(move || read_bounded(stderr, bound));
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if start.elapsed() >= timeout {
+            // Kill the entire process group — git + ssh + credential helpers
+            unsafe { libc::killpg(child_pgid, libc::SIGKILL) };
+            let _ = child.wait();
+            let deadline = Instant::now() + STREAM_GRACE;
+            let _ = stdout.finish(deadline);
+            let _ = stderr.finish(deadline);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "git command timed out",
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    let deadline = Instant::now() + STREAM_GRACE;
+    let stdout = stdout.finish(deadline);
+    let stderr = stderr.finish(deadline);
+    Ok(std::process::Output {
+        status,
+        stdout: stdout?,
+        stderr: stderr?,
+    })
+}
 
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let stdout = join_reader(stdout_thread);
-                let stderr = join_reader(stderr_thread);
-                return Ok(std::process::Output {
-                    status,
-                    stdout: stdout?,
-                    stderr: stderr?,
+/// One output stream, read in its own thread into a buffer the caller can take at any time.
+struct Stream {
+    bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    done: std::sync::mpsc::Receiver<std::io::Result<()>>,
+    bound: Bound,
+}
+
+impl Stream {
+    fn read<R: std::io::Read + Send + 'static>(reader: Option<R>, bound: Bound) -> Self {
+        let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (sent, done) = std::sync::mpsc::channel();
+        match reader {
+            Some(reader) => {
+                let shared = bytes.clone();
+                std::thread::spawn(move || {
+                    let _ = sent.send(read_bounded(reader, bound, &shared));
                 });
             }
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    if let Ok(Some(status)) = child.try_wait() {
-                        let stdout = join_reader(stdout_thread);
-                        let stderr = join_reader(stderr_thread);
-                        return Ok(std::process::Output {
-                            status,
-                            stdout: stdout?,
-                            stderr: stderr?,
-                        });
-                    }
-                    // Kill the entire process group — git + ssh + credential helpers
-                    unsafe { libc::killpg(child_pgid, libc::SIGKILL) };
-                    let _ = child.wait();
-                    // Pipes are now closed; readers unblock and finish
-                    let _ = stdout_thread.join();
-                    let _ = stderr_thread.join();
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "git command timed out",
-                    ));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
+            None => {
+                let _ = sent.send(Ok(()));
             }
-            Err(e) => return Err(e),
         }
+        Self { bytes, done, bound }
+    }
+
+    /// The bytes read by `deadline`, or the read's error.
+    fn finish(self, deadline: std::time::Instant) -> std::io::Result<Vec<u8>> {
+        use std::sync::mpsc::RecvTimeoutError;
+        match self
+            .done
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        {
+            Ok(result) => result?,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(std::io::Error::other("subprocess output reader panicked"))
+            }
+        }
+        let mut bytes = std::mem::take(
+            &mut *self
+                .bytes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        if let Bound::Tail(keep) = self.bound {
+            bytes.drain(..bytes.len().saturating_sub(keep));
+        }
+        Ok(bytes)
     }
 }
 
-fn read_bounded<R: std::io::Read>(reader: Option<R>, bound: Bound) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-
-    let Some(reader) = reader else {
-        return Ok(Vec::new());
-    };
-    let mut bytes = Vec::new();
-    match bound {
-        Bound::Limit(limit) => {
-            reader
-                .take(limit.saturating_add(1) as u64)
-                .read_to_end(&mut bytes)?;
-            if bytes.len() > limit {
+fn read_bounded<R: std::io::Read>(
+    mut reader: R,
+    bound: Bound,
+    bytes: &std::sync::Mutex<Vec<u8>>,
+) -> std::io::Result<()> {
+    let mut chunk = [0u8; 8192];
+    loop {
+        let read = match reader.read(&mut chunk) {
+            Ok(0) => return Ok(()),
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        let mut bytes = bytes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        bytes.extend_from_slice(&chunk[..read]);
+        match bound {
+            Bound::Limit(limit) if bytes.len() > limit => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "subprocess output exceeded byte limit",
                 ));
             }
-        }
-        Bound::Tail(keep) => {
-            let mut reader = reader;
-            let mut chunk = [0u8; 8192];
-            loop {
-                let read = match reader.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(read) => read,
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(error) => return Err(error),
-                };
-                bytes.extend_from_slice(&chunk[..read]);
-                if bytes.len() > 2 * keep {
-                    bytes.drain(..bytes.len() - keep);
-                }
+            Bound::Tail(keep) if bytes.len() > 2 * keep => {
+                let excess = bytes.len() - keep;
+                bytes.drain(..excess);
             }
-            bytes.drain(..bytes.len().saturating_sub(keep));
-        }
-        Bound::None => {
-            let mut reader = reader;
-            reader.read_to_end(&mut bytes)?;
+            _ => {}
         }
     }
-    Ok(bytes)
-}
-
-fn join_reader(
-    thread: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
-) -> std::io::Result<Vec<u8>> {
-    thread
-        .join()
-        .map_err(|_| std::io::Error::other("subprocess output reader panicked"))?
 }
 
 #[cfg(test)]
@@ -178,7 +201,8 @@ mod tests {
 
     #[test]
     fn bounded_reader_rejects_oversized_output() {
-        let error = read_bounded(Some(Cursor::new(b"four")), super::Bound::Limit(3)).unwrap_err();
+        let bytes = std::sync::Mutex::new(Vec::new());
+        let error = read_bounded(Cursor::new(b"four"), super::Bound::Limit(3), &bytes).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 }

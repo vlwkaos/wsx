@@ -458,6 +458,17 @@ def run(wsx, wsxd, work, owned):
     check = wait_state(loud, 'ready', 'failed')['result']['checks'][0]
     assert check['exit'] == 0 and 'tail end' in check['output'] and len(check['output']) < 20000, check
     js('task', 'close', loud, '--discard')
+    # A check that leaves a process holding its output ends with its shell: the leftover
+    # cannot keep the check, and the machine's check slot, waiting for that output to close.
+    (project / 'wsx.config.yml').write_text(
+        'tasks:\n  minFreeGb: 0\n  agent:\n    tools: [Read]\n'
+        '  checks: ["(sleep 47 &); echo left running"]\n')
+    left = js('task', 'new', 'NOOP')['id']
+    check = wait_state(left, 'ready', 'failed')['result']['checks'][0]
+    assert check['exit'] == 0 and 'left running' in check['output'], check
+    for line in leftovers('sleep 47'):
+        os.kill(int(line.split(None, 1)[0]), 9)
+    js('task', 'close', left, '--discard')
 
     # M2: the landing steps use a committed config without the a.txt check.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
