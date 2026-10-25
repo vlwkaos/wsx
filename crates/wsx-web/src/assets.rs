@@ -185,9 +185,11 @@ impl Assets {
             "display": "standalone",
             "background_color": theme.background_color,
             "theme_color": theme.chrome_color,
+            // ^ Icons are full-bleed with the mark in the central 80 %, so a launcher may mask them
+            // (docs/web-themes.md "Files").
             "icons": [
-                { "src": format!("theme/{}", theme.icon_192), "sizes": "192x192", "type": "image/png", "purpose": "any" },
-                { "src": format!("theme/{}", theme.icon_512), "sizes": "512x512", "type": "image/png", "purpose": "any" },
+                { "src": format!("theme/{}", theme.icon_192), "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+                { "src": format!("theme/{}", theme.icon_512), "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
             ],
         })
         .to_string();

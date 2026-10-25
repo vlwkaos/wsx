@@ -26,6 +26,7 @@
 
 ### Changed
 
+- The web client's home-screen icon shows split panes, the active one in the theme's green with a prompt, instead of a generic `>_` on blue. The manifest marks the icons `any maskable`, so Android crops them to its own shape without cutting the mark.
 - The web chats read better on a phone. The session chat and the manager chat open at the first reply this device has not read, under a "New" line, with "↓ 3 new" to go to the end; with nothing unread they open where you left them. Scrolled up, a new reply does not move the chat and the button counts it.
 - Reply to one message in either chat: swipe it right, or long-press it (right-click on a computer) and choose Reply. The quote shows over the text box with ×, the message goes out starting with `> <its first line>`, and a tap on that quote in the chat goes to the quoted message.
 - On a phone, a table's columns narrow and their words wrap. A table of more than three columns keeps the first two and shows the others as `Header: value` lines in the second cell; only a word that cannot wrap, such as a long path, still scrolls it sideways.
