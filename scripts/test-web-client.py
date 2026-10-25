@@ -538,7 +538,8 @@ def stop(process, grace=5):
     for signal_number, wait_seconds in ((signal.SIGTERM, grace), (signal.SIGKILL, 3)):
         try:
             os.killpg(process.pid, signal_number)
-        except ProcessLookupError:
+        # ^ macOS answers EPERM for a group whose members have all exited but one is not yet reaped.
+        except (ProcessLookupError, PermissionError):
             break
         try:
             process.wait(timeout=wait_seconds)
