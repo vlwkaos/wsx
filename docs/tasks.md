@@ -114,7 +114,16 @@ tasks:
     review: "..."        # added to the manager's review of a task it created
     batch: "..."         # the housekeeping task's prompt
     idle: "..."          # the idle task's prompt; empty (default) is off
+    steps:               # the worker's turns in order; none (default) is one build turn
+      - name: context
+        prompt: Use owner:recall to load the context of this task.
+      - name: plan
+        prompt: Use owner:develop to explore and plan. Do not edit yet.
+      - name: build
+        prompt: Implement the plan.
 ```
+
+**Steps.** With `steps` the host sends each step as its own turn of the same worker conversation: the first turn is the prompt and "Step 1 of N, <name>: <prompt>", and a result with status `done` starts the next step, with any message queued during the turn. The checks run after the last step, as after any result; check retries, conflicts and adds after that are ordinary turns. A step that needs the owner's decision returns `blocked` and the task waits on `owner`; the answer continues the same step. The task record keeps `steps` as they were at `task new` and `step`, the index of the current one; the web shows it under *Running* as `plan (2/3)`. A project's `tasks.workflow.steps` wins; a project without them takes the owner's from `~/.config/wsx/wsx.config.yml` (or under `$XDG_CONFIG_HOME`), of which only `tasks.workflow.steps` is read. At most 12 steps; a name is 1 to 32 letters, digits, `-` or `_`, unique; a prompt is 1 to 16 KiB of text. A bad step refuses `task new`.
 
 - Defaults name no skill. `build`: keep the change lean, reuse what exists, remove what the change makes dead, and simplify the diff before finishing. `review`: nothing beyond the fixed review (the owner's words, no copy of an existing helper, no dead code, nothing unasked). `batch`: consolidate the code the tasks changed, merge duplicates, remove dead code and empty layers, keep behavior and public interfaces, lower the net line count; the checks prove the behavior is unchanged.
 - Each text is at most 16 KiB, newlines allowed, no other control characters; it is trimmed.

@@ -151,6 +151,7 @@ pub fn overview(scope: &Scope) -> Value {
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
                 "waiting": record.waiting,
                 "hold": record.hold,
+                "step": step_label(record),
                 "conflict": record.state == TaskState::Working && resolving_conflict(dir),
             }),
         ));
@@ -519,6 +520,18 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     Ok(summary)
 }
 
+/// The workflow step a working task is on, as `plan (2/6)`; none without steps.
+/// ref: docs/tasks.md "Workflow"
+fn step_label(record: &TaskRecord) -> Option<String> {
+    let step = record.steps.get(record.step as usize)?;
+    Some(format!(
+        "{} ({}/{})",
+        step.name,
+        record.step + 1,
+        record.steps.len()
+    ))
+}
+
 /// The actions a task's state allows. The host still decides; this only picks buttons.
 /// `hand` takes a build over in its working copy (docs/tasks.md "By hand").
 fn actions(record: &TaskRecord) -> Vec<&'static str> {
@@ -527,18 +540,14 @@ fn actions(record: &TaskRecord) -> Vec<&'static str> {
         (TaskState::Waiting, Some(WaitOn::Hand)) => return vec!["handback"],
         (TaskState::Waiting, Some(WaitOn::Permission)) => vec!["add", "allow"],
         (TaskState::Working | TaskState::Checking, _) => vec!["steer", "add"],
-        (TaskState::Ready, _) => vec!["land", "add", "trial"],
+        (TaskState::Ready, _) => vec!["land", "add"],
         (TaskState::Waiting | TaskState::Failed, _) => vec!["add"],
         (TaskState::Landed | TaskState::Closed, _) => return vec![],
     };
+    // ^ Hold and trial stay commands for the manager; the owner's buttons are land, add, hand.
     if record.state != TaskState::Checking {
         actions.push("hand");
     }
-    actions.push(if record.hold.is_some() {
-        "unhold"
-    } else {
-        "hold"
-    });
     actions
 }
 

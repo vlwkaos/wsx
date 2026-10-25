@@ -470,6 +470,30 @@ def run(wsx, wsxd, work, owned):
         os.kill(int(line.split(None, 1)[0]), 9)
     js('task', 'close', left, '--discard')
 
+    # 13b. Workflow steps: the owner's own steps apply to a project that names none; the host
+    # sends each step as its own turn and runs the checks after the last.
+    owner_config = work / 'c' / 'wsx' / 'wsx.config.yml'
+    owner_config.parent.mkdir(parents=True, exist_ok=True)
+    owner_config.write_text('tasks:\n  workflow:\n    steps:\n'
+                            '      - name: plan\n        prompt: PLAN only\n'
+                            '      - name: build\n        prompt: WORK s.txt\n')
+    (project / 'wsx.config.yml').write_text(
+        'tasks:\n  minFreeGb: 0\n  agent:\n    tools: [Read]\n  checks: ["test -f s.txt"]\n')
+    stepped = js('task', 'new', 'NOOP')['id']
+    done = wait_state(stepped, 'ready', 'failed')
+    assert done['state'] == 'ready' and done['record']['step'] == 1, done
+    assert [step['name'] for step in done['record']['steps']] == ['plan', 'build'], done['record']
+    turns = [entry for entry in log(stepped) if entry['kind'] == 'result']
+    assert len(turns) == 2 and 'Step 1 of 2, plan: PLAN only' in turns[0]['summary'], turns
+    assert 'Step 2 of 2, build: WORK s.txt' in turns[1]['summary'], turns
+    js('task', 'close', stepped, '--discard')
+    # A project's own steps win; a bad step refuses the task before anything starts.
+    (project / 'wsx.config.yml').write_text(
+        'tasks:\n  minFreeGb: 0\n  workflow:\n    steps:\n'
+        '      - {name: a, prompt: x}\n      - {name: a, prompt: y}\n')
+    assert 'named twice' in cli('task', 'new', 'NOOP', ok=False).stderr
+    owner_config.unlink()
+
     # M2: the landing steps use a committed config without the a.txt check.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
     (project / 'big.txt').write_text(''.join('line %d\n' % n for n in range(1, 11)))

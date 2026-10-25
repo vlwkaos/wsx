@@ -821,6 +821,8 @@ fn create(
         sandbox: settings.sandbox,
         grants: Vec::new(),
         checks: settings.checks,
+        steps: settings.workflow.steps.clone(),
+        step: 0,
         env: settings.env,
         check_timeout_secs: settings.check_timeout_secs,
         agent_session: None,

@@ -21,6 +21,7 @@
 
 ### Changed
 
+- The web's task buttons are only *Land*, *Answer*, *Work by hand* and *Try*. *Try live*, *Hold for me* and *Release hold* are gone; the manager still holds a task or starts a trial when it cannot judge a change itself. A working row says when the task waits to run checks or runs them.
 - The web's To check list leaves more room for the items on a phone. The task chip starts the item's first line and Try, Fail and Pass sit at its top right with the words flowing beside them, so no row holds only the chip and buttons and the words use the full width below them; *All passed* moved into the top bar, and the intro sentence is gone.
 - The open reservoir in the manager chat no longer spends a row on its chevron alone. The chevron sits at the right end of the list's first row, so the list starts at the top and its first label ("Running") is no longer cut off.
 - `tasks.env` sets environment variables for a task's worker and its checks alike. wsx's own config sets `CARGO_INCREMENTAL=0`: incremental rebuilds on macOS left every rebuild's object files in the task copy (one copy grew to 14 GB), and a copy now stays about 2.5 GB with its dependencies still warm. wsx's `minFreeGb` drops to 3, and workers may write Zig's cache, which a cold build of `wsx-terminal` needs ([docs/tasks.md](docs/tasks.md) "Config").
@@ -44,6 +45,7 @@
 
 ### Added
 
+- `tasks.workflow.steps`: your own workflow as named steps, such as context, plan, build, review and memo. The task host sends each step as its own turn of the worker's conversation, and the web shows the current one under *Running* (`plan (2/5)`). Steps in `~/.config/wsx/wsx.config.yml` apply to every project that has none of its own.
 - A session row in the web slides left to show Remove, which closes the session (`DELETE api/sessions/<id>`, with `session_start`); a task's session is refused.
 - `wsx agent install claude` writes the Claude output style `wsx` and selects it when no style is chosen.
 - Each manager turn's message ends with a ledger summary from the host (open tasks by state, what changed since the last turn, To check, approvals, deploy); the manager reads the full ledger only when it needs more.

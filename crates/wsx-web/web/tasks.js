@@ -260,8 +260,6 @@ function NeedRow({ project, item, index, onActing, onFailed, leaving }) {
     actions = html`${button("Fail: tell the worker", "reply", "danger", open, { "aria-expanded": draft.field === "answer", "aria-label": `Fail #${item.task}: tell the worker what is wrong` })}${button("Pass and land", "pass", "accent", () => run("pass"), { "aria-label": `Pass #${item.task} and land it` })}`;
   } else if (acting && item.kind === "land" && trial) {
     actions = html`<span class="row-context" role="status">Going live…</span>`;
-  } else if (acting && item.kind === "land" && item.hold && overview?.try_live && !overview.trial) {
-    actions = html`${button("Try live", "play", null, () => run("trial"), { "aria-label": `Try #${item.task} on the live site` })}${button("Land", "land", "accent", () => run("land"), { "aria-label": `Land #${item.task}` })}`;
   } else if (acting && item.kind === "land") {
     actions = button("Land", "land", "accent", () => run("land"), { "aria-label": `Land #${item.task}` });
   }
@@ -294,8 +292,10 @@ function NeedRow({ project, item, index, onActing, onFailed, leaving }) {
     </li>`;
 }
 
-// What a working task does when it is more than work: a conflict, or the owner's hands.
-const workingWords = (task) => task.conflict ? "resolving a conflict" : task.waiting?.on === "hand" ? "by hand" : "";
+// What a working task does, in one line: a conflict, the owner's hands, the checks, or the
+// workflow step it is on (docs/tasks.md "Workflow").
+const workingWords = (task) => task.conflict ? "resolving a conflict" : task.waiting?.on === "hand" ? "by hand"
+  : task.waiting?.on === "check_slot" ? "waiting to run checks" : task.state === "checking" ? "running checks" : task.step ?? "";
 
 // A working task in the reservoir: its chip and title; the chip pulses.
 const RunningRow = ({ project, task, leaving }) => html`

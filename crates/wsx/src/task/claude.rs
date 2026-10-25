@@ -395,11 +395,26 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
          this working copy. \
          When you cannot continue, return status blocked and say what you need; when the \
          sandbox or a permission stops a host or a path you need, name that host or path. \
-         Write the summary and the report by this rule. {presentation}",
+         {steps}Write the summary and the report by this rule. {presentation}",
         record.branch,
+        steps = steps_note(record),
         presentation = wsx_core::integration::PRESENTATION.trim_end(),
         build = workflow.build,
         checks = check_run_note(record),
+    )
+}
+
+/// The workflow steps in order: each turn names its step.
+fn steps_note(record: &TaskRecord) -> String {
+    if record.steps.is_empty() {
+        return String::new();
+    }
+    let names: Vec<&str> = record.steps.iter().map(|step| step.name.as_str()).collect();
+    format!(
+        "The task runs in steps, one turn each: {}. Each turn names its step: do that step \
+         only, then return status done. When a step needs a decision that is the owner's, \
+         return status blocked with the question; otherwise decide yourself and go on. ",
+        names.join(", ")
     )
 }
 

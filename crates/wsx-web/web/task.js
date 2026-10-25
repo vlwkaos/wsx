@@ -239,14 +239,11 @@ export function TaskPage({ project, task, onClose, grip }) {
     trial && html`<p class="task-approval" role="status">${TRIAL_WORDS[trial.stage]}</p>`,
     trial?.stage === "live" && actions.includes("land") && button(act.busy === "pass" ? "Landing…" : "Pass and land", () => act.run("pass", `api/tasks/${project}/t/${task}/pass`, {})),
     trial && button(act.busy === "trial_end" ? "Ending…" : "End trial", () => act.run("trial_end", `api/tasks/${project}/t/${task}/trial_end`, {})),
-    !trial && detail.hold && actions.includes("trial") && overview?.try_live && !overview.trial && button(act.busy === "trial" ? "Starting…" : "Try live", () => act.run("trial", `api/tasks/${project}/t/${task}/trial`, {})),
     !trial && actions.includes("land") && button(act.busy === "land" ? "Landing…" : "Land", () => act.run("land", `api/tasks/${project}/t/${task}/land`, {})),
     // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
     actions.includes("hand") && button(act.busy === "hand" ? "Opening…" : "Work by hand", () => act.run("hand", `api/tasks/${project}/t/${task}/hand`, {})),
     actions.includes("handback") && button(act.busy === "handback" ? "Handing back…" : "Hand back", () => act.run("handback", `api/tasks/${project}/t/${task}/handback`, {})),
     store.tasks[project]?.preview && detail.state !== "closed" && html`<${TryButton} project=${project} task=${task} />`,
-    actions.includes("hold") && button(act.busy === "hold" ? "Holding…" : "Hold for me", () => act.run("hold", `api/tasks/${project}/t/${task}/hold`, {})),
-    actions.includes("unhold") && button(act.busy === "unhold" ? "Releasing…" : "Release hold", () => act.run("unhold", `api/tasks/${project}/t/${task}/unhold`, {})),
   ].filter(Boolean) : [];
   const held = detail.hold && html`<p class="task-approval">Held for you to try: ${detail.hold}</p>`;
   const report = sections(detail.report);
