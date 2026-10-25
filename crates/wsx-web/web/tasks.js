@@ -458,7 +458,9 @@ function loadMentions(project) {
 }
 
 const LIST_LABELS = { "#": "Tasks", "@": "Projects", "/": "Skills" };
-const emptyNote = (mark, tasks, mentions) => mark === "#" ? (tasks.length ? "No task matches that." : "This project has no task yet.")
+const emptyNote = (mark, tasks, mentions, failed, retry) => mark === "#" ? (tasks.length ? "No task matches that." : "This project has no task yet.")
+  : failed ? html`<span class="slash-failed" role="alert">${failed}</span>
+    <button class="link-action" type="button" onPointerDown=${(event) => event.preventDefault()} onClick=${retry}>Retry</button>`
   : !mentions ? "Loading…"
   : mark === "@" ? (mentions.projects.length ? "No project matches that." : "There is no other project.")
   : (mentions.skills.length ? "No skill matches that." : "You have no skills to lend the manager.");
@@ -478,13 +480,17 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
   const tasks = store.tasks[project]?.tasks ?? [];
   const typed = closed === text ? null : wordQuery(text, caret);
   const [mentions, setMentions] = useState(null);
+  // ^ A failed read shows its error and a Retry in the list, not "Loading…" for ever.
+  const [failed, setFailed] = useState("");
+  const [attempt, setAttempt] = useState(0);
   const mark = typed?.mark;
   useEffect(() => {
     if (mark !== "/" && mark !== "@") return undefined;
     let current = true;
-    loadMentions(project).then((value) => { if (current) setMentions(value); }, () => {});
+    setFailed("");
+    loadMentions(project).then((value) => { if (current) setMentions(value); }, (failure) => { if (current) setFailed(failure.message); });
     return () => { current = false; };
-  }, [project, mark === "/" || mark === "@"]);
+  }, [project, mark === "/" || mark === "@", attempt]);
   // ^ `#` lists tasks, `@` the other projects, `/` the owner's skills the manager can use. A
   // skill is asked for in words: the manager is headless and takes no slash command.
   const options = !typed ? null
@@ -568,7 +574,7 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
       ${error && html`<p class="error" role="alert">${error}</p>`}
       ${listOpen && html`<${Suggestions} label=${LIST_LABELS[mark]} active=${active} onHover=${setActive} onPick=${pick}
         options=${options}
-        notes=${[!options.length && emptyNote(mark, tasks, mentions)]} />`}
+        notes=${[!options.length && emptyNote(mark, tasks, mentions, failed, () => setAttempt((count) => count + 1))]} />`}
       <div class="composer-row" onPointerDown=${focusField}>
         <${AttachButton} onFiles=${upload} />
         <div class="composer-input">

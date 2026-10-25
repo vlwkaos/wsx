@@ -421,6 +421,10 @@ div.steps .steps-summary { cursor: default; }
   margin: 0; padding: var(--space-1) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* A failed read of the list: its error, wrapped, and Retry at the right as a full tap target. */
+.slash-note:has(.slash-failed) { display: flex; align-items: center; gap: var(--space-3); padding-block: 0; white-space: normal; }
+.slash-failed { flex: 1; min-width: 0; color: var(--color-danger); }
+.slash-note .link-action { min-height: var(--size-control); }
 /* The attach icon, not its touch target, starts at the column edge. */
 .composer-row > .icon-button:first-child { margin-left: calc(-1 * var(--space-3)); }
 .composer .button { height: var(--size-control); }
