@@ -441,8 +441,9 @@ div.steps .steps-summary { cursor: default; }
 .reply-menu button:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 /* A message under a finger: a swipe right moves it; a long press opens the menu, not the
    system's text selection (the menu has Copy). */
+.log > [data-quote] { touch-action: pan-y; }
 @media (pointer: coarse) {
-  .log > [data-quote] { touch-action: pan-y; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  .log > [data-quote] { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 }
 .log > [data-found] { outline: var(--focus-width) solid var(--color-accent); outline-offset: var(--space-1); border-radius: var(--radius-control); }
 .queue { list-style: none; margin: 0; padding: 0 var(--column-inset); border-top: var(--border-width) solid var(--color-hairline); background: var(--color-surface); }
