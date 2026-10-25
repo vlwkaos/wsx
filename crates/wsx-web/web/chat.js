@@ -337,6 +337,12 @@ function Composer({ session, working, onSent }) {
   // ^ A listed command at the start of the field shows as one token in the accent colour
   // (an overlay behind the transparent field); the text the agent gets is unchanged.
   const token = tokenOf(listing, draft.text);
+  // ^ A `!` line runs in Claude's shell mode, by the server's rule (src/commands.rs
+  // `is_shell_line`): the composer shows it and the button says Run.
+  const typed = draft.text.trim();
+  const shell = session.agent?.provider === "claude" && !draft.attachments.length && !/[\n\t]/.test(typed)
+    && /^!\s*\S/.test(typed) && new TextEncoder().encode(typed).length <= 256;
+  const sendWord = shell ? "Run" : working ? "Queue" : "Send";
   const listOpen = Boolean(matches) && ready;
   useEffect(() => {
     if (!ready || !can("chat_send") || !draft.text.startsWith("/") || listing) return undefined;
@@ -430,7 +436,7 @@ function Composer({ session, working, onSent }) {
     send();
   };
   return html`
-    <div class="composer">
+    <div class="composer" data-shell=${shell ? "" : null}>
       <${FileChips} files=${draft}
         onRemove=${(item) => { draft.attachments = draft.attachments.filter((other) => other !== item); keepDraft(session.id); renew((count) => count + 1); }} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
@@ -447,9 +453,9 @@ function Composer({ session, working, onSent }) {
           onInput=${() => { changed(field.current.value); grow(field.current); }} onKeyDown=${keydown}
           onPaste=${pasteFiles(upload)} onFocus=${isolate} onBlur=${release}></textarea>
         </div>
-        <button class="button button-primary composer-send" type="button" aria-label=${working ? "Queue" : "Send"}
+        <button class="button button-primary composer-send" type="button" aria-label=${shell ? "Run in the shell" : sendWord}
           disabled=${busy || !ready || draft.uploads.length > 0} onClick=${send}>
-          <span class="send-mark" aria-hidden="true"><${Icon} name="send" /></span><span class="send-text">${working ? "Queue" : "Send"}</span>
+          <span class="send-mark" aria-hidden="true"><${Icon} name="send" /></span><span class="send-text">${sendWord}</span>
         </button>
       </div>
     </div>`;

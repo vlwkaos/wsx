@@ -437,6 +437,8 @@ div.steps .steps-summary { cursor: default; }
   background: var(--color-surface); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-sheet);
 }
 .app:not([data-wide]) .composer:focus-within .composer-row { border-color: var(--color-accent); }
+/* A `!` line runs in Claude's shell mode: the field's border says so, as Claude's own does. */
+.app:not([data-wide]) .composer[data-shell] .composer-row { border-color: var(--color-attention); }
 .app:not([data-wide]) .composer-input { order: -1; flex-basis: 100%; }
 .app:not([data-wide]) .composer-field, .app:not([data-wide]) .composer-mirror { min-height: 0; padding: 0; }
 .app:not([data-wide]) .composer-row > .icon-button,
@@ -520,6 +522,7 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
   border: 0; background: none; resize: none; line-height: var(--line-height); outline: none;
 }
 .composer:focus-within { border-top-color: var(--color-accent); }
+.composer[data-shell] { border-top-color: var(--color-attention); }
 .chips { list-style: none; margin: 0; padding: 0 var(--space-2) var(--space-1); display: flex; flex-wrap: wrap; gap: var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); }
 .chips li { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; }
 .chips li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

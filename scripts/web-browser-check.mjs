@@ -298,6 +298,19 @@ async function chats() {
     || working.live.join() !== "Thinking" || working.pulse !== "pulse") {
     await fail(`the working chat is wrong: ${JSON.stringify(working)}`);
   }
+  // A `!` line runs in Claude's shell mode: the button says Run and the border changes; `!`
+  // alone is a message.
+  const typeInto = (text) => evaluate(`(() => { const field = document.querySelector('.composer-field'); field.value = ${JSON.stringify(text)};
+    field.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  const shellState = () => evaluate(`({ shell: document.querySelector('.composer').hasAttribute('data-shell'),
+    send: document.querySelector('.composer .send-text').textContent })`);
+  await typeInto("! ls -la");
+  await until("document.querySelector('.composer').hasAttribute('data-shell')", "a ! line did not mark the composer");
+  const shelled = await shellState();
+  await typeInto("!");
+  const bare = await shellState();
+  await typeInto("");
+  if (shelled.send !== "Run" || bare.shell || bare.send !== "Queue") await fail(`the shell line state is wrong: ${JSON.stringify({ shelled, bare })}`);
   // One column: the user's message ends, and the composer's button ends, where the agent's
   // text column ends; the button is as high as any control.
   const column = await evaluate(`(() => { const edge = (selector, side) => Math.round(document.querySelector(selector).getBoundingClientRect()[side]);
