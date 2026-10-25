@@ -440,6 +440,19 @@ await until("!!document.querySelector('.log .bubble') && !!document.querySelecto
 // other projects; no row of the first read slid in.
 if (await count(".log [data-fresh]")) await fail("rows of the first read play the entry");
 const optionNamed = (name) => `[...document.querySelectorAll('.slash-option')].find((node) => node.querySelector('.slash-name')?.textContent === ${JSON.stringify(name)})`;
+// A failed read shows the server's error and a Retry in the list, not "Loading…".
+await evaluate(`(() => { const real = window.fetch; globalThis.realFetch = real;
+  window.fetch = (url, init) => String(url).includes('/mentions') ? Promise.resolve(new Response(JSON.stringify({ error: { code: 'unavailable', message: 'The host is busy.' } }), { status: 503 })) : real(url, init); })()`);
+await typeInto(".composer-field", "/");
+await until("document.querySelector('.slash-failed')?.textContent === 'The host is busy.' && [...document.querySelectorAll('.slash-note button')].some((node) => node.textContent === 'Retry')",
+  "a failed / list does not show its error and Retry", 30);
+if (await count(".slash-option")) await fail("a failed / list shows options");
+await shot("mentions-failed", ".composer-send");
+await evaluate("window.fetch = globalThis.realFetch; [...document.querySelectorAll('.slash-note button')].find((node) => node.textContent === 'Retry').click()");
+// ^ Retry reads again: `/` alone lists the first 50 of the owner's 73 linked skills.
+if ((await evaluate("document.activeElement?.className")) !== "composer-field") await fail("Retry took the focus from the field");
+await until("document.querySelectorAll('.slash-option').length === 50", "the / list does not show the first 50 skills", 30);
+await shot("mentions-all-skills", ".composer-send");
 await typeInto(".composer-field", "/fixture");
 await until(`!!${optionNamed("/fixture-skill")}`, "the / list does not show the fixture skill", 30);
 const skillOption = await evaluate(`(() => { const node = ${optionNamed("/fixture-skill")}; return { description: node.querySelector('.slash-description').textContent, source: node.querySelector('.slash-source').textContent,

@@ -2777,9 +2777,16 @@ def task_journey(args):
         home, state, project, other, calm, plans, bin_dir, tmp = (work / name for name in ('h', 's', 'demo', 'ui', 'calm', 'plans', 'bin', 't'))
         for folder in (home, state, project, other, calm, plans, bin_dir, tmp):
             folder.mkdir(mode=0o700)
-        # ^ The owner's skill the manager composer's `/` list shows (docs/web-client-tasks.md).
-        (home / '.claude/skills/fixture-skill').mkdir(parents=True)
-        (home / '.claude/skills/fixture-skill/SKILL.md').write_text('---\nname: fixture-skill\ndescription: Fixture skill for the manager\n---\nBODY-SECRET\n')
+        # ^ The owner's skills the manager composer's `/` list shows (docs/web-client-tasks.md), laid
+        # out as the owner's: each a link to ../../.agents/skills/<name>, and a folder with no skill.
+        owner_skills = ['fixture-skill'] + ['owner-skill-%02d' % number for number in range(72)]
+        for name in owner_skills:
+            description = 'Fixture skill for the manager' if name == 'fixture-skill' else '[engineering] ' + 'A long line of what the skill does. ' * 6
+            (home / '.agents/skills' / name).mkdir(parents=True)
+            (home / '.agents/skills' / name / 'SKILL.md').write_text('---\nname: %s\ndescription: %s\n---\nBODY-SECRET\n' % (name, description))
+            (home / '.claude/skills').mkdir(parents=True, exist_ok=True)
+            (home / '.claude/skills' / name).symlink_to('../../.agents/skills/' + name)
+        (home / '.claude/skills/synced').mkdir()
         project, other, calm, plans = project.resolve(), other.resolve(), calm.resolve(), plans.resolve()
         session_projects = [(work / name) for name in (('busy', 'quiet', 'gone') if args.browser else ())]
         for folder in session_projects:
@@ -3154,7 +3161,8 @@ merge_seconds = 3
         # The manager composer's lists: the owner's skills (name and description, never the body)
         # and the other registered projects with their manager's set name.
         mentions = steady(owner, 'GET', '/api/tasks/%d/mentions' % ids['plans'])[1]
-        assert [(skill['name'], skill['description']) for skill in mentions['skills']] == [('fixture-skill', 'Fixture skill for the manager')], mentions
+        assert [skill['name'] for skill in mentions['skills']] == owner_skills, mentions
+        assert mentions['skills'][0]['description'] == 'Fixture skill for the manager', mentions['skills'][0]
         assert 'BODY-SECRET' not in json.dumps(mentions) and mentions['truncated'] is False, mentions
         by_name = {item['name']: item for item in mentions['projects']}
         assert 'plans' not in by_name and by_name['demo']['manager'] is None and 'ui' in by_name, mentions['projects']
