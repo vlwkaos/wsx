@@ -1,9 +1,10 @@
 // Chat: the agent's own saved conversation as a typed timeline, what the agent does
 // now, the messages that wait for it, and the composer (docs/web-client-chat.md).
 import { api, resolve } from "./api.js";
-import { bytes, elapsed, html, Icon, useCallback, useEffect, useExit, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
-import { can, events, readMap, shows, stateOf, state, touch, writeMap } from "./store.js";
+import { bytes, elapsed, html, Icon, readMap, useCallback, useEffect, useExit, useFollowEnd, useLayoutEffect, useNow, useRef, useState, writeMap } from "./lib.js";
+import { can, events, shows, stateOf, state, touch } from "./store.js";
 import { Markdown } from "./markdown.js";
+import { QuoteChip, Quoted, quoteOf, useReply, withQuote } from "./reply.js";
 
 // Unsent text, attachments, files that still upload and the message that is not in the
 // saved conversation yet, per session. Kept outside the view so a route change does not
@@ -288,14 +289,16 @@ function tokenOf(listing, text) {
 }
 
 // A list of suggestions above a composer: the `/` commands and the `#` tasks. Each option
-// is `{ key, name, description, source }`; `notes` are muted lines at the end of its box.
+// is `{ key, name, description, source }`, a task's also its `number` after its title as the
+// name; `notes` are muted lines at the end of its box.
 export const Suggestions = ({ label, options, active, onPick, onHover, notes }) => html`
   <div class="slash">
     <ul class="slash-list" id="slash-list" role="listbox" aria-label=${label}>
       ${options.map((option, index) => html`
         <li key=${option.key} id=${`slash-${index}`} class="slash-option" role="option" aria-selected=${index === active}
           onPointerDown=${(event) => event.preventDefault()} onPointerEnter=${() => onHover(index)} onClick=${() => onPick(option)}>
-          <span class="slash-name">${option.name}</span>
+          <span class="slash-name" data-title=${option.number ? "" : null}>${option.name}</span>
+          ${option.number && html`<span class="task-number">${option.number}</span>`}
           <span class="slash-description">${option.description}</span>
           <span class="slash-source" data-tone=${option.tone}>${option.source}</span>
         </li>`)}
@@ -319,7 +322,7 @@ export function grow(node) {
   node.style.height = `${Math.min(node.scrollHeight, line * 6 + (node.offsetHeight - node.clientHeight))}px`;
 }
 
-function Composer({ session, working, onSent }) {
+function Composer({ session, working, reply, onReply, onSent }) {
   const draft = draftFor(session.id);
   const [, renew] = useState(0);
   const [error, setError] = useState("");
@@ -382,12 +385,13 @@ function Composer({ session, working, onSent }) {
     setError("");
     try {
       // A queued message shows in the queue; a delivered one waits for the saved conversation.
-      const answer = await post(session.id, body, draft.attachments);
+      const answer = await post(session.id, withQuote(reply, body), draft.attachments);
       draft.text = "";
       draft.attachments = [];
       keepDraft(session.id);
       field.current.value = "";
       grow(field.current);
+      onReply(null);
       onSent(answer);
     } catch (failure) {
       // The draft stays in the field; nothing was sent.
@@ -440,6 +444,7 @@ function Composer({ session, working, onSent }) {
       <${FileChips} files=${draft}
         onRemove=${(item) => { draft.attachments = draft.attachments.filter((other) => other !== item); keepDraft(session.id); renew((count) => count + 1); }} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
+      <${QuoteChip} quote=${reply} onRemove=${() => onReply(null)} />
       ${listOpen && html`<${CommandList} listing=${listing} matches=${matches} active=${active} onPick=${pick} onHover=${setActive} />`}
       <div class="composer-row" onPointerDown=${focusField}>
         <${AttachButton} onFiles=${upload} />
@@ -520,14 +525,28 @@ function Question({ session, question, onAnswered }) {
     </section>`;
 }
 
+// `rows` rendered by `render`, with the "New" line over `first`: the first reply that came
+// since this device last read the chat.
+export function withNewLine(rows, first, render) {
+  const shown = rows.map(render);
+  if (first) shown.splice(rows.indexOf(first), 0, html`<p class="log-new" key="new" role="separator" aria-label="New messages"><span>New</span></p>`);
+  return shown;
+}
+
+// Down to the end: "3 new" while replies below were not read yet.
+export const JumpButton = ({ unread, leaving = false, onClick }) => html`
+  <button class="jump" type="button" data-leaving=${leaving ? "" : null} tabIndex=${leaving ? -1 : null} onClick=${onClick}>
+    <${Icon} name="down" />${unread ? `${unread} new` : "Jump to latest"}</button>`;
+
 export function Chat({ session, onModel }) {
   const id = session.id;
   const [data, setData] = useState(null);
   // ^ The model of the newest reply, or of a switch the person made, for the top row.
   useEffect(() => { if (data?.model) onModel?.(data.model); }, [data?.model]);
   const [failure, setFailure] = useState("");
-  // New items keep the reader at the end only when the reader is at the end.
-  const { log, away, scrolled, toEnd } = useFollowEnd();
+  // New items keep the reader at the end only when the reader is at the end; the chat opens
+  // at its first unread reply, else where the reader left it.
+  const { log, away, unread, since, scrolled, toEnd } = useFollowEnd(`session-${id}`, Boolean(data));
   const [jump, leaving] = useExit(away);
   const generation = useRef(0);
   // The timeline the page shows, one request at a time, and whether a change came during it.
@@ -535,6 +554,12 @@ export function Chat({ session, onModel }) {
   const loading = useRef(false);
   const again = useRef(false);
   const draft = draftFor(id);
+  const [reply, setReply] = useState(null);
+  const quote = (line) => {
+    setReply(line);
+    document.querySelector(".chat .composer-field")?.focus();
+  };
+  const [gestures, menu] = useReply(quote);
 
   // ^ While an agent writes, a change comes several times a second. Each one used to fetch
   // the whole timeline (about 200 KB on a long conversation). Now the page asks from the
@@ -612,6 +637,7 @@ export function Chat({ session, onModel }) {
   // answer from the chat, a row that leads to the terminal. The draft stays for later.
   const blocked = status.key === "blocked";
   const lastUserBlock = list.findLast?.((block) => block.kind === "user");
+  const firstNew = since == null ? null : list.find((block) => block.kind === "assistant" && block.at_unix_ms > since);
   const terminalLink = shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`;
   // A hold the chat cannot name: the server sends the rows above the agent's editor, closed
   // until asked for (docs/web-client-chat.md "Timeline").
@@ -626,23 +652,24 @@ export function Chat({ session, onModel }) {
   return html`
     <div class="chat">
       <div class="log-wrap">
-      <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation" tabindex="0">
+      <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation" tabindex="0" ...${gestures}>
         ${data?.truncated && html`<p class="note">Older messages are not shown.</p>`}
         ${data && !list.length && !sent.length ? html`<p class="empty">${EMPTY_WORDS[data.status] ?? "No messages yet."}</p>` : null}
-        ${list.map((block, index) => block.steps
+        ${withNewLine(list, firstNew, (block, index) => block.steps
           ? html`<${Steps} key=${block.id} items=${block.steps} live=${Boolean(working) && index === list.length - 1} />`
           : block.kind === "summary" ? html`<${Summary} key=${block.id} id=${`summary-${block.id}`} text=${block.text} />`
           : block.kind === "notice" ? html`<p key=${block.id} class="note chat-notice" role="status">${block.text}</p>`
           : html`
-            <article key=${block.id} class=${block.kind === "user" ? "message message-user" : "message"} data-kind=${block.kind}>
-              ${block.text && (block.kind === "user" ? html`<p class="prose">${block.text}</p>`
+            <article key=${block.id} class=${block.kind === "user" ? "message message-user" : "message"} data-kind=${block.kind}
+              data-key=${block.id} data-at=${block.at_unix_ms} data-in=${block.kind === "assistant" ? "" : null} data-quote=${block.text ? quoteOf(block.text) : null}>
+              ${block.text && (block.kind === "user" ? html`<${Quoted} text=${block.text} />`
                 : html`<${Markdown} text=${block.text} files=${block.attachments} />`)}
               <${Attachments} files=${block.attachments} />
               ${block === lastUserBlock && delivery && !sent.length ? html`<p class="note" role="status">${delivery}</p>` : null}
             </article>`)}
         ${sent.map((queued) => html`
-          <article key=${`sent-${queued.id}`} class="message message-user" data-pending>
-            ${queued.text && html`<p class="prose">${queued.text}</p>`}
+          <article key=${`sent-${queued.id}`} class="message message-user" data-pending data-key=${`sent-${queued.id}`} data-quote=${queued.text ? quoteOf(queued.text) : null}>
+            ${queued.text && html`<${Quoted} text=${queued.text} />`}
             <${Attachments} files=${queued.attachments} />
             ${queued.text && html`<${CopyText} text=${queued.text} label="Copy the sent message" />`}
             ${can("chat_send") && html`<button class="link-action" type="button" onClick=${() => act(`queue/${queued.id}/retry`)}>Send again</button>`}
@@ -655,8 +682,9 @@ export function Chat({ session, onModel }) {
             ${can("chat_send") && html`<button class="link-action" type="button" onClick=${() => act("cancel")}>Stop</button>`}
           </div>`}
       </div>
-      ${jump && html`<button class="jump" type="button" data-leaving=${leaving ? "" : null} tabIndex=${leaving ? -1 : null} onClick=${toEnd}><${Icon} name="down" />Jump to latest</button>`}
+      ${jump && html`<${JumpButton} unread=${unread} leaving=${leaving} onClick=${toEnd} />`}
       </div>
+      ${menu}
       ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
       ${waiting.length ? html`
         <ul class="queue" aria-label="Messages waiting for the agent">
@@ -681,6 +709,6 @@ export function Chat({ session, onModel }) {
           ${terminalLink}
         </div>`
       : html`${held}${can("chat_send") && html`<${Composer} session=${session} working=${Boolean(working) || waiting.some((queued) => !queued.failed)}
-        onSent=${() => { toEnd(); load(); }} />`}`}
+        reply=${reply} onReply=${setReply} onSent=${() => { toEnd(); load(); }} />`}`}
     </div>`;
 }

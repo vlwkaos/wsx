@@ -31,6 +31,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   RUN <command>  run that shell command (the wsx task commands it names) and quote its output
   SCRIPT         (a line) run the rest of the message as one shell script, heredocs too
   TABLE          answer with a wide markdown table that names #4 twice and #2
+  TABLE5         answer "Five columns:" with a table of five columns and 30 lines after it
   DIAGRAM        answer with a tall mermaid diagram, drawn after the bubble shows
   PAGE <section> <words>  replace that section of the project page (its sandbox entry names it)
   WRITE <path>   write <path> when an allowWrite entry and no denyWrite entry holds it, as Bash would
@@ -215,6 +216,14 @@ def manager_turn(text, project, settings):
         cell = 'a long cell that keeps going ' * 4
         replies.append('Where things stand:\n\n| Task | State | Note |\n|---|---|---|\n'
                        '| #4 | blocked | %s |\n| #4 | asks | %s |\n| #2 | ready | %s |' % (cell, cell, cell))
+    if 'TABLE5' in text.split():
+        rows = [('alpha', 'blocked', 'owner', 'Monday', 'waits for the network grant'),
+                ('beta', 'ready', 'manager', 'Tuesday', 'lands after the checks pass'),
+                ('gamma', 'working', 'worker', 'Wednesday', 'writes the migration notes'),
+                ('delta', 'done', 'owner', 'Thursday', 'shipped in the last release')]
+        table = '\n'.join('| %s |' % ' | '.join(row) for row in rows)
+        notes = '\n\n'.join('Note %d about the table.' % n for n in range(1, 31))
+        replies.append('Five columns:\n\n| Name | State | Owner | Since | Note |\n|---|---|---|---|---|\n%s\n\n%s' % (table, notes))
     if 'DIAGRAM' in text.split():
         steps = ' --> '.join('S%d[step %d]' % (n, n) for n in range(8))
         replies.append('The plan:\n\n```mermaid\nflowchart TD\n  %s\n```' % steps)

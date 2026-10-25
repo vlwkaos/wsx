@@ -4,6 +4,7 @@
 import { clock, html } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
+import { Quoted, quoteOf } from "./reply.js";
 import { TaskChip } from "./tasks.js";
 
 // Bubbles of one author closer together than this read as one group.
@@ -109,13 +110,14 @@ export function Bubble({ project, row, words, names, fresh }) {
       <p class="bubble-head"><${TaskChip} project=${project} id=${report.task} />${" "}<span class="bubble-state">· ${report.head}</span></p>
       <div class="bubble-body" id=${id}><${Markdown} text=${report.summary} words=${words} prose /></div>`;
   } else if (out) {
-    body = html`<div class="bubble-body" id=${id}><p class="prose">${words(row.entry.text)}</p></div><${Attachments} files=${row.entry.attachments} />`;
+    body = html`<div class="bubble-body" id=${id}><${Quoted} text=${row.entry.text} words=${words} /></div><${Attachments} files=${row.entry.attachments} />`;
   } else {
     body = html`<div class="bubble-body" id=${id}><${Markdown} text=${row.entry.text} words=${words} prose /></div>`;
   }
   return html`
     <article class="bubble" data-side=${out ? "out" : "in"} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}
-      data-at=${row.pending ? null : row.at}
+      data-at=${row.pending ? null : row.at} data-key=${row.key} data-in=${out || row.pending ? null : ""}
+      data-quote=${quoteOf(row.report ? row.report.summary : row.entry.text) || null}
       data-pending=${row.pending ? "" : null} aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}`}>
       ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${authorName(row.author, names)}</p>`}
       <div class="bubble-box">${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>

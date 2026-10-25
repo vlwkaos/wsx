@@ -3,11 +3,12 @@
 // task's or the project page's sheet over the chat (docs/web-client-tasks.md). Fixed actions
 // go straight to wsx.
 import { api } from "./api.js";
-import { html, Icon, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
-import { can, events, leaveFor, readMap, shows, state, touch, update, useStore, writeMap } from "./store.js";
+import { html, Icon, readMap, useEffect, useFollowEnd, useLayoutEffect, useRef, useState, writeMap } from "./lib.js";
+import { can, events, leaveFor, shows, state, touch, update, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
-import { AttachButton, FileChips, grow, isolate, pasteFiles, release, Suggestions, uploadFiles } from "./chat.js";
+import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, withNewLine } from "./chat.js";
 import { Bubble, conversation, Dots, StatusLine, Typing } from "./bubbles.js";
+import { QuoteChip, useReply, withQuote } from "./reply.js";
 import { TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
 import { ChecksPage } from "./checks.js";
@@ -94,16 +95,24 @@ export const running = (task) => task?.stage === "working";
 export function TaskChip({ project, id }) {
   const store = useStore();
   const task = store.tasks[project]?.tasks.find((candidate) => candidate.id === id);
-  // ^ A task that stops running settles its dot once instead of snapping from the pulse.
-  const live = running(task);
-  const settle = useAfter(live, LEAVE_MS * 3);
   if (!task) return html`<a class="task-chip" href=${taskLink(project, id)}>#${id}</a>`;
-  const [word, tone] = taskStage(task);
   return html`
-    <a class="task-chip" href=${taskLink(project, id)} title=${task.title} aria-label=${`#${id}, ${word}`}>
-      <span class="mark" data-tone=${tone} data-running=${live ? "" : null} data-settle=${settle ? "" : null} aria-hidden="true"></span>#${id}
+    <a class="task-chip" href=${taskLink(project, id)} title=${task.title} aria-label=${`#${id}, ${taskStage(task)[0]}`}>
+      <${StateMark} task=${task} />#${id}
     </a>`;
 }
+
+// A task's state dot. A task that stops running settles its dot once instead of snapping from the pulse.
+function StateMark({ task }) {
+  const live = running(task);
+  const settle = useAfter(live, LEAVE_MS * 3);
+  return html`<span class="mark" data-tone=${taskStage(task)[1]} data-running=${live ? "" : null} data-settle=${settle ? "" : null} aria-hidden="true"></span>`;
+}
+
+// A task in a list: its title first, then its number, small and muted, never cut. `state` is
+// for a screen reader, where the row's dot shows it.
+export const TaskTitle = ({ title, id, state }) => html`
+  <span class="row-title"><span class="row-label">${title}</span><span class="task-number">#${id}</span>${state && html`<span class="visually-hidden">, ${state}</span>`}</span>`;
 
 // One text-to-nodes function per project, so the markdown of a message is parsed once:
 // `#n` becomes a chip, and "project page" a link to the page.
@@ -180,8 +189,8 @@ async function act(project, item, action, body = {}) {
   return answer;
 }
 
-// One open item in the reservoir: its chip (an approval names its task in its label), its
-// title and what it waits for, with its one action. The title opens the task's sheet, where the
+// One open item in the reservoir: its state dot, its title and number (an approval names its
+// task in its label) and what it waits for, with its one action. The title opens the task's sheet, where the
 // other actions are. `onActing` says an action started, `onFailed` that it failed: the
 // reservoir moves the focus on when the row leaves, before or after the action's answer.
 function NeedRow({ project, item, index, onActing, onFailed, leaving }) {
@@ -267,15 +276,15 @@ function NeedRow({ project, item, index, onActing, onFailed, leaving }) {
   const context = item.kind === "approval" ? item.title ?? item.commit ?? ""
     : item.kind === "waiting" ? waitWords(item)
     : item.kind === "land" ? (trial?.stage === "live" ? "on the live site: try it" : item.reason) : "failed";
-  const label = item.kind === "approval" ? item.label : item.title;
+  // ^ An approval names its task in its label ("Approve land #3").
+  const task = item.kind === "approval" ? null : overview?.tasks.find((candidate) => candidate.id === item.task);
   const body = html`
-    <span class="row-label">${label}</span>
+    ${item.kind === "approval" ? html`<span class="row-label">${item.label}</span>` : html`<${TaskTitle} title=${item.title} id=${item.task} state=${task && taskStage(task)[0]} />`}
     ${context && html`<span class="row-context">${context}</span>`}`;
   return html`
     <li class="need" data-key=${itemKey(item)} data-leaving=${leaving ? "" : null} inert=${Boolean(leaving)}>
       <div class="row-link">
-        ${item.task != null && item.kind !== "approval" ? html`<${TaskChip} project=${project} id=${item.task} />`
-          : html`<span class="mark" data-tone=${KIND_TONE[item.kind]} aria-hidden="true"></span>`}
+        ${task ? html`<${StateMark} task=${task} />` : html`<span class="mark" data-tone=${KIND_TONE[item.kind]} aria-hidden="true"></span>`}
         ${item.task != null
           ? html`<a class="row-main row-open" href=${taskLink(project, item.task)}>${body}</a>`
           : html`<span class="row-main">${body}</span>`}
@@ -297,12 +306,12 @@ function NeedRow({ project, item, index, onActing, onFailed, leaving }) {
 const workingWords = (task) => task.conflict ? "resolving a conflict" : task.waiting?.on === "hand" ? "by hand"
   : task.waiting?.on === "check_slot" ? "waiting to run checks" : task.state === "checking" ? "running checks" : task.step ?? "";
 
-// A working task in the reservoir: its chip and title; the chip pulses.
+// A working task in the reservoir: its pulsing dot, title and number.
 const RunningRow = ({ project, task, leaving }) => html`
   <li class="need" data-leaving=${leaving ? "" : null} inert=${Boolean(leaving)}>
     <div class="row-link">
-      <${TaskChip} project=${project} id=${task.id} />
-      <a class="row-main row-open" href=${taskLink(project, task.id)}><span class="row-label">${task.title}</span>
+      <${StateMark} task=${task} />
+      <a class="row-main row-open" href=${taskLink(project, task.id)}><${TaskTitle} title=${task.title} id=${task.id} state=${taskStage(task)[0]} />
         ${workingWords(task) && html`<span class="row-context">${workingWords(task)}</span>`}</a>
     </div>
   </li>`;
@@ -465,7 +474,19 @@ const emptyNote = (mark, tasks, mentions, failed, retry) => mark === "#" ? (task
   : mark === "@" ? (mentions.projects.length ? "No project matches that." : "There is no other project.")
   : (mentions.skills.length ? "No skill matches that." : "You have no skills to lend the manager.");
 
-function ManagerComposer({ project, busy: thinking, onSent, field }) {
+// The `#` picker's tasks: the title first, the number after it. A task done or closed more than
+// a day ago folds away until the text after `#` names it (docs/web-client-tasks.md "Project screen").
+const DAY_MS = 86_400_000;
+const settled = (task) => ["done", "closed"].includes(task.stage) && Date.now() - task.updated_unix_ms > DAY_MS;
+const taskOptions = (tasks, query) => tasks
+  .filter((task) => (query || !settled(task)) && (String(task.id).startsWith(query) || task.title.toLowerCase().includes(query))).slice(0, 50)
+  .map((task) => ({ key: task.id, name: task.title, number: `#${task.id}`, source: taskStage(task)[0], tone: taskStage(task)[1], insert: `#${task.id} ` }));
+const foldedNote = (tasks, query) => {
+  const folded = query ? 0 : tasks.filter(settled).length;
+  return folded ? `${folded} done more than a day ago: type a number or a word to find ${folded === 1 ? "it" : "them"}.` : null;
+};
+
+function ManagerComposer({ project, busy: thinking, reply, onReply, onSent, field }) {
   const store = useStore();
   const [text, setText] = useState(() => readDrafts()[project] ?? "");
   const [caret, setCaret] = useState(0);
@@ -494,8 +515,7 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
   // ^ `#` lists tasks, `@` the other projects, `/` the owner's skills the manager can use. A
   // skill is asked for in words: the manager is headless and takes no slash command.
   const options = !typed ? null
-    : mark === "#" ? tasks.filter((task) => String(task.id).startsWith(typed.query) || task.title.toLowerCase().includes(typed.query)).slice(0, 50)
-      .map((task) => ({ key: task.id, name: `#${task.id}`, description: task.title, source: taskStage(task)[0], tone: taskStage(task)[1], insert: `#${task.id} ` }))
+    : mark === "#" ? taskOptions(tasks, typed.query)
     : mark === "@" ? within(mentions?.projects ?? [], typed.query, (other) => other.name)
       .map((other) => ({ key: other.id, name: `@${other.name}`, description: other.manager ?? "", source: "project", insert: `@${other.name} ` }))
     : within(mentions?.skills ?? [], typed.query, (skill) => skill.name)
@@ -527,11 +547,13 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
     setError("");
     try {
       const attachments = files.attachments.map((item) => item.hash);
-      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text: body, attachments } });
+      const text = withQuote(reply, body);
+      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text, attachments } });
       field.current.value = "";
       files.attachments = [];
       changed();
-      onSent({ id: answer.id, text: body });
+      onReply(null);
+      onSent({ id: answer.id, text });
     } catch (failure) {
       // The draft stays in the field; nothing was sent.
       setError(failure.message);
@@ -572,9 +594,10 @@ function ManagerComposer({ project, busy: thinking, onSent, field }) {
     <div class="composer">
       <${FileChips} files=${files} onRemove=${(item) => { files.attachments = files.attachments.filter((other) => other !== item); filesChanged(); }} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
+      <${QuoteChip} quote=${reply} onRemove=${() => onReply(null)} />
       ${listOpen && html`<${Suggestions} label=${LIST_LABELS[mark]} active=${active} onHover=${setActive} onPick=${pick}
         options=${options}
-        notes=${[!options.length && emptyNote(mark, tasks, mentions, failed, () => setAttempt((count) => count + 1))]} />`}
+        notes=${[!options.length && emptyNote(mark, tasks, mentions, failed, () => setAttempt((count) => count + 1)), mark === "#" && foldedNote(tasks, typed.query)]} />`}
       <div class="composer-row" onPointerDown=${focusField}>
         <${AttachButton} onFiles=${upload} />
         <div class="composer-input">
@@ -707,8 +730,10 @@ export function Manager({ project: id, task, page, checks }) {
   const [chat, setChat] = useState(null);
   const [failure, setFailure] = useState("");
   const [sent, setSent] = useState(null);
-  const { log, away, scrolled, toEnd } = useFollowEnd();
+  const { log, away, unread, since, scrolled, toEnd } = useFollowEnd(`project-${id}`, Boolean(chat));
   const field = useRef();
+  const [reply, setReply] = useState(null);
+  const [gestures, menu] = useReply((line) => { setReply(line); field.current?.focus(); });
   const loading = useRef(false);
   const again = useRef(false);
   const shown = useRef([]);
@@ -775,6 +800,7 @@ export function Manager({ project: id, task, page, checks }) {
     if (grouped) last.last = false;
     rows.push({ kind: "bubble", key: "sending", author: "owner", at: Date.now(), first: !grouped, last: true, pending: true, entry: { text: sent.text } });
   }
+  const firstNew = since == null ? null : rows.find((row) => row.kind === "bubble" && row.author !== "owner" && !row.pending && row.at > since);
   const typing = Boolean(chat?.busy);
   // ^ The typing bubble fades out as the reply replaces it.
   const typingShown = useAfter(typing, LEAVE_MS) || typing;
@@ -809,19 +835,20 @@ export function Manager({ project: id, task, page, checks }) {
       <div class="chat">
         <${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "bubble" && row.author !== "owner")?.at} sent=${sent} />
         <div class="log-wrap">
-          <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation with the manager" tabindex="0">
+          <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation with the manager" tabindex="0" ...${gestures}>
             ${cut.current ? html`<p class="note">Older messages are not shown.</p>` : null}
             ${chat && !rows.length ? html`<p class="empty">No messages yet. Ask the manager for a task or a status; it answers from the ledger.</p>` : null}
-            ${rows.map((row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${fresh.current.has(row.key)} />`
+            ${withNewLine(rows, firstNew, (row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${fresh.current.has(row.key)} />`
               : row.kind === "line" ? html`<${StatusLine} key=${row.key} parts=${row.parts} words=${words} fresh=${fresh.current.has(row.key)} />`
               : html`<${Note} key=${row.key} entry=${row.entry} />`)}
             ${typingShown && html`<${Typing} name=${names.manager} leaving=${!typing} />`}
           </div>
-          ${away && html`<button class="jump" type="button" onClick=${toEnd}><${Icon} name="down" />Jump to latest</button>`}
+          ${away && html`<${JumpButton} unread=${unread} onClick=${toEnd} />`}
         </div>
+        ${menu}
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
         <${Reservoir} project=${id} items=${items} tasks=${overview?.tasks ?? []} checking=${overview?.to_check ?? 0} />
-        ${can("task_act") && html`<${ManagerComposer} project=${id} busy=${typing} field=${field}
+        ${can("task_act") && html`<${ManagerComposer} project=${id} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
           onSent=${(message) => { toEnd(); setSent(message); load(); }} />`}
       </div>
       ${task != null && html`
