@@ -9,6 +9,12 @@ live="$main/.work/web-live"
 test -x "$live/wsx" || { echo "no live site at $live" >&2; exit 1; }
 command -v pm2 >/dev/null || { echo "pm2 is not on PATH" >&2; exit 1; }
 
+# ^ The end-to-end gate runs here, once for the newest commit after a batch of lands, not in
+# each task's checks. A failure stops the deploy and the manager sees it in the ledger.
+cargo build --locked -p wsx -p wsx-daemon
+python3 -B scripts/test-task.py
+python3 -B scripts/test-web-client.py --browser
+python3 -B scripts/runtime-smoke.py
 cargo build --release --locked -p wsx -p wsx-daemon
 # ^ wsxd sits next to wsx so the web build and the daemon it hands off to stay one revision.
 cp target/release/wsxd "$live/wsxd.new"

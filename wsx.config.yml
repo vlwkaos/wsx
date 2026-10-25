@@ -18,15 +18,13 @@ tasks:
   env:
     CARGO_INCREMENTAL: "0"
   minFreeGb: 3
-  # ^ One gate: the same checks a person runs before a release, after each result and each land.
+  # ^ Fast checks after each result and each land. The slow end-to-end scripts run once per
+  # batch of lands, in the deploy of main (scripts/deploy-web-live.sh).
   checks:
     - cargo fmt --all --check
     - cargo build -p wsx -p wsx-daemon
     - cargo nextest run --workspace --locked
-    - python3 -B scripts/test-task.py
-    - python3 -B scripts/test-web-client.py --browser
-    - python3 -B scripts/runtime-smoke.py
-  checkTimeoutSeconds: 2400
+  checkTimeoutSeconds: 1200
   # ^ Workers get the owner's skills; the project's words for each stage (docs/tasks.md "Workflow").
   skills: owner
   workflow:
