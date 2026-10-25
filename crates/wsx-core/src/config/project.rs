@@ -131,7 +131,12 @@ struct TaskWorkflowFile {
     batch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     idle: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    steps: Option<Vec<crate::model::workspace::WorkflowStep>>,
 }
+
+/// At most this many workflow steps, each a turn of the worker.
+const MAX_WORKFLOW_STEPS: usize = 12;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -391,20 +396,81 @@ fn warn_once(warning: String) {
 /// The task settings of a project. Unlike `load_project_config`, a file that
 /// cannot be read or parsed is an error: a task must not run with default tools.
 pub fn load_task_config(repo_path: &Path) -> Result<TaskConfig, String> {
-    let canonical = repo_path.join(PROJECT_CONFIG_FILE);
-    if !canonical.exists() {
+    let mut tasks = read_tasks(&repo_path.join(PROJECT_CONFIG_FILE))?;
+    // ^ The owner's own workflow applies to every project that names no steps of its own.
+    if tasks.workflow.steps.is_empty() {
+        if let Some(path) = owner_config_path() {
+            tasks.workflow.steps = read_tasks(&path)?.workflow.steps;
+        }
+    }
+    Ok(tasks)
+}
+
+/// `~/.config/wsx/wsx.config.yml` (or under `$XDG_CONFIG_HOME`): only its
+/// `tasks.workflow.steps` is read. ref: docs/tasks.md "Workflow"
+fn owner_config_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+        .map(|dir| dir.join("wsx").join(PROJECT_CONFIG_FILE))
+}
+
+fn read_tasks(path: &Path) -> Result<TaskConfig, String> {
+    if !path.exists() {
         return Ok(TaskConfig::default());
     }
-    let text = read_bounded(&canonical)
-        .map_err(|error| format!("cannot read {}: {error}", canonical.display()))?;
-    parse_yaml(&canonical, &text)
+    let text =
+        read_bounded(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    parse_yaml(path, &text)
         .map(|config| {
             if let Some(warning) = config.notice {
                 warn_once(warning);
             }
             config.tasks
         })
-        .map_err(|error| format!("cannot parse {}: {error}", canonical.display()))
+        .map_err(|error| format!("cannot parse {}: {error}", path.display()))
+}
+
+/// Names are short words, unique; each prompt is one bounded text.
+fn validate_steps(
+    steps: Vec<crate::model::workspace::WorkflowStep>,
+) -> Result<Vec<crate::model::workspace::WorkflowStep>, String> {
+    if steps.len() > MAX_WORKFLOW_STEPS {
+        return Err(format!(
+            "tasks.workflow.steps has {} steps; at most {MAX_WORKFLOW_STEPS}",
+            steps.len()
+        ));
+    }
+    let mut names = std::collections::HashSet::new();
+    steps
+        .into_iter()
+        .map(|step| {
+            let name = step.name.trim().to_string();
+            let prompt = step.prompt.trim().to_string();
+            let named = (1..=32).contains(&name.len())
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            if !named {
+                return Err(format!(
+                    "tasks.workflow.steps: {name:?} must be 1 to 32 letters, digits, - or _"
+                ));
+            }
+            if !names.insert(name.clone()) {
+                return Err(format!("tasks.workflow.steps: {name:?} is named twice"));
+            }
+            if prompt.is_empty()
+                || prompt.len() > MAX_DEFAULT_COMMAND_BYTES
+                || prompt.chars().any(|c| c.is_control() && c != '\n')
+            {
+                return Err(format!(
+                    "tasks.workflow.steps.{name}.prompt must be 1 to {MAX_DEFAULT_COMMAND_BYTES} bytes of text"
+                ));
+            }
+            Ok(crate::model::workspace::WorkflowStep { name, prompt })
+        })
+        .collect()
 }
 
 fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
@@ -454,6 +520,9 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         text(workflow.review, "review", &mut config.workflow.review)?;
         text(workflow.batch, "batch", &mut config.workflow.batch)?;
         text(workflow.idle, "idle", &mut config.workflow.idle)?;
+        if let Some(steps) = workflow.steps {
+            config.workflow.steps = validate_steps(steps)?;
+        }
     }
     config.checks = validate_list(file.checks, "tasks.checks", MAX_DEFAULT_COMMAND_BYTES)?;
     config.env = validate_env(file.env)?;

@@ -168,6 +168,12 @@ pub struct TaskRecord {
     #[serde(default)]
     pub grants: Vec<Access>,
     pub checks: Vec<String>,
+    /// `tasks.workflow.steps` as they were when the task was created, and the index of the
+    /// step the worker is on. ref: docs/tasks.md "Workflow"
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<crate::model::workspace::WorkflowStep>,
+    #[serde(default)]
+    pub step: u32,
     /// `tasks.env` as it was when the task was created: the worker's and the checks'.
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,

@@ -136,6 +136,16 @@ pub struct TaskWorkflow {
     /// The prompt of the task the manager host starts at an idle recap after a land; empty
     /// is off.
     pub idle: String,
+    /// The worker's turns in order, each one step; empty is one build turn. The project's
+    /// steps, or else the owner's in `~/.config/wsx/wsx.config.yml`.
+    pub steps: Vec<WorkflowStep>,
+}
+
+/// One step of `tasks.workflow.steps`: the host sends `prompt` as its own worker turn.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, Serialize)]
+pub struct WorkflowStep {
+    pub name: String,
+    pub prompt: String,
 }
 
 impl Default for TaskWorkflow {
@@ -151,6 +161,7 @@ impl Default for TaskWorkflow {
                     same, and lower the net line count. The checks prove the behavior is unchanged."
                     .into(),
             idle: String::new(),
+            steps: Vec::new(),
         }
     }
 }

@@ -265,7 +265,11 @@ impl Host {
             // ^ A new task: no conversation yet, so its first turn has not run.
             TaskState::Working if self.record.agent_session.is_none() => {
                 let prompt = self.dir.prompt()?.context("the task log has no prompt")?;
-                self.start_turn(&prompt);
+                let text = match self.step_text() {
+                    Some(step) => format!("{prompt}\n\n{step}"),
+                    None => prompt,
+                };
+                self.start_turn(&text);
             }
             TaskState::Working | TaskState::Checking => {
                 // ^ A restarted pane cannot rejoin a turn of the process it lost.
@@ -854,6 +858,16 @@ impl Host {
             ));
             return;
         }
+        // ^ A done step that is not the last starts the next one, with any queued message.
+        // ref: docs/tasks.md "Workflow"
+        if result.status == "done" && (self.record.step as usize) + 1 < self.record.steps.len() {
+            self.record.step += 1;
+            self.save();
+            let mut text: Vec<String> = self.pending.drain(..).collect();
+            text.extend(self.step_text());
+            self.start_turn(&text.join("\n\n"));
+            return;
+        }
         // ^ A command is the worker's to run: an item that names one goes back once, within
         // the check retries. ref: docs/tasks.md "To check"
         let commands: Vec<&str> = result
@@ -879,6 +893,27 @@ impl Host {
             return;
         }
         self.start_checks();
+    }
+
+    /// The turn text of the current workflow step, when the task has steps.
+    fn step_text(&self) -> Option<String> {
+        let total = self.record.steps.len();
+        let index = self.record.step as usize;
+        let step = self.record.steps.get(index)?;
+        let end = match index + 1 == total {
+            true => "This is the last step: finish the task and return your final result.",
+            false => {
+                "Do only this step. When it is done, return status done with what it found \
+                      or did; the next step follows."
+            }
+        };
+        self.say(&format!("step {} of {total}: {}", index + 1, step.name));
+        Some(format!(
+            "Step {} of {total}, {}: {}\n{end}",
+            index + 1,
+            step.name,
+            step.prompt
+        ))
     }
 
     /// Hold `what` while less than `tasks.minFreeGb` is free: the task shows the reason and
