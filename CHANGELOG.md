@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- A land no longer refuses because the main checkout has uncommitted files the land does not touch: they stay as they are and the land goes on. It refuses only for changed files the land changes too, names only those, and says where to commit or stash them; the message starts with words, so a copy no longer drops the path's leading `/`. The ledger (`land_blocked_by`) and the web task sheet, under *Land*, say before the press which files would stop a ready task's land ([docs/tasks.md](docs/tasks.md) "Landing").
 - A task host restarted while its task was checking runs the checks again. Before, the task waited for the owner with "the host restarted during a turn".
 - A task check that leaves a process behind, such as a test daemon or a push fixture from a killed test run, no longer holds the machine's check slot. Before, the host waited for that process to close the check's output, so one check never ended and every other task stayed in `checking` for hours. Now the check ends 2 seconds after its shell with the output read so far. The same holds for wsx's git and plugin commands.
 - The manager chat's `/` and `@` lists show why they are empty when their read fails, with a Retry, instead of "Loading…" with no end. Before, a failed read of the owner's skills (the server restarting, a refused or timed-out request) left the list at "Loading…" until the owner cleared the field and typed `/` again.

@@ -247,6 +247,10 @@ export function TaskPage({ project, task, onClose, grip }) {
     actions.includes("handback") && button(act.busy === "handback" ? "Handing back…" : "Hand back", () => act.run("handback", `api/tasks/${project}/t/${task}/handback`, {})),
     store.tasks[project]?.preview && detail.state !== "closed" && html`<${TryButton} project=${project} task=${task} />`,
   ].filter(Boolean) : [];
+  // ^ The main checkout's changed files this land would overwrite, said before the press
+  // (docs/tasks.md "Landing"); Land stays, it refuses until they are committed or stashed.
+  const blocked = acting && actions.includes("land") && detail.land_blocked_by?.length > 0 && html`
+    <p class="task-approval" role="note">Land stops: ${detail.default_branch} has uncommitted changes in ${detail.land_blocked_by.join(", ")}. Commit or stash them in the main checkout first.</p>`;
   const held = detail.hold && html`<p class="task-approval">Held for you to try: ${detail.hold}</p>`;
   const report = sections(detail.report);
   const entries = detail.timeline.entries;
@@ -257,6 +261,7 @@ export function TaskPage({ project, task, onClose, grip }) {
         <${TaskStory} detail=${detail} words=${words}>${held}${buttons.length ? html`
           <div class="task-next" role="group" aria-label="Actions">
             <div class="actions">${buttons}</div>
+            ${blocked}
           </div>` : null}</${TaskStory}>
 
         ${FOLDS.filter((title) => report[title] != null).map((title) => {

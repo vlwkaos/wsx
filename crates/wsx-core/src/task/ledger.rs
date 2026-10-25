@@ -4,7 +4,7 @@
 use super::view::{
     attention, check_outcomes, clip, overlaps, project_tasks, read_result, task_summary,
 };
-use super::{checks, copy, store, DeployKind, DeployRecord, TaskRecord, WaitOn};
+use super::{checks, copy, store, DeployKind, DeployRecord, TaskRecord, TaskState, WaitOn};
 use crate::config::project::load_task_config;
 use crate::model::workspace::TaskConfig;
 use crate::{ops, runtime};
@@ -77,6 +77,9 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
                 "asks": record.waits_on(WaitOn::Permission)
                     .then(|| result.as_ref().map(|r| r["asks"].clone()))
                     .flatten(),
+                // ^ The main checkout's changed files this land would overwrite: pressing
+                // Land refuses until they are committed or stashed (docs/tasks.md "Ledger").
+                "land_blocked_by": (record.state == TaskState::Ready).then(|| land_blockers(record)),
             }),
         ));
     }
@@ -123,6 +126,14 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         ledger["open_omitted"] = json!(omitted);
     }
     Ok(ledger)
+}
+
+/// The main checkout's changed files that landing `record`'s revision would overwrite;
+/// none when that cannot be told. ref: docs/tasks.md "Landing"
+pub fn land_blockers(record: &TaskRecord) -> Vec<String> {
+    copy::resolve_commit(&record.working_copy, "HEAD")
+        .and_then(|head| copy::land_blockers(&record.project_path, &record.default_branch, &head))
+        .unwrap_or_default()
 }
 
 /// At most `chars` characters of `text`, its lines kept.

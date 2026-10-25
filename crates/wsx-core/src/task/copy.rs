@@ -398,24 +398,69 @@ pub fn rebase(working_copy: &Path, onto: &str) -> Result<Rebase> {
     ))
 }
 
-/// Move `default_branch` from `old_tip` to `commit`, fast-forward only. Where the branch is
-/// checked out the checkout must have no tracked changes; elsewhere the ref moves with
-/// `old_tip` as guard, so a branch that moved meanwhile is never overwritten.
-pub fn fast_forward(main: &Path, default_branch: &str, old_tip: &str, commit: &str) -> Result<()> {
-    let checkout = list_worktrees(main)?
+/// The worktree that has `branch` checked out, if one has.
+fn checkout_of(main: &Path, branch: &str) -> Result<Option<PathBuf>> {
+    Ok(list_worktrees(main)?
         .into_iter()
-        .find(|worktree| worktree.branch == default_branch);
-    match checkout {
+        .find(|worktree| worktree.branch == branch)
+        .map(|worktree| worktree.path))
+}
+
+/// Files `checkout` has changed (tracked or new) that the commits from its HEAD to `commit`
+/// change too: a fast-forward would overwrite them. Other changes stay as they are.
+/// ref: docs/tasks.md "Landing"
+fn overlapping_changes(checkout: &Path, commit: &str) -> Result<Vec<String>> {
+    // ^ Three dots: from where `commit` left HEAD, so a task that still needs its rebase
+    // shows the files its own commits change.
+    let landing = git(
+        checkout,
+        &[
+            "diff",
+            "--name-only",
+            "--no-renames",
+            &format!("HEAD...{commit}"),
+        ],
+    )?;
+    let landing: std::collections::HashSet<&str> = landing.lines().collect();
+    let tracked = git(checkout, &["diff", "--name-only", "--no-renames", "HEAD"])?;
+    let new = git(checkout, &["ls-files", "--others", "--exclude-standard"])?;
+    Ok(tracked
+        .lines()
+        .chain(new.lines())
+        .filter(|path| landing.contains(path))
+        .take(MAX_LISTED_CHANGES)
+        .map(str::to_string)
+        .collect())
+}
+
+/// What would stop `commit` from landing on `default_branch`: the checkout's changed files
+/// it overlaps, or none when the branch is not checked out. ref: docs/tasks.md "Ledger"
+pub fn land_blockers(main: &Path, default_branch: &str, commit: &str) -> Result<Vec<String>> {
+    match checkout_of(main, default_branch)? {
+        Some(checkout) => overlapping_changes(&checkout, commit),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Move `default_branch` from `old_tip` to `commit`, fast-forward only. Where the branch is
+/// checked out, its changed files that the move also changes refuse it; other changes stay
+/// (`git merge --ff-only` keeps them). Elsewhere the ref moves with `old_tip` as guard, so a
+/// branch that moved meanwhile is never overwritten. Nothing stashes or commits the owner's
+/// files. ref: docs/tasks.md "Landing"
+pub fn fast_forward(main: &Path, default_branch: &str, old_tip: &str, commit: &str) -> Result<()> {
+    match checkout_of(main, default_branch)? {
         Some(checkout) => {
-            let changes = tracked_changes(&checkout.path)?;
-            if !changes.is_empty() {
+            let blocked = overlapping_changes(&checkout, commit)?;
+            if !blocked.is_empty() {
+                // ^ Words first: a path at the start of the line lost its `/` when the owner
+                // copied the message from the page (2026-10-25).
                 bail!(
-                    "{} has {default_branch} checked out with changes: {}; commit or stash them, then land again",
-                    checkout.path.display(),
-                    changes.join(", ")
+                    "{default_branch} has uncommitted changes in {} that this land changes too; commit or stash them in {}, then land again",
+                    blocked.join(", "),
+                    checkout.display()
                 );
             }
-            git(&checkout.path, &["merge", "--ff-only", "--quiet", commit]).map(drop)
+            git(&checkout, &["merge", "--ff-only", "--quiet", commit]).map(drop)
         }
         None => git(
             main,

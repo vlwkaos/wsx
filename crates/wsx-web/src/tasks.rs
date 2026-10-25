@@ -464,6 +464,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         json!(record.state == TaskState::Working && view::resolving_conflict(&dir));
     if record.state == TaskState::Ready {
         summary["land_reason"] = json!(land_reason(&dir, &record, land_auto));
+        summary["land_blocked_by"] = json!(ledger::land_blockers(&record));
     }
     // ^ This task's items of the project's "To check" list, and the task a fail started.
     let items = checks::read(&scope.store).unwrap_or_default();
