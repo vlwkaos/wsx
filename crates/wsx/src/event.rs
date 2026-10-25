@@ -522,6 +522,7 @@ fn translate_key(key: KeyEvent) -> Action {
         }
         (KeyModifiers::NONE, KeyCode::Char('g')) => Action::AssignGroup,
         (KeyModifiers::NONE, KeyCode::Char('/')) => Action::SearchStart,
+        (KeyModifiers::NONE, KeyCode::Char('t')) => Action::Tasks,
         (KeyModifiers::SHIFT, KeyCode::Char('{')) | (KeyModifiers::NONE, KeyCode::Char('{')) => {
             Action::GroupPrev
         }

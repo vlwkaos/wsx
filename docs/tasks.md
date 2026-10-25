@@ -212,6 +212,15 @@ Some work the owner wants to try before it lands: a larger piece handed over, a 
 
 When it would pass 16 KiB, the memos are left out first, then the least urgent open tasks, counted in `open_omitted`.
 
+## TUI
+
+`t` in the TUI's Workspace opens the selected project's Tasks view, read-only, from the same ledger (`crates/wsx/src/task_list.rs`, `crates/wsx/src/ui/tasks.rs`):
+
+- The heading names the project with the To check count and the waiting approvals.
+- `Open` lists the open tasks waiting, failed, ready, checking, then working; `Recent` the ledger's landed and closed ones. Each row is the title, the number in muted text, the state word and what it waits for (`<on>: <reason>`, or `try first: <hold>`). Below 40 columns a row drops the number, below 64 what it waits for; the title and state stay.
+- `j`/`k` move, `Enter` shows the task: state, what it waits for, each check as passed or failed, its To check items, then the summary (or a closed task's memo). `j`/`k` scroll it, `Esc` goes back; `Esc` or `t` closes the list.
+- While it is open the view compares the size and time of the store's files (`store::watched_files`, as the web client's watch) every second off the UI thread, and reads the ledger again only when one changed. A failed read keeps the last list and says why above it.
+
 ## Manager
 
 ```sh

@@ -40,6 +40,7 @@ pub enum Action {
     GroupPrev,
     GroupNext,
     GroupManager,
+    Tasks,
     InputChar(char),
     InputBackspace,
     InputTab,

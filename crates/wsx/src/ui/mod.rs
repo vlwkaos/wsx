@@ -14,6 +14,7 @@ pub mod preview;
 pub mod review;
 pub mod routine_editor;
 pub mod search_feedback;
+pub mod tasks;
 pub mod terminal_title;
 pub mod theme;
 pub mod upgrade;
@@ -529,6 +530,7 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
                 }
             }
         }
+        Mode::Tasks { list } => tasks::render(frame, area, list),
         Mode::Workspace
         | Mode::Terminal { .. }
         | Mode::Move { .. }
@@ -694,6 +696,20 @@ fn status_bar_view(app: &App) -> StatusBarView {
             "DETAIL",
             theme::ModeBadge::Info,
             vec!["(j/k)scroll".into(), "Esc: close".into()],
+        ),
+        Mode::Tasks { list } if list.detail.is_some() => (
+            "TASK",
+            theme::ModeBadge::Info,
+            vec!["(j/k)scroll".into(), "Esc: back".into()],
+        ),
+        Mode::Tasks { .. } => (
+            "TASKS",
+            theme::ModeBadge::Info,
+            vec![
+                "(j/k)move".into(),
+                "(enter)detail".into(),
+                "Esc: close".into(),
+            ],
         ),
     };
     // ^ Global quit hints stay right-aligned; single-key labels complete the word after the key.
@@ -928,6 +944,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  g             Assign project group",
         "  d             Unregister project",
         "  e             View/edit wsx.config.yml",
+        "  t             Tasks (read-only), Enter for one task's detail",
         "",
         " Worktree",
         "  w             Add worktree (branch: prompt)",

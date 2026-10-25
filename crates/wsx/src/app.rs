@@ -522,6 +522,9 @@ pub enum Mode {
         routine_name: String,
         scroll: u16,
     },
+    Tasks {
+        list: Box<crate::task_list::TaskList>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2730,6 +2733,11 @@ impl App {
         if self.review.as_mut().is_some_and(|review| review.poll()) {
             self.needs_redraw = true;
         }
+        if let Mode::Tasks { list } = &mut self.mode {
+            if list.poll() {
+                self.needs_redraw = true;
+            }
+        }
         self.expire_notice(Instant::now());
         if let Some(target) = self.pending_integration_demand.take() {
             self.prompt_for_integration_if_needed(target);
@@ -4058,6 +4066,21 @@ impl App {
         if matches!(self.mode, Mode::RoutineEditor { .. }) {
             return self.dispatch_routine_editor(action);
         }
+        if let Mode::Tasks { list } = &mut self.mode {
+            match (action, list.detail.is_some()) {
+                (Action::NavigateDown, false) => list.select(1),
+                (Action::NavigateUp, false) => list.select(-1),
+                (Action::Select, false) => list.open_detail(),
+                (Action::NavigateDown, true) => list.scroll = list.scroll.saturating_add(1),
+                (Action::NavigateUp, true) => list.scroll = list.scroll.saturating_sub(1),
+                (Action::InputEscape | Action::Quit | Action::Select, true) => list.detail = None,
+                (Action::InputEscape | Action::Quit | Action::Tasks, false) => {
+                    self.mode = Mode::Workspace
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
         if matches!(self.mode, Mode::RoutineDetail { .. }) {
             match action {
                 Action::InputEscape | Action::Quit | Action::Select => self.mode = Mode::Workspace,
@@ -4125,7 +4148,8 @@ impl App {
             | Mode::GroupManager { .. } => unreachable!(),
             Mode::RoutinePresetPicker { .. }
             | Mode::RoutineEditor { .. }
-            | Mode::RoutineDetail { .. } => unreachable!(),
+            | Mode::RoutineDetail { .. }
+            | Mode::Tasks { .. } => unreachable!(),
         }
         Ok(())
     }
@@ -4396,6 +4420,7 @@ impl App {
             Action::GroupNext => self.action_group_next(),
             Action::GroupPrev => self.action_group_prev(),
             Action::GroupManager => self.action_group_manager(),
+            Action::Tasks => self.action_tasks(),
             Action::MouseClick { col, row } => {
                 self.handle_mouse_click(col, row, terminal, false)?
             }
@@ -5298,6 +5323,27 @@ impl App {
             _ => self.set_error("Unexpected pane split response"),
         }
         Ok(())
+    }
+
+    fn action_tasks(&mut self) {
+        let project = match self.current_selection() {
+            Selection::Project(pi)
+            | Selection::Worktree(pi, _)
+            | Selection::Session(pi, _, _)
+            | Selection::Pane(pi, _, _, _)
+            | Selection::RoutinesHeader(pi)
+            | Selection::Routine(pi, _) => &self.workspace.projects[pi],
+            Selection::None => {
+                self.set_status("Select a project first");
+                return;
+            }
+        };
+        self.mode = Mode::Tasks {
+            list: Box::new(crate::task_list::TaskList::new(
+                project.name.clone(),
+                project.path.clone(),
+            )),
+        };
     }
 
     fn action_add_routine(&mut self) -> Result<()> {

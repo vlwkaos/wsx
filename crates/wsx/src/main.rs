@@ -11,6 +11,7 @@ mod review;
 mod search;
 mod session_state;
 mod task;
+mod task_list;
 mod terminal_surface;
 #[cfg(test)]
 mod terminal_surface_tests;
