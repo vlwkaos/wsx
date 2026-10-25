@@ -52,6 +52,7 @@
 
 ### Added
 
+- The TUI shows a project's tasks: `t` on a project, worktree or session opens them read-only, from the same ledger as the manager and the web client. Open tasks come first, those waiting on you, failed, ready, checking, then working, with the title, the number, the state as a word and what each waits for; then the recent landed and closed ones. The heading counts To check items and waiting approvals, `Enter` shows a task's checks, waiting reason and summary, and the list follows the tasks as they change. A narrow window keeps the title and the state ([docs/tasks.md](docs/tasks.md) "TUI").
 - In the web chat to a Claude session, a draft that is a `!` shell line changes the composer's border colour and its button reads *Run*, so it is clear the line runs in Claude's shell mode.
 - `tasks.workflow.steps`: your own workflow as named steps, such as context, plan, build, review and memo. The task host sends each step as its own turn of the worker's conversation, and the web shows the current one under *Running* (`plan (2/5)`). Steps in `~/.config/wsx/wsx.config.yml` apply to every project that has none of its own.
 - A session row in the web slides left to show Remove, which closes the session (`DELETE api/sessions/<id>`, with `session_start`); a task's session is refused.

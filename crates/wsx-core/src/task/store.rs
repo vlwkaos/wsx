@@ -678,6 +678,25 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
     }
     Ok(files)
 }
+
+/// Size and modification time of each file `watched_files` names that exists.
+pub type Stamp = std::collections::HashMap<PathBuf, (u64, i64, i64)>;
+
+/// The project's `Stamp`: a change in it means the ledger and the task views may differ.
+pub fn stamp(project_id: &str) -> Stamp {
+    watched_files(project_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|path| {
+            let metadata = fs::metadata(&path).ok()?;
+            Some((
+                path,
+                (metadata.len(), metadata.mtime(), metadata.mtime_nsec()),
+            ))
+        })
+        .collect()
+}
+
 pub const PAGE_FILE: &str = "page.md";
 pub const MAX_PAGE_BYTES: u64 = 256 * 1024;
 

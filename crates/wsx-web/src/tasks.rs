@@ -10,7 +10,6 @@ use crate::{
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -1083,27 +1082,10 @@ pub fn deny(scope: &Scope, id: &str, note: Option<String>) -> Outcome<Value> {
     Ok(json!({ "ok": true }))
 }
 
-/// Size and modification time of each followed file of a project.
-type Stamp = HashMap<PathBuf, (u64, i64, i64)>;
-
-fn stamp(store_id: &str) -> Stamp {
-    store::watched_files(store_id)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|path| {
-            let metadata = std::fs::metadata(&path).ok()?;
-            Some((
-                path,
-                (metadata.len(), metadata.mtime(), metadata.mtime_nsec()),
-            ))
-        })
-        .collect()
-}
-
 /// What the event observer remembers about each project's tasks between polls.
 #[derive(Default)]
 pub struct Watch {
-    stamps: HashMap<String, Stamp>,
+    stamps: HashMap<String, store::Stamp>,
     overviews: HashMap<u64, String>,
     /// Each task's (state, revision) when last seen, by project; a project seen for the
     /// first time, as at a server start, notifies nothing.
@@ -1356,7 +1338,7 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
     }
     let scopes = scopes(snapshot, &app.site.access);
     for scope in &scopes {
-        let now = stamp(&scope.store);
+        let now = store::stamp(&scope.store);
         let before = watch.stamps.insert(scope.store.clone(), now.clone());
         if before.as_ref() == Some(&now) {
             continue;

@@ -23,6 +23,7 @@ import subprocess
 import sys
 import termios
 import time
+import unicodedata
 
 import wsxd_client
 
@@ -50,22 +51,19 @@ LAND_CONFIG = '''tasks:
 '''
 
 
-def tui_text(wsx, env, cwd, until, seconds=15):
-    """The real TUI in a private PTY (120x40): its output as text without escapes, read until
-    `until` (a regex) matches or the time is up, then the TUI quits."""
+def tui_run(wsx, env, cwd, done, cols=120, seconds=15):
+    """The real TUI in a private PTY (`cols`x40). `done(output, write)` sees all output so far
+    after each read and may write keys; the TUI quits when it returns true or the time is up."""
     master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, 120, 0, 0))
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, cols, 0, 0))
     proc = subprocess.Popen([str(wsx)], cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave,
                             start_new_session=True)
-    output, text, deadline = bytearray(), '', time.monotonic() + seconds
+    output, deadline = bytearray(), time.monotonic() + seconds
     try:
         while time.monotonic() < deadline and proc.poll() is None:
             if select.select([master], [], [], 0.1)[0]:
                 output += os.read(master, 65536)
-                # ^ Cells of one style are written in one run; escapes split the runs.
-                text = re.sub(r'\x1b(\[[0-9;?<>=]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[()][0-9A-Za-z]|.)', '\n',
-                              output.decode('utf-8', 'replace'))
-                if re.search(until, text):
+                if done(output, lambda keys: os.write(master, keys)):
                     break
     finally:
         if proc.poll() is None:
@@ -77,6 +75,19 @@ def tui_text(wsx, env, cwd, until, seconds=15):
                 proc.wait(timeout=3)
         os.close(master)
         os.close(slave)
+
+
+def tui_text(wsx, env, cwd, until, seconds=15):
+    """The TUI's output as text without escapes, read until `until` (a regex) matches."""
+    text = ''
+
+    def done(output, _write):
+        nonlocal text
+        # ^ Cells of one style are written in one run; escapes split the runs.
+        text = re.sub(r'\x1b(\[[0-9;?<>=]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[()][0-9A-Za-z]|.)', '\n',
+                      output.decode('utf-8', 'replace'))
+        return re.search(until, text)
+    tui_run(wsx, env, cwd, done, seconds=seconds)
     return text
 
 
@@ -93,6 +104,53 @@ def slowest(count=8):
     ends = [at for _, at in PARTS[1:]] + [time.monotonic()]
     spans = [(name, round(end - at, 1)) for (name, at), end in zip(PARTS, ends)]
     return sorted(spans, key=lambda span: -span[1])[:count]
+
+
+def screen(output, cols, rows=40):
+    """The screen `output` leaves: the cursor moves, clears and prints the TUI writes, without
+    styles. ratatui writes only the cells that changed, so the raw text alone can split words."""
+    grid = [[' '] * cols for _ in range(rows)]
+    row = col = 0
+    tokens = re.finditer(r'\x1b\[([0-9;?<>=]*)([ -/]*[@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b.|(.)',
+                         output.decode('utf-8', 'replace'), re.S)
+    for token in tokens:
+        params, final, char = token.group(1), token.group(2), token.group(3)
+        if final == 'H':
+            numbers = [int(n) if n else 1 for n in params.split(';')] if params else [1, 1]
+            row, col = numbers[0] - 1, (numbers[1] if len(numbers) > 1 else 1) - 1
+        elif final == 'J' and params == '2':
+            grid = [[' '] * cols for _ in range(rows)]
+        elif final == 'K':
+            grid[row][col:] = [' '] * (cols - col)
+        elif char == '\r':
+            col = 0
+        elif char == '\n':
+            row = min(row + 1, rows - 1)
+        elif char is not None and char.isprintable() and 0 <= row < rows and col < cols:
+            grid[row][col] = char
+            col += 2 if unicodedata.east_asian_width(char) in 'WF' else 1
+    return '\n'.join(''.join(line).rstrip() for line in grid)
+
+
+def tui_screens(wsx, env, cwd, steps, cols=120):
+    """For each `(regex, keys)` step: wait until the screen matches, keep it, send the keys.
+    Returns the kept screens."""
+    screens, shown = [], ''
+
+    def done(output, write):
+        nonlocal shown
+        shown = screen(output, cols)
+        if re.search(steps[len(screens)][0], shown):
+            screens.append(shown)
+            if len(screens) == len(steps):
+                return True
+            keys = steps[len(screens) - 1][1]
+            write(keys() if callable(keys) else keys)
+        return False
+    tui_run(wsx, env, cwd, done, cols=cols, seconds=40)
+    assert len(screens) == len(steps), 'TUI step %d %r not shown:\n%s' % (
+        len(screens), steps[len(screens)][0], shown)
+    return screens
 
 
 def main():
@@ -256,6 +314,10 @@ def run(wsx, wsxd, work, owned):
     assert 'invalid task number' in cli('task', 'show', '../1', ok=False).stderr
     assert 'a prompt is required' in cli('task', 'new', ok=False).stderr
     assert 'empty' in cli('task', 'new', '-', stdin='\n', ok=False).stderr
+
+    # 0. The TUI's Tasks view (`t`) of a project without tasks (docs/tasks.md "TUI").
+    empty, = tui_screens(wsx, env, project, [(r'WORKSPACE', b't'), (r'No tasks', b'')])[1:]
+    assert re.search(r'Tasks demo +0 to check  0 approvals', empty) and 'TASKS' in empty, empty
 
     # 1. New: a working turn in its own working copy.
     mark('1')
@@ -631,8 +693,46 @@ def run(wsx, wsxd, work, owned):
     git('worktree', 'prune')
     git('branch', '-D', 'stray-merged', 'stray-dirty', 'stray-gone')
     assert js('task', 'ledger')['stray_worktrees'] == []
-    # ^ Open the gate first: a waiting worker ends at once instead of polling for 10 minutes.
-    gate.write_text('open')
+    # 14d. The TUI's Tasks view: open tasks in attention order with their state word and what
+    # they wait for, then the recent ones; Enter shows one read-only; the list follows the
+    # ledger as it changes; a narrow width keeps title and state (docs/tasks.md "TUI").
+    asking = js('task', 'new', 'NEEDS WebSearch NOOP')['id']
+    failing = js('task', 'new', 'WORK broken.txt')['id']
+    reason = wait_state(asking, 'waiting')['record']['waiting']['reason']
+    wait_state(failing, 'failed')
+
+    def row(shown, n):
+        return next(line for line in shown.splitlines() if re.search(r'#%d\b' % n, line))
+
+    def open_gate():
+        gate.write_text('open')
+        return b''
+    shots = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'),
+        (r'(?s)Open.*#%d .*Recent' % d3, b'\r'),
+        (r'Waits', b'\x1b'),
+        (r'\(enter\)detail', b'j\r'),
+        (r'Checks', b'\x1b'),
+        (r'\(enter\)detail', open_gate),
+        (r'#%d +ready' % d1, b'\x1b'),
+        (r'WORKSPACE', b'')])
+    listed, asked, _, checked = shots[1:5]
+    order = [listed.index(row(listed, n)) for n in (asking, failing, x1, d1, memo_task)]
+    assert order == sorted(order) and order[-1] > listed.index('Recent'), listed
+    assert re.search(r'NEEDS WebSearch NOOP +#%d +waiting +owner: ' % asking, row(listed, asking)), listed
+    assert re.search(r'#%d +failed' % failing, row(listed, failing)), listed
+    assert re.search(r'#%d +working' % d1, row(listed, d1)) and 'closed' in row(listed, memo_task), listed
+    assert 'NEEDS WebSearch NOOP  #%d' % asking in asked and re.search(r'State +waiting', asked), asked
+    assert re.search(r'Waits +owner: ' + re.escape(reason[:30]), asked), asked
+    assert re.search(r'Checks +0 passed, 1 failed', checked) and re.search(r'failed +test ! -e broken.txt', checked), checked
+    assert 'Summary' in checked and 'TASK ' in checked, checked
+    assert 'TASKS' not in shots[-1], shots[-1]
+    narrow = tui_screens(wsx, env, project, [(r'WORKSPACE', b't'), (r'Recent', b'')], cols=40)[1]
+    for title, state in (('NEEDS WebSearch', 'waiting'), ('WORK broken.txt', 'failed'), ('WORK memo.txt', 'closed')):
+        assert re.search(r'^ %s.* %s$' % (re.escape(title), state), narrow, re.M), narrow
+    assert not re.search(r'#\d', narrow.split('Open', 1)[1]), narrow
+    for n in (asking, failing):
+        js('task', 'close', n, '--discard')
     for n in (d1, d2, d3):
         js('task', 'close', n, '--discard')
 

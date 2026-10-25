@@ -71,7 +71,7 @@ A foreground command appears as a running job without an agent name until an int
 | Context | Keys |
 |---|---|
 | Workspace | `j/k` move, `h/l` collapse/expand, `Enter` select, `m` reorder, `i/I` idle, `a/A` active, `n/N` attention |
-| Project | `p` add project, `w` add worktree, `u` add routine, `e` config, `g` assign group |
+| Project | `p` add project, `w` add worktree, `u` add routine, `e` config, `g` assign group, `t` tasks ([read-only](docs/tasks.md#tui)) |
 | Worktree | `s` add session, `r` alias, `m` reorder, `d` delete |
 | Session or pane | `Enter` Terminal, `x` acknowledge or mute, `C` interrupt |
 | Pane | `|` split right, `-` split down, `d` close |
