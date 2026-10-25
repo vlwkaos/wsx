@@ -44,10 +44,10 @@ max_file_bytes = 26214400
 quota_bytes = 1073741824
 ttl_seconds = 604800
 
-[tasks]                                   # optional; when task notifications go out (web-client-tasks.md "Task notifications")
+[notify.manager]                          # optional; "Manager needs me" ("Notifications")
+merge_seconds = 3                         # 1-60: new items this close go in one push
+[notify.agents]                           # optional; "An agent needs me"
 merge_seconds = 3                         # 1-60
-digest_quiet_seconds = 180                # 1-3600
-digest_max_seconds = 900                  # digest_quiet_seconds-86400
 
 [push]                                    # required with the push capability; from `wsx web vapid`
 subject = "mailto:you@example.com"
@@ -160,10 +160,27 @@ While an agent writes, `history` arrives about once a second. A chat page reads 
 
 ## PWA and push
 
-The manifest has 192 and 512 px PNG icons. The service worker caches the shell and serves it when offline; API and media requests are never cached by it. Push is off until a device picks topics in Settings and accepts the browser prompt: agent needs input (`blocked`), agent finished (`done`), agent error (`error`), and with `task_view` tasks (`tasks`, [web-client-tasks.md](web-client-tasks.md) "Task notifications"). Only a state change notifies. Tapping a notification opens that session's chat (`#/s/<session>/chat`), or for `tasks` the project or task it names. A subscription endpoint must be on one of `push.service_origins` (default: FCM, Mozilla and Apple).
+The manifest has 192 and 512 px PNG icons. The service worker caches the shell and serves it when offline; API and media requests are never cached by it. A subscription endpoint must be on one of `push.service_origins` (default: FCM, Mozilla and Apple).
 
-- Agent push text: the title is `<project> › <branch>: <session label>`; the body is the state and one line of the current turn (after the last user message), at most 120 characters, cut on a character: `Needs your input: <the question or the call it waits on>`, `Finished: <first line of the last reply>`, `Stopped with an error: <the call that failed, else the last reply>`. Without such a line the body is the state alone. Tool lines are the call's one-line title, never its input or output.
 - App badge: every push carries `badge`, the number of items that need the owner: blocked agent sessions the lists show (not task or manager sessions) plus each granted project's task `needs` (the Home count). The service worker sets it on push; the page sets it whenever its data changes, so it drops once an opened item is answered, and clears it at 0. It uses the Badging API (`navigator.setAppBadge`) where it exists: an installed PWA on iOS and iPadOS 16.4+ with notification permission, and Chromium on desktop. Android Chrome shows its own notification dot instead; elsewhere nothing happens.
+
+## Notifications
+
+A push reaches the owner only when the owner must act; the rest waits for one digest a day. Settings has three switches per device, each saved at once. Turning one on asks the browser for permission; a refusal or a failed save keeps the switches as stored and shows the error until the next save. With all three off the device has no subscription. Push text is written by wsx, never by the manager.
+
+| Switch | Pushes when | Text | Tap opens |
+|---|---|---|---|
+| Manager needs me (`task_view`) | a task starts to wait on the owner (not on `hand`), an approval request is new, To check items are added | `<n> items need you: <projects>`; one line per open item: `#4 Fix the login: needs you: <its wait reason>`, `Approve land #5`, `2 to check` (with the project before each line when several have items) | the item when only one is open (its task sheet, or the To check list), else the project, else Home |
+| An agent needs me | a listed session's agent needs input or stopped with an error | one session: `<project> › <branch>: <label>` over `Needs your input: <the question or the call it waits on>` or `Stopped with an error: <the call that failed, else the last reply>`; more: `3 agents need input: a, b, c; 1 agent stopped with an error: d`, one line per session | the session when only one, else the inbox |
+| Daily digest | once a day at the device's chosen time (default 09:00), when something happened | `<site>: daily digest`; each task that became ready, failed (with the first check that did not pass) or landed since the last digest in its latest state, `deployed <commit>` and `released <commit>`, and `2 agents finished: a, b` | Home, or the inbox without `task_view` |
+
+- Each of the first two is one push per device that replaces the earlier one (tag `wsx-<site>-manager`, `wsx-<site>-agents`) and counts every item still open, so a phone shows one notice per switch. It goes out once `notify.<switch>.merge_seconds` passed since the first new item; later ones in that window join it, and an item answered within the window is no news. Only a change notifies: the first sight of a session or project, as at a server start, does not. An agent that finished never pushes: it goes in the digest.
+- A line is at most 160 characters with the title cut at 60; a body stops at 1500 bytes and ends `and <n> more`.
+- No "Manager needs me" push goes to a device while one of its visible pages shows the project of every new item ([web-client-tasks.md](web-client-tasks.md) "Task notifications").
+- Mute: a session's `⋯` menu has *Mute notifications* (*Unmute notifications*) while the device has a switch on. A muted session is left out of that device's agent pushes and its digest. Settings says "2 sessions muted" with *Unmute all*. A mute ends with its session.
+- The digest time is a minute of the device's day in the UTC offset it had when the time was saved; save it again after a clock change. A digest that falls while the server is stopped goes when it starts again that day. A digest with nothing to say is not sent. Off means no digest; the "Since you left" line of a project stays.
+- Stored per device in `push.json`: the subscription, `choices` (`manager`, `agents`, `digest {minute, utc_offset_minutes}`), `muted` and the last digest. The topics of earlier versions are read once at start: `blocked` and `error` turn on "An agent needs me", `tasks` "Manager needs me" and the digest, `done` the digest (09:00 in the server's offset).
+- `GET api/push` answers `{public_key, choices, muted}`; `POST api/push {subscription, choices: {manager, agents, digest}}` saves (403 for `manager` without `task_view`, 400 for an endpoint off `service_origins` or bad keys); `DELETE api/push` removes the subscription; `POST api/push/mute {session, muted}` (404 for a session outside the grant, 409 `notifications_off` without a subscription).
 
 ## Files
 

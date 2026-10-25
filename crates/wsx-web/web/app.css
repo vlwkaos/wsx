@@ -616,8 +616,9 @@ body[data-keyboard] .chat:has(.slash) .reservoir { display: none; }
   position: absolute; z-index: 2; top: 100%; right: 0; min-width: calc(var(--size-rail) / 2); padding: var(--space-1) 0;
   display: flex; flex-direction: column; border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); background: var(--color-surface);
 }
-.more-menu a { min-height: var(--size-control); display: flex; align-items: center; padding: 0 var(--space-4); text-decoration: none; }
-.more-menu a:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
+.more-menu a, .more-menu button { min-height: var(--size-control); display: flex; align-items: center; padding: 0 var(--space-4); text-decoration: none; }
+.more-menu button { border: 0; background: none; color: inherit; font: inherit; text-align: start; white-space: nowrap; }
+.more-menu a:focus-visible, .more-menu button:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 .manager .log-wrap { overflow: hidden; }
 /* The task sheet: over the chat from the bottom, about 85% of the visible height; on a wide
    screen a panel at the right. A swipe down on its top moves it with the finger (an inline
@@ -753,6 +754,13 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .options { display: flex; flex-direction: column; }
 .option { min-height: var(--size-control); padding: 0 var(--space-4); display: flex; align-items: center; gap: var(--space-3); }
 .option input { accent-color: var(--color-accent); }
+/* A notification switch: its label left, its control right; under the label when the row is narrow. */
+.option-row { flex-wrap: wrap; justify-content: space-between; padding-block: var(--space-2); }
+.option-text { flex: 1 1 calc(var(--size-rail) * 0.6); min-width: 0; display: flex; flex-direction: column; }
+.option-hint { font-size: var(--font-size-sm); color: var(--color-muted); }
+.option-row input[type="checkbox"] { flex: none; margin: 0; }
+.option-time { width: auto; font-size: var(--font-size-field); color: var(--color-text); }
+.option-status { margin: 0; padding: var(--space-2) var(--space-4); font-size: var(--font-size-sm); }
 .device { padding: 0 var(--space-4); font-size: var(--font-size-sm); }
 /* Version facts: the label left, the value beside it. */
 .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-4); margin: 0; padding: 0 var(--space-4); font-size: var(--font-size-sm); }

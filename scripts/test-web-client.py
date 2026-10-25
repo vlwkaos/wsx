@@ -2509,35 +2509,60 @@ capabilities = ["terminal_view"]
 
         # --- Web Push with explicit device consent, to the local receiver.
         status, info = owner.request('GET', '/api/push')
-        assert status == 200 and info['topics'] == [] and len(info['public_key']) == 87
+        off = {'manager': False, 'agents': False, 'digest': None}
+        assert status == 200 and info['choices'] == off and info['muted'] == [] and len(info['public_key']) == 87, info
         keys = {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}
+        agents_only = {'manager': False, 'agents': True, 'digest': None}
         for endpoint in ('https://evil.example/push', 'http://127.0.0.1:1/push', push_origin + '@evil.example/x'):
-            refused = owner.request('POST', '/api/push', {'subscription': {'endpoint': endpoint, 'keys': keys}, 'topics': ['done']})
+            refused = owner.request('POST', '/api/push', {'subscription': {'endpoint': endpoint, 'keys': keys}, 'choices': agents_only})
             assert refused[0] == 400, endpoint
-        assert owner.request('POST', '/api/push', {'subscription': {'endpoint': push_origin + '/push/1', 'keys': dict(keys, auth='AAAA')}, 'topics': ['done']})[0] == 400
-        assert pushes() == []
+        assert owner.request('POST', '/api/push', {'subscription': {'endpoint': push_origin + '/push/1', 'keys': dict(keys, auth='AAAA')}, 'choices': agents_only})[0] == 400
         subscription = {'endpoint': push_origin + '/push/device-1', 'keys': keys, 'expirationTime': None}
-        status, body = owner.request('POST', '/api/push', {'subscription': subscription, 'topics': ['done', 'blocked']})
-        assert status == 200 and body['topics'] == ['done', 'blocked'], body
+        # "Manager needs me" needs task_view; a digest time must be a minute of a day.
+        assert owner.request('POST', '/api/push', {'subscription': subscription, 'choices': dict(agents_only, manager=True)})[0] == 403
+        assert owner.request('POST', '/api/push', {'subscription': subscription, 'choices': dict(agents_only, digest={'minute': 1440, 'utc_offset_minutes': 0})})[0] == 400
+        assert pushes() == []
+        # The digest far off for now; it is moved to the next minute below.
+        later = {'minute': (time.gmtime().tm_hour * 60 + time.gmtime().tm_min + 180) % 1440, 'utc_offset_minutes': 0}
+        status, body = owner.request('POST', '/api/push', {'subscription': subscription, 'choices': dict(agents_only, digest=later)})
+        assert status == 200 and body['choices'] == dict(agents_only, digest=later), body
         stored = (work / 'state/wsx/web/owner/push.json')
         assert stored.stat().st_mode & 0o777 == 0o600
         settle('owner')
-        # A long reply of many-byte characters: the body keeps its first 120 characters, cut whole.
-        owner.request('POST', chat + '/send', {'text': 'notify me ' + 'é' * 300 + '\nsecond line'})
-        got = wait(lambda: pushes(), 'done push')[0]
-        assert got.get('error') is None, got
-        assert got['vapid']['ok'] and got['vapid']['alg'] == 'ES256' and got['vapid']['key'] == info['public_key']
-        assert got['vapid']['claims']['sub'] == 'mailto:owner@example.invalid' and got['encoding'] == 'aes128gcm'
-        reply = 'echo: notify me ' + 'é' * 300
-        assert got['payload'] == {'kind': 'done', 'title': 'project › main: owner chat', 'body': 'Finished: ' + reply[:120] + '…',
-                                  'session_id': sessions['owner'], 'tag': 'wsx-owner-%d' % sessions['owner'], 'badge': 0}, got['payload']
-        assert got['path'] == '/push/device-1'
+        # An agent that finished never pushes; it waits for the digest.
+        owner.request('POST', chat + '/send', {'text': 'notify me'})
+        wait(lambda: traces('owner')[-1] == 'notify me', 'finished turn')
         settle('owner')
+        time.sleep(4.5)
+        assert pushes() == [], pushes()
+        # A second agent of the project, for the push that names every session that needs the owner.
+        created = call('session_create', {'worktree_id': worktrees['project'], 'label': 'second chat',
+            'command': [sys.executable, str(actor), str(work / 'second.jsonl'), str(work / 'second.trace'),
+                        str(work / 'project'), str(chart), str(outside)], 'rows': 12, 'cols': 100})
+        assert created['type'] == 'created', created
+        sessions['second'] = created['data']['id']
+        settle('second')
         # Blocked: the body is the question the agent asks; the badge counts this session.
         owner.request('POST', chat + '/send', {'text': 'ask me something'})
-        blocked = wait(lambda: len(pushes()) == 2 and pushes()[1], 'blocked push')
-        assert blocked['payload']['kind'] == 'blocked' and blocked['payload']['badge'] == 1, blocked['payload']
-        assert blocked['payload']['body'] == 'Needs your input: Which option should I take for the login redirect?', blocked['payload']
+        blocked = wait(lambda: len(pushes()) == 1 and pushes()[0], 'blocked push')
+        assert blocked.get('error') is None, blocked
+        assert blocked['vapid']['ok'] and blocked['vapid']['alg'] == 'ES256' and blocked['vapid']['key'] == info['public_key']
+        assert blocked['vapid']['claims']['sub'] == 'mailto:owner@example.invalid' and blocked['encoding'] == 'aes128gcm'
+        assert blocked['path'] == '/push/device-1'
+        question = 'Needs your input: Which option should I take for the login redirect?'
+        assert blocked['payload'] == {'kind': 'agents', 'title': 'project › main: owner chat', 'body': question,
+                                      'session_id': sessions['owner'], 'tag': 'wsx-owner-agents', 'badge': 1}, blocked['payload']
+        # The second one blocks: one push in place of the first that names both, and opens the inbox.
+        steady(owner, 'POST', '/api/chat/%d/send' % sessions['second'], {'text': 'ask me something'})
+        both = wait(lambda: len(pushes()) == 2 and pushes()[1], 'second blocked push')['payload']
+        assert both == {'kind': 'agents', 'title': '2 agents need input: owner chat, second chat',
+                        'body': 'owner chat: %s\nsecond chat: %s' % (question, question), 'url': '#/',
+                        'tag': 'wsx-owner-agents', 'badge': 2}, both
+        # Mute the second session on this device: it leaves the push and the digest.
+        assert owner.request('POST', '/api/push/mute', {'session': 999999, 'muted': True})[0] == 404
+        status, body = owner.request('POST', '/api/push/mute', {'session': sessions['second'], 'muted': True})
+        assert status == 200 and body['muted'] == [sessions['second']], body
+        assert json.loads(stored.read_text())[0]['muted'] == [sessions['second']]
         # Blocked: the web chat refuses to type into a provider dialog.
         events.expect('workspace', lambda data: data['sessions'][0]['agent']['state'] == 'blocked')
         refused = owner.request('POST', chat + '/send', {'text': 'yes'})
@@ -2550,13 +2575,33 @@ capabilities = ["terminal_view"]
         lease_free(sessions['owner'])
         # A turn a person interrupted ends its exchange: the next message is not held back.
         wait(lambda: steady(owner, 'GET', chat + '/timeline')[1]['exchange']['state'] == 'interrupted', 'interrupted exchange')
-        # "error" was not consented to: the state change happens, no push is sent.
+        # An error pushes; the muted session, still blocked, is not counted.
         settle('owner')
         owner.request('POST', chat + '/send', {'text': 'fail now'})
-        events.expect('workspace', lambda data: data['sessions'][0]['agent']['state'] == 'error')
-        time.sleep(0.6)
-        assert len(pushes()) == 2, pushes()[2:]
-        ok('push: endpoint allowlist, VAPID verified and payload decrypted by an independent receiver, consent per topic')
+        failed = wait(lambda: len(pushes()) == 3 and pushes()[2], 'error push')['payload']
+        assert failed['title'] == 'project › main: owner chat' and failed['session_id'] == sessions['owner'] and failed['tag'] == 'wsx-owner-agents', failed
+        assert failed['body'] == 'Stopped with an error' or failed['body'].startswith('Stopped with an error: '), failed
+        ok('agent push: endpoint allowlist, VAPID verified and payload decrypted by an independent receiver; blocked and error push, finished does not; one push names every session and replaces the one before; a muted session is left out')
+
+        # The digest, moved to the next minute: it keeps the window and names the agent that
+        # finished, without the muted one.
+        owner.request('POST', chat + '/send', {'text': 'notify me again'})
+        wait(lambda: traces('owner')[-1] == 'notify me again', 'finished turn after the error')
+        settle('owner')
+        now = time.gmtime()
+        if now.tm_sec > 50:
+            time.sleep(61 - now.tm_sec)
+            now = time.gmtime()
+        soon = {'minute': (now.tm_hour * 60 + now.tm_min + 1) % 1440, 'utc_offset_minutes': 0}
+        assert owner.request('POST', '/api/push', {'subscription': subscription, 'choices': dict(agents_only, digest=soon)})[1]['muted'] == [sessions['second']]
+        digest = wait(lambda: len(pushes()) == 4 and pushes()[3], 'daily digest', timeout=90)['payload']
+        assert digest == {'kind': 'digest', 'title': 'Owner <wsx>: daily digest', 'body': '1 agent finished: owner chat',
+                          'url': '#/', 'tag': 'wsx-owner-digest', 'badge': 1}, digest
+        # The muted session goes with its session.
+        second = next(item for item in call('snapshot')['data']['sessions'] if item['id'] == sessions['second'])
+        assert call('session_close', {'session_id': sessions['second'], 'expected_revision': second['revision']})['type'] == 'ack'
+        wait(lambda: owner.request('GET', '/api/push')[1]['muted'] == [], 'mute forgotten with its session')
+        ok('agent digest: at the minute the device chose, an agent that finished; a muted session is left out and forgotten with its session')
 
         # --- Per-device rate limit, then revocation.
         codes = [owner.request('GET', '/api/session')[0] for _ in range(140)]
@@ -2575,8 +2620,8 @@ capabilities = ["terminal_view"]
         cli('session', 'send-text', sessions['owner'], 'after revoke')
         wait(lambda: traces('owner')[-1] == 'after revoke', 'post-revoke turn')
         time.sleep(1.0)
-        assert len(pushes()) == 2, 'a revoked device was notified'
-        assert json.loads(stored.read_text()) == []
+        assert len(pushes()) == 4, 'a revoked device was notified'
+        wait(lambda: json.loads(stored.read_text()) == [], 'subscription of the revoked device removed')
         tries = [owner.request('POST', '/api/pair', {'code': 'BBBBB-BBBB%d' % index})[0] for index in range(6)]
         assert tries[-1] == 429 and set(tries[:3]) == {403}, tries
         ok('rate limit per device, revocation closes the stream and stops media, chat and push; pairing guesses limited')
@@ -2923,10 +2968,8 @@ capabilities = [{capabilities}]
 subject = "mailto:owner@example.invalid"
 private_key = "{private_key}"
 service_origins = ["{push_origin}"]
-[tasks]
+[notify.manager]
 merge_seconds = 3
-digest_quiet_seconds = 3
-digest_max_seconds = 6
 ''')
             files[name].chmod(0o600)
             servers[name] = start(work, [str(wsx), 'web', 'serve', '--site', str(files[name])], env=env, cwd=project,
@@ -3283,6 +3326,9 @@ digest_max_seconds = 6
                 (work / 'restart-owner.done').write_text('done')
             restarter = threading.Thread(target=restart_owner, daemon=True)
             restarter.start()
+            # ^ Settings saves the browser's subscription: the local receiver's endpoint and keys.
+            os.environ['WSX_PUSH_FIXTURE'] = json.dumps({'endpoint': push_origin + '/push/browser',
+                                                         'keys': {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}})
             result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,
                                   str(ids['ui']), str(args.captures), ','.join(home_order),
                                   str(audit) if audit.exists() else '', str(ids['plans']), str(restart)], timeout=360)
@@ -3302,81 +3348,92 @@ digest_max_seconds = 6
             assert kept['label'] == 'old chat' and kept['worktree_id'] == ui_worktrees['ui-old']['id'], kept
             ok('plain worktree: its git worktree entry, branch head, status and session are unchanged after the page')
 
-        # --- Task notifications: at once after the merge window, a digest after a quiet time,
-        # never to a device whose page shows the project.
-        def pushes():
+        # --- "Manager needs me": one push per device naming every open item, replacing the one
+        # before; ready, failed and landed wait for the daily digest (docs/web-client.md "Notifications").
+        def pushes(kind, path='/push/tasks'):
             file = work / 'push.jsonl'
-            return [json.loads(line) for line in file.read_text().splitlines()] if file.exists() else []
+            records = [json.loads(line) for line in file.read_text().splitlines()] if file.exists() else []
+            return [record for record in records if record['path'] == path and record['payload'].get('kind') == kind]
         keys = {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}
-        refused = steady(plain, 'POST', '/api/push', {'subscription': {'endpoint': push_origin + '/push/plain', 'keys': keys}, 'topics': ['tasks']})
+        subscription = {'endpoint': push_origin + '/push/tasks', 'keys': keys}
+        refused = steady(plain, 'POST', '/api/push', {'subscription': dict(subscription, endpoint=push_origin + '/push/plain'), 'choices': {'manager': True}})
         assert refused[0] == 403, refused
-        status, body = steady(owner, 'POST', '/api/push', {'subscription': {'endpoint': push_origin + '/push/tasks', 'keys': keys}, 'topics': ['tasks']})
-        assert status == 200 and body['topics'] == ['tasks'], body
-        time.sleep(7)  # batches from the journey above went out to nobody
-        baseline = len(pushes())
+        # The digest at a time far off for now; it is moved to the next minute below.
+        later = (time.gmtime().tm_hour * 60 + time.gmtime().tm_min + 180) % 1440
+        choices = {'manager': True, 'agents': False, 'digest': {'minute': later, 'utc_offset_minutes': 0}}
+        status, body = steady(owner, 'POST', '/api/push', {'subscription': subscription, 'choices': choices})
+        assert status == 200 and body['choices'] == choices and body['muted'] == [], body
+        subscribed_ms = time.time() * 1000
+        time.sleep(4)  # items from the journey above went out to nobody
+        baselines = {'manager': len(pushes('manager')), 'digest': len(pushes('digest'))}
 
-        def new_pushes(count, label, timeout=30):
-            got = wait(lambda: len(pushes()) >= baseline + count and pushes()[baseline:], label, timeout=timeout)
+        def new_pushes(kind, label, timeout=30):
+            got = wait(lambda: len(pushes(kind)) > baselines[kind] and pushes(kind)[baselines[kind]:], label, timeout=timeout)
             for record in got:
                 assert record.get('error') is None and record['vapid']['ok'], record
+            baselines[kind] += len(got)
             return [record['payload'] for record in got]
 
-        first = js('task', 'new', 'NEEDS_HOST x.example NOOP', '-p', 'demo')['id']
-        second = js('task', 'new', 'NEEDS_HOST x.example NOOP', '-p', 'demo')['id']
-        wait_state(first, 'waiting')
-        wait_state(second, 'waiting')
-        merged = new_pushes(1, 'waiting push')
-        time.sleep(4)
-        assert len(pushes()) == baseline + 1, pushes()[baseline:]
-        assert merged[0]['title'] == owner_name + ': demo' and merged[0]['url'] == '#/p/%d' % demo, merged
-        # Each task by number and title with its ask in one line; the badge counts every project's needs.
-        # The oracle is the overview the page shows: each task's shown title and its wait reason.
         def line(n, what, project='demo'):
             row = next(row for row in steady(owner, 'GET', '/api/tasks/%d' % ids[project])[1]['tasks'] if row['id'] == n)
             what = 'needs you: ' + row['waiting']['reason'] if what == 'asks' else what
             title = row['title'] if len(row['title']) <= 60 else row['title'][:60] + '…'  # cut as the push cuts it
             return '#%d %s: %s' % (n, title, what)
-        assert merged[0]['body'] == line(first, 'asks') + '\n' + line(second, 'asks') and merged[0]['tag'].endswith('-now'), merged
-        needs = sum(len(overview['needs']) for overview in steady(owner, 'GET', '/api/tasks')[1])
-        assert merged[0]['badge'] == needs and needs >= 2, (merged[0], needs)
-        baseline += 1
+
+        def manager_push():
+            """The push the overviews the page shows call for: every waiting task, approval and To check count."""
+            names = {value: key for key, value in ids.items()}
+            projects = []
+            for overview in sorted(steady(owner, 'GET', '/api/tasks')[1], key=lambda overview: overview['project']):
+                project, items = overview['project'], []
+                for need in overview['needs']:
+                    task_url = '#/p/%d/t/%d' % (project, need['task']) if need.get('task') else '#/p/%d' % project
+                    if need['kind'] == 'waiting':
+                        items.append((1, line(need['task'], 'asks', names[project]), task_url))
+                    elif need['kind'] == 'approval':
+                        items.append((1, need['label'], task_url))
+                if overview['to_check']:
+                    items.append((overview['to_check'], '%d to check' % overview['to_check'], '#/p/%d/checks' % project))
+                if items:
+                    projects.append((project, names[project], items))
+            count = sum(item[0] for _, _, items in projects for item in items)
+            every = [item for _, _, items in projects for item in items]
+            return {
+                'kind': 'manager', 'tag': 'wsx-owner-manager',
+                'title': '%d %s: %s' % (count, 'item needs you' if count == 1 else 'items need you', ', '.join(name for _, name, _ in projects)),
+                'body': '\n'.join((name + ': ' if len(projects) > 1 else '') + item[1] for _, name, items in projects for item in items),
+                'url': every[0][2] if len(every) == 1 else '#/p/%d' % projects[0][0] if len(projects) == 1 else '#/',
+                'badge': sum(len(overview['needs']) for overview in steady(owner, 'GET', '/api/tasks')[1]),
+            }
+
+        first = js('task', 'new', 'NEEDS_HOST x.example NOOP', '-p', 'demo')['id']
+        second = js('task', 'new', 'NEEDS_HOST x.example NOOP', '-p', 'demo')['id']
+        wait_state(first, 'waiting')
+        wait_state(second, 'waiting')
+        merged = new_pushes('manager', 'waiting push')
+        time.sleep(4)
+        assert len(merged) == 1 and len(pushes('manager')) == baselines['manager'], pushes('manager')[-2:]
+        assert merged[0] == manager_push(), (merged[0], manager_push())
+        def says(payload, entry, project='demo'):
+            """The line is in the body, after its project's name when several projects have items."""
+            lines = payload['body'].split('\n')
+            return entry in lines or project + ': ' + entry in lines
+        assert says(merged[0], line(first, 'asks')) and says(merged[0], line(second, 'asks')), merged
+        # Ready and failed wait for the digest.
         for n in (first, second):
             assert act(n, 'allow', {'host': 'x.example'})[0] == 200
         wait_state(first, 'ready')
         wait_state(second, 'ready')
-        digest = new_pushes(1, 'digest push')
-        time.sleep(4)
-        assert len(pushes()) == baseline + 1, pushes()[baseline:]
-        assert digest[0]['body'] == line(first, 'ready for review') + '\n' + line(second, 'ready for review'), digest
-        assert digest[0]['tag'].endswith('-digest'), digest
-        baseline += 1
-        # A failed task names the check that failed.
         broken = js('task', 'new', 'WORK broken.txt', '-p', 'demo')['id']
         wait_state(broken, 'failed')
-        failed = new_pushes(1, 'failed digest')
-        assert failed[0]['body'] == line(broken, 'failed: test ! -e broken.txt failed'), failed
-        baseline += 1
-        # The cap: a task finishes every 2 s, so the 3 s quiet time never comes; the digest
-        # goes out 6 s after the first, with what came until then. The tasks start first and
-        # wait at a gate each, so a slow `task new` cannot stretch the gap past the quiet time.
-        gates = [work / ('steady-gate-%d' % k) for k in range(6)]
-        steady_ids = [js('task', 'new', 'WAIT %s NOOP' % gate, '-p', 'demo')['id'] for gate in gates]
-        wait(lambda: all(str(gate) in (work / 'fake-claude.trace').read_text() for gate in gates),
-             'every steady worker waits at its gate', timeout=60)
-        started_at = time.monotonic()
-        for k, gate in enumerate(gates):
-            gate.write_text('open')
-            wait_state(steady_ids[k], 'ready')
-            time.sleep(max(0, 2 * (k + 1) - (time.monotonic() - started_at)))
-        capped = new_pushes(1, 'capped digest')
-        first_ready = capped[0]['body']
-        assert 2 <= len(first_ready.split('\n')) <= 5 and first_ready.startswith(line(steady_ids[0], 'ready for review') + '\n'), capped
-        assert line(steady_ids[-1], 'ready for review') not in first_ready, capped
-        baseline += 1
-        rest = new_pushes(1, 'digest after the cap')
-        assert line(steady_ids[-1], 'ready for review') in rest[0]['body'].split('\n'), rest
-        baseline += 1
-        # A page of this device shows demo: no push for demo, a push for ui.
+        # A landing adds a To check item: the push replaces the one before and counts it.
+        checked = js('task', 'new', 'WORK h.txt HV', '-p', 'demo')['id']
+        wait_state(checked, 'ready')
+        assert act(checked, 'land', {})[0] == 200
+        added = new_pushes('manager', 'to check push')
+        assert len(added) == 1 and added[0] == manager_push(), (added, manager_push())
+        assert added[0]['tag'] == merged[0]['tag'] and says(added[0], '%d to check' % steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['to_check']), added
+        # A page of this device shows demo: no push for a new demo item, a push for one in ui.
         page = 'page-owner-1'
         assert steady(owner, 'POST', '/api/presence', {'page': page, 'project': demo})[0] == 404  # no stream yet
         assert steady(owner, 'POST', '/api/presence', {'page': 'x', 'project': demo})[0] == 400
@@ -3386,26 +3443,63 @@ digest_max_seconds = 6
         assert steady(viewer, 'POST', '/api/presence', {'page': page, 'project': None})[0] == 404
         hidden = js('task', 'new', 'NEEDS_HOST y.example NOOP', '-p', 'demo')['id']
         wait_state(hidden, 'waiting')
+        time.sleep(5)
+        assert len(pushes('manager')) == baselines['manager'], 'a push for the project the page shows'
         other = js('task', 'new', 'NEEDS_HOST y.example NOOP', '-p', 'ui')['id']
         wait(lambda: js('task', 'show', other, '-p', 'ui')['state'] == 'waiting', 'ui waiting')
-        elsewhere = new_pushes(1, 'push for the other project')
-        time.sleep(4)
-        assert len(pushes()) == baseline + 1 and elsewhere[0]['title'] == owner_name + ': ui', pushes()[baseline:]
-        assert elsewhere[0]['body'] == line(other, 'asks', 'ui') and elsewhere[0]['url'] == '#/p/%d/t/%d' % (ids['ui'], other), elsewhere
-        baseline += 1
+        elsewhere = new_pushes('manager', 'push for the other project')
+        assert len(elsewhere) == 1 and elsewhere[0] == manager_push(), (elsewhere, manager_push())
+        assert says(elsewhere[0], line(other, 'asks', 'ui'), 'ui') and says(elsewhere[0], line(hidden, 'asks')), elsewhere
         # The page goes away: its presence goes with its stream.
         shown.connection.close()
         time.sleep(1)
-        later = js('task', 'new', 'NEEDS_HOST z.example NOOP', '-p', 'demo')['id']
-        wait_state(later, 'waiting')
-        assert new_pushes(1, 'push after the page closed')[0]['body'] == line(later, 'asks')
-        baseline += 1
+        gone = js('task', 'new', 'NEEDS_HOST z.example NOOP', '-p', 'demo')['id']
+        wait_state(gone, 'waiting')
+        assert says(new_pushes('manager', 'push after the page closed')[0], line(gone, 'asks'))
         # An approval request reads as its action, never as its id.
-        js('task', 'say', 'RUN wsx task land %d -p demo --json' % steady_ids[0], '-p', 'demo')
-        asked = new_pushes(1, 'approval push')
-        assert asked[0]['body'] == 'Approve land #%d' % steady_ids[0] and asked[0]['tag'].endswith('-now'), asked
-        baseline += 1
-        ok('task push: waiting merged in one, ready as one digest, the digest cap, the shown project skipped for that device, presence ends with the stream, an approval named by its action, tasks topic needs task_view')
+        js('task', 'say', 'RUN wsx task land %d -p demo --json' % first, '-p', 'demo')
+        asked = new_pushes('manager', 'approval push')
+        assert asked[0] == manager_push() and says(asked[0], 'Approve land #%d' % first), asked
+        ok('manager push: waiting merged in one, a new To check item, an approval; each names every open item and replaces the one before; ready and failed do not push; the shown project skipped for that device; presence ends with the stream; manager needs task_view')
+
+        # The daily digest, moved to the next minute: the window since the switch was turned on
+        # stays, so it lists what became ready, failed or landed since, each in its latest state.
+        now = time.gmtime()
+        if now.tm_sec > 50:
+            time.sleep(61 - now.tm_sec)
+            now = time.gmtime()
+        choices['digest'] = {'minute': (now.tm_hour * 60 + now.tm_min + 1) % 1440, 'utc_offset_minutes': 0}
+        assert steady(owner, 'POST', '/api/push', {'subscription': subscription, 'choices': choices})[1]['choices'] == choices
+        digest = new_pushes('digest', 'daily digest', timeout=90)
+        assert len(digest) == 1 and digest[0]['title'] == owner_name + ': daily digest' and digest[0]['tag'] == 'wsx-owner-digest' and digest[0]['url'] == '#/', digest
+        told = digest[0]['body'].split('\n')
+        prefix = 'demo: ' if any(entry.startswith('demo: ') for entry in told) else ''
+        for expected in (line(first, 'ready for review'), line(second, 'ready for review'),
+                         line(broken, 'failed: test ! -e broken.txt failed'), line(checked, 'landed')):
+            assert prefix + expected in told, (expected, told)
+        # Each task once; nothing from before the switch, nothing that waits.
+        before = [row['id'] for row in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['tasks'] if row['updated_unix_ms'] <= subscribed_ms]
+        assert not any(entry.startswith(prefix + '#%d ' % n) for n in before + [hidden, gone] for entry in told), told
+        time.sleep(6)
+        assert len(pushes('digest')) == baselines['digest'], 'a second digest the same day'
+        ok('daily digest: at the minute the device chose, once a day, ready, failed and landed since the last one in their latest state; a new time keeps the window')
+
+        # Earlier topics are read once and map to the switches; the server keeps no topic list.
+        viewer_device = steady(viewer, 'GET', '/api/session')[1]['device']['id']
+        stop(servers['viewer'])
+        stored = work / 'state/wsx/web/viewer/push.json'
+        stored.write_text(json.dumps([{'device_id': viewer_device, 'endpoint': push_origin + '/push/old', 'keys': keys,
+                                       'topics': ['blocked', 'done', 'tasks'], 'created_unix': int(time.time())}]))
+        servers['viewer'] = start(work, [str(wsx), 'web', 'serve', '--site', str(files['viewer'])], env=env, cwd=project,
+                                  stdout=subprocess.DEVNULL, stderr=(work / 'viewer.log').open('a'))
+        wait(lambda: _up(viewer), 'restarted viewer server')
+        offset = time.localtime().tm_gmtoff // 60
+        migrated = steady(viewer, 'GET', '/api/push')[1]
+        assert migrated['choices'] == {'manager': True, 'agents': True, 'digest': {'minute': 540, 'utc_offset_minutes': offset}}, migrated
+        assert 'topics' not in stored.read_text() and json.loads(stored.read_text())[0]['choices']['manager'] is True
+        assert steady(viewer, 'DELETE', '/api/push', {})[1]['choices'] == {'manager': False, 'agents': False, 'digest': None}
+        assert json.loads(stored.read_text()) == []
+        ok('old topics: blocked, done and tasks read as an agent needs me, manager needs me and a 09:00 digest; stored without topics')
         success = True
     finally:
         for process in reversed(STARTED):

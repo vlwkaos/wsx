@@ -13,7 +13,7 @@ use std::{
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use wsx_core::config::project::load_task_config;
 use wsx_core::runtime::Snapshot;
@@ -1110,10 +1110,10 @@ pub struct Watch {
     seen: HashMap<u64, HashMap<u32, (TaskState, u32)>>,
     /// Approval requests already seen, by project.
     requests: HashMap<u64, HashSet<String>>,
-    /// Blocked, conflict and approval requests that wait for the merge window, by project.
-    urgent: HashMap<u64, Batch>,
-    /// Ready, failed and landed that wait for the digest, by project.
-    digest: HashMap<u64, Batch>,
+    /// New items for "Manager needs me" that wait for the merge window.
+    pending: crate::events::Pending<(u64, Key)>,
+    /// What waits on the owner now, by project, with the project's name.
+    open: HashMap<u64, (String, Vec<Open>)>,
     /// How many items need the owner, by project: the overview's `needs`.
     needs: HashMap<u64, usize>,
 }
@@ -1125,51 +1125,84 @@ impl Watch {
     }
 }
 
-/// Changes that go out as one notification.
-struct Batch {
-    project: String,
-    first: Instant,
-    last: Instant,
-    /// `(task, "#4 Fix the login: landed")`, or `(None, "Approve land #5")` for a request.
-    changes: Vec<(Option<u32>, String)>,
+/// One item of "Manager needs me".
+#[derive(Clone, PartialEq, Eq)]
+enum Key {
+    Task(u32),
+    Approval(String),
+    Checks,
 }
 
-impl Batch {
-    fn add(batches: &mut HashMap<u64, Batch>, scope: &Scope, change: (Option<u32>, String)) {
-        let now = Instant::now();
-        let batch = batches.entry(scope.project).or_insert_with(|| Batch {
-            project: scope.name.clone(),
-            first: now,
-            last: now,
-            changes: Vec::new(),
+/// An item that waits on the owner: a task that waits on them, an approval request, or the
+/// project's open To check items (`count` of them).
+struct Open {
+    key: Key,
+    line: String,
+    url: String,
+    count: usize,
+}
+
+/// The items of "Manager needs me" in an overview, in its order (docs/web-client.md
+/// "Notifications"): `#4 Fix the login: needs you: <the ask>`, `Approve land #5`, `2 to check`.
+fn attention(project: u64, overview: &Value) -> Vec<Open> {
+    let mut open = Vec::new();
+    for need in overview["needs"].as_array().into_iter().flatten() {
+        let task = need["task"].as_u64().map(|task| task as u32);
+        let url = match task {
+            Some(task) => format!("#/p/{project}/t/{task}"),
+            None => format!("#/p/{project}"),
+        };
+        let (key, line) = match (need["kind"].as_str(), task) {
+            (Some("waiting"), Some(task)) => {
+                let what = match need["waiting"]["reason"].as_str().map(str::trim) {
+                    Some(reason) if !reason.is_empty() => format!("needs you: {reason}"),
+                    _ => "needs you".into(),
+                };
+                (
+                    Key::Task(task),
+                    task_line(task, need["title"].as_str().unwrap_or(""), &what),
+                )
+            }
+            (Some("approval"), _) => (
+                Key::Approval(need["approval"].as_str().unwrap_or("").to_owned()),
+                need["label"].as_str().unwrap_or("").to_owned(),
+            ),
+            _ => continue,
+        };
+        open.push(Open {
+            key,
+            line,
+            url,
+            count: 1,
         });
-        batch.last = now;
-        batch.changes.push(change);
     }
+    let checks = overview["to_check"].as_u64().unwrap_or(0) as usize;
+    if checks > 0 {
+        open.push(Open {
+            key: Key::Checks,
+            line: format!("{checks} to check"),
+            url: format!("#/p/{project}/checks"),
+            count: checks,
+        });
+    }
+    open
 }
 
-/// Turn new task states and approval requests into waiting notifications
-/// (docs/web-client-tasks.md "Task notifications").
+/// Note new tasks that wait on the owner and new approval requests for "Manager needs me".
 fn notice(scope: &Scope, watch: &mut Watch) {
     let first = !watch.seen.contains_key(&scope.project);
     let seen = watch.seen.entry(scope.project).or_default();
-    for (dir, record) in view::project_tasks(&scope.store).unwrap_or_default() {
+    for (_, record) in view::project_tasks(&scope.store).unwrap_or_default() {
         let Ok(record) = record else { continue };
         let now = (record.state, record.revision);
         let before = seen.insert(record.id, now);
-        if first || before == Some(now) {
-            continue;
-        }
-        let change = || (Some(record.id), notice_line(&dir, &record));
-        match record.state {
-            // ^ Hands at work need no push; every other wait is sent at once.
-            TaskState::Waiting if !record.waits_on(WaitOn::Hand) => {
-                Batch::add(&mut watch.urgent, scope, change())
-            }
-            TaskState::Ready | TaskState::Failed | TaskState::Landed => {
-                Batch::add(&mut watch.digest, scope, change())
-            }
-            _ => {}
+        // ^ Hands at work need no push.
+        if !first
+            && before != Some(now)
+            && record.state == TaskState::Waiting
+            && !record.waits_on(WaitOn::Hand)
+        {
+            watch.pending.add((scope.project, Key::Task(record.id)));
         }
     }
     let lines = store::read_approvals(&scope.store).unwrap_or_default();
@@ -1179,120 +1212,140 @@ fn notice(scope: &Scope, watch: &mut Watch) {
             continue;
         };
         if known.insert(id.clone()) && !first {
-            Batch::add(
-                &mut watch.urgent,
-                scope,
-                (None, owner::approval_label(line)),
-            );
+            watch
+                .pending
+                .add((scope.project, Key::Approval(id.clone())));
         }
     }
 }
 
-/// Send each batch whose time has come: the urgent one after its merge window, the digest
-/// after a quiet time or at its cap. A device whose page shows the project is skipped.
-/// `badge` is what needs the owner now, for the app badge.
+/// Once the merge window of new items passed: one "Manager needs me" push that names every
+/// open item, replacing the one before (its tag). A device whose page shows the project of
+/// every new item is skipped. `badge` is what needs the owner now, for the app badge.
 pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
-    let times = &app.site.tasks;
-    let now = Instant::now();
-    let merge = Duration::from_secs(times.merge_seconds);
-    let quiet = Duration::from_secs(times.digest_quiet_seconds);
-    let cap = Duration::from_secs(times.digest_max_seconds);
-    let urgent: Vec<u64> = watch
-        .urgent
-        .iter()
-        .filter(|(_, batch)| now - batch.first >= merge)
-        .map(|(project, _)| *project)
+    let merge = Duration::from_secs(app.site.notify.manager.merge_seconds);
+    let Some(new) = watch.pending.due(merge) else {
+        return;
+    };
+    // ^ An item answered within the window is no news.
+    let new: Vec<(u64, Key)> = new
+        .into_iter()
+        .filter(|(project, key)| {
+            watch
+                .open
+                .get(project)
+                .is_some_and(|(_, items)| items.iter().any(|item| item.key == *key))
+        })
         .collect();
-    let digest: Vec<u64> = watch
-        .digest
+    let Some((first, _)) = new.first() else {
+        return;
+    };
+    let mut skip = app.showing(*first);
+    for (project, _) in &new {
+        let showing = app.showing(*project);
+        skip.retain(|device| showing.contains(device));
+    }
+    let mut projects: Vec<(&u64, &(String, Vec<Open>))> = watch
+        .open
         .iter()
-        .filter(|(_, batch)| now - batch.last >= quiet || now - batch.first >= cap)
-        .map(|(project, _)| *project)
+        .filter(|(_, (_, items))| !items.is_empty())
         .collect();
-    for project in urgent {
-        if let Some(batch) = watch.urgent.remove(&project) {
-            send(app, project, &batch, true, badge);
-        }
-    }
-    for project in digest {
-        if let Some(batch) = watch.digest.remove(&project) {
-            send(app, project, &batch, false, badge);
-        }
-    }
+    projects.sort_by_key(|(project, _)| **project);
+    let count: usize = projects
+        .iter()
+        .flat_map(|(_, (_, items))| items)
+        .map(|item| item.count)
+        .sum();
+    let names: Vec<&str> = projects
+        .iter()
+        .map(|(_, (name, _))| name.as_str())
+        .collect();
+    let several = names.len() > 1;
+    let lines: Vec<String> = projects
+        .iter()
+        .flat_map(|(_, (name, items))| {
+            items.iter().map(move |item| match several {
+                false => item.line.clone(),
+                true => format!("{name}: {}", item.line),
+            })
+        })
+        .collect();
+    let items: Vec<&Open> = projects.iter().flat_map(|(_, (_, items))| items).collect();
+    let url = match (items.as_slice(), projects.as_slice()) {
+        ([item], _) => item.url.clone(),
+        (_, [(project, _)]) => format!("#/p/{project}"),
+        _ => "#/".into(),
+    };
+    let payload = json!({
+        "kind": "manager",
+        "title": format!(
+            "{count} {}: {}",
+            if count == 1 { "item needs you" } else { "items need you" },
+            names.join(", ")
+        ),
+        "body": crate::events::notice_body(&lines),
+        "url": url,
+        "tag": format!("wsx-{}-manager", app.site.id),
+        "badge": badge,
+    });
+    crate::events::deliver(app, crate::push::Switch::Manager, |device| {
+        (!skip.contains(&device.device_id)).then(|| payload.clone())
+    });
 }
 
-/// A task as a notification names it: `#4 Fix the login: needs you: <the ask>`, `failed: <the
-/// check>`, `ready for review` or `landed` (docs/web-client-tasks.md "Task notifications").
-fn notice_line(dir: &TaskDir, record: &TaskRecord) -> String {
-    let what = match record.state {
-        TaskState::Waiting => match &record.waiting {
-            Some(waiting) => format!("needs you: {}", waiting.reason.trim()),
-            None => "needs you".into(),
-        },
-        TaskState::Failed => view::read_result(dir)
-            .and_then(|result| {
-                view::check_outcomes(&result)
-                    .into_iter()
-                    .find(|(_, outcome)| *outcome != "passed")
-                    .map(|(command, outcome)| format!("failed: {command} {outcome}"))
-            })
-            .unwrap_or_else(|| "failed".into()),
-        TaskState::Ready => "ready for review".into(),
-        state => state.as_str().into(),
-    };
-    let title = view::readable_title(dir, record).unwrap_or_default();
+/// `#4 Fix the login: <what>`, the title cut at 60 characters and the line at 160.
+fn task_line(task: u32, title: &str, what: &str) -> String {
     let title = view::clip(title.trim(), view::MAX_TITLE_CHARS);
     let line = if title.is_empty() {
-        format!("#{} {what}", record.id)
+        format!("#{task} {what}")
     } else {
-        format!("#{} {title}: {what}", record.id)
+        format!("#{task} {title}: {what}")
     };
     view::clip(&line, NOTICE_CHARS)
 }
 const NOTICE_CHARS: usize = 160;
-/// A push body stays far below the push service's 4 KiB with the rest of the payload.
-const NOTICE_BODY_BYTES: usize = 1500;
 
-/// One push for a batch, one line per change: at once for what needs the owner, or as a
-/// digest with each task in its latest state only.
-fn send(app: &Arc<App>, project: u64, batch: &Batch, urgent: bool, badge: usize) {
-    let tasks: HashSet<u32> = batch.changes.iter().filter_map(|(task, _)| *task).collect();
-    let url = match (tasks.iter().next(), tasks.len(), batch.changes.len()) {
-        (Some(task), 1, 1) => format!("#/p/{project}/t/{task}"),
-        _ => format!("#/p/{project}"),
-    };
-    let mut lines: Vec<&(Option<u32>, String)> = Vec::new();
-    for change in &batch.changes {
-        if !urgent && change.0.is_some() {
-            lines.retain(|other| other.0 != change.0);
+/// What the daily digest says of a project since `after_ms`: each task that became ready,
+/// failed or landed, in its latest state (`failed` names the first check that did not pass),
+/// and the last deploy and release (docs/web-client.md "Notifications").
+pub fn digest_lines(scope: &Scope, after_ms: u64) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (dir, record) in view::project_tasks(&scope.store).unwrap_or_default() {
+        let Ok(record) = record else { continue };
+        if record.updated_unix_ms <= after_ms {
+            continue;
         }
-        lines.push(change);
+        let what = match record.state {
+            TaskState::Failed => view::read_result(&dir)
+                .and_then(|result| {
+                    view::check_outcomes(&result)
+                        .into_iter()
+                        .find(|(_, outcome)| *outcome != "passed")
+                        .map(|(command, outcome)| format!("failed: {command} {outcome}"))
+                })
+                .unwrap_or_else(|| "failed".into()),
+            TaskState::Ready => "ready for review".into(),
+            TaskState::Landed => "landed".into(),
+            _ => continue,
+        };
+        let title = view::readable_title(&dir, &record).unwrap_or_default();
+        lines.push(task_line(record.id, &title, &what));
     }
-    let mut body = String::new();
-    for (index, (_, line)) in lines.iter().enumerate() {
-        if body.len() + line.len() + 1 > NOTICE_BODY_BYTES {
-            body.push_str(&format!("\nand {} more", lines.len() - index));
-            break;
+    let deploys = store::read_deploys(&scope.store).unwrap_or_default();
+    for (kind, word) in [
+        (task::DeployKind::Deploy, "deployed"),
+        (task::DeployKind::Release, "released"),
+    ] {
+        if let Some(deploy) = deploys.iter().rev().find(|deploy| {
+            deploy.kind == kind && deploy.exit == Some(0) && deploy.unix_ms > after_ms
+        }) {
+            lines.push(format!(
+                "{word} {}",
+                deploy.commit.get(..7).unwrap_or(&deploy.commit)
+            ));
         }
-        if !body.is_empty() {
-            body.push('\n');
-        }
-        body.push_str(line);
     }
-    let payload = json!({
-        "kind": "tasks",
-        "title": format!("{}: {}", app.site.name, batch.project),
-        "body": body,
-        "url": url,
-        "tag": format!("wsx-{}-tasks-{project}-{}", app.site.id, if urgent { "now" } else { "digest" }),
-        "badge": badge,
-    });
-    crate::events::deliver(
-        app,
-        crate::push::Topic::Tasks,
-        payload,
-        app.showing(project),
-    );
+    lines
 }
 
 /// One observer step: publish `tasks` when a project's overview changed, `task` for each
@@ -1341,6 +1394,20 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
             let text = overview.to_string();
             let needs = overview["needs"].as_array().map_or(0, Vec::len);
             watch.needs.insert(scope.project, needs);
+            let open = attention(scope.project, &overview);
+            let checks = |items: &[Open]| {
+                items
+                    .iter()
+                    .find(|item| item.key == Key::Checks)
+                    .map_or(0, |item| item.count)
+            };
+            // ^ New To check items are news; a project first seen is not.
+            if let Some((_, before)) = watch.open.get(&scope.project) {
+                if checks(&open) > checks(before) {
+                    watch.pending.add((scope.project, Key::Checks));
+                }
+            }
+            watch.open.insert(scope.project, (scope.name.clone(), open));
             if watch.overviews.get(&scope.project) != Some(&text) {
                 watch.overviews.insert(scope.project, text);
                 crate::events::publish_json(app, "tasks", overview);
@@ -1380,6 +1447,7 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
     watch.overviews.retain(|project, _| alive.contains(project));
     watch.seen.retain(|project, _| alive.contains(project));
     watch.needs.retain(|project, _| alive.contains(project));
+    watch.open.retain(|project, _| alive.contains(project));
     watch.requests.retain(|project, _| alive.contains(project));
     let stores: HashSet<&String> = scopes.iter().map(|scope| &scope.store).collect();
     watch.stamps.retain(|store, _| stores.contains(store));

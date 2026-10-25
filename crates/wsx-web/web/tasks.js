@@ -5,7 +5,7 @@
 import { api } from "./api.js";
 import { html, Icon, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, events, leaveFor, readMap, shows, state, touch, update, useStore, writeMap } from "./store.js";
-import { Back, toast } from "./ui.js";
+import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, pasteFiles, release, Suggestions, uploadFiles } from "./chat.js";
 import { Bubble, conversation, Dots, StatusLine, Typing } from "./bubbles.js";
 import { TaskPage } from "./task.js";
@@ -644,28 +644,13 @@ function SinceLine({ project, reply, sent }) {
 
 // The top row's ⋯: the project page, sessions and files.
 function More({ project }) {
-  const [open, setOpen] = useState(false);
-  const menu = useRef();
-  useEffect(() => {
-    if (!open) return undefined;
-    const outside = (event) => { if (!menu.current?.contains(event.target)) setOpen(false); };
-    const escape = (event) => { if (event.key === "Escape") { setOpen(false); menu.current?.querySelector("button")?.focus(); } };
-    document.addEventListener("pointerdown", outside);
-    document.addEventListener("keydown", escape);
-    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
-  }, [open]);
   const files = shows("files") && can("files_read");
   return html`
-    <div class="more" ref=${menu}>
-      <button class="icon-button more-button" type="button" aria-label="More" aria-haspopup="menu" aria-expanded=${open}
-        onClick=${() => setOpen(!open)}><span aria-hidden="true">⋯</span></button>
-      ${open && html`
-        <div class="more-menu" role="menu">
-          <a role="menuitem" href=${`#/p/${project.id}/page`} onClick=${() => setOpen(false)}>Page</a>
-          <a role="menuitem" href=${`#/p/${project.id}/sessions`} onClick=${() => setOpen(false)}>Sessions</a>
-          ${files && html`<a role="menuitem" href=${`#/p/${project.id}/files`} onClick=${() => setOpen(false)}>Files</a>`}
-        </div>`}
-    </div>`;
+    <${MoreMenu}>
+      <a role="menuitem" href=${`#/p/${project.id}/page`}>Page</a>
+      <a role="menuitem" href=${`#/p/${project.id}/sessions`}>Sessions</a>
+      ${files && html`<a role="menuitem" href=${`#/p/${project.id}/files`}>Files</a>`}
+    </${MoreMenu}>`;
 }
 
 // A task or the project page over the chat, about 85% of the height (a `fit` sheet only as

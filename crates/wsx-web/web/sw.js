@@ -65,8 +65,10 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const { session_id: session, url } = event.notification.data ?? {};
-  // A task notification names its project or task route; only a route of this page is followed.
-  const target = session ? `${scope}#/s/${session}/chat` : /^#\/p\/\d+(\/t\/\d+)?$/.test(url ?? "") ? `${scope}${url}` : scope;
+  // Any other notification names a list, a project, its To check list or a task; only a
+  // route of this page is followed.
+  const target = session ? `${scope}#/s/${session}/chat`
+    : /^#\/(sessions|p\/\d+(\/t\/\d+|\/checks)?)?$/.test(url ?? "") ? `${scope}${url}` : scope;
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
       const open = windows.find((client) => client.url.startsWith(scope));

@@ -1,5 +1,5 @@
 // Notices, the confirmation dialog, and the device's light or dark choice.
-import { html, Icon, useEffect, useExit, useState } from "./lib.js";
+import { html, Icon, useEffect, useExit, useRef, useState } from "./lib.js";
 import { backTarget, can, goBack, parseRoute, reloadForBuild, state, useStore } from "./store.js";
 
 // A theme with a dark scheme is dark unless this device chose light (docs/web-themes.md).
@@ -117,4 +117,24 @@ export function Back({ fallback }) {
     <a class="icon-button" href=${target} aria-label=${`Back to ${names[route.screen]}`} onClick=${goBack}>
       <${Icon} name="back" />
     </a>`;
+}
+
+// A top row's ⋯ menu. A tap outside or Escape closes it, and so does choosing an item.
+export function MoreMenu({ children }) {
+  const [open, setOpen] = useState(false);
+  const menu = useRef();
+  useEffect(() => {
+    if (!open) return undefined;
+    const outside = (event) => { if (!menu.current?.contains(event.target)) setOpen(false); };
+    const escape = (event) => { if (event.key === "Escape") { setOpen(false); menu.current?.querySelector("button")?.focus(); } };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
+  }, [open]);
+  return html`
+    <div class="more" ref=${menu}>
+      <button class="icon-button more-button" type="button" aria-label="More" aria-haspopup="menu" aria-expanded=${open}
+        onClick=${() => setOpen(!open)}><span aria-hidden="true">⋯</span></button>
+      ${open && html`<div class="more-menu" role="menu" onClick=${() => setOpen(false)}>${children}</div>`}
+    </div>`;
 }

@@ -1,5 +1,6 @@
 // One shared state for the page. Views read it through `useStore` and never keep
 // their own copy. The event stream is its only writer after the first load.
+import { api } from "./api.js";
 import { useEffect, useState } from "./lib.js";
 
 export const state = {
@@ -17,6 +18,8 @@ export const state = {
   build: null,
   // Each granted project's task overview by project id, with task_view (docs/web-client-tasks.md).
   tasks: {},
+  // This device's notification switches and muted sessions (api/push), once read.
+  push: null,
 };
 
 // ^ This page's build: the path segment its modules were loaded from, assets/<build>/.
@@ -32,6 +35,15 @@ export async function reloadForBuild() {
     await Promise.race([registration?.update(), new Promise((done) => setTimeout(done, 3000))]);
   } catch { /* an update that fails still reloads from the network */ }
   location.reload();
+}
+// ^ Read once when Settings or a session's menu first needs it; each change answers the new state.
+let pushRead = null;
+export function loadPush() {
+  pushRead ??= api("api/push").then((data) => update({ push: data })).catch((failure) => { pushRead = null; throw failure; });
+  return pushRead;
+}
+export async function setMuted(session, muted) {
+  update({ push: await api("api/push/mute", { method: "POST", json: { session, muted } }) });
 }
 const listeners = new Set();
 let version = 0;

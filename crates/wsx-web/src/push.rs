@@ -1,7 +1,7 @@
 //! Web Push: VAPID (RFC 8292) and aes128gcm message encryption (RFC 8291).
 //! ^ Policy ported from the 0.30 preview (abe5197 wsx-web/src/push.rs): a browser can
 //! only register an endpoint on an origin the site file lists, and only for the
-//! topics that device consented to. The OpenSSL/libcurl transport was not ported;
+//! switches that device turned on. The OpenSSL/libcurl transport was not ported;
 //! see docs/web-client.md "Dependencies".
 use crate::devices::{now_unix, random_bytes, write_private};
 use crate::site::{parse_origin, PushSettings};
@@ -25,14 +25,59 @@ const MAX_ENDPOINT_BYTES: usize = 2048;
 // Push services reject bodies above 4096 bytes; keep one aes128gcm record.
 const MAX_PAYLOAD_BYTES: usize = 3000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// The topics of earlier versions. Read once from `push.json` and mapped to the switches; never written.
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Topic {
+enum OldTopic {
     Blocked,
     Done,
     Error,
-    /// Task attention and digests (docs/web-client-tasks.md "Task notifications").
     Tasks,
+}
+
+/// The two switches that push at once; the digest has its own time (docs/web-client.md
+/// "Notifications").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Switch {
+    Manager,
+    Agents,
+}
+
+/// When a device gets its daily digest: a minute of its day, in the offset it had then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DigestTime {
+    pub minute: u16,
+    pub utc_offset_minutes: i16,
+}
+
+impl DigestTime {
+    /// The device's day number at `unix`, and whether its digest minute has come that day.
+    pub fn day(&self, unix: u64) -> (i64, bool) {
+        let local = unix as i64 + i64::from(self.utc_offset_minutes) * 60;
+        (
+            local.div_euclid(86_400),
+            local.rem_euclid(86_400) / 60 >= i64::from(self.minute),
+        )
+    }
+}
+
+/// What a device chose: the API's body and part of its stored subscription.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Choices {
+    #[serde(default)]
+    pub manager: bool,
+    #[serde(default)]
+    pub agents: bool,
+    #[serde(default)]
+    pub digest: Option<DigestTime>,
+}
+
+impl Choices {
+    pub fn any(&self) -> bool {
+        self.manager || self.agents || self.digest.is_some()
+    }
 }
 
 #[derive(Deserialize)]
@@ -53,12 +98,64 @@ pub struct SubscriptionKeys {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct Subscription {
-    device_id: String,
+pub struct Subscription {
+    pub device_id: String,
     endpoint: String,
     keys: SubscriptionKeys,
-    topics: Vec<Topic>,
+    #[serde(default)]
+    pub choices: Choices,
+    /// Sessions this device hears nothing about.
+    #[serde(default)]
+    pub muted: Vec<u64>,
+    /// The device's day of the last digest and when it went: the next lists what came after.
+    #[serde(default)]
+    pub digest_sent: Option<(i64, u64)>,
+    #[serde(default, skip_serializing)]
+    topics: Vec<OldTopic>,
     created_unix: u64,
+}
+
+impl Subscription {
+    pub fn wants(&self, switch: Switch) -> bool {
+        match switch {
+            Switch::Manager => self.choices.manager,
+            Switch::Agents => self.choices.agents,
+        }
+    }
+
+    /// Earlier topics as switches: blocked and error are "An agent needs me", tasks is
+    /// "Manager needs me", and done and tasks' digest are the daily digest, at 09:00 here.
+    fn migrate(&mut self) {
+        let topics = std::mem::take(&mut self.topics);
+        let choices = &mut self.choices;
+        choices.agents |= topics.contains(&OldTopic::Blocked) || topics.contains(&OldTopic::Error);
+        choices.manager |= topics.contains(&OldTopic::Tasks);
+        if choices.digest.is_none()
+            && (topics.contains(&OldTopic::Done) || topics.contains(&OldTopic::Tasks))
+        {
+            choices.digest = Some(DigestTime {
+                minute: 9 * 60,
+                utc_offset_minutes: local_offset_minutes(),
+            });
+        }
+    }
+}
+
+/// This host's UTC offset now, for a digest time migrated without the device's own.
+fn local_offset_minutes() -> i16 {
+    let now = now_unix() as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: both pointers are valid for the call; localtime_r is thread-safe.
+    if unsafe { libc::localtime_r(&now, &mut tm) }.is_null() {
+        return 0;
+    }
+    (tm.tm_gmtoff / 60) as i16
+}
+
+/// The first digest after the digest is switched on: today when its time is still to come.
+fn first_digest(time: DigestTime, now: u64) -> (i64, u64) {
+    let (day, passed) = time.day(now);
+    (if passed { day } else { day - 1 }, now)
 }
 
 pub struct Push {
@@ -99,11 +196,25 @@ impl Push {
         let public_key =
             URL_SAFE_NO_PAD.encode(key.verifying_key().to_encoded_point(false).as_bytes());
         let file = state_dir.join("push.json");
-        let subscriptions = fs::read(&file)
+        let mut subscriptions: Vec<Subscription> = fs::read(&file)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        Ok(Self {
+        let old = subscriptions
+            .iter()
+            .any(|subscription| !subscription.topics.is_empty());
+        for subscription in &mut subscriptions {
+            subscription.migrate();
+            if subscription.digest_sent.is_none() {
+                subscription.digest_sent = subscription
+                    .choices
+                    .digest
+                    .map(|time| first_digest(time, now_unix()));
+            }
+        }
+        // ^ A device whose topics map to no switch has nothing left to receive.
+        subscriptions.retain(|subscription| subscription.choices.any());
+        let push = Self {
             file,
             subject: settings.subject.clone(),
             origins: settings.service_origins.clone(),
@@ -117,7 +228,11 @@ impl Push {
                 .http_status_as_error(false)
                 .build()
                 .into(),
-        })
+        };
+        if old {
+            push.save(&crate::locked(&push.subscriptions));
+        }
+        Ok(push)
     }
 
     pub fn public_key(&self) -> &str {
@@ -130,24 +245,28 @@ impl Push {
         }
     }
 
-    pub fn topics(&self, device_id: &str) -> Vec<Topic> {
-        let subscriptions = crate::locked(&self.subscriptions);
-        subscriptions
+    /// This device's subscription, if it has one.
+    pub fn device(&self, device_id: &str) -> Option<Subscription> {
+        crate::locked(&self.subscriptions)
             .iter()
             .find(|subscription| subscription.device_id == device_id)
-            .map(|subscription| subscription.topics.clone())
-            .unwrap_or_default()
+            .cloned()
     }
 
-    /// Store this device's consent. An empty topic list removes the subscription.
+    /// Store this device's choices. With every switch off the subscription is removed.
+    /// Its mutes and the last digest are kept while it stays.
     pub fn subscribe(
         &self,
         device_id: &str,
         input: SubscriptionInput,
-        mut topics: Vec<Topic>,
+        choices: Choices,
     ) -> Result<()> {
-        topics.dedup();
-        ensure!(topics.len() <= 4, "too many topics");
+        if let Some(time) = choices.digest {
+            ensure!(
+                time.minute < 24 * 60 && (-14 * 60..=14 * 60).contains(&time.utc_offset_minutes),
+                "digest time is out of range"
+            );
+        }
         ensure!(
             input.endpoint.len() <= MAX_ENDPOINT_BYTES
                 && !input.endpoint.chars().any(|c| c.is_control() || c == ' '),
@@ -160,14 +279,36 @@ impl Push {
         );
         receiver_keys(&input.keys)?;
         let mut subscriptions = crate::locked(&self.subscriptions);
-        subscriptions.retain(|subscription| subscription.device_id != device_id);
-        if !topics.is_empty() {
+        let before = subscriptions
+            .iter()
+            .position(|subscription| subscription.device_id == device_id)
+            .map(|index| subscriptions.remove(index));
+        if choices.any() {
+            let now = now_unix();
+            // ^ The same time keeps the next digest; a new one keeps what it will list.
+            let digest_sent = choices.digest.map(|time| {
+                let kept = before.as_ref().and_then(|before| before.digest_sent);
+                match (
+                    kept,
+                    before.as_ref().and_then(|before| before.choices.digest),
+                ) {
+                    (Some(kept), Some(was)) if was == time => kept,
+                    (Some((_, since)), _) => (first_digest(time, now).0, since),
+                    (None, _) => first_digest(time, now),
+                }
+            });
             subscriptions.push(Subscription {
                 device_id: device_id.to_owned(),
                 endpoint: input.endpoint,
                 keys: input.keys,
-                topics,
-                created_unix: now_unix(),
+                choices,
+                muted: before
+                    .as_ref()
+                    .map(|before| before.muted.clone())
+                    .unwrap_or_default(),
+                digest_sent,
+                topics: Vec::new(),
+                created_unix: before.map_or(now, |before| before.created_unix),
             });
         }
         self.save(&subscriptions);
@@ -183,45 +324,72 @@ impl Push {
         }
     }
 
-    /// Deliver to every still-paired device that consented to `topic`.
-    /// Blocking network I/O: call from a blocking thread. Returns delivered count.
-    /// Send to each paired device that consented to `topic`, except the devices in `except`.
-    pub fn notify(
-        &self,
-        topic: Topic,
-        payload: &serde_json::Value,
-        paired: &[String],
-        except: &[String],
-    ) -> usize {
-        let targets: Vec<Subscription> = {
-            let mut subscriptions = crate::locked(&self.subscriptions);
-            // A revoked device loses its subscription with its credential.
-            let before = subscriptions.len();
-            subscriptions.retain(|subscription| paired.contains(&subscription.device_id));
-            if subscriptions.len() != before {
-                self.save(&subscriptions);
-            }
-            subscriptions
-                .iter()
-                .filter(|subscription| {
-                    subscription.topics.contains(&topic)
-                        && !except.contains(&subscription.device_id)
-                })
-                .cloned()
-                .collect()
-        };
-        let body = payload.to_string();
-        let mut delivered = 0;
-        for target in targets {
-            match self.send(&target, body.as_bytes()) {
-                Ok(status) if (200..300).contains(&status) => delivered += 1,
-                // The push service says this subscription is gone for good.
-                Ok(404 | 410) => self.unsubscribe(&target.device_id),
-                Ok(status) => eprintln!("wsx web: push service answered {status}"),
-                Err(error) => eprintln!("wsx web: push delivery failed: {error:#}"),
-            }
+    /// Mute or unmute one session for this device. Answers its mutes, `None` without a
+    /// subscription.
+    pub fn mute(&self, device_id: &str, session: u64, muted: bool) -> Option<Vec<u64>> {
+        let mut subscriptions = crate::locked(&self.subscriptions);
+        let subscription = subscriptions
+            .iter_mut()
+            .find(|subscription| subscription.device_id == device_id)?;
+        subscription.muted.retain(|other| *other != session);
+        if muted {
+            subscription.muted.push(session);
         }
-        delivered
+        let list = subscription.muted.clone();
+        self.save(&subscriptions);
+        Some(list)
+    }
+
+    /// Forget the mutes of sessions that no longer exist.
+    pub fn retain_muted(&self, alive: &[u64]) {
+        let mut subscriptions = crate::locked(&self.subscriptions);
+        let mut changed = false;
+        for subscription in subscriptions.iter_mut() {
+            let before = subscription.muted.len();
+            subscription.muted.retain(|session| alive.contains(session));
+            changed |= subscription.muted.len() != before;
+        }
+        if changed {
+            self.save(&subscriptions);
+        }
+    }
+
+    /// Record that a device's digest for `day` went (or had nothing to say) at `unix`.
+    pub fn digest_sent(&self, device_id: &str, day: i64, unix: u64) {
+        let mut subscriptions = crate::locked(&self.subscriptions);
+        if let Some(subscription) = subscriptions
+            .iter_mut()
+            .find(|subscription| subscription.device_id == device_id)
+        {
+            subscription.digest_sent = Some((day, unix));
+            self.save(&subscriptions);
+        }
+    }
+
+    /// The subscriptions of still-paired devices; a revoked device loses its subscription
+    /// with its credential.
+    pub fn devices(&self, paired: &[String]) -> Vec<Subscription> {
+        let mut subscriptions = crate::locked(&self.subscriptions);
+        let before = subscriptions.len();
+        subscriptions.retain(|subscription| paired.contains(&subscription.device_id));
+        if subscriptions.len() != before {
+            self.save(&subscriptions);
+        }
+        subscriptions.clone()
+    }
+
+    /// Send one payload to one device. Blocking network I/O: call from a blocking thread.
+    pub fn notify(&self, device_id: &str, payload: &serde_json::Value) {
+        let Some(target) = self.device(device_id) else {
+            return;
+        };
+        match self.send(&target, payload.to_string().as_bytes()) {
+            Ok(status) if (200..300).contains(&status) => {}
+            // The push service says this subscription is gone for good.
+            Ok(404 | 410) => self.unsubscribe(&target.device_id),
+            Ok(status) => eprintln!("wsx web: push service answered {status}"),
+            Err(error) => eprintln!("wsx web: push delivery failed: {error:#}"),
+        }
     }
 
     fn send(&self, target: &Subscription, payload: &[u8]) -> Result<u16> {

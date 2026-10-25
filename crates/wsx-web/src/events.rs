@@ -4,7 +4,8 @@
 //! connected, compares transcript file stamps so new history reaches the page.
 use crate::{
     chat::{self, exchange_view, session_view},
-    push::Topic,
+    devices::now_unix,
+    push::{Subscription, Switch},
     App,
 };
 use serde_json::{json, Value};
@@ -22,6 +23,8 @@ const POLL_MS: u64 = 2_000;
 const WORKING_POLL_MS: u64 = 800;
 // How often the server reads whether an upgrade of the running wsxd failed.
 const UPGRADE_CHECK: Duration = Duration::from_secs(30);
+// How often the server looks whether a device's daily digest is due.
+const DIGEST_CHECK: Duration = Duration::from_secs(5);
 
 /// A named server-sent event with a JSON body.
 #[derive(Clone)]
@@ -62,6 +65,10 @@ fn observe(app: Arc<App>) {
     let mut activities: HashMap<u64, String> = HashMap::new();
     // The screen stamp of each blocked session's question, while a page is open.
     let mut questions: HashMap<u64, Option<String>> = HashMap::new();
+    // Sessions whose agent began to need the owner, for "An agent needs me".
+    let mut agents: Pending<u64> = Pending::default();
+    let mut last_digest_check = Instant::now();
+    let mut alive_before: Vec<u64> = Vec::new();
     // ^ docs/daemon-live-upgrade.md: wsxd takes a poll without presence for an old TUI
     // and defers every upgrade. This server reconnects by itself, so it says at which
     // protocol. The identity is this executable's; the server never replaces wsxd.
@@ -169,17 +176,18 @@ fn observe(app: Arc<App>) {
                 .as_ref()
                 .filter(|agent| agent.attached)
                 .map_or(AgentState::Unknown, |agent| agent.state);
-            let mut history_changed = states
+            let transition = states
                 .insert(session, state)
                 .is_some_and(|previous| previous != state);
+            // A transition is the only trigger: the first sight of a session, or a
+            // server restart, never notifies. "Finished" goes to the daily digest only.
+            if transition && !first && chat::needs_owner(target).is_some() {
+                agents.add(session);
+            }
+            let mut history_changed = transition;
             history_changed |= app
                 .chat
                 .follow_conversation(app, target, &mut attached, first);
-            // A transition is the only trigger: the first sight of a session, or a
-            // server restart, never notifies.
-            if history_changed && !first {
-                notify(app, target, state, badge);
-            }
             if app.events.receiver_count() > 0 {
                 let stamp = chat::history_stamp(target.pane);
                 history_changed |= stamps
@@ -232,7 +240,20 @@ fn observe(app: Arc<App>) {
             workspace = text;
             publish(app, message("workspace", view));
         }
+        if let Some(new) = agents.due(Duration::from_secs(app.site.notify.agents.merge_seconds)) {
+            notify_agents(app, &targets, &new, badge);
+        }
+        if last_digest_check.elapsed() >= DIGEST_CHECK || first {
+            last_digest_check = Instant::now();
+            daily_digest(app, &snapshot, &targets, badge);
+        }
         let alive: Vec<u64> = targets.iter().map(|target| target.session_id.0).collect();
+        if alive != alive_before {
+            if let Some(push) = &app.push {
+                push.retain_muted(&alive);
+            }
+            alive_before = alive.clone();
+        }
         app.queue.retain(&alive);
         activities.retain(|session, _| alive.contains(session));
         states.retain(|session, _| targets.iter().any(|target| target.session_id.0 == *session));
@@ -265,56 +286,273 @@ fn publish(app: &App, message: Message) {
     let _ = app.events.send(message);
 }
 
-/// An agent notice: the project, worktree and session in the title; the state and one
-/// line of the turn in the body (docs/web-client.md "PWA and push").
-fn notify(app: &Arc<App>, target: &chat::Target, state: AgentState, badge: usize) {
-    let (topic, words) = match state {
-        AgentState::Blocked => (Topic::Blocked, "Needs your input"),
-        AgentState::Done => (Topic::Done, "Finished"),
-        AgentState::Error => (Topic::Error, "Stopped with an error"),
-        _ => return,
-    };
-    // ^ The notice reads the agent's saved conversation: not for a site without push.
-    if app.push.is_none() {
-        return;
-    }
-    let session = target.session_id.0;
-    let clip = |text: &str| wsx_core::task::view::clip(text, 60);
-    let title = format!(
-        "{} › {}: {}",
-        clip(&target.project.name),
-        clip(target.branch),
-        clip(target.label)
-    );
-    let body = match chat::notice_line(target, state) {
-        Some(line) => format!("{words}: {line}"),
-        None => words.to_owned(),
-    };
-    let payload = json!({
-        "kind": topic,
-        "title": title,
-        "body": body,
-        "session_id": session,
-        "tag": format!("wsx-{}-{session}", app.site.id),
-        "badge": badge,
-    });
-    deliver(app, topic, payload, Vec::new());
+/// New items of one switch that wait for its merge window (docs/web-client.md "Notifications").
+pub struct Pending<K> {
+    first: Option<Instant>,
+    new: Vec<K>,
 }
 
-/// Push `payload` to every paired device that consented to `topic`, except `except`.
-pub fn deliver(app: &Arc<App>, topic: Topic, payload: Value, except: Vec<String>) {
+impl<K> Default for Pending<K> {
+    fn default() -> Self {
+        Self {
+            first: None,
+            new: Vec::new(),
+        }
+    }
+}
+
+impl<K: PartialEq> Pending<K> {
+    pub fn add(&mut self, key: K) {
+        self.first.get_or_insert_with(Instant::now);
+        if !self.new.contains(&key) {
+            self.new.push(key);
+        }
+    }
+
+    /// The new items once `merge` passed since the first of them; they are taken.
+    pub fn due(&mut self, merge: Duration) -> Option<Vec<K>> {
+        if self.first?.elapsed() < merge {
+            return None;
+        }
+        self.first = None;
+        Some(std::mem::take(&mut self.new))
+    }
+}
+
+/// A push body stays far below the push service's 4 KiB with the rest of the payload.
+const NOTICE_BODY_BYTES: usize = 1500;
+
+/// One line per item; a body that would pass 1500 bytes ends `and <n> more`.
+pub fn notice_body(lines: &[String]) -> String {
+    let mut body = String::new();
+    for (index, line) in lines.iter().enumerate() {
+        if body.len() + line.len() + 1 > NOTICE_BODY_BYTES {
+            body.push_str(&format!("\nand {} more", lines.len() - index));
+            break;
+        }
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(line);
+    }
+    body
+}
+
+/// The "An agent needs me" push: every session that needs input or stopped with an error,
+/// except the device's muted ones, sent when one of them is new to it. One session reads
+/// `<project> › <branch>: <label>` over its state and one line of its turn
+/// (docs/web-client.md "Notifications").
+fn notify_agents(app: &Arc<App>, targets: &[chat::Target], new: &[u64], badge: usize) {
     if app.push.is_none() {
         return;
     }
-    let paired: Vec<String> = match app.devices.list() {
-        Ok(devices) => devices.into_iter().map(|device| device.id).collect(),
-        Err(_) => return,
+    let clip = |text: &str, chars| wsx_core::task::view::clip(text, chars);
+    // (session, blocked, name, title, body) of each open item; the notice reads the saved
+    // conversation once per session.
+    let open: Vec<(u64, bool, String, String, String)> = targets
+        .iter()
+        .filter_map(|target| {
+            let state = chat::needs_owner(target)?;
+            let words = match state {
+                AgentState::Blocked => "Needs your input",
+                _ => "Stopped with an error",
+            };
+            let body = match chat::notice_line(target, state) {
+                Some(line) => format!("{words}: {line}"),
+                None => words.to_owned(),
+            };
+            Some((
+                target.session_id.0,
+                state == AgentState::Blocked,
+                clip(target.label, 30),
+                format!(
+                    "{} › {}: {}",
+                    clip(&target.project.name, 60),
+                    clip(target.branch, 60),
+                    clip(target.label, 60)
+                ),
+                body,
+            ))
+        })
+        .collect();
+    let list = if app.site.allows(crate::site::Capability::TaskView) {
+        "#/sessions"
+    } else {
+        "#/"
     };
+    let tag = format!("wsx-{}-agents", app.site.id);
+    deliver(app, Switch::Agents, |device| {
+        let shown: Vec<_> = open
+            .iter()
+            .filter(|(session, ..)| !device.muted.contains(session))
+            .collect();
+        if !shown.iter().any(|(session, ..)| new.contains(session)) {
+            return None;
+        }
+        if let [(session, _, _, title, body)] = shown.as_slice() {
+            return Some(json!({
+                "kind": "agents", "title": title, "body": body, "session_id": session,
+                "tag": tag, "badge": badge,
+            }));
+        }
+        let group = |blocked: bool, one: &str, many: &str| {
+            let names: Vec<&str> = shown
+                .iter()
+                .filter(|item| item.1 == blocked)
+                .map(|item| item.2.as_str())
+                .collect();
+            (!names.is_empty()).then(|| counted(&names, one, many))
+        };
+        let title: Vec<String> = [
+            group(true, "agent needs input", "agents need input"),
+            group(
+                false,
+                "agent stopped with an error",
+                "agents stopped with an error",
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let lines: Vec<String> = shown
+            .iter()
+            .map(|(_, _, name, _, body)| clip(&format!("{name}: {body}"), 160))
+            .collect();
+        Some(json!({
+            "kind": "agents", "title": title.join("; "), "body": notice_body(&lines), "url": list,
+            "tag": tag, "badge": badge,
+        }))
+    });
+}
+
+/// Each device's daily digest, once its time came that day: what the two switches leave
+/// out since the last one. Nothing to say sends nothing (docs/web-client.md "Notifications").
+fn daily_digest(
+    app: &Arc<App>,
+    snapshot: &runtime::Snapshot,
+    targets: &[chat::Target],
+    badge: usize,
+) {
+    let Some(push) = &app.push else {
+        return;
+    };
+    let Some(paired) = paired(app) else {
+        return;
+    };
+    let now = now_unix();
+    let scopes = if app.site.allows(crate::site::Capability::TaskView) {
+        crate::tasks::scopes(snapshot, &app.site.access)
+    } else {
+        Vec::new()
+    };
+    for device in push.devices(&paired) {
+        let Some(time) = device.choices.digest else {
+            continue;
+        };
+        let (day, passed) = time.day(now);
+        let (last, since) = device.digest_sent.unwrap_or((day - 1, now));
+        if !passed || last >= day {
+            continue;
+        }
+        push.digest_sent(&device.device_id, day, now);
+        let projects: Vec<(&str, Vec<String>)> = scopes
+            .iter()
+            .map(|scope| {
+                (
+                    scope.name.as_str(),
+                    crate::tasks::digest_lines(scope, since * 1000),
+                )
+            })
+            .filter(|(_, lines)| !lines.is_empty())
+            .collect();
+        let several = projects.len() > 1;
+        let mut lines: Vec<String> = projects
+            .into_iter()
+            .flat_map(|(name, lines)| {
+                lines.into_iter().map(move |line| match several {
+                    true => format!("{name}: {line}"),
+                    false => line,
+                })
+            })
+            .collect();
+        let finished: Vec<String> = targets
+            .iter()
+            .filter(|target| {
+                !chat::is_task_session(target)
+                    && !device.muted.contains(&target.session_id.0)
+                    && target.pane.agent.as_ref().is_some_and(|agent| {
+                        agent.attached
+                            && agent.state == AgentState::Done
+                            && agent
+                                .state_since_unix_ms
+                                .is_some_and(|ms| ms > since * 1000)
+                    })
+            })
+            .map(|target| wsx_core::task::view::clip(target.label, 30))
+            .collect();
+        if !finished.is_empty() {
+            lines.push(counted(&finished, "agent finished", "agents finished"));
+        }
+        if lines.is_empty() {
+            continue;
+        }
+        let payload = json!({
+            "kind": "digest",
+            "title": format!("{}: daily digest", app.site.name),
+            "body": notice_body(&lines),
+            "url": "#/",
+            "tag": format!("wsx-{}-digest", app.site.id),
+            "badge": badge,
+        });
+        send(app, vec![(device.device_id, payload)]);
+    }
+}
+
+/// `2 agents finished: a, b`.
+fn counted(names: &[impl AsRef<str>], one: &str, many: &str) -> String {
+    let words = if names.len() == 1 { one } else { many };
+    let names: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
+    format!("{} {words}: {}", names.len(), names.join(", "))
+}
+
+/// The ids of the paired devices: a revoked device gets nothing.
+fn paired(app: &App) -> Option<Vec<String>> {
+    let devices = app.devices.list().ok()?;
+    Some(devices.into_iter().map(|device| device.id).collect())
+}
+
+/// Push to each paired device with `switch` on what `payload_for` builds for it, if anything.
+pub fn deliver(
+    app: &Arc<App>,
+    switch: Switch,
+    payload_for: impl Fn(&Subscription) -> Option<Value>,
+) {
+    let Some(push) = &app.push else {
+        return;
+    };
+    let Some(paired) = paired(app) else {
+        return;
+    };
+    let sends = push
+        .devices(&paired)
+        .iter()
+        .filter(|device| device.wants(switch))
+        .filter_map(|device| Some((device.device_id.clone(), payload_for(device)?)))
+        .collect();
+    send(app, sends);
+}
+
+fn send(app: &Arc<App>, sends: Vec<(String, Value)>) {
+    if sends.is_empty() {
+        return;
+    }
     // A slow push service must not hold back the event stream.
     let app = app.clone();
     thread::spawn(move || {
         if let Some(push) = &app.push {
-            push.notify(topic, &payload, &paired, &except);
+            for (device, payload) in sends {
+                push.notify(&device, &payload);
+            }
         }
     });
 }

@@ -74,17 +74,17 @@ With `task_view` the inbox is `#/sessions`, the Sessions tab, titled *Sessions*,
 
 # Task notifications
 
-A device that picks "A task needs me" in Settings (topic `tasks`, offered with `task_view`) gets two kinds of Web Push, decided by the event observer from the task records and `approvals.jsonl`:
+The event observer decides from the task records, `approvals.jsonl` and the open To check items ([web-client.md](web-client.md) "Notifications" has the switches, the text and the timing):
 
-| Change | When | Text |
-|---|---|---|
-| a task starts waiting (not on `hand`), a new approval request | once `merge_seconds` passed since the first of them; later ones in that window go in the same push | `#4 Fix the login: needs you: <its wait reason>`, `Approve land #5` |
-| a task becomes `ready`, `failed` or `landed` | one digest once `digest_quiet_seconds` passed without another, at most `digest_max_seconds` after the first | `#5 Add a badge: ready for review`, `#6 Fix the build: failed: cargo test failed`, `#3 Docs: landed` |
+| Change | Goes to |
+|---|---|
+| a task starts waiting (not on `hand`), a new approval request, new To check items | "Manager needs me": one push that names every open item of these kinds, replacing the earlier one |
+| a task becomes `ready`, `failed` or `landed`, a deploy or a release | the daily digest, read from the store at its time |
 
-- Each change is one line, `#<n> <title>: <what happened>`, with the shown title cut at 60 characters and the line at 160; a digest lists each task once, in its latest state. A body stops at 1500 bytes and ends `and <n> more`. A failed task names the first check that did not pass. Batches are per project; the title is `<site>: <project>`; the payload's `badge` is what needs the owner (web-client.md "PWA and push"). A push about one task opens its task sheet, any other its project. A change is counted by its (state, revision); a project first seen after a server start notifies nothing, and working, checking and stopped never notify.
-- No push goes to a device while one of its pages shows that project (any `#/p/<project>` route) and is visible. The page opens its event stream as `api/events?page=<id>` with an id it chose, and `POST api/presence {page, project}` tells the server the project it shows (`null` when hidden or elsewhere). The presence of a page ends with its last stream; a page id belongs to the device that opened it (404 for another device's or an unknown page).
-- "Since you left": the device records when it left a project's screen (route change or hidden page). On opening it again, or coming back to it, more than a minute later, the screen asks `since` and shows one line, "Since you left: #2 #3 landed · #1 blocked · 2 replies", with *Dismiss* beside it on the same line (a long list is cut with an ellipsis). The line goes by itself once the newest reply that came while the device was away has been on screen, or when the owner sends a message. Nothing runs while the device is away; the line is computed from the logs.
-- Limits: a batch waits while `wsxd` is unavailable, because the observer runs with the daemon's long-poll. Push text is written by wsx, never by the manager.
+- A change is counted by its (state, revision); a project first seen after a server start notifies nothing, and working, checking and stopped never notify.
+- No "Manager needs me" push goes to a device while one of its pages shows the project of every new item (any `#/p/<project>` route) and is visible. The page opens its event stream as `api/events?page=<id>` with an id it chose, and `POST api/presence {page, project}` tells the server the project it shows (`null` when hidden or elsewhere). The presence of a page ends with its last stream; a page id belongs to the device that opened it (404 for another device's or an unknown page).
+- "Since you left": the device records when it left a project's screen (route change or hidden page). On opening it again, or coming back to it, more than a minute later, the screen asks `since` and shows one line, "Since you left: #2 #3 landed · #1 blocked · 2 replies", with *Dismiss*. Nothing runs while the device is away; the line is computed from the logs.
+- Limits: a push or a digest waits while `wsxd` is unavailable, because the observer runs with the daemon's long-poll. Push text is written by wsx, never by the manager.
 
 ## Motion
 
