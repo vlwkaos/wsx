@@ -93,6 +93,10 @@ struct Host {
     /// A `land` or a `trial` waits for the checks of its rebased revision.
     after_rebase: Option<AfterRebase>,
     disk_wait: Option<DiskWait>,
+    /// The place of a disk wait in the machine's disk queue, and the disk slot it took to
+    /// resume: held until its turn or checks end.
+    disk_queue: Option<slot::Ticket>,
+    disk_slot: Option<slot::Slot>,
     /// The worker's running `check-run`: its check indexes and every call that waits for its
     /// answer. A repeat call (a client that timed out and asks again) joins it.
     check_run: Option<(Vec<usize>, Vec<Sender<broker::Response>>)>,
@@ -140,6 +144,8 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         reexec: false,
         after_rebase: None,
         disk_wait: None,
+        disk_queue: None,
+        disk_slot: None,
         check_run: None,
         stored_checks: None,
         carried_verify: Vec::new(),
@@ -650,6 +656,7 @@ impl Host {
         let dropped = self.pending.len() as u32;
         self.pending.clear();
         self.disk_wait = None;
+        self.disk_queue = None;
         self.log(LogEvent::Hand {
             by: Actor::Owner,
             dropped,
@@ -954,10 +961,26 @@ impl Host {
         true
     }
 
+    /// Resume once there is space. Tasks resume one at a time, oldest wait first: resumed at
+    /// once, they would fill the disk again. ref: docs/tasks.md "Checks, revisions and report"
     fn resume_after_disk(&mut self) {
-        if self.low_disk().is_some() {
+        if self.disk_wait.is_none() || self.low_disk().is_some() {
             return;
         }
+        if let Some(queue) = &self.disk_queue {
+            let label = format!("{} t{}", self.record.project, self.record.id);
+            match queue.try_take(&label) {
+                Ok(taken) => self.disk_slot = Some(taken),
+                Err(reason) => {
+                    if self.record.waiting.as_ref().map(|w| &w.reason) != Some(&reason) {
+                        self.say(&reason);
+                        self.wait(WaitOn::Disk, reason);
+                    }
+                    return;
+                }
+            }
+        }
+        self.disk_queue = None;
         let Some(what) = self.disk_wait.take() else {
             return;
         };
@@ -978,6 +1001,11 @@ impl Host {
 
     /// Wait for `on`: nothing runs until it happens. ref: docs/tasks.md "Store"
     fn wait(&mut self, on: WaitOn, reason: String) {
+        if on == WaitOn::Disk && self.disk_queue.is_none() {
+            self.disk_queue = slot::Ticket::join("disk-slot", "disk", Priority::Normal)
+                .inspect_err(|error| self.say(&format!("cannot join the disk queue: {error}")))
+                .ok();
+        }
         self.record.waiting = Some(Waiting { on, reason });
         self.set_state(TaskState::Waiting);
     }
@@ -1671,6 +1699,9 @@ impl Host {
     fn set_state(&mut self, state: TaskState) {
         let changed = self.record.state != state;
         self.record.state = state;
+        if !matches!(state, TaskState::Working | TaskState::Checking) {
+            self.disk_slot = None;
+        }
         if state != TaskState::Waiting {
             self.record.waiting = None;
         }
