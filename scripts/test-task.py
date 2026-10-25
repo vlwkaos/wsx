@@ -756,13 +756,8 @@ def run(wsx, wsxd, work, owned):
         wait(lambda: show(n)['state'] == 'landed' and not copy.exists() and log(n)[-1]['kind'] == 'closed'
              and not git('branch', '--list', 'wsx/t%d' % n), 't%s closed after landing' % n, 60)
 
-    # 15. Landing, local-merge. A dirty default-branch checkout refuses and names the file.
+    # 15. Landing, local-merge (a dirty default-branch checkout is part 32h).
     mark('15')
-    (project / 'README').write_text('dirty\n')
-    refused = land(y1, ok=False)
-    assert not refused['ok'] and 'README' in refused['message'] and 'land again' in refused['message'], refused
-    assert show(y1)['state'] == 'ready'
-    git('checkout', '--', 'README')
     # Uncommitted work in the task's own copy refuses too: wsx commits nothing for the worker.
     y1_copy = Path(show(y1)['record']['working_copy'])
     (y1_copy / 'README').write_text('uncommitted\n')
@@ -1976,6 +1971,31 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(planned, 'ready', 'failed')['state'] == 'ready'
     assert [e['kind'] for e in log(planned) if e['kind'] in ('checks', 'revision')] == ['checks', 'revision']
     js('task', 'close', planned, '--discard')
+
+    # 32h. A dirty main checkout (docs/tasks.md "Landing"): a changed file the land does not
+    # touch stays dirty and the land goes on; one the land changes too refuses it, naming only
+    # that file, and the ledger named it before the press. The message keeps the path's '/'.
+    mark('32h')
+    (project / '.gitignore').write_text('target/\nunrelated/\n')
+    free = js('task', 'new', 'WORK free.txt')['id']
+    wait_state(free, 'ready', 'failed')
+    assert next(row for row in json.loads(cli('task', 'ledger').stdout)['open'] if row['id'] == free)['land_blocked_by'] == []
+    assert land(free)['state'] == 'landed' and main_has('free.txt')
+    assert git('status', '--porcelain', '--', '.gitignore') == 'M .gitignore'
+    wait_closed(free)
+    (project / 'README').write_text('dirty\n')
+    overlap = js('task', 'new', 'WORK README')['id']
+    wait_state(overlap, 'ready', 'failed')
+    row = next(row for row in json.loads(cli('task', 'ledger').stdout)['open'] if row['id'] == overlap)
+    assert row['land_blocked_by'] == ['README'], row
+    refused = land(overlap, ok=False)['message']
+    assert 'uncommitted changes in README that this land changes too' in refused, refused
+    assert '.gitignore' not in refused and 'scratch.txt' not in refused, refused
+    named = re.search(r'stash them in (\S+), then land again', refused)
+    assert named and named.group(1).startswith('/') and os.path.realpath(named.group(1)) == os.path.realpath(project), refused
+    assert show(overlap)['state'] == 'ready' and (project / 'README').read_text() == 'dirty\n'
+    js('task', 'close', overlap, '--discard')
+    git('checkout', '--', 'README', '.gitignore')
 
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     mark('33')
