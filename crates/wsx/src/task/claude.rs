@@ -430,13 +430,14 @@ fn check_run_note(record: &TaskRecord) -> String {
         .map(|(index, check)| format!("{}. `{check}`", index + 1))
         .collect();
     format!(
-        "After your result wsx runs the project's checks: {}. `wsx task check-run 2 3` runs \
-         checks by number and `wsx task check-run` runs all: the task host runs them outside \
-         your sandbox exactly as it will after your result, so a test that needs a terminal \
-         or a browser works there. While you work, run focused checks; run all of them once, \
-         at the end, before you report done: a full run waits for the machine's one check \
-         slot. Fix what fails first. A check that fails the same way on the default branch \
-         is not yours to fix: name it in your summary instead. ",
+        "After your result wsx runs all of the project's checks once: {}. \
+         `wsx task check-run 2 3` runs checks by number: the task host runs them outside your \
+         sandbox exactly as it will after your result, so a test that needs a terminal or a \
+         browser works there. Run only the checks your change touches, never the full set: \
+         each run waits for the machine's one check slot. A check that already ran on the \
+         same commit, with nothing uncommitted, answers from its stored result. Fix what \
+         fails in code you changed. A check that fails in code you did not touch is not \
+         yours: do not run it again, name it in your summary. ",
         listed.join(" ")
     )
 }

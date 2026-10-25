@@ -112,6 +112,32 @@ pub fn resolve_commit(repo: &Path, revision: &str) -> Result<String> {
     .with_context(|| format!("{revision} is not a commit in {}", repo.display()))
 }
 
+pub fn tree(repo: &Path, revision: &str) -> Result<String> {
+    git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{revision}^{{tree}}"),
+        ],
+    )
+    .with_context(|| format!("{revision} has no tree in {}", repo.display()))
+}
+
+/// HEAD's tree when the checkout has no change, untracked files included; otherwise `None`.
+pub fn clean_tree(checkout: &Path) -> Result<Option<String>> {
+    if !git(
+        checkout,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )?
+    .is_empty()
+    {
+        return Ok(None);
+    }
+    tree(checkout, "HEAD").map(Some)
+}
+
 /// Create the working copy. On failure nothing is left: no folder, worktree or branch.
 pub fn create(main: &Path, base_revision: &str, id: u32) -> Result<WorkingCopy> {
     let path = working_copy_path(main, id)?;

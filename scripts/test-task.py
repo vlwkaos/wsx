@@ -1749,6 +1749,30 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
     git('commit', '-q', '-am', 'no slot checks')
 
+    # 32b. Checks run once per tree (docs/tasks.md "Checks, revisions and report", "Landing"): a
+    # repeat check-run on the same clean tree runs nothing, a land with an unmoved main runs no
+    # checks, and a land after main moved runs them on the rebased revision.
+    def checks_logged(n):
+        return len([e for e in log(n) if e['kind'] == 'checks'])
+    once = js('task', 'new', 'CHECKRUN_TWICE WORK once.txt')['id']
+    assert wait_state(once, 'ready', 'failed')['state'] == 'ready'
+    first, second = next(t for t in traces() if 'check_run_twice' in t)['check_run_twice']
+    assert first[0] == 0 and 'stored' not in first[1], first
+    assert second[0] == 0 and 'check 1 `test ! -e broken.txt`: exit 0 (stored: it ran on this tree before)' in second[1], second
+    assert len([e for e in log(once) if e['kind'] == 'check_run']) == 1, log(once)
+    ran = checks_logged(once)
+    assert land(once)['state'] == 'landed' and checks_logged(once) == ran, log(once)
+    wait_closed(once)
+    moved = js('task', 'new', 'WORK moved.txt')['id']
+    assert wait_state(moved, 'ready', 'failed')['state'] == 'ready'
+    ran = checks_logged(moved)
+    (project / 'main-moved.txt').write_text('main moved\n')
+    git('add', 'main-moved.txt')
+    git('commit', '-q', '-m', 'main moves')
+    assert 'checks run on the new revision' in land(moved)['message']
+    assert wait_state(moved, 'landed', 'failed')['state'] == 'landed' and checks_logged(moved) == ran + 1, log(moved)
+    wait_closed(moved)
+
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     mark('33')
     # ledger and messages its manager, which answers once; nothing else crosses projects.

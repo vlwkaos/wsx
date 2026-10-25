@@ -43,9 +43,10 @@ enum Event {
     /// `None` when the agent process of that generation ended.
     Agent(u64, Option<AgentLine>),
     ChecksDone(Vec<CheckResult>),
-    /// The worker's `wsx task check-run` through the broker, and its results to log.
+    /// The worker's `wsx task check-run` through the broker, and its results to log; the
+    /// last part is what to store when the tree stayed clean and unchanged during the run.
     CheckRun(Vec<String>, Sender<broker::Response>),
-    CheckRunDone(Vec<CheckResult>, broker::Response),
+    CheckRunDone(Vec<CheckResult>, broker::Response, Option<StoredChecks>),
     /// Checks wait for the machine's check slot, for this reason.
     CheckQueued(String),
     /// Checks took the slot, or run without it after this error.
@@ -95,6 +96,8 @@ struct Host {
     /// The worker's running `check-run`: its check indexes and every call that waits for its
     /// answer. A repeat call (a client that timed out and asks again) joins it.
     check_run: Option<(Vec<usize>, Vec<Sender<broker::Response>>)>,
+    /// The check-run results of one clean tree: a repeat on that tree answers from them.
+    stored_checks: Option<StoredChecks>,
     /// The Human Verify items of the revision whose landing conflicted: the turn that
     /// resolves it rarely repeats them, and they still need a person.
     carried_verify: Vec<wsx_core::task::HumanVerify>,
@@ -138,6 +141,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         after_rebase: None,
         disk_wait: None,
         check_run: None,
+        stored_checks: None,
         carried_verify: Vec::new(),
         started: Instant::now(),
     };
@@ -233,9 +237,15 @@ impl Host {
                 Event::Agent(..) => {}
                 Event::ChecksDone(results) => self.on_checks(results),
                 Event::CheckRun(argv, reply) => self.check_run(&argv, reply),
-                Event::CheckRunDone(results, response) => {
+                Event::CheckRunDone(results, response, stored) => {
                     for reply in self.check_run.take().map(|run| run.1).unwrap_or_default() {
                         let _ = reply.send(response.clone());
+                    }
+                    if let Some((tree, ran)) = stored {
+                        match &mut self.stored_checks {
+                            Some((on, results)) if *on == tree => results.extend(ran),
+                            _ => self.stored_checks = Some((tree, ran)),
+                        }
                     }
                     self.log(LogEvent::CheckRun { results });
                 }
@@ -1032,46 +1042,56 @@ impl Host {
             self.say("check-run: joined the run of the same checks");
             return;
         }
+        // ^ A check that ran on this clean tree gives the same answer: it does not run again.
+        let working_copy = self.record.working_copy.clone();
+        let tree = copy::clean_tree(&working_copy).ok().flatten();
+        let stored = match (&tree, &self.stored_checks) {
+            (Some(tree), Some((on, results))) if tree == on => results.clone(),
+            _ => BTreeMap::new(),
+        };
+        let to_run: Vec<(usize, String)> = picked
+            .iter()
+            .filter(|(index, command)| {
+                stored
+                    .get(index)
+                    .is_none_or(|check| check.command != *command)
+            })
+            .cloned()
+            .collect();
+        if to_run.is_empty() {
+            self.say("check-run: every check already ran on this tree");
+            let _ = reply.send(check_run_response(&picked, &stored, &BTreeMap::new()));
+            return;
+        }
         if let Some((free_mb, min_gb)) = self.low_disk() {
             return refuse(disk_full(free_mb, min_gb));
         }
         self.check_run = Some((indexes, vec![reply]));
         // ^ A run of checks that only format or compile is light: it takes no slot.
         let priority =
-            (!picked.iter().all(|(_, command)| light(command))).then_some(Priority::Normal);
-        let commands = picked.iter().map(|(_, command)| command.clone()).collect();
+            (!to_run.iter().all(|(_, command)| light(command))).then_some(Priority::Normal);
+        let commands = to_run.iter().map(|(_, command)| command.clone()).collect();
         let events = self.events.clone();
         self.spawn_checks(priority, commands, move |results| {
-            let mut stdout = String::new();
-            for ((index, _), check) in picked.iter().zip(&results) {
-                let ended = match (check.timed_out, check.exit) {
-                    (true, _) => "timed out".to_string(),
-                    (false, Some(code)) => format!("exit {code}"),
-                    (false, None) => "no exit code".to_string(),
-                };
-                stdout.push_str(&format!(
-                    "check {} `{}`: {ended}\n",
-                    index + 1,
-                    check.command
-                ));
-                if check.exit != Some(0) {
-                    stdout.push_str(&check.output);
-                    if !check.output.ends_with('\n') {
-                        stdout.push('\n');
-                    }
-                }
-            }
-            let code = if results.iter().all(|check| check.exit == Some(0)) {
-                0
-            } else {
-                1
-            };
-            let response = broker::Response {
-                stdout,
-                stderr: String::new(),
-                code,
-            };
-            let _ = events.send(Event::CheckRunDone(results, response));
+            let ran: BTreeMap<usize, CheckResult> = to_run
+                .iter()
+                .map(|(index, _)| *index)
+                .zip(results.iter().cloned())
+                .collect();
+            let response = check_run_response(&picked, &stored, &ran);
+            // ^ A tree that changed during the run, a timeout or a full disk is not stored.
+            let unchanged = tree.filter(|tree| {
+                copy::clean_tree(&working_copy).ok().flatten().as_ref() == Some(tree)
+            });
+            let ran = ran
+                .into_iter()
+                .filter(|(_, check)| check.exit.is_some() && !check.output.contains(NO_SPACE))
+                .collect();
+            let _ = events.send(Event::CheckRunDone(
+                results,
+                response,
+                unchanged.map(|tree| (tree, ran)),
+            ));
         });
     }
 
@@ -1373,6 +1393,8 @@ impl Host {
                 self.carried_verify = self.current_result().human_verify;
                 Ok(self.resolve_conflict(&tip, &paths))
             }
+            // ^ The rebase kept the tree whose checks passed: their results stand.
+            Rebase::Done if self.rebase_kept_tree()? => self.fast_forward(tried),
             Rebase::Done => {
                 self.after_rebase = Some(AfterRebase::Land { tried });
                 self.start_checks();
@@ -1439,6 +1461,26 @@ impl Host {
             );
         }
         Ok(())
+    }
+
+    /// Whether HEAD has the tree of the current revision and the project's checks are the
+    /// ones that passed on it.
+    fn rebase_kept_tree(&mut self) -> Result<bool> {
+        let working_copy = &self.record.working_copy;
+        let revision = format!("refs/wsx/task/{}/r{}", self.record.id, self.record.revision);
+        if copy::tree(working_copy, &revision)? != copy::tree(working_copy, "HEAD")? {
+            return Ok(false);
+        }
+        self.follow_checks();
+        let passed: Vec<String> = view::read_result(&self.dir)
+            .and_then(|result| {
+                serde_json::from_value::<Vec<CheckResult>>(result["checks"].clone()).ok()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|check| check.command)
+            .collect();
+        Ok(!passed.is_empty() && passed == self.record.checks)
     }
 
     fn default_tip(&self) -> Result<String> {
@@ -1706,6 +1748,54 @@ fn check_message(text: &str) -> Result<()> {
 
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
+}
+
+/// A tree id and the check results that ran on it, by check index.
+type StoredChecks = (String, BTreeMap<usize, CheckResult>);
+
+/// The answer to a worker's `check-run`: each picked check and how it ended (the output of a
+/// failed one), exit 0 when all passed: from `ran`, or `stored` from an earlier run.
+fn check_run_response(
+    picked: &[(usize, String)],
+    stored: &BTreeMap<usize, CheckResult>,
+    ran: &BTreeMap<usize, CheckResult>,
+) -> broker::Response {
+    let result = |index| ran.get(index).or_else(|| stored.get(index));
+    let mut stdout = String::new();
+    for (index, _) in picked {
+        let Some(check) = result(index) else {
+            continue;
+        };
+        let ended = match (check.timed_out, check.exit) {
+            (true, _) => "timed out".to_string(),
+            (false, Some(code)) => format!("exit {code}"),
+            (false, None) => "no exit code".to_string(),
+        };
+        let note = if ran.contains_key(index) {
+            ""
+        } else {
+            " (stored: it ran on this tree before)"
+        };
+        stdout.push_str(&format!(
+            "check {} `{}`: {ended}{note}\n",
+            index + 1,
+            check.command
+        ));
+        if check.exit != Some(0) {
+            stdout.push_str(&check.output);
+            if !check.output.ends_with('\n') {
+                stdout.push('\n');
+            }
+        }
+    }
+    let passed = picked
+        .iter()
+        .all(|(index, _)| result(index).is_some_and(|check| check.exit == Some(0)));
+    broker::Response {
+        stdout,
+        stderr: String::new(),
+        code: if passed { 0 } else { 1 },
+    }
 }
 
 /// Checks a worker's `check-run` runs without the slot: one plain command that only formats
