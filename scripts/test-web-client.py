@@ -1232,7 +1232,7 @@ capabilities = ["terminal_view"]
             assert headers['x-content-type-options'] == 'nosniff' and headers['x-frame-options'] == 'DENY'
             status, manifest = owner.request('GET', '/manifest.webmanifest', shape=shape)
             assert status == 200 and manifest['id'] == manifest['scope'] == manifest['start_url'] == '/app/owner/'
-            assert [icon['sizes'] for icon in manifest['icons']] == ['192x192', '512x512']
+            assert [(icon['sizes'], icon['purpose']) for icon in manifest['icons']] == [('192x192', 'any maskable'), ('512x512', 'any maskable')]
             status, headers, worker = owner.request('GET', '/sw.js', shape=shape, raw=True)
             assert status == 200 and headers['content-type'].startswith('text/javascript')
             # Module URLs carry the build: assets/<build>/main.js in the page and the shell list.

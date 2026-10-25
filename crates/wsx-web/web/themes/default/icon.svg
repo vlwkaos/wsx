@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- wsx app icon: split panes, the active pane in the accent with a prompt. Keep the mark inside the 80 % maskable safe zone (a 40 % radius circle). Render: scripts/render-web-icon.sh -->
+  <rect width="512" height="512" fill="#1a1d22"/>
+  <rect x="120" y="120" width="128" height="272" rx="20" fill="#6fe3c1"/>
+  <rect x="268" y="120" width="124" height="126" rx="20" fill="#ecedee"/>
+  <rect x="268" y="266" width="124" height="126" rx="20" fill="#9aa0a8"/>
+  <path d="M152 168 l40 32 l-40 32" fill="none" stroke="#06231b" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

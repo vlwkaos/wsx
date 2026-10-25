@@ -97,9 +97,9 @@ png_512 = "icon-512.png"
 | `theme.toml` | 64 KiB |
 | Component CSS | 128 KiB; may not contain `url(`, `@import`, `@font-face`, `image-set(`, `src(`, `expression(`, `javascript:`, `//`, `</` or `\` |
 | Font file | 2 MiB each |
-| Icon | exact 192 and 512 px PNG, 1 MiB each |
+| Icon | exact 192 and 512 px PNG, 1 MiB each; full-bleed, with the mark inside the central 80 % circle |
 
-Files are read once at start, relative to the theme directory, without following symlinks. Fonts are declared in `theme.toml` only; the server writes the `@font-face` rules. An `[icon]` table in the site file replaces the theme's icons.
+Files are read once at start, relative to the theme directory, without following symlinks. Fonts are declared in `theme.toml` only; the server writes the `@font-face` rules. An `[icon]` table in the site file replaces the theme's icons. The manifest lists the icons as `any maskable`: a launcher may crop them to a circle or another shape, so only the central 80 % is sure to show. The default icon's source is `themes/default/icon.svg`; `scripts/render-web-icon.sh` renders the two PNGs from it.
 
 ## Serving
 
