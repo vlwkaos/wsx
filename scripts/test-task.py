@@ -538,8 +538,10 @@ def run(wsx, wsxd, work, owned):
 
     # 13. A check that runs past tasks.checkTimeoutSeconds is killed and fails the task.
     mark('13')
+    # ^ `land: { auto: false }`: the uncommitted config no longer stops an auto land, and
+    # these tasks must stay ready (docs/tasks.md "Landing").
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  agent:\n    tools: [Read]\n  checks: ["sleep 37"]\n  checkTimeoutSeconds: 1\n')
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    tools: [Read]\n  checks: ["sleep 37"]\n  checkTimeoutSeconds: 1\n')
     timed = js('task', 'new', 'NOOP')
     failed = wait_state(timed['id'], 'failed', 'ready')
     check = failed['result']['checks'][0]
@@ -551,7 +553,7 @@ def run(wsx, wsxd, work, owned):
     # A check that prints far past the kept output runs to its end: its exit decides, and the
     # output it keeps is the end, where a test run puts its summary.
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  agent:\n    tools: [Read]\n'
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    tools: [Read]\n'
         '  checks: ["seq 1 40000; seq 1 40000 >&2; echo tail end"]\n')
     loud = js('task', 'new', 'NOOP')['id']
     check = wait_state(loud, 'ready', 'failed')['result']['checks'][0]
@@ -560,7 +562,7 @@ def run(wsx, wsxd, work, owned):
     # A check that leaves a process holding its output ends with its shell: the leftover
     # cannot keep the check, and the machine's check slot, waiting for that output to close.
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  agent:\n    tools: [Read]\n'
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    tools: [Read]\n'
         '  checks: ["(sleep 47 &); echo left running"]\n')
     left = js('task', 'new', 'NOOP')['id']
     check = wait_state(left, 'ready', 'failed')['result']['checks'][0]
@@ -578,7 +580,7 @@ def run(wsx, wsxd, work, owned):
                             '      - name: plan\n        prompt: PLAN only\n'
                             '      - name: build\n        prompt: WORK s.txt\n')
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  agent:\n    tools: [Read]\n  checks: ["test -f s.txt"]\n')
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    tools: [Read]\n  checks: ["test -f s.txt"]\n')
     stepped = js('task', 'new', 'NOOP')['id']
     done = wait_state(stepped, 'ready', 'failed')
     assert done['state'] == 'ready' and done['record']['step'] == 1, done
@@ -597,12 +599,12 @@ def run(wsx, wsxd, work, owned):
     # under a failing check passes once the project's checks change.
     mark('13c')
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  agent:\n    tools: [Read]\n  checks: ["false"]\n')
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    tools: [Read]\n  checks: ["false"]\n')
     release = work / 'release-13c'
     followed = js('task', 'new', 'WAIT %s' % release)['id']
     wait(lambda: show(followed)['record']['agent_session'], 't%s started' % followed)
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  agent:\n    tools: [Read]\n  checks: ["true"]\n')
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    tools: [Read]\n  checks: ["true"]\n')
     release.write_text('go')
     done = wait_state(followed, 'ready', 'failed')
     assert done['state'] == 'ready' and done['record']['checks'] == ['true'], done
