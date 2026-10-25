@@ -203,8 +203,10 @@ export function useFollowEnd(name, ready) {
     const element = node.current;
     if (!element) return;
     // ^ A box that changed height scrolls without the reader. The event can come before the
-    // resize observer.
-    if (element.clientHeight !== height.current) return settle();
+    // resize observer. A scroll farther than the change is the reader's, in the same frame.
+    const resized = element.clientHeight - height.current;
+    if (resized && Math.abs(element.scrollTop - top.current) <= Math.abs(resized) + 1) return settle();
+    height.current = element.clientHeight;
     // ^ Only the reader scrolling up leaves the end. The event of the log's own pin can come
     // after a row grew again (a diagram drew), before the resize observer pins once more.
     if (atEnd.current && element.scrollTop >= top.current - 1) return settle();
