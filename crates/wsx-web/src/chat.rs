@@ -1129,31 +1129,38 @@ pub fn notice_line(target: &Target, state: AgentState) -> Option<String> {
 }
 const NOTICE_CHARS: usize = 120;
 
+/// A task worker or the manager: its task or the project chat shows it, so the lists leave
+/// it out (store.js `listedSessions`).
+pub fn is_task_session(target: &Target) -> bool {
+    matches!(
+        target
+            .pane
+            .agent
+            .as_ref()
+            .map(|agent| agent.provider.as_str()),
+        Some("task" | "manager")
+    ) || target
+        .label
+        .strip_prefix("task-")
+        .is_some_and(|rest| rest == "manager" || rest.parse::<u32>().is_ok())
+}
+
+/// The state of a listed session's attached agent when it needs the owner: blocked or error.
+pub fn needs_owner(target: &Target) -> Option<AgentState> {
+    let agent = target.pane.agent.as_ref()?;
+    (!is_task_session(target)
+        && !target.pane.exited
+        && agent.attached
+        && matches!(agent.state, AgentState::Blocked | AgentState::Error))
+    .then_some(agent.state)
+}
+
 /// How many sessions wait for the owner's input, as the page counts them: an attached
-/// agent that is blocked, in a session the lists show (store.js `listedSessions`).
+/// agent that is blocked, in a session the lists show.
 pub fn blocked_count(targets: &[Target]) -> usize {
     targets
         .iter()
-        .filter(|target| {
-            let task = matches!(
-                target
-                    .pane
-                    .agent
-                    .as_ref()
-                    .map(|agent| agent.provider.as_str()),
-                Some("task" | "manager")
-            ) || target
-                .label
-                .strip_prefix("task-")
-                .is_some_and(|rest| rest == "manager" || rest.parse::<u32>().is_ok());
-            !task
-                && !target.pane.exited
-                && target
-                    .pane
-                    .agent
-                    .as_ref()
-                    .is_some_and(|agent| agent.attached && agent.state == AgentState::Blocked)
-        })
+        .filter(|target| needs_owner(target) == Some(AgentState::Blocked))
         .count()
 }
 

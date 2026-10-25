@@ -1,68 +1,101 @@
-// Settings: this device's appearance, its notification consent and its pairing.
+// Settings: this device's appearance, its notification switches and its pairing.
 import { api } from "./api.js";
 import { html, useEffect, useState } from "./lib.js";
-import { can, pageBuild, reloadForBuild, state } from "./store.js";
+import { can, loadPush, pageBuild, reloadForBuild, setMuted, state, update, useStore } from "./store.js";
 import { confirmDialog, hasDarkScheme, scheme, setScheme } from "./ui.js";
 
-const TOPICS = [
-  ["blocked", "An agent needs my input"],
-  ["done", "An agent finished"],
-  ["error", "An agent stopped with an error"],
-  ["tasks", "A task needs me (at once), or tasks finished (one digest)", "task_view"],
+// The three switches of this device (docs/web-client.md "Notifications").
+const SWITCHES = [
+  ["manager", "Manager needs me", "A task waits for you, an approval is asked, or there is something new to check.", "task_view"],
+  ["agents", "An agent needs me", "A session's agent needs your input or stopped with an error."],
+  ["digest", "Daily digest", "Once a day: tasks that landed, failed or deployed, and agents that finished."],
 ];
+const DEFAULT_DIGEST = 9 * 60;
+const clock = (minute) => `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
 
 function keyBytes(base64url) {
   const text = atob(base64url.replaceAll("-", "+").replaceAll("_", "/"));
   return Uint8Array.from(text, (character) => character.charCodeAt(0));
 }
 
+// Each change saves at once; the permission prompt follows a switch the owner turned on.
+// A failed save leaves the switches as stored and keeps its error until the next save.
 function Push() {
-  const [topics, setTopics] = useState([]);
-  const [key, setKey] = useState(null);
+  const store = useStore();
   const [status, setStatus] = useState({ text: "" });
   const [busy, setBusy] = useState(true);
+  const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
   useEffect(() => {
-    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
-      setStatus({ text: "This browser cannot receive notifications here. On iPhone, add the site to the Home Screen first." });
+    if (!supported) {
+      setStatus({ text: "This browser cannot receive notifications here. On iPhone, add the site to the Home Screen first.", failed: true });
       return;
     }
-    api("api/push").then((data) => { setKey(data.public_key); setTopics(data.topics); setBusy(false); })
-      .catch((failure) => setStatus({ text: failure.message, failed: true }));
+    loadPush().then(() => setBusy(false), (failure) => setStatus({ text: failure.message, failed: true }));
   }, []);
-  // Runs only from the button, so the permission prompt follows an explicit choice.
-  const apply = async () => {
+  const choices = store.push?.choices ?? { manager: false, agents: false, digest: null };
+  const muted = store.push?.muted ?? [];
+  const save = async (next) => {
     setBusy(true);
     try {
       const registration = await navigator.serviceWorker.ready;
-      if (!topics.length) {
+      if (!next.manager && !next.agents && !next.digest) {
         await (await registration.pushManager.getSubscription())?.unsubscribe();
-        await api("api/push", { method: "DELETE", json: {} });
+        update({ push: await api("api/push", { method: "DELETE", json: {} }) });
         setStatus({ text: "Notifications are off for this device." });
       } else {
-        if ((await Notification.requestPermission()) !== "granted") throw new Error("The browser did not allow notifications for this site.");
+        const permission = await Notification.requestPermission();
+        if (permission === "denied") throw new Error("The browser blocks notifications for this site. Allow them in the browser's site settings, then turn the switch on again.");
+        if (permission !== "granted") throw new Error("The browser did not allow notifications for this site.");
         const subscription = (await registration.pushManager.getSubscription())
-          ?? (await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) }));
+          ?? (await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(store.push.public_key) }));
         const { endpoint, keys, expirationTime } = subscription.toJSON();
-        await api("api/push", { method: "POST", json: { subscription: { endpoint, keys, expirationTime }, topics } });
-        setStatus({ text: "Saved. This device will be notified." });
+        update({ push: await api("api/push", { method: "POST", json: { subscription: { endpoint, keys, expirationTime }, choices: next } }) });
+        setStatus({ text: "Saved." });
       }
     } catch (failure) {
       setStatus({ text: failure.message, failed: true });
     }
     setBusy(false);
   };
-  const toggle = (topic) => setTopics((list) => list.includes(topic) ? list.filter((other) => other !== topic) : [...list, topic]);
+  const digestAt = (minute) => ({ minute, utc_offset_minutes: -new Date().getTimezoneOffset() });
+  const flip = (name) => save({ ...choices, [name]: name === "digest" ? (choices.digest ? null : digestAt(DEFAULT_DIGEST)) : !choices[name] });
+  const unmute = async () => {
+    setBusy(true);
+    try {
+      for (const session of muted) await setMuted(session, false);
+      setStatus({ text: "Every session is unmuted." });
+    } catch (failure) {
+      setStatus({ text: failure.message, failed: true });
+    }
+    setBusy(false);
+  };
   return html`
     <section aria-label="Notifications">
-      <h2 class="label">Notify this device when</h2>
+      <h2 class="label">Notifications on this device</h2>
       <div class="options">
-        ${TOPICS.filter(([, , needs]) => !needs || can(needs)).map(([topic, label]) => html`
-          <label class="option" key=${topic}><input type="checkbox" checked=${topics.includes(topic)} onChange=${() => toggle(topic)} />${label}</label>`)}
+        ${SWITCHES.filter(([, , , needs]) => !needs || can(needs)).map(([name, label, hint]) => html`
+          <label class="option option-row" key=${name}>
+            <span class="option-text">${label}<span class="option-hint">${hint}</span></span>
+            <input type="checkbox" role="switch" name=${name} checked=${name === "digest" ? Boolean(choices.digest) : choices[name]}
+              disabled=${busy} onChange=${() => flip(name)} />
+          </label>`)}
+        ${choices.digest && html`
+          <label class="option option-row">
+            <span class="option-text">Digest time</span>
+            <input class="input option-time" type="time" name="digest-time" value=${clock(choices.digest.minute)} disabled=${busy}
+              onChange=${(event) => {
+                const [hours, minutes] = event.target.value.split(":").map(Number);
+                if (Number.isInteger(hours) && Number.isInteger(minutes)) save({ ...choices, digest: digestAt(hours * 60 + minutes) });
+              }} />
+          </label>`}
+        ${muted.length > 0 && html`
+          <div class="option option-row">
+            <span class="option-text">${muted.length} ${muted.length === 1 ? "session" : "sessions"} muted</span>
+            <button class="button" type="button" disabled=${busy} onClick=${unmute}>Unmute all</button>
+          </div>`}
       </div>
-      <div class="actions">
-        <button class="button" type="button" disabled=${busy} onClick=${apply}>Save notification choices</button>
-        <span class=${status.failed ? "error" : "muted"} role="status">${status.text}</span>
-      </div>
+      ${status.text && html`
+        <p class=${`option-status ${status.failed ? "error" : "muted"}`} role=${status.failed ? "alert" : "status"}>${status.text}</p>`}
     </section>`;
 }
 

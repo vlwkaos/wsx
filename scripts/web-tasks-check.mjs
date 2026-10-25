@@ -1185,6 +1185,80 @@ await shot("page");
 await key("Escape", 27);
 await resize([390, 844, 2]);
 
+// --- Settings > Notifications: three switches, each saved at once (docs/web-client.md
+// "Notifications"). Only the browser's permission prompt and push service are stubbed: the
+// subscription is the local receiver's (WSX_PUSH_FIXTURE), and the server checks and stores it.
+const fixture = JSON.parse(process.env.WSX_PUSH_FIXTURE);
+await evaluate(`(() => {
+  globalThis.PUSH_PERMISSION = "default";
+  globalThis.PUSH_ENDPOINT = ${JSON.stringify(fixture.endpoint)};
+  Notification.requestPermission = async () => globalThis.PUSH_PERMISSION;
+  const subscription = { toJSON: () => ({ endpoint: globalThis.PUSH_ENDPOINT, keys: ${JSON.stringify(fixture.keys)}, expirationTime: null }),
+    unsubscribe: async () => { globalThis.PUSH_SUBSCRIBED = false; return true; } };
+  PushManager.prototype.getSubscription = async () => (globalThis.PUSH_SUBSCRIBED ? subscription : null);
+  PushManager.prototype.subscribe = async () => { globalThis.PUSH_SUBSCRIBED = true; return subscription; };
+})()`);
+const switches = () => evaluate("Object.fromEntries([...document.querySelectorAll('.options input[role=switch]')].map((node) => [node.name, node.checked]))");
+const settled = (what) => until("![...document.querySelectorAll('.options input[role=switch]')].some((node) => node.disabled)", `${what}: the switches stayed disabled`);
+const status = () => evaluate("document.querySelector('.option-status')?.textContent ?? ''");
+await go("#/settings");
+await until("document.querySelectorAll('.options input[role=switch]').length === 3", "Settings does not show the three switches");
+await settled("Settings opened");
+if (JSON.stringify(await switches()) !== JSON.stringify({ manager: false, agents: false, digest: false })) await fail(`a new device has switches on: ${JSON.stringify(await switches())}`);
+const labels = await text(".option-row .option-text");
+if (!labels[0].startsWith("Manager needs me") || !labels[1].startsWith("An agent needs me") || !labels[2].startsWith("Daily digest")) await fail(`the switch labels are ${labels}`);
+// ^ The label is left and the control right on a wide row; on a narrow one the control may wrap under it.
+await shot("settings-notifications-empty");
+await evaluate("globalThis.PUSH_PERMISSION = 'denied'");
+await click("input[name=manager]");
+await until("document.querySelector('.option-status.error')?.textContent.includes('blocks notifications')", "a refused permission shows no error");
+await settled("the refused permission");
+if ((await switches()).manager) await fail("the manager switch stayed on after the browser refused");
+await shot("settings-notifications-denied");
+await evaluate("globalThis.PUSH_PERMISSION = 'granted'");
+await click("input[name=manager]");
+await until("document.querySelector('.option-status')?.textContent === 'Saved.'", "turning on Manager needs me was not saved");
+await settled("the manager switch");
+await click("input[name=digest]");
+await until("document.querySelector('input[name=digest-time]')?.value === '09:00'", "the digest has no time after it was turned on");
+await settled("the digest switch");
+const stored = await evaluate("fetch('api/push').then((response) => response.json())");
+if (!stored.choices.manager || stored.choices.agents || stored.choices.digest?.minute !== 540) await fail(`the server stored ${JSON.stringify(stored.choices)}`);
+await shot("settings-notifications-saved");
+// A failed save: the server refuses an endpoint the site does not list; the error stays.
+await evaluate("globalThis.PUSH_ENDPOINT = 'https://push.invalid/x'");
+await click("input[name=agents]");
+await until("document.querySelector('.option-status.error')?.textContent.includes('not allowed')", "a refused save shows no error");
+await settled("the refused save");
+if ((await switches()).agents) await fail("the agents switch stayed on after the save failed");
+await pause(4500);
+if (!(await status()).includes("not allowed")) await fail("the save error went away by itself");
+await shot("settings-notifications-failed");
+await evaluate(`globalThis.PUSH_ENDPOINT = ${JSON.stringify(fixture.endpoint)}`);
+// Mute a session from its menu; Settings counts it and unmutes it.
+await go("#/sessions");
+await until("[...document.querySelectorAll('a[href*=\"#/s/\"]')].some((node) => node.textContent.includes('old chat'))", "the inbox does not list old chat");
+await evaluate("[...document.querySelectorAll('a[href*=\"#/s/\"]')].find((node) => node.textContent.includes('old chat')).click()");
+await until("!!document.querySelector('.session .more-button')", "the session has no ⋯ menu while notifications are on");
+await click(".session .more-button");
+if ((await text(".more-menu button")).join() !== "Mute notifications") await fail(`the session menu reads ${await text(".more-menu button")}`);
+await click(".more-menu button");
+await until("(document.querySelector('.notices')?.textContent ?? document.body.textContent).includes('No more notifications about old chat')", "muting said nothing");
+await go("#/settings");
+await until("[...document.querySelectorAll('.option-row')].some((node) => node.textContent.startsWith('1 session muted'))", "Settings does not count the muted session");
+for (const next of [[1280, 800, 1], [390, 844, 2]]) {
+  await resize(next);
+  await shot("settings-notifications-muted");
+}
+await evaluate("[...document.querySelectorAll('.option-row button')].find((node) => node.textContent === 'Unmute all').click()");
+await until("![...document.querySelectorAll('.option-row')].some((node) => node.textContent.includes('muted'))", "Unmute all left a muted session");
+// Every switch off: the device has no subscription, so later pushes do not reach it.
+await click("input[name=manager]");
+await settled("the manager switch off");
+await click("input[name=digest]");
+await until("document.querySelector('.option-status')?.textContent === 'Notifications are off for this device.'", "turning every switch off did not say so");
+if ((await evaluate("fetch('api/push').then((response) => response.json())")).choices.digest !== null) await fail("the digest stayed on");
+
 // --- A new build on the server: a pill until it is tapped; the tap reloads at the same route
 // with the composer's draft.
 await go(chat);
@@ -1214,6 +1288,6 @@ problems.splice(quietFrom);
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, a whole worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Allow, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, Allow for project, Shared files only in a conflict), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, a whole worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Allow, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, Allow for project, Shared files only in a conflict), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

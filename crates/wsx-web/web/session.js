@@ -1,8 +1,8 @@
 // A session owns the full height: one top row (back, label with its state in words,
 // Chat | Terminal), then the chat or the terminal.
 import { html, Loading, useEffect, useRef, useState } from "./lib.js";
-import { can, isAgent, markSeen, replaceRoute, sessionLink, shows, stateOf, useStore } from "./store.js";
-import { Back } from "./ui.js";
+import { can, isAgent, listedSessions, loadPush, markSeen, replaceRoute, sessionLink, setMuted, shows, stateOf, useStore } from "./store.js";
+import { Back, MoreMenu, toast } from "./ui.js";
 import { Chat } from "./chat.js";
 import { terminalView } from "./terminal.js";
 
@@ -12,6 +12,24 @@ function Terminal({ session, tools }) {
   const mount = useRef();
   useEffect(() => terminalView(mount.current, session, tools.current).close, [session]);
   return html`<div class="terminal-mount" ref=${mount}></div>`;
+}
+
+// The top row's ⋯ while this device gets notifications: mute or unmute this session
+// (docs/web-client.md "Notifications").
+function SessionMore({ session }) {
+  const store = useStore();
+  useEffect(() => { loadPush().catch(() => {}); }, []);
+  const choices = store.push?.choices;
+  if (!choices || !(choices.agents || choices.digest)) return null;
+  const muted = store.push.muted.includes(session.id);
+  const change = () => setMuted(session.id, !muted).then(
+    () => toast(muted ? `Notifications about ${session.label} are back on.` : `No more notifications about ${session.label} on this device.`),
+    (failure) => toast(failure.message, { failure: true }),
+  );
+  return html`
+    <${MoreMenu}>
+      <button role="menuitem" type="button" onClick=${change}>${muted ? "Unmute notifications" : "Mute notifications"}</button>
+    </${MoreMenu}>`;
 }
 
 export function Session({ id, tab }) {
@@ -49,6 +67,7 @@ export function Session({ id, tab }) {
                 onClick=${(event) => replaceRoute(event, sessionLink(session, name))}>
                 ${name === "chat" ? "Chat" : "Terminal"}</a>`)}
           </nav>`}
+        ${can("push") && isAgent(session) && listedSessions([session]).length > 0 && html`<${SessionMore} session=${session} />`}
       </header>
       ${active === "terminal" ? html`<${Terminal} key="terminal" session=${id} tools=${tools} />`
         : active === "chat" ? html`<${Chat} key="chat" session=${session} onModel=${setModel} />`

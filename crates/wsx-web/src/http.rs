@@ -7,7 +7,7 @@ use crate::{
     devices::Device,
     events::Message,
     media::MediaError,
-    push::{SubscriptionInput, Topic},
+    push::{Choices, SubscriptionInput},
     sandbox::{SandboxError, MAX_TEXT_BYTES},
     site::{Capability, Panel},
     terminal, App,
@@ -105,6 +105,7 @@ pub fn router(app: Shared) -> Router {
                 "/api/push",
                 get(push_get).post(push_set).delete(push_delete),
             )
+            .route("/api/push/mute", post(push_mute))
             .layer(middleware::from_fn_with_state(app.clone(), guard))
             .with_state(app.clone())
     };
@@ -1449,22 +1450,30 @@ async fn terminal_socket(
         }))
 }
 
+/// This device's switches and muted sessions (docs/web-client.md "Notifications").
+fn push_view(push: &crate::push::Push, device: &str) -> Value {
+    let subscription = push.device(device);
+    json!({
+        "public_key": push.public_key(),
+        "choices": subscription.as_ref().map(|subscription| subscription.choices.clone()).unwrap_or_default(),
+        "muted": subscription.map(|subscription| subscription.muted).unwrap_or_default(),
+    })
+}
+
 async fn push_get(State(app): State<Shared>, Paired(device): Paired) -> Outcome<Json<Value>> {
     allow(&app, Capability::Push, "notifications")?;
     let push = app
         .push
         .as_ref()
         .ok_or_else(|| Fault::forbidden("notifications"))?;
-    Ok(Json(
-        json!({ "public_key": push.public_key(), "topics": push.topics(&device.id) }),
-    ))
+    Ok(Json(push_view(push, &device.id)))
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PushInput {
     subscription: SubscriptionInput,
-    topics: Vec<Topic>,
+    choices: Choices,
 }
 
 async fn push_set(
@@ -1473,22 +1482,57 @@ async fn push_set(
     Json(input): Json<PushInput>,
 ) -> Outcome<Json<Value>> {
     allow(&app, Capability::Push, "notifications")?;
-    if input.topics.contains(&Topic::Tasks) {
-        allow(&app, Capability::TaskView, "task notifications")?;
+    if input.choices.manager {
+        allow(&app, Capability::TaskView, "manager notifications")?;
     }
     let push = app
         .push
         .as_ref()
         .ok_or_else(|| Fault::forbidden("notifications"))?;
-    blocking(|| push.subscribe(&device.id, input.subscription, input.topics))
+    blocking(|| push.subscribe(&device.id, input.subscription, input.choices))
         .map_err(|error| Fault::new(400, "invalid_subscription", format!("{error:#}")))?;
-    Ok(Json(json!({ "topics": push.topics(&device.id) })))
+    Ok(Json(push_view(push, &device.id)))
 }
 
 async fn push_delete(State(app): State<Shared>, Paired(device): Paired) -> Outcome<Json<Value>> {
     allow(&app, Capability::Push, "notifications")?;
-    if let Some(push) = &app.push {
-        blocking(|| push.unsubscribe(&device.id));
+    let push = app
+        .push
+        .as_ref()
+        .ok_or_else(|| Fault::forbidden("notifications"))?;
+    blocking(|| push.unsubscribe(&device.id));
+    Ok(Json(push_view(push, &device.id)))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MuteInput {
+    session: u64,
+    muted: bool,
+}
+
+/// Mute or unmute one granted session for this device's "An agent needs me" and digest.
+async fn push_mute(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    Json(input): Json<MuteInput>,
+) -> Outcome<Json<Value>> {
+    allow(&app, Capability::Push, "notifications")?;
+    let push = app
+        .push
+        .as_ref()
+        .ok_or_else(|| Fault::forbidden("notifications"))?;
+    // ^ An unmute of a session that is gone is allowed; a mute names a granted session.
+    if input.muted {
+        let snapshot = blocking(|| crate::chat::snapshot(&app.client))?;
+        crate::chat::target(&snapshot, &app.site.access, input.session)?;
     }
-    Ok(Json(json!({ "topics": [] })))
+    blocking(|| push.mute(&device.id, input.session, input.muted)).ok_or_else(|| {
+        Fault::new(
+            409,
+            "notifications_off",
+            "this device has no notifications to mute",
+        )
+    })?;
+    Ok(Json(push_view(push, &device.id)))
 }

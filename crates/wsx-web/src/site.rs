@@ -79,28 +79,29 @@ struct SiteFile {
     #[serde(default)]
     terminal: TerminalFile,
     #[serde(default)]
-    tasks: TaskTimes,
+    notify: Notify,
 }
 
-/// When task notifications go out (docs/web-client-tasks.md "Task notifications").
+/// When the pushes of the two "needs me" switches go out (docs/web-client.md "Notifications").
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Notify {
+    /// "Manager needs me": tasks that wait on the owner, approval requests, To check items.
+    pub manager: Merge,
+    /// "An agent needs me": session agents that need input or stopped with an error.
+    pub agents: Merge,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
-pub struct TaskTimes {
-    /// Blocked, conflict and approval requests wait this long for others to merge.
+pub struct Merge {
+    /// New items this close after the first go out in the same push.
     pub merge_seconds: u64,
-    /// Ready, failed and landed go out as one digest once none came for this long,
-    pub digest_quiet_seconds: u64,
-    /// or at the latest this long after the first of them.
-    pub digest_max_seconds: u64,
 }
 
-impl Default for TaskTimes {
+impl Default for Merge {
     fn default() -> Self {
-        Self {
-            merge_seconds: 3,
-            digest_quiet_seconds: 180,
-            digest_max_seconds: 900,
-        }
+        Self { merge_seconds: 3 }
     }
 }
 
@@ -231,7 +232,7 @@ pub struct Site {
     pub media: MediaLimits,
     pub push: Option<PushSettings>,
     pub terminal_ligatures: bool,
-    pub tasks: TaskTimes,
+    pub notify: Notify,
     pub state_dir: PathBuf,
 }
 
@@ -347,13 +348,12 @@ impl Site {
             !has(Capability::TaskAct) || has(Capability::TaskView),
             "task_act needs task_view"
         );
-        let tasks = file.tasks;
+        let notify = file.notify;
         ensure!(
-            (1..=60).contains(&tasks.merge_seconds)
-                && (1..=3600).contains(&tasks.digest_quiet_seconds)
-                && (tasks.digest_quiet_seconds..=86_400).contains(&tasks.digest_max_seconds),
-            "tasks times are out of range: merge_seconds 1-60, digest_quiet_seconds 1-3600, \
-             digest_max_seconds from digest_quiet_seconds to 86400"
+            [&notify.manager, &notify.agents]
+                .iter()
+                .all(|merge| (1..=60).contains(&merge.merge_seconds)),
+            "notify.manager.merge_seconds and notify.agents.merge_seconds must be 1-60"
         );
         ensure!(
             has(Capability::SessionStart) != file.access.agent_command.is_empty(),
@@ -463,7 +463,7 @@ impl Site {
             media,
             push,
             terminal_ligatures: file.terminal.ligatures,
-            tasks,
+            notify,
             state_dir,
         })
     }
