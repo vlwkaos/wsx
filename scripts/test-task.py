@@ -1833,6 +1833,8 @@ def run(wsx, wsxd, work, owned):
     code, said = next(t for t in traces() if 'check_run_again' in t)['check_run_again']
     assert code == 0 and ': exit 0' in said, said
     assert len([e for e in log(again) if e['kind'] == 'check_run']) == 1, log(again)
+    # ^ A run that ended before the result starts no turn of its own.
+    assert len([e for e in log(again) if e['kind'] == 'result']) == 1, log(again)
     # ^ One start for the check-run and one for the checks after the result.
     starts = [line for line in spans.read_text().splitlines() if line.startswith(copy_name(again) + ' start')]
     assert len(starts) == 2, spans.read_text()
@@ -1879,6 +1881,23 @@ def run(wsx, wsxd, work, owned):
     worker_launch = [t for t in traces() if t.get('launch') and not t.get('manager')][-1]
     assert '2. `probe` (`echo scenario-ran' in worker_launch['instructions'], worker_launch['instructions']
     js('task', 'close', scenario, '--discard')
+    # 32t. A result that comes before its own check-run's answer waits for it: the worker gets
+    # the answer in one turn, and only its next result runs the checks.
+    mark('32t')
+    late_gate = base / 'late-gate'
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n' % late_gate)
+    git('commit', '-q', '-am', 'a slow scenario')
+    late = js('task', 'new', 'CHECKRUN_LATE slow WORK late.txt')['id']
+    wait(lambda: [e for e in log(late) if e['kind'] == 'result'], 'the result before the answer', 30)
+    time.sleep(1)
+    assert show(late)['state'] == 'working' and not [e for e in log(late) if e['kind'] == 'checks'], log(late)
+    late_gate.touch()
+    assert wait_state(late, 'ready', 'failed')['state'] == 'ready', log(late)
+    kinds = [e['kind'] for e in log(late) if e['kind'] in ('result', 'check_run', 'checks')]
+    assert kinds == ['result', 'check_run', 'result', 'checks'], kinds
+    answers = [t['message'] for t in traces() if 'Your check-run ended after your result' in t.get('message', '')]
+    assert len(answers) == 1 and 'check 2 `while [ ! -e' in answers[0] and ': exit 0' in answers[0], answers
+    js('task', 'close', late, '--discard')
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
     git('commit', '-q', '-am', 'no scenario')
     # 32d. The disk queue (docs/tasks.md "Checks, revisions and report"): tasks that wait for
