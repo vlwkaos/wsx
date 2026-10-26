@@ -321,6 +321,7 @@ def run(wsx, wsxd, work, owned):
     assert 'empty' in cli('task', 'new', '-', stdin='\n', ok=False).stderr
 
     # 0. The TUI's Tasks view (`t`) of a project without tasks (docs/tasks.md "TUI").
+    mark('0')
     empty, = tui_screens(wsx, env, project, [(r'WORKSPACE', b't'), (r'No tasks', b'')])[1:]
     assert re.search(r'Tasks demo +0 to check  0 approvals', empty) and 'TASKS' in empty, empty
 
@@ -701,6 +702,7 @@ def run(wsx, wsxd, work, owned):
     # 14d. The TUI's Tasks view: open tasks in attention order with their state word and what
     # they wait for, then the recent ones; Enter shows one read-only; the list follows the
     # ledger as it changes; a narrow width keeps title and state (docs/tasks.md "TUI").
+    mark('14d')
     asking = js('task', 'new', 'NEEDS WebSearch NOOP')['id']
     failing = js('task', 'new', 'WORK broken.txt')['id']
     reason = wait_state(asking, 'waiting')['record']['waiting']['reason']
