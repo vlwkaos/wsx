@@ -627,8 +627,6 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
     Ok(config)
 }
 
-/// `tasks.env`: names a shell can set, never one wsx sets itself (`PATH`, `GIT_EDITOR`,
-/// `WSX_*`); values are one line of text. ref: docs/tasks.md "Config"
 /// A scenario name starts with a letter, so it never reads as a check number.
 fn validate_scenarios(
     scenarios: BTreeMap<String, String>,
@@ -655,6 +653,8 @@ fn validate_scenarios(
         .collect()
 }
 
+/// `tasks.env`: names a shell can set, never one wsx sets itself (`PATH`, `GIT_EDITOR`,
+/// `WSX_*`); values are one line of text. ref: docs/tasks.md "Config"
 fn validate_env(env: BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
     if env.len() > MAX_TASK_LIST_ITEMS {
         return Err(format!(
