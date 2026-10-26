@@ -35,7 +35,7 @@ export function TryButton({ project, task, icon = false }) {
 function Place({ where }) {
   if (!where) return null;
   const link = /^(https?:\/\/|\/|#)/.test(where);
-  return html`<dt>Look at</dt><dd class="check-where">${link
+  return html`<dt>Look at</dt><dd>${link
     ? html`<a href=${where} target="_blank" rel="noopener">${where}</a>`
     : where}</dd>`;
 }
@@ -96,15 +96,14 @@ export function CheckRow({ project, item, revision, onChanged }) {
             <a class="check-capture" href=${capture} target="_blank" rel="noopener" aria-label=${`Capture of: ${item.check}`}>
               <img src=${capture} alt="" />
             </a>`}
-          ${item.state === "failed" && html`<p class="check-state">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
-          ${item.state === "passed" && html`<p class="check-state">Passed</p>`}
+          ${item.state !== "open" && html`<p class="check-state">${item.state === "passed" ? "Passed" : html`Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}`}</p>`}
         </div>
         ${acting && html`
           <span class="check-acts">
             <${TryButton} project=${project} task=${item.task} icon />
             <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy} ref=${toggle}
               title=${failing ? "Close the note" : "Fail"} aria-expanded=${failing}
-              aria-label=${failing ? `Do not fail: ${item.check}` : `Fail: ${item.check}`} onClick=${() => setFailing(!failing)}><${Icon} name="fail" /></button>
+              aria-label=${`${failing ? "Do not fail" : "Fail"}: ${item.check}`} onClick=${() => setFailing(!failing)}><${Icon} name="fail" /></button>
             <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Pass"
               aria-label=${`Pass: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
           </span>`}

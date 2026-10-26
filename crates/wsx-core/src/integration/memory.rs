@@ -464,10 +464,9 @@ fn read_tail(
                 // ^ Claude 2.1.30x saves a `deferred_tools_record` attachment whose parent was
                 // never saved: the chain goes on at the record saved before it. Any other missing
                 // parent ends the chain, so a branch the person left never joins it.
-                let attachment = node.role == "attachment";
                 current = next.and_then(|id| match index.get(id) {
                     Some(next) => Some(*next),
-                    None if attachment && position > 0 => Some(position - 1),
+                    None if node.role == "attachment" && position > 0 => Some(position - 1),
                     None => {
                         truncated = true;
                         None
