@@ -117,6 +117,7 @@ const peerColor = (project) => {
 // One message. `words` turns its text runs into task chips.
 export function Bubble({ project, row, words, names, fresh }) {
   const out = row.author === "owner";
+  const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
   const id = `bubble-${row.key}`;
   const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${names.peers[row.to]}` : row.tag;
   let body;
@@ -127,8 +128,8 @@ export function Bubble({ project, row, words, names, fresh }) {
       ${row.approvals && html`<${ChatApprovals} project=${project} items=${row.approvals} />`}`;
   }
   return html`
-    <article class="bubble" data-side=${out ? "out" : "in"} data-speaker=${row.author.startsWith("peer:") ? "peer" : row.author}
-      data-peer=${row.author.startsWith("peer:") ? peerColor(row.author.slice(5)) : null} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}
+    <article class="bubble" data-side=${out ? "out" : "in"} data-speaker=${peer == null ? row.author : "peer"}
+      data-peer=${peer == null ? null : peerColor(peer)} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}
       data-at=${row.pending ? null : row.at} data-key=${row.key} data-in=${out || row.pending ? null : ""}
       data-quote=${quoteOf(row.entry.text) || null}
       data-pending=${row.pending ? "" : null} aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}`}>
