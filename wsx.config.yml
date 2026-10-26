@@ -31,7 +31,8 @@ tasks:
     # ^ The steps (context, plan, build, review, memo) are the owner's, in ~/.config/wsx/wsx.config.yml.
     build: >-
       Follow CLAUDE.md and AGENTS.md. Keep the change lean: reuse what exists, remove what your
-      change makes dead; prefer removing code to adding it.
+      change makes dead; prefer removing code to adding it. Run owner:memo to save durable
+      lessons into knowledge/sessions/, and never commit knowledge/: it is git-ignored.
     # ^ When session notes are newer than the last idle task, the manager host starts one task
     # with this prompt.
     idle: >-
