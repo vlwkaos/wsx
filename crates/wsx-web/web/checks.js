@@ -96,7 +96,8 @@ export function CheckRow({ project, item, revision, onChanged }) {
             <a class="check-capture" href=${capture} target="_blank" rel="noopener" aria-label=${`Capture of: ${item.check}`}>
               <img src=${capture} alt="" />
             </a>`}
-          ${item.state !== "open" && html`<p class="check-state">${item.state === "passed" ? "Passed" : html`Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}`}</p>`}
+          ${item.state === "failed" && html`<p class="check-state">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
+          ${item.state === "passed" && html`<p class="check-state">Passed</p>`}
         </div>
         ${acting && html`
           <span class="check-acts">
