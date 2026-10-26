@@ -3278,7 +3278,7 @@ merge_seconds = 3
         planned = ids['plans']
         view = steady(owner, 'GET', '/api/tasks/%d' % planned)[1]
         assert [(item['kind'], item['task']) for item in view['needs']] == [('waiting', 1), ('land', 2)], view['needs']
-        assert view['needs'][0]['waiting']['on'] == 'owner' , view['needs'][0]
+        assert view['needs'][0]['waiting']['on'] == 'owner', view['needs'][0]
         detail = steady(owner, 'GET', '/api/tasks/%d/t/1' % planned)[1]
         assert detail['actions'] == ['add', 'hand'] and detail['talk'] == [] and 'brief' not in detail and 'phase' not in detail, detail
         assert steady(owner, 'POST', '/api/tasks/%d/t/1/start' % planned, {})[0] == 404
