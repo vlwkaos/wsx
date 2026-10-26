@@ -31,7 +31,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
                  OWNER_SAID in it becomes the id of the turn's first owner message
   SCRIPT         (a line) run the rest of the message as one shell script, heredocs too
   TABLE          answer with a wide markdown table that names #4 twice and #2
-  TABLE5         answer "Five columns:" with a table of five columns and 30 lines after it
+  TABLE5         answer "Five columns:" with a table of five columns and 20 rows, and 30 lines after it
   DIAGRAM        answer with a tall mermaid diagram, drawn after the bubble shows
   PAGE <section> <words>  replace that section of the project page (its instructions name it)
   STATUS         answer from `wsx task ledger`
@@ -153,7 +153,7 @@ def manager_turn(text, project, page):
                 ('beta', 'ready', 'manager', 'Tuesday', 'lands after the checks pass'),
                 ('gamma', 'working', 'worker', 'Wednesday', 'writes the migration notes'),
                 ('delta', 'done', 'owner', 'Thursday', 'shipped in the last release')]
-        table = '\n'.join('| %s |' % ' | '.join(row) for row in rows)
+        table = '\n'.join('| %s |' % ' | '.join(row) for row in rows * 5)
         notes = '\n\n'.join('Note %d about the table.' % n for n in range(1, 31))
         replies.append('Five columns:\n\n| Name | State | Owner | Since | Note |\n|---|---|---|---|---|\n%s\n\n%s' % (table, notes))
     if 'DIAGRAM' in text.split():
