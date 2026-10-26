@@ -2054,7 +2054,7 @@ def run(wsx, wsxd, work, owned):
     twice = js('task', 'new', 'NORESULT 2 WORK twice.txt')['id']
     assert wait_state(twice, 'ready', 'failed')['state'] == 'failed'
     assert len(asked(twice)) == 1
-    assert show(twice)['result']['summary'] == 'the agent ended with success and no result'
+    assert show(twice)['result']['result']['summary'] == 'the agent ended with success and no result'
     js('task', 'close', once, '--discard')
     js('task', 'close', twice, '--discard')
 
