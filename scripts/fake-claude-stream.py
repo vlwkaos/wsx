@@ -17,9 +17,8 @@ Each user message is a small script of words:
   WAIT <file>  keep working until <file> exists, at most 10 minutes
   CHECKRUN_AGAIN  start `wsx task check-run`, kill it after 1 s, run it again and trace that answer
   CHECKRUN_TWICE  run `wsx task check-run` twice on the same tree and trace both answers
-  PROBE <secret> <other copy> <state file> <library dir>  try each through wsx's boundary and trace
-               what it allowed: read the secret, write the other copy and the state file, move
-               main's ref, write the main repository's hooks, write under the library folder, listen on 127.0.0.1, open a PTY
+  PROBE <script> <spec> <out>  run the test's boundary probe script (python3 <script> <spec> <out>)
+               and trace what it wrote to <out>
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
 conflict with the line "resolved".
 Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE, and each
@@ -96,47 +95,11 @@ def tool_result(use_id, text, failed):
         {'type': 'tool_result', 'tool_use_id': use_id, 'is_error': failed, 'content': text}]}})
 
 
-def attempt(action):
-    try:
-        action()
-        return True
-    except OSError:
-        return False
-
-
-def probe(secret, other, state_file, library):
-    """What the boundary around this process allows; True is allowed."""
-    def write(path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w') as out:
-            out.write('probe\n')
-
-    def listen():
-        import socket
-        server = socket.socket()
-        server.bind(('127.0.0.1', 0))
-        server.listen(1)
-        client = socket.create_connection(server.getsockname())
-        server.accept()[0].close()
-        client.close()
-        server.close()
-
-    def pty():
-        for fd in os.openpty():
-            os.close(fd)
-    moved = subprocess.run(['git', 'update-ref', 'refs/heads/main', 'HEAD'], capture_output=True).returncode == 0
-    common = subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-                            capture_output=True, text=True).stdout.strip()
-    trace({'probe': {'read_secret': attempt(lambda: open(secret).read()),
-                     'write_other_copy': attempt(lambda: write(os.path.join(other, 'probe.txt'))),
-                     'write_state': attempt(lambda: write(state_file)),
-                     'move_main': moved,
-                     'write_hooks': attempt(lambda: write(os.path.join(common, 'hooks', 'pre-commit'))),
-                     'write_library': attempt(lambda: write(os.path.join(library, 'probe.txt'))),
-                     'write_own_copy': attempt(lambda: write('probe.txt')),
-                     'listen': attempt(listen), 'pty': attempt(pty)}})
-    if os.path.exists('probe.txt'):
-        os.remove('probe.txt')
+def probe(script, spec, out):
+    """The test's boundary probe, run as this worker's own command inside wsx's boundary."""
+    subprocess.run([sys.executable, script, spec, out], check=True)
+    with open(out) as answer:
+        trace({'probe': json.load(answer)})
 
 
 def png_chunk(kind, data):
@@ -336,7 +299,7 @@ def main():
             rule = words[words.index('NEEDS') + 1]
             denials.append({'tool_name': 'Bash', 'tool_use_id': 'x', 'tool_input': {'command': rule}})
         if 'PROBE' in words:
-            probe(*words[words.index('PROBE') + 1:words.index('PROBE') + 5])
+            probe(*words[words.index('PROBE') + 1:words.index('PROBE') + 4])
         if 'rebased' in words and 'onto' in words:
             tip = words[words.index('onto') + 1]
             rebase_env = dict(os.environ, GIT_EDITOR='true', GIT_AUTHOR_NAME='fake', GIT_AUTHOR_EMAIL='fake@example.invalid',
