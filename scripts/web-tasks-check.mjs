@@ -43,13 +43,20 @@ const typeInto = (selector, value) => evaluate(`(() => { const field = document.
   field.value = ${JSON.stringify(value)}; field.setSelectionRange(field.value.length, field.value.length);
   field.dispatchEvent(new Event('input', { bubbles: true })); field.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true })); })()`);
 // Paste into a text box: a ClipboardEvent that carries a DataTransfer, as a browser sends it.
-// "image" is a small PNG named "image.png", as iOS and Chrome name a pasted screenshot, and
-// "image-2" another one; any other value is plain text. It returns false when the page cancelled the paste.
+// "image" is a PNG named "image.png", as iOS and Chrome name a pasted screenshot, and "image-2"
+// another one: 640 x 400 with a border, a grid, a corner block and its name, so a capture of the
+// image viewer shows its fit and edges. Any other value is plain text. It returns false when the page cancelled the paste.
 const pasteInto = (selector, what) => evaluate(`(async () => {
   const data = new DataTransfer();
   if (${JSON.stringify(what)}.startsWith('image')) {
-    const canvas = Object.assign(document.createElement('canvas'), { width: 8, height: 8 });
-    canvas.getContext('2d').fillRect(0, 0, 4, ${JSON.stringify(what)} === 'image' ? 4 : 6);
+    const canvas = Object.assign(document.createElement('canvas'), { width: 640, height: 400 });
+    const pen = canvas.getContext('2d');
+    pen.fillStyle = '#e6e6e6'; pen.fillRect(0, 0, 640, 400);
+    pen.fillStyle = '#282c34'; pen.fillRect(8, 8, 624, 384);
+    pen.strokeStyle = '#5a5f69';
+    for (let at = 40; at < 640; at += 40) { pen.beginPath(); pen.moveTo(at, 8); pen.lineTo(at, 392); pen.moveTo(8, at); pen.lineTo(632, at); pen.stroke(); }
+    pen.fillStyle = '#468cdc'; pen.fillRect(8, 8, 112, 72);
+    pen.fillStyle = '#fac83c'; pen.font = 'bold 64px sans-serif'; pen.fillText(${JSON.stringify(what)}, 120, 240);
     data.items.add(new File([await new Promise((done) => canvas.toBlob(done, 'image/png'))], 'image.png', { type: 'image/png' }));
   } else data.setData('text/plain', ${JSON.stringify(what)});
   const field = document.querySelector(${JSON.stringify(selector)});
@@ -236,12 +243,16 @@ async function viewImages(name, links) {
   const state = () => evaluate(`(() => { const stage = document.querySelector('.viewer-stage').getBoundingClientRect(); const box = ${shown}?.getBoundingClientRect();
     return box && { src: ${shown}.src, place: ${place}, count: document.querySelector('.viewer-bar .time')?.textContent ?? '',
       inside: box.left >= stage.left - 1 && box.top >= stage.top - 1 && box.right <= stage.right + 1 && box.bottom <= stage.bottom + 1,
+      gaps: [box.left - stage.left, stage.right - box.right, box.top - stage.top, stage.bottom - box.bottom].map(Math.round),
       fills: Math.max(box.width / stage.width, box.height / stage.height) > 0.99,
       beside: box.left - stage.left > 20 ? [stage.left + 10, stage.top + stage.height / 2] : [stage.left + stage.width / 2, stage.bottom - 10] }; })()`);
   const at = async (index) => {
     await until(`${shown}?.src === ${JSON.stringify(sources[index])}`, `${what}: the viewer did not go to image ${index + 1}`);
     const now = await state();
     if (now.count !== `${index + 1} of 2` || !now.inside || !now.fills) await fail(`${what}: image ${index + 1} does not fit the screen: ${JSON.stringify(now)}`);
+    // ^ Centered both ways: the gaps left and right are equal, and so are those above and below.
+    const [left, right, top, bottom] = now.gaps;
+    if (Math.abs(left - right) > 1 || Math.abs(top - bottom) > 1) await fail(`${what}: image ${index + 1} is not centered: gaps ${JSON.stringify(now.gaps)}`);
     return now;
   };
   const swipe = async (from, to) => {
@@ -1374,7 +1385,7 @@ if (await sheetState() !== "3 open") await fail(`the list's top row reads ${awai
 // items fit: the sheet is as high as its rows, on the bottom, with no empty band under them.
 const context = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [(node.querySelector('.check-task')?.textContent ?? '').replace(node.querySelector('.task-chip').textContent, '').trim(), [...node.querySelectorAll('.check-facts > *')].map((line) => line.textContent).join('|')])");
 if (!context.every(([did]) => did.startsWith("did: WORK")) || context.slice(0, 2).some(([, facts]) => facts !== "Check|open the file|Look at|/#/x|Passes if|it has text")) await fail(`the items' context reads ${JSON.stringify(context)}`);
-await until("[...document.querySelectorAll('.check-capture img')].map((image) => image.naturalWidth).join() === '1,1'", "#7's and #8's captures did not load");
+await until("[...document.querySelectorAll('.check-capture img')].map((image) => image.naturalWidth).join() === '480,480'", "#7's and #8's captures did not load");
 if (await count(".check-capture") !== 2) await fail("an item without a capture shows one");
 await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
 const fitted = await evaluate("(() => { const sheet = document.querySelector('dialog.task-sheet').getBoundingClientRect(); const last = [...document.querySelectorAll('.check-item')].pop().getBoundingClientRect(); return [Math.round(innerHeight - sheet.bottom), Math.round(sheet.bottom - last.bottom), Math.round(sheet.height / innerHeight * 100)]; })()");

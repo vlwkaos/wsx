@@ -105,9 +105,42 @@ def png_chunk(kind, data):
     return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
 
 
-# ^ A real 1x1 PNG, so a browser draws the capture.
-PIXEL = (b'\x89PNG\r\n\x1a\n' + png_chunk(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 0, 0, 0, 0))
-         + png_chunk(b'IDAT', zlib.compress(b'\x00\x80')) + png_chunk(b'IEND', b''))
+# 3x5 glyphs for a capture's label, a row per string, '#' an on cell.
+GLYPHS = {'C': ['###', '#..', '#..', '#..', '###'], 'A': ['###', '#.#', '###', '#.#', '#.#'],
+          'P': ['###', '#.#', '###', '#..', '#..'], 'T': ['###', '.#.', '.#.', '.#.', '.#.'],
+          'U': ['#.#', '#.#', '#.#', '#.#', '###'], 'R': ['###', '#.#', '##.', '#.#', '#.#'],
+          'E': ['###', '#..', '###', '#..', '###'], 'D': ['##.', '#.#', '#.#', '#.#', '##.'],
+          ' ': ['...'] * 5}
+
+
+def capture_png(label, width=480, height=300):
+    """A visible, non-square capture: a light border, a grid, a blue corner block and `label`
+    in large letters, so a viewer's fit, centering and edges show in a screenshot."""
+    scale, x0, y0 = 10, 60, 120
+    on = set()
+    for index, char in enumerate(label):
+        for row, line in enumerate(GLYPHS.get(char, GLYPHS[' '])):
+            for col, cell in enumerate(line):
+                if cell == '#':
+                    on.add((index * 4 + col, row))
+    rows = []
+    for y in range(height):
+        row = bytearray(b'\x00')
+        for x in range(width):
+            if x < 6 or y < 6 or x >= width - 6 or y >= height - 6:
+                pixel = (230, 230, 230)
+            elif x < 90 and y < 60:
+                pixel = (70, 140, 220)
+            elif x >= x0 and y >= y0 and ((x - x0) // scale, (y - y0) // scale) in on:
+                pixel = (250, 200, 60)
+            elif x % 30 == 0 or y % 30 == 0:
+                pixel = (90, 95, 105)
+            else:
+                pixel = (40, 44, 52)
+            row += bytes(pixel)
+        rows.append(bytes(row))
+    return (b'\x89PNG\r\n\x1a\n' + png_chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
+            + png_chunk(b'IDAT', zlib.compress(b''.join(rows))) + png_chunk(b'IEND', b''))
 
 
 def own_repo():
@@ -365,8 +398,10 @@ def main():
             verify.append({'check': 'open the file', 'where': '/#/x' if 'CAPTURE' in words else 'a real device',
                            'capture': 'shot.png' if 'CAPTURE' in words else '', 'pass_if': 'it has text'})
             if 'CAPTURE' in words:
+                # ^ Labeled by the first worked file's stem, so two captures differ: "CAPTURE D".
+                stem = words[words.index('WORK') + 1][:1].upper() if 'WORK' in words else ''
                 with open('shot.png', 'wb') as out:
-                    out.write(PIXEL)
+                    out.write(capture_png('CAPTURE ' + stem))
         if 'CMDHV' in words:
             verify.append({'check': 'run `wsx task list`', 'where': '', 'capture': '', 'pass_if': 'it lists the task'})
         if 'BAREHV' in words:
