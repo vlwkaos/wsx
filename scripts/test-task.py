@@ -322,6 +322,9 @@ def run(wsx, wsxd, work, owned):
         path = Path(show(n)['log'])
         return [json.loads(line) for line in path.read_text().splitlines()]
 
+    def kinds(n, *names):
+        return [e['kind'] for e in log(n) if e['kind'] in names]
+
     def leftovers(marker):
         ps = subprocess.run(['ps', '-axo', 'pid=,command='], capture_output=True, text=True).stdout
         return [line for line in ps.splitlines() if marker in line and 'ps -axo' not in line]
@@ -1590,7 +1593,7 @@ def run(wsx, wsxd, work, owned):
         assert word in refused.stdout + refused.stderr, refused
     time.sleep(1.5)
     assert show(handed)['record']['waiting']['on'] == 'hand'
-    assert not [e for e in log(handed) if e['kind'] in ('checks', 'revision', 'result')], log(handed)
+    assert not kinds(handed, 'checks', 'revision', 'result'), log(handed)
     assert not any(t.get('message') in ('WORK no.txt', 'WORK queued.txt') for t in traces())
     assert not (hand_copy / 'late.txt').exists()
     # Uncommitted tracked work refuses the handback, and the pane stays.
@@ -1608,7 +1611,7 @@ def run(wsx, wsxd, work, owned):
     assert reviewed(handed)['state'] == 'landed'
     wait_closed(handed)
     assert main_has('hand.txt') and git('show', 'main:README') == 'by hand'
-    assert [e['kind'] for e in log(handed) if e['kind'] in ('checks', 'revision')] == ['checks', 'revision']
+    assert kinds(handed, 'checks', 'revision') == ['checks', 'revision']
     # ^ The fork wrote its own transcript; the worker's is as it was.
     assert hashlib.sha256(worker_transcript.read_bytes()).hexdigest() == before
     assert any(path.name.startswith('fork-') for path in (home / '.claude/fake-sessions').iterdir())
@@ -1835,9 +1838,9 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(again, 'ready', 'failed')['state'] == 'ready'
     code, said = next(t for t in traces() if 'check_run_again' in t)['check_run_again']
     assert code == 0 and ': exit 0' in said, said
-    assert len([e for e in log(again) if e['kind'] == 'check_run']) == 1, log(again)
+    assert kinds(again, 'check_run') == ['check_run'], log(again)
     # ^ A run that ended before the result starts no turn of its own.
-    assert len([e for e in log(again) if e['kind'] == 'result']) == 1, log(again)
+    assert kinds(again, 'result') == ['result'], log(again)
     # ^ One start for the check-run and one for the checks after the result.
     starts = [line for line in spans.read_text().splitlines() if line.startswith(copy_name(again) + ' start')]
     assert len(starts) == 2, spans.read_text()
@@ -1849,25 +1852,23 @@ def run(wsx, wsxd, work, owned):
     # 32b. Checks run once per tree (docs/tasks.md "Checks, revisions and report", "Landing"): a
     # repeat check-run on the same clean tree runs nothing, a land with an unmoved main runs no
     # checks, and a land after main moved runs them on the rebased revision.
-    def checks_logged(n):
-        return len([e for e in log(n) if e['kind'] == 'checks'])
     once = js('task', 'new', 'CHECKRUN_TWICE WORK once.txt')['id']
     assert wait_state(once, 'ready', 'failed')['state'] == 'ready'
     first, second = next(t for t in traces() if 'check_run_twice' in t)['check_run_twice']
     assert first[0] == 0 and 'stored' not in first[1], first
     assert second[0] == 0 and 'check 1 `test ! -e broken.txt`: exit 0 (stored: it ran on this tree before)' in second[1], second
-    assert len([e for e in log(once) if e['kind'] == 'check_run']) == 1, log(once)
-    ran = checks_logged(once)
-    assert land(once)['state'] == 'landed' and checks_logged(once) == ran, log(once)
+    assert kinds(once, 'check_run') == ['check_run'], log(once)
+    ran = len(kinds(once, 'checks'))
+    assert land(once)['state'] == 'landed' and len(kinds(once, 'checks')) == ran, log(once)
     wait_closed(once)
     moved = js('task', 'new', 'WORK moved.txt')['id']
     assert wait_state(moved, 'ready', 'failed')['state'] == 'ready'
-    ran = checks_logged(moved)
+    ran = len(kinds(moved, 'checks'))
     (project / 'main-moved.txt').write_text('main moved\n')
     git('add', 'main-moved.txt')
     git('commit', '-q', '-m', 'main moves')
     assert 'checks run on the new revision' in land(moved)['message']
-    assert wait_state(moved, 'landed', 'failed')['state'] == 'landed' and checks_logged(moved) == ran + 1, log(moved)
+    assert wait_state(moved, 'landed', 'failed')['state'] == 'landed' and len(kinds(moved, 'checks')) == ran + 1, log(moved)
     wait_closed(moved)
     # 32s. A scenario runs through check-run by name or by number after the checks, never in a
     # bare check-run or after a result; the worker's instructions list it.
@@ -1891,13 +1892,12 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n' % late_gate)
     git('commit', '-q', '-am', 'a slow scenario')
     late = js('task', 'new', 'CHECKRUN_LATE slow WORK late.txt')['id']
-    wait(lambda: [e for e in log(late) if e['kind'] == 'result'], 'the result before the answer', 30)
+    wait(lambda: kinds(late, 'result'), 'the result before the answer', 30)
     time.sleep(1)
-    assert show(late)['state'] == 'working' and not [e for e in log(late) if e['kind'] == 'checks'], log(late)
+    assert show(late)['state'] == 'working' and not kinds(late, 'checks'), log(late)
     late_gate.touch()
     assert wait_state(late, 'ready', 'failed')['state'] == 'ready', log(late)
-    kinds = [e['kind'] for e in log(late) if e['kind'] in ('result', 'check_run', 'checks')]
-    assert kinds == ['result', 'check_run', 'result', 'checks'], kinds
+    assert kinds(late, 'result', 'check_run', 'checks') == ['result', 'check_run', 'result', 'checks'], log(late)
     answers = [t['message'] for t in traces() if 'Your check-run ended after your result' in t.get('message', '')]
     assert len(answers) == 1 and 'check 2 `while [ ! -e' in answers[0] and ': exit 0' in answers[0], answers
     js('task', 'close', late, '--discard')
@@ -1908,13 +1908,12 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('"test ! -e broken.txt"', '"while [ ! -e %s ]; do sleep 0.2; done"' % gate_open))
     git('commit', '-q', '-am', 'a slow gate')
     twice = js('task', 'new', 'REPEAT WORK twice.txt')['id']
-    wait(lambda: len([e for e in log(twice) if e['kind'] == 'result']) == 2, 'the repeated result', 30)
+    wait(lambda: kinds(twice, 'result') == ['result'] * 2, 'the repeated result', 30)
     assert show(twice)['state'] == 'checking', show(twice)
     gate_open.touch()
     assert wait_state(twice, 'ready', 'failed')['state'] == 'ready', log(twice)
     time.sleep(1)
-    kinds = [e['kind'] for e in log(twice) if e['kind'] in ('checks', 'revision')]
-    assert kinds == ['checks', 'revision'], kinds
+    assert kinds(twice, 'checks', 'revision') == ['checks', 'revision'], log(twice)
     js('task', 'close', twice, '--discard')
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
     git('commit', '-q', '-am', 'no scenario')
@@ -1992,12 +1991,12 @@ def run(wsx, wsxd, work, owned):
     waiting = wait_state(planned, 'waiting', 'ready', 'failed')
     assert waiting['record']['waiting'] == {'on': 'plan', 'reason': 'its plan waits for the manager'}, waiting['record']
     assert 'plan' not in waiting['record'], waiting['record']
-    assert not [e for e in log(planned) if e['kind'] in ('checks', 'revision')], log(planned)
+    assert not kinds(planned, 'checks', 'revision'), log(planned)
     assert 'First write a short plan and stop' in next(e for e in log(planned) if e['kind'] == 'result')['summary']
     wait(lambda: events_with('#%d waiting r0' % planned, 'waits on plan'), 'the plan event')
     js('task', 'add', planned, 'go WORK planned.txt')
     assert wait_state(planned, 'ready', 'failed')['state'] == 'ready'
-    assert [e['kind'] for e in log(planned) if e['kind'] in ('checks', 'revision')] == ['checks', 'revision']
+    assert kinds(planned, 'checks', 'revision') == ['checks', 'revision']
     js('task', 'close', planned, '--discard')
     # 32h. The real Claude in wsx's boundary (docs/tasks.md "Permissions"): with no prompt it
     # runs part 23's probe and gets the same answers. Skipped, and said so, when no claude is on PATH.
