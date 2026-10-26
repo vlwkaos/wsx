@@ -733,8 +733,8 @@ def run(wsx, wsxd, work, owned):
     assert 'Summary' in checked and 'TASK ' in checked, checked
     assert 'TASKS' not in shots[-1], shots[-1]
     narrow = tui_screens(wsx, env, project, [(r'WORKSPACE', b't'), (r'Recent', b'')], cols=40)[1]
-    for title, state in (('NEEDS WebSearch', 'waiting'), ('WORK broken.txt', 'failed'), ('WORK memo.txt', 'closed')):
-        assert re.search(r'^ %s.* %s$' % (re.escape(title), state), narrow, re.M), narrow
+    for title, word in (('NEEDS WebSearch', 'waiting'), ('WORK broken.txt', 'failed'), ('WORK memo.txt', 'closed')):
+        assert re.search(r'^ %s.* %s$' % (re.escape(title), word), narrow, re.M), narrow
     assert not re.search(r'#\d', narrow.split('Open', 1)[1]), narrow
     for n in (asking, failing):
         js('task', 'close', n, '--discard')
