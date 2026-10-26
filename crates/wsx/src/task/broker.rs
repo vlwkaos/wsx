@@ -1,6 +1,6 @@
 //! A host runs its agent's `wsx task` commands: the manager host every `task` command of the
-//! manager agent, a task host the worker's `check-run`. The agent's Bash stays in its sandbox
-//! whatever the command's shape (heredoc, `;`, `&&`, a pipe); under `WSX_TASK_BROKER` the CLI
+//! manager agent, a task host the worker's `check-run`, whatever the command's shape (heredoc,
+//! `;`, `&&`, a pipe), so the host keeps the actor and the check slot; under `WSX_TASK_BROKER` the CLI
 //! sends a `task` command's argv, stdin and folder to the host's socket and prints the host's
 //! answer. ref: docs/tasks.md "Permissions"
 

@@ -126,23 +126,15 @@ export function withChips(project) {
   return chipWords.get(project);
 }
 
-// What a waiting task waits for, in words: "needs to reach crates.io", "waits for disk
+// What a waiting task waits for, in words: "waits for disk
 // space", "stopped", "needs an answer" (docs/tasks.md "Store").
-const waitWords = (item) => item.asks?.length ? `needs to ${askWords(item.asks)}`
-  : item.waiting?.on === "disk" ? "waits for disk space"
+const waitWords = (item) => item.waiting?.on === "disk" ? "waits for disk space"
   : item.waiting?.reason === "stopped by request" ? "stopped" : "needs an answer";
 const KIND_TONE = { waiting: "attention", failed: "danger", approval: "attention", land: "accent" };
 // One open item in words, as the owner would read it: "#4 needs an answer", "Approve land #3".
 export const needWords = (item) => item.kind === "approval" ? item.label
   : item.kind === "waiting" ? `#${item.task} ${waitWords(item)}`
   : `#${item.task} ${item.kind === "land" ? "is ready to land" : "failed"}`;
-// What a waiting task asks for, never a command: "reach crates.io and write ~/.cargo"
-// (docs/web-client-tasks.md). A grant body names one ask.
-export function askWords(asks) {
-  const words = asks.map((ask) => ask.kind === "network" ? `reach ${ask.host}` : `write ${ask.path}`);
-  return words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
-}
-export const grantBody = (ask, project) => ask.kind === "network" ? { host: ask.host, project } : { path: ask.path, project };
 export const needTone = (item) => KIND_TONE[item.kind];
 const itemKey = (item) => item.kind === "approval" ? item.approval : `${item.kind}-${item.task}`;
 
@@ -153,9 +145,8 @@ const actionOf = (key) => {
   return pending.get(key);
 };
 
-// Actions whose outcome the chat already shows ("Approved land #3", "#1 may reach crates.io
-// (owner)", the worker's "#3 · done").
-const SAID_IN_CHAT = new Set(["approve", "deny", "allow"]);
+// Actions whose outcome the chat already shows ("Approved land #3", the worker's "#3 · done").
+const SAID_IN_CHAT = new Set(["approve", "deny"]);
 
 // What a fixed action did, as a notice: wsx's own answer, unless the chat says it already.
 export function announce(name, action, answer) {
@@ -254,31 +245,13 @@ function NeedRow({ project, item, index, onActing, onFailed, leaving }) {
     const text = field.current.value.trim();
     if (text) run("add", { text });
   };
-  // ^ One grant per ask; the host resumes the task with the last one.
-  const asks = item.kind === "waiting" ? item.asks ?? [] : [];
-  const grant = async () => {
-    draft.busy = true;
-    draft.error = "";
-    refresh();
-    onActing(itemKey(item), index);
-    try {
-      for (const ask of asks) await act(project, item, "allow", grantBody(ask, false));
-    } catch (failure) {
-      onFailed(itemKey(item));
-      draft.error = failure.message;
-    }
-    draft.busy = false;
-    refresh();
-  };
   // ^ Icons, so the title and what the item waits for keep the row's width; the name is the
   // button's title and, with what it acts on, its accessible name.
   const button = (label, icon, tone, onClick, extra = {}) => html`
     <button class="button icon-button need-action" type="button" title=${label} data-tone=${tone} disabled=${draft.busy}
       onClick=${onClick} ...${extra}><${Icon} name=${icon} /></button>`;
   let actions = null;
-  if (acting && asks.length) {
-    actions = button("Allow", "pass", "accent", grant, { "aria-label": `Allow #${item.task} to ${askWords(asks)}` });
-  } else if (acting && ["waiting", "failed"].includes(item.kind)) {
+  if (acting && ["waiting", "failed"].includes(item.kind)) {
     actions = button("Answer", "reply", null, open, { "aria-expanded": draft.field === "answer", "aria-label": `Answer #${item.task}` });
   } else if (acting && item.kind === "approval" && draft.running) {
     // ^ The approved action runs until its decision settles the row; it may take minutes.

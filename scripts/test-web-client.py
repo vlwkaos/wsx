@@ -2718,7 +2718,6 @@ TASK_CONFIG = '''tasks:
   land: { auto: false, approve: true }
   agent:
     model: fake-model
-    tools: [WebFetch]
   checks:
     - "test ! -e broken.txt"
   manager: { model: fake-manager }
@@ -2843,8 +2842,8 @@ def task_journey(args):
 
         daemon = start(work, [str(wsxd)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait(path.exists, 'daemon')
-        # The fixture store: #1 blocked on a host, #2 ready with a Human Verify item, #3 ready to land.
-        assert js('task', 'new', 'NEEDS_HOST crates.io WORK m.txt', '-p', 'demo')['id'] == 1
+        # The fixture store: #1 refused a tool and waiting for the owner, #2 ready with a Human Verify item, #3 ready to land.
+        assert js('task', 'new', 'NEEDS Bash(curl:*) WORK m.txt', '-p', 'demo')['id'] == 1
         assert js('task', 'new', 'WORK a.txt HV', '-p', 'demo')['id'] == 2
         assert js('task', 'new', 'WORK b.txt', '-p', 'demo')['id'] == 3
         wait_state(1, 'waiting')
@@ -2857,7 +2856,7 @@ def task_journey(args):
             wait(lambda: js('task', 'show', n, '-p', 'plans')['state'] == state_name, 'plans #%d %s' % (n, state_name))
         if args.browser:
             # The same store in the second project (`ui`), for the page: the browser acts on it.
-            for prompt in ('NEEDS_HOST crates.io WORK m.txt', 'WORK a.txt HV', 'WORK b.txt', 'NEEDS_HOST crates.io WORK n.txt'):
+            for prompt in ('NEEDS Bash(curl:*) WORK m.txt', 'WORK a.txt HV', 'WORK b.txt', 'NEEDS Bash(curl:*) WORK n.txt'):
                 js('task', 'new', prompt, '-p', 'ui')
             for n, state_name in ((1, 'waiting'), (2, 'ready'), (3, 'ready'), (4, 'waiting')):
                 wait(lambda: js('task', 'show', n, '-p', 'ui')['state'] == state_name, 'ui #%d' % n)
@@ -2888,8 +2887,6 @@ def task_journey(args):
                  'ui heard plans', timeout=30)
             js('task', 'say', 'RUN wsx task say -p plans --from-manager --reply "ui is fine" --json', '-p', 'ui')
             wait(lambda: any(e['kind'] == 'sent' for e in js('task', 'chat', '-p', 'ui')['entries']), 'ui answered plans', timeout=30)
-            # The owner let ui's manager write a folder for two hours: a settled line in its chat.
-            assert js('task', 'allow', 'manager', '--path', str(work / 'granted'), '--until', '2h', '-p', 'ui')['ok']
             # A deploy of the default branch tip: the brief says it is up to date until a task lands.
             assert js('task', 'deploy', '-p', 'ui')['exit'] == 0
             # Sessions without tasks, oldest first: an agent that exited (`gone`), one done
@@ -3005,8 +3002,7 @@ merge_seconds = 3
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
         assert kinds[0] == ('waiting', 1) and sorted(kinds[1:]) == [('land', 2), ('land', 3)], kinds
-        assert overview['needs'][0]['asks'] == [{'kind': 'network', 'host': 'crates.io'}], overview['needs'][0]
-        assert overview['needs'][0]['waiting'] == {'on': 'permission', 'reason': 'needs to reach crates.io'}, overview['needs'][0]
+        assert overview['needs'][0]['waiting']['on'] == 'owner' and 'asks' not in overview['needs'][0], overview['needs'][0]
         assert overview['needs'][1]['reason'] == 'ready to land' and overview['working'] == 0 and overview['to_check'] == 0, overview
         # Three states for the owner; the store's own states stay in the record.
         assert {row['id']: row['stage'] for row in overview['tasks']} == {1: 'needs_you', 2: 'needs_you', 3: 'needs_you'}
@@ -3038,9 +3034,8 @@ merge_seconds = 3
         assert act(2, 'land', {'result': 'pass'})[0] == 422
         assert act(2, 'add', {'text': '  '})[0] == 400
         assert act(2, 'add', {'text': 'x' * (64 * 1024 + 1)})[0] == 413
-        assert act(1, 'allow', {'host': 'bad host'})[0] == 400
-        assert act(1, 'allow', {'tool': 'Bash(make:*)'})[0] == 422  # no tool rules from the web
-        assert act(1, 'allow', {'host': 'a.example', 'path': '~/.x'})[0] == 400
+        # ^ Nothing is granted: the web has no `allow` action.
+        assert act(1, 'allow', {'tool': 'Bash(make:*)'})[0] == 422 and act(1, 'allow', {})[0] == 404
         assert act(2, 'explode', {})[0] == 404 and act(99, 'add', {'text': 'hi'})[0] == 404
         # ^ A second device of the owner: these steps keep to their own request budget.
         trier = Site(ports['owner'], '')
@@ -3089,8 +3084,8 @@ merge_seconds = 3
         assert steady(owner, 'GET', '/api/tasks/%d/checks/c99/capture' % demo)[0] == 404
         landed = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
         assert landed['stage'] == 'done' and [i['id'] for i in landed['to_check']] == ['c1'] and landed['actions'] == [], landed
-        status, body = act(1, 'allow', {'host': 'crates.io'})
-        assert status == 200 and body['message'] == 'may now reach crates.io; resumed the task', body
+        status, body = act(1, 'add', {'text': 'NOOP'})
+        assert status == 200, body
         wait_state(1, 'ready')
         status, body = act(1, 'add', {'text': 'NOOP and again'})
         assert status == 200, body
@@ -3122,7 +3117,7 @@ merge_seconds = 3
         assert status == 200 and len(body['sessions_closed']) == 1, body
         wait_state(4, 'ready')
         assert steady(owner, 'GET', '/api/tasks/%d/t/4' % demo)[1]['revision'] == before_hand + 1
-        ok('actions: no verdict route, land refused then landed with its item to check, allow resumes, add reaches the worker, steer reaches the turn, hand and hand back')
+        ok('actions: no verdict route, land refused then landed with its item to check, add resumes a waiting task and reaches the worker, steer reaches the turn, hand and hand back')
 
         # --- The manager: say starts it, the reply arrives in the chat, events follow.
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS'})
@@ -3173,7 +3168,7 @@ merge_seconds = 3
         # What was settled, newest first, one line each; the home row's last reply and activity.
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         settled = [row['text'] for row in overview['resolutions']]
-        for line in ('Denied discard #1', 'Approved land #3', '#1 may reach crates.io (owner)'):
+        for line in ('Denied discard #1', 'Approved land #3', '#1 got an answer'):
             assert line in settled, (line, settled)
         # ^ A landing is the worker's "done" bubble in the chat, never a line.
         assert settled.index('Denied discard #1') < settled.index('Approved land #3') and not any('landed' in line for line in settled), settled
@@ -3416,8 +3411,8 @@ merge_seconds = 3
                 'badge': sum(len(overview['needs']) for overview in steady(owner, 'GET', '/api/tasks')[1]),
             }
 
-        first = js('task', 'new', 'NEEDS_HOST x.example NOOP', '-p', 'demo')['id']
-        second = js('task', 'new', 'NEEDS_HOST x.example NOOP', '-p', 'demo')['id']
+        first = js('task', 'new', 'NEEDS Bash(curl:*) NOOP', '-p', 'demo')['id']
+        second = js('task', 'new', 'NEEDS Bash(curl:*) NOOP', '-p', 'demo')['id']
         wait_state(first, 'waiting')
         wait_state(second, 'waiting')
         merged = new_pushes('manager', 'waiting push')
@@ -3431,7 +3426,7 @@ merge_seconds = 3
         assert says(merged[0], line(first, 'asks')) and says(merged[0], line(second, 'asks')), merged
         # Ready and failed wait for the digest.
         for n in (first, second):
-            assert act(n, 'allow', {'host': 'x.example'})[0] == 200
+            assert act(n, 'add', {'text': 'NOOP'})[0] == 200
         wait_state(first, 'ready')
         wait_state(second, 'ready')
         broken = js('task', 'new', 'WORK broken.txt', '-p', 'demo')['id']
@@ -3451,11 +3446,11 @@ merge_seconds = 3
         shown.expect('workspace')
         assert steady(owner, 'POST', '/api/presence', {'page': page, 'project': demo})[0] == 200
         assert steady(viewer, 'POST', '/api/presence', {'page': page, 'project': None})[0] == 404
-        hidden = js('task', 'new', 'NEEDS_HOST y.example NOOP', '-p', 'demo')['id']
+        hidden = js('task', 'new', 'NEEDS Bash(curl:*) NOOP', '-p', 'demo')['id']
         wait_state(hidden, 'waiting')
         time.sleep(5)
         assert len(pushes('manager')) == baselines['manager'], 'a push for the project the page shows'
-        other = js('task', 'new', 'NEEDS_HOST y.example NOOP', '-p', 'ui')['id']
+        other = js('task', 'new', 'NEEDS Bash(curl:*) NOOP', '-p', 'ui')['id']
         wait(lambda: js('task', 'show', other, '-p', 'ui')['state'] == 'waiting', 'ui waiting')
         elsewhere = new_pushes('manager', 'push for the other project')
         assert len(elsewhere) == 1 and elsewhere[0] == manager_push(), (elsewhere, manager_push())
@@ -3463,7 +3458,7 @@ merge_seconds = 3
         # The page goes away: its presence goes with its stream.
         shown.connection.close()
         time.sleep(1)
-        gone = js('task', 'new', 'NEEDS_HOST z.example NOOP', '-p', 'demo')['id']
+        gone = js('task', 'new', 'NEEDS Bash(curl:*) NOOP', '-p', 'demo')['id']
         wait_state(gone, 'waiting')
         assert says(new_pushes('manager', 'push after the page closed')[0], line(gone, 'asks'))
         # An approval request reads as its action, never as its id.

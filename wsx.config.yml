@@ -6,13 +6,8 @@ copy:
 git:
   subtrees:
     - vendor/asched
-# Manager mode (docs/tasks.md "Permissions"). Workers build and test inside Claude's sandbox;
-# the checks need a PTY or Chrome, which the sandbox cannot give, so the host runs them outside it.
+# Manager mode: workers and the manager run inside wsx's boundary (docs/tasks.md "Permissions").
 tasks:
-  sandbox:
-    allowedDomains: [crates.io, index.crates.io, static.crates.io]
-    # ^ wsx-terminal's build script runs Zig, which writes its global cache even when warm.
-    allowWrite: ["~/.cargo/registry", "~/.cargo/git", "~/.cache/zig"]
   # ^ Incremental builds leave every rebuild's object files behind; without them a task copy
   # stays about 2.5 GB, so 3 GB free is one task's build (docs/tasks.md "Config", "Build output").
   env:

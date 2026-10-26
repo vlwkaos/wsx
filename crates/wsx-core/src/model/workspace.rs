@@ -65,9 +65,6 @@ pub const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 20 * 60;
 pub struct TaskConfig {
     pub adapter: String,
     pub model: String,
-    /// Tools beyond the fixed ones, never `Bash(...)`: the sandbox bounds Bash (docs/tasks.md "Permissions").
-    pub tools: Vec<String>,
-    pub sandbox: TaskSandbox,
     /// `tasks.skills: owner` lends workers the owner's skills, as the manager has them.
     pub owner_skills: bool,
     pub workflow: TaskWorkflow,
@@ -107,20 +104,6 @@ pub struct TaskConfig {
     /// Quiet seconds after which the manager writes the owner a recap; 0 is off. The config
     /// says minutes (`recapMinutes`, a fraction allowed). ref: docs/tasks.md "Recap"
     pub manager_recap_secs: u64,
-    /// Tools the manager gets beyond its read-only ones (`tasks.manager.tools`), never
-    /// `Bash(...)` or a bare file tool.
-    pub manager_tools: Vec<String>,
-}
-
-/// `tasks.sandbox`: what a worker's commands may reach beyond its working copy.
-/// ref: docs/tasks.md "Permissions"
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, Serialize)]
-#[serde(default)]
-pub struct TaskSandbox {
-    /// Hosts reachable without the classifier, such as `crates.io` or `*.npmjs.org`.
-    pub allowed_domains: Vec<String>,
-    /// Absolute or `~/` paths the worker's commands may write, such as `~/.cargo/registry`.
-    pub allow_write: Vec<String>,
 }
 
 /// `tasks.workflow`: the project's own words for each fixed stage; wsx's defaults name no
@@ -188,8 +171,6 @@ impl Default for TaskConfig {
         Self {
             adapter: "claude".into(),
             model: "opus".into(),
-            tools: Vec::new(),
-            sandbox: TaskSandbox::default(),
             owner_skills: false,
             workflow: TaskWorkflow::default(),
             checks: Vec::new(),
@@ -212,7 +193,6 @@ impl Default for TaskConfig {
             manager_event_model: None,
             manager_rotate_tokens: 150_000,
             manager_recap_secs: 60 * 60,
-            manager_tools: Vec::new(),
         }
     }
 }

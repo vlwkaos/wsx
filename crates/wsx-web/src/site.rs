@@ -35,7 +35,7 @@ pub enum Capability {
     Push,
     /// Read the tasks, reports and manager chat of a project (docs/web-client-tasks.md).
     TaskView,
-    /// Talk to the manager and act on tasks: add, steer, allow, verify, land, approve, deny.
+    /// Talk to the manager and act on tasks: add, steer, verify, land, approve, deny.
     TaskAct,
 }
 

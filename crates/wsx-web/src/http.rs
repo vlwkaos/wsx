@@ -1000,10 +1000,6 @@ async fn tasks_say(
 #[serde(deny_unknown_fields, default)]
 struct ActInput {
     text: Option<String>,
-    /// `allow`: exactly one of host and path; `project` keeps it for every task.
-    host: Option<String>,
-    path: Option<String>,
-    project: bool,
 }
 
 async fn task_act(
@@ -1034,16 +1030,6 @@ async fn task_act(
         },
         "steer" => HostRequest::Steer {
             text: input.text.ok_or_else(|| missing("text"))?,
-        },
-        // ^ The web grants hosts and paths only; tool rules stay with the CLI.
-        "allow" => HostRequest::Grant {
-            access: match (input.host, input.path) {
-                (Some(host), None) => wsx_core::task::Access::Network { host },
-                (None, Some(path)) => wsx_core::task::Access::Write { path },
-                _ => return Err(missing("one of host and path")),
-            },
-            project: input.project,
-            by: wsx_core::task::Actor::Owner,
         },
         "land" => HostRequest::Land { tried: false },
         // ^ Pass on a trial: the owner tried it on the live site.

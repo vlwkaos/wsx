@@ -23,7 +23,7 @@ use wsx_core::task::{
     copy::{self, Rebase},
     now_unix_ms, report,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
-    view, Access, Actor, CheckResult, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
+    view, Actor, CheckResult, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
     TaskState, WaitOn, Waiting, WorkerResult, MAX_MESSAGE_BYTES,
 };
 
@@ -78,18 +78,11 @@ struct Host {
     turn_active: bool,
     /// Adds sent during a turn or a check, delivered when it ends.
     pending: VecDeque<String>,
-    /// A grant takes effect when the agent next starts.
-    restart_needed: bool,
     stop_requested: bool,
     /// The result of the latest turn, until its checks end.
     last_result: Option<WorkerResult>,
     /// Tool calls denied in that turn.
     last_denials: Vec<String>,
-    /// What the sandbox stopped in the running turn, and the hosts its commands reached.
-    stops: Vec<Access>,
-    reached: std::collections::BTreeSet<String>,
-    /// What the latest blocked result asks for.
-    last_asks: Vec<Access>,
     /// Turns started for failed checks since the last message from a person.
     check_retries: u32,
     /// The file this host runs from, and whether it must exec its replacement.
@@ -124,10 +117,6 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
     let broker_socket = dir.broker_path();
     let brokered = hosting::bind(&broker_socket)?;
     record.pane_id = hosting::own_pane();
-    // ^ A restarted host still knows what the block asks for.
-    let last_asks = view::read_result(&dir)
-        .and_then(|result| serde_json::from_value(result["asks"].clone()).ok())
-        .unwrap_or_default();
     let (events, receiver) = channel();
     let mut host = Host {
         dir,
@@ -137,13 +126,9 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         generation: 0,
         turn_active: false,
         pending: VecDeque::new(),
-        restart_needed: false,
         stop_requested: false,
         last_result: None,
         last_denials: Vec::new(),
-        stops: Vec::new(),
-        reached: Default::default(),
-        last_asks,
         check_retries: 0,
         binary: hosting::Binary::capture(),
         reexec: false,
@@ -330,11 +315,6 @@ impl Host {
             HostRequest::Status => Ok("".to_string()),
             HostRequest::Steer { text } => self.steer(text),
             HostRequest::Add { text, files } => self.add(text, files),
-            HostRequest::Grant {
-                access,
-                project,
-                by,
-            } => self.grant(access, project, by),
             HostRequest::Stop => self.stop(),
             HostRequest::Land { tried } => self.land(false, tried),
             HostRequest::Hold { reason, by } => self.hold(reason, by),
@@ -515,104 +495,6 @@ impl Host {
         }
     }
 
-    /// Add a grant; a blocked task resumes once every ask of its block is granted. A
-    /// project grant is already in the project's file (`owner::prepare_request`), so only
-    /// the log names it here.
-    fn grant(&mut self, access: Access, project: bool, by: Actor) -> Result<String> {
-        access.check().map_err(anyhow::Error::msg)?;
-        if !project && !self.record.grants.contains(&access) {
-            self.record.grants.push(access.clone());
-        }
-        self.log(LogEvent::Granted {
-            access: access.clone(),
-            project,
-            by,
-        });
-        self.restart_needed = true;
-        let what = access.describe();
-        let project_grants = store::read_grants(&self.record.project_id).unwrap_or_default();
-        let open: Vec<String> = self
-            .last_asks
-            .iter()
-            .filter(|ask| !self.record.grants.contains(ask) && !project_grants.contains(ask))
-            .map(Access::describe)
-            .collect();
-        // ^ A task that waits for a grant or an answer resumes; disk and hands wait on.
-        let blocked = (self.record.waits_on(WaitOn::Permission)
-            || self.record.waits_on(WaitOn::Owner))
-            && !self.turn_active;
-        if blocked && !open.is_empty() {
-            self.save();
-            return Ok(format!("may now {what}; still asks to {}", open.join(", ")));
-        }
-        if blocked {
-            self.check_retries = 0;
-            let who = match by {
-                Actor::Owner => "The owner",
-                Actor::Manager => "The manager",
-            };
-            self.start_turn(&format!(
-                "{who} allowed you to {what}. Retry what was stopped and continue the task."
-            ));
-            return Ok(format!("may now {what}; resumed the task"));
-        }
-        self.save();
-        Ok(format!("may now {what} from the next turn"))
-    }
-
-    /// A refused write as the folder to grant: `~/.cargo` for a hidden folder in home,
-    /// otherwise the parent folder, or the file itself when its parent is home or the root.
-    /// None for the working copy and the main repository's git folder, which are never granted.
-    fn write_ask(&self, printed: &str) -> Option<Access> {
-        let path = normalize(&self.record.working_copy.join(printed));
-        if path.starts_with(&self.record.working_copy)
-            || path.starts_with(self.record.project_path.join(".git"))
-        {
-            return None;
-        }
-        let home = dirs::home_dir();
-        let shown = match home
-            .as_deref()
-            .and_then(|home| path.strip_prefix(home).ok())
-        {
-            Some(rest) => {
-                let first = rest
-                    .components()
-                    .next()?
-                    .as_os_str()
-                    .to_string_lossy()
-                    .into_owned();
-                match rest.parent() {
-                    _ if first.starts_with('.') => format!("~/{first}"),
-                    Some(parent) if parent.as_os_str().is_empty() => {
-                        format!("~/{}", rest.display())
-                    }
-                    Some(parent) => format!("~/{}", parent.display()),
-                    None => return None,
-                }
-            }
-            None => match path.parent() {
-                Some(parent) if parent.parent().is_some() => parent.display().to_string(),
-                _ => path.display().to_string(),
-            },
-        };
-        let access = Access::Write { path: shown };
-        access.check().is_ok().then_some(access)
-    }
-
-    /// What the turn's stops ask for: hosts no command reached and write folders, once each.
-    fn turn_asks(&self, denied_writes: &[String]) -> Vec<Access> {
-        let mut asks: Vec<Access> = Vec::new();
-        let written = denied_writes.iter().filter_map(|path| self.write_ask(path));
-        for ask in self.stops.iter().cloned().chain(written) {
-            let reached = matches!(&ask, Access::Network { host } if self.reached.contains(host));
-            if !reached && !asks.contains(&ask) {
-                asks.push(ask);
-            }
-        }
-        asks
-    }
-
     fn stop(&mut self) -> Result<String> {
         let Some(agent) = self.agent.take() else {
             bail!("the agent is not running");
@@ -715,7 +597,6 @@ impl Host {
             ..WorkerResult::default()
         };
         self.last_denials.clear();
-        self.last_asks.clear();
         self.write_result(&result, &[]);
         self.last_result = Some(result);
         // ^ A failed check of the owner's work goes back to the owner, not to the worker.
@@ -755,12 +636,6 @@ impl Host {
         if self.wait_for_disk(DiskWait::Turn(text.to_string())) {
             return Ok(());
         }
-        if self.restart_needed {
-            if let Some(agent) = self.agent.take() {
-                agent.stop();
-            }
-            self.restart_needed = false;
-        }
         if self.agent.is_none() {
             let (session, resume) = match &self.record.agent_session {
                 Some(session) => (session.clone(), true),
@@ -769,14 +644,8 @@ impl Host {
             self.generation += 1;
             let generation = self.generation;
             self.stop_requested = false;
-            let project_grants = store::read_grants(&self.record.project_id)?;
             self.agent = Some(ClaudeAgent::spawn(
-                &Launch::worker(
-                    &self.record,
-                    &project_grants,
-                    &hosting::real_socket_path(&self.dir.broker_path()),
-                    &self.dir.path,
-                )?,
+                &Launch::worker(&self.record, &self.dir.broker_path(), &self.dir.path)?,
                 &session,
                 resume,
                 if resume { self.session_cost() } else { 0 },
@@ -789,8 +658,6 @@ impl Host {
             .context("the agent is not running")?
             .send(text)?;
         self.turn_active = true;
-        self.stops.clear();
-        self.reached.clear();
         self.set_state(TaskState::Working);
         Ok(())
     }
@@ -808,17 +675,6 @@ impl Host {
                 self.log(LogEvent::Agent { text });
             }
             Some(AgentLine::Result(result)) => self.on_result(result),
-            Some(AgentLine::Stopped(access)) => {
-                let access = match access {
-                    Access::Write { path } => self.write_ask(&path),
-                    other => Some(other),
-                };
-                if let Some(access) = access.filter(|access| !self.stops.contains(access)) {
-                    self.say(&format!("sandbox stopped: {}", access.describe()));
-                    self.stops.push(access);
-                }
-            }
-            Some(AgentLine::Reached(hosts)) => self.reached.extend(hosts),
             None => {
                 self.agent = None;
                 if self.turn_active && !self.stop_requested {
@@ -861,26 +717,14 @@ impl Host {
             first_line(&result.summary)
         ));
         self.last_denials = turn.denials.clone();
-        self.last_asks = if result.status == "blocked" {
-            self.turn_asks(&turn.denied_writes)
-        } else {
-            Vec::new()
-        };
         self.write_result(&result, &[]);
         self.last_result = Some(result.clone());
         // ^ Only the worker's own word blocks a task. Denials it worked around are evidence.
         if result.status == "blocked" {
             self.log(LogEvent::Blocked {
                 denials: turn.denials,
-                asks: self.last_asks.clone(),
             });
-            // ^ What the sandbox stopped is granted; anything else is the owner's to answer.
-            if self.last_asks.is_empty() {
-                self.wait(WaitOn::Owner, first_line(&result.summary).to_string());
-            } else {
-                let asks: Vec<String> = self.last_asks.iter().map(Access::describe).collect();
-                self.wait(WaitOn::Permission, format!("needs to {}", asks.join(", ")));
-            }
+            self.wait(WaitOn::Owner, first_line(&result.summary).to_string());
             // ^ A worker stopped by a full disk continues once there is space again.
             self.wait_for_disk(DiskWait::Turn(
                 "The disk was full; there is space again. Continue the task where it stopped."
@@ -1692,7 +1536,6 @@ impl Host {
             "result": result,
             "checks": checks,
             "denials": self.last_denials,
-            "asks": self.last_asks,
         }))
         .unwrap_or_default();
         if bytes.len() > MAX_RESULT_BYTES {
@@ -1755,9 +1598,7 @@ impl Host {
             self.record.waiting.as_ref().map(|w| w.on),
         ) {
             (TaskState::Working | TaskState::Checking, _) => runtime::AgentState::Working,
-            (TaskState::Waiting, Some(WaitOn::Permission | WaitOn::Owner)) => {
-                runtime::AgentState::Blocked
-            }
+            (TaskState::Waiting, Some(WaitOn::Owner)) => runtime::AgentState::Blocked,
             (TaskState::Waiting, _) | (TaskState::Closed, _) => runtime::AgentState::Idle,
             (TaskState::Ready | TaskState::Landed, _) => runtime::AgentState::Done,
             (TaskState::Failed, _) => runtime::AgentState::Error,
@@ -1902,21 +1743,6 @@ fn run_check(
             output: error.to_string(),
         },
     }
-}
-
-/// `path` without `.` and `..` parts, without touching the disk.
-fn normalize(path: &Path) -> std::path::PathBuf {
-    let mut clean = std::path::PathBuf::new();
-    for part in path.components() {
-        match part {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                clean.pop();
-            }
-            other => clean.push(other),
-        }
-    }
-    clean
 }
 
 /// The failed checks for the worker: each command, how it ended and the end of its output.

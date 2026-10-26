@@ -175,9 +175,6 @@ pub fn overview(scope: &Scope) -> Value {
         if let Some(waiting) = &record.waiting {
             row["waiting"] = json!(waiting);
             row["denials"] = result["denials"].clone();
-            if waiting.on == WaitOn::Permission {
-                row["asks"] = result["asks"].clone();
-            }
         }
         needs.push((rank, record.updated_unix_ms, row));
     }
@@ -290,19 +287,6 @@ fn resolutions(
                     mode: task::MessageKind::Add,
                     ..
                 } if blocked => format!("#{id} got an answer"),
-                LogEvent::Granted {
-                    access,
-                    project,
-                    by,
-                } => format!(
-                    "#{id} may {}{} ({})",
-                    access.describe(),
-                    if *project { ", every task" } else { "" },
-                    match by {
-                        task::Actor::Owner => "owner",
-                        task::Actor::Manager => "manager",
-                    }
-                ),
                 // ^ A landing is the worker's "done" bubble in the chat, not a line.
                 LogEvent::Closed { discarded: true } => format!("#{id} was closed and discarded"),
                 LogEvent::Closed { discarded: false } => format!("#{id} was closed"),
@@ -448,7 +432,6 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["result"] = result["result"].clone();
     summary["denials"] = result["denials"].clone();
     summary["waiting"] = json!(record.waiting);
-    summary["asks"] = result["asks"].clone();
     summary["checks"] = result["checks"].clone();
     summary["report"] = json!(report);
     summary["talk"] = talk(&log);
@@ -529,7 +512,6 @@ fn actions(record: &TaskRecord) -> Vec<&'static str> {
     let on = record.waiting.as_ref().map(|waiting| waiting.on);
     let mut actions = match (record.state, on) {
         (TaskState::Waiting, Some(WaitOn::Hand)) => return vec!["handback"],
-        (TaskState::Waiting, Some(WaitOn::Permission)) => vec!["add", "allow"],
         (TaskState::Working | TaskState::Checking, _) => vec!["steer", "add"],
         (TaskState::Ready, _) => vec!["land", "add"],
         (TaskState::Waiting | TaskState::Failed, _) => vec!["add"],
@@ -852,11 +834,6 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
         HostRequest::Steer { text } | HostRequest::Add { text, .. } => {
             message(text, "the message")?;
         }
-        HostRequest::Grant { access, .. } => {
-            access
-                .check()
-                .map_err(|reason| Fault::new(400, "invalid_grant", reason))?;
-        }
         HostRequest::Land { .. } => {}
         HostRequest::Hold { reason, .. } => {
             if let Some(reason) = reason {
@@ -876,7 +853,6 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
         }
     }
     let dir = open_task(scope, task)?;
-    owner::prepare_request(&dir.project_id, &request).map_err(internal)?;
     let timeout = if matches!(request, HostRequest::Land { .. }) {
         owner::LAND_TIMEOUT
     } else {

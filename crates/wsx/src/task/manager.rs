@@ -1,10 +1,11 @@
 //! `wsx task manager-host`: one manager agent per project in a hidden session in the
-//! main checkout. It edits no project file; it answers from the ledger, acts through
+//! main checkout. It edits no project file but a commit of the owner's own changes on the
+//! owner's yes; it answers from the ledger, acts through
 //! `wsx task` commands and keeps notes in its own folder. ref: docs/tasks.md "Manager"
 
+use super::boundary::Boundary;
 use super::claude::{
-    kept_from_edits, new_session_id, skills_plugin, AgentLine, Boundary, ClaudeAgent, Launch,
-    TurnResult, SKILLS_PLUGIN_NAME,
+    new_session_id, skills_plugin, AgentLine, ClaudeAgent, Launch, TurnResult, SKILLS_PLUGIN_NAME,
 };
 use super::{broker, hosting};
 use anyhow::{Context, Result};
@@ -20,16 +21,14 @@ use wsx_core::task::manager::{
     decided_request, instructions_digest, pending_approvals, ApprovalLine,
 };
 use wsx_core::task::manager::{
-    Author, ManagerEntry, ManagerEvent, ManagerGrant, ManagerRequest, ManagerResponse,
-    ManagerState, Seen,
+    Author, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState, Seen,
 };
 use wsx_core::task::owner;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
 use wsx_core::task::{
-    checks, ledger, now_unix_ms, Access, Actor, LogEvent, TaskRecord, TaskState, WaitOn,
-    MAX_MESSAGE_BYTES,
+    checks, ledger, now_unix_ms, LogEvent, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
 };
 
 use wsx_core::task::owner::ACTOR_ENV;
@@ -100,8 +99,6 @@ struct Manager {
     /// The model the running agent process uses now.
     agent_model: String,
     rotate_tokens: u64,
-    /// `tasks.manager.tools`, added to the read-only ones.
-    tools: Vec<String>,
     state: ManagerState,
     events: Sender<Event>,
     agent: Option<ClaudeAgent>,
@@ -127,17 +124,7 @@ struct Manager {
     binary: Option<hosting::Binary>,
     reexec: bool,
     owed: Owed,
-    /// The granted paths the running agent was started with.
-    granted: Vec<String>,
 }
-
-/// Tools the manager has beyond `Read Glob Grep`, so it loads context as a worker does and
-/// beyond: the owner's skills and research subagents. ref: docs/tasks.md "Manager"
-const MANAGER_TOOLS: [&str; 4] = ["WebFetch", "WebSearch", "Skill", "Agent"];
-
-/// Denied by name: its writes go through sandboxed Bash alone, also in a subagent or a skill
-/// whose `allowed-tools` names them. ref: docs/tasks.md "Permissions"
-const MANAGER_DENIED_TOOLS: [&str; 3] = ["Edit", "Write", "NotebookEdit"];
 
 /// The plugin that lends the manager the owner's skills, `manager/<this>/`.
 /// The manager's lean project context in its notes folder. ref: docs/tasks.md "Memo"
@@ -167,13 +154,12 @@ fn instructions(
     format!(
         "You are the manager of the wsx project {project}. The owner talks to you as to a \
          colleague. You never edit the project's files and never run builds or tests; \
-         workers do that in their own tasks. You may keep notes in {notes}, the only folder \
-         you can write besides the project page. \
+         workers do that in their own tasks. Keep your notes in {notes}. \
          Messages headed 'Owner' come from the owner; messages headed 'Events' are written \
          by wsx. Each message ends with a ledger summary from wsx: the open tasks by state \
          and what changed since your last turn. The ledger is the source of truth, not your \
          memory: run `wsx task ledger -p {project}` when you need more, such as a task's \
-         checks, asks, overlaps or memo, or the deploys. Every `wsx task` command takes \
+         checks, overlaps or memo, or the deploys. Every `wsx task` command takes \
          `-p {project} --json`. When a command says the owner was asked to approve, tell \
          the owner and do not retry it. When the owner's message in this turn asks for the \
          action itself (\"close #42\", \"land #5\", \"deploy\"), pass `--owner-said <id>`, \
@@ -246,31 +232,30 @@ fn instructions(
          worker leaves for a person what a command, a test or a capture could prove, tell \
          that worker to prove it. A release refuses while items are open: tell the owner \
          how many are open. \
-         A task waits when the ledger shows `waiting`: on `permission`, the sandbox stopped \
-         a host or folder the task asks for; when the task plainly needs it, grant it with \
-         `wsx task allow <n> --host <host>` or `--path <path>`, which resumes it, else add \
-         to the worker. A grant for every task (`--project-wide`) or a tool rule asks the \
-         owner's approval; never tell the owner to edit settings files. On `owner`, the \
-         worker asked or stopped: answer with `wsx task add` when you can, else put the \
-         question to the owner in plain words. On `disk`, it resumes by itself once there \
-         is space. On `hand`, the owner works in its copy: never add, steer, land or close \
+         A task waits when the ledger shows `waiting`. On `owner`, the worker asked or \
+         stopped: answer with `wsx task add` when you can, else put the question to the \
+         owner in plain words; never tell the owner to edit settings files. On `disk`, it \
+         resumes by itself once there is space. On `hand`, the owner works in its copy: never add, steer, land or close \
          it. Only the owner runs `wsx task hand <n>` and `wsx task handback <n>`; you may \
          name them when work needs the owner's own hands. \
-         Your Bash runs in a sandbox that writes only your notes folder and the project \
-         page; `wsx task` commands reach the tasks from there, also in a pipe or with a \
-         heredoc, and no other `wsx` command runs. Load context as a worker would, without \
+         You run inside wsx's boundary and nothing asks you for permission; the boundary \
+         refuses the owner's secrets, wsx's config and state and the tasks' working copies. \
+         Never edit the main checkout or a task's working copy; workers own them. \
+         `wsx task` commands reach the tasks, also in a pipe or with a heredoc, and no \
+         other `wsx` command runs. Load context as a worker would, without \
          editing or building: Read, Glob and Grep the project and the tasks' working \
          copies, WebFetch and WebSearch, and read-only git in Bash (`git log`, `git show`, \
-         `git diff`, `git status`, also `git -C <working copy>`); never a git command that \
-         writes. {skills}At the start of a turn, look at the skills and subagents you have. \
+         `git diff`, `git status`, also `git -C <working copy>`). The one git command that \
+         writes: when a land refuses because the main checkout has the owner's uncommitted \
+         changes, tell the owner those files and ask; only after the owner says yes, commit \
+         exactly those files in the main checkout, your working folder (`git commit -m \
+         \"<message that names them>\" -- <files>`), and land again. {skills}At the start of a turn, look at the skills and subagents you have. \
          Before you answer about a prior decision, a term you do not know, the code or a \
          research question, use any skill or subagent whose description fits lookup, \
          context, memory or research; check rather than guess. When none fits, use Read, \
          Grep, WebSearch and the Explore subagent; use the docs tools the project settings \
          allow. Think about the owner's goal and the likely next step before you answer, \
-         and say what you checked in one short line. Subagents and skills keep your \
-         boundary: Edit, Write and NotebookEdit are denied to them as to you, and their \
-         Bash writes only where yours does. When the owner asks for status, read the \
+         and say what you checked in one short line. When the owner asks for status, read the \
          ledger and answer in a few plain lines: what landed and is live, what runs, what \
          waits for the owner and why; never give the owner commands to run. In a recap or a \
          status, name the ledger's `stray_worktrees` that are merged and clean, or missing, \
@@ -292,15 +277,13 @@ fn instructions(
          --from-manager \"<question>\"` and use its reply when it arrives. \
          The project page {page} is the owner's one-page picture of the project: the goal, \
          the tasks and how they relate as a mermaid graph, the plans, the decisions and the \
-         open questions. When one of them changes, update that section in place with Bash, \
-         such as a short python3 script that reads the page, replaces that section and \
-         writes the same file back (only that file is writable: a temporary file beside it \
-         fails); never rewrite the whole file, and never create another page. Workers do \
+         open questions. When one of them changes, update that section in place; never \
+         rewrite the whole file, and never create another page. Workers do \
          not write it. When a reply points to it, call it the project page. \
          {context} is your lean project context; read it when a conversation starts. \
          Workers leave a `memo` of durable project knowledge; the event of a task that \
-         lands or closes carries it as 'memo:'. In that turn, fold each memo into {context} \
-         with Bash: keep it lean, merge duplicates, drop what is stale, at most 60 lines. \
+         lands or closes carries it as 'memo:'. In that turn, fold each memo into {context}: \
+         keep it lean, merge duplicates, drop what is stale, at most 60 lines. \
          When a message opens with 'Handover' (a new conversation after a rotation), first \
          fold the memos on the ledger's recent tasks the same way, in case one was missed.",
         review = match workflow.review.is_empty() {
@@ -322,9 +305,7 @@ pub fn run(project_id: &str) -> Result<()> {
     let dir = ManagerDir::open(project_id)?;
     let listener = hosting::bind(&dir.socket_path())?;
     let brokered = hosting::bind(&dir.broker_path())?;
-    let mut state = dir.read_state()?;
-    // ^ A grant without --until ends when the host restarts (docs/tasks.md "Permissions").
-    state.grants.retain(|grant| grant.until_ms.is_some());
+    let state = dir.read_state()?;
     let (events, receiver) = channel();
     let mut manager = Manager {
         dir,
@@ -334,7 +315,6 @@ pub fn run(project_id: &str) -> Result<()> {
         event_model: settings.manager_event_model,
         agent_model: String::new(),
         rotate_tokens: settings.manager_rotate_tokens,
-        tools: settings.manager_tools,
         state,
         events: events.clone(),
         agent: None,
@@ -353,7 +333,6 @@ pub fn run(project_id: &str) -> Result<()> {
         binary: hosting::Binary::capture(),
         reexec: false,
         owed: Owed::default(),
-        granted: Vec::new(),
     };
     manager.restore()?;
     let requests = events.clone();
@@ -430,7 +409,6 @@ impl Manager {
                 Event::Sent { to, text, reply } => self.log(ManagerEvent::Sent { to, text, reply }),
             }
             if self.turn.is_none() {
-                self.apply_grants();
                 self.flush_events();
                 self.next_turn();
             } else {
@@ -453,18 +431,6 @@ impl Manager {
                 busy,
                 message: format!("{} message(s) waiting", self.queue.len()),
             },
-            ManagerRequest::Grant { path, until_ms } => {
-                let (ok, message) = match self.grant(path, until_ms) {
-                    Ok(message) => (true, message),
-                    Err(error) => (false, format!("{error:#}")),
-                };
-                ManagerResponse {
-                    ok,
-                    id: None,
-                    busy,
-                    message,
-                }
-            }
             ManagerRequest::Say { text, from } => {
                 match self.accept(from.unwrap_or(Author::Owner), text) {
                     Ok(id) => ManagerResponse {
@@ -484,69 +450,6 @@ impl Manager {
                         message: format!("{error:#}"),
                     },
                 }
-            }
-        }
-    }
-
-    /// The owner's write grant: logged and kept; the agent restarts with it between turns.
-    fn grant(&mut self, path: String, until_ms: Option<u64>) -> Result<String> {
-        Access::Write { path: path.clone() }
-            .check()
-            .map_err(anyhow::Error::msg)?;
-        // ^ The sandbox's denyWrite on the main checkout beats any allowWrite: refuse a path
-        // there rather than grant what stays denied.
-        let expanded = real_path(&path);
-        if expanded.starts_with(real_path(&self.main)) {
-            anyhow::bail!(
-                "{path} is in the main checkout, which the manager never writes; nothing was granted"
-            );
-        }
-        // ^ Its own state (the grants among it) stays out of its reach.
-        if real_path(&self.dir.path).starts_with(&expanded) {
-            anyhow::bail!("{path} holds the manager's own state folder; nothing was granted");
-        }
-        if until_ms.is_some_and(|until| until <= now_unix_ms()) {
-            anyhow::bail!("--until is already past; nothing was granted");
-        }
-        self.state.grants.retain(|grant| grant.path != path);
-        self.state.grants.push(ManagerGrant {
-            path: path.clone(),
-            until_ms,
-        });
-        self.save();
-        self.log(ManagerEvent::Granted {
-            access: Access::Write { path: path.clone() },
-            by: Actor::Owner,
-            until_ms,
-        });
-        Ok(match self.turn {
-            Some(_) => format!("the manager may write {path} from the end of its turn"),
-            None => format!("the manager may write {path} from its next turn"),
-        })
-    }
-
-    fn live_grants(&self) -> Vec<String> {
-        let now = now_unix_ms();
-        self.state
-            .grants
-            .iter()
-            .filter(|grant| grant.live(now))
-            .map(|grant| grant.path.clone())
-            .collect()
-    }
-
-    /// Between turns, end an agent whose granted paths changed (a new grant or one past its
-    /// --until): settings apply at each start, so the next turn resumes the conversation
-    /// with the current ones.
-    fn apply_grants(&mut self) {
-        let now = now_unix_ms();
-        if self.state.grants.iter().any(|grant| !grant.live(now)) {
-            self.state.grants.retain(|grant| grant.live(now));
-            self.save();
-        }
-        if self.live_grants() != self.granted {
-            if let Some(agent) = self.agent.take() {
-                agent.stop();
             }
         }
     }
@@ -1142,7 +1045,6 @@ impl Manager {
         let mut text = text.to_string();
         let model = self.turn_model(events_only);
         if self.agent.is_none() {
-            self.granted = self.live_grants();
             let mut launch = self.launch()?;
             let digest = instructions_digest(&launch.instructions);
             // ^ Claude keeps the system prompt a conversation began with, also on resume:
@@ -1151,8 +1053,6 @@ impl Manager {
                 && self.state.instructions.as_deref() != Some(&digest)
             {
                 self.rotate(0, Some("the manager's instructions changed".into()));
-                // ^ The rotation ended the grants of that conversation.
-                self.granted = self.live_grants();
                 launch = self.launch()?;
             }
             let (session, resume) = match &self.state.agent_session {
@@ -1170,12 +1070,6 @@ impl Manager {
             }
             self.state.instructions = Some(digest);
             self.save();
-            if !self.granted.is_empty() {
-                text = format!(
-                    "{text}\n\nThe owner lets your Bash also write, for a limited time: {}.",
-                    self.granted.join(", ")
-                );
-            }
             self.generation += 1;
             let generation = self.generation;
             let launch = Launch {
@@ -1206,53 +1100,30 @@ impl Manager {
         agent.send(text.trim_end())
     }
 
-    /// The manager's Bash writes only its notes folder, the page and the owner's grants; its
-    /// `wsx task` commands leave the sandbox. ref: docs/tasks.md "Permissions"
+    /// The manager runs inside its boundary and prompts for nothing. ref: docs/tasks.md "Permissions"
     fn launch(&self) -> Result<Launch> {
         let exe = std::env::current_exe().context("cannot find the wsx binary")?;
         let notes = self.dir.notes()?;
-        // ^ The folder exists: the host bound the socket before any launch.
-        let broker_socket = hosting::real_socket_path(&self.dir.broker_path());
+        let broker_socket = self.dir.broker_path();
         let page = store::ensure_page(&self.dir.project_id, &self.project)?;
-        // ^ Claude resolves symlinks such as /tmp → /private/tmp before it matches a rule.
-        let page = page.canonicalize().unwrap_or(page);
-        let mut writes = vec![notes.display().to_string(), page.display().to_string()];
-        writes.extend(
-            self.granted
-                .iter()
-                .map(|path| real_path(path).display().to_string()),
-        );
-        let boundary = Boundary {
-            cwd: self.main.clone(),
-            // ^ The page is one file: Bash may rewrite it in place, never beside it.
-            writes,
-            deny_writes: vec![self.main.display().to_string()],
-            domains: Vec::new(),
-            unix_sockets: vec![broker_socket.display().to_string()],
-            deny_edits: kept_from_edits(&self.main, None),
-            deny_tools: MANAGER_DENIED_TOOLS.map(String::from).to_vec(),
-        };
+        let boundary = Boundary::manager(&self.main, &self.dir.path, &page)?;
         let skills = skills_plugin(&self.dir.path)?;
         let workflow = load_task_config(&self.main)
             .map(|settings| settings.workflow)
             .unwrap_or_default();
         let mut launch = Launch::new(
-            &boundary,
+            &self.main,
+            boundary,
             &self.model,
-            MANAGER_TOOLS
-                .map(String::from)
-                .into_iter()
-                .chain(self.tools.iter().cloned())
-                .collect(),
             instructions(&self.project, &notes, &page, skills.is_some(), &workflow),
         );
         launch.plugin_dirs = skills.into_iter().collect();
         // ^ The agent's `wsx task` commands go to this host (broker.rs), which runs them as
-        // the manager actor outside the sandbox; the actor mark stays for the approval rules.
+        // the manager actor; the actor mark stays for the approval rules.
         launch.env = vec![
             (broker::BROKER_ENV.into(), broker_socket.into_os_string()),
             (ACTOR_ENV.into(), "manager".into()),
-            // ^ Its git reads must not try to refresh the index of a checkout it cannot write.
+            // ^ Its git reads must not take the index lock of the owner's checkout.
             ("GIT_OPTIONAL_LOCKS".into(), "0".into()),
         ];
         launch.path_prefix = exe.parent().map(Path::to_path_buf);
@@ -1272,8 +1143,6 @@ impl Manager {
                 self.log(ManagerEvent::Agent { text });
             }
             Some(AgentLine::Result(result)) => self.on_result(result),
-            // ^ The manager's commands ask nothing; its asks are the tasks'.
-            Some(AgentLine::Stopped(_) | AgentLine::Reached(_)) => {}
             None => {
                 self.agent = None;
                 if self.turn.take().is_some() {
@@ -1317,8 +1186,6 @@ impl Manager {
         }
         self.state.agent_session = None;
         self.state.instructions = None;
-        // ^ A grant without --until lasts for its conversation.
-        self.state.grants.retain(|grant| grant.until_ms.is_some());
         self.state.turn_seen = None;
         self.state.handover = true;
         self.save();
@@ -1473,16 +1340,6 @@ fn new_task(exe: &Path, project: &str, prompt: &str) -> Result<u32, String> {
 
 /// The end of a notes file, at most `MAX_NOTES_READ` bytes: the newest lines are last.
 /// A link, a missing file or text that is not UTF-8 reads as empty.
-/// A granted path as the sandbox matches it: `~/` expanded, symlinks resolved when it exists.
-fn real_path(path: impl AsRef<Path>) -> PathBuf {
-    let path = path.as_ref();
-    let path = match (path.strip_prefix("~"), dirs::home_dir()) {
-        (Ok(rest), Some(home)) => home.join(rest),
-        _ => path.to_path_buf(),
-    };
-    path.canonicalize().unwrap_or(path)
-}
-
 fn read_note(path: &Path) -> String {
     use std::io::{Read, Seek, SeekFrom};
     use std::os::unix::fs::OpenOptionsExt;

@@ -1,6 +1,7 @@
 //! `wsx task`: start a headless worker and steer, read and close it.
 //! ref: docs/tasks.md
 
+mod boundary;
 pub mod broker;
 mod claude;
 pub mod host;
@@ -23,19 +24,17 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::checks::{self, CheckItem};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
-use wsx_core::task::manager::{
-    ApprovalAction, ApprovalLine, GrantAsk, ManagerEvent, ManagerRequest, ManagerResponse,
-};
+use wsx_core::task::manager::{ApprovalAction, ApprovalLine, ManagerEvent};
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{
     checked_files, overlaps, project_tasks, task_summary, MAX_RESULT_READ_BYTES,
 };
 use wsx_core::task::{
-    call_host, call_socket, copy, now_unix_ms,
+    call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
-    Access, Actor, DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind,
-    TaskRecord, TaskState, MAX_MESSAGE_BYTES,
+    Actor, DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
+    TaskState, MAX_MESSAGE_BYTES,
 };
 use wsx_core::{ops, runtime};
 
@@ -115,22 +114,6 @@ pub enum TaskCmd {
         /// Add a glob of the paths it expects to change (repeatable)
         #[arg(long, value_name = "GLOB")]
         files: Vec<String>,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Let a task reach a host, write a folder or use a tool (never Bash), and resume it when blocked;
-    /// `allow manager --path <dir>` lets the project's manager write a folder
-    Allow {
-        /// A task number, or `manager`
-        task: String,
-        #[command(flatten)]
-        access: AccessArgs,
-        /// For `allow manager`: until this duration (30m, 2h, 1d) or local time (18:00) passes;
-        /// without it, until the manager's conversation ends
-        #[arg(long)]
-        until: Option<String>,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -343,7 +326,6 @@ impl TaskCmd {
             | Self::Show { json, .. }
             | Self::Steer { json, .. }
             | Self::Add { json, .. }
-            | Self::Allow { json, .. }
             | Self::Stop { json, .. }
             | Self::Land { json, .. }
             | Self::Hold { json, .. }
@@ -457,48 +439,6 @@ pub fn run(command: TaskCmd) -> Result<()> {
             let files = checked_files(&dir.read_record()?.files, &files)?;
             send(&dir, HostRequest::Add { text, files }, json)
         }
-        TaskCmd::Allow {
-            task,
-            access,
-            until,
-            project,
-            json,
-        } => {
-            if task == "manager" {
-                return allow_manager(project.as_deref(), access, until.as_deref(), json);
-            }
-            if until.is_some() {
-                bail!("--until is for `wsx task allow manager`");
-            }
-            let dir = open(project.as_deref(), &task)?;
-            let (access, project_wide) = access.into_access();
-            // ^ The manager grants a host or a path for one task alone; the project and
-            // tool rules are the owner's. ref: docs/tasks.md "Permissions"
-            if acting_as_manager() && (project_wide || matches!(access, Access::Tool { .. })) {
-                access.check().map_err(anyhow::Error::msg)?;
-                let record = dir.read_record()?;
-                return ask_owner(
-                    &dir.project_id,
-                    ApprovalAction::Grant,
-                    Some(&record),
-                    None,
-                    Some(GrantAsk {
-                        access,
-                        project_wide,
-                    }),
-                    None,
-                    json,
-                )
-                .map(drop);
-            }
-            let request = HostRequest::Grant {
-                access,
-                project: project_wide,
-                by: actor(),
-            };
-            owner::prepare_request(&dir.project_id, &request)?;
-            send(&dir, request, json)
-        }
         TaskCmd::Stop {
             task,
             project,
@@ -530,7 +470,6 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     &dir.project_id,
                     ApprovalAction::Land,
                     Some(&record),
-                    None,
                     None,
                     said.owner_said,
                     json,
@@ -576,7 +515,6 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     &dir.project_id,
                     ApprovalAction::Discard,
                     Some(&dir.read_record()?),
-                    None,
                     None,
                     said.owner_said,
                     json,
@@ -859,9 +797,6 @@ fn create(
         pane_id: None,
         adapter: settings.adapter,
         model: model.unwrap_or(settings.model),
-        tools: settings.tools,
-        sandbox: settings.sandbox,
-        grants: Vec::new(),
         checks: settings.checks,
         steps: settings.workflow.steps.clone(),
         step: 0,
@@ -1543,7 +1478,7 @@ fn deploy(
     };
     if approve
         && acting_as_manager()
-        && ask_owner(&project_id, action, None, commit, None, owner_said, json)?
+        && ask_owner(&project_id, action, None, commit, owner_said, json)?
     {
         return Ok(());
     }
@@ -1853,9 +1788,6 @@ fn chat(project: Option<&str>, after: Option<u64>, json: bool) -> Result<()> {
                 println!("(new conversation after {tokens} tokens)")
             }
             ManagerEvent::Stopped { reason } => println!("(manager stopped: {reason})"),
-            ManagerEvent::Granted { access, .. } => {
-                println!("(the owner let the manager {})", access.describe())
-            }
             _ => {}
         }
     }
@@ -1877,146 +1809,27 @@ fn actor() -> Actor {
     }
 }
 
-/// What `allow` names: one tool rule, host or folder.
-#[derive(clap::Args)]
-pub struct AccessArgs {
-    /// A tool rule that is not Bash, such as WebSearch
-    #[arg(required_unless_present_any = ["host", "path"], conflicts_with_all = ["host", "path"])]
-    tool: Option<String>,
-    /// A host the task's commands may reach, such as crates.io
-    #[arg(long, conflicts_with = "path")]
-    host: Option<String>,
-    /// A folder the task's commands may write, absolute or ~/, such as ~/.cargo
-    #[arg(long)]
-    path: Option<String>,
-    /// For every task of the project, kept in the task store
-    #[arg(long)]
-    project_wide: bool,
-}
-
-impl AccessArgs {
-    fn into_access(self) -> (Access, bool) {
-        let access = match (self.tool, self.host, self.path) {
-            (_, Some(host), _) => Access::Network { host },
-            (_, _, Some(path)) => Access::Write { path },
-            (rule, ..) => Access::Tool {
-                rule: rule.unwrap_or_default(),
-            },
-        };
-        (access, self.project_wide)
-    }
-}
-
-/// The owner lets the manager's Bash write one more folder; it applies from the manager's
-/// next turn. ref: docs/tasks.md "Permissions"
-fn allow_manager(
-    project: Option<&str>,
-    access: AccessArgs,
-    until: Option<&str>,
-    json: bool,
-) -> Result<()> {
-    // ^ The manager never widens its own boundary, also through its broker.
-    if acting_as_manager() {
-        bail!("only the owner widens the manager's boundary; ask the owner");
-    }
-    let (Access::Write { path }, false) = access.into_access() else {
-        bail!("`wsx task allow manager` takes --path <dir> alone");
-    };
-    let until_ms = until.map(until_unix_ms).transpose()?;
-    let (_, dir) = ensure_manager(project)?;
-    let response: ManagerResponse = call_socket(
-        &dir.socket_path(),
-        &ManagerRequest::Grant { path, until_ms },
-        HOST_TIMEOUT,
-    )?;
-    if json {
-        print_json(&serde_json::to_value(&response)?)?;
-    } else {
-        println!("{}", response.message);
-    }
-    if !response.ok {
-        bail!("{}", response.message);
-    }
-    Ok(())
-}
-
-/// `--until`: a duration from now (`90s`, `30m`, `2h`, `1d`) or the next local `HH:MM`.
-fn until_unix_ms(text: &str) -> Result<u64> {
-    let now = now_unix_ms();
-    if let Some((hour, minute)) = text.split_once(':') {
-        let (Ok(hour), Ok(minute)) = (hour.parse::<i32>(), minute.parse::<i32>()) else {
-            bail!("--until {text:?}: a time is HH:MM, such as 18:00");
-        };
-        if !(0..24).contains(&hour) || !(0..60).contains(&minute) {
-            bail!("--until {text:?}: a time is HH:MM, such as 18:00");
-        }
-        let seconds = (now / 1000) as libc::time_t;
-        let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
-        // SAFETY: localtime_r fills the tm it is given; mktime reads and normalizes it.
-        let at = unsafe {
-            libc::localtime_r(&seconds, local.as_mut_ptr());
-            let mut local = local.assume_init();
-            local.tm_hour = hour;
-            local.tm_min = minute;
-            local.tm_sec = 0;
-            local.tm_isdst = -1;
-            libc::mktime(&mut local)
-        };
-        let mut at = u64::try_from(at).context("--until: the local time is out of range")? * 1000;
-        if at <= now {
-            at += 24 * 3600 * 1000;
-        }
-        return Ok(at);
-    }
-    let last = text.chars().last().unwrap_or_default();
-    let split = text.len().saturating_sub(last.len_utf8());
-    let unit = match last {
-        's' => 1000,
-        'm' => 60 * 1000,
-        'h' => 3600 * 1000,
-        'd' => 24 * 3600 * 1000,
-        _ => {
-            bail!("--until {text:?}: give a duration such as 30m, 2h, 1d, or a time such as 18:00")
-        }
-    };
-    let count: u64 = text[..split]
-        .parse()
-        .ok()
-        .filter(|count| *count > 0)
-        .with_context(|| format!("--until {text:?}: the duration needs a count above 0"))?;
-    count
-        .checked_mul(unit)
-        .and_then(|span| now.checked_add(span))
-        .context("--until: the duration is too long")
-}
-
 /// The manager's action that needs the owner: approved by the owner's message `owner_said`
 /// of its running turn (recorded; false: run it), else a request (true: the owner was asked).
-/// A project-wide grant or a tool rule always asks. ref: docs/tasks.md "Approvals"
+/// ref: docs/tasks.md "Approvals"
 fn ask_owner(
     project_id: &str,
     action: ApprovalAction,
     task: Option<&TaskRecord>,
     commit: Option<&str>,
-    grant: Option<GrantAsk>,
     owner_said: Option<u64>,
     json: bool,
 ) -> Result<bool> {
-    // ^ A grant does not depend on the revision; the owner approves it at any time.
-    let revision = task
-        .filter(|_| grant.is_none())
-        .map(|record| record.revision);
-    let grants = grant.is_some();
+    let revision = task.map(|record| record.revision);
     let request = ApprovalLine::Request {
         id: String::new(),
         action,
         task: task.map(|record| record.id),
         revision,
         commit: commit.map(str::to_string),
-        grant,
         unix_ms: now_unix_ms(),
     };
-    if let Some(said) = owner_said.filter(|_| !grants) {
+    if let Some(said) = owner_said {
         let id = owner::approve_by_message(project_id, request, said)?;
         if !json {
             println!("{id}: approved by owner message {said}");

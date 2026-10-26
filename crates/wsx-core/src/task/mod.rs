@@ -19,8 +19,6 @@ use std::path::PathBuf;
 
 /// Largest prompt, steer or add, in bytes.
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
-/// Longest tool rule a grant holds.
-pub const MAX_RULE_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,9 +59,9 @@ impl TaskState {
 #[serde(rename_all = "snake_case")]
 pub enum WaitOn {
     /// An answer: the worker asked, was stopped, or its host restarted during a turn.
+    /// ^ `permission` is a record from before wsx's own boundary replaced the grants.
+    #[serde(alias = "permission")]
     Owner,
-    /// A grant for what the sandbox stopped (`TaskRecord` asks are in `result.json`).
-    Permission,
     /// `tasks.minFreeGb` of free disk; the host resumes by itself.
     Disk,
     /// A `--plan` task's first result is its plan: the manager reads it and answers with an
@@ -81,7 +79,6 @@ impl WaitOn {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Owner => "owner",
-            Self::Permission => "permission",
             Self::Disk => "disk",
             Self::Plan => "plan",
             Self::Hand => "hand",
@@ -95,48 +92,6 @@ pub struct Waiting {
     pub on: WaitOn,
     /// What it waits for, in plain words.
     pub reason: String,
-}
-
-/// A host or a path an agent needs, or a tool rule: what a block asks for and what a
-/// grant gives. ref: docs/tasks.md "Permissions"
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Access {
-    Network { host: String },
-    Write { path: String },
-    Tool { rule: String },
-}
-
-impl Access {
-    /// Refuse what a grant may never hold: a malformed host or path, a Bash or bare
-    /// file-tool rule.
-    pub fn check(&self) -> Result<(), String> {
-        use crate::config::project::{tool_refusal, validate_host, validate_write_path};
-        match self {
-            Self::Network { host } => validate_host(host),
-            Self::Write { path } => validate_write_path(path),
-            Self::Tool { rule } => {
-                if rule.is_empty()
-                    || rule.len() > MAX_RULE_BYTES
-                    || rule.chars().any(char::is_control)
-                {
-                    return Err(format!(
-                        "a tool rule must be 1..{MAX_RULE_BYTES} bytes without control characters"
-                    ));
-                }
-                tool_refusal(rule).map_or(Ok(()), |reason| Err(format!("{rule}: {reason}")))
-            }
-        }
-    }
-
-    /// "reach crates.io", "write ~/.cargo", "use WebSearch".
-    pub fn describe(&self) -> String {
-        match self {
-            Self::Network { host } => format!("reach {host}"),
-            Self::Write { path } => format!("write {path}"),
-            Self::Tool { rule } => format!("use {rule}"),
-        }
-    }
 }
 
 /// Who acted: the owner, or the manager's agent (`WSX_TASK_ACTOR=manager`).
@@ -162,15 +117,6 @@ pub struct TaskRecord {
     pub pane_id: Option<u64>,
     pub adapter: String,
     pub model: String,
-    /// Tools beyond the fixed ones (`tasks.agent.tools`). Records from before the sandbox
-    /// may hold `Bash(...)` rules; the launch drops them.
-    pub tools: Vec<String>,
-    /// `tasks.sandbox` as it was when the task was created.
-    #[serde(default)]
-    pub sandbox: crate::model::workspace::TaskSandbox,
-    /// Hosts, paths and tools granted to this task; the project's own are in `grants.json`.
-    #[serde(default)]
-    pub grants: Vec<Access>,
     pub checks: Vec<String>,
     /// `tasks.workflow.steps` as they were when the task was created, and the index of the
     /// step the worker is on. ref: docs/tasks.md "Workflow"
@@ -254,15 +200,6 @@ pub enum LogEvent {
     },
     Blocked {
         denials: Vec<String>,
-        /// What the sandbox or a permission stopped in the turn, for the owner to grant.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        asks: Vec<Access>,
-    },
-    /// `project`: kept for every task of the project (`grants.json`).
-    Granted {
-        access: Access,
-        project: bool,
-        by: Actor,
     },
     Result {
         status: String,
@@ -469,12 +406,6 @@ pub enum HostRequest {
         /// More expected path globs (`task add --files`), already checked.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<String>,
-    },
-    /// Add a grant and resume a blocked task. A project grant is already in `grants.json`.
-    Grant {
-        access: Access,
-        project: bool,
-        by: Actor,
     },
     Stop,
     /// Land the ready revision. `tried`: the owner passed its trial, so its Human Verify

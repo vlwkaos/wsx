@@ -60,25 +60,13 @@ pub fn task_copies(main: &Path) -> Vec<PathBuf> {
     copies
 }
 
-/// The main repository's git folder and this worktree's own folder inside it.
-pub fn git_dirs(working_copy: &Path) -> Result<(PathBuf, PathBuf)> {
+/// The main repository's git folder, as `git rev-parse --git-common-dir` names it.
+pub fn git_common_dir(repo: &Path) -> Result<PathBuf> {
     let text = git(
-        working_copy,
-        &[
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-            "--git-dir",
-        ],
+        repo,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )?;
-    let mut lines = text.lines();
-    match (lines.next(), lines.next()) {
-        (Some(common), Some(own)) => Ok((PathBuf::from(common), PathBuf::from(own))),
-        _ => bail!(
-            "git rev-parse did not name the git folders of {}",
-            working_copy.display()
-        ),
-    }
+    Ok(PathBuf::from(text.trim()))
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
