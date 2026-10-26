@@ -1620,7 +1620,8 @@ def run(wsx, wsxd, work, owned):
     assert after['resume'] and after['session'] == before['session'] and after['pid'] != before['pid'], (restart, said)
     assert str(granted) in writes(after) and str(expired) not in writes(after), writes(after)
     assert writes(after)[:2] == writes(before), (writes(before), writes(after))
-    assert 'The owner lets your Bash also write, for a limited time: %s.' % granted in turn_with('WRITE %s' % probes[0])['message']
+    granted_turn = turn_with('WRITE %s' % probes[0])
+    assert 'The owner lets your Bash also write, for a limited time: %s.' % granted in granted_turn['message'], (granted_turn, restart)
     assert [path.exists() for path in probes] == [True, False, False, False], said
     assert said.count('Operation not permitted') == 3, said
     grants = [e for e in manager_entries() if e['kind'] == 'granted']
