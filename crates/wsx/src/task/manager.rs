@@ -494,10 +494,10 @@ impl Manager {
             Some(seen) => {
                 self.observed = seen;
                 self.observed_decisions = self.state.decisions_seen;
-                self.observed_deploys_ms = match self.state.deploys_seen_ms {
-                    Some(ms) => ms,
-                    None => self.newest_deploy_ms(),
-                };
+                self.observed_deploys_ms = self
+                    .state
+                    .deploys_seen_ms
+                    .unwrap_or_else(|| self.newest_deploy_ms());
             }
             None => {
                 // ^ First start: what already happened is the baseline, not news.
