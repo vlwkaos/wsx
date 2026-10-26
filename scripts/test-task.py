@@ -2031,7 +2031,7 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(loud, 'ready', 'failed')['state'] == 'ready'
     code, said = [t for t in traces() if 'check_run_with' in t][-1]['check_run_with'][0]
     assert code == 1 and 'check 2 `yes check-line' in said and ': exit 3' in said, said
-    assert said.rstrip().endswith('check-line\nloud-end') and len(said) < 16 * 1024, said[-300:]
+    assert said.rstrip().endswith('check-line\nchecloud-end') and len(said) < 16 * 1024, said[-300:]
     cut = re.search(r'\[the first (\d+) bytes are cut; the whole output is in (\S+)\]', said)
     whole = Path(show(loud)['log']).parent / 'check-run-2.log'
     assert cut and os.path.samefile(cut.group(2), whole) and whole.stat().st_size == 4000000 + len('loud-end\n'), said[:300]
