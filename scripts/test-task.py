@@ -891,7 +891,7 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text(LAND_CONFIG + '''  deploy:
     command: 'printf "%s %s\\n" "$WSX_DEPLOY_COMMIT" "$(pwd)" >> ../deploy.log'
   release:
-    command: 'exit 3'
+    command: 'seq 1 60; echo release broke here >&2; exit 3'
 ''')
     git('commit', '-q', '-am', 'deploy config')
     assert js('task', 'deployed')['deploy']['commit'] is None
@@ -922,7 +922,14 @@ def run(wsx, wsxd, work, owned):
     assert status['deploy']['commit'] == tip and status['deploy']['behind'] == 1, status
     failed_release = cli('task', 'release', '--json', ok=False)
     assert json.loads(failed_release.stdout)['exit'] == 3 and 'recorded' in failed_release.stderr
-    assert js('task', 'deployed')['release'] == {'commit': None, 'failed_since': 1, 'configured': True}
+    assert 'release broke here' in failed_release.stderr, failed_release.stderr
+    # ^ A failed attempt keeps the end of its output: the ledger's deploys show its last 40 lines.
+    release_status = js('task', 'deployed')['release']
+    failed = release_status.pop('failed')
+    assert release_status == {'commit': None, 'failed_since': 1, 'configured': True}, release_status
+    assert failed['exit'] == 3 and failed['commit'] == git('rev-parse', 'main'), failed
+    assert failed['output'].splitlines() == [str(n) for n in range(22, 61)] + ['release broke here'], failed
+    assert js('task', 'ledger')['deploys']['release']['failed'] == failed
     older = git('rev-parse', 'main~3')
     assert js('task', 'deploy', '--commit', older)['commit'] == older
     assert js('task', 'deployed')['deploy']['behind'] == 3
@@ -1118,6 +1125,11 @@ def run(wsx, wsxd, work, owned):
         return [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
                 and all(needle in e['text'] for needle in needles)]
 
+    # ^ A failed deploy or release is an event with the end of its output.
+    js('task', 'check', 'pass', '--all')
+    cli('task', 'release', '--json', ok=False)
+    wait(lambda: events_with('release of %s failed (exit 3); its output ends:\n    52\n' % git('rev-parse', 'main')[:12],
+                             '\n    60\n    release broke here'), 'the failed release event')
     busy = js('task', 'say', 'SLOW')
     first = js('task', 'new', 'NOOP')['id']
     second = js('task', 'new', 'NOOP')['id']
@@ -1836,6 +1848,23 @@ def run(wsx, wsxd, work, owned):
     assert 'checks run on the new revision' in land(moved)['message']
     assert wait_state(moved, 'landed', 'failed')['state'] == 'landed' and checks_logged(moved) == ran + 1, log(moved)
     wait_closed(moved)
+    # 32s. A scenario runs through check-run by name or by number after the checks, never in a
+    # bare check-run or after a result; the worker's instructions list it.
+    mark('32s')
+    scenario_log = base / 'scenario.log'
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG + '  scenarios:\n    probe: echo scenario-ran >> %s\n' % scenario_log)
+    git('commit', '-q', '-am', 'a scenario')
+    scenario = js('task', 'new', 'CHECKRUN_WITH probe WORK scenario.txt')['id']
+    assert wait_state(scenario, 'ready', 'failed')['state'] == 'ready'
+    named, bare = next(t for t in traces() if 'check_run_with' in t)['check_run_with']
+    assert named[0] == 0 and 'check 2 `echo scenario-ran' in named[1] and 'check 1' not in named[1], named
+    assert bare[0] == 0 and 'check 1 `test ! -e broken.txt`' in bare[1] and 'scenario' not in bare[1], bare
+    assert scenario_log.read_text() == 'scenario-ran\n'
+    worker_launch = [t for t in traces() if t.get('launch') and not t.get('manager')][-1]
+    assert '2. `probe` (`echo scenario-ran' in worker_launch['instructions'], worker_launch['instructions']
+    js('task', 'close', scenario, '--discard')
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+    git('commit', '-q', '-am', 'no scenario')
     # 32d. The disk queue (docs/tasks.md "Checks, revisions and report"): tasks that wait for
     mark('32d')
     # disk resume one at a time, oldest first, so they do not fill the freed space at once.

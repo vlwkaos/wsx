@@ -2,7 +2,7 @@
 // task (from the record and the result), in plain words written by wsx, never by a model
 // (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
-import { firstSentence, html, useEffect, useRef, useState } from "./lib.js";
+import { firstSentence, html, Icon, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 
 const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
@@ -53,10 +53,18 @@ export function ProjectFacts({ project, overview }) {
   const checkout = ledger.main?.branch
     ? `Main checkout on ${ledger.main.branch}, ${ledger.main.changed_files ? `${plural(ledger.main.changed_files, "uncommitted file")}` : "clean"}.`
     : null;
+  // ^ The end of the newest failed attempt's output, folded under the facts (docs/tasks.md "Ledger").
+  const failures = ["deploy", "release"].map((kind) => ({ kind, failed: ledger.deploys?.[kind]?.failed_since ? ledger.deploys[kind].failed : null }))
+    .filter(({ failed }) => failed?.output);
   if (!deploys.length && !checkout) return null;
   return html`
     <div class="facts-line">
       ${deploys.map((line) => html`<p key=${line}>${line}</p>`)}
+      ${failures.map(({ kind, failed }) => html`
+        <details class="task-fold deploy-output" key=${kind}>
+          <summary class="fold-head"><${Icon} name="chevron" />How the ${kind} of ${short(failed.commit)} ended</summary>
+          <div class="code-block"><pre tabindex="0">${failed.output}</pre></div>
+        </details>`)}
       ${checkout && html`<p>${checkout}</p>`}
     </div>`;
 }

@@ -99,6 +99,8 @@ struct TasksFile {
     #[serde(rename = "minFreeGb", skip_serializing_if = "Option::is_none")]
     min_free_gb: Option<u64>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    scenarios: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     env: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     land: Option<TaskLandFile>,
@@ -503,6 +505,7 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
     }
     config.checks = validate_list(file.checks, "tasks.checks", MAX_DEFAULT_COMMAND_BYTES)?;
+    config.scenarios = validate_scenarios(file.scenarios)?;
     config.env = validate_env(file.env)?;
     if let Some(preview) = file.preview {
         config.preview = Some(preview_config(preview)?);
@@ -626,6 +629,32 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
 
 /// `tasks.env`: names a shell can set, never one wsx sets itself (`PATH`, `GIT_EDITOR`,
 /// `WSX_*`); values are one line of text. ref: docs/tasks.md "Config"
+/// A scenario name starts with a letter, so it never reads as a check number.
+fn validate_scenarios(
+    scenarios: BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, String> {
+    if scenarios.len() > MAX_TASK_LIST_ITEMS {
+        return Err(format!(
+            "tasks.scenarios has more than {MAX_TASK_LIST_ITEMS} entries"
+        ));
+    }
+    scenarios
+        .into_iter()
+        .map(|(name, command)| {
+            let mut chars = name.chars();
+            let word = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+            if !word || name.len() > MAX_TASK_WORD_BYTES {
+                return Err(format!("tasks.scenarios: {name:?} is not a scenario name"));
+            }
+            let field = format!("tasks.scenarios.{name}");
+            let command = validate_optional_text(Some(command), &field, MAX_DEFAULT_COMMAND_BYTES)?
+                .ok_or_else(|| format!("{field} must not be empty"))?;
+            Ok((name, command))
+        })
+        .collect()
+}
+
 fn validate_env(env: BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
     if env.len() > MAX_TASK_LIST_ITEMS {
         return Err(format!(

@@ -69,6 +69,9 @@ pub struct TaskConfig {
     pub owner_skills: bool,
     pub workflow: TaskWorkflow,
     pub checks: Vec<String>,
+    /// `tasks.scenarios`: named end-to-end commands a worker runs through `check-run <name>`,
+    /// never after a result (docs/tasks.md "Checks, revisions and report").
+    pub scenarios: std::collections::BTreeMap<String, String>,
     /// `tasks.env`: set for the worker's commands and for the checks, the same in both.
     pub env: std::collections::BTreeMap<String, String>,
     /// Seconds one check may run before its process group is killed.
@@ -174,6 +177,7 @@ impl Default for TaskConfig {
             owner_skills: false,
             workflow: TaskWorkflow::default(),
             checks: Vec::new(),
+            scenarios: Default::default(),
             env: Default::default(),
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
             min_free_gb: 5,

@@ -370,6 +370,9 @@ pub struct DeployRecord {
     /// The task whose trial this deploy put on the live site.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trial: Option<u32>,
+    /// The end of a failed command's output (stdout, then stderr).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
 /// `tasks/<project-id>/trial.json`: the one task whose unlanded revision the live site runs

@@ -18,10 +18,10 @@ use crate::cli::{
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use serde_json::json;
-use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
+use wsx_core::git::output_with_timeout_tail;
 use wsx_core::task::checks::{self, CheckItem};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
 use wsx_core::task::manager::{ApprovalAction, ApprovalLine, ManagerEvent};
@@ -40,6 +40,9 @@ use wsx_core::{ops, runtime};
 
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
+/// ^ A deploy or release longer than this is killed with its process group and recorded as
+/// failed, so a hung command frees `deploy.lock`. wsx's own takes about 18 minutes.
+const DEPLOY_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
 
 /// `--owner-said <id>` on an action that needs the owner's approval (docs/tasks.md "Approvals").
 #[derive(clap::Args)]
@@ -1536,26 +1539,37 @@ fn deploy(
     let commit = copy::create_detached(&main, &revision, &path)
         .map_err(|error| error.context(format!("nothing was run or recorded for this {name}")))?;
     let started = Instant::now();
-    // ^ JSON callers parse stdout, so the command writes to stderr then.
-    let stdout = if json {
-        std::process::Stdio::from(std::io::stderr().as_fd().try_clone_to_owned()?)
-    } else {
-        std::process::Stdio::inherit()
-    };
-    let status = std::process::Command::new("/bin/sh")
-        .args(["-c", &command])
-        .current_dir(&path)
-        .env("WSX_DEPLOY_COMMIT", &commit)
-        .stdin(std::process::Stdio::null())
-        .stdout(stdout)
-        .status();
+    // ^ The output's tail is kept like a check's: a failed deploy records it for the ledger.
+    let ran = output_with_timeout_tail(
+        std::process::Command::new("/bin/sh")
+            .args(["-c", &command])
+            .current_dir(&path)
+            .env("WSX_DEPLOY_COMMIT", &commit)
+            .stdin(std::process::Stdio::null()),
+        DEPLOY_TIMEOUT,
+        host::CHECK_OUTPUT_BYTES,
+    );
     let duration_ms = started.elapsed().as_millis() as u64;
     ops::cargo_clean(&path);
     let removed = copy::remove(&main, &path, None);
-    let exit = match &status {
-        Ok(status) => status.code(),
-        Err(_) => None,
+    let (status, output) = match &ran {
+        Ok(output) => (Some(output.status), host::output_text(output)),
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => (
+            None,
+            format!("timed out after {} s", DEPLOY_TIMEOUT.as_secs()),
+        ),
+        Err(error) => (None, format!("cannot run tasks.{name}.command: {error}")),
     };
+    // ^ JSON callers parse stdout, so the command's output goes to stderr then.
+    if !output.is_empty() {
+        if json {
+            eprintln!("{output}");
+        } else {
+            println!("{output}");
+        }
+    }
+    let exit = status.and_then(|status| status.code());
+    let succeeded = status.is_some_and(|status| status.success());
     let record = DeployRecord {
         kind,
         commit: commit.clone(),
@@ -1563,10 +1577,11 @@ fn deploy(
         unix_ms: now_unix_ms(),
         duration_ms,
         trial,
+        output: (!succeeded).then(|| output.clone()),
     };
     store::append_deploy(&project_id, &record)?;
     // ^ A trial whose deploy failed ends, and the default branch deploys again.
-    if let (Some(task), false) = (trial, status.as_ref().is_ok_and(|status| status.success())) {
+    if let (Some(task), false) = (trial, succeeded) {
         trial::end(
             &project_id,
             &project_name,
@@ -1581,8 +1596,9 @@ fn deploy(
             path.display()
         )
     })?;
-    let status = status
-        .with_context(|| format!("cannot run tasks.{name}.command; recorded with no exit code"))?;
+    let Some(status) = status else {
+        bail!("tasks.{name}.command: {output}; recorded with no exit code");
+    };
     let mut message = format!(
         "{name} of {commit:.12}: exit {}",
         exit.map_or("none".into(), |code| code.to_string())

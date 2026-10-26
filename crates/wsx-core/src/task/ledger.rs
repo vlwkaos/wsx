@@ -258,6 +258,28 @@ pub fn kind_name(kind: DeployKind) -> &'static str {
     }
 }
 
+/// The ledger's `deploys` show this many last lines of a failed attempt's output.
+const FAILED_LINES: usize = 40;
+
+/// ... and at most this many bytes of them, so the ledger stays small.
+const FAILED_BYTES: usize = 4 * 1024;
+
+/// The last `lines` lines of `text`.
+pub fn tail_lines(text: &str, lines: usize) -> String {
+    let all: Vec<&str> = text.trim_end().lines().collect();
+    all[all.len().saturating_sub(lines)..].join("\n")
+}
+
+/// The end of a failed attempt's output as the ledger shows it.
+fn failed_tail(text: &str) -> String {
+    let tail = tail_lines(text, FAILED_LINES);
+    let mut start = tail.len().saturating_sub(FAILED_BYTES);
+    while !tail.is_char_boundary(start) {
+        start += 1;
+    }
+    tail[start..].to_string()
+}
+
 /// The last successful deploy and release, how far each is behind the default branch,
 /// and how many attempts failed since.
 pub fn deploy_status(
@@ -276,15 +298,17 @@ pub fn deploy_status(
             DeployKind::Release => settings.release_command.is_some(),
         };
         // ^ Newest first: attempts that failed until the last success of this kind.
-        let (mut last, mut failed_since) = (None, 0);
+        let (mut last, mut failed_since, mut failed) = (None, 0, None);
         for record in records.iter().rev().filter(|record| record.kind == kind) {
             if record.exit == Some(0) {
                 last = Some(record);
                 break;
             }
             failed_since += 1;
+            failed = failed.or(Some(record));
         }
-        out[kind_name(kind)] = match last {
+        let name = kind_name(kind);
+        out[name] = match last {
             None => {
                 json!({ "commit": null, "failed_since": failed_since, "configured": configured })
             }
@@ -298,6 +322,15 @@ pub fn deploy_status(
                 "configured": configured,
             }),
         };
+        // ^ What the newest failed attempt ended with: the end of its output.
+        if let Some(failed) = failed {
+            out[name]["failed"] = json!({
+                "commit": failed.commit,
+                "exit": failed.exit,
+                "unix_ms": failed.unix_ms,
+                "output": failed.output.as_deref().map(failed_tail),
+            });
+        }
     }
     out["trial"] = trial_status(&project_id, &records);
     Ok(out)

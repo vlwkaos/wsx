@@ -28,7 +28,7 @@ use wsx_core::task::{
 };
 
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
-const CHECK_OUTPUT_BYTES: usize = 8 * 1024;
+pub(super) const CHECK_OUTPUT_BYTES: usize = 8 * 1024;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
 /// The turn a host hands to its replacement: queued messages joined, so a few messages.
 /// The end of a `--plan` task's first prompt. ref: docs/tasks.md "Workflow"
@@ -889,19 +889,41 @@ impl Host {
             return refuse(format!("{:#}", self.by_hand_refusal()));
         }
         self.follow_checks();
-        let checks = &self.record.checks;
+        // ^ The scenarios come after the checks, numbered on from them, and run only when
+        // named: like the checks, they are the main checkout's, never the worker's.
+        let scenarios = load_task_config(&self.record.project_path)
+            .map(|settings| settings.scenarios)
+            .unwrap_or_default();
+        let mut runnable = self.record.checks.clone();
+        runnable.extend(scenarios.values().cloned());
+        let checks = self.record.checks.len();
         let picked: Result<Vec<(usize, String)>, String> = match numbers {
-            [] => Ok(checks.iter().cloned().enumerate().collect()),
+            [] => Ok(runnable.iter().take(checks).cloned().enumerate().collect()),
             numbers => numbers
                 .iter()
-                .map(|number| {
-                    number
-                        .parse::<usize>()
+                .map(|word| {
+                    word.parse::<usize>()
                         .ok()
-                        .filter(|n| (1..=checks.len()).contains(n))
-                        .map(|n| (n - 1, checks[n - 1].clone()))
+                        .filter(|n| (1..=runnable.len()).contains(n))
+                        .map(|n| n - 1)
+                        .or_else(|| {
+                            scenarios
+                                .keys()
+                                .position(|name| name == word)
+                                .map(|at| checks + at)
+                        })
+                        .map(|index| (index, runnable[index].clone()))
                         .ok_or_else(|| {
-                            format!("{number} is not a check number 1..={}", checks.len())
+                            let names: Vec<&str> = scenarios.keys().map(String::as_str).collect();
+                            format!(
+                                "{word} is not a check number 1..={} or a scenario ({})",
+                                runnable.len(),
+                                if names.is_empty() {
+                                    "none".into()
+                                } else {
+                                    names.join(", ")
+                                }
+                            )
                         })
                 })
                 .collect(),
@@ -1718,24 +1740,12 @@ fn run_check(
     process.envs(env);
     // ^ The tail: a long check output (a test run) ends with its failures and summary.
     match output_with_timeout_tail(&mut process, timeout, CHECK_OUTPUT_BYTES) {
-        Ok(output) => {
-            let mut text = String::from_utf8_lossy(&output.stdout)
-                .trim_end()
-                .to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.trim().is_empty() {
-                if !text.is_empty() {
-                    text.push('\n');
-                }
-                text.push_str(stderr.trim_end());
-            }
-            CheckResult {
-                command: command.into(),
-                exit: output.status.code(),
-                timed_out: false,
-                output: text,
-            }
-        }
+        Ok(output) => CheckResult {
+            command: command.into(),
+            exit: output.status.code(),
+            timed_out: false,
+            output: output_text(&output),
+        },
         Err(error) => CheckResult {
             command: command.into(),
             exit: None,
@@ -1743,6 +1753,21 @@ fn run_check(
             output: error.to_string(),
         },
     }
+}
+
+/// A command's output as one text: stdout, then stderr.
+pub(super) fn output_text(output: &std::process::Output) -> String {
+    let mut text = String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(stderr.trim_end());
+    }
+    text
 }
 
 /// The failed checks for the worker: each command, how it ended and the end of its output.
