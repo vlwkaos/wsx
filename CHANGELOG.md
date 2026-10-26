@@ -34,6 +34,7 @@
 
 ### Changed
 
+- The web To check items read in a clear order: the task chip and what the task did as the title, then *Check*, *Look at* and *Passes if* as lines with muted labels. *Try*, *Fail* and *Pass* sit in one place on every item, a row under the words on a phone and a column at the right on a wide screen, instead of moving with the length of the pass line. *Fail*'s note is sent with *Send*; the Cancel button is gone, and × again or Escape closes the note ([docs/web-client-tasks.md](docs/web-client-tasks.md) "To check").
 - The manager chat reads as a chat. A manager reply to wsx's task events is a muted line, not a bubble, and `-` shows nothing; a worker's report stays in the task sheet. The manager answers in a few short lines and hands the owner no chores (commands, deletes, settings to edit, tasks to verify). Its instructions are about half as long. The quiet-period recap is off by default (`tasks.manager.recapMinutes`) and at most 8 lines when on ([docs/tasks.md](docs/tasks.md) "Manager", "Recap").
 - The idle task that consolidates project knowledge runs as one turn, without the owner's workflow steps.
 - The web client's home-screen icon shows split panes, the active one in the theme's green with a prompt, instead of a generic `>_` on blue. The manifest marks the icons `any maskable`, so Android crops them to its own shape without cutting the mark.
