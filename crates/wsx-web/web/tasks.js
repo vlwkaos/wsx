@@ -6,7 +6,7 @@ import { api } from "./api.js";
 import { html, Icon, readMap, useEffect, useFollowEnd, useLayoutEffect, useRef, useState, writeMap } from "./lib.js";
 import { can, events, leaveFor, shows, state, touch, update, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
-import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, withNewLine } from "./chat.js";
+import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
 import { Bubble, conversation, Dots, StatusLine, Typing } from "./bubbles.js";
 import { QuoteChip, useReply, withQuote } from "./reply.js";
 import { TaskPage } from "./task.js";
@@ -798,6 +798,7 @@ export function Manager({ project: id, task, page, checks }) {
     rows.push({ kind: "bubble", key: "sending", author: "owner", at: Date.now(), first: !grouped, last: true, pending: true, entry: { text: sent.text } });
   }
   const firstNew = since == null ? null : rows.find((row) => row.kind === "bubble" && row.author !== "owner" && !row.pending && row.at > since);
+  const [recent, earlier] = useRecent(`project-${id}`, rows, firstNew);
   const typing = Boolean(chat?.busy);
   // ^ The typing bubble fades out as the reply replaces it.
   const typingShown = useAfter(typing, LEAVE_MS) || typing;
@@ -835,7 +836,8 @@ export function Manager({ project: id, task, page, checks }) {
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation with the manager" tabindex="0" ...${gestures}>
             ${cut.current ? html`<p class="note">Older messages are not shown.</p>` : null}
             ${chat && !rows.length ? html`<p class="empty">No messages yet. Ask the manager for a task or a status; it answers from the ledger.</p>` : null}
-            ${withNewLine(rows, firstNew, (row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${fresh.current.has(row.key)} />`
+            ${earlier}
+            ${withNewLine(recent, firstNew, (row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${fresh.current.has(row.key)} />`
               : row.kind === "line" ? html`<${StatusLine} key=${row.key} parts=${row.parts} words=${words} fresh=${fresh.current.has(row.key)} />`
               : html`<${Note} key=${row.key} entry=${row.entry} />`)}
             ${typingShown && html`<${Typing} name=${names.manager} leaving=${!typing} />`}

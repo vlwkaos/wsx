@@ -132,6 +132,10 @@ export function useFollowEnd(name, ready) {
   const [away, setAway] = useState(false);
   const [opened] = useState(() => readMap(READ_KEY)[name] ?? null);
   const placed = useRef(false);
+  // ^ The row the reader left, held where they left it until they scroll: the rows above it
+  // may still grow (a diagram draws) after the log opens, while the log is too short to
+  // scroll there yet.
+  const restore = useRef(null);
   // ^ The observers keep the first render's functions: they read the props through refs.
   const loaded = useRef(ready);
   loaded.current = ready;
@@ -155,7 +159,8 @@ export function useFollowEnd(name, ready) {
     const element = node.current;
     // ^ Not the row cut by the top edge: when that row grows inside (its diagram draws), what
     // the reader sees of it is below the growth, and Chrome's CSS anchor there moves it too.
-    const rows = [...element.children];
+    // ^ A named row: a control above the rows (Show earlier) stays put while rows go in under it.
+    const rows = [...element.children].filter((child) => child.dataset.key);
     const row = rows.find((child) => child.offsetTop >= element.scrollTop) ?? rows.at(-1);
     anchor.current = row ? { row, top: onScreen(row) } : null;
     top.current = element.scrollTop;
@@ -178,7 +183,10 @@ export function useFollowEnd(name, ready) {
     const place = opened?.place;
     const left = place && [...element.children].find((row) => row.dataset.key === place.key);
     if (fresh) element.scrollTop = fresh.offsetTop - parseFloat(getComputedStyle(element).paddingTop);
-    else if (left) element.scrollTop = left.offsetTop - place.offset;
+    else if (left) {
+      restore.current = { row: left, offset: place.offset };
+      element.scrollTop = left.offsetTop - place.offset;
+    }
     else element.scrollTop = element.scrollHeight;
     atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
     setAway(!atEnd.current);
@@ -190,11 +198,16 @@ export function useFollowEnd(name, ready) {
     if (!element) return;
     height.current = element.clientHeight;
     if (!placed.current && loaded.current) return open();
+    if (restore.current?.row.isConnected) {
+      element.scrollTop = restore.current.row.offsetTop - restore.current.offset;
+      return mark();
+    }
     if (atEnd.current) element.scrollTop = element.scrollHeight;
     else if (anchor.current?.row.isConnected) {
       const moved = onScreen(anchor.current.row) - anchor.current.top;
-      // ^ Smaller moves add up against the same mark until they come to a pixel.
-      if (Math.abs(moved) < 1) return;
+      // ^ Smaller moves add up against the same mark until they come to a pixel; the rows
+      // below may still have changed, so the unread count is taken again.
+      if (Math.abs(moved) < 1) return seen();
       element.scrollTop += moved;
     }
     mark();
@@ -202,6 +215,11 @@ export function useFollowEnd(name, ready) {
   const scrolled = () => {
     const element = node.current;
     if (!element) return;
+    // ^ The log's own move to the row the reader left is not the reader's scroll.
+    if (restore.current) {
+      if (Math.abs(element.scrollTop - top.current) <= 1) return;
+      restore.current = null;
+    }
     // ^ A box that changed height scrolls without the reader. The event can come before the
     // resize observer. A scroll farther than the change is the reader's, in the same frame.
     const resized = element.clientHeight - height.current;
@@ -233,7 +251,7 @@ export function useFollowEnd(name, ready) {
     rows.observe(element, { childList: true });
     watchers.current = [sizes, rows];
   }, []);
-  const toEnd = () => { atEnd.current = true; setAway(false); settle(); };
+  const toEnd = () => { restore.current = null; atEnd.current = true; setAway(false); settle(); };
   useLayoutEffect(settle);
   // ^ Kept when the chat closes or the page goes to the background (a phone may drop it then);
   // a page that shows again counts what is on screen as read.

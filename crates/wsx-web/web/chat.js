@@ -527,6 +527,34 @@ function Question({ session, question, onAnswered }) {
 
 // `rows` rendered by `render`, with the "New" line over `first`: the first reply that came
 // since this device last read the chat.
+// A long log renders its newest rows only: this many, and always from its first unread row,
+// with a button that shows as many more above (docs/web-client.md "Screens").
+const RECENT_ROWS = 60;
+// `name` is the log's: another log starts again from its newest rows.
+export function useRecent(name, rows, first) {
+  const [shown, setShown] = useState({ name, count: RECENT_ROWS });
+  // ^ The rows go in above the reader: their distance from the log's end stays, so the row
+  // they read stays where it is on the screen.
+  const held = useRef(null);
+  useLayoutEffect(() => {
+    if (!held.current) return;
+    const { log, fromEnd } = held.current;
+    held.current = null;
+    log.scrollTop = log.scrollHeight - fromEnd;
+  });
+  const count = shown.name === name ? shown.count : RECENT_ROWS;
+  const from = first ? Math.min(rows.indexOf(first), rows.length - count) : rows.length - count;
+  const start = Math.max(0, from);
+  const more = (event) => {
+    const log = event.currentTarget.closest(".log");
+    held.current = { log, fromEnd: log.scrollHeight - log.scrollTop };
+    setShown({ name, count: rows.length - start + RECENT_ROWS });
+  };
+  const earlier = start > 0 && html`
+    <button class="link-action log-earlier" type="button" onClick=${more}>Show ${Math.min(start, RECENT_ROWS)} earlier</button>`;
+  return [rows.slice(start), earlier];
+}
+
 export function withNewLine(rows, first, render) {
   const shown = rows.map(render);
   if (first) shown.splice(rows.indexOf(first), 0, html`<p class="log-new" key="new" role="separator" aria-label="New messages"><span>New</span></p>`);
@@ -638,6 +666,7 @@ export function Chat({ session, onModel }) {
   const blocked = status.key === "blocked";
   const lastUserBlock = list.findLast?.((block) => block.kind === "user");
   const firstNew = since == null ? null : list.find((block) => block.kind === "assistant" && block.at_unix_ms > since);
+  const [recent, earlier] = useRecent(`session-${id}`, list, firstNew);
   const terminalLink = shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`;
   // A hold the chat cannot name: the server sends the rows above the agent's editor, closed
   // until asked for (docs/web-client-chat.md "Timeline").
@@ -655,8 +684,9 @@ export function Chat({ session, onModel }) {
       <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation" tabindex="0" ...${gestures}>
         ${data?.truncated && html`<p class="note">Older messages are not shown.</p>`}
         ${data && !list.length && !sent.length ? html`<p class="empty">${EMPTY_WORDS[data.status] ?? "No messages yet."}</p>` : null}
-        ${withNewLine(list, firstNew, (block, index) => block.steps
-          ? html`<${Steps} key=${block.id} items=${block.steps} live=${Boolean(working) && index === list.length - 1} />`
+        ${earlier}
+        ${withNewLine(recent, firstNew, (block) => block.steps
+          ? html`<${Steps} key=${block.id} items=${block.steps} live=${Boolean(working) && block === list.at(-1)} />`
           : block.kind === "summary" ? html`<${Summary} key=${block.id} id=${`summary-${block.id}`} text=${block.text} />`
           : block.kind === "notice" ? html`<p key=${block.id} class="note chat-notice" role="status">${block.text}</p>`
           : html`
