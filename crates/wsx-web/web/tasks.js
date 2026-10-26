@@ -689,13 +689,11 @@ function Sheet({ label, fit = false, onClose, children }) {
   const drag = useRef(null);
   const [ready, setReady] = useState(!fit);
   useEffect(() => {
-    if (ready) return;
-    const timer = setTimeout(() => setReady(true), 1000);
-    return () => clearTimeout(timer);
-  }, [ready]);
-  useEffect(() => {
-    const node = dialog.current;
-    if (ready && !node.open) node.showModal();
+    if (!ready) {
+      const timer = setTimeout(() => setReady(true), 1000);
+      return () => clearTimeout(timer);
+    }
+    if (!dialog.current.open) dialog.current.showModal();
   }, [ready]);
   useEffect(() => {
     const node = dialog.current;

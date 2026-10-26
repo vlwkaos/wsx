@@ -180,7 +180,6 @@ const rows = () => evaluate(`[...document.querySelectorAll('.reservoir-list .nee
   row.querySelector('.task-number')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, row.querySelector('.row-context')?.textContent ?? '',
   [...row.querySelectorAll('.need-action')].map((node) => node.title).join('+')])`);
 const rowOf = (label) => `[...document.querySelectorAll('.reservoir-list .need')].find((row) => ((row.querySelector('.task-number')?.textContent.trim() ?? '') + ' ' + row.querySelector('.row-label').textContent).trim().startsWith(${JSON.stringify(label)}))`;
-// The closed line as read: "6 need you · #6 <title> +1 more".
 // The open of a sheet in frames: its top and left on each animation frame, from before the tap
 // to 700 ms after the sheet is first seen open.
 const watchSheet = () => evaluate(`(() => { window.sheetFrames = []; window.sheetWatched = false; let seen = null;
@@ -197,12 +196,14 @@ async function oneMotion(where) {
   for (const axis of [0, 1]) {
     const values = frames.map((frame) => frame[axis]);
     const way = Math.sign(end[axis] - values[0]);
-    const back = values.findIndex((value, index) => index > 0 && (value - values[index - 1]) * way < -0.5 || way === 0 && Math.abs(value - end[axis]) > 0.5);
-    if (back !== -1 || Math.abs(values.at(-1) - end[axis]) > 0.5 || (axis === moving) !== (Math.abs(values[0] - end[axis]) > 50)) {
+    // ^ A still axis stays at its end; a moving one never steps back by more than half a pixel.
+    const back = values.some((value, index) => way ? index > 0 && (value - values[index - 1]) * way < -0.5 : Math.abs(value - end[axis]) > 0.5);
+    if (back || Math.abs(values.at(-1) - end[axis]) > 0.5 || (axis === moving) !== (Math.abs(values[0] - end[axis]) > 50)) {
       await fail(`${where}: the sheet does not open in one motion on ${axis ? "left" : "top"}: ${JSON.stringify(values.map(Math.round))}, rests at ${Math.round(end[axis])}`);
     }
   }
 }
+// The closed line as read: "6 need you · #6 <title> +1 more".
 const reservoirWords = () => evaluate("document.querySelector('.reservoir-head')?.textContent.trim().replace(/\\s+/g, ' ') ?? ''");
 async function openReservoir() {
   if (!(await evaluate("!!document.querySelector('.reservoir[data-open]')"))) await click(".reservoir-head");
