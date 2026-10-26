@@ -76,6 +76,49 @@ def tui_run(wsx, env, cwd, done, cols=120, seconds=15):
         os.close(slave)
 
 
+# ^ What a worker tries inside wsx's boundary (docs/tasks.md "Permissions"), run as the worker's
+# own command by the fake worker (part 23) and by the real Claude (part 32h). A write to a file
+# that exists only opens it for appending, so nothing changes when it is allowed.
+PROBE_SCRIPT = '''import json, os, socket, subprocess, sys
+spec = json.load(open(sys.argv[1]))
+def tried(action):
+    try:
+        action()
+        return True
+    except OSError:
+        return False
+def write(path):
+    if os.path.isfile(path):
+        os.close(os.open(path, os.O_WRONLY | os.O_APPEND))
+    else:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "w").close()
+        os.remove(path)
+def listen():
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    client = socket.create_connection(server.getsockname())
+    server.accept()[0].close()
+    client.close()
+    server.close()
+def pty():
+    for fd in os.openpty():
+        os.close(fd)
+seen = {name: tried(lambda path=path: open(path).read()) for name, path in spec["read"].items()}
+seen.update({name: tried(lambda path=path: write(path)) for name, path in spec["write"].items()})
+seen["move_main"] = subprocess.run(["git", "update-ref", "refs/heads/main", "HEAD"], capture_output=True).returncode == 0
+seen.update(listen=tried(listen), pty=tried(pty))
+json.dump(seen, open(sys.argv[2], "w"))
+'''
+# ^ True: the boundary allows it; False: it refuses it.
+PROBE_EXPECTED = {'read_ssh': False, 'write_ssh': False, 'write_state': False, 'write_existing_copy': False,
+                  'write_later_copy': False, 'write_main_ref': False, 'write_main_lock': False,
+                  'write_main_reflog': False, 'write_hooks': False, 'write_config': False,
+                  'write_own_copy': True, 'write_task_folder': True, 'write_tmpdir': True, 'write_cargo': True,
+                  'write_library': True, 'move_main': False, 'listen': True, 'pty': True}
+
+
 def tui_text(wsx, env, cwd, until, seconds=15):
     """The TUI's output as text without escapes, read until `until` (a regex) matches."""
     text = ''
@@ -1234,16 +1277,44 @@ def run(wsx, wsxd, work, owned):
     secret = home / '.ssh/id_fixture'
     secret.parent.mkdir(mode=0o700, exist_ok=True)
     secret.write_text('secret\n')
-    other_copy, library = base / 'project-t999', home / 'Library/Caches/wsx-probe'
-    store_file = Path(created['task_dir']).parent / 'probe.txt'
-    main_tip = git('rev-parse', 'main')
-    probed = js('task', 'new', 'PROBE %s %s %s %s WORK p.txt' % (secret, other_copy, store_file, library))['id']
+    store_dir, common = Path(created['task_dir']).parent, project / '.git'
+    probe_script = work / 'probe.py'
+    probe_script.write_text(PROBE_SCRIPT)
+
+    def probe_files(n):
+        """The probe's spec and answer for task n, which is created next."""
+        spec = {'read': {'read_ssh': str(secret)},
+                'write': {'write_ssh': str(home / '.ssh/probe'), 'write_state': str(store_dir / 'probe.txt'),
+                          'write_existing_copy': str(base / 'project-t998/probe.txt'),
+                          'write_later_copy': str(base / 'project-t999/probe.txt'),
+                          'write_main_ref': str(common / 'refs/heads/main'),
+                          'write_main_lock': str(common / 'refs/heads/main.lock'),
+                          'write_main_reflog': str(common / 'logs/refs/heads/main'),
+                          'write_hooks': str(common / 'hooks/pre-commit'), 'write_config': str(common / 'config'),
+                          'write_own_copy': str(base / ('project-t%d' % n) / 'probe.txt'),
+                          'write_task_folder': str(store_dir / str(n) / 'probe.txt'),
+                          'write_tmpdir': str(tmp / 'probe.txt'), 'write_cargo': str(home / '.cargo/registry/probe.txt'),
+                          'write_library': str(home / 'Library/Caches/wsx-probe/probe.txt')}}
+        spec_file, answer = work / ('probe-%d.json' % n), work / ('probe-%d-answer.json' % n)
+        spec_file.write_text(json.dumps(spec))
+        return spec_file, answer
+
+    def next_task():
+        return max(row['id'] for row in js('task', 'list', '--all')['tasks']) + 1
+
+    # ^ A copy that exists at the launch and one made after it are both another task's.
+    (base / 'project-t998').mkdir()
+    main_tip, config_before = git('rev-parse', 'main'), (common / 'config').read_text()
+    spec_file, answer = probe_files(next_task())
+    probed = js('task', 'new', 'PROBE %s %s %s WORK p.txt' % (probe_script, spec_file, answer))['id']
+    assert spec_file.name == 'probe-%d.json' % probed
     assert wait_state(probed, 'ready', 'failed')['state'] == 'ready'
     seen = next(t['probe'] for t in traces() if 'probe' in t)
-    assert seen == {'read_secret': False, 'write_other_copy': False, 'write_state': False, 'move_main': False,
-                    'write_hooks': False, 'write_library': True, 'write_own_copy': True, 'listen': True, 'pty': True}, seen
-    assert git('rev-parse', 'main') == main_tip and not other_copy.exists() and not store_file.exists()
-    assert not (project / '.git/hooks/pre-commit').exists()
+    assert seen == PROBE_EXPECTED, {k: v for k, v in seen.items() if PROBE_EXPECTED.get(k) != v}
+    assert git('rev-parse', 'main') == main_tip and (common / 'config').read_text() == config_before
+    assert not (common / 'hooks/pre-commit').exists() and not (common / 'refs/heads/main.lock').exists()
+    assert not (base / 'project-t999').exists() and not any((base / 'project-t998').iterdir())
+    (base / 'project-t998').rmdir()
     # The manager's `wsx task` commands run through its broker with no denial.
     held = js('task', 'new', 'WAIT %s NOOP' % (base / 'never'))['id']
     wait(lambda: show(held)['state'] == 'working' and launches_in(held), 'held worker')
@@ -1847,8 +1918,7 @@ def run(wsx, wsxd, work, owned):
     assert [e['kind'] for e in log(planned) if e['kind'] in ('checks', 'revision')] == ['checks', 'revision']
     js('task', 'close', planned, '--discard')
     # 32h. The real Claude in wsx's boundary (docs/tasks.md "Permissions"): with no prompt it
-    # writes under ~/Library, listens on 127.0.0.1 and opens a PTY; it cannot read ~/.ssh, write
-    # another task's copy or move main's ref. Skipped, and said so, when no claude is on PATH.
+    # runs part 23's probe and gets the same answers. Skipped, and said so, when no claude is on PATH.
     mark('32h')
     real = shutil.which('claude')
     if real is None:
@@ -1861,40 +1931,24 @@ def run(wsx, wsxd, work, owned):
                                            fake.read_text().split('\n', 1)[1]))
         (project / 'wsx.config.yml').write_text(LAND_CONFIG + '  env: { REAL_CLAUDE: "1" }\n')
         git('commit', '-q', '-am', 'real claude')
-        probe, answer = work / 'probe.py', work / 'probe.json'
-        probe.write_text('''import json, os, socket, subprocess, sys
-def tried(action):
-    try:
-        action()
-        return True
-    except OSError:
-        return False
-def write(path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    open(path, "w").write("probe")
-def listen():
-    server = socket.socket(); server.bind(("127.0.0.1", 0)); server.listen(1)
-    socket.create_connection(server.getsockname()); server.accept()
-secret, other, library, out = sys.argv[1:]
-json.dump({"read_secret": tried(lambda: open(secret).read()),
-           "write_other_copy": tried(lambda: write(os.path.join(other, "probe.txt"))),
-           "move_main": subprocess.run(["git", "update-ref", "refs/heads/main", "HEAD"]).returncode == 0,
-           "write_library": tried(lambda: write(os.path.join(library, "probe.txt"))),
-           "listen": tried(listen), "pty": tried(os.openpty)}, open(out, "w"))
-''')
+        (base / 'project-t998').mkdir()
         tip = git('rev-parse', 'main')
-        command = 'python3 %s %s %s %s %s' % (probe, secret, other_copy, library / 'real', answer)
+        spec_file, answer = probe_files(next_task())
+        command = 'python3 %s %s %s' % (probe_script, spec_file, answer)
         auto = js('task', 'new', '--model', 'sonnet', '--title', 'Boundary probe',
                   'This is a wsx test of the worker boundary. Run this one Bash command exactly as written: '
                   '`%s`. It records what the boundary allows in a file outside the working copy. Then change '
                   'no file, commit nothing and return status done with the command and its exit code as '
                   'evidence.' % command)['id']
+        assert spec_file.name == 'probe-%d.json' % auto
         ended = wait(lambda: (current := show(auto))['state'] in ('ready', 'failed', 'waiting') and current,
                      'real claude turn', 600)
         assert ended['state'] == 'ready', ended
-        assert json.loads(answer.read_text()) == {'read_secret': False, 'write_other_copy': False, 'move_main': False,
-                                                  'write_library': True, 'listen': True, 'pty': True}, answer.read_text()
+        seen = json.loads(answer.read_text())
+        assert seen == PROBE_EXPECTED, {k: v for k, v in seen.items() if PROBE_EXPECTED.get(k) != v}
+        # ^ The turn itself reached Anthropic's API from inside the boundary: the network is open.
         assert git('rev-parse', 'main') == tip and not any(e['kind'] == 'blocked' for e in log(auto))
+        (base / 'project-t998').rmdir()
         js('task', 'close', auto, '--discard')
         fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(fake_script) + ' "$@"\n')
         (project / 'wsx.config.yml').write_text(LAND_CONFIG)

@@ -31,22 +31,20 @@ pub struct Boundary {
 }
 
 impl Boundary {
-    /// A worker: its own task folder in the state folder; never the default branch's ref, nor
-    /// the main repository's hooks and config, which run or apply in the owner's own git.
+    /// A worker: its own copy and task folder; never the default branch's ref: wsx lands.
     pub fn worker(record: &TaskRecord, own: &Path) -> Result<Self> {
         let common = copy::git_common_dir(&record.project_path)?;
         let branch = format!("refs/heads/{}", record.default_branch);
         let mut boundary = Self::new(&record.project_path, own)?;
         boundary.deny_write_prefix = vec![common.join(&branch), common.join("logs").join(&branch)];
-        boundary
-            .deny_write
-            .extend([real(&common.join("hooks")), real(&common.join("config"))]);
         boundary.own.push(real(&record.working_copy));
         Ok(boundary)
     }
 
-    /// The manager: its folder and the project page. It may move the default branch: it
-    /// commits the owner's uncommitted changes on main when the owner says yes.
+    /// The manager: its folder and the project page.
+    // ^ It may move the default branch: when a land refuses on the owner's uncommitted changes
+    // in the main checkout, it commits them on main after the owner's yes (docs/tasks.md
+    // "Manager"), which writes main's ref and reflog.
     pub fn manager(main: &Path, own: &Path, page: &Path) -> Result<Self> {
         let mut boundary = Self::new(main, own)?;
         boundary.own_prefix.push(real(page));
@@ -60,12 +58,15 @@ impl Boundary {
             );
         }
         let home = dirs::home_dir().context("no home folder")?;
+        let common = copy::git_common_dir(main)?;
         let secrets: Vec<PathBuf> = SECRETS.iter().map(|name| real(&home.join(name))).collect();
         let mut deny_write = secrets.clone();
         // ^ Writes only: the agent's own sign-in reads the login keychain in its process.
         deny_write.push(real(&home.join("Library/Keychains")));
         deny_write.extend(config_dirs().iter().map(|dir| real(dir)));
         deny_write.push(real(&store::state_dir()));
+        // ^ The main repository's hooks run, and its config applies, in the owner's own git.
+        deny_write.extend([real(&common.join("hooks")), real(&common.join("config"))]);
         let deny_copies = match (main.parent(), main.file_name()) {
             (Some(parent), Some(name)) => {
                 Some((real(parent), format!("{}-t", name.to_string_lossy())))
