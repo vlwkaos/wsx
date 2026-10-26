@@ -838,8 +838,12 @@ def run(wsx, wsxd, work, owned):
     # goes. An item that names a command goes back to the worker once; its next result has none.
     shot = js('task', 'new', 'WORK cap.txt HV CAPTURE')['id']
     command = js('task', 'new', 'WORK cmd.txt CMDHV')['id']
+    assert reviewed(shot)['state'] == 'landed', show(shot)
+    # ^ command branched before shot landed: its land rebases, reruns the checks and lands when
+    # they pass (docs/tasks.md "Landing" 3).
+    assert 'checks run on the new revision' in reviewed(command)['message'], show(command)
+    assert wait_state(command, 'landed', 'ready', 'failed')['state'] == 'landed', show(command)
     for n in (shot, command):
-        assert reviewed(n)['state'] == 'landed'
         wait_closed(n)
     assert [e['kind'] for e in log(command)].count('result') == 2, log(command)
     kept = [i for i in js('task', 'check')['open'] if i['task'] in (shot, command)]
