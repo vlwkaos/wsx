@@ -1023,8 +1023,7 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
         &socket,
         &std::env::current_exe()?,
     )?);
-    let listener = UnixListener::bind(&socket)?;
-    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+    let listener = bind_owner_only(&socket)?;
     listener.set_nonblocking(true)?;
     let mut listener = Some(listener);
     let plugin_dispatcher = match spawn_plugin_dispatcher(&daemon) {
@@ -1385,8 +1384,7 @@ fn rollback_handoff(
     });
     if listener.is_none() {
         prepare_socket(socket)?;
-        let restored = UnixListener::bind(socket)?;
-        fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
+        let restored = bind_owner_only(socket)?;
         restored.set_nonblocking(true)?;
         *listener = Some(restored);
     }
@@ -1673,6 +1671,25 @@ fn acquire_singleton_lock(path: &Path) -> io::Result<fs::File> {
             format!("another wsxd owns {}: {error}", path.display()),
         ))
     }
+}
+
+/// Listen on `socket`, which appears only once it is owner-only: a client refuses a socket
+/// another user could reach, so one that connected between a bind and a chmod failed.
+/// ^ The name gains one character, so it stays within the socket path limit; the
+/// singleton lock keeps a second wsxd from using the same name.
+fn bind_owner_only(socket: &Path) -> io::Result<UnixListener> {
+    let mut name = socket.file_name().unwrap_or_default().to_os_string();
+    name.push("~");
+    let staging = socket.with_file_name(name);
+    let _ = fs::remove_file(&staging);
+    let listener = UnixListener::bind(&staging)?;
+    if let Err(error) = fs::set_permissions(&staging, fs::Permissions::from_mode(0o600))
+        .and_then(|()| fs::rename(&staging, socket))
+    {
+        let _ = fs::remove_file(&staging);
+        return Err(error);
+    }
+    Ok(listener)
 }
 
 fn cleanup(daemon: &Daemon, socket: &Path) {
