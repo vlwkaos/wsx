@@ -1029,10 +1029,13 @@ async function readAndReply(where) {
   // the quote; a long press opens the menu too.
   const point = await pressPoint(fiveColumns);
   const quote = "(document.querySelector('.composer .reply-quote-text')?.textContent ?? '').replace('Replying to: ', '')";
+  const rightClickReply = async (at) => {
+    await evaluate(`${fiveColumns}.querySelector('.bubble-body p').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: ${at.x}, clientY: ${at.y}, button: 2 }))`);
+    await until("!!document.querySelector('.reply-menu')", `${where}: a right click opened no menu`);
+  };
   if (phone()) await touch(point, 90);
   else {
-    await evaluate(`${fiveColumns}.querySelector('.bubble-body p').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: ${point.x}, clientY: ${point.y}, button: 2 }))`);
-    await until("!!document.querySelector('.reply-menu')", `${where}: a right click opened no menu`);
+    await rightClickReply(point);
     await shot("reply-menu");
     await evaluate("[...document.querySelectorAll('.reply-menu button')].find((node) => node.textContent.trim() === 'Reply').click()");
   }
@@ -1040,18 +1043,22 @@ async function readAndReply(where) {
   if (await evaluate(`${fiveColumns}.style.translate`)) await fail(`${where}: the swiped bubble did not come back`);
   await evaluate("document.querySelector('.composer .reply-quote button').click()");
   await until("!document.querySelector('.composer .reply-quote')", `${where}: × did not remove the quote`);
+  // ^ The reply is sent with its quote on every screen.
   if (phone()) {
     await touch(await pressPoint(fiveColumns), 0, 700);
     await until("!!document.querySelector('.reply-menu')", `${where}: a long press opened no menu`);
-    await evaluate("[...document.querySelectorAll('.reply-menu button')].find((node) => node.textContent.trim() === 'Reply').click()");
-    await until(`${quote} === 'Five columns:'`, `${where}: Reply in the menu shows no quote`);
-  }
+  } else await rightClickReply(await pressPoint(fiveColumns));
+  await evaluate("[...document.querySelectorAll('.reply-menu button')].find((node) => node.textContent.trim() === 'Reply').click()");
+  await until(`${quote} === 'Five columns:'`, `${where}: Reply in the menu shows no quote`);
   if (await evaluate("document.activeElement?.matches('.composer-field')") !== true) await fail(`${where}: the reply did not focus the composer`);
   await shot("reply-quote", ".composer-send");
   await typeInto(".composer-field", "my answer");
   said += 1;
+  // ^ Only a bubble this send adds counts: the one of an earlier round quotes the same words.
+  const sentReplies = "[...document.querySelectorAll('.log > .bubble[data-side=out]:not([data-pending])')].filter((node) => node.querySelector('.quote')?.textContent === 'Five columns:')";
+  const sentBefore = JSON.stringify(await evaluate(`${sentReplies}.map((node) => node.dataset.key)`));
   await click(".composer-send");
-  const sentReply = "[...document.querySelectorAll('.log > .bubble[data-side=out]:not([data-pending])')].findLast((node) => node.querySelector('.quote')?.textContent === 'Five columns:')";
+  const sentReply = `${sentReplies}.findLast((node) => !${sentBefore}.includes(node.dataset.key))`;
   await until(`!!${sentReply} && ${sentReply}.querySelector('.prose').textContent === 'my answer' && !document.querySelector('.composer .reply-quote')`, `${where}: the reply was not sent with its quote`, 60);
   const stored = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => data.entries.filter((entry) => entry.kind === 'message' && entry.from === 'owner').map((entry) => entry.text).at(-1))`);
   if (stored !== "> Five columns:\n\nmy answer") await fail(`${where}: the manager got ${JSON.stringify(stored)}`);
