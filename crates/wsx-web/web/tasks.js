@@ -443,7 +443,7 @@ function keepDraft(project, text) {
 // text so far, `/` (one of the owner's skills): what it names so far.
 function wordQuery(text, caret) {
   const before = text.slice(0, caret);
-  const typed = /(?:^|\s)([#@])([\w.-]*)$/.exec(before) ?? /^(\/)([\w:.-]*)$/.exec(before);
+  const typed = /(?:^|\s)([#@])([\w.-]*)$/.exec(before) ?? /(?:^|\s)(\/)([\w:.-]*)$/.exec(before);
   return typed ? { mark: typed[1], query: typed[2].toLowerCase(), start: caret - typed[2].length - 1 } : null;
 }
 const within = (names, query, pick) => {
@@ -516,7 +516,7 @@ function ManagerComposer({ project, busy: thinking, reply, onReply, onSent, fiel
     : mark === "@" ? within(mentions?.projects ?? [], typed.query, (other) => other.name)
       .map((other) => ({ key: other.id, name: `@${other.name}`, description: other.manager ?? "", source: "project", insert: `@${other.name} ` }))
     : within(mentions?.skills ?? [], typed.query, (skill) => skill.name)
-      .map((skill) => ({ key: skill.name, name: `/${skill.name}`, description: skill.description, source: "skill", insert: `Use owner:${skill.name}: ` }));
+      .map((skill) => ({ key: skill.name, name: `/${skill.name}`, description: skill.description, source: "skill", insert: typed.start ? `owner:${skill.name} ` : `Use owner:${skill.name}: ` }));
   const listOpen = Boolean(options);
   useLayoutEffect(() => { field.current.value = text; grow(field.current); }, [project]);
   useLayoutEffect(() => { if (listOpen) document.getElementById(`slash-${active}`)?.scrollIntoView({ block: "nearest" }); }, [active, listOpen]);
