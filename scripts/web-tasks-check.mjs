@@ -217,6 +217,9 @@ const closeSheet = async (what, hash) => {
 async function viewImages(name, links) {
   const what = `${name} at ${size[0]} px`;
   const place = "JSON.stringify([location.pathname, location.search, location.hash, [...document.querySelectorAll('.scroll, .log')].map((node) => Math.round(node.scrollTop))])";
+  // ^ The set's images are in and the log has followed them to its end before the page's place is read.
+  await evaluate(`Promise.all([...document.querySelectorAll(${JSON.stringify(links)})].map((link) => link.querySelector('img').decode().catch(() => {})))`);
+  await pause(500);
   const before = await evaluate(place);
   const sources = await evaluate(`[...document.querySelectorAll(${JSON.stringify(links)})].map((link) => link.href)`);
   if (sources.length !== 2) await fail(`${what}: the set has ${sources.length} image links, not 2`);
