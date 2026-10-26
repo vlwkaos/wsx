@@ -123,6 +123,34 @@ pub fn approval_label(request: &ApprovalLine) -> String {
     }
 }
 
+/// A decided request in words, from its label: "Approved land #3", "Denied discard #4",
+/// "Dropped discard #4: #4 is closed".
+pub fn decision_words(label: &str, approved: bool, outcome: &str) -> String {
+    match (approved, outcome.strip_prefix(DROPPED)) {
+        (true, _) => label.replacen("Approve", "Approved", 1),
+        (false, Some(why)) => format!("{}: {why}", label.replacen("Approve", "Dropped", 1)),
+        (false, None) => label.replacen("Approve", "Denied", 1),
+    }
+}
+
+/// The outcome of a request wsx settled itself because its task moved on: "dropped; <why>".
+pub const DROPPED: &str = "dropped; ";
+
+/// Why a pending request no longer applies: its task left or moved past the revision it
+/// names. ref: docs/tasks.md "Approvals"
+pub fn stale_reason(request: &ApprovalLine, record: &super::TaskRecord) -> Option<String> {
+    let ApprovalLine::Request { task, revision, .. } = request else {
+        return None;
+    };
+    let task = (*task)?;
+    if !record.state.is_open() {
+        return Some(format!("#{task} is {}", record.state.as_str()));
+    }
+    revision
+        .filter(|revision| *revision != record.revision)
+        .map(|revision| format!("#{task} moved from r{revision} to r{}", record.revision))
+}
+
 /// A grant for the whole project changes `grants.json` before the task's host hears of
 /// it, so the next agent start of every task has it. Other requests pass.
 /// ref: docs/tasks.md "Permissions"
@@ -260,6 +288,36 @@ pub fn deny(name: &str, main: &Path, id: &str, note: Option<String>) -> Result<(
     decide(&project_id, id, false, note, "denied")
 }
 
+/// Settle a pending request that no longer applies, with why; the manager host tells the
+/// manager and the owner in the chat.
+pub fn drop_request(project_id: &str, id: &str, why: &str) -> Result<()> {
+    decide(project_id, id, false, None, &format!("{DROPPED}{why}"))
+}
+
+/// Record a request the owner approved by asking for it in the chat: the manager names the
+/// owner's message `said` of its running turn, and the action runs without a button.
+/// The id of the recorded request is returned. ref: docs/tasks.md "Approvals"
+pub fn approve_by_message(project_id: &str, request: ApprovalLine, said: u64) -> Result<String> {
+    let manager = ManagerDir::existing(project_id)?
+        .context("the project has no manager, so no owner message")?;
+    super::manager::owner_said_in_turn(&manager.read_log()?, said)
+        .map_err(|why| anyhow::anyhow!("--owner-said {said}: {why}; nothing was run"))?;
+    let line = store::append_approval(project_id, request)?;
+    let id = line.id().to_string();
+    store::append_approval(
+        project_id,
+        ApprovalLine::Decision {
+            id: id.clone(),
+            approved: true,
+            note: None,
+            outcome: format!("approved by owner message {said}"),
+            owner_said: Some(said),
+            unix_ms: now_unix_ms(),
+        },
+    )?;
+    Ok(id)
+}
+
 fn decide(
     project_id: &str,
     id: &str,
@@ -274,6 +332,7 @@ fn decide(
             approved,
             note,
             outcome: outcome.chars().take(MAX_OUTCOME_CHARS).collect(),
+            owner_said: None,
             unix_ms: now_unix_ms(),
         },
     )

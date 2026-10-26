@@ -788,17 +788,27 @@ def run(wsx, wsxd, work, owned):
     for n in (x1, y1, x2):
         wait_closed(n)
 
-    # 16. Auto land (the default; docs/tasks.md "Landing"): a ready task lands by itself with no
+    # 16. Auto land (the default; docs/tasks.md "Landing"): a ready task the owner created waits
     mark('16')
-    # owner action, its Human Verify items join the To check list, and a conflict lands after
-    # the worker's fix. With main not checked out, the ref moves with the old tip as guard.
+    # for the manager's review instead of landing by itself, the review's land needs no other
+    # step, its Human Verify items join the To check list, and a landing that conflicts lands by
+    # itself after the worker's fix. With main not checked out, the ref moves with the old tip
+    # as guard.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', ''))
     git('commit', '-q', '-am', 'auto land')
+
+    def reviewed(n):
+        """Wait for a ready task that stays ready, and land it as the manager's review would."""
+        assert wait_state(n, 'ready', 'landed', 'failed')['state'] == 'ready', show(n)
+        return land(n)
+
     # ^ The task records main as its default branch at `new`; main is left during the turn.
     hv = js('task', 'new', 'SLOW WORK z.txt HV')['id']
     git('switch', '-q', '-c', 'parking')
-    landed_hv = wait_state(hv, 'landed', 'ready', 'failed')
-    assert landed_hv['state'] == 'landed' and main_has('z.txt'), landed_hv
+    assert wait_state(hv, 'ready', 'landed', 'failed')['state'] == 'ready'
+    time.sleep(1.5)
+    assert show(hv)['state'] == 'ready' and not main_has('z.txt'), 'an owner task landed without a review'
+    assert reviewed(hv)['state'] == 'landed' and main_has('z.txt')
     assert git('rev-parse', '--abbrev-ref', 'HEAD') == 'parking'
     assert [e['kind'] for e in log(hv)].count('landed') == 1
     item = js('task', 'check')['open']
@@ -809,21 +819,24 @@ def run(wsx, wsxd, work, owned):
     report = Path(show(hv)['report']).read_text()
     assert '## To check\n\n- [ ] open the file (pass if: it has text)' in report and 'State `landed`' in report, report
     git('switch', '-q', 'main')
-    # Two tasks on one file: whichever lands second conflicts, the worker resolves it, and it
-    # lands by itself.
+    # Two tasks on one file: the second land conflicts, the worker resolves it, and it lands by
+    # itself without a second review.
     a1 = js('task', 'new', 'WORK x.txt alpha HV')['id']
     a2 = js('task', 'new', 'WORK x.txt beta HV')['id']
     for n in (a1, a2):
-        assert wait_state(n, 'landed', 'failed')['state'] == 'landed', show(n)
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', show(n)
+    assert land(a1)['state'] == 'landed'
+    assert 'lands when its checks pass' in land(a2)['message']
+    assert wait_state(a2, 'landed', 'failed')['state'] == 'landed', show(a2)
     conflicts = [n for n in (a1, a2) if any(e['kind'] == 'conflict' for e in log(n))]
-    assert len(conflicts) == 1 and git('show', 'main:x.txt') == 'resolved', conflicts
+    assert conflicts == [a2] and git('show', 'main:x.txt') == 'resolved', conflicts
     assert len(js('task', 'check')['open']) == 3
     # An item keeps where to look and its capture, copied into the task folder before the copy
     # goes. An item that names a command goes back to the worker once; its next result has none.
     shot = js('task', 'new', 'WORK cap.txt HV CAPTURE')['id']
     command = js('task', 'new', 'WORK cmd.txt CMDHV')['id']
     for n in (shot, command):
-        assert wait_state(n, 'landed', 'ready', 'failed')['state'] == 'landed'
+        assert reviewed(n)['state'] == 'landed'
         wait_closed(n)
     assert [e['kind'] for e in log(command)].count('result') == 2, log(command)
     kept = [i for i in js('task', 'check')['open'] if i['task'] in (shot, command)]
@@ -1259,12 +1272,12 @@ def run(wsx, wsxd, work, owned):
     asked = js('task', 'say', 'RUN wsx task land %d -p demo --json\nRUN wsx task approve a3 -p demo --json' % keep)
     text = reply_to(asked['id'])['text']
     assert 'the owner was asked (a3)' in text and 'is for the owner' in text, text
-    # An approval for a revision the task has moved past is not run.
+    # An approval for a revision the task has moved past is dropped, and the manager hears why
+    # in the chat (docs/tasks.md "Approvals").
     js('task', 'add', keep, 'WORK keep2.txt')
     assert wait_state(keep, 'ready', 'failed')['revision'] == 2
-    moved = cli('task', 'approve', 'a3', '--json', ok=False)
-    assert 'moved from r1 to r2' in moved.stderr and show(keep)['state'] == 'ready'
-    assert 'no pending approval a3' in cli('task', 'approve', 'a3', ok=False).stderr
+    wait(lambda: events_with('approval a3 (land #%d) dropped; #%d moved from r1 to r2' % (keep, keep)), 'the drop event')
+    assert 'no pending approval a3' in cli('task', 'approve', 'a3', ok=False).stderr and show(keep)['state'] == 'ready'
     assert js('task', 'ledger')['approvals'] == []
     wait_closed(ap)
     js('task', 'close', keep, '--discard')
@@ -1500,7 +1513,7 @@ def run(wsx, wsxd, work, owned):
     # 30. By hand (docs/tasks.md "By hand"): the owner takes a running build over in its own
     mark('30')
     # working copy with a fork of the worker's conversation; nothing else writes there until
-    # handback, whose commits are checked, land by themselves and close the task.
+    # handback, whose commits are checked and, once reviewed, land and close the task.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', ''))
     git('commit', '-q', '-am', 'auto land for hand')
     gate = work / 'hand-gate'
@@ -1563,6 +1576,7 @@ def run(wsx, wsxd, work, owned):
     assert back['ok'] and len(back['sessions_closed']) == 1 and '1 commit' in back['message'], back
     assert not hand_sessions()
     assert [e['commits'] for e in log(handed) if e['kind'] == 'handback'] == [1]
+    assert reviewed(handed)['state'] == 'landed'
     wait_closed(handed)
     assert main_has('hand.txt') and git('show', 'main:README') == 'by hand'
     assert [e['kind'] for e in log(handed) if e['kind'] in ('checks', 'revision')] == ['checks', 'revision']
@@ -1630,6 +1644,7 @@ def run(wsx, wsxd, work, owned):
     assert [e['reason'] for e in log(held) if e['kind'] == 'hold'] == ['try the held page']
     assert next(r for r in js('task', 'ledger')['open'] if r['id'] == held)['hold'] == 'try the held page'
     first = js('task', 'new', 'WORK pipe1.txt')['id']
+    reviewed(first)
     wait_closed(first)
     wait(lambda: live() == git('rev-parse', 'main'), 'the pipeline land deploys', 60)
     # The trial rebases onto the newest main and checks it before it goes live.
@@ -1643,6 +1658,7 @@ def run(wsx, wsxd, work, owned):
     assert 'already runs' in js('task', 'trial', held)['message']
     # Pipeline work lands meanwhile; its deploy waits, and a deploy by hand is refused.
     second = js('task', 'new', 'WORK pipe2.txt')['id']
+    reviewed(second)
     wait_closed(second)
     time.sleep(2)
     assert live() == tried['commit'] and main_has('pipe2.txt'), live()
@@ -1906,6 +1922,60 @@ def run(wsx, wsxd, work, owned):
         js('task', 'close', n, '--discard')
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
     git('commit', '-q', '-am', 'disk as before')
+    # 32e. Approval from the owner's words (docs/tasks.md "Approvals"): in a turn that began with
+    # an owner message, the manager names that message and the action runs without a new request;
+    # approvals.jsonl records it as approved by that message, and no event repeats it. A message
+    # outside the running turn approves nothing.
+    approvals_file = Path(created['task_dir']).parent / 'approvals.jsonl'
+
+    def approval_lines():
+        return [json.loads(line) for line in approvals_file.read_text().splitlines()]
+
+    # ^ An older wsx wrote an action this one cannot read (approval a9 of the owner's log): the
+    # next id still comes after it, so an old decision never settles a new request.
+    with open(approvals_file, 'a') as old:
+        old.write('{"kind":"request","id":"a90","action":"start","task":1,"unix_ms":1}\n'
+                  '{"kind":"decision","id":"a90","approved":true,"outcome":"done","unix_ms":2}\n')
+    said_task = js('task', 'new', 'WORK said.txt')['id']
+    assert wait_state(said_task, 'ready', 'failed')['state'] == 'ready'
+    stale = js('task', 'say', 'RUN wsx task close %d --discard --owner-said 1 -p demo --json' % said_task)
+    text = reply_to(stale['id'])['text']
+    assert 'message 1 is not in the running turn; nothing was run' in text, text
+    assert show(said_task)['state'] == 'ready'
+    said = js('task', 'say', 'close #%d\nRUN wsx task close %d --discard --owner-said OWNER_SAID -p demo --json'
+              % (said_task, said_task))
+    text = reply_to(said['id'])['text']
+    assert 'owner was asked' not in text and '--discard --owner-said %d -p demo --json -> 0' % said['id'] in text, text
+    assert show(said_task)['state'] == 'closed'
+    request, decision = approval_lines()[-2:]
+    assert (request['kind'], request['id'], request['action'], request['task']) == ('request', 'a91', 'discard', said_task), request
+    assert (decision['kind'], decision['id'], decision['approved'], decision['owner_said']) == ('decision', 'a91', True, said['id']), decision
+    assert js('task', 'ledger')['approvals'] == []
+    # 32f. A pending request whose task leaves is dropped with the reason, and the manager and
+    # the owner read it in the chat.
+    gone = js('task', 'new', 'WORK gone.txt')['id']
+    assert wait_state(gone, 'ready', 'failed')['state'] == 'ready'
+    asked = js('task', 'say', 'RUN wsx task close %d --discard -p demo --json' % gone)
+    assert 'the owner was asked (a92)' in reply_to(asked['id'])['text']
+    assert [p['id'] for p in js('task', 'ledger')['approvals']] == ['a92']
+    js('task', 'close', gone, '--discard')
+    wait(lambda: events_with('approval a92 (discard #%d) dropped; #%d is closed' % (gone, gone)), 'the dropped request event')
+    assert js('task', 'ledger')['approvals'] == [] and approval_lines()[-1]['outcome'] == 'dropped; #%d is closed' % gone
+    assert not events_with('approval a91'), 'an approval by the owner message became an event'
+    # 32g. A plan first (docs/tasks.md "Workflow"): the first turn of a `--plan` task is told to
+    # plan and stop; its result runs no check and waits on plan for the manager, and an add
+    # continues it as an ordinary task.
+    planned = js('task', 'new', '--plan', 'NOOP plan the change')['id']
+    waiting = wait_state(planned, 'waiting', 'ready', 'failed')
+    assert waiting['record']['waiting'] == {'on': 'plan', 'reason': 'its plan waits for the manager'}, waiting['record']
+    assert 'plan' not in waiting['record'], waiting['record']
+    assert not [e for e in log(planned) if e['kind'] in ('checks', 'revision')], log(planned)
+    assert 'First write a short plan and stop' in next(e for e in log(planned) if e['kind'] == 'result')['summary']
+    wait(lambda: events_with('#%d waiting r0' % planned, 'waits on plan'), 'the plan event')
+    js('task', 'add', planned, 'go WORK planned.txt')
+    assert wait_state(planned, 'ready', 'failed')['state'] == 'ready'
+    assert [e['kind'] for e in log(planned) if e['kind'] in ('checks', 'revision')] == ['checks', 'revision']
+    js('task', 'close', planned, '--discard')
 
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     mark('33')
@@ -1960,26 +2030,29 @@ def run(wsx, wsxd, work, owned):
         js('task', 'land', other_land, '-p', 'other')
     wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and '#%d landed' % other_land in e['text']
                      and 'memo: other lesson' in e['text'] for e in other_entries()), 'the other land event', 60)
-    # 34. Recap: once the other project is quiet for its 12 s, wsx asks its manager for one
+    # 34. Recap (docs/tasks.md "Recap"): once the other project is quiet for its 12 s after a
     mark('34')
-    # recap, and the manager answers it in the chat.
-    recap = wait(lambda: next((e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'recap'), None),
-                 'the recap request after a quiet minute', 120)
+    # land, wsx asks its manager for one recap with the token cost since the last one, and the
+    # manager answers it in the chat.
+    def recaps():
+        return [e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'recap']
+
+    recap = wait(lambda: next(iter(recaps()), None), 'the recap request after a quiet period', 120)
     assert 'two weeks' in recap['text'] and 'Start no task' in recap['text'], recap
+    assert 'Token cost since the last recap: ' in recap['text'] and 'workers ' in recap['text'], recap
+    assert 'in 1 turn(s) (#%d ' % other_land in recap['text'], recap
     wait(lambda: next((e for e in other_entries() if e['kind'] == 'reply' and recap['id'] in e['to']), None),
          'the manager answers the recap', 60)
-    assert [e['from'] for e in other_entries() if e['kind'] == 'message'].count('recap') == 1
-    # 35. Idle task (docs/tasks.md "Workflow"): with tasks.workflow.idle empty, the recap after a
+    # 35. Idle task (docs/tasks.md "Workflow"): a quiet period with no change asks for no recap
     mark('35')
-    # land starts no task. With it set, the next recap starts exactly one, as the manager; a
-    # later quiet period with no new land starts none.
+    # (an owner message is no change), and with no session notes newer than the last idle task
+    # it starts no idle task and says nothing. A new session note starts one task, as the
+    # manager; its close is a change, so one more recap comes, and the older note starts no
+    # second idle task.
     assert [t['id'] for t in other_tasks()] == [other_land], other_tasks()
     idle_text = 'WORK idle.txt MEMO knowledge folded'
     (other / 'wsx.config.yml').write_text(other_config + '  workflow:\n    idle: "%s"\n' % idle_text)
     git('commit', '-q', '-am', 'idle task', cwd=other)
-
-    def recaps():
-        return [e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'recap']
 
     def idle_tasks():
         return [t for t in other_tasks() if t.get('title') == 'Consolidate project knowledge']
@@ -1987,19 +2060,22 @@ def run(wsx, wsxd, work, owned):
     nudge = js('task', 'say', '-p', 'other', 'STATUS')
     wait(lambda: next((e for e in other_entries() if e['kind'] == 'reply' and nudge['id'] in e['to']), None),
          'the other manager answers', 60)
-    wait(lambda: len(recaps()) == 2, 'the second recap', 120)
-    idle = wait(idle_tasks, 'the idle task', 30)
-    assert len(idle) == 1 and len(other_tasks()) == 2, other_tasks()
+    time.sleep(20)
+    assert len(recaps()) == 1 and not idle_tasks(), (recaps(), other_tasks())
+    notes = other / 'knowledge/sessions/other'
+    notes.mkdir(parents=True)
+    (notes / 'session-1.md').write_text('a lesson\n')
+    idle = wait(idle_tasks, 'the idle task after a new session note', 150)
+    assert len(idle) == 1 and len(other_tasks()) == 2 and len(recaps()) == 1, (other_tasks(), recaps())
     idle_shown = other_state(idle[0]['id'], 'ready', 'failed')
     # ^ The manager's own task: it waits for the manager's review, never lands by itself.
     assert idle_shown['state'] == 'ready' and idle_shown['record']['created_by'] == 'manager', idle_shown
     prompt = json.loads(Path(idle_shown['log']).read_text().splitlines()[1])
     assert prompt['kind'] == 'message' and prompt['text'] == idle_text, prompt
     js('task', 'close', idle[0]['id'], '--discard', '-p', 'other')
-    wait(lambda: len(recaps()) == 3, 'the third recap', 120)
+    wait(lambda: len(recaps()) == 2, 'the recap after the idle task closed', 150)
     time.sleep(3)
     assert len(idle_tasks()) == 1 and len(other_tasks()) == 2, other_tasks()
-
 
 if __name__ == '__main__':
     main()

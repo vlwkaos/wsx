@@ -16,15 +16,20 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::TaskWorkflow;
 use wsx_core::runtime;
-use wsx_core::task::manager::{instructions_digest, pending_approvals, ApprovalLine};
 use wsx_core::task::manager::{
-    Author, ManagerEvent, ManagerGrant, ManagerRequest, ManagerResponse, ManagerState, Seen,
+    decided_request, instructions_digest, pending_approvals, ApprovalLine,
 };
+use wsx_core::task::manager::{
+    Author, ManagerEntry, ManagerEvent, ManagerGrant, ManagerRequest, ManagerResponse,
+    ManagerState, Seen,
+};
+use wsx_core::task::owner;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
 use wsx_core::task::{
-    checks, ledger, now_unix_ms, Access, Actor, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
+    checks, ledger, now_unix_ms, Access, Actor, LogEvent, TaskRecord, TaskState, WaitOn,
+    MAX_MESSAGE_BYTES,
 };
 
 use wsx_core::task::owner::ACTOR_ENV;
@@ -69,8 +74,9 @@ pub(super) enum Event {
     Request(ManagerRequest, Sender<ManagerResponse>),
     Agent(u64, Option<AgentLine>),
     Tick,
-    /// `wsx task new` with `tasks.workflow.idle` ended: the task number or the error.
-    IdleStarted(Result<u32, String>),
+    /// `wsx task new` with `tasks.workflow.idle` ended: when it began, and the task number or
+    /// the error.
+    IdleStarted(u64, Result<u32, String>),
     /// The agent's `say --from-manager` reached another project's manager.
     Sent {
         to: String,
@@ -115,10 +121,8 @@ struct Manager {
     last_event: Option<Instant>,
     /// `tasks.manager.recapMinutes` as a duration; `None` is off.
     recap_quiet: Option<Duration>,
-    /// When a message was logged or a turn ran last, and whether a message other than a
-    /// recap request came since the last recap.
+    /// When a message was logged, a turn ran or the host last looked for a recap.
     last_activity: Instant,
-    since_recap: bool,
     /// The file this host runs from, and whether it must exec its replacement.
     binary: Option<hosting::Binary>,
     reexec: bool,
@@ -171,7 +175,13 @@ fn instructions(
          memory: run `wsx task ledger -p {project}` when you need more, such as a task's \
          checks, asks, overlaps or memo, or the deploys. Every `wsx task` command takes \
          `-p {project} --json`. When a command says the owner was asked to approve, tell \
-         the owner and do not retry it. Keep turns short. Name tasks as #<n>. \
+         the owner and do not retry it. When the owner's message in this turn asks for the \
+         action itself (\"close #42\", \"land #5\", \"deploy\"), pass `--owner-said <id>`, \
+         the id in that message's 'Owner (message <id>)' heading, to `land`, `close \
+         --discard`, `deploy` or `release`: wsx checks the message and runs it without \
+         asking again. Never name a message that did not ask for that action. An event \
+         'approval <id> (...) dropped' is a request that no longer applies: tell the owner \
+         why in one line. Keep turns short. Name tasks as #<n>. \
          Present every reply to the owner by this rule. {presentation} \
          Talk before work. When the owner asks for work, first talk it through in the chat: \
          the goal in one line, its size (how many tasks; which can run at once because they \
@@ -192,15 +202,17 @@ fn instructions(
          when only the `--files` globs meet). When new work overlaps an open task's files, \
          you decide the orchestration and say it in one line: add it to that task with \
          `wsx task add`, or run it in parallel when the overlap is small and let the land \
-         rebase. Never ask the owner to hold off or wait. Pick the worker's model with \
-         `--model`: `sonnet` may do when the prompt is already thorough; keep the default \
-         (opus) for a critical fix or heavy, complex work. To change a running task use \
-         `wsx task add` or `wsx task steer`. \
+         rebase. Never ask the owner to hold off or wait. For larger or riskier work (several \
+         subsystems, a design choice, a costly mistake) add `--plan`: the worker's first \
+         turn writes a short plan (goal, files, approach, how it proves it) and stops \
+         without editing, and the task waits on `plan`. Read it with `wsx task show <n> \
+         --json` and continue with `wsx task add <n> \"go\"` or what to change. A small fix \
+         needs no plan. To change a running task use `wsx task add` or `wsx task steer`. \
          The ledger's `checks` (and 'checks n of m passed' in an event) are what wsx ran on \
          the task's latest revision: report each check as passed or failed from them, and \
          trust them over the worker's words about what it could not run or verify. \
-         A task the owner created lands by itself when its checks pass and the ledger's \
-         `auto_land` is true. A ready task you created waits for your review: read its diff \
+         A ready task waits for your review: one you created, and one the owner created \
+         while the ledger's `auto_land` is true and checks ran on it. Read its diff \
          (`git -C <working copy> diff <base>..HEAD`; `wsx task show <n> --json` names both) \
          against the owner's words and for lean code: no copy of a helper that exists, no \
          dead code, nothing the request did not ask for. Then `wsx task land <n>`, or \
@@ -262,7 +274,10 @@ fn instructions(
          ledger and answer in a few plain lines: what landed and is live, what runs, what \
          waits for the owner and why; never give the owner commands to run. In a recap or a \
          status, name the ledger's `stray_worktrees` that are merged and clean, or missing, \
-         as cleanup candidates for the owner; never delete a worktree yourself. \
+         as cleanup candidates for the owner; never delete a worktree yourself. A recap \
+         request names the token cost since the last recap: watch token use, and in the \
+         recap say where it went and name a saving when you see one (a shorter prompt, a \
+         plan that caught a wrong turn, fewer turns). \
          When the owner decides something (a rule, a preference, a choice), append one line \
          `- <YYYY-MM-DD> <decision>` to {decisions} at once. Every new conversation of yours \
          starts with that file and {context}. \
@@ -335,7 +350,6 @@ pub fn run(project_id: &str) -> Result<()> {
         recap_quiet: (settings.manager_recap_secs > 0)
             .then(|| Duration::from_secs(settings.manager_recap_secs)),
         last_activity: Instant::now(),
-        since_recap: false,
         binary: hosting::Binary::capture(),
         reexec: false,
         owed: Owed::default(),
@@ -403,16 +417,15 @@ impl Manager {
                     self.watch_tasks();
                     self.ask_recap();
                 }
-                Event::IdleStarted(Ok(id)) => {
+                Event::IdleStarted(began, Ok(id)) => {
                     self.say(&format!("started idle task #{id}"));
                     self.state.idle_task = Some(id);
+                    self.state.idle_ms = Some(began);
                     self.save();
                 }
-                Event::IdleStarted(Err(error)) => {
-                    self.say(&format!("cannot start the idle task: {error}"));
-                    // ^ The next idle period tries again.
-                    self.state.landed_since_idle = true;
-                    self.save();
+                // ^ The next idle period tries again.
+                Event::IdleStarted(_, Err(error)) => {
+                    self.say(&format!("cannot start the idle task: {error}"))
                 }
                 Event::Sent { to, text, reply } => self.log(ManagerEvent::Sent { to, text, reply }),
             }
@@ -550,15 +563,18 @@ impl Manager {
                 _ => Vec::new(),
             })
             .collect();
-        // ^ A message other than a recap request after the last recap is news for the next one.
-        self.since_recap = log
-            .iter()
-            .rev()
-            .find_map(|entry| match &entry.event {
-                ManagerEvent::Message { from, .. } => Some(*from != Author::Recap),
-                _ => None,
-            })
-            .unwrap_or(false);
+        // ^ A state from before `recap_ms`: the last recap request, else now.
+        if self.state.recap_ms.is_none() {
+            self.state.recap_ms = Some(
+                log.iter()
+                    .rev()
+                    .find(|entry| {
+                        matches!(&entry.event, ManagerEvent::Message { from, .. } if *from == Author::Recap)
+                    })
+                    .map_or_else(now_unix_ms, |entry| entry.unix_ms),
+            );
+            self.save();
+        }
         for entry in log {
             if let ManagerEvent::Message { id, from, text } = entry.event {
                 if !delivered.contains(&id) {
@@ -596,44 +612,64 @@ impl Manager {
         store::read_approvals(&self.dir.project_id).unwrap_or_default()
     }
 
-    /// Turn new approval decisions into event lines.
+    /// Drop pending requests whose task left or moved on, then turn new decisions into event
+    /// lines, except those the owner's chat message approved: the manager ran them itself.
     fn watch_approvals(&mut self) {
-        let lines = self.approval_lines();
-        let decisions: Vec<&ApprovalLine> = lines
-            .iter()
-            .filter(|line| matches!(line, ApprovalLine::Decision { .. }))
+        let project_id = self.dir.project_id.clone();
+        let mut lines = self.approval_lines();
+        let stale: Vec<(String, String)> = pending_approvals(&lines)
+            .into_iter()
+            .filter_map(|request| {
+                let ApprovalLine::Request {
+                    task: Some(task), ..
+                } = request
+                else {
+                    return None;
+                };
+                let record = store::TaskDir::open(&project_id, *task)
+                    .and_then(|dir| dir.read_record())
+                    .ok()?;
+                owner::stale_reason(request, &record).map(|why| (request.id().to_string(), why))
+            })
             .collect();
-        for decision in decisions.iter().skip(self.observed_decisions as usize) {
+        if !stale.is_empty() {
+            for (id, why) in stale {
+                if let Err(error) = owner::drop_request(&project_id, &id, &why) {
+                    self.say(&format!("cannot drop approval {id}: {error:#}"));
+                }
+            }
+            lines = self.approval_lines();
+        }
+        let decisions: Vec<usize> = (0..lines.len())
+            .filter(|at| matches!(lines[*at], ApprovalLine::Decision { .. }))
+            .collect();
+        for at in decisions.iter().skip(self.observed_decisions as usize) {
             let ApprovalLine::Decision {
                 id,
                 approved,
                 note,
                 outcome,
+                owner_said: None,
                 ..
-            } = decision
+            } = &lines[*at]
             else {
                 continue;
             };
-            let asked = lines.iter().find_map(|line| match line {
-                ApprovalLine::Request {
-                    id: requested,
-                    action,
-                    task,
-                    ..
-                } if requested == id => Some(format!(
+            let asked = match decided_request(&lines, *at) {
+                Some(ApprovalLine::Request { action, task, .. }) => format!(
                     "{action:?}{}",
                     task.map_or(String::new(), |task| format!(" #{task}"))
-                )),
-                _ => None,
-            });
-            let verdict = if *approved {
-                format!("approved; {outcome}")
-            } else {
-                format!("denied; {}", note.as_deref().unwrap_or("no note"))
+                )
+                .to_ascii_lowercase(),
+                _ => String::new(),
+            };
+            let verdict = match (approved, outcome.starts_with(owner::DROPPED)) {
+                (true, _) => format!("approved; {outcome}"),
+                (false, true) => outcome.clone(),
+                (false, false) => format!("denied; {}", note.as_deref().unwrap_or("no note")),
             };
             self.pending_events.push(format!(
-                "approval {id} ({}) {}",
-                asked.unwrap_or_default().to_ascii_lowercase(),
+                "approval {id} ({asked}) {}",
                 clip(&verdict, EVENT_SUMMARY_CHARS * 2)
             ));
             self.last_event = Some(Instant::now());
@@ -656,9 +692,6 @@ impl Manager {
             self.observed.insert(record.id, now);
             if !is_event(&record) {
                 continue;
-            }
-            if record.state == TaskState::Landed && self.state.idle_task != Some(record.id) {
-                self.state.landed_since_idle = true;
             }
             let title = view::title(&dir, &record).unwrap_or_default();
             let summary = {
@@ -755,17 +788,16 @@ impl Manager {
             text: text.clone(),
         })?;
         self.last_activity = Instant::now();
-        self.since_recap = from != Author::Recap;
         self.enqueue(id, from, text);
         Ok(id)
     }
 
-    /// After `recapMinutes` with no message and no turn, and only when a message came since
-    /// the last recap, ask the manager for one. ref: docs/tasks.md "Recap"
+    /// After `recapMinutes` with no message and no turn: start the idle task when it is due,
+    /// and ask the manager for a recap when something changed since the last one, with the
+    /// token cost since. A quiet project gets one recap. ref: docs/tasks.md "Recap"
     fn ask_recap(&mut self) {
         let due = self.recap_quiet.is_some_and(|quiet| {
-            self.since_recap
-                && self.turn.is_none()
+            self.turn.is_none()
                 && self.queue.is_empty()
                 && self.pending_events.is_empty()
                 && self.last_activity.elapsed() >= quiet
@@ -773,21 +805,115 @@ impl Manager {
         if !due {
             return;
         }
-        if let Err(error) = self.accept(Author::Recap, RECAP_REQUEST.into()) {
-            self.say(&format!("cannot ask for a recap: {error:#}"));
-            // ^ Not again every second: the next try waits a whole quiet period.
-            self.last_activity = Instant::now();
-        }
+        // ^ Once per quiet period: the next look waits a whole period.
+        self.last_activity = Instant::now();
         self.start_idle();
-    }
-
-    /// At an idle recap, when a task landed since the last idle task started and that task
-    /// is not open, start one task with `tasks.workflow.idle` as the manager would, so it
-    /// waits for the manager's review. A quiet project gets one. ref: docs/tasks.md "Workflow"
-    fn start_idle(&mut self) {
-        if !self.state.landed_since_idle {
+        let since = self.state.recap_ms.unwrap_or(0);
+        let log: Vec<_> = self
+            .dir
+            .read_log()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|entry| entry.unix_ms > since)
+            .collect();
+        if !self.changed_since(&log, since) {
             return;
         }
+        let text = format!("{RECAP_REQUEST} {}", self.cost_since(&log, since));
+        self.state.recap_ms = Some(now_unix_ms());
+        self.save();
+        if let Err(error) = self.accept(Author::Recap, text) {
+            self.say(&format!("cannot ask for a recap: {error:#}"));
+        }
+    }
+
+    /// A land, a close, a new wait or an approval decision the manager heard of in `log` (the
+    /// entries after `since`), a new approval request or a To check item after `since`.
+    fn changed_since(&self, log: &[ManagerEntry], since: u64) -> bool {
+        let heard = log.iter().any(|entry| match &entry.event {
+            ManagerEvent::Message {
+                from: Author::Events,
+                text,
+                ..
+            } => text.lines().any(|line| {
+                line.starts_with("approval ")
+                    || matches!(
+                        line.split(' ').nth(1),
+                        Some("landed" | "closed" | "waiting")
+                    )
+            }),
+            _ => false,
+        });
+        let asked = self
+            .approval_lines()
+            .iter()
+            .any(|line| matches!(line, ApprovalLine::Request { unix_ms, .. } if *unix_ms > since));
+        let to_check = checks::read(&self.dir.project_id)
+            .unwrap_or_default()
+            .iter()
+            .any(|item| item.unix_ms > since);
+        heard || asked || to_check
+    }
+
+    /// The spend since `since` from the logs' `cost_micro_usd`: the manager's replies and the
+    /// workers' results, the costliest tasks named. ref: docs/tasks.md "Recap"
+    fn cost_since(&self, log: &[ManagerEntry], since: u64) -> String {
+        let manager: Vec<u64> = log
+            .iter()
+            .filter_map(|entry| match &entry.event {
+                ManagerEvent::Reply { usage, .. } => {
+                    Some(usage.as_ref().map_or(0, |usage| usage.cost_micro_usd))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut tasks: Vec<(u64, u32, usize)> = project_tasks(&self.dir.project_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(dir, record)| {
+                let costs: Vec<u64> = dir
+                    .read_log()
+                    .ok()?
+                    .into_iter()
+                    .filter(|entry| entry.unix_ms > since)
+                    .filter_map(|entry| match entry.event {
+                        LogEvent::Result { usage, .. } => {
+                            Some(usage.map_or(0, |usage| usage.cost_micro_usd))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let id = record.ok()?.id;
+                (!costs.is_empty()).then(|| (costs.iter().sum(), id, costs.len()))
+            })
+            .collect();
+        tasks.sort_by(|left, right| right.cmp(left));
+        let usd = |micro: u64| format!("{:.2} USD", micro as f64 / 1e6);
+        let workers: u64 = tasks.iter().map(|(cost, ..)| cost).sum();
+        let turns: usize = tasks.iter().map(|(.., turns)| turns).sum();
+        let top: Vec<String> = tasks
+            .iter()
+            .take(3)
+            .map(|(cost, id, _)| format!("#{id} {}", usd(*cost)))
+            .collect();
+        format!(
+            "Token cost since the last recap: {} in all; you {} in {} turn(s), workers {} in {turns} turn(s){}.",
+            usd(manager.iter().sum::<u64>() + workers),
+            usd(manager.iter().sum()),
+            manager.len(),
+            usd(workers),
+            match top.is_empty() {
+                true => String::new(),
+                false => format!(" ({})", top.join(", ")),
+            }
+        )
+    }
+
+    /// When session notes in the main checkout's `knowledge/sessions/<project>/` are newer
+    /// than the last idle task's start and that task is not open, start one task with
+    /// `tasks.workflow.idle` as the manager would, so it waits for the manager's review.
+    /// Otherwise nothing, not even a line. ref: docs/tasks.md "Workflow"
+    fn start_idle(&mut self) {
         let prompt = load_task_config(&self.main)
             .map(|settings| settings.workflow.idle)
             .unwrap_or_default();
@@ -796,17 +922,17 @@ impl Manager {
                 .and_then(|dir| dir.read_record())
                 .is_ok_and(|record| record.state.is_open())
         });
-        if prompt.is_empty() || open {
+        let notes = newest_ms(&self.main.join("knowledge/sessions").join(&self.project));
+        if prompt.is_empty() || open || notes.is_none_or(|ms| ms <= self.state.idle_ms.unwrap_or(0))
+        {
             return;
         }
         let Ok(exe) = std::env::current_exe() else {
             return self.say("cannot find the wsx binary for the idle task");
         };
-        self.state.landed_since_idle = false;
-        self.save();
-        let (project, events) = (self.project.clone(), self.events.clone());
+        let (project, events, began) = (self.project.clone(), self.events.clone(), now_unix_ms());
         std::thread::spawn(move || {
-            let _ = events.send(Event::IdleStarted(new_task(&exe, &project, &prompt)));
+            let _ = events.send(Event::IdleStarted(began, new_task(&exe, &project, &prompt)));
         });
     }
 
@@ -893,10 +1019,11 @@ impl Manager {
     /// manager created waits for its review, else the manager's. ref: docs/tasks.md "Manager"
     fn turn_model(&self, events_only: bool) -> String {
         let review_due = || {
+            let land_auto = load_task_config(&self.main).is_ok_and(|settings| settings.land_auto);
             project_tasks(&self.dir.project_id)
                 .unwrap_or_default()
                 .into_iter()
-                .any(|(_, record)| record.is_ok_and(|record| record.manager_reviews()))
+                .any(|(_, record)| record.is_ok_and(|record| record.manager_reviews(land_auto)))
         };
         match &self.event_model {
             Some(model) if events_only && !review_due() => model.clone(),
@@ -1294,6 +1421,22 @@ impl Manager {
             }
         }
     }
+}
+
+/// The newest modification time of the files in `folder`, or none.
+fn newest_ms(folder: &Path) -> Option<u64> {
+    std::fs::read_dir(folder)
+        .ok()?
+        .filter_map(|entry| entry.ok()?.metadata().ok())
+        .filter(std::fs::Metadata::is_file)
+        .filter_map(|meta| {
+            meta.modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+        })
+        .map(|since| since.as_millis() as u64)
+        .max()
 }
 
 /// `wsx task new -p <project> --title <IDLE_TITLE> -` as the manager; the new task's number.

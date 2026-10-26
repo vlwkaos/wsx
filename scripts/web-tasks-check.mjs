@@ -612,6 +612,14 @@ if (rowWords.join("|") !== expectedRows.join("|")) await fail(`the reservoir row
 if (listedRows[0][2] !== "needs to reach crates.io" || listedRows[2][1] !== "Approve land #3" || listedRows[3][1] !== "Approve discard #4" || listedRows[2][2] !== "did: WORK b.txt"
   || listedRows[4][2] !== "ready to land" || listedRows[7][1] !== "2 to check") await fail(`the reservoir rows read ${JSON.stringify(listedRows)}`);
 if (!/^keep a worker busy WAIT /.test(listedRows[6][1])) await fail(`the running task's title is ${listedRows[6][1]}`);
+// ^ The manager's reply that asked for both approvals holds them, each with Deny and Approve:
+// one tap in the chat, besides the reservoir rows (docs/web-client-tasks.md "Project screen").
+const inBubble = await evaluate("[...document.querySelectorAll('.bubble[data-side=in] .bubble-approval')].map((node) => `${node.getAttribute('aria-label')}: ${[...node.querySelectorAll('button')].map((button) => button.textContent).join('+')}`)");
+if (inBubble.join("|") !== "Approve land #3: Deny+Approve|Approve discard #4: Deny+Approve") await fail(`the reply bubble's approvals are ${JSON.stringify(inBubble)}`);
+await evaluate("document.querySelector('.bubble .bubble-approval').scrollIntoView({ block: 'center' })");
+await shot("reply-approvals");
+await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight; })()");
+await until(atEnd, "the chat did not go back to its end", 100);
 if ((await text(".reservoir-label")).join() !== "Running" || !(await evaluate(`!!document.querySelector('.reservoir-list[aria-label=Running]').contains(${rowOf("#6")})`))) await fail("#6 is not under Running");
 if (!(await evaluate(`${rowOf("#6")}.querySelector('.mark[data-running]')`))) await fail("the running task's dot does not pulse");
 // ^ A task row reads title first, then its number, small, muted and never cut (docs/web-client-tasks.md "Project screen").

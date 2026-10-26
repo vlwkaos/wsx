@@ -129,12 +129,12 @@ pub struct TaskSandbox {
 pub struct TaskWorkflow {
     /// Added to every worker's instructions.
     pub build: String,
-    /// Added to the manager's review of a task it created.
+    /// Added to the manager's review of a ready task.
     pub review: String,
     /// The housekeeping task's prompt after a request's tasks land.
     pub batch: String,
-    /// The prompt of the task the manager host starts at an idle recap after a land; empty
-    /// is off.
+    /// The prompt of the task the manager host starts when session notes are newer than the
+    /// last one; empty is off.
     pub idle: String,
     /// The worker's turns in order, each one step; empty is one build turn. The project's
     /// steps, or else the owner's in `~/.config/wsx/wsx.config.yml`.

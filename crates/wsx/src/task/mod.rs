@@ -42,6 +42,15 @@ use wsx_core::{ops, runtime};
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
 
+/// `--owner-said <id>` on an action that needs the owner's approval (docs/tasks.md "Approvals").
+#[derive(clap::Args)]
+pub struct OwnerSaid {
+    /// The manager: the owner's message of this turn that asked for it (its id), which
+    /// approves it without a new request
+    #[arg(long, value_name = "MESSAGE")]
+    owner_said: Option<u64>,
+}
+
 #[derive(Subcommand)]
 pub enum TaskCmd {
     /// Start a worker on a new branch in its own working copy
@@ -63,6 +72,9 @@ pub enum TaskCmd {
         /// A glob of the paths it expects to change, relative to the checkout (repeatable)
         #[arg(long, value_name = "GLOB")]
         files: Vec<String>,
+        /// The first turn writes a plan and stops without editing; an `add` continues it
+        #[arg(long)]
+        plan: bool,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -138,6 +150,8 @@ pub enum TaskCmd {
         /// The owner passed its trial: its Human Verify items are not added to To check
         #[arg(long)]
         tried: bool,
+        #[command(flatten)]
+        said: OwnerSaid,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -173,6 +187,8 @@ pub enum TaskCmd {
         /// Close although the branch has commits that are not on the default branch
         #[arg(long)]
         discard: bool,
+        #[command(flatten)]
+        said: OwnerSaid,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -214,6 +230,8 @@ pub enum TaskCmd {
         /// Deploy the revision in this task's trial slot (the task host starts it)
         #[arg(long, hide = true, value_name = "TASK", conflicts_with_all = ["commit", "if_new"])]
         trial: Option<u32>,
+        #[command(flatten)]
+        said: OwnerSaid,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -224,6 +242,8 @@ pub enum TaskCmd {
         /// Commit, tag or branch to release; default: the default branch tip
         #[arg(long, value_name = "REF")]
         commit: Option<String>,
+        #[command(flatten)]
+        said: OwnerSaid,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -395,6 +415,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             model,
             hold,
             files,
+            plan,
             project,
             json,
         } => new(
@@ -404,6 +425,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             model.as_deref(),
             hold,
             files,
+            plan,
             project.as_deref(),
             json,
         ),
@@ -464,8 +486,10 @@ pub fn run(command: TaskCmd) -> Result<()> {
                         access,
                         project_wide,
                     }),
+                    None,
                     json,
-                );
+                )
+                .map(drop);
             }
             let request = HostRequest::Grant {
                 access,
@@ -488,6 +512,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
         TaskCmd::Land {
             task,
             tried,
+            said,
             project,
             json,
         } => {
@@ -499,15 +524,19 @@ pub fn run(command: TaskCmd) -> Result<()> {
             let record = dir.read_record()?;
             let settings = load_task_config(&record.project_path)
                 .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
-            if acting_as_manager() && settings.land_approve {
-                return ask_owner(
+            if acting_as_manager()
+                && settings.land_approve
+                && ask_owner(
                     &dir.project_id,
                     ApprovalAction::Land,
                     Some(&record),
                     None,
                     None,
+                    said.owner_said,
                     json,
-                );
+                )?
+            {
+                return Ok(());
             }
             send(&dir, HostRequest::Land { tried }, json)
         }
@@ -534,21 +563,26 @@ pub fn run(command: TaskCmd) -> Result<()> {
         TaskCmd::Close {
             task,
             discard,
+            said,
             project,
             json,
         } => {
             let dir = open(project.as_deref(), &task)?;
-            // ^ Discarding work cannot be undone: the manager always asks first.
-            if discard && acting_as_manager() {
-                let record = dir.read_record()?;
-                return ask_owner(
+            // ^ Discarding work cannot be undone: the manager always asks first, or names
+            // the owner's message that asked for it.
+            if discard
+                && acting_as_manager()
+                && ask_owner(
                     &dir.project_id,
                     ApprovalAction::Discard,
-                    Some(&record),
+                    Some(&dir.read_record()?),
                     None,
                     None,
+                    said.owner_said,
                     json,
-                );
+                )?
+            {
+                return Ok(());
             }
             close(&dir, discard, json)
         }
@@ -573,6 +607,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             commit,
             if_new,
             trial,
+            said,
             project,
             json,
         } => deploy(
@@ -581,10 +616,12 @@ pub fn run(command: TaskCmd) -> Result<()> {
             commit.as_deref(),
             if_new,
             trial,
+            said.owner_said,
             json,
         ),
         TaskCmd::Release {
             commit,
+            said,
             project,
             json,
         } => deploy(
@@ -593,6 +630,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             commit.as_deref(),
             false,
             None,
+            said.owner_said,
             json,
         ),
         TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
@@ -739,6 +777,7 @@ fn new(
     model: Option<&str>,
     hold: Option<String>,
     files: Vec<String>,
+    plan: bool,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
@@ -750,7 +789,8 @@ fn new(
         .map(wsx_core::task::view::checked_hold)
         .transpose()?;
     let files = checked_files(&[], &files)?;
-    let (dir, record, answered) = create(prompt, from, title, model, None, hold, files, project)?;
+    let (dir, record, answered) =
+        create(prompt, from, title, model, None, hold, files, plan, project)?;
     let state = answered.unwrap_or(TaskState::Working);
     let id = dir.id;
     if json {
@@ -774,8 +814,9 @@ fn new(
     Ok(())
 }
 
-/// Create a task and start its host; `fixes` names the "To check" item it fixes. The state
-/// is none when the host did not answer in time.
+/// Create a task and start its host; `fixes` names the "To check" item it fixes; with `plan`
+/// its first turn writes a plan (docs/tasks.md "Workflow"). The state is none when the host
+/// did not answer in time.
 #[allow(clippy::too_many_arguments)]
 fn create(
     prompt: String,
@@ -785,6 +826,7 @@ fn create(
     fixes: Option<String>,
     hold: Option<String>,
     files: Vec<String>,
+    plan: bool,
     project: Option<&str>,
 ) -> Result<(TaskDir, TaskRecord, Option<TaskState>)> {
     let (config, workspace) = load_full_workspace()?;
@@ -835,6 +877,7 @@ fn create(
         fixes,
         created_by: actor(),
         hold: hold.clone(),
+        plan,
         waiting: None,
         created_unix_ms: now,
         updated_unix_ms: now,
@@ -961,6 +1004,7 @@ fn fail_check(project: &str, project_id: &str, id: &str, note: &str) -> Result<C
         Some(item.id.clone()),
         None,
         Vec::new(),
+        false,
         Some(project),
     )?;
     checks::fail(project_id, id, note, dir.id).with_context(|| {
@@ -1463,6 +1507,7 @@ fn deploy(
     commit: Option<&str>,
     if_new: bool,
     trial: Option<u32>,
+    owner_said: Option<u64>,
     json: bool,
 ) -> Result<()> {
     let name = kind_name(kind);
@@ -1492,12 +1537,15 @@ fn deploy(
         DeployKind::Deploy => settings.deploy_approve,
         DeployKind::Release => settings.release_approve,
     };
-    if approve && acting_as_manager() {
-        let action = match kind {
-            DeployKind::Deploy => ApprovalAction::Deploy,
-            DeployKind::Release => ApprovalAction::Release,
-        };
-        return ask_owner(&project_id, action, None, commit, None, json);
+    let action = match kind {
+        DeployKind::Deploy => ApprovalAction::Deploy,
+        DeployKind::Release => ApprovalAction::Release,
+    };
+    if approve
+        && acting_as_manager()
+        && ask_owner(&project_id, action, None, commit, None, owner_said, json)?
+    {
+        return Ok(());
     }
     // ^ One deploy or release at a time per project; a later one waits here.
     let _running = store::lock_deploys(&project_id)?;
@@ -1942,34 +1990,41 @@ fn until_unix_ms(text: &str) -> Result<u64> {
         .context("--until: the duration is too long")
 }
 
-/// Record an approval request instead of acting, and say that the owner was asked.
+/// The manager's action that needs the owner: approved by the owner's message `owner_said`
+/// of its running turn (recorded; false: run it), else a request (true: the owner was asked).
+/// A project-wide grant or a tool rule always asks. ref: docs/tasks.md "Approvals"
 fn ask_owner(
     project_id: &str,
     action: ApprovalAction,
     task: Option<&TaskRecord>,
     commit: Option<&str>,
     grant: Option<GrantAsk>,
+    owner_said: Option<u64>,
     json: bool,
-) -> Result<()> {
+) -> Result<bool> {
     // ^ A grant does not depend on the revision; the owner approves it at any time.
     let revision = task
         .filter(|_| grant.is_none())
         .map(|record| record.revision);
-    let line = store::append_approval(
-        project_id,
-        ApprovalLine::Request {
-            id: String::new(),
-            action,
-            task: task.map(|record| record.id),
-            revision,
-            commit: commit.map(str::to_string),
-            grant,
-            unix_ms: now_unix_ms(),
-        },
-    )?;
-    let ApprovalLine::Request { id, .. } = &line else {
-        unreachable!("a request stays a request");
+    let grants = grant.is_some();
+    let request = ApprovalLine::Request {
+        id: String::new(),
+        action,
+        task: task.map(|record| record.id),
+        revision,
+        commit: commit.map(str::to_string),
+        grant,
+        unix_ms: now_unix_ms(),
     };
+    if let Some(said) = owner_said.filter(|_| !grants) {
+        let id = owner::approve_by_message(project_id, request, said)?;
+        if !json {
+            println!("{id}: approved by owner message {said}");
+        }
+        return Ok(false);
+    }
+    let line = store::append_approval(project_id, request)?;
+    let id = line.id();
     let target = task.map_or(String::new(), |record| {
         format!(" #{} r{}", record.id, record.revision)
     });
@@ -1978,11 +2033,11 @@ fn ask_owner(
         action_name(action)
     );
     if json {
-        print_json(&json!({ "ok": true, "approval": id, "message": message }))
+        print_json(&json!({ "ok": true, "approval": id, "message": message }))?;
     } else {
         println!("{message}");
-        Ok(())
     }
+    Ok(true)
 }
 
 fn owner_only(command: &str) -> Result<()> {

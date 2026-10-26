@@ -31,6 +31,11 @@ const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 const CHECK_OUTPUT_BYTES: usize = 8 * 1024;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
 /// The turn a host hands to its replacement: queued messages joined, so a few messages.
+/// The end of a `--plan` task's first prompt. ref: docs/tasks.md "Workflow"
+const PLAN_REQUEST: &str = "First write a short plan and stop: edit no file and commit nothing \
+in this turn. Put the plan in your result's summary with status done: the goal in one line, the \
+files you expect to change, the approach, and how you will prove the result. The manager reads \
+it and answers with go or what to change.";
 const HANDOFF_FILE: &str = "handoff.txt";
 const MAX_HANDOFF_BYTES: u64 = 4 * 1024 * 1024;
 /// Turns a failed check starts by itself before the task fails; an owner's message resets it.
@@ -281,11 +286,12 @@ impl Host {
             // ^ A new task: no conversation yet, so its first turn has not run.
             TaskState::Working if self.record.agent_session.is_none() => {
                 let prompt = self.dir.prompt()?.context("the task log has no prompt")?;
-                let text = match self.step_text() {
-                    Some(step) => format!("{prompt}\n\n{step}"),
-                    None => prompt,
-                };
-                self.start_turn(&text);
+                let mut text = vec![prompt];
+                text.extend(self.step_text());
+                if self.record.plan {
+                    text.push(PLAN_REQUEST.into());
+                }
+                self.start_turn(&text.join("\n\n"));
             }
             // ^ The checks of a result do not depend on the host that lost them: they run
             // again on the worker's last result, as the land or retry that follows would.
@@ -882,6 +888,13 @@ impl Host {
             ));
             return;
         }
+        // ^ A plan has nothing to check: the manager reads it and continues the task with an
+        // add. ref: docs/tasks.md "Workflow"
+        if self.record.plan {
+            self.record.plan = false;
+            self.wait(WaitOn::Plan, "its plan waits for the manager".into());
+            return;
+        }
         // ^ A done step that is not the last starts the next one, with any queued message.
         // ref: docs/tasks.md "Workflow"
         if result.status == "done" && (self.record.step as usize) + 1 < self.record.steps.len() {
@@ -1252,6 +1265,8 @@ impl Host {
         });
         let result = self.last_result.clone().unwrap_or_default();
         let passed = result.status == "done" && results.iter().all(|check| check.exit == Some(0));
+        // ^ Read before this revision is logged: the manager reviewed and landed it already.
+        let relands = view::resolving_conflict(&self.dir);
         match self.record_revision() {
             Ok((revision, commit)) => {
                 let state = if passed {
@@ -1292,13 +1307,14 @@ impl Host {
                         let text = check_retry_request(&failed, attempt);
                         self.start_turn(&text);
                     }
-                    // ^ A ready task lands at once when the project lands by itself and has
-                    // checks to prove it; it goes from checking to landed without a stop at
-                    // ready. A message that waits for the worker comes first: its answer is a
-                    // new revision, which lands in turn. ref: docs/tasks.md "Landing"
+                    // ^ Every ready task waits for the manager's review; one that resolved
+                    // the conflict of a landing lands again at once when the project lands
+                    // by itself and has checks to prove it, from checking to landed without
+                    // a stop at ready. A message that waits for the worker comes first: its
+                    // answer is a new revision. ref: docs/tasks.md "Landing"
                     None if state == TaskState::Ready
+                        && relands
                         && !results.is_empty()
-                        && self.record.created_by == Actor::Owner
                         && self.record.hold.is_none()
                         && self.pending.is_empty()
                         && self.auto_land() =>

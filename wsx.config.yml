@@ -32,10 +32,17 @@ tasks:
     build: >-
       Follow CLAUDE.md and AGENTS.md. Keep the change lean: reuse what exists, remove what your
       change makes dead; prefer removing code to adding it.
-    # ^ At an idle recap after a land, the manager host starts one task with this prompt.
+    # ^ When session notes are newer than the last idle task, the manager host starts one task
+    # with this prompt.
     idle: >-
-      Run owner:dream on this branch to consolidate knowledge/sessions into knowledge/coding,
-      knowledge/domain, plan and history, prune duplicates and stale entries, and commit the result.
+      Run owner:dream to consolidate the session notes of knowledge/sessions/wsx in the main
+      checkout into the vault folder /Users/vlwkaos/ws/dgv3/notes/knowledges/wsx (coding,
+      domain, plan, history), pruning duplicates and stale entries. Write only that vault
+      folder and the ir index in ~/.config/ir. First read the vault's history to see which
+      sessions are already folded, and fold only the others; you may remove the vault's session
+      files that are already folded. Never commit knowledge/ in this repository: it is untracked.
+      Never commit in the vault: its sync job does. This task changes no repository file, so
+      report done without a commit.
   deploy:
     command: sh scripts/deploy-web-live.sh
     auto: true
