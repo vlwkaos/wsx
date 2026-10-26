@@ -96,7 +96,7 @@ pub struct TaskConfig {
     pub deploy_command: Option<String>,
     pub release_command: Option<String>,
     /// The project manager (`tasks.manager`).
-    /// `tasks.manager.name`: the name the owner reads instead of "Manager", when set.
+    /// `tasks.manager.name`: the name the owner reads instead of the project's, when set.
     pub manager_name: Option<String>,
     pub manager_model: String,
     /// The model of a turn with only wsx's events and no review due; `None` (`off`) keeps
@@ -162,10 +162,10 @@ pub struct TaskPreview {
 }
 
 impl TaskConfig {
-    /// The manager's name as the owner reads it: `tasks.manager.name`, else "Manager"
-    /// (docs/tasks.md "Config").
-    pub fn manager_shown_name(&self) -> &str {
-        self.manager_name.as_deref().unwrap_or("Manager")
+    /// The manager's name as the owner reads it: `tasks.manager.name`, else its project's
+    /// name (docs/tasks.md "Config").
+    pub fn manager_shown_name<'a>(&'a self, project: &'a str) -> &'a str {
+        self.manager_name.as_deref().unwrap_or(project)
     }
 }
 

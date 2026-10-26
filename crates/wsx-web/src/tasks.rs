@@ -10,7 +10,7 @@ use crate::{
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
@@ -574,7 +574,7 @@ pub fn chat(
     media: &crate::media::Media,
 ) -> Outcome<Value> {
     // ^ The name the owner reads (docs/tasks.md "Config"); the role stays `manager` inside.
-    let manager = json!({ "name": manager_name(&scope.path) });
+    let manager = json!({ "name": manager_name(scope) });
     let Some(dir) = ManagerDir::existing(&scope.store).map_err(internal)? else {
         return Ok(
             json!({ "entries": [], "skipped": 0, "running": false, "busy": false, "manager": manager, "peers": {} }),
@@ -631,7 +631,7 @@ pub fn chat(
     )
     .ok();
     let busy = status.as_ref().is_some_and(|status| status.busy);
-    // ^ Another project's manager by its set name, else "Manager <project>".
+    // ^ Another project's manager by its set name, else by its project's.
     let mut peers = serde_json::Map::new();
     for entry in &log {
         let peer = match &entry.event {
@@ -646,8 +646,7 @@ pub fn chat(
             let name = scopes
                 .iter()
                 .find(|other| &other.name == peer)
-                .and_then(|other| load_task_config(&other.path).ok()?.manager_name)
-                .unwrap_or_else(|| format!("Manager {peer}"));
+                .map_or_else(|| peer.clone(), manager_name);
             peers.insert(peer.clone(), json!(name));
         }
     }
@@ -663,10 +662,10 @@ pub fn chat(
 }
 
 /// A project's manager name as the owner reads it (`TaskConfig::manager_shown_name`).
-fn manager_name(path: &Path) -> String {
-    load_task_config(path)
+fn manager_name(scope: &Scope) -> String {
+    load_task_config(&scope.path)
         .unwrap_or_default()
-        .manager_shown_name()
+        .manager_shown_name(&scope.name)
         .to_string()
 }
 

@@ -105,6 +105,15 @@ export function conversation(entries, resolutions, approvals = []) {
 const authorName = (author, names) => author === "owner" ? "You" : author === "manager" ? names.manager
   : names.peers[author.slice(5)];
 
+// ^ Another project's manager keeps one of the `color-peer-N` colors, from its project
+// (docs/web-themes.md "Tokens").
+const PEER_COLORS = 4;
+const peerColor = (project) => {
+  let hash = 0;
+  for (const char of project) hash = (hash * 31 + char.codePointAt(0)) >>> 0;
+  return hash % PEER_COLORS + 1;
+};
+
 // One message. `words` turns its text runs into task chips.
 export function Bubble({ project, row, words, names, fresh }) {
   const out = row.author === "owner";
@@ -118,7 +127,8 @@ export function Bubble({ project, row, words, names, fresh }) {
       ${row.approvals && html`<${ChatApprovals} project=${project} items=${row.approvals} />`}`;
   }
   return html`
-    <article class="bubble" data-side=${out ? "out" : "in"} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}
+    <article class="bubble" data-side=${out ? "out" : "in"} data-speaker=${row.author.startsWith("peer:") ? "peer" : row.author}
+      data-peer=${row.author.startsWith("peer:") ? peerColor(row.author.slice(5)) : null} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}
       data-at=${row.pending ? null : row.at} data-key=${row.key} data-in=${out || row.pending ? null : ""}
       data-quote=${quoteOf(row.entry.text) || null}
       data-pending=${row.pending ? "" : null} aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}`}>
@@ -131,7 +141,7 @@ export function Bubble({ project, row, words, names, fresh }) {
 // The manager writes: three dots, still where the user asked for less motion.
 export const Dots = () => html`<span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span>`;
 export const Typing = ({ name, leaving }) => html`
-  <article class="bubble" data-side="in" data-first="" data-last="" role="status" data-leaving=${leaving ? "" : null}>
+  <article class="bubble" data-side="in" data-speaker="manager" data-first="" data-last="" role="status" data-leaving=${leaving ? "" : null}>
     <p class="bubble-author" aria-hidden="true">${name}</p>
     <div class="bubble-box typing"><span class="visually-hidden">${name} is typing</span><${Dots} /></div>
   </article>`;

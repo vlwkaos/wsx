@@ -1037,14 +1037,16 @@ def run(wsx, wsxd, work, owned):
     assert launch['cwd'] == str(project)
     # ^ The name the owner reads, trimmed; the session keeps its label `task-manager`.
     assert js('task', 'manager')['name'] == 'Atlas'
-    # ^ The TUI's manager row reads the name; without one it keeps the provider (docs/tasks.md "Config").
+    # ^ The TUI's manager row reads the name; without one the project's (docs/tasks.md "Config").
     named = tui_text(wsx, env, project, r'task-manager\s*\n*\s*\(Atlas\)')
     assert re.search(r'task-manager\s*\n*\s*\(Atlas\)', named) and '(manager)' not in named, named[-3000:]
     config_text = (project / 'wsx.config.yml').read_text()
     (project / 'wsx.config.yml').write_text(config_text.replace('name: "  Atlas ", ', ''))
-    plain = tui_text(wsx, env, project, r'task-manager\s*\n*\s*\(manager\)')
+    plain = tui_text(wsx, env, project, r'task-manager\s*\n*\s*\(demo\)')
+    plain_name = js('task', 'manager')['name']
     (project / 'wsx.config.yml').write_text(config_text)
-    assert re.search(r'task-manager\s*\n*\s*\(manager\)', plain) and '(Atlas)' not in plain, plain[-3000:]
+    assert re.search(r'task-manager\s*\n*\s*\(demo\)', plain) and '(Atlas)' not in plain, plain[-3000:]
+    assert plain_name == 'demo', plain_name
     assert js('task', 'manager')['state'] == 'running'
     # A new task and an add to the running one, each by a wsx task command the manager runs.
     started = js('task', 'say', 'RUN wsx task new "WORK s1.txt" -p demo --json')

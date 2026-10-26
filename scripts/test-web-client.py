@@ -1297,9 +1297,9 @@ capabilities = ["terminal_view"]
         dark_rule = ':root:not([data-scheme="light"]),[data-scheme="dark"]{color-scheme:dark;'
         assert '--color-bg:#f7f7f8;' in css and dark_rule in css and '@font-face' not in css
         assert css.split(dark_rule)[1].startswith('--color-accent:#6fe3c1;')
-        # The token contract is the default theme's list: 60 tokens, 16 of them the terminal palette.
+        # The token contract is the default theme's list: 64 tokens, 16 of them the terminal palette.
         light_tokens = re.findall(r'--([a-z0-9-]+):', css.split(dark_rule)[0])
-        assert len(light_tokens) == 60 and len([token for token in light_tokens if token.startswith('color-ansi-')]) == 16, len(light_tokens)
+        assert len(light_tokens) == 64 and len([token for token in light_tokens if token.startswith('color-ansi-')]) == 16, len(light_tokens)
         assert 'prefers-color-scheme' not in css
         # The page is dark by default, so the installed app's splash and toolbar are dark too.
         assert (manifest['background_color'], manifest['theme_color']) == ('#0a0b0d', '#0a0b0d')
@@ -2877,7 +2877,7 @@ def task_journey(args):
                     top = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=folder, env=env,
                                          capture_output=True, text=True, timeout=20).stdout.strip()
                     assert os.path.realpath(top) == os.path.realpath(folder), ('fixture git escaped', folder, top)
-                    # ^ ui's manager has a name (docs/tasks.md "Config"); the others read "Manager".
+                    # ^ ui's manager has a name (docs/tasks.md "Config"); the others read as their project.
                     (folder / 'wsx.config.yml').write_text(
                         TASK_CONFIG.replace('{ model: fake-manager }', '{ name: Atlas, model: fake-manager }') if folder == other
                         else TASK_CONFIG)
@@ -3351,8 +3351,8 @@ merge_seconds = 3
             # The manager's name: ui's set name, plans' default; a peer by its set name.
             ui_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]
             plans_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['plans'])[1]
-            assert ui_chat['manager'] == {'name': 'Atlas'} and ui_chat['peers'] == {'plans': 'Manager plans'}, (ui_chat['manager'], ui_chat['peers'])
-            assert plans_chat['manager'] == {'name': 'Manager'} and plans_chat['peers'] == {'ui': 'Atlas'}, (plans_chat['manager'], plans_chat['peers'])
+            assert ui_chat['manager'] == {'name': 'Atlas'} and ui_chat['peers'] == {'plans': 'plans'}, (ui_chat['manager'], ui_chat['peers'])
+            assert plans_chat['manager'] == {'name': 'plans'} and plans_chat['peers'] == {'ui': 'Atlas'}, (plans_chat['manager'], plans_chat['peers'])
             args.captures.mkdir(parents=True, exist_ok=True)
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]

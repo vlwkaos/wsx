@@ -9,11 +9,11 @@ theme = "/abs/path/to/my-theme"   # a theme directory, or the path of a theme .t
 
 ## Tokens
 
-`crates/wsx-web/web/themes/default/theme.toml` is the complete list: 60 tokens, 16 of them the terminal palette. A theme must define every token, directly or through `extends`. A token becomes the CSS variable `--<token>`.
+`crates/wsx-web/web/themes/default/theme.toml` is the complete list: 64 tokens, 16 of them the terminal palette. A theme must define every token, directly or through `extends`. A token becomes the CSS variable `--<token>`.
 
 | Group | Tokens | Value |
 |---|---|---|
-| Color roles | `color-bg` `color-surface` `color-raised` `color-hairline` `color-text` `color-muted` `color-faint` `color-accent` `color-accent-text` `color-attention` `color-danger` `color-overlay` | `#rgb`, `#rrggbb` or `#rrggbbaa` |
+| Color roles | `color-bg` `color-surface` `color-raised` `color-hairline` `color-text` `color-muted` `color-faint` `color-accent` `color-accent-text` `color-attention` `color-danger` `color-overlay` `color-peer-1` … `color-peer-4` | `#rgb`, `#rrggbb` or `#rrggbbaa` |
 | Terminal palette | `color-ansi-0` … `color-ansi-15` (ANSI 0-7, then bright) | same |
 | Type families | `font-body` `font-mono` `font-terminal` | family list: letters, digits, space, `,` `'` `-` `_` |
 | Type scale | `font-size-md` `font-size-sm` `font-size-label` `font-size-title`, `font-size-field` (text fields on a touch device; keep it at 16px or more, or iOS zooms the page on focus) | length |
@@ -26,7 +26,7 @@ theme = "/abs/path/to/my-theme"   # a theme directory, or the path of a theme .t
 
 A length is `0` or a number with `px`, `rem`, `em`, `ch`, `vh`, `vw` or `%`. Any other value, and any unknown token name, stops the server at start with the token named. `[tokens_dark]` may set only `color-*` and `opacity-*` tokens. There are no shadow tokens: the design has no shadows.
 
-Role use: `color-bg` is the page and the terminal. `color-surface` is the composer, sheets and the user's message. `color-raised` is pressed and selected rows, inputs and terminal keys. `color-hairline` is every divider and border. `color-accent` is the one primary action of a screen, the focus ring and the working state. Every working state (a task or a session at work, its mark and its pulse, the manager typing and its dots, "N working") is painted with `--color-working`, set once in `app.css` to `color-accent` and named by the `working` tone; it is not a theme token, so a theme changes it through `color-accent`. Ready, verify and land keep the plain accent. `color-attention` is "needs you". `color-danger` is error, failed and destructive. A state is always a word; the color repeats it.
+Role use: `color-bg` is the page and the terminal. `color-surface` is the composer, sheets and the user's message. `color-raised` is pressed and selected rows, inputs and terminal keys. `color-hairline` is every divider and border. `color-accent` is the one primary action of a screen, the focus ring and the working state. Every working state (a task or a session at work, its mark and its pulse, the manager typing and its dots, "N working") is painted with `--color-working`, set once in `app.css` to `color-accent` and named by the `working` tone; it is not a theme token, so a theme changes it through `color-accent`. Ready, verify and land keep the plain accent. `color-attention` is "needs you". `color-danger` is error, failed and destructive. A state is always a word; the color repeats it. In the manager chat each speaker has a color on its name and its bubble's edge, beside the name that stays: the owner `color-accent`, the manager `color-text`, wsx events `color-muted`, and another project's manager one of `color-peer-1` … `color-peer-4`, chosen by a hash of its project so it keeps its color.
 
 Dark scheme rule: a theme has a dark scheme when it has a `[tokens_dark]` table. A theme that changes any `color-*` token in `[tokens]` and has no `[tokens_dark]` is light only; it does not inherit the dark colors of the theme it extends. A light-only theme is served with `color-scheme: light`.
 
@@ -44,6 +44,10 @@ WCAG contrast ratio of each text and state color on `color-bg`, `color-surface` 
 | `color-accent` | `#6fe3c1` | 12.6 / 11.8 / 10.8 | `#0b6b56` | 6.0 / 6.5 / 5.5 |
 | `color-attention` | `#f2b84b` | 11.0 / 10.3 / 9.4 | `#8a5a00` | 5.5 / 5.9 / 5.1 |
 | `color-danger` | `#f2777a` | 7.2 / 6.8 / 6.2 | `#b3261e` | 6.1 / 6.5 / 5.6 |
+| `color-peer-1` | `#7aa7f7` | 8.2 / 7.6 / 7.0 | `#2a59c4` | 5.9 / 6.3 / 5.4 |
+| `color-peer-2` | `#c594f0` | 8.3 / 7.8 / 7.1 | `#7a3fc4` | 5.9 / 6.3 / 5.4 |
+| `color-peer-3` | `#f589c4` | 8.7 / 8.1 / 7.4 | `#a8326f` | 5.9 / 6.3 / 5.4 |
+| `color-peer-4` | `#a9d16a` | 11.3 / 10.6 / 9.7 | `#4d7300` | 5.2 / 5.6 / 4.8 |
 | `color-accent-text` on `color-accent` | `#06231b` | 10.6 | `#ffffff` | 6.5 |
 
 The terminal palette is read on the dark `color-bg` (`#0a0b0d`) in both schemes. Its lowest ratios are `color-ansi-0` (`#747983`, 4.5) and `color-ansi-8` (`#8b9098`, 6.1); every other entry is 7.2 or more.

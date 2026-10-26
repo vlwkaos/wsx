@@ -120,7 +120,7 @@ fn folded_item<'a>(
     ListItem::new(Line::from(spans)).style(style)
 }
 
-/// `manager_name`: the project's `tasks.manager.name`; the manager's row shows it in place of
+/// `manager_name`: `TaskConfig::manager_shown_name`; the manager's row shows it in place of
 /// its provider `manager` (docs/tasks.md "Config").
 fn session_line(
     sess: &SessionInfo,
@@ -481,10 +481,9 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                     usize::from(layout.list.width),
                     port_visibility,
                     animation_frame,
-                    project
-                        .config
-                        .as_ref()
-                        .and_then(|config| config.tasks.manager_name.as_deref()),
+                    Some(project.config.as_ref().map_or(&project.name, |config| {
+                        config.tasks.manager_shown_name(&project.name)
+                    })),
                 ))
             }
             FlatEntry::Pane {
