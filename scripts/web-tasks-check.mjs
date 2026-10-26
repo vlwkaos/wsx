@@ -508,6 +508,15 @@ if (skillOption.description !== "Fixture skill for the manager" || skillOption.s
 await shot("mentions-skills", ".composer-send");
 await evaluate(`${optionNamed("/fixture-skill")}.click()`);
 if ((await evaluate("document.querySelector('.composer-field').value")) !== "Use owner:fixture-skill: ") await fail(`a picked skill reads ${await evaluate("document.querySelector('.composer-field').value")}`);
+// ^ `/` opens the list at the start of any word, and a pick after other words reads as part of the sentence.
+await typeInto(".composer-field", "Then /fixture");
+await until(`!!${optionNamed("/fixture-skill")}`, "the / list does not open after other words", 30);
+await shot("mentions-skills-mid-text", ".composer-send");
+await evaluate(`${optionNamed("/fixture-skill")}.click()`);
+if ((await evaluate("document.querySelector('.composer-field').value")) !== "Then owner:fixture-skill ") await fail(`a skill picked after other words reads ${await evaluate("document.querySelector('.composer-field').value")}`);
+await typeInto(".composer-field", "see src/fix");
+await new Promise((done) => setTimeout(done, 300));
+if (await count(".slash")) await fail("a / inside a word opens the skill list");
 await typeInto(".composer-field", "Ask @pla");
 await until(`!!${optionNamed("@plans")}`, "the @ list does not show the second project", 30);
 await shot("mentions-projects", ".composer-send");
