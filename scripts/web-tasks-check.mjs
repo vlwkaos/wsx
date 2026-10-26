@@ -7,7 +7,7 @@
 // and whose last deploy failed; <plans-checkout> is its main checkout.
 // The project lands by hand and has: #1 and #4 waiting for a host, #2 ready with an item to
 // check, #3 ready, #5 closed after a long report the manager heard of, #6 working (its prompt
-// opens with "Owner asked:"), #7 and #8 landed with an item each to check (#7's summary has two
+// opens with "Owner asked:"), #7 and #8 landed with an item each to check, each with a capture (#7's summary has two
 // sentences), and two pending approvals: a1 lands #3, a2 discards #4 (shown as
 // "Approve land #3", "Approve discard #4"). Writing <restart-file> asks the test to restart
 // the server with another site name, so it serves another build; it writes <restart-file>.done.
@@ -43,13 +43,13 @@ const typeInto = (selector, value) => evaluate(`(() => { const field = document.
   field.value = ${JSON.stringify(value)}; field.setSelectionRange(field.value.length, field.value.length);
   field.dispatchEvent(new Event('input', { bubbles: true })); field.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true })); })()`);
 // Paste into a text box: a ClipboardEvent that carries a DataTransfer, as a browser sends it.
-// "image" is a small PNG named "image.png", as iOS and Chrome name a pasted screenshot; any
-// other value is plain text. It returns false when the page cancelled the paste.
+// "image" is a small PNG named "image.png", as iOS and Chrome name a pasted screenshot, and
+// "image-2" another one; any other value is plain text. It returns false when the page cancelled the paste.
 const pasteInto = (selector, what) => evaluate(`(async () => {
   const data = new DataTransfer();
-  if (${JSON.stringify(what)} === 'image') {
+  if (${JSON.stringify(what)}.startsWith('image')) {
     const canvas = Object.assign(document.createElement('canvas'), { width: 8, height: 8 });
-    canvas.getContext('2d').fillRect(0, 0, 4, 4);
+    canvas.getContext('2d').fillRect(0, 0, 4, ${JSON.stringify(what)} === 'image' ? 4 : 6);
     data.items.add(new File([await new Promise((done) => canvas.toBlob(done, 'image/png'))], 'image.png', { type: 'image/png' }));
   } else data.setData('text/plain', ${JSON.stringify(what)});
   const field = document.querySelector(${JSON.stringify(selector)});
@@ -210,6 +210,68 @@ const closeSheet = async (what, hash) => {
   await key("Escape", 27);
   await until(`${hash ? `location.hash === ${JSON.stringify(hash)} && ` : ""}!document.querySelector('dialog.task-sheet')`, `Escape did not close ${what}`);
 };
+// A tap on an image link opens it full screen over the page (docs/web-client.md "Image viewer"):
+// no navigation, the image fits the screen, a swipe (phone) or an arrow key (wide) goes to the
+// set's other image and back, and Escape, Back and a tap beside the image close it with the page
+// where it was. `links` selects the set's two links; the open viewer is captured as `name`.
+async function viewImages(name, links) {
+  const what = `${name} at ${size[0]} px`;
+  const place = "JSON.stringify([location.pathname, location.search, location.hash, [...document.querySelectorAll('.scroll, .log')].map((node) => Math.round(node.scrollTop))])";
+  const before = await evaluate(place);
+  const sources = await evaluate(`[...document.querySelectorAll(${JSON.stringify(links)})].map((link) => link.href)`);
+  if (sources.length !== 2) await fail(`${what}: the set has ${sources.length} image links, not 2`);
+  const shown = "document.querySelector('dialog.viewer[open] .viewer-stage img:not([data-loading])')";
+  const open = async () => {
+    await evaluate(`document.querySelector(${JSON.stringify(links)}).click()`);
+    await until(`!!${shown} && history.state?.viewer === true`, `${what}: the image did not open full screen`);
+  };
+  const closed = async (how) => {
+    await until(`!document.querySelector('dialog.viewer') && !history.state?.viewer`, `${what}: ${how} did not close the viewer`);
+    const after = await evaluate(place);
+    if (after !== before) await fail(`${what}: after ${how} the page is not where it was: ${after}, was ${before}`);
+  };
+  const state = () => evaluate(`(() => { const stage = document.querySelector('.viewer-stage').getBoundingClientRect(); const box = ${shown}?.getBoundingClientRect();
+    return box && { src: ${shown}.src, place: ${place}, count: document.querySelector('.viewer-bar .time')?.textContent ?? '',
+      inside: box.left >= stage.left - 1 && box.top >= stage.top - 1 && box.right <= stage.right + 1 && box.bottom <= stage.bottom + 1,
+      fills: Math.max(box.width / stage.width, box.height / stage.height) > 0.99,
+      beside: box.left - stage.left > 20 ? [stage.left + 10, stage.top + stage.height / 2] : [stage.left + stage.width / 2, stage.bottom - 10] }; })()`);
+  const at = async (index) => {
+    await until(`${shown}?.src === ${JSON.stringify(sources[index])}`, `${what}: the viewer did not go to image ${index + 1}`);
+    const now = await state();
+    if (now.count !== `${index + 1} of 2` || !now.inside || !now.fills) await fail(`${what}: image ${index + 1} does not fit the screen: ${JSON.stringify(now)}`);
+    return now;
+  };
+  const swipe = async (from, to) => {
+    const y = Math.round(size[1] / 2);
+    await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: from, y, id: 1 }] });
+    for (const x of [from + (to - from) / 3, from + (to - from) * 2 / 3, to]) await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: Math.round(x), y, id: 1 }] });
+    await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  };
+  await open();
+  const first = await at(0);
+  if (first.place !== before) await fail(`${what}: opening the image navigated: ${first.place}, was ${before}`);
+  await shot(`viewer-${name}`);
+  if (phone()) await swipe(size[0] - 60, 60);
+  else await key("ArrowRight", 39);
+  await at(1);
+  if (phone()) await swipe(60, size[0] - 60);
+  else await key("ArrowLeft", 37);
+  await at(0);
+  await key("Escape", 27);
+  await closed("Escape");
+  await open();
+  await evaluate("history.back()");
+  await closed("Back");
+  await open();
+  const [x, y] = (await state()).beside.map(Math.round);
+  if (phone()) {
+    await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+    await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } else {
+    for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
+  }
+  await closed("a tap beside the image");
+}
 // The closed line as read: "6 need you · #6 <title> +1 more".
 const reservoirWords = () => evaluate("document.querySelector('.reservoir-head')?.textContent.trim().replace(/\\s+/g, ' ') ?? ''");
 async function openReservoir() {
@@ -1236,6 +1298,11 @@ await until("document.querySelectorAll('.composer .chips li').length === 1 && !d
 if (!(await pasteInto(".composer-field", "pasted words"))) await fail("a text paste was cancelled in the manager chat");
 if (await pasteInto(".composer-field", "image")) await fail("a pasted image was left to the manager's text box");
 await until("document.querySelectorAll('.composer .chips li').length === 2 && !document.querySelector('.composer .chips [data-uploading]')", "the pasted image did not upload in the manager chat", 100);
+// ^ A second screenshot, a second later so its name differs: the message has two images, which
+// the image viewer goes between.
+await pause(1100);
+if (await pasteInto(".composer-field", "image-2")) await fail("a second pasted image was left to the manager's text box");
+await until("document.querySelectorAll('.composer .chips li').length === 3 && !document.querySelector('.composer .chips [data-uploading]')", "the second pasted image did not upload in the manager chat", 100);
 await shot("manager-attach", ".composer-send");
 await typeInto(".composer-field", "Here are the notes");
 await click(".composer-send");
@@ -1243,6 +1310,8 @@ const sentWithFile = "[...document.querySelectorAll('.log .bubble[data-side=out]
 await until(`${sentWithFile} || !!document.querySelector('.composer .error')`, "the sent message shows no attachment", 100);
 if (!(await evaluate(sentWithFile))) await fail(`the message with a file was not sent: ${await evaluate("document.querySelector('.composer .error')?.textContent ?? ''")}; bubbles ${JSON.stringify(await bubbles())}`);
 if (await count(".composer .chips li")) await fail("the sent file stayed in the composer");
+const chatImages = ".log .bubble[data-side=out] .attachments a[data-view]";
+await viewImages("chat-images", chatImages);
 
 // The first item's Fail: × opens a note sent with Send, with no Cancel; × again or Escape closes it
 // and leaves the sheet open; an empty note is not sent. Ends with a note typed in the open form.
@@ -1287,6 +1356,7 @@ const wideRoom = await evaluate(`[...document.querySelectorAll('.check-item')].m
   return [Math.round(box('.check-acts').left - box('.check-words').right), Math.round(box('.check-acts').top - box('.check-task').top), Math.round(box('.check-acts').right)]; })`);
 if (!wideRoom.every(([gap, top, right]) => gap >= 8 && Math.abs(top) <= 12 && Math.abs(right - wideRoom[0][2]) <= 1)) await fail(`the wide To check buttons are not in one column: ${JSON.stringify(wideRoom)}`);
 await shot("to-check", ".composer-send");
+await viewImages("to-check", ".check-list .check-capture");
 await failForm();
 await key("Escape", 27);
 await until("!document.querySelector('.check-item .need-form')", "Escape did not close the wide note");
@@ -1296,12 +1366,12 @@ await oneMotion("To check opened again on a phone", () => go(`#/p/${project}/che
 const listed = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [node.querySelector('.task-chip').textContent.trim(), node.querySelector('.check-what').textContent, node.querySelector('.check-pass').textContent])");
 if (JSON.stringify(listed) !== JSON.stringify([["#7", "open the file", "it has text"], ["#8", "open the file", "it has text"], ["#2", "open the file", "it has text"]])) await fail(`the To check list reads ${JSON.stringify(listed)}`);
 if (await sheetState() !== "3 open") await fail(`the list's top row reads ${await sheetState()}`);
-// ^ Each item says what its task did and where to look; #8's shows its capture. Three short
+// ^ Each item says what its task did; #7's and #8's say where to look and show their captures. Three short
 // items fit: the sheet is as high as its rows, on the bottom, with no empty band under them.
 const context = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [(node.querySelector('.check-task')?.textContent ?? '').replace(node.querySelector('.task-chip').textContent, '').trim(), [...node.querySelectorAll('.check-facts > *')].map((line) => line.textContent).join('|')])");
-if (!context.every(([did]) => did.startsWith("did: WORK")) || context[1][1] !== "Check|open the file|Look at|/#/x|Passes if|it has text" || context[0][1] !== "Check|open the file|Look at|a real device|Passes if|it has text") await fail(`the items' context reads ${JSON.stringify(context)}`);
-await until("document.querySelector('.check-capture img')?.naturalWidth === 1", "#8's capture did not load");
-if (await count(".check-capture") !== 1) await fail("an item without a capture shows one");
+if (!context.every(([did]) => did.startsWith("did: WORK")) || context.slice(0, 2).some(([, facts]) => facts !== "Check|open the file|Look at|/#/x|Passes if|it has text")) await fail(`the items' context reads ${JSON.stringify(context)}`);
+await until("[...document.querySelectorAll('.check-capture img')].map((image) => image.naturalWidth).join() === '1,1'", "#7's and #8's captures did not load");
+if (await count(".check-capture") !== 2) await fail("an item without a capture shows one");
 await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
 const fitted = await evaluate("(() => { const sheet = document.querySelector('dialog.task-sheet').getBoundingClientRect(); const last = [...document.querySelectorAll('.check-item')].pop().getBoundingClientRect(); return [Math.round(innerHeight - sheet.bottom), Math.round(sheet.bottom - last.bottom), Math.round(sheet.height / innerHeight * 100)]; })()");
 if (Math.abs(fitted[0]) > 1 || fitted[1] > 48 || fitted[2] >= 85) await fail(`the To check sheet does not fit its rows: ${JSON.stringify(fitted)}`);
@@ -1321,6 +1391,7 @@ const room = await evaluate(`(() => { const list = document.querySelector('.chec
     all: !!document.querySelector('dialog.task-sheet header.bar .check-all'), intro: !!document.querySelector('.check-intro') }; })()`);
 if (!room.inline || !room.full || !room.under || !room.edge || !room.muted || !room.all || room.intro) await fail(`the To check items are not laid out on a phone: ${JSON.stringify(room)}`);
 await shot("to-check", ".composer-send");
+await viewImages("to-check", ".check-list .check-capture");
 // ^ Try starts the preview of the item's task and becomes a link to it (docs/tasks.md "Preview").
 await evaluate(`${firstItem}.querySelector('.check-act[title="Try it on a preview"]').click()`);
 await until(`!!${firstItem}.querySelector('a.check-act[href^="https://host.example.ts.net:"]')`, "Try did not become a preview link", 300);
@@ -1482,6 +1553,7 @@ await managerWidth("the wide chat");
 await shot("project", ".composer-send");
 await followEnd("1280 px");
 await readAndReply("1280 px");
+await viewImages("chat-images", chatImages);
 await go(page(3));
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the sheet did not open on a wide screen");
 if ((await evaluate("getComputedStyle(document.querySelector('dialog.task-sheet')).animationName")) !== "sheet-in-side") await fail("the wide sheet does not come in from the right");
