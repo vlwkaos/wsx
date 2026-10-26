@@ -1615,13 +1615,15 @@ capabilities = ["terminal_view"]
                              + old_record('assistant', 'old-answer', 'old-question', [{'type': 'text', 'text': 'the old answer'}])
                              + old_record('attachment', 'deferred', 'never-saved', attachment={'type': 'deferred_tools_record'})
                              + old_record('assistant', 'newest', 'deferred', [{'type': 'text', 'text': 'the newest answer'}]),
-                             'newest', [('user', 'the old question'), ('assistant', 'the old answer'), ('assistant', 'the newest answer')]),
+                             'newest', [('user', 'the old question'), ('assistant', 'the old answer'), ('assistant', 'the newest answer')], True),
             'old-long-turn': (old_record('user', 'old-question', None, 'the long task')
                               + old_record('assistant', 'old-answer', 'old-question', [{'type': 'text', 'text': 'starting'}])
                               + steps + old_record('assistant', 'newest', 'result-9', [{'type': 'text', 'text': 'the task is done'}]),
-                              'newest', [('user', 'the long task'), ('assistant', 'starting')]),
+                              # ^ After the next message the newest MiB holds a person message, so the long turn
+                              # before it is older than the read and not shown.
+                              'newest', [('user', 'the long task'), ('assistant', 'starting')], False),
         }
-        for name, (content, leaf, head) in fixtures.items():
+        for name, (content, leaf, head, kept) in fixtures.items():
             (work / (name + '.jsonl')).write_text(content)
             created = call('session_create', {'worktree_id': worktrees['project3'], 'label': name,
                 'command': ['/usr/bin/env', 'WSX_FIXTURE_LEAF=' + leaf, sys.executable, str(actor), str(work / (name + '.jsonl')),
@@ -1644,7 +1646,7 @@ capabilities = ["terminal_view"]
             items = wait(lambda: (lambda items: items if items[-1].get('text') == 'echo: continue it' else None)(
                 steady(root, 'GET', '/api/chat/%d/timeline' % sessions[name])[1]['items']), name + ' answer')
             shown = [(item['kind'], item.get('text')) for item in items if item['kind'] in ('user', 'assistant')]
-            assert shown[:len(head)] == head and shown[-2:] == [('user', 'continue it'), ('assistant', 'echo: continue it')], (name, shown)
+            assert (shown[:len(head)] == head) == kept and shown[-2:] == [('user', 'continue it'), ('assistant', 'echo: continue it')], (name, shown)
             session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == sessions[name])
             assert call('session_close', {'session_id': sessions[name], 'expected_revision': session['revision']})['type'] == 'ack'
         ok('older transcripts: a record whose parent Claude never saved keeps the conversation before it; '
