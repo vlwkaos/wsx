@@ -3430,7 +3430,7 @@ merge_seconds = 3
         broken = js('task', 'new', 'WORK broken.txt', '-p', 'demo')['id']
         wait_state(broken, 'failed')
         # A landing adds a To check item: the push replaces the one before and counts it.
-        checked = js('task', 'new', 'WORK h.txt HV', '-p', 'demo')['id']
+        checked = js('task', 'new', 'WORK j.txt HV', '-p', 'demo')['id']
         wait_state(checked, 'ready')
         assert act(checked, 'land', {})[0] == 200
         added = new_pushes('manager', 'to check push')
