@@ -180,16 +180,17 @@ const rows = () => evaluate(`[...document.querySelectorAll('.reservoir-list .nee
   row.querySelector('.task-number')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, row.querySelector('.row-context')?.textContent ?? '',
   [...row.querySelectorAll('.need-action')].map((node) => node.title).join('+')])`);
 const rowOf = (label) => `[...document.querySelectorAll('.reservoir-list .need')].find((row) => ((row.querySelector('.task-number')?.textContent.trim() ?? '') + ' ' + row.querySelector('.row-label').textContent).trim().startsWith(${JSON.stringify(label)}))`;
-// The open of a sheet in frames: its top and left on each animation frame, from before the tap
-// to 700 ms after the sheet is first seen open.
-const watchSheet = () => evaluate(`(() => { window.sheetFrames = []; window.sheetWatched = false; let seen = null;
-  const step = (now) => { const sheet = document.querySelector('dialog.task-sheet[open]');
-    if (sheet) { const box = sheet.getBoundingClientRect(); window.sheetFrames.push([box.top, box.left]); seen ??= now; }
-    if (seen === null || now - seen < 700) requestAnimationFrame(step); else window.sheetWatched = true; };
-  requestAnimationFrame(step); })()`);
-// One motion: on each axis the sheet moves one way only, never back, and its last frame is where
-// it rests. On a phone it rises from below; on a wide screen it comes in from the right.
-async function oneMotion(where) {
+// One motion: the sheet's top and left on each animation frame, from before `open` to 700 ms
+// after the sheet is first seen open. On each axis it moves one way only, never back, and its
+// last frame is where it rests. On a phone it rises from below; on a wide screen it comes in
+// from the right.
+async function oneMotion(where, open) {
+  await evaluate(`(() => { window.sheetFrames = []; window.sheetWatched = false; let seen = null;
+    const step = (now) => { const sheet = document.querySelector('dialog.task-sheet[open]');
+      if (sheet) { const box = sheet.getBoundingClientRect(); window.sheetFrames.push([box.top, box.left]); seen ??= now; }
+      if (seen === null || now - seen < 700) requestAnimationFrame(step); else window.sheetWatched = true; };
+    requestAnimationFrame(step); })()`);
+  await open();
   await until("window.sheetWatched", `${where}: the sheet did not open`);
   const { frames, end } = await evaluate("({ frames: window.sheetFrames, end: (({ top, left }) => [top, left])(document.querySelector('dialog.task-sheet').getBoundingClientRect()) })");
   const moving = phone() ? 0 : 1;
@@ -203,6 +204,10 @@ async function oneMotion(where) {
     }
   }
 }
+const closeSheet = async (what, hash) => {
+  await key("Escape", 27);
+  await until(`${hash ? `location.hash === ${JSON.stringify(hash)} && ` : ""}!document.querySelector('dialog.task-sheet')`, `Escape did not close ${what}`);
+};
 // The closed line as read: "6 need you · #6 <title> +1 more".
 const reservoirWords = () => evaluate("document.querySelector('.reservoir-head')?.textContent.trim().replace(/\\s+/g, ' ') ?? ''");
 async function openReservoir() {
@@ -725,8 +730,7 @@ for (let attempt = 0; attempt < 300 && !factsRead(facts); attempt++) {
 }
 if (!factsRead(facts)) await fail(`the page's facts read ${facts}`);
 await shot("page");
-await key("Escape", 27);
-await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the page");
+await closeSheet("the page", chat);
 
 // --- A turn of the manager: two messages group on the right; while it runs a typing bubble
 // ends the chat and the header says "typing"; the reply edits the page (with a link to it),
@@ -768,8 +772,7 @@ await shot("project-reply", ".composer-send");
 await until("document.querySelectorAll('.log .page-link').length > 0", "the reply about the page has no link", 60);
 await evaluate("[...document.querySelectorAll('.log .page-link')].at(-1).click()");
 await until("/Ship the chat/.test(document.querySelector('.project-page')?.textContent ?? '')", "the page does not show the manager's edit", 30);
-await key("Escape", 27);
-await until("!document.querySelector('dialog.task-sheet')", "Escape did not close the page");
+await closeSheet("the page");
 
 // --- A new conversation (BIG passes the manager's rotateTokens) shows once: it has no id, so
 // the reads after it return it again until the next message.
@@ -797,15 +800,13 @@ await until(`location.hash === '#/p/${project}/t/2' && !!document.querySelector(
 const phoneSheet = await evaluate("({ sheet: getComputedStyle(document.querySelector('dialog.task-sheet')).animationName, backdrop: getComputedStyle(document.querySelector('dialog.task-sheet'), '::backdrop').animationName })");
 if (phoneSheet.sheet !== "sheet-in" || phoneSheet.backdrop !== "arrive") await fail(`the sheet enters with ${JSON.stringify(phoneSheet)}`);
 if (await logTop() !== top0) await fail(`a row moved the chat from ${top0} to ${await logTop()}`);
-await key("Escape", 27);
-await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the sheet a row opened");
+await closeSheet("the sheet a row opened", chat);
 await closeReservoir();
 if (await logTop() !== top0) await fail(`closing the sheet moved the chat from ${top0} to ${await logTop()}`);
 await evaluate("[...document.querySelectorAll('.log .task-chip')].find((chip) => chip.textContent.trim() === '#2').click()");
 await until(`location.hash === '#/p/${project}/t/2' && !!document.querySelector('dialog.task-sheet[open] .story')`, "a chip did not open the task sheet");
 if (await logTop() !== top0) await fail(`a chip moved the chat from ${top0} to ${await logTop()}`);
-await key("Escape", 27);
-await until("!document.querySelector('dialog.task-sheet')", "Escape did not close the sheet a chip opened");
+await closeSheet("the sheet a chip opened");
 await click(".jump");
 await until(atEnd, "Jump to latest did not return to the end");
 await typeInto(".composer-field", "a draft that stays");
@@ -814,8 +815,7 @@ await until(`location.hash === '#/p/${project}/t/2' && !!document.querySelector(
 await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
 const sheetBox = await evaluate("(() => { const r = document.querySelector('dialog.task-sheet').getBoundingClientRect(); return { top: Math.round(r.top), height: Math.round(r.height) }; })()");
 if (Math.abs(sheetBox.height - 844 * 0.85) > 2 || Math.abs(sheetBox.top - 844 * 0.15) > 2) await fail(`the sheet is not 85% high: ${JSON.stringify(sheetBox)}`);
-await key("Escape", 27);
-await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the sheet");
+await closeSheet("the sheet", chat);
 const kept = await evaluate("({ value: document.querySelector('.composer-field').value, focused: document.activeElement === document.querySelector('.composer-field') })");
 if (kept.value !== "a draft that stays" || !kept.focused) await fail(`after the sheet the composer has ${JSON.stringify(kept)}`);
 await go(page(2));
@@ -1181,8 +1181,7 @@ await typeInto(".task-message .composer-field", "NOOP and a note");
 await click(".task-message .composer-send");
 await pause(5000);
 if (!(await evaluate("/Land #6 did not run/.test(document.querySelector('.notice')?.textContent ?? '')"))) await fail("a later outcome or the time hid the failure");
-await key("Escape", 27);
-await until("!document.querySelector('dialog.task-sheet')", "Escape did not close #4");
+await closeSheet("#4");
 await evaluate("document.querySelector('.notice[data-tone=danger] button').click()");
 await until("!document.querySelector('.notice')", "Dismiss did not clear the failure");
 // An outcome alone clears itself.
@@ -1193,8 +1192,7 @@ await typeInto(".task-message .composer-field", "NOOP once more");
 await click(".task-message .composer-send");
 await until("[...document.querySelectorAll('.notice')].some((node) => /^#4: /.test(node.textContent))", "a message to #4 showed no outcome");
 await until("!document.querySelector('.notice')", "the outcome did not clear itself", 80);
-await key("Escape", 27);
-await until("!document.querySelector('dialog.task-sheet')", "Escape did not close #4 again");
+await closeSheet("#4 again");
 
 // --- The manager chat attaches files as a session's chat does, and shows another project's
 // manager as its own bubbles (docs/web-client-tasks.md "Project screen").
@@ -1227,23 +1225,17 @@ await go(chat);
 await until("!!document.querySelector('.reservoir-head')", "the chat did not come back for To check");
 await openReservoir();
 await until(`!!${rowOf("3 to check")}`, "the reservoir has no To check row", 60);
-await watchSheet();
-await evaluate(`${rowOf("3 to check")}.querySelector('.row-open').click()`);
-await until(`location.hash === '#/p/${project}/checks' && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open");
 // ^ The list and #8's capture are in the sheet before it moves, so it rises once and stays.
-await oneMotion("To check on a phone");
-await key("Escape", 27);
-await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the To check list");
+await oneMotion("To check on a phone", async () => {
+  await evaluate(`${rowOf("3 to check")}.querySelector('.row-open').click()`);
+  await until(`location.hash === '#/p/${project}/checks' && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open");
+});
+await closeSheet("the To check list", chat);
 await resize([1280, 800, 1]);
-await watchSheet();
-await go(`#/p/${project}/checks`);
-await oneMotion("To check on a wide screen");
-await key("Escape", 27);
-await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the wide To check list");
+await oneMotion("To check on a wide screen", () => go(`#/p/${project}/checks`));
+await closeSheet("the wide To check list", chat);
 await resize([390, 844, 2]);
-await watchSheet();
-await go(`#/p/${project}/checks`);
-await oneMotion("To check opened again on a phone");
+await oneMotion("To check opened again on a phone", () => go(`#/p/${project}/checks`));
 const listed = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [node.querySelector('.task-chip').textContent.trim(), node.querySelector('.check-what').textContent, node.querySelector('.check-end .check-pass').textContent])");
 if (JSON.stringify(listed) !== JSON.stringify([["#7", "open the file", "Passes if it has text"], ["#8", "open the file", "Passes if it has text"], ["#2", "open the file", "Passes if it has text"]])) await fail(`the To check list reads ${JSON.stringify(listed)}`);
 if (await sheetState() !== "3 open") await fail(`the list's top row reads ${await sheetState()}`);
@@ -1291,8 +1283,7 @@ await until("document.querySelectorAll('.check-item').length === 1", "the passed
 await evaluate("document.querySelector('.check-all').click()");
 await until("(document.querySelector('dialog.task-sheet .empty')?.textContent ?? '') === 'Nothing to check.'", "All passed did not empty the list", 60);
 await shot("to-check-done");
-await key("Escape", 27);
-await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the To check list");
+await closeSheet("the To check list", chat);
 await until("[...document.querySelectorAll('.status-line')].some((node) => /#7 failed a check; #\\d+ fixes it/.test(node.textContent))", "the chat does not say which task fixes the failed check", 60);
 await until("!/to check/.test(document.querySelector('.reservoir-words')?.textContent ?? '')", "the reservoir still counts items to check", 60);
 // ^ With #4 and the fix task landed (a pending approval denied) only Running is left: its label
@@ -1353,8 +1344,7 @@ await click(".task-message .composer-send");
 await until("document.querySelectorAll('.task-talk .bubble').length === 1", "the answer is not a bubble", 60);
 if (await evaluate("document.querySelector('.task-talk .bubble').dataset.side") !== "out") await fail("the answer is not the owner's bubble");
 await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '') === 'needs you' && [...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === 'Land')", "#1 did not get ready after the answer", 120);
-await key("Escape", 27);
-await until(`location.hash === '#/p/${plans}' && !document.querySelector('dialog.task-sheet')`, "Escape did not close the waiting sheet");
+await closeSheet("the waiting sheet", `#/p/${plans}`);
 // ^ Closing the sheet gives the composer the focus after the next paint: wait for it, or it
 // takes the focus back from the row button pressed below.
 await until("document.activeElement?.classList.contains('composer-field') && !document.activeElement.closest('dialog')", "closing the sheet did not focus the composer");
@@ -1371,8 +1361,7 @@ await shot("reservoir-cleared", ".composer-send");
 await go(page(6));
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "#6's sheet did not open");
 if (await count('.task-sheet a[href*="/terminal"]')) await fail("the task sheet links to the worker's terminal");
-await key("Escape", 27);
-await until("!document.querySelector('dialog.task-sheet')", "Escape did not close #6's sheet");
+await closeSheet("#6's sheet");
 await click(".more-button");
 if (!(await text(".more-menu a")).includes("Sessions")) await fail(`the ⋯ menu lost Sessions: ${await text(".more-menu a")}`);
 await click(".more-button");
@@ -1411,8 +1400,7 @@ await until("document.querySelector('dialog.task-sheet')?.getAnimations().length
 const panel = await evaluate("(() => { const r = document.querySelector('dialog.task-sheet').getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height) }; })()");
 if (panel.right !== 1280 || panel.left < 640 || panel.height !== 800) await fail(`on a wide screen the sheet is ${JSON.stringify(panel)}`);
 await shot("sheet");
-await key("Escape", 27);
-await until("!document.querySelector('dialog.task-sheet')", "Escape did not close the wide sheet");
+await closeSheet("the wide sheet");
 await go(`#/p/${project}/page`);
 await until("!!document.querySelector('.project-page .diagram img')", "the wide page did not draw its graph", 30);
 await shot("page");
