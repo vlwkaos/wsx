@@ -72,6 +72,16 @@ const NO_SPACE: &str = "No space left on device";
 const RESULT_RETRY: &str = "Your turn ended without a result. Return your result now: \
 StructuredOutput is the last call of a turn, and nothing runs after it.";
 
+/// A worker's `check-run`: its check indexes and every call that waits for its answer. A
+/// repeat call (a client that timed out and asks again) joins it.
+struct CheckRun {
+    indexes: Vec<usize>,
+    replies: Vec<Sender<broker::Response>>,
+    /// The worker returned its result before the answer: the answer goes to it in one turn,
+    /// and the checks after the result wait for that turn's result.
+    result_waits: bool,
+}
+
 struct Host {
     dir: TaskDir,
     record: TaskRecord,
@@ -100,9 +110,8 @@ struct Host {
     /// resume: held until its turn or checks end.
     disk_queue: Option<slot::Ticket>,
     disk_slot: Option<slot::Slot>,
-    /// The worker's running `check-run`: its check indexes and every call that waits for its
-    /// answer. A repeat call (a client that timed out and asks again) joins it.
-    check_run: Option<(Vec<usize>, Vec<Sender<broker::Response>>)>,
+    /// The worker's queued or running `check-run`.
+    check_run: Option<CheckRun>,
     /// The check-run results of one clean tree: a repeat on that tree answers from them.
     stored_checks: Option<StoredChecks>,
     /// The Human Verify items of the revision whose landing conflicted: the turn that
@@ -240,7 +249,8 @@ impl Host {
                 Event::ChecksDone(results) => self.on_checks(results),
                 Event::CheckRun(argv, reply) => self.check_run(&argv, reply),
                 Event::CheckRunDone(results, response, stored) => {
-                    for reply in self.check_run.take().map(|run| run.1).unwrap_or_default() {
+                    let run = self.check_run.take();
+                    for reply in run.iter().flat_map(|run| &run.replies) {
                         let _ = reply.send(response.clone());
                     }
                     if let Some((tree, ran)) = stored {
@@ -250,6 +260,19 @@ impl Host {
                         }
                     }
                     self.log(LogEvent::CheckRun { results });
+                    // ^ The worker finishes with the proof it asked for, then the checks run.
+                    if run.is_some_and(|run| run.result_waits) {
+                        self.say("check-run: its answer goes to the worker");
+                        self.pending.push_back(format!(
+                            "Your check-run ended after your result. Its answer:\n{}\nPut it \
+                             in your result's evidence (fix what fails in code you changed) \
+                             and return your result again.",
+                            response.stdout.trim_end()
+                        ));
+                        if !self.turn_active {
+                            self.deliver_pending();
+                        }
+                    }
                 }
                 Event::CheckQueued(reason) => self.check_queued(reason),
                 Event::CheckSlot(error) => self.check_slot(error),
@@ -805,6 +828,13 @@ impl Host {
             self.start_turn(&text);
             return;
         }
+        // ^ A result before its own check-run's answer waits for it: no second run queues.
+        // ref: docs/tasks.md "Checks, revisions and report"
+        if let Some(run) = &mut self.check_run {
+            run.result_waits = true;
+            self.say("the result waits for its check-run");
+            return;
+        }
         self.start_checks();
     }
 
@@ -920,6 +950,10 @@ impl Host {
         if self.record.waits_on(WaitOn::Hand) {
             return refuse(format!("{:#}", self.by_hand_refusal()));
         }
+        // ^ A late call after the result: the checks of that result run now, in one slot.
+        if self.record.state == TaskState::Checking {
+            return refuse("the checks after your result run now".into());
+        }
         self.follow_checks();
         // ^ The scenarios come after the checks, numbered on from them, and run only when
         // named: like the checks, they are the main checkout's, never the worker's.
@@ -969,7 +1003,12 @@ impl Host {
         };
         // ^ Never two runs in one working copy: the same checks join, other ones wait.
         let indexes: Vec<usize> = picked.iter().map(|(index, _)| *index).collect();
-        if let Some((running, replies)) = &mut self.check_run {
+        if let Some(CheckRun {
+            indexes: running,
+            replies,
+            ..
+        }) = &mut self.check_run
+        {
             if *running != indexes {
                 let numbers: Vec<String> = running.iter().map(|i| (i + 1).to_string()).collect();
                 return refuse(format!(
@@ -1005,7 +1044,11 @@ impl Host {
         if let Some((free_mb, min_gb)) = self.low_disk() {
             return refuse(disk_full(free_mb, min_gb));
         }
-        self.check_run = Some((indexes, vec![reply]));
+        self.check_run = Some(CheckRun {
+            indexes,
+            replies: vec![reply],
+            result_waits: false,
+        });
         // ^ A run of checks that only format or compile is light: it takes no slot.
         let priority =
             (!to_run.iter().all(|(_, command)| light(command))).then_some(Priority::Normal);
