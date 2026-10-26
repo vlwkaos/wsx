@@ -18,7 +18,6 @@ static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture {
     root: PathBuf,
-    wsxd: PathBuf,
 }
 
 impl Fixture {
@@ -71,10 +70,7 @@ impl Fixture {
         )
         .expect("write the fake claude");
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).expect("chmod the fake");
-        let fixture = Self {
-            root,
-            wsxd: wsxd.to_path_buf(),
-        };
+        let fixture = Self { root };
         fixture.git(&["init", "-q", "--template=", "-b", "main"]);
         fixture.git(&["add", "."]);
         fixture.git(&["commit", "-q", "-m", "start"]);
@@ -110,7 +106,10 @@ impl Fixture {
             }
         }
         command
-            .env("WSX_DAEMON_BIN", &self.wsxd)
+            .env(
+                "WSX_DAEMON_BIN",
+                Path::new(env!("CARGO_BIN_EXE_wsx")).with_file_name("wsxd"),
+            )
             .env("WSX_SOCKET", self.root.join("d.sock"));
         command
     }
