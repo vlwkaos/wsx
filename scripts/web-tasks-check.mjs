@@ -1217,6 +1217,8 @@ const speakerColors = () => evaluate(`(() => { const color = (selector, property
     color('.log .bubble[data-speaker="peer"] .bubble-author', 'color'), color('.log .status-line', 'color')]; })()`);
 for (const scheme of ["dark", "light"]) {
   await evaluate(scheme === "light" ? "document.documentElement.dataset.scheme = 'light'" : "delete document.documentElement.dataset.scheme");
+  // ^ The bubbles fade to the new scheme's colors (app.css transitions); read them after.
+  await pause(1000);
   const colors = await speakerColors();
   if (colors.some((color) => !color) || new Set(colors).size !== colors.length) await fail(`the speakers' colors in the ${scheme} scheme: ${JSON.stringify(colors)}`);
   await evaluate("document.querySelector('.log .bubble[data-speaker=\"peer\"]').scrollIntoView({ block: 'center' })");
