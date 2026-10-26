@@ -271,7 +271,14 @@ impl Host {
                 };
                 self.start_turn(&text);
             }
-            TaskState::Working | TaskState::Checking => {
+            // ^ The checks of a result do not depend on the host that lost them: they run
+            // again on the worker's last result, as the land or retry that follows would.
+            TaskState::Checking => {
+                self.last_result = Some(self.current_result());
+                self.say("the host restarted during the checks: they run again");
+                self.start_checks();
+            }
+            TaskState::Working => {
                 // ^ A restarted pane cannot rejoin a turn of the process it lost.
                 let reason = "the host restarted during a turn".to_string();
                 self.log(LogEvent::Stopped {
