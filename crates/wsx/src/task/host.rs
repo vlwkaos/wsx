@@ -705,24 +705,24 @@ impl Host {
     }
 
     fn on_result(&mut self, turn: TurnResult) {
+        if turn.answers_nothing() {
+            self.log(LogEvent::Agent {
+                text: "claude ended its own turn with no result: ignored".into(),
+            });
+            return;
+        }
         let structured = turn
             .structured
             .and_then(|value| serde_json::from_value::<WorkerResult>(value).ok());
-        if structured.is_none() && !turn.is_error {
-            // ^ No model call: Claude's own turn for a background-task notification, which
-            // answers no message of the host. ref: docs/tasks.md "Claude adapter"
-            if turn.usage.input_tokens == 0 && turn.usage.output_tokens == 0 {
-                self.log(LogEvent::Agent {
-                    text: "claude ended its own turn with no result: ignored".into(),
-                });
-                return;
-            }
-            if !std::mem::replace(&mut self.result_asked, true) {
-                self.turn_active = false;
-                self.say("the turn ended without a result: asked for it once");
-                self.start_turn(RESULT_RETRY);
-                return;
-            }
+        // ^ A model turn that left out its result is asked for it once.
+        if structured.is_none()
+            && !turn.is_error
+            && !std::mem::replace(&mut self.result_asked, true)
+        {
+            self.turn_active = false;
+            self.say("the turn ended without a result: asked for it once");
+            self.start_turn(RESULT_RETRY);
+            return;
         }
         self.turn_active = false;
         self.result_asked = false;

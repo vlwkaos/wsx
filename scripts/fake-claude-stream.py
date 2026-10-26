@@ -37,6 +37,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   DIAGRAM        answer with a tall mermaid diagram, drawn after the bubble shows
   PAGE <section> <words>  replace that section of the project page (its instructions name it)
   STATUS         answer from `wsx task ledger`
+  NOTIFY         first end a 0-token turn with no result, as Claude's own turn for a notification
   SLOW           take about 3 s
   BIG            a last model call of 200k tokens, so the host rotates the conversation
   SUMMED         four model calls of 50k each: the result's usage sums 200k, the context is 50k
@@ -244,6 +245,10 @@ def main():
             # ^ A subagent's call is another context: it never counts as the conversation's.
             emit({'type': 'assistant', 'parent_tool_use_id': 'sub', 'message': {
                 'model': model, 'content': [], 'usage': {'input_tokens': 900000}}})
+            if 'NOTIFY' in text.split():
+                emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': '',
+                      'session_id': session, 'permission_denials': [],
+                      'usage': {'input_tokens': 0, 'output_tokens': 0}})
             spent += 0.001
             saved = spending() | {session: spent}
             with open(spent_file, 'w') as out:
