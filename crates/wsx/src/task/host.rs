@@ -633,7 +633,8 @@ impl Host {
     }
 
     fn try_start_turn(&mut self, text: &str) -> Result<()> {
-        if self.binary.as_ref().is_some_and(hosting::Binary::replaced) {
+        // ^ Not while a check-run waits: the exec would close its socket unanswered.
+        if self.check_run.is_none() && self.binary.as_ref().is_some_and(hosting::Binary::replaced) {
             // ^ Every turn gets the replaced binary's launch: this host hands the turn over
             // and execs it once the caller has its answer; the new host resumes the agent.
             self.dir.write_file(HANDOFF_FILE, text.as_bytes())?;
@@ -986,9 +987,8 @@ impl Host {
         // ^ A run of checks that only format or compile is light: it takes no slot.
         let priority =
             (!to_run.iter().all(|(_, command)| light(command))).then_some(Priority::Normal);
-        let commands = to_run.iter().map(|(_, command)| command.clone()).collect();
         let events = self.events.clone();
-        self.spawn_checks(priority, commands, move |results| {
+        self.spawn_checks(priority, "check-run", to_run.clone(), move |results| {
             let ran: BTreeMap<usize, CheckResult> = to_run
                 .iter()
                 .map(|(index, _)| *index)
@@ -1047,17 +1047,20 @@ impl Host {
             _ => Priority::Normal,
         };
         let events = self.events.clone();
-        self.spawn_checks(Some(priority), self.record.checks.clone(), move |results| {
+        let checks = self.record.checks.iter().cloned().enumerate().collect();
+        self.spawn_checks(Some(priority), "check", checks, move |results| {
             let _ = events.send(Event::ChecksDone(results));
         });
     }
 
     /// Run `commands` in a thread, holding the machine's check slot unless `priority` is
-    /// `None`; each check's timeout counts from the slot. ref: docs/tasks.md "Checks, revisions and report"
+    /// `None`; each check's timeout counts from the slot. Check `n`'s whole output goes to
+    /// `<kind>-<n>.log` in the task folder. ref: docs/tasks.md "Checks, revisions and report"
     fn spawn_checks(
         &self,
         priority: Option<Priority>,
-        commands: Vec<String>,
+        kind: &str,
+        checks: Vec<(usize, String)>,
         done: impl FnOnce(Vec<CheckResult>) + Send + 'static,
     ) {
         let timeout = Duration::from_secs(self.record.check_timeout_secs);
@@ -1065,6 +1068,10 @@ impl Host {
         let env = self.record.env.clone();
         let events = self.events.clone();
         let label = format!("{} t{}", self.record.project, self.record.id);
+        let checks: Vec<(String, std::path::PathBuf)> = checks
+            .into_iter()
+            .map(|(index, command)| (command, self.dir.file(&format!("{kind}-{}.log", index + 1))))
+            .collect();
         std::thread::spawn(move || {
             let results = {
                 let _slot = priority.and_then(|priority| {
@@ -1075,9 +1082,9 @@ impl Host {
                     let _ = events.send(Event::CheckSlot(error));
                     taken.ok()
                 });
-                commands
+                checks
                     .iter()
-                    .map(|command| run_check(&working_copy, command, &env, timeout))
+                    .map(|(command, log)| run_check(&working_copy, command, &env, timeout, log))
                     .collect()
             };
             done(results);
@@ -1735,10 +1742,14 @@ fn run_check(
     command: &str,
     env: &BTreeMap<String, String>,
     timeout: Duration,
+    log: &Path,
 ) -> CheckResult {
+    // ^ The shell sends the whole output to `log`, in the order it was written; the result
+    // keeps its end, so a check-run's answer stays small however much a check prints.
+    let quoted = log.to_string_lossy().replace('\'', "'\\''");
     let mut process = std::process::Command::new("/bin/sh");
     process
-        .args(["-c", command])
+        .args(["-c", &format!("exec >'{quoted}' 2>&1\n{command}")])
         .current_dir(working_copy)
         .stdin(std::process::Stdio::null());
     for (name, _) in std::env::vars_os() {
@@ -1747,21 +1758,49 @@ fn run_check(
         }
     }
     process.envs(env);
-    // ^ The tail: a long check output (a test run) ends with its failures and summary.
-    match output_with_timeout_tail(&mut process, timeout, CHECK_OUTPUT_BYTES) {
-        Ok(output) => CheckResult {
-            command: command.into(),
-            exit: output.status.code(),
-            timed_out: false,
-            output: output_text(&output),
-        },
-        Err(error) => CheckResult {
-            command: command.into(),
-            exit: None,
-            timed_out: error.kind() == std::io::ErrorKind::TimedOut,
-            output: error.to_string(),
-        },
+    // ^ The pipes get only what the shell says before its redirection, such as a log it
+    // cannot open.
+    let ran = output_with_timeout_tail(&mut process, timeout, CHECK_OUTPUT_BYTES);
+    let mut output = log_tail(log).unwrap_or_default();
+    let said = match &ran {
+        Ok(output) => output_text(output),
+        Err(error) => error.to_string(),
+    };
+    if !said.is_empty() {
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(&said);
     }
+    CheckResult {
+        command: command.into(),
+        exit: ran.as_ref().ok().and_then(|output| output.status.code()),
+        timed_out: ran
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::TimedOut),
+        output,
+    }
+}
+
+/// The last `CHECK_OUTPUT_BYTES` of a check's log: a long output (a test run) ends with its
+/// failures and summary. A cut log is named first, so the reader can open the whole of it.
+fn log_tail(log: &Path) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(log)?;
+    let size = file.metadata()?.len();
+    let keep = CHECK_OUTPUT_BYTES as u64;
+    file.seek(SeekFrom::Start(size.saturating_sub(keep)))?;
+    let mut bytes = Vec::new();
+    file.take(keep).read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes).trim_end().to_string();
+    Ok(match size > keep {
+        true => format!(
+            "[the first {} bytes are cut; the whole output is in {}]\n{text}",
+            size - keep,
+            log.display()
+        ),
+        false => text,
+    })
 }
 
 /// A command's output as one text: stdout, then stderr.

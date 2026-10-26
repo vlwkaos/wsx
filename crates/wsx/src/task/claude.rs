@@ -267,7 +267,9 @@ fn check_run_note(record: &TaskRecord) -> String {
          `wsx task check-run 2 3` runs checks or scenarios by number or name: the task host \
          runs them outside your boundary exactly as it will after your result, so a test \
          that needs a terminal or a browser works there. Run only the checks your change touches, never the full set: \
-         each run waits for the machine's one check slot. A check that already ran on the \
+         each run waits for the machine's one check slot and can take 20 minutes or more, so \
+         start it with run_in_background (or a 600000 ms timeout) and wait for its answer \
+         before your turn ends. A check that already ran on the \
          same commit, with nothing uncommitted, answers from its stored result. Fix what \
          fails in code you changed. A check that fails in code you did not touch is not \
          yours: do not run it again, name it in your summary. ",

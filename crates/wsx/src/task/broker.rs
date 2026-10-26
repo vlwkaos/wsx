@@ -212,13 +212,16 @@ fn answer(mut stream: UnixStream, handle: &dyn Fn(Request) -> Response) {
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
-/// One JSON value from the stream, at most `limit` bytes, without waiting for its end.
+/// One JSON value from the stream, at most `limit` bytes, without waiting for its end. A
+/// longer one is cut, so it is not valid; an empty one is a socket that closed unanswered.
 fn read_one<T: serde::de::DeserializeOwned>(stream: &UnixStream, limit: u64) -> Result<T> {
     let reader = std::io::BufReader::new(stream.take(limit));
     let mut values = serde_json::Deserializer::from_reader(reader).into_iter::<T>();
     match values.next() {
-        Some(value) => value.context("not a valid message"),
-        None => bail!("the message is empty or larger than {limit} bytes"),
+        Some(value) => {
+            value.with_context(|| format!("not a valid message of at most {limit} bytes"))
+        }
+        None => bail!("the connection closed without a message; run the command again"),
     }
 }
 
