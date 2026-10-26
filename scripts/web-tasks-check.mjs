@@ -515,7 +515,7 @@ await shot("mentions-skills-mid-text", ".composer-send");
 await evaluate(`${optionNamed("/fixture-skill")}.click()`);
 if ((await evaluate("document.querySelector('.composer-field').value")) !== "Then owner:fixture-skill ") await fail(`a skill picked after other words reads ${await evaluate("document.querySelector('.composer-field').value")}`);
 await typeInto(".composer-field", "see src/fix");
-await new Promise((done) => setTimeout(done, 300));
+await pause(300);
 if (await count(".slash")) await fail("a / inside a word opens the skill list");
 await typeInto(".composer-field", "Ask @pla");
 await until(`!!${optionNamed("@plans")}`, "the @ list does not show the second project", 30);
