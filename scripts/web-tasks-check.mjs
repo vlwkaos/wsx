@@ -1421,6 +1421,8 @@ const stored = await evaluate("fetch('api/push').then((response) => response.jso
 if (!stored.choices.manager || stored.choices.agents || stored.choices.digest?.minute !== 540) await fail(`the server stored ${JSON.stringify(stored.choices)}`);
 await shot("settings-notifications-saved");
 // A failed save: the server refuses an endpoint the site does not list; the error stays.
+// ^ The refusal is a 400 the browser logs; only that one is not a page defect.
+const refusedFrom = problems.length;
 await evaluate("globalThis.PUSH_ENDPOINT = 'https://push.invalid/x'");
 await click("input[name=agents]");
 await until("document.querySelector('.option-status.error')?.textContent.includes('not allowed')", "a refused save shows no error");
@@ -1429,6 +1431,7 @@ if ((await switches()).agents) await fail("the agents switch stayed on after the
 await pause(4500);
 if (!(await status()).includes("not allowed")) await fail("the save error went away by itself");
 await shot("settings-notifications-failed");
+problems.splice(refusedFrom, problems.length - refusedFrom, ...problems.slice(refusedFrom).filter((problem) => !/status of 400 .*\/api\/push$/.test(problem)));
 await evaluate(`globalThis.PUSH_ENDPOINT = ${JSON.stringify(fixture.endpoint)}`);
 // Mute a session from its menu; Settings counts it and unmutes it.
 await go("#/sessions");
