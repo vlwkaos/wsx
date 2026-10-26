@@ -411,8 +411,7 @@ def main():
             continue
         summary = 'did: ' + text + (' | steers: ' + '; '.join(steers) if steers else '')
         for repeat in range(2 if 'REPEAT' in words else 1):
-            if repeat:
-                time.sleep(1)
+            time.sleep(repeat)
             emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': summary,
                   'session_id': session, 'permission_denials': denials,
                   'structured_output': {'status': status, 'summary': summary,

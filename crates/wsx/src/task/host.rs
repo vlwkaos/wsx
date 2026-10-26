@@ -1022,20 +1022,16 @@ impl Host {
         };
         // ^ Never two runs in one working copy: the same checks join, other ones wait.
         let indexes: Vec<usize> = picked.iter().map(|(index, _)| *index).collect();
-        if let Some(CheckRun {
-            indexes: running,
-            replies,
-            ..
-        }) = &mut self.check_run
-        {
-            if *running != indexes {
-                let numbers: Vec<String> = running.iter().map(|i| (i + 1).to_string()).collect();
+        if let Some(run) = &mut self.check_run {
+            if run.indexes != indexes {
+                let numbers: Vec<String> =
+                    run.indexes.iter().map(|i| (i + 1).to_string()).collect();
                 return refuse(format!(
                     "a check-run of checks {} still runs; run it again to wait for its answer",
                     numbers.join(" ")
                 ));
             }
-            replies.push(reply);
+            run.replies.push(reply);
             self.say("check-run: joined the run of the same checks");
             return;
         }
