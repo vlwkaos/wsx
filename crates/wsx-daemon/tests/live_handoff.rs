@@ -60,6 +60,15 @@ impl Fixture {
         }
     }
 
+    fn wsxd(&self) -> PathBuf {
+        // ^ The daemon re-validates the handoff executable by device, inode, size and mtime
+        // after the deferral. Another task's build can relink the shared target/debug/wsxd in
+        // that window, so each test hands off its own copy.
+        let binary = self.root.join("bin/wsxd");
+        fs::copy(env!("CARGO_BIN_EXE_wsxd"), &binary).unwrap();
+        binary
+    }
+
     fn command(&self, executable: &Path) -> Command {
         let mut command = Command::new(executable);
         command
@@ -200,8 +209,8 @@ fn reported_pid(text: &str) -> String {
 
 #[test]
 fn daemon_handoff_preserves_live_shell_pid_and_io() {
-    let source_binary = PathBuf::from(env!("CARGO_BIN_EXE_wsxd"));
     let mut fixture = Fixture::new();
+    let source_binary = fixture.wsxd();
     fixture.source = Some(fixture.command(&source_binary).spawn().unwrap());
     wait_for_socket(&fixture.socket);
     let client = Client::new(fixture.socket.clone());
@@ -543,8 +552,8 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
 #[test]
 fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
     const PANES: usize = 43;
-    let source_binary = PathBuf::from(env!("CARGO_BIN_EXE_wsxd"));
     let mut fixture = Fixture::new();
+    let source_binary = fixture.wsxd();
     fixture.source = Some(fixture.command(&source_binary).spawn().unwrap());
     wait_for_socket(&fixture.socket);
     let client = Client::new(fixture.socket.clone());
@@ -685,11 +694,7 @@ fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
 #[test]
 fn restart_into_the_same_build_waits_only_for_a_tui_that_cannot_follow() {
     let mut fixture = Fixture::new();
-    // ^ The daemon re-validates the handoff executable by device, inode, size and mtime
-    // after the deferral. Another task's build can relink the shared target/debug/wsxd in
-    // that window, so the test hands off its own copy.
-    let binary = fixture.root.join("bin/wsxd");
-    fs::copy(env!("CARGO_BIN_EXE_wsxd"), &binary).unwrap();
+    let binary = fixture.wsxd();
     fixture.source = Some(fixture.command(&binary).spawn().unwrap());
     wait_for_socket(&fixture.socket);
     let client = Client::new(fixture.socket.clone());
@@ -894,8 +899,8 @@ fn lifecycle(client: &Client) -> wsx_core::runtime::DaemonLifecycle {
 // as its last screen; the live pane keeps its process.
 #[test]
 fn an_exited_pane_hands_off_as_its_last_screen() {
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_wsxd"));
     let mut fixture = Fixture::new();
+    let binary = fixture.wsxd();
     fixture.source = Some(fixture.command(&binary).spawn().unwrap());
     wait_for_socket(&fixture.socket);
     let client = Client::new(fixture.socket.clone());
@@ -993,8 +998,8 @@ fn an_exited_pane_hands_off_as_its_last_screen() {
 #[test]
 fn a_failed_handoff_keeps_its_reason() {
     use std::os::unix::fs::PermissionsExt;
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_wsxd"));
     let mut fixture = Fixture::new();
+    let binary = fixture.wsxd();
     fixture.source = Some(fixture.command(&binary).spawn().unwrap());
     wait_for_socket(&fixture.socket);
     let client = Client::new(fixture.socket.clone());
