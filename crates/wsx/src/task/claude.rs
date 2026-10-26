@@ -226,7 +226,7 @@ fn steps_note(record: &TaskRecord) -> String {
     let names: Vec<&str> = record.steps.iter().map(|step| step.name.as_str()).collect();
     format!(
         "The task runs in steps, one turn each: {}. Each turn names its step: do that step \
-         only, then return status done. When a step needs a decision that is the owner's, \
+         only, then return status done as the turn's last call: nothing runs after it. When a step needs a decision that is the owner's, \
          return status blocked with the question; otherwise decide yourself and go on. ",
         names.join(", ")
     )

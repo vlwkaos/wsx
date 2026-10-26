@@ -68,6 +68,9 @@ enum DiskWait {
 const DISK_POLL: Duration = Duration::from_secs(30);
 /// What a check prints when the disk is full: the check then waits instead of failing.
 const NO_SPACE: &str = "No space left on device";
+/// The one turn a worker gets when its turn ended without a result.
+const RESULT_RETRY: &str = "Your turn ended without a result. Return your result now: \
+StructuredOutput is the last call of a turn, and nothing runs after it.";
 
 struct Host {
     dir: TaskDir,
@@ -85,6 +88,8 @@ struct Host {
     last_denials: Vec<String>,
     /// Turns started for failed checks since the last message from a person.
     check_retries: u32,
+    /// The worker was asked once this turn for the result its last turn left out.
+    result_asked: bool,
     /// The file this host runs from, and whether it must exec its replacement.
     binary: Option<hosting::Binary>,
     reexec: bool,
@@ -130,6 +135,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         last_result: None,
         last_denials: Vec::new(),
         check_retries: 0,
+        result_asked: false,
         binary: hosting::Binary::capture(),
         reexec: false,
         after_rebase: None,
@@ -699,19 +705,36 @@ impl Host {
     }
 
     fn on_result(&mut self, turn: TurnResult) {
-        self.turn_active = false;
-        let mut result = turn
+        let structured = turn
             .structured
-            .and_then(|value| serde_json::from_value::<WorkerResult>(value).ok())
-            .unwrap_or_else(|| WorkerResult {
-                status: "failed".into(),
-                summary: if turn.text.is_empty() {
-                    format!("the agent ended with {} and no result", turn.subtype)
-                } else {
-                    turn.text.clone()
-                },
-                ..WorkerResult::default()
-            });
+            .and_then(|value| serde_json::from_value::<WorkerResult>(value).ok());
+        if structured.is_none() && !turn.is_error {
+            // ^ No model call: Claude's own turn for a background-task notification, which
+            // answers no message of the host. ref: docs/tasks.md "Claude adapter"
+            if turn.usage.input_tokens == 0 && turn.usage.output_tokens == 0 {
+                self.log(LogEvent::Agent {
+                    text: "claude ended its own turn with no result: ignored".into(),
+                });
+                return;
+            }
+            if !std::mem::replace(&mut self.result_asked, true) {
+                self.turn_active = false;
+                self.say("the turn ended without a result: asked for it once");
+                self.start_turn(RESULT_RETRY);
+                return;
+            }
+        }
+        self.turn_active = false;
+        self.result_asked = false;
+        let mut result = structured.unwrap_or_else(|| WorkerResult {
+            status: "failed".into(),
+            summary: if turn.text.is_empty() {
+                format!("the agent ended with {} and no result", turn.subtype)
+            } else {
+                turn.text.clone()
+            },
+            ..WorkerResult::default()
+        });
         if turn.is_error && result.status == "done" {
             result.status = "failed".into();
         }
