@@ -60,12 +60,18 @@ export function ProjectFacts({ project, overview }) {
     <div class="facts-line">
       ${deploys.map((line) => html`<p key=${line}>${line}</p>`)}
       ${failures.map(({ kind, failed }) => html`
-        <details class="task-fold deploy-output" key=${kind}>
+        <details class="task-fold deploy-output" key=${kind} onToggle=${toEnd}>
           <summary class="fold-head"><${Icon} name="chevron" />How the ${kind} of ${short(failed.commit)} ended</summary>
           <div class="code-block"><pre tabindex="0">${failed.output}</pre></div>
         </details>`)}
       ${checkout && html`<p>${checkout}</p>`}
     </div>`;
+}
+
+// ^ The fold opens to the output's last lines, where a failure says why.
+function toEnd(event) {
+  const pre = event.currentTarget.querySelector("pre");
+  if (event.currentTarget.open) pre.scrollTop = pre.scrollHeight;
 }
 
 // What the owner should know next, in one sentence, or nothing while the agents just work.

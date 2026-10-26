@@ -520,7 +520,7 @@ pub struct WorkerResult {
     pub decisions: Vec<Decision>,
     /// What the worker proved, each with the command or capture that shows it.
     pub evidence: Vec<Evidence>,
-    /// Only what needs a person: look, feel, a real device, real data.
+    /// Only how it looks or feels, with a capture; without one, a real device or real data.
     pub human_verify: Vec<HumanVerify>,
     pub left_open: Vec<String>,
     pub notes: String,
@@ -557,10 +557,16 @@ pub struct HumanVerify {
 }
 
 impl HumanVerify {
-    /// An item that names a command (a code span) is for the worker to run, not a person.
+    /// An item the worker proves, not a person: it names a command (a code span), or it has
+    /// no capture and its `where` does not name a real device or real data.
     /// ref: docs/tasks.md "To check"
-    pub fn names_command(&self) -> bool {
-        self.check.contains('`') || self.pass_if.contains('`')
+    pub fn is_for_worker(&self) -> bool {
+        let place = self.place.to_lowercase();
+        self.check.contains('`')
+            || self.pass_if.contains('`')
+            || (self.capture.trim().is_empty()
+                && !place.contains("real device")
+                && !place.contains("real data"))
     }
 }
 

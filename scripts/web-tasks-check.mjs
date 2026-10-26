@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Real-browser check of manager mode on the page (docs/web-client-tasks.md), driven over the
 // Chrome DevTools Protocol. Called by `test-web-client.py --part tasks --browser`.
-//   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> <home order> <slop-audit.js|""> <plans-id> <restart-file>
+//   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> <home order> <slop-audit.js|""> <plans-id> <restart-file> <plans-checkout> <long-name>
 // <home order> is the project names as home must list them, comma-separated. <plans-id> is a
-// project whose #1 waits for the owner's answer and whose #2 is ready to land.
+// project whose #1 waits for the owner's answer, whose #2 is ready to land and writes <long-name>,
+// and whose last deploy failed; <plans-checkout> is its main checkout.
 // The project lands by hand and has: #1 and #4 waiting for a host, #2 ready with an item to
 // check, #3 ready, #5 closed after a long report the manager heard of, #6 working (its prompt
 // opens with "Owner asked:"), #7 and #8 landed with an item each to check (#7's summary has two
@@ -14,11 +15,12 @@
 // /ui-view-standards beside it (scripts/mobile-audit.js, or the file WSX_MOBILE_AUDIT names).
 // The project's plain git worktree `old-work`, which no task owns, has a done agent session
 // ("old chat"); the project's task copies are on `wsx/t<n>`.
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { launch, mobileAudit, pause } from "./web-cdp.mjs";
 
-const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile] = process.argv.slice(2);
+const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, plansCheckout, longName] = process.argv.slice(2);
 const project = Number(projectArg);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key } = await launch({
   captures, prefix: "tasks-", timeoutSeconds: 300,
@@ -1294,10 +1296,10 @@ await oneMotion("To check opened again on a phone", () => go(`#/p/${project}/che
 const listed = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [node.querySelector('.task-chip').textContent.trim(), node.querySelector('.check-what').textContent, node.querySelector('.check-pass').textContent])");
 if (JSON.stringify(listed) !== JSON.stringify([["#7", "open the file", "it has text"], ["#8", "open the file", "it has text"], ["#2", "open the file", "it has text"]])) await fail(`the To check list reads ${JSON.stringify(listed)}`);
 if (await sheetState() !== "3 open") await fail(`the list's top row reads ${await sheetState()}`);
-// ^ Each item says what its task did; #8's says where to look and shows its capture. Three short
+// ^ Each item says what its task did and where to look; #8's shows its capture. Three short
 // items fit: the sheet is as high as its rows, on the bottom, with no empty band under them.
 const context = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [(node.querySelector('.check-task')?.textContent ?? '').replace(node.querySelector('.task-chip').textContent, '').trim(), [...node.querySelectorAll('.check-facts > *')].map((line) => line.textContent).join('|')])");
-if (!context.every(([did]) => did.startsWith("did: WORK")) || context[1][1] !== "Check|open the file|Look at|/#/x|Passes if|it has text" || context[0][1] !== "Check|open the file|Passes if|it has text") await fail(`the items' context reads ${JSON.stringify(context)}`);
+if (!context.every(([did]) => did.startsWith("did: WORK")) || context[1][1] !== "Check|open the file|Look at|/#/x|Passes if|it has text" || context[0][1] !== "Check|open the file|Look at|a real device|Passes if|it has text") await fail(`the items' context reads ${JSON.stringify(context)}`);
 await until("document.querySelector('.check-capture img')?.naturalWidth === 1", "#8's capture did not load");
 if (await count(".check-capture") !== 1) await fail("an item without a capture shows one");
 await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
@@ -1396,6 +1398,45 @@ await closeSheet("the waiting sheet", `#/p/${plans}`);
 // ^ Closing the sheet gives the composer the focus after the next paint: wait for it, or it
 // takes the focus back from the row button pressed below.
 await until("document.activeElement?.classList.contains('composer-field') && !document.activeElement.closest('dialog')", "closing the sheet did not focus the composer");
+// --- An uncommitted change in the main checkout to the file #2 writes: Land stays, a line
+// under the buttons names it and wraps on a phone; a commit ends the line. The commit is then
+// undone, so #2 still lands.
+const git = (...args) => execFileSync("git", ["-C", plansCheckout, ...args], { stdio: "pipe" });
+fs.writeFileSync(path.join(plansCheckout, longName), "the owner's draft\n");
+await go(`#/p/${plans}/t/2`);
+await until("(document.querySelector('.task-sheet .task-approval[role=note]')?.textContent ?? '').startsWith('Land stops:')", "no Land stops line for a dirty main checkout", 30);
+const stops = await evaluate(`(() => { const line = document.querySelector('.task-sheet .task-approval[role=note]').getBoundingClientRect();
+  const buttons = [...document.querySelectorAll('.task-sheet .task-next .button')].map((node) => node.getBoundingClientRect());
+  const note = document.querySelector('.task-sheet .task-approval[role=note]'), scroll = document.querySelector('.task-sheet .scroll');
+  return { text: note.textContent, top: line.top, right: line.right, width: innerWidth, below: Math.max(...buttons.map((box) => box.bottom)),
+    sideways: [document.documentElement, scroll, note].filter((node) => node.scrollWidth > node.clientWidth + 1).map((node) => node.className || node.tagName) }; })()`);
+if (!stops.text.includes(longName)) await fail(`the Land stops line reads ${stops.text}`);
+if (!(await nextButtons()).includes("Land")) await fail(`with the line the buttons are ${await nextButtons()}`);
+if (stops.top < stops.below || stops.right > stops.width || stops.sideways.length) await fail(`the Land stops line is not under the buttons or overflows: ${JSON.stringify(stops)}`);
+await shot("land-stops");
+git("add", longName);
+git("-c", "user.name=owner", "-c", "user.email=owner@example.invalid", "commit", "-q", "-m", "the owner's draft");
+await closeSheet("the land-stops sheet", `#/p/${plans}`);
+await go(`#/p/${plans}/t/2`);
+await until("!!document.querySelector('dialog.task-sheet[open] .story') && !document.querySelector('.task-sheet .task-approval[role=note]')", "the Land stops line stayed after the commit", 30);
+git("reset", "-q", "--hard", "HEAD~1");
+await closeSheet("the committed sheet", `#/p/${plans}`);
+
+// --- plans' failed deploy: its fold opens to the last lines, monospace, at most half the screen.
+await go(`#/p/${plans}/page`);
+await until("!!document.querySelector('.project-page .deploy-output summary')", "plans' page has no fold for the failed deploy", 30);
+if (!/^How the deploy of [0-9a-f]{8} ended$/.test((await text(".deploy-output summary"))[0])) await fail(`the fold reads ${await text(".deploy-output summary")}`);
+await click(".deploy-output summary");
+await until("document.querySelector('.deploy-output').open", "the fold did not open");
+await pause(200);
+const fold = await evaluate(`(() => { const pre = document.querySelector('.deploy-output pre'), box = pre.getBoundingClientRect();
+  return { height: box.height, font: getComputedStyle(pre).fontFamily, end: pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 1,
+    last: pre.textContent.trim().split('\\n').pop(), sideways: document.documentElement.scrollWidth > innerWidth }; })()`);
+if (fold.last !== "deploy step 60" || !fold.end) await fail(`the fold does not open to the last lines: ${JSON.stringify(fold)}`);
+if (!/mono/i.test(fold.font) || fold.height > 844 / 2 || fold.sideways) await fail(`the fold's box is ${JSON.stringify(fold)}`);
+await shot("deploy-output");
+await closeSheet("plans' page", `#/p/${plans}`);
+
 await openReservoir();
 await until(`(${rowOf("#1")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#1's row does not offer Land", 60);
 moved = await clearRow("#2", "Land");
