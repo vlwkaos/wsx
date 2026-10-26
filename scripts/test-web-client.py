@@ -1615,18 +1615,18 @@ capabilities = ["terminal_view"]
                              + old_record('assistant', 'old-answer', 'old-question', [{'type': 'text', 'text': 'the old answer'}])
                              + old_record('attachment', 'deferred', 'never-saved', attachment={'type': 'deferred_tools_record'})
                              + old_record('assistant', 'newest', 'deferred', [{'type': 'text', 'text': 'the newest answer'}]),
-                             'newest', [('user', 'the old question'), ('assistant', 'the old answer'), ('assistant', 'the newest answer')], True),
+                             [('user', 'the old question'), ('assistant', 'the old answer'), ('assistant', 'the newest answer')], True),
             'old-long-turn': (old_record('user', 'old-question', None, 'the long task')
                               + old_record('assistant', 'old-answer', 'old-question', [{'type': 'text', 'text': 'starting'}])
                               + steps + old_record('assistant', 'newest', 'result-9', [{'type': 'text', 'text': 'the task is done'}]),
                               # ^ After the next message the newest MiB holds a person message, so the long turn
                               # before it is older than the read and not shown.
-                              'newest', [('user', 'the long task'), ('assistant', 'starting')], False),
+                              [('user', 'the long task'), ('assistant', 'starting')], False),
         }
-        for name, (content, leaf, head, kept) in fixtures.items():
+        for name, (content, head, kept) in fixtures.items():
             (work / (name + '.jsonl')).write_text(content)
             created = call('session_create', {'worktree_id': worktrees['project3'], 'label': name,
-                'command': ['/usr/bin/env', 'WSX_FIXTURE_LEAF=' + leaf, sys.executable, str(actor), str(work / (name + '.jsonl')),
+                'command': ['/usr/bin/env', 'WSX_FIXTURE_LEAF=newest', sys.executable, str(actor), str(work / (name + '.jsonl')),
                             str(work / (name + '.trace')), str(third_root), str(chart), str(outside)], 'rows': 12, 'cols': 100})
             assert created['type'] == 'created', created
             sessions[name] = created['data']['id']
