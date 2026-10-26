@@ -1228,25 +1228,22 @@ if (await count(".composer .chips li")) await fail("the sent file stayed in the 
 
 // The first item's Fail: × opens a note sent with Send, with no Cancel; × again or Escape closes it
 // and leaves the sheet open; an empty note is not sent. Ends with a note typed in the open form.
+const firstItem = "document.querySelector('.check-item')";
 async function failForm() {
-  const item = "document.querySelector('.check-item')";
-  const failButton = `${item}.querySelector('.check-acts .check-act[data-tone="danger"]')`;
-  await evaluate(`${failButton}.click()`);
-  await until(`!!${item}.querySelector('.need-form input')`, "Fail did not ask for a note");
-  const form = await evaluate(`[[...${item}.querySelectorAll('.need-form button')].map((node) => node.textContent).join(), ${failButton}.getAttribute('aria-expanded')]`);
+  const failButton = `${firstItem}.querySelector('.check-acts .check-act[data-tone="danger"]')`;
+  const press = async (open, message) => { await evaluate(`${failButton}.click()`); await until(`${open ? "!!" : "!"}${firstItem}.querySelector('.need-form${open ? " input" : ""}')`, message); };
+  await press(true, "Fail did not ask for a note");
+  const form = await evaluate(`[[...${firstItem}.querySelectorAll('.need-form button')].map((node) => node.textContent).join(), ${failButton}.getAttribute('aria-expanded')]`);
   if (JSON.stringify(form) !== JSON.stringify(["Send", "true"])) await fail(`the fail form reads ${JSON.stringify(form)}`);
-  await evaluate(`${item}.querySelector('.need-form').requestSubmit()`);
+  await evaluate(`${firstItem}.querySelector('.need-form').requestSubmit()`);
   await pause(300);
   if (await count(".check-item") !== 3) await fail("a fail without a note was sent");
   await key("Escape", 27);
-  await until(`!${item}.querySelector('.need-form') && document.activeElement === ${failButton}`, "Escape did not close the note and give the focus back to ×");
+  await until(`!${firstItem}.querySelector('.need-form') && document.activeElement === ${failButton}`, "Escape did not close the note and give the focus back to ×");
   if (!await evaluate("!!document.querySelector('dialog.task-sheet[open]')")) await fail("Escape in the note closed the To check sheet");
-  await evaluate(`${failButton}.click()`);
-  await until(`!!${item}.querySelector('.need-form input')`, "× did not open the note again");
-  await evaluate(`${failButton}.click()`);
-  await until(`!${item}.querySelector('.need-form')`, "× did not close the note");
-  await evaluate(`${failButton}.click()`);
-  await until(`!!${item}.querySelector('.need-form input')`, "× did not open the note a third time");
+  await press(true, "× did not open the note again");
+  await press(false, "× did not close the note");
+  await press(true, "× did not open the note a third time");
   await typeInto(".check-item .need-form input", "the text is cut off");
   await shot("to-check-fail", ".composer-send");
 }
@@ -1306,7 +1303,6 @@ const room = await evaluate(`(() => { const list = document.querySelector('.chec
     all: !!document.querySelector('dialog.task-sheet header.bar .check-all'), intro: !!document.querySelector('.check-intro') }; })()`);
 if (!room.inline || !room.full || !room.under || !room.edge || !room.muted || !room.all || room.intro) await fail(`the To check items are not laid out on a phone: ${JSON.stringify(room)}`);
 await shot("to-check", ".composer-send");
-const firstItem = "document.querySelector('.check-item')";
 // ^ Try starts the preview of the item's task and becomes a link to it (docs/tasks.md "Preview").
 await evaluate(`${firstItem}.querySelector('.check-act[title="Try it on a preview"]').click()`);
 await until(`!!${firstItem}.querySelector('a.check-act[href^="https://host.example.ts.net:"]')`, "Try did not become a preview link", 300);
