@@ -1231,7 +1231,7 @@ if (await count(".composer .chips li")) await fail("the sent file stayed in the 
 const firstItem = "document.querySelector('.check-item')";
 async function failForm() {
   const failButton = `${firstItem}.querySelector('.check-acts .check-act[data-tone="danger"]')`;
-  const press = async (open, message) => { await evaluate(`${failButton}.click()`); await until(`${open ? "!!" : "!"}${firstItem}.querySelector('.need-form${open ? " input" : ""}')`, message); };
+  const press = async (open, message) => { await evaluate(`${failButton}.click()`); await until(`${open ? "!!" : "!"}${firstItem}.querySelector('.need-form input')`, message); };
   await press(true, "Fail did not ask for a note");
   const form = await evaluate(`[[...${firstItem}.querySelectorAll('.need-form button')].map((node) => node.textContent).join(), ${failButton}.getAttribute('aria-expanded')]`);
   if (JSON.stringify(form) !== JSON.stringify(["Send", "true"])) await fail(`the fail form reads ${JSON.stringify(form)}`);
