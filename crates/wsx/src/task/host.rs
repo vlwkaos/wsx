@@ -615,10 +615,19 @@ impl Host {
             return;
         }
         if let Err(error) = self.try_start_turn(text) {
-            self.say(&format!("cannot start the agent: {error:#}"));
+            let reason = format!("cannot start the agent: {error:#}");
+            self.say(&reason);
             self.log(LogEvent::Stopped {
-                reason: format!("cannot start the agent: {error:#}"),
+                reason: reason.clone(),
             });
+            // ^ As the result, so the ledger and the report name the reason too.
+            let result = WorkerResult {
+                status: "failed".into(),
+                summary: reason,
+                ..WorkerResult::default()
+            };
+            self.write_result(&result, &[]);
+            self.last_result = Some(result);
             self.set_state(TaskState::Failed);
         }
     }

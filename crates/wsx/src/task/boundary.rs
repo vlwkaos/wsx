@@ -113,10 +113,33 @@ impl Boundary {
     }
 
     /// `program` inside the boundary; the caller adds its arguments and environment.
-    pub fn command(&self, program: &str) -> Command {
+    /// Fails with sandbox-exec's own words when it cannot apply the profile here, so the
+    /// agent start fails with the reason instead of an agent that ends at once.
+    pub fn command(&self, program: &str) -> Result<Command> {
+        let profile = self.profile();
+        let tried = Command::new(SANDBOX_EXEC)
+            .arg("-p")
+            .arg(&profile)
+            .arg("/usr/bin/true")
+            .output()
+            .with_context(|| format!("cannot run {SANDBOX_EXEC}"))?;
+        if !tried.status.success() {
+            let said = String::from_utf8_lossy(&tried.stderr).trim().to_string();
+            // ^ Seatbelt does not start inside another sandbox: sandbox_apply answers EPERM.
+            let hint = if said.contains("Operation not permitted") {
+                "; this host runs inside another sandbox, where wsx's boundary cannot start: \
+                 start wsxd outside it"
+            } else {
+                ""
+            };
+            anyhow::bail!(
+                "{SANDBOX_EXEC} cannot apply the boundary ({}: {said}){hint}",
+                tried.status
+            );
+        }
         let mut command = Command::new(SANDBOX_EXEC);
-        command.arg("-p").arg(self.profile()).arg(program);
-        command
+        command.arg("-p").arg(profile).arg(program);
+        Ok(command)
     }
 }
 
@@ -148,13 +171,13 @@ fn real(path: &Path) -> PathBuf {
 fn subpath(path: &Path) -> String {
     let text = path.display().to_string();
     format!(
-        "subpath \"{}\"",
+        "(subpath \"{}\")",
         text.replace('\\', "\\\\").replace('"', "\\\"")
     )
 }
 
 fn regex(pattern: &str) -> String {
-    format!("regex #\"{pattern}\"")
+    format!("(regex #\"{pattern}\")")
 }
 
 fn escape(path: &Path) -> String {

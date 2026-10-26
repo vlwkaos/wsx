@@ -289,7 +289,7 @@ impl ClaudeAgent {
         wrap: impl Fn(Option<AgentLine>) -> E + Send + 'static,
     ) -> Result<Self> {
         // ^ The host's boundary confines the agent; the adapter only adds its own argv.
-        let mut command = launch.boundary.command("claude");
+        let mut command = launch.boundary.command("claude")?;
         command.args(claude_args(launch, session, resume));
         command.env_clear();
         for name in KEPT_ENV {
