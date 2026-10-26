@@ -1381,11 +1381,11 @@ await oneMotion("To check opened again on a phone", () => go(`#/p/${project}/che
 const listed = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [node.querySelector('.task-chip').textContent.trim(), node.querySelector('.check-what').textContent, node.querySelector('.check-pass').textContent])");
 if (JSON.stringify(listed) !== JSON.stringify([["#7", "open the file", "it has text"], ["#8", "open the file", "it has text"], ["#2", "open the file", "it has text"]])) await fail(`the To check list reads ${JSON.stringify(listed)}`);
 if (await sheetState() !== "3 open") await fail(`the list's top row reads ${await sheetState()}`);
-// ^ Each item says what its task did; #7's and #8's say where to look and show their captures. The
+// ^ Each item says what its task did and where to look; #7's and #8's show their captures. The
 // sheet is on the bottom and as high as its rows with no empty band under them, at most 85%: with
 // the two captures the rows are higher, so it stops at 85% and its list scrolls.
 const context = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [(node.querySelector('.check-task')?.textContent ?? '').replace(node.querySelector('.task-chip').textContent, '').trim(), [...node.querySelectorAll('.check-facts > *')].map((line) => line.textContent).join('|')])");
-if (!context.every(([did]) => did.startsWith("did: WORK")) || context.slice(0, 2).some(([, facts]) => facts !== "Check|open the file|Look at|/#/x|Passes if|it has text")) await fail(`the items' context reads ${JSON.stringify(context)}`);
+if (!context.every(([did]) => did.startsWith("did: WORK")) || context.slice(0, 2).some(([, facts]) => facts !== "Check|open the file|Look at|/#/x|Passes if|it has text") || context[2][1] !== "Check|open the file|Look at|a real device|Passes if|it has text") await fail(`the items' context reads ${JSON.stringify(context)}`);
 await until("[...document.querySelectorAll('.check-capture img')].map((image) => image.naturalWidth).join() === '480,480'", "#7's and #8's captures did not load");
 if (await count(".check-capture") !== 2) await fail("an item without a capture shows one");
 await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
