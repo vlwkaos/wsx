@@ -89,7 +89,7 @@ export function Home({ rail }) {
                     ${count ? html`<span class="count" key=${count} data-tone="attention" aria-label=${`${count} ${count === 1 ? "needs" : "need"} you`}>${count}</span>` : null}
                   </span>
                   <span class="row-context" key=${status.text} data-tone=${status.tone ?? null} data-loading=${status.loading ? "" : null}>
-                    ${row.overview?.busy ? html`<span class="row-typing" role="img" aria-label="Manager is typing"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></span>` : null}${status.text}
+                    ${row.overview?.busy ? html`<span class="row-typing" role="img" aria-label=${`${row.overview.manager} is typing`}><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></span>` : null}${status.text}
                   </span>
                 </span>
                 <span class="row-state">
