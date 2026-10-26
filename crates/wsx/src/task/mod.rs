@@ -77,6 +77,9 @@ pub enum TaskCmd {
         /// The first turn writes a plan and stops without editing; an `add` continues it
         #[arg(long)]
         plan: bool,
+        /// One turn without `tasks.workflow.steps`: the manager's idle task
+        #[arg(long, hide = true)]
+        no_steps: bool,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -401,6 +404,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             hold,
             files,
             plan,
+            no_steps,
             project,
             json,
         } => new(
@@ -411,6 +415,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             hold,
             files,
             plan,
+            no_steps,
             project.as_deref(),
             json,
         ),
@@ -719,6 +724,7 @@ fn new(
     hold: Option<String>,
     files: Vec<String>,
     plan: bool,
+    no_steps: bool,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
@@ -730,8 +736,9 @@ fn new(
         .map(wsx_core::task::view::checked_hold)
         .transpose()?;
     let files = checked_files(&[], &files)?;
-    let (dir, record, answered) =
-        create(prompt, from, title, model, None, hold, files, plan, project)?;
+    let (dir, record, answered) = create(
+        prompt, from, title, model, None, hold, files, plan, no_steps, project,
+    )?;
     let state = answered.unwrap_or(TaskState::Working);
     let id = dir.id;
     if json {
@@ -756,7 +763,8 @@ fn new(
 }
 
 /// Create a task and start its host; `fixes` names the "To check" item it fixes; with `plan`
-/// its first turn writes a plan (docs/tasks.md "Workflow"). The state is none when the host
+/// its first turn writes a plan, with `no_steps` it runs no `tasks.workflow.steps`
+/// (docs/tasks.md "Workflow"). The state is none when the host
 /// did not answer in time.
 #[allow(clippy::too_many_arguments)]
 fn create(
@@ -768,6 +776,7 @@ fn create(
     hold: Option<String>,
     files: Vec<String>,
     plan: bool,
+    no_steps: bool,
     project: Option<&str>,
 ) -> Result<(TaskDir, TaskRecord, Option<TaskState>)> {
     let (config, workspace) = load_full_workspace()?;
@@ -801,7 +810,10 @@ fn create(
         adapter: settings.adapter,
         model: model.unwrap_or(settings.model),
         checks: settings.checks,
-        steps: settings.workflow.steps.clone(),
+        steps: match no_steps {
+            true => Vec::new(),
+            false => settings.workflow.steps.clone(),
+        },
         step: 0,
         env: settings.env,
         check_timeout_secs: settings.check_timeout_secs,
@@ -942,6 +954,7 @@ fn fail_check(project: &str, project_id: &str, id: &str, note: &str) -> Result<C
         Some(item.id.clone()),
         None,
         Vec::new(),
+        false,
         false,
         Some(project),
     )?;

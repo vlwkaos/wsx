@@ -152,8 +152,8 @@ async function pair() {
 // The top of the task sheet as words: what changed, what to know next, and whether a step path is left.
 const story = () => evaluate(`({ summary: document.querySelector('.story-summary')?.textContent.trim() ?? '',
   next: document.querySelector('.story-next')?.textContent.trim() ?? '', steps: document.querySelectorAll('.story-steps').length })`);
-// A task's "done" bubble, by the header of the worker's report.
-const workerBubble = (n) => `[...document.querySelectorAll('.log .bubble')].find((node) => node.querySelector('.bubble-head')?.textContent.trim().replace(/\\s+/g, ' ') === '#${n} · done')`;
+// A muted line that names task n as `word` ("#7 done").
+const statusSays = (n, word) => `[...document.querySelectorAll('.status-line')].some((node) => node.textContent.includes('#${n} ${word}'))`;
 // The sheet's action buttons, under its top.
 const nextButtons = () => text(".task-sheet .task-next button");
 const clickNext = (label) => evaluate(`[...document.querySelectorAll('.task-sheet .task-next button')].find((node) => node.textContent === ${JSON.stringify(label)}).click()`);
@@ -262,10 +262,13 @@ async function motion() {
     const calm = state.projects.find((project) => project.name === 'calm');
     const rows = () => [...document.querySelectorAll('.home-rows > .row')];
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
-    // The manager of ui runs a turn: typing dots on its row.
+    // The manager of ui runs a turn: typing dots on its row. ^ Counted against the dots already
+    // there: another fixture manager may run a real turn at the same time.
+    const dots = () => document.querySelectorAll('.home-row .row-typing .typing-dot').length;
+    const idle = dots();
     update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], busy: true } } });
     await frames();
-    const typing = document.querySelectorAll('.home-row .row-typing .typing-dot').length;
+    const typing = dots() - idle;
     toast('Saved the page');
     await frames();
     const notice = !!document.querySelector('.notice .notice-timer');
@@ -490,18 +493,15 @@ for (const gone of [".need-card", ".tray", ".brief", ".events"]) {
 }
 if (await evaluate("/Explain/.test(document.querySelector('#app').innerText)")) await fail("the chat still offers Explain");
 if (await evaluate("document.querySelector('.manager .bar-state')?.textContent ?? ''")) await fail(`an idle manager is named in the header: ${await evaluate("document.querySelector('.manager .bar-state').textContent")}`);
-// The owner's message on the right, the manager's reply on the left with its author, and #5's
-// long report as one bubble by "#5 worker" with its header, shown whole.
+// The owner's message on the right, the manager's reply on the left with its author. A worker's
+// result is a muted line ("#5 ready"), never a bubble: its report is in the task sheet.
 let shown = await bubbles();
 const ownerAsk = shown.find((bubble) => bubble.side === "out" && bubble.text.startsWith("RUN wsx task land 3"));
 // ^ ui's manager is named "Atlas" (tasks.manager.name); plans' reads "Manager".
 const managerReply = shown.find((bubble) => bubble.side === "in" && bubble.author === "Atlas");
 if (!ownerAsk || ownerAsk.author || !managerReply) await fail(`the bubbles are ${JSON.stringify(shown)}`);
-const report = `[...document.querySelectorAll('.log .bubble')].find((node) => node.querySelector('.bubble-author')?.textContent === '#5 worker')`;
-await until(`!!${report}`, "the long report has no worker bubble");
-const head = await evaluate(`${report}.querySelector('.bubble-head').textContent.trim().replace(/\\s+/g, ' ')`);
-if (head !== "#5 · ready") await fail(`the report's header reads ${head}`);
-if (!(await evaluate(`/line 30 of the report/.test(${report}.textContent) && !${report}.querySelector('button.link-action')`))) await fail("the long report is not shown whole");
+await until(statusSays(5, "ready"), "#5's result left no muted line");
+if (await evaluate("/line 30 of the report/.test(document.querySelector('.log').textContent) || [...document.querySelectorAll('.bubble-author')].some((node) => / worker$/.test(node.textContent))")) await fail("a worker's report is in the chat");
 await managerWidth("the phone chat");
 await shot("project", ".composer-send");
 // The chat opens at its newest message; scrolled up, it shows Jump to latest.
@@ -512,13 +512,11 @@ await evaluate("document.querySelector('.log').scrollTop = 0");
 await until("!!document.querySelector('.jump')", "no jump button after scrolling the manager chat up");
 await click(".jump");
 await until(`!document.querySelector('.jump') && ${atEnd}`, "Jump to latest did not go to the end of the manager chat");
-// A landed task is one worker bubble "#7 · done" with its whole summary. No muted line
-// repeats the landing.
-await until(`!!${workerBubble(7)} && !!${workerBubble(8)}`, "the landed tasks have no worker bubbles");
-const done = await evaluate(`({ head: ${workerBubble(7)}.querySelector('.bubble-head').textContent.trim().replace(/\\s+/g, ' '),
-  body: ${workerBubble(7)}.querySelector('.bubble-body').textContent.trim(), more: !!${workerBubble(7)}.querySelector('button.link-action') })`);
-if (done.head !== "#7 · done" || !done.body.startsWith("did: WORK d.txt HV done.") || !/More words follow/.test(done.body) || done.more) await fail(`the done bubble reads ${JSON.stringify(done)}`);
-if (await evaluate("[...document.querySelectorAll('.status-line')].some((node) => /#[78] (landed|done)/.test(node.textContent))")) await fail("a muted line repeats a landing");
+// A landed task is the muted line "#7 done".
+await until(`${statusSays(7, "done")} && ${statusSays(8, "done")}`, "the landed tasks have no muted line");
+// ^ The manager's reply to a turn of only events (the fake says "noted events") is a muted line too.
+await until("[...document.querySelectorAll('.status-line')].some((node) => node.textContent.includes('noted events'))", "a reply to events is not a muted line", 60);
+if (await evaluate("[...document.querySelectorAll('.bubble')].some((node) => node.textContent.includes('noted events'))")) await fail("a reply to events is a bubble");
 
 // --- The reservoir: one line over the composer that names the running task (its pulsing chip
 // and its title without "Owner asked:") and the items to check; a tap opens the decision list,
@@ -659,10 +657,9 @@ await until("[...document.querySelectorAll('.status-line')].some((node) => /#1 g
 let moved = await clearRow("Approve land #3", "Approve");
 if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))")) await fail("a notice repeats the status line of Approve");
 await until(`!${rowOf("Approve land #3")} && !${rowOf("#3")}`, "the reservoir kept the approved landing", 300);
-// ^ The approval is a muted line; the landing is #3's "done" bubble, not a second line.
+// ^ The approval and the landing are muted lines.
 await until("[...document.querySelectorAll('.status-line')].some((node) => /Approved land #3/.test(node.textContent))", "the approval left no muted line", 300);
-await until(`!!${workerBubble(3)}`, "the landing of #3 has no done bubble", 300);
-if (await evaluate("[...document.querySelectorAll('.status-line')].some((node) => /#3 landed/.test(node.textContent))")) await fail("a muted line repeats the landing of #3");
+await until(statusSays(3, "done"), "the landing of #3 left no muted line", 300);
 await until(`(${rowOf("#1")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#1 is not ready to land after its answer", 300);
 moved = await clearRow("#1", "Land");
 // ^ A bubble that arrives with the landing sticks the chat to its end one frame later: on a
@@ -991,7 +988,9 @@ async function readAndReply(where) {
   await pause(300);
   const drift = (await rowAt(held.key)) - held.down;
   if (Math.abs(drift) > 2) await fail(`${where}: a reply below moved the row in view by ${drift} px`);
-  if (await jumpWords() !== "1 new") await fail(`${where}: scrolled up, the button reads "${await jumpWords()}", not "1 new"`);
+  if (await jumpWords() !== "1 new") await fail(`${where}: scrolled up, the button reads "${await jumpWords()}", not "1 new": ${await evaluate(`JSON.stringify((() => { const log = document.querySelector('.log');
+    return { top: log.scrollTop, height: log.scrollHeight, client: log.clientHeight, rows: [...log.children].filter((row) => row.dataset.in != null && row.dataset.at).map((row) => [row.dataset.key, row.offsetTop, row.offsetHeight, row.dataset.at]).slice(-4),
+      read: localStorage.getItem('wsx-read'), last: [...log.children].slice(-3).map((row) => [row.className, row.dataset.key, row.dataset.at]) }; })())`)}`);
   // (b) Left with that reply unread: the chat opens at a New line over it, at the top of the
   // screen, and the button still counts it.
   await reopen(where);
@@ -1474,6 +1473,6 @@ problems.splice(quietFrom);
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, a whole worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

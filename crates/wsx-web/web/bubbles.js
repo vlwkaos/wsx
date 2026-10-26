@@ -1,16 +1,18 @@
-// The manager chat as messages: one bubble per owner message, manager reply and worker
-// report, each with its author and time, and task changes as grouped muted lines
+// The manager chat as messages: one bubble per owner message and manager reply, each with its
+// author and time, and task changes and the manager's replies to them as grouped muted lines
 // (docs/web-client-tasks.md "Project screen").
 import { clock, html } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { Quoted, quoteOf } from "./reply.js";
-import { ChatApprovals, TaskChip } from "./tasks.js";
+import { ChatApprovals } from "./tasks.js";
 
 // Bubbles of one author closer together than this read as one group.
 const GROUP_MS = 5 * 60_000;
 // Status lines this close together read as one line.
 const LINE_MS = 60_000;
+// A quiet reply's line: its first line, cut here.
+const QUIET_CHARS = 120;
 
 const EVENT_WORDS = { landed: "done" };
 
@@ -43,7 +45,7 @@ export function conversation(entries, resolutions, approvals = []) {
     } else if (entry.kind === "message" && entry.from === "recap") {
       return;
     } else if (entry.kind === "reply") {
-      rows.push({ kind: "bubble", at, key, author: "manager", entry, tag: entry.to?.some((id) => recaps.has(id)) ? "Recap" : null });
+      rows.push({ kind: "bubble", at, key, author: "manager", entry, quiet: entry.quiet, tag: entry.to?.some((id) => recaps.has(id)) ? "Recap" : null });
     } else if (entry.kind === "message" && /^manager(-reply)?:/.test(entry.from ?? "")) {
       // ^ Another project's manager wrote (docs/tasks.md "Managers talk").
       const [from, peer] = entry.from.split(/:(.*)/s);
@@ -51,16 +53,8 @@ export function conversation(entries, resolutions, approvals = []) {
     } else if (entry.kind === "sent") {
       rows.push({ kind: "bubble", at, key, author: "manager", entry, to: entry.to });
     } else if (entry.kind === "message") {
-      // ^ The status lines first, so they join the settled lines just before them.
-      const reports = entry.reports ?? [];
-      const reported = new Set(reports.map((report) => report.task));
-      const lines = entry.text.split("\n").filter(Boolean)
-        .filter((line) => !reported.has(Number(/^#(\d+) /.exec(line)?.[1])))
-        .map(shortLine);
+      const lines = entry.text.split("\n").filter(Boolean).map(shortLine);
       if (lines.length) rows.push({ kind: "line", at, key, parts: lines });
-      for (const report of reports) {
-        rows.push({ kind: "bubble", at, key: `${key}-r${report.task}`, author: `worker-${report.task}`, report });
-      }
     } else if (entry.kind === "rotated" || entry.kind === "stopped") {
       rows.push({ kind: "note", at, key, entry });
     }
@@ -76,9 +70,18 @@ export function conversation(entries, resolutions, approvals = []) {
     const reply = rows.find((row) => row.entry?.kind === "reply" && row.at >= approval.unix_ms);
     if (reply) reply.approvals = [...(reply.approvals ?? []), approval];
   }
+  // ^ A reply to a turn of only events is the manager's own work: a muted line, unless it asks
+  // for an approval; `-` says nothing changed for the owner (docs/tasks.md "Manager").
+  const shown = rows.flatMap((row) => {
+    if (!row.quiet || row.approvals) return [row];
+    const first = row.entry.text.trim().split("\n")[0].trim();
+    if (!first || first === "-") return [];
+    const part = first.length > QUIET_CHARS ? `${first.slice(0, QUIET_CHARS - 1)}…` : first;
+    return [{ kind: "line", at: row.at, key: row.key, parts: [part] }];
+  });
   // ^ Adjacent lines join; adjacent bubbles of one author group (author once, time last).
   const joined = [];
-  for (const row of rows) {
+  for (const row of shown) {
     const last = joined.at(-1);
     if (row.kind === "line" && last?.kind === "line" && row.at - last.at < LINE_MS) {
       last.parts = [...last.parts, ...row.parts.filter((part) => !last.parts.includes(part))];
@@ -100,7 +103,7 @@ export function conversation(entries, resolutions, approvals = []) {
 
 // `names`: the manager's and its peers' names as the server resolves them (docs/tasks.md "Config").
 const authorName = (author, names) => author === "owner" ? "You" : author === "manager" ? names.manager
-  : author.startsWith("peer:") ? names.peers[author.slice(5)] : `#${author.slice(7)} worker`;
+  : names.peers[author.slice(5)];
 
 // One message. `words` turns its text runs into task chips.
 export function Bubble({ project, row, words, names, fresh }) {
@@ -108,12 +111,7 @@ export function Bubble({ project, row, words, names, fresh }) {
   const id = `bubble-${row.key}`;
   const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${names.peers[row.to]}` : row.tag;
   let body;
-  if (row.report) {
-    const { report } = row;
-    body = html`
-      <p class="bubble-head"><${TaskChip} project=${project} id=${report.task} />${" "}<span class="bubble-state">· ${report.head}</span></p>
-      <div class="bubble-body" id=${id}><${Markdown} text=${report.summary} words=${words} prose /></div>`;
-  } else if (out) {
+  if (out) {
     body = html`<div class="bubble-body" id=${id}><${Quoted} text=${row.entry.text} words=${words} /></div><${Attachments} files=${row.entry.attachments} />`;
   } else {
     body = html`<div class="bubble-body" id=${id}><${Markdown} text=${row.entry.text} words=${words} prose /></div>
@@ -122,7 +120,7 @@ export function Bubble({ project, row, words, names, fresh }) {
   return html`
     <article class="bubble" data-side=${out ? "out" : "in"} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}
       data-at=${row.pending ? null : row.at} data-key=${row.key} data-in=${out || row.pending ? null : ""}
-      data-quote=${quoteOf(row.report ? row.report.summary : row.entry.text) || null}
+      data-quote=${quoteOf(row.entry.text) || null}
       data-pending=${row.pending ? "" : null} aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}`}>
       ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${authorName(row.author, names)}</p>`}
       <div class="bubble-box">${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>

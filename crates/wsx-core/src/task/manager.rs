@@ -88,6 +88,10 @@ pub enum ManagerEvent {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TurnUsage>,
+        /// The reply to a turn of only events: the manager's own work, which the chat shows
+        /// as a muted line, not a message (docs/tasks.md "Manager").
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        quiet: bool,
     },
     /// This manager's message to another project's manager (`say --from-manager`).
     Sent {

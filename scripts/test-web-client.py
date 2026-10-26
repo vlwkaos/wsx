@@ -916,7 +916,9 @@ def web_journey(args):
             def state():
                 snapshot = call('snapshot')['data']
                 pane = next(s['focused_pane'] for s in snapshot['sessions'] if s['id'] == sessions[name])
-                return next(p for p in snapshot['panes'] if p['id'] == pane)['agent']['state'] in ('idle', 'done')
+                # ^ A new agent has no report until its first one: wait for it, do not fail.
+                agent = next(p for p in snapshot['panes'] if p['id'] == pane)['agent'] or {}
+                return agent.get('state') in ('idle', 'done')
             wait(state, name + ' agent ready')
 
         def lease_free(session):
@@ -3284,12 +3286,10 @@ merge_seconds = 3
         assert steady(owner, 'POST', '/api/tasks/%d/t/1/start' % planned, {})[0] == 404
         ok('a waiting task: its need and reason, add and hand, no brief or start')
         if args.browser:
-            # #5's long report: one worker bubble's data, its full summary, on the events message.
-            reports = [r for e in steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]['entries'] for r in e.get('reports', [])]
-            # ^ The project lands by hand, so the manager may also have heard of #7 or #8 at ready.
-            heard = [(r['task'], r['state'], r['head']) for r in reports]
-            assert heard[0] == (5, 'ready', 'ready') and [r for r in heard if r[1] == 'landed'] == [(7, 'landed', 'done'), (8, 'landed', 'done')], reports
-            assert reports[0]['summary'].startswith('did: WORK c.txt') and 'line 30 of the report' in reports[0]['summary'], reports
+            # A worker's report stays in the task sheet: the chat route carries the events lines only.
+            entries = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]['entries']
+            assert not any('reports' in e for e in entries), entries
+            assert any(e['kind'] == 'message' and e.get('from') == 'events' and '#5 ready' in e['text'] for e in entries), entries
             # The manager's name: ui's set name, plans' default; a peer by its set name.
             ui_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]
             plans_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['plans'])[1]
