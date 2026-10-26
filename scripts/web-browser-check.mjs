@@ -374,7 +374,11 @@ async function chats() {
 
   // A long conversation: opens at its end; scrolled up, a jump button shows.
   await openSession("long");
-  await until("document.querySelectorAll('.message').length > 40", "the long conversation did not load");
+  // ^ A long log renders its newest 60 rows (chat.js RECENT_ROWS) under a "Show N earlier" button.
+  await until("(document.querySelector('.log > .message:last-of-type')?.textContent ?? '').includes('Step 24 covers')", "the long conversation did not load");
+  const recent = await evaluate(`({ rows: document.querySelectorAll('.log > :is(.message, details.steps)').length,
+    earlier: document.querySelector('.log > .log-earlier')?.textContent.trim() ?? '', first: document.querySelector('.log > .message-user')?.textContent.trim() ?? '' })`);
+  if (recent.rows !== 60 || !/^Show [1-9]\d* earlier$/.test(recent.earlier) || recent.first.startsWith('Question 1:')) await fail(`the long chat does not render its newest 60 rows under Show earlier: ${JSON.stringify(recent)}`);
   const long = await evaluate(`(() => { const log = document.querySelector('.log');
     return { end: log.scrollHeight - log.scrollTop - log.clientHeight, wide: log.scrollWidth - log.clientWidth,
       steps: [...document.querySelectorAll('details.steps > summary')].slice(-4).map((node) => node.textContent.trim()),
