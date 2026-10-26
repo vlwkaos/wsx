@@ -1898,6 +1898,21 @@ def run(wsx, wsxd, work, owned):
     answers = [t['message'] for t in traces() if 'Your check-run ended after your result' in t.get('message', '')]
     assert len(answers) == 1 and 'check 2 `while [ ! -e' in answers[0] and ': exit 0' in answers[0], answers
     js('task', 'close', late, '--discard')
+    # 32u. A result that comes while the checks of an earlier one run (Claude's own turn for a
+    # background notice) is answered by those checks: one result, one run, one revision.
+    mark('32u')
+    gate_open = base / 'gate-open'
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('"test ! -e broken.txt"', '"while [ ! -e %s ]; do sleep 0.2; done"' % gate_open))
+    git('commit', '-q', '-am', 'a slow gate')
+    twice = js('task', 'new', 'REPEAT WORK twice.txt')['id']
+    wait(lambda: len([e for e in log(twice) if e['kind'] == 'result']) == 2, 'the repeated result', 30)
+    assert show(twice)['state'] == 'checking', show(twice)
+    gate_open.touch()
+    assert wait_state(twice, 'ready', 'failed')['state'] == 'ready', log(twice)
+    time.sleep(1)
+    kinds = [e['kind'] for e in log(twice) if e['kind'] in ('checks', 'revision')]
+    assert kinds == ['checks', 'revision'], kinds
+    js('task', 'close', twice, '--discard')
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
     git('commit', '-q', '-am', 'no scenario')
     # 32d. The disk queue (docs/tasks.md "Checks, revisions and report"): tasks that wait for
