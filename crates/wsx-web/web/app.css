@@ -278,8 +278,6 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .diagram-scroll { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent; }
 .diagram-open { display: block; width: fit-content; margin-inline: auto; padding: 0; border: 0; background: none; cursor: zoom-in; }
 .diagram img, .viewer img { display: block; max-width: none; border-radius: 0; }
-/* A transparent image keeps the scheme's page under it. */
-.viewer img { background: var(--color-bg); }
 .viewer img[data-loading] { visibility: hidden; }
 .diagram-failed > * + * { margin-top: var(--space-1); }
 .viewer {
@@ -288,7 +286,7 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 }
 .viewer[open] { display: flex; flex-direction: column; }
 .viewer-bar {
-  flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1);
+  flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-1);
   padding: var(--space-2) var(--space-4); padding-top: max(var(--space-2), env(safe-area-inset-top));
   border-bottom: var(--border-width) solid var(--color-hairline);
 }
@@ -300,7 +298,8 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 @media (pointer: coarse) { .viewer-zoom .time { display: none; } }
 .viewer-note { margin: auto; }
 .viewer-stage { flex: 1; min-height: 0; overflow: auto; display: flex; touch-action: none; cursor: grab; }
-.viewer-stage img { margin: auto; flex: 0 0 auto; }
+/* A transparent image keeps the scheme's page under it. */
+.viewer-stage img { margin: auto; flex: 0 0 auto; background: var(--color-bg); }
 /* An image link opens the viewer: the pointer says so. */
 a[data-view] { cursor: zoom-in; }
 /* A table takes its full height in the message; only a table wider than its block scrolls, sideways. */

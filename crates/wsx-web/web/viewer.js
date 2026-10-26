@@ -39,16 +39,15 @@ export function viewImageLinks() {
   });
 }
 
-// An image's size when the opener knows it (a diagram); others are measured when they load.
-const known = (image) => image.width ? { width: image.width, height: image.height } : null;
-
 function Viewer({ images, start, dark, onClosed }) {
   const dialog = useRef();
   const stage = useRef();
   const picture = useRef();
   const [at, setAt] = useState(start);
   const image = images[at];
-  const [natural, setNatural] = useState(known(image));
+  // ^ An image's size: the opener's when it knows it (a diagram), else measured when it loads.
+  const [measured, setMeasured] = useState(null);
+  const natural = image.width ? image : measured;
   const [room, setRoom] = useState(null);
   const [zoom, setZoom] = useState(1);
   const pointers = useRef(new Map());
@@ -88,7 +87,7 @@ function Viewer({ images, start, dark, onClosed }) {
     setAt(next);
     setZoom(1);
     setBroken(false);
-    setNatural(known(images[next]));
+    setMeasured(null);
   };
   // At zoom 1 the whole image fits the screen.
   const fit = natural && room ? Math.min(room.width / natural.width, room.height / natural.height) : null;
@@ -217,7 +216,7 @@ function Viewer({ images, start, dark, onClosed }) {
         ${broken && html`<p class="note viewer-note" role="alert">The image could not be read.</p>`}
         <img key=${image.src} ref=${picture} src=${image.src} alt=${image.alt} draggable=${false} data-loading=${fit === null || broken || undefined}
           width=${natural && Math.round(natural.width * scale)} height=${natural && Math.round(natural.height * scale)}
-          onLoad=${(event) => { if (!image.width) setNatural({ width: event.target.naturalWidth, height: event.target.naturalHeight }); }}
+          onLoad=${(event) => setMeasured({ width: event.target.naturalWidth, height: event.target.naturalHeight })}
           onError=${() => setBroken(true)} />
       </div>
     </dialog>`;

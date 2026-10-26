@@ -255,12 +255,7 @@ async function viewImages(name, links) {
     if (Math.abs(left - right) > 1 || Math.abs(top - bottom) > 1) await fail(`${what}: image ${index + 1} is not centered: gaps ${JSON.stringify(now.gaps)}`);
     return now;
   };
-  const swipe = async (from, to) => {
-    const y = Math.round(size[1] / 2);
-    await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: from, y, id: 1 }] });
-    for (const x of [from + (to - from) / 3, from + (to - from) * 2 / 3, to]) await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: Math.round(x), y, id: 1 }] });
-    await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  };
+  const swipe = (from, to) => touch({ x: from, y: Math.round(size[1] / 2) }, to - from);
   await open();
   const first = await at(0);
   if (first.place !== before) await fail(`${what}: opening the image navigated: ${first.place}, was ${before}`);
@@ -279,12 +274,8 @@ async function viewImages(name, links) {
   await closed("Back");
   await open();
   const [x, y] = (await state()).beside.map(Math.round);
-  if (phone()) {
-    await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
-    await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  } else {
-    for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
-  }
+  if (phone()) await touch({ x, y }, 0);
+  else for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
   await closed("a tap beside the image");
 }
 // The closed line as read: "6 need you · #6 <title> +1 more".
