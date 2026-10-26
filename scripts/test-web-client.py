@@ -3490,7 +3490,7 @@ merge_seconds = 3
         # Earlier topics are read once and map to the switches; the server keeps no topic list.
         viewer_device = steady(viewer, 'GET', '/api/session')[1]['device']['id']
         stop(servers['viewer'])
-        stored = work / 'state/wsx/web/viewer/push.json'
+        stored = state / 'wsx/web/viewer/push.json'
         stored.write_text(json.dumps([{'device_id': viewer_device, 'endpoint': push_origin + '/push/old', 'keys': keys,
                                        'topics': ['blocked', 'done', 'tasks'], 'created_unix': int(time.time())}]))
         servers['viewer'] = start(work, [str(wsx), 'web', 'serve', '--site', str(files['viewer'])], env=env, cwd=project,
