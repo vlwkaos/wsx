@@ -262,13 +262,11 @@ async function motion() {
     const calm = state.projects.find((project) => project.name === 'calm');
     const rows = () => [...document.querySelectorAll('.home-rows > .row')];
     const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
-    // The manager of ui runs a turn: typing dots on its row. ^ Counted against the dots already
-    // there: another fixture manager may run a real turn at the same time.
-    const dots = () => document.querySelectorAll('.home-row .row-typing .typing-dot').length;
-    const idle = dots();
+    // The manager of ui runs a turn: typing dots on its row. ^ Only ui's row: another fixture
+    // manager may run a real turn at the same time.
     update({ tasks: { ...state.tasks, [ui]: { ...state.tasks[ui], busy: true } } });
     await frames();
-    const typing = dots() - idle;
+    const typing = document.querySelectorAll('.home-rows > .row[data-key="' + ui + '"] .row-typing .typing-dot').length;
     toast('Saved the page');
     await frames();
     const notice = !!document.querySelector('.notice .notice-timer');
@@ -288,8 +286,12 @@ async function motion() {
     render(html\`<\${Loading} />\`, holder);
     return { typing, notice, moved, glides, ghosts, loading: holder.querySelector('.loading')?.getAttribute('role'), reduced: ${reduced} };
   })()`);
-  const seen = await run(false);
-  if (seen.typing !== 3 || !seen.notice || !seen.moved || seen.glides < 1 || seen.ghosts !== 1 || seen.loading !== "status") await fail(`motion at ${w}px: ${JSON.stringify(seen)}`);
+  // ^ The fake state goes into the live store: a real update in the same frame (another
+  // manager's turn, a project list read) can undo it, so one of 3 tries must show it all.
+  const good = (seen) => seen.typing === 3 && seen.notice && seen.moved && seen.glides >= 1 && seen.ghosts === 1 && seen.loading === "status";
+  let seen = await run(false);
+  for (let attempt = 1; attempt < 3 && !good(seen); attempt++) { await pause(1000); seen = await run(false); }
+  if (!good(seen)) await fail(`motion at ${w}px: ${JSON.stringify(seen)}`);
   await expectAll("typing dots", ".row-typing .typing-dot", "pulse");
   await expectAll("a working row", ".home-row .pulse", "pulse");
   await expectAll("the count badge", ".home-row .count", "pop");
@@ -1473,6 +1475,39 @@ problems.splice(quietFrom);
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
+// ^ Last: its 35 messages keep the manager busy for a while.
+await resize([390, 844, 2]);
+await go(chat);
+await until("!!document.querySelector('.reservoir-head')", "the ui chat did not come back");
+// A long chat renders its newest 60 rows; "Show N earlier" adds rows above and keeps the reader
+// on the row they read (docs/web-client.md "Screens").
+const named = "document.querySelectorAll('.log > [data-key]').length";
+// ^ The say route limits a burst: a refused message waits and goes again.
+for (let n = 0; n < 35; n++) {
+  let status = await say(`NOOP ${n}`);
+  for (let attempt = 0; attempt < 20 && status !== 200; attempt++) { await pause(1000); status = await say(`NOOP ${n}`); }
+  if (status !== 200) await fail(`message ${n} of the long chat was not taken: ${status}`);
+}
+await until(`!document.querySelector('.log .typing')`, "the manager did not answer the long chat", 120);
+// ^ Read to the end and opened again: nothing unread, so the window is the newest 60 rows.
+await toLatest("390 px");
+await pause(500);
+await reopen("390 px");
+for (let n = 0; n < 50 && !(await count(".log-earlier")); n++) await pause(100);
+if (!(await count(".log-earlier"))) await fail(`a long chat shows no Show earlier: ${await evaluate(`JSON.stringify({ named: ${named}, rows: document.querySelector('.log').children.length,
+  last: [...document.querySelectorAll('.log > [data-key]')].slice(-3).map((node) => node.dataset.key), fresh: !!document.querySelector('.log-new'), note: document.querySelector('.log > .note')?.textContent ?? null })`)}`);
+await pause(500);
+const rendered = await evaluate(named);
+if (rendered > 61) await fail(`a long chat renders ${rendered} rows`);
+await evaluate("document.querySelector('.log').scrollTop = 0");
+await pause(300);
+const reading = await rowInView();
+await click(".log-earlier");
+await until(`${named} > ${rendered}`, "Show earlier added no rows");
+await pause(300);
+const shifted = (await rowAt(reading.key)) - reading.down;
+if (Math.abs(shifted) > 2) await fail(`Show earlier moved the row in view by ${shifted} px`);
+await toLatest("390 px");
 console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

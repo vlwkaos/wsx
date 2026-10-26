@@ -225,6 +225,8 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
   /* The end of the conversation stands well clear of the composer; the jump button fits in the gap. */
   padding-bottom: calc(var(--space-4) * 4);
 }
+/* A long log shows its newest rows; this shows more above (useRecent in chat.js). */
+.log-earlier { align-self: center; }
 .log:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 .message { max-width: var(--size-prose); min-width: 0; }
 /* Hook: .markdown, .code-block, .table-wrap — the agent's text as markdown.
