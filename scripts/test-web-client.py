@@ -2531,14 +2531,15 @@ capabilities = ["terminal_view"]
         settle('owner')
         # An agent that finished never pushes; it waits for the digest.
         owner.request('POST', chat + '/send', {'text': 'notify me'})
-        wait(lambda: traces('owner')[-1] == 'notify me', 'finished turn')
+        wait(lambda: traces('owner')[-1].splitlines()[-1] == 'notify me', 'finished turn')
         settle('owner')
         time.sleep(4.5)
         assert pushes() == [], pushes()
         # A second agent of the project, for the push that names every session that needs the owner.
-        created = call('session_create', {'worktree_id': worktrees['project'], 'label': 'second chat',
+        # ^ In another granted project: wsxd runs one writer exchange per worktree.
+        created = call('session_create', {'worktree_id': worktrees['project3'], 'label': 'second chat',
             'command': [sys.executable, str(actor), str(work / 'second.jsonl'), str(work / 'second.trace'),
-                        str(work / 'project'), str(chart), str(outside)], 'rows': 12, 'cols': 100})
+                        str(work / 'project3'), str(chart), str(outside)], 'rows': 12, 'cols': 100})
         assert created['type'] == 'created', created
         sessions['second'] = created['data']['id']
         settle('second')
@@ -2585,8 +2586,8 @@ capabilities = ["terminal_view"]
 
         # The digest, moved to the next minute: it keeps the window and names the agent that
         # finished, without the muted one.
-        owner.request('POST', chat + '/send', {'text': 'notify me again'})
-        wait(lambda: traces('owner')[-1] == 'notify me again', 'finished turn after the error')
+        cli('session', 'send-text', sessions['owner'], 'notify me again')
+        wait(lambda: traces('owner')[-1].splitlines()[-1] == 'notify me again', 'finished turn after the error')
         settle('owner')
         now = time.gmtime()
         if now.tm_sec > 50:
