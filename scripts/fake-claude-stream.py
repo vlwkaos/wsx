@@ -15,6 +15,7 @@ Each user message is a small script of words:
                Claude's own turn for a background-task notification ends
   CAPTURE      (with HV) the item has a page path and a small PNG capture
   CMDHV        return a Human Verify item that names a command
+  BAREHV       return a Human Verify item about a page without a capture
   WAIT <file>  keep working until <file> exists, at most 10 minutes
   CHECKRUN_AGAIN  start `wsx task check-run`, kill it after 1 s, run it again and trace that answer
   CHECKRUN_TWICE  run `wsx task check-run` twice on the same tree and trace both answers
@@ -357,16 +358,19 @@ def main():
                            env=dict(os.environ, GIT_AUTHOR_NAME='fake', GIT_AUTHOR_EMAIL='fake@example.invalid',
                                     GIT_COMMITTER_NAME='fake', GIT_COMMITTER_EMAIL='fake@example.invalid'))
         status = 'blocked' if blocked else 'done'
-        # ^ CAPTURE leaves a small PNG for the item; CMDHV names a command, which wsx sends back.
+        # ^ CAPTURE leaves a small PNG for the item; CMDHV names a command and BAREHV is a page
+        # without a capture: wsx sends both back.
         verify = []
         if 'HV' in words:
-            verify.append({'check': 'open the file', 'where': '/#/x' if 'CAPTURE' in words else '',
+            verify.append({'check': 'open the file', 'where': '/#/x' if 'CAPTURE' in words else 'a real device',
                            'capture': 'shot.png' if 'CAPTURE' in words else '', 'pass_if': 'it has text'})
             if 'CAPTURE' in words:
                 with open('shot.png', 'wb') as out:
                     out.write(PIXEL)
         if 'CMDHV' in words:
             verify.append({'check': 'run `wsx task list`', 'where': '', 'capture': '', 'pass_if': 'it lists the task'})
+        if 'BAREHV' in words:
+            verify.append({'check': 'the page reads well', 'where': '/#/x', 'capture': '', 'pass_if': 'it reads well'})
         if 'NORESULT' in words:
             no_result = end_without_result(session, int(words[words.index('NORESULT') + 1]))
             continue

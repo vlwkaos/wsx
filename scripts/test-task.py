@@ -835,9 +835,10 @@ def run(wsx, wsxd, work, owned):
     assert conflicts == [a2] and git('show', 'main:x.txt') == 'resolved', conflicts
     assert len(js('task', 'check')['open']) == 3
     # An item keeps where to look and its capture, copied into the task folder before the copy
-    # goes. An item that names a command goes back to the worker once; its next result has none.
+    # goes. An item that names a command and one about a page without a capture go back to the
+    # worker once, in one message; its next result has none.
     shot = js('task', 'new', 'WORK cap.txt HV CAPTURE')['id']
-    command = js('task', 'new', 'WORK cmd.txt CMDHV')['id']
+    command = js('task', 'new', 'WORK cmd.txt CMDHV BAREHV')['id']
     assert reviewed(shot)['state'] == 'landed', show(shot)
     # ^ command branched before shot landed: its land rebases, reruns the checks and lands when
     # they pass (docs/tasks.md "Landing" 3).
@@ -846,6 +847,8 @@ def run(wsx, wsxd, work, owned):
     for n in (shot, command):
         wait_closed(n)
     assert [e['kind'] for e in log(command)].count('result') == 2, log(command)
+    sent = [t['message'] for t in traces() if 'yours to prove' in str(t.get('message'))]
+    assert len(sent) == 1 and 'wsx task list' in sent[0] and 'the page reads well' in sent[0], sent
     kept = [i for i in js('task', 'check')['open'] if i['task'] in (shot, command)]
     assert [(i['task'], i['where'], i['capture']) for i in kept] == [(shot, '/#/x', 'captures/r1-1.png')], kept
     stored = Path(show(shot)['report']).parent / 'captures' / 'r1-1.png'

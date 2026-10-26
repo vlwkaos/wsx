@@ -820,26 +820,29 @@ impl Host {
             self.start_turn(&text.join("\n\n"));
             return;
         }
-        // ^ A command is the worker's to run: an item that names one goes back once, within
-        // the check retries. ref: docs/tasks.md "To check"
-        let commands: Vec<&str> = result
+        // ^ What a test, an assert or a capture shows is the worker's to prove: such an item
+        // goes back once, within the check retries. ref: docs/tasks.md "To check"
+        let items: Vec<&str> = result
             .human_verify
             .iter()
-            .filter(|item| item.names_command())
+            .filter(|item| item.is_for_worker())
             .map(|item| item.check.as_str())
             .collect();
         if result.status == "done"
-            && !commands.is_empty()
+            && !items.is_empty()
             && self.pending.is_empty()
             && self.check_retries < MAX_CHECK_RETRIES
         {
             self.check_retries += 1;
-            self.say("human_verify names a command: sent back to the worker");
+            self.say("human_verify has items the worker proves: sent back to the worker");
             let text = format!(
-                "These human_verify items name a command: {}. A command is yours to run: run \
-                 it, put what it shows in evidence, and keep in human_verify only what a person \
-                 looks at or feels, in plain words with where to look. Then finish as before.",
-                commands.join(" | ")
+                "These human_verify items are yours to prove: {}. A command, a test, an assert \
+                 or a capture is yours: stage the state it needs in a fixture, run it and put \
+                 what it shows in evidence. Keep in human_verify only how a screen looks or \
+                 feels, with a capture of that state; an item without a capture is only for a \
+                 real device or the owner's real data, and its where says so. Then finish as \
+                 before.",
+                items.join(" | ")
             );
             self.start_turn(&text);
             return;

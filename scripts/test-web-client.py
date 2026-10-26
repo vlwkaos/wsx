@@ -2773,6 +2773,7 @@ capabilities = ["terminal_view"]
 # covers the default auto land.
 # ^ `minFreeGb: 0`: tasks must not wait on this machine's free disk. `approve: true` keeps
 # the manager's land an approval request for the journey.
+LONG_NAME = 'notes-about-jumping-between-projects-from-the-keyboard-and-back.txt'
 TASK_CONFIG = '''tasks:
   minFreeGb: 0
   land: { auto: false, approve: true }
@@ -2781,7 +2782,7 @@ TASK_CONFIG = '''tasks:
   checks:
     - "test ! -e broken.txt"
   manager: { model: fake-manager }
-  deploy: { command: "true" }
+  deploy: { command: 'test -z "$WSX_FIXTURE_DEPLOY_FAIL" || { seq -f "deploy step %g" 60; exit 3; }' }
   preview:
     command: 'exec python3 -m http.server "$PORT" --bind 127.0.0.1'
     ports: 9150-9199
@@ -2911,7 +2912,8 @@ def task_journey(args):
         wait_state(3, 'ready')
         # `plans`: #1 waits for the owner (its worker was refused a tool and asks), #2 is ready.
         assert js('task', 'new', 'Let me jump between projects from the keyboard NEEDS WebSearch NOOP', '-p', 'plans')['id'] == 1
-        assert js('task', 'new', 'WORK two.txt', '-p', 'plans')['id'] == 2
+        # ^ A long file name: the sheet's "Land stops" line must wrap it on a phone.
+        assert js('task', 'new', 'WORK %s' % LONG_NAME, '-p', 'plans')['id'] == 2
         for n, state_name in ((1, 'waiting'), (2, 'ready')):
             wait(lambda: js('task', 'show', n, '-p', 'plans')['state'] == state_name, 'plans #%d %s' % (n, state_name))
         if args.browser:
@@ -2949,6 +2951,10 @@ def task_journey(args):
             wait(lambda: any(e['kind'] == 'sent' for e in js('task', 'chat', '-p', 'ui')['entries']), 'ui answered plans', timeout=30)
             # A deploy of the default branch tip: the brief says it is up to date until a task lands.
             assert js('task', 'deploy', '-p', 'ui')['exit'] == 0
+            # plans' deploy fails with 60 lines: its project page folds their end.
+            failed = subprocess.run([str(wsx), 'task', 'deploy', '-p', 'plans', '--json'], env=dict(env, WSX_FIXTURE_DEPLOY_FAIL='1'),
+                                    cwd=project, capture_output=True, text=True, timeout=60)
+            assert json.loads(failed.stdout)['exit'] == 3, (failed.stdout, failed.stderr)
             # Sessions without tasks, oldest first: an agent that exited (`gone`), one done
             # (`quiet`), two working (`busy`).
             agent_script = work / 'session-agent.py'
@@ -3077,7 +3083,7 @@ merge_seconds = 3
         detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
         assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'add', 'hand'], detail['actions']
         assert detail['land_reason'] == 'ready to land' and detail['to_check'] == [] and detail['fixes'] is None, detail
-        assert detail['result']['human_verify'] == [{'check': 'open the file', 'where': '', 'capture': '', 'pass_if': 'it has text'}]
+        assert detail['result']['human_verify'] == [{'check': 'open the file', 'where': 'a real device', 'capture': '', 'pass_if': 'it has text'}]
         headings = [line for line in detail['report'].splitlines() if line.startswith('## ')]
         assert headings == ['## Summary', '## Changes', '## Evidence', '## To check', '## Left open'], headings
         kinds = [entry['kind'] for entry in detail['timeline']['entries']]
@@ -3137,7 +3143,7 @@ merge_seconds = 3
         assert [(i['id'], i['task'], i['title'], i['check'], i['state']) for i in listed] == [
             ('c1', 2, 'did: WORK a.txt HV', 'open the file', 'open')], listed
         # ^ The title is already the worker's sentence; an item without a capture has no image.
-        assert listed[0]['did'] is None and 'capture' not in listed[0] and 'where' not in listed[0], listed
+        assert listed[0]['did'] is None and 'capture' not in listed[0] and listed[0]['where'] == 'a real device', listed
         assert steady(owner, 'GET', '/api/tasks/%d/checks/c1/capture' % demo)[0] == 404
         assert steady(owner, 'GET', '/api/tasks/%d/checks/c99/capture' % demo)[0] == 404
         landed = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
@@ -3392,7 +3398,8 @@ merge_seconds = 3
                                                          'keys': {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}})
             result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,
                                   str(ids['ui']), str(args.captures), ','.join(home_order),
-                                  str(audit) if audit.exists() else '', str(ids['plans']), str(restart)], timeout=360)
+                                  str(audit) if audit.exists() else '', str(ids['plans']), str(restart),
+                                  str(plans), LONG_NAME], timeout=360)
             assert result.returncode == 0, result.stdout + result.stderr
             # ^ Try started #7's preview: its mapping goes with it.
             assert js('task', 'preview', 7, '--stop', '-p', 'ui')['stopped'] is True
