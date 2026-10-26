@@ -36,30 +36,6 @@ pub fn working_copy_path_named(main: &Path, suffix: &str) -> Result<PathBuf> {
     Ok(parent.join(format!("{name}-{suffix}")))
 }
 
-/// The task copies beside the main checkout: `<parent>/<repo>-t<n>`, also of closed tasks
-/// whose folder is still there.
-pub fn task_copies(main: &Path) -> Vec<PathBuf> {
-    let (Some(parent), Some(name)) = (main.parent(), main.file_name()) else {
-        return Vec::new();
-    };
-    let prefix = format!("{}-t", name.to_string_lossy());
-    let Ok(entries) = std::fs::read_dir(parent) else {
-        return Vec::new();
-    };
-    let mut copies: Vec<PathBuf> = entries
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry.file_name().to_str().is_some_and(|name| {
-                name.strip_prefix(&prefix)
-                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-            })
-        })
-        .map(|entry| entry.path())
-        .collect();
-    copies.sort();
-    copies
-}
-
 /// The main repository's git folder, as `git rev-parse --git-common-dir` names it.
 pub fn git_common_dir(repo: &Path) -> Result<PathBuf> {
     let text = git(

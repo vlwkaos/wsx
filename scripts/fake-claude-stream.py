@@ -10,7 +10,6 @@ Each user message is a small script of words:
   HUGE         first print one 5 MiB stdout line
   HV           return one Human Verify item
   LINE <file> <n>  replace line n of <file> with the message and commit
-  EDIT <file>  try the Edit tool on <file>: auto mode allows it in the copy unless Edit is disallowed
   MEMO <words> return the rest of the line as the result's memo
   CAPTURE      (with HV) the item has a page path and a small PNG capture
   CMDHV        return a Human Verify item that names a command
@@ -66,23 +65,16 @@ def emit(value):
 
 
 def parse_args(argv):
-    options, allowed, disallowed, index = {}, [], [], 0
+    options, index = {}, 0
     while index < len(argv):
         arg = argv[index]
-        if arg in ('--allowedTools', '--disallowedTools'):
-            into = allowed if arg == '--allowedTools' else disallowed
-            index += 1
-            while index < len(argv) and not argv[index].startswith('--'):
-                into.append(argv[index])
-                index += 1
-            continue
         if arg.startswith('--') and index + 1 < len(argv) and not argv[index + 1].startswith('--'):
             options[arg] = argv[index + 1]
             index += 2
             continue
         options[arg] = True
         index += 1
-    return options, allowed, disallowed
+    return options
 
 
 def tool_use(use_id, command, **extra):
@@ -120,22 +112,6 @@ def own_repo():
 def rest_of_line(text, word):
     line = next(line for line in text.splitlines() if word in line.split())
     return line.split(word, 1)[1].strip()
-
-
-def try_edit(words, allowed, disallowed, denials):
-    """EDIT <file>: auto mode accepts an edit in the working copy unless the tool is disallowed."""
-    if 'EDIT' not in words:
-        return
-    name = words[words.index('EDIT') + 1]
-    emit({'type': 'assistant', 'message': {'content': [
-        {'type': 'tool_use', 'name': 'Edit', 'input': {'file_path': name}}]}})
-    if 'Edit' in disallowed:
-        denials.append({'tool_name': 'Edit', 'tool_use_id': 'e', 'tool_input': {'file_path': name}})
-        trace({'edit_denied': name})
-        return
-    with open(name, 'a') as out:
-        out.write('edited\n')
-    trace({'edited': name})
 
 
 def edit_page(page, section, words):
@@ -211,14 +187,14 @@ def interactive(options):
 
 
 def main():
-    options, allowed, disallowed = parse_args(sys.argv[1:])
+    options = parse_args(sys.argv[1:])
     if '-p' not in options:
         return interactive(options)
     instructions = options.get('--append-system-prompt', '')
     project = instructions.split('wsx project ')[1].split('.')[0] if 'You are the manager' in instructions else None
     session = options.get('--resume') or options.get('--session-id')
     trace({'launch': True, 'pid': os.getpid(), 'session': session, 'resume': '--resume' in options,
-           'allowed': allowed, 'disallowed': disallowed, 'instructions': instructions,
+           'argv': sys.argv[1:], 'instructions': instructions,
            'schema': '--json-schema' in options, 'model': options.get('--model'),
            'schema_required': json.loads(options['--json-schema']).get('required') if '--json-schema' in options else None,
            'mode': options.get('--permission-mode'), 'settings': json.loads(options.get('--settings', '{}')),
@@ -332,7 +308,6 @@ def main():
         if 'CHECKRUN_TWICE' in words:
             answers = [subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True) for _ in range(2)]
             trace({'check_run_twice': [[ran.returncode, ran.stdout + ran.stderr] for ran in answers]})
-        try_edit(words, allowed, disallowed, denials)
         blocked = bool(denials) and 'NEEDS' in words
         if not blocked and 'WORK' in words:
             name = words[words.index('WORK') + 1]

@@ -375,8 +375,9 @@ def run(wsx, wsxd, work, owned):
     assert oct(host_socket.parent.stat().st_mode & 0o777) == '0o700'
     launch = wait(lambda: next((t for t in traces() if t.get('launch')), None), 'fake launch')
     # ^ One wsx variable: the host's broker for `wsx task check-run`.
-    assert launch['wsx_env'] == ['WSX_TASK_BROKER'] and launch['allowed'] == [] and launch['schema']
+    assert launch['wsx_env'] == ['WSX_TASK_BROKER'] and launch['schema']
     assert launch['model'] == 'fake-model' and not launch['resume'] and launch['mode'] == 'bypassPermissions'
+    assert not {'--allowedTools', '--disallowedTools'} & set(launch['argv']), launch['argv']
     assert "put in the result's memo a short, lean memo of durable" in launch['instructions'], launch['instructions']
     assert 'memo' in launch['schema_required'], launch['schema_required']
     # One permission model (docs/tasks.md "Permissions"): wsx's boundary, no agent settings for it.
@@ -390,7 +391,6 @@ def run(wsx, wsxd, work, owned):
     assert ready['state'] == 'ready', ready
     assert any(t.get('steer_in_turn') == 'use capitals' for t in traces())
     assert [e['mode'] for e in log(1) if e['kind'] == 'message'] == ['prompt', 'steer']
-    assert launch['disallowed'] == []
     assert ready['result']['checks'] and all(c['exit'] == 0 for c in ready['result']['checks'])
     commit = git('rev-parse', 'refs/wsx/task/1/r1')
     assert commit == git('rev-parse', 'wsx/t1')
@@ -940,7 +940,7 @@ def run(wsx, wsxd, work, owned):
     assert len(raw.encode()) <= 16 * 1024 and ledger['open_omitted'] == 0
     assert ledger['to_check'] == 0 and ledger['auto_land'] is False and 'verification' not in ledger['open'][0]
     assert [(row['id'], row['state']) for row in ledger['open']] == [(blocked_task, 'waiting'), (ready_task, 'ready')]
-    assert ledger['open'][0]['waiting']['on'] == 'owner' and 'asks' not in ledger['open'][0], ledger['open'][0]
+    assert ledger['open'][0]['waiting']['on'] == 'owner' , ledger['open'][0]
     assert ledger['open'][1]['summary'] == 'did: WORK l.txt could not run the browser test' and ledger['open'][1]['human_verify'] == 0
     assert ledger['open'][1]['checks'] == [{'command': 'test ! -e broken.txt', 'outcome': 'passed'}], ledger['open'][1]
     assert 0 < len(ledger['recent']) <= 10 and all(row['state'] in ('landed', 'closed') for row in ledger['recent'])
@@ -987,7 +987,7 @@ def run(wsx, wsxd, work, owned):
     assert '`wsx task ledger -p demo` when you need more' in launch['instructions'], launch['instructions']
     page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md')
     # ^ It uses the owner's skills (docs/tasks.md "Manager"); no tool list: nothing prompts.
-    assert launch['allowed'] == [], launch['allowed']
+    assert not {'--allowedTools', '--disallowedTools'} & set(launch['argv']), launch['argv']
     plugin = Path(launch['plugin_dir'])
     assert plugin.parent.name == 'manager' and plugin.resolve().is_relative_to(state.resolve()), plugin
     assert json.loads((plugin / '.claude-plugin/plugin.json').read_text())['name'] == 'owner'

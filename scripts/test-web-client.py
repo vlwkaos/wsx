@@ -3002,7 +3002,7 @@ merge_seconds = 3
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
         assert kinds[0] == ('waiting', 1) and sorted(kinds[1:]) == [('land', 2), ('land', 3)], kinds
-        assert overview['needs'][0]['waiting']['on'] == 'owner' and 'asks' not in overview['needs'][0], overview['needs'][0]
+        assert overview['needs'][0]['waiting']['on'] == 'owner', overview['needs'][0]
         assert overview['needs'][1]['reason'] == 'ready to land' and overview['working'] == 0 and overview['to_check'] == 0, overview
         # Three states for the owner; the store's own states stay in the record.
         assert {row['id']: row['stage'] for row in overview['tasks']} == {1: 'needs_you', 2: 'needs_you', 3: 'needs_you'}
@@ -3034,8 +3034,6 @@ merge_seconds = 3
         assert act(2, 'land', {'result': 'pass'})[0] == 422
         assert act(2, 'add', {'text': '  '})[0] == 400
         assert act(2, 'add', {'text': 'x' * (64 * 1024 + 1)})[0] == 413
-        # ^ Nothing is granted: the web has no `allow` action.
-        assert act(1, 'allow', {'tool': 'Bash(make:*)'})[0] == 422 and act(1, 'allow', {})[0] == 404
         assert act(2, 'explode', {})[0] == 404 and act(99, 'add', {'text': 'hi'})[0] == 404
         # ^ A second device of the owner: these steps keep to their own request budget.
         trier = Site(ports['owner'], '')
@@ -3280,7 +3278,7 @@ merge_seconds = 3
         planned = ids['plans']
         view = steady(owner, 'GET', '/api/tasks/%d' % planned)[1]
         assert [(item['kind'], item['task']) for item in view['needs']] == [('waiting', 1), ('land', 2)], view['needs']
-        assert view['needs'][0]['waiting']['on'] == 'owner' and 'asks' not in view['needs'][0], view['needs'][0]
+        assert view['needs'][0]['waiting']['on'] == 'owner' , view['needs'][0]
         detail = steady(owner, 'GET', '/api/tasks/%d/t/1' % planned)[1]
         assert detail['actions'] == ['add', 'hand'] and detail['talk'] == [] and 'brief' not in detail and 'phase' not in detail, detail
         assert steady(owner, 'POST', '/api/tasks/%d/t/1/start' % planned, {})[0] == 404

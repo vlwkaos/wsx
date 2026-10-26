@@ -84,7 +84,7 @@ impl Boundary {
     }
 
     /// The Seatbelt profile: allow everything, then the denials, then the role's own paths.
-    pub fn profile(&self) -> String {
+    fn profile(&self) -> String {
         let mut profile = String::from("(version 1)\n(allow default)\n");
         let mut rule = |verb: &str, filter: String| profile += &format!("({verb} {filter})\n");
         for path in &self.deny_read {
