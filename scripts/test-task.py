@@ -1719,6 +1719,11 @@ def run(wsx, wsxd, work, owned):
     assert started - killed < 5 and 'end' not in slot_marks()[holder_copy], slot_marks()
     release.touch()
     assert wait_state(waiter, 'ready', 'failed')['state'] == 'ready'
+    # ^ The killed holder, restarted, runs its checks again instead of waiting for the owner.
+    assert show(holder)['state'] == 'checking'
+    cli('session', 'restart', 'task-%d' % holder)
+    again = wait_state(holder, 'ready', 'failed', 'waiting')
+    assert again['state'] == 'ready', again
     for n in pair:
         js('task', 'close', n, '--discard')
     # A worker's check-run waits for the slot with no client timeout; a client that gave up and

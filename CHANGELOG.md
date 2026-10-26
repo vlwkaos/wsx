@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- A task host restarted while its task was checking runs the checks again. Before, the task waited for the owner with "the host restarted during a turn".
 - A task check that leaves a process behind, such as a test daemon or a push fixture from a killed test run, no longer holds the machine's check slot. Before, the host waited for that process to close the check's output, so one check never ended and every other task stayed in `checking` for hours. Now the check ends 2 seconds after its shell with the output read so far. The same holds for wsx's git and plugin commands.
 - A file or a screenshot pasted into the web chat's or the manager chat's text box is attached, as with the attach button. Before, a pasted screenshot on iPhone or desktop was dropped without a word. A pasted image without a useful name gets one with the time, such as `pasted-20261024153012.png`; a text paste is unchanged.
 - Opening the terminal of an exited pane no longer fails now and then on macOS with "Invalid argument". The pane sends its last screen and closes the stream, and macOS refuses a socket option on a stream its peer has already closed.
