@@ -81,7 +81,7 @@ export function CheckRow({ project, item, revision, onChanged }) {
         <${Place} where=${item.where} />
         ${item.capture && html`
           <a class="check-capture" href=${capture} target="_blank" rel="noopener" aria-label=${`Capture of: ${item.check}`}>
-            <img src=${capture} alt="" loading="lazy" />
+            <img src=${capture} alt="" />
           </a>`}
         <div class="check-end">
           <p class="check-pass">Passes if ${item.pass_if}</p>
@@ -125,6 +125,14 @@ export function ChecksPage({ project, onClose, grip }) {
   // ^ The overview counts the open items; a change anywhere reads the list again.
   const count = store.tasks[project]?.to_check;
   useEffect(() => { read(); }, [project, count]);
+  // ^ The sheet opens once the first read and its captures are in (tasks.js `Sheet`).
+  const page = useRef();
+  const loaded = items !== null || Boolean(failure);
+  useEffect(() => {
+    if (!loaded) return;
+    const images = [...page.current.querySelectorAll(".check-capture img")];
+    Promise.all(images.map((image) => image.decode().catch(() => {}))).then(() => grip.ready());
+  }, [loaded]);
   const passAll = async () => {
     setBusy(true);
     setFailure("");
@@ -138,7 +146,7 @@ export function ChecksPage({ project, onClose, grip }) {
     setBusy(false);
   };
   return html`
-    <div class="page task-page">
+    <div class="page task-page" ref=${page}>
       <header class="bar" onPointerDown=${grip?.down} onPointerMove=${grip?.move} onPointerUp=${grip?.up} onPointerCancel=${grip?.up}>
         <button class="icon-button" type="button" aria-label="Back to the chat" onClick=${onClose}><${Icon} name="back" /></button>
         <div class="bar-title">
