@@ -2020,6 +2020,25 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', overlap, '--discard')
     git('checkout', '--', 'README', '.gitignore')
 
+    # 32o. A check-run of a check that prints more than the broker's 3 MiB answer (docs/tasks.md
+    mark('32o')
+    # "Checks, revisions and report"): the worker gets its exit code and the end of its output,
+    # whose first line names the log in the task folder that holds all of it.
+    (project / 'wsx.config.yml').write_text(
+        LAND_CONFIG + '  scenarios:\n    loud: yes check-line | head -c 4000000; echo loud-end; exit 3\n')
+    git('commit', '-q', '-am', 'a loud scenario')
+    loud = js('task', 'new', 'CHECKRUN_WITH loud WORK loud.txt')['id']
+    assert wait_state(loud, 'ready', 'failed')['state'] == 'ready'
+    code, said = [t for t in traces() if 'check_run_with' in t][-1]['check_run_with'][0]
+    assert code == 1 and 'check 2 `yes check-line' in said and ': exit 3' in said, said
+    assert said.rstrip().endswith('check-line\nloud-end') and len(said) < 16 * 1024, said[-300:]
+    cut = re.search(r'\[the first (\d+) bytes are cut; the whole output is in (\S+)\]', said)
+    whole = Path(show(loud)['log']).parent / 'check-run-2.log'
+    assert cut and os.path.samefile(cut.group(2), whole) and whole.stat().st_size == 4000000 + len('loud-end\n'), said[:300]
+    js('task', 'close', loud, '--discard')
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+    git('commit', '-q', '-am', 'no loud scenario')
+
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     mark('33')
     # ledger and messages its manager, which answers once; nothing else crosses projects.
