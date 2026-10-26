@@ -2039,6 +2039,25 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
     git('commit', '-q', '-am', 'no loud scenario')
 
+    # 32p. A turn with no result (docs/tasks.md "Claude adapter"): Claude's own 0-token turn for
+    mark('32p')
+    # a background-task notification is ignored; a model turn without a result is asked once.
+    def asked(n):
+        session = show(n)['record']['agent_session']
+        return [t for t in traces() if t.get('session') == session
+                and t.get('message', '').startswith('Your turn ended without a result.')]
+    once = js('task', 'new', 'NORESULT 1 WORK once.txt')['id']
+    assert wait_state(once, 'ready', 'failed')['state'] == 'ready', show(once)['result']
+    assert len(asked(once)) == 1
+    assert [e['status'] for e in log(once) if e['kind'] == 'result'] == ['done']
+    assert any(e.get('text') == 'claude ended its own turn with no result: ignored' for e in log(once))
+    twice = js('task', 'new', 'NORESULT 2 WORK twice.txt')['id']
+    assert wait_state(twice, 'ready', 'failed')['state'] == 'failed'
+    assert len(asked(twice)) == 1
+    assert show(twice)['result']['summary'] == 'the agent ended with success and no result'
+    js('task', 'close', once, '--discard')
+    js('task', 'close', twice, '--discard')
+
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     mark('33')
     # ledger and messages its manager, which answers once; nothing else crosses projects.

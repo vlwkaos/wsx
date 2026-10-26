@@ -11,6 +11,8 @@ Each user message is a small script of words:
   HV           return one Human Verify item
   LINE <file> <n>  replace line n of <file> with the message and commit
   MEMO <words> return the rest of the line as the result's memo
+  NORESULT <n> end this turn and the next n-1 without a result, each after a 0-token result as
+               Claude's own turn for a background-task notification ends
   CAPTURE      (with HV) the item has a page path and a small PNG capture
   CMDHV        return a Human Verify item that names a command
   WAIT <file>  keep working until <file> exists, at most 10 minutes
@@ -213,6 +215,7 @@ def main():
     spent_file = TRACE + '.spent'
     spending = lambda: json.load(open(spent_file)) if os.path.exists(spent_file) else {}
     model, spent = options.get('--model'), spending().get(session, 0.0) if '--resume' in options else 0.0
+    no_result = 0
     while True:
         line = stdin.readline()
         if not line:
@@ -252,6 +255,9 @@ def main():
                   'total_cost_usd': round(spent, 6)})
             continue
         words = text.split()
+        if no_result:
+            no_result = end_without_result(session, no_result)
+            continue
         if 'HUGE' in words:
             emit({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'x' * (5 << 20)}]}})
         steers = []
@@ -349,6 +355,9 @@ def main():
                     out.write(PIXEL)
         if 'CMDHV' in words:
             verify.append({'check': 'run `wsx task list`', 'where': '', 'capture': '', 'pass_if': 'it lists the task'})
+        if 'NORESULT' in words:
+            no_result = end_without_result(session, int(words[words.index('NORESULT') + 1]))
+            continue
         summary = 'did: ' + text + (' | steers: ' + '; '.join(steers) if steers else '')
         emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': summary,
               'session_id': session, 'permission_denials': denials,
@@ -358,6 +367,14 @@ def main():
                                     'human_verify': verify,
                                     'left_open': ['nothing real'], 'notes': '',
                                     'memo': rest_of_line(text, 'MEMO') if 'MEMO' in words else ''}})
+
+
+def end_without_result(session, left):
+    """A notification turn with no model call, then a model turn with no result."""
+    for usage in ({'input_tokens': 0, 'output_tokens': 0}, {'input_tokens': 10, 'output_tokens': 5}):
+        emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': '',
+              'session_id': session, 'permission_denials': [], 'usage': usage})
+    return left - 1
 
 
 if __name__ == '__main__':
