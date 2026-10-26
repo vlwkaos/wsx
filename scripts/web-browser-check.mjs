@@ -504,9 +504,10 @@ async function markdown() {
     || (phone() ? seen.table.scrolls : seen.table.right !== "right")) await fail(`the table is wrong: ${JSON.stringify(seen.table)}`);
   if (seen.user !== "say markdown.md" || !seen.plain) await fail("the person's message is not plain text");
   // A table wider than its block scrolls sideways and still takes its full height.
-  const narrow = await evaluate(`(() => { const wrap = document.querySelector('.message:not(.message-user) .table-wrap'); wrap.style.maxWidth = '80px';
-    wrap.scrollLeft = 40; const seen = { wide: wrap.scrollWidth - wrap.clientWidth, left: wrap.scrollLeft, tall: wrap.scrollHeight - wrap.clientHeight };
-    wrap.scrollLeft = 0; wrap.removeAttribute('style'); return seen; })()`);
+  // ^ Widen the table, not narrow the block: a folded phone table wraps its words into 80 px.
+  const narrow = await evaluate(`(() => { const wrap = document.querySelector('.message:not(.message-user) .table-wrap'), table = wrap.querySelector('table');
+    table.style.minWidth = (wrap.clientWidth * 2) + 'px'; wrap.scrollLeft = 40; const seen = { wide: wrap.scrollWidth - wrap.clientWidth, left: wrap.scrollLeft, tall: wrap.scrollHeight - wrap.clientHeight };
+    wrap.scrollLeft = 0; table.removeAttribute('style'); return seen; })()`);
   if (narrow.wide < 1 || narrow.left < 1 || narrow.tall > 1) await fail(`a wide table does not scroll only sideways: ${JSON.stringify(narrow)}`);
   // Prose keeps its reading width; a table or a code block may take the width of the
   // conversation minus the gutter, centered on the reading column, and no wider.
