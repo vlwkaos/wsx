@@ -12,6 +12,7 @@ use std::{
 };
 
 const MAX_READ: u64 = 1024 * 1024;
+const MAX_GROWN_READ: u64 = 16 * 1024 * 1024;
 const MAX_FILES: usize = 2048;
 const MAX_RECORDS: usize = 4096;
 const MAX_TOOL_TITLE: usize = 120;
@@ -182,7 +183,7 @@ impl Reader {
                 return reply;
             }
         };
-        let submitted = |node: &Node| node.role == "user" && !node.meta && !node.text.is_empty();
+        let submitted = Node::submitted;
         let nodes = &loaded.nodes;
         reply.path = Some(loaded.path.clone());
         let Some(start) = nodes
@@ -351,12 +352,40 @@ fn read_file(
             return Err("history_owner_mismatch");
         }
     }
-    let start = metadata.len().saturating_sub(MAX_READ);
+    // ^ A long turn (tool results, Claude's attachments) can push the person's last message
+    // out of the newest MiB: read further back, up to MAX_GROWN_READ, until it is in.
+    // docs/web-client-chat.md "Timeline"
+    let mut window = MAX_READ;
+    loop {
+        let start = metadata.len().saturating_sub(window);
+        let loaded = read_tail(provider, reference, path, &mut file, start, metadata.len());
+        let short = start > 0
+            && window < MAX_GROWN_READ
+            && loaded.as_ref().map_or_else(
+                |status| *status == "record_limit",
+                |loaded| loaded.truncated && !loaded.nodes.iter().any(Node::submitted),
+            );
+        if !short {
+            return loaded;
+        }
+        window *= 4;
+    }
+}
+
+/// The records from `start` to `end`, the observed end of the file.
+fn read_tail(
+    provider: &str,
+    reference: &AgentSessionRef,
+    path: &Path,
+    file: &mut fs::File,
+    start: u64,
+    end: u64,
+) -> Result<Loaded, &'static str> {
     file.seek(SeekFrom::Start(start))
         .map_err(|_| "history_unreadable")?;
     let mut data = Vec::new();
     // Freeze the observed end: a growing log cannot make this read unbounded.
-    file.take(metadata.len() - start)
+    file.take(end - start)
         .read_to_end(&mut data)
         .map_err(|_| "history_unreadable")?;
     let mut truncated = start > 0;
@@ -433,12 +462,15 @@ fn read_file(
                     }
                     _ => node.parent.as_deref(),
                 };
-                current = next.and_then(|id| {
-                    let next = index.get(id).copied();
-                    if next.is_none() {
-                        truncated = true
+                // ^ Claude 2.1.30x saves a `deferred_tools_record` attachment whose parent was
+                // never saved: the chain goes on at the record saved before it.
+                current = next.and_then(|id| match index.get(id) {
+                    Some(next) => Some(*next),
+                    None if position > 0 => Some(position - 1),
+                    None => {
+                        truncated = true;
+                        None
                     }
-                    next
                 });
             }
         }
@@ -684,6 +716,13 @@ struct Node {
     /// A Claude compaction boundary that kept the newest records: the ids of the first
     /// and last kept record, and of the summary they follow.
     preserved: Option<Preserved>,
+}
+
+impl Node {
+    /// An input the person submitted.
+    fn submitted(&self) -> bool {
+        self.role == "user" && !self.meta && !self.text.is_empty()
+    }
 }
 
 struct Preserved {
