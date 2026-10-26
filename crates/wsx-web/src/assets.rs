@@ -39,6 +39,7 @@ const FILES: &[(&str, &str, &str)] = &[
     ("page.js", JS, include_str!("../web/page.js")),
     ("markdown.js", JS, include_str!("../web/markdown.js")),
     ("diagram.js", JS, include_str!("../web/diagram.js")),
+    ("viewer.js", JS, include_str!("../web/viewer.js")),
     ("files.js", JS, include_str!("../web/files.js")),
     ("settings.js", JS, include_str!("../web/settings.js")),
     ("terminal.js", JS, include_str!("../web/terminal.js")),

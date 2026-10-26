@@ -274,10 +274,13 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .tok-comment, .tok-quote { color: var(--color-muted); font-style: italic; }
 .tok-deletion { color: var(--color-danger); }
 .tok-title { font-weight: var(--font-weight-medium); }
-/* Hook: .diagram, .viewer — a drawn diagram, and the same diagram full screen. */
+/* Hook: .diagram, .viewer — a drawn diagram; an image or a diagram full screen (viewer.js). */
 .diagram-scroll { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent; }
 .diagram-open { display: block; width: fit-content; margin-inline: auto; padding: 0; border: 0; background: none; cursor: zoom-in; }
 .diagram img, .viewer img { display: block; max-width: none; border-radius: 0; }
+/* A transparent image keeps the scheme's page under it. */
+.viewer img { background: var(--color-bg); }
+.viewer img[data-loading] { visibility: hidden; }
 .diagram-failed > * + * { margin-top: var(--space-1); }
 .viewer {
   width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 0; border: 0;
@@ -285,14 +288,21 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 }
 .viewer[open] { display: flex; flex-direction: column; }
 .viewer-bar {
-  flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2);
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1);
   padding: var(--space-2) var(--space-4); padding-top: max(var(--space-2), env(safe-area-inset-top));
   border-bottom: var(--border-width) solid var(--color-hairline);
 }
 .viewer-bar .time { min-width: 5ch; text-align: center; font-size: var(--font-size-sm); }
 .viewer-bar .button { min-width: var(--size-control); }
+.viewer-bar .icon-button { color: var(--color-text); }
+.viewer-zoom { display: flex; align-items: center; gap: var(--space-1); margin-left: auto; }
+/* On a phone the fingers zoom: the percent gives the bar's room to the image count. */
+@media (max-width: 599px) { .viewer-zoom .time { display: none; } }
+.viewer-note { margin: auto; }
 .viewer-stage { flex: 1; min-height: 0; overflow: auto; display: flex; touch-action: none; cursor: grab; }
 .viewer-stage img { margin: auto; flex: 0 0 auto; }
+/* An image link opens the viewer: the pointer says so. */
+a[data-view] { cursor: zoom-in; }
 /* A table takes its full height in the message; only a table wider than its block scrolls, sideways. */
 .table-wrap { overflow-x: auto; overflow-y: hidden; border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent; }
 .table-wrap table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--font-size-sm); overflow-wrap: normal; }
@@ -395,6 +405,9 @@ div.steps .steps-summary { cursor: default; }
   .task-sheet[open] { animation: sheet-in calc(var(--motion-duration) * 2) var(--motion-easing); }
   .app[data-wide] .task-sheet[open] { animation-name: sheet-in-side; }
   .task-sheet[open]::backdrop { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
+  /* The viewer fades in, each image it goes to fades in, and a swiped image springs back. */
+  .viewer[open], .viewer-stage img { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
+  .viewer-stage img:not([data-swiping]) { transition: translate var(--motion-duration) var(--motion-easing); }
 }
 @keyframes tick-in { from { opacity: 0; transform: translateY(-40%); } }
 @keyframes ticker-in { from { opacity: 0; transform: translateY(70%); } }

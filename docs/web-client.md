@@ -137,8 +137,21 @@ Motion shows that something arrived, changed or left; nothing moves for its own 
 | Chat | The working bar slides in; a sent message eases from the muted pending color; Jump to latest fades in and out; "Uploading…" pulses. |
 | Notices | A notice slides and fades in and out. A toast shows a thin bar that drains over its 4 s; the offline notice pulses slowly. |
 | State words | A working session's word in the top row has a pulse dot; a tone change fades in color. |
+| Image viewer | The viewer and each image it goes to fade in; a swiped image springs back. |
 
 `scripts/web-tasks-check.mjs` (`motion()`) checks the animation names on the home row, count, notice, timer and placeholder, the FLIP glide and ghost, and that none of them runs under `reduce`; it captures phone and desktop frames.
+
+## Image viewer
+
+`viewer.js`. A tap on an image opens it full screen over the page, without a navigation: a To check capture, an image attached to a message or shown in one, and a drawn diagram. The image links stay real links (`a[data-view]`), so a link opened with a modifier key opens as a link does.
+
+- The image fits the screen on a dark backdrop (a diagram keeps the page's scheme, which it is drawn in). The `<img>` is the original URL, so a long press reaches it.
+- Zoom: pinch, a double tap on the image (2.5×, at that point, and back), ctrl+wheel, or − and + in the top bar. A drag moves a zoomed image. The page itself never zooms.
+- The set is the other `data-view` links of the closest `data-gallery`: the captures of the To check list, the images of one message. A swipe at 1× or ArrowLeft and ArrowRight go to the previous and next; the top bar shows "1 of 2" with Previous and Next.
+- × (Close), Escape, a tap beside the image at 1× and Back close it. The viewer pushes a history entry with the same URL when it opens and goes Back when it closes, so the phone's back gesture closes it and the page and its scroll stay where they were. The focus goes back to the link.
+- Left out: download and share buttons.
+
+`scripts/web-tasks-check.mjs` (`viewImages`) opens a To check capture and a chat message's images at 390 × 844 and 1280 × 800, and checks the fit, a swipe or the arrow keys, the three ways to close and that the page did not move.
 
 ## Notices
 

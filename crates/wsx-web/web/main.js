@@ -14,6 +14,7 @@ import { loadTasks, Manager, noteDecisions } from "./tasks.js";
 import { Session } from "./session.js";
 import { Files } from "./files.js";
 import { Settings } from "./settings.js";
+import { viewImageLinks } from "./viewer.js";
 
 // ^ With task_view home lists the projects, one row each, and Sessions (the inbox, shells
 // too) stays one tap away beside it, so work that no task owns is never hidden. A project's
@@ -239,4 +240,5 @@ async function boot() {
 applyScheme();
 followViewport();
 trackHistory();
+viewImageLinks();
 boot();

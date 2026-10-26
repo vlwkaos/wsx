@@ -71,12 +71,15 @@ const ALIGN = /text-align:(left|center|right)/;
 function inline(tokens, files, words) {
   const stack = [[]];
   const push = (node) => stack.at(-1).push(node);
+  let linked = 0;
   for (const token of tokens ?? []) {
     if (token.nesting === 1) {
+      if (token.type === "link_open") linked += 1;
       stack.push([]);
     } else if (token.nesting === -1) {
       const children = stack.pop();
       if (token.type === "link_close") {
+        linked -= 1;
         const href = token.meta;
         // Any other scheme, and a relative address, stays text.
         push(LINK.test(href) ? html`<a href=${href} target="_blank" rel="noopener noreferrer">${children}</a>` : children);
@@ -92,10 +95,12 @@ function inline(tokens, files, words) {
     } else if (token.type === "hardbreak") {
       push(html`<br />`);
     } else if (token.type === "image") {
-      // Only a file the server already granted for this message is shown as a picture.
+      // Only a file the server already granted for this message is shown as a picture. A tap
+      // opens it full screen (viewer.js), unless it is inside a link of its own.
       const name = (token.attrGet("src") ?? "").split(/[?#]/)[0].split("/").at(-1);
       const file = files?.find((candidate) => candidate.image && candidate.name === name);
-      push(file ? html`<img src=${resolve(file.url)} alt=${token.content} loading="lazy" />`
+      const picture = file && html`<img src=${resolve(file.url)} alt=${token.content} loading="lazy" />`;
+      push(file ? (linked ? picture : html`<a href=${resolve(file.url)} data-view>${picture}</a>`)
         : html`<span class="image-alt">${token.content || "image"}</span>`);
     } else {
       push(token.content);
@@ -184,6 +189,6 @@ export function Markdown({ text, files, words, prose = false }) {
         else if (child.type === "link_close") child.meta = href;
       }
     }
-    return html`<div class="markdown">${blocks(tokens, files, words)}</div>`;
+    return html`<div class="markdown" data-gallery>${blocks(tokens, files, words)}</div>`;
   }, [text, granted, words, prose]);
 }

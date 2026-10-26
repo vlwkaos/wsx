@@ -112,11 +112,11 @@ const DELIVERY_WORDS = {
 };
 
 export const Attachments = ({ files }) => files?.length ? html`
-  <ul class="attachments">
+  <ul class="attachments" data-gallery>
     ${files.map((file) => html`
       <li key=${file.hash}>
         ${file.image
-          ? html`<a href=${resolve(file.url)}><img src=${resolve(file.url)} alt=${file.name} loading="lazy" /></a>`
+          ? html`<a href=${resolve(file.url)} data-view><img src=${resolve(file.url)} alt=${file.name} loading="lazy" /></a>`
           : html`<a href=${resolve(file.url)} download=${file.name}>${file.name} (${bytes(file.size)})</a>`}
       </li>`)}
   </ul>` : null;

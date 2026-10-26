@@ -4,6 +4,7 @@
 // the CSSOM, and its CSS is adopted as a constructed style sheet. The finished SVG is
 // shown only as an image from a blob: URL: no script, link or request can come from it.
 import { html, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
+import { openViewer } from "./viewer.js";
 
 // scripts/vendor-mermaid.sh checks this name against the version it writes.
 const LIBRARY = "./mermaid-11.17.2.js";
@@ -107,76 +108,16 @@ function useScheme() {
   return scheme;
 }
 
-const ZOOM_STEP = 1.5;
 // Diagram text is drawn at the body size; shown smaller than this it is hard to read.
 const MIN_TEXT_PX = 10;
 // A left-to-right flowchart's header, which can be drawn top to bottom instead.
 const SIDEWAYS = /^(\s*(?:flowchart|graph)\s+)(LR|RL)\b/m;
-
-// Full screen: drag to move, pinch or the two buttons to zoom. The page itself never zooms.
-function Viewer({ diagram, onClose }) {
-  const dialog = useRef();
-  const stage = useRef();
-  const [zoom, setZoom] = useState(1);
-  const pointers = useRef(new Map());
-  const pinch = useRef(null);
-  useEffect(() => { dialog.current.showModal(); }, []);
-  // At zoom 1 the whole diagram fits the stage.
-  const fit = () => Math.min(stage.current.clientWidth / diagram.width, stage.current.clientHeight / diagram.height, 1);
-  const [base, setBase] = useState(null);
-  useEffect(() => { setBase(fit()); }, []);
-  const clamp = (value) => Math.min(8, Math.max(1, value));
-  const spread = () => {
-    const [a, b] = [...pointers.current.values()];
-    return Math.hypot(a.x - b.x, a.y - b.y);
-  };
-  const down = (event) => {
-    try { stage.current.setPointerCapture(event.pointerId); } catch { /* a pointer that already ended */ }
-    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    if (pointers.current.size === 2) pinch.current = { spread: spread(), zoom };
-  };
-  const move = (event) => {
-    const last = pointers.current.get(event.pointerId);
-    if (!last) return;
-    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    if (pointers.current.size === 2 && pinch.current) {
-      setZoom(clamp(pinch.current.zoom * spread() / pinch.current.spread));
-    } else if (pointers.current.size === 1) {
-      stage.current.scrollLeft -= event.clientX - last.x;
-      stage.current.scrollTop -= event.clientY - last.y;
-    }
-  };
-  const up = (event) => {
-    pointers.current.delete(event.pointerId);
-    pinch.current = null;
-  };
-  const wheel = (event) => {
-    if (!event.ctrlKey) return;
-    event.preventDefault();
-    setZoom((value) => clamp(value * (event.deltaY < 0 ? 1.1 : 1 / 1.1)));
-  };
-  const scale = (base ?? 1) * zoom;
-  return html`
-    <dialog class="viewer" ref=${dialog} aria-label="Diagram" onClose=${onClose}>
-      <div class="viewer-bar">
-        <button class="button" type="button" aria-label="Zoom out" disabled=${zoom <= 1} onClick=${() => setZoom((value) => clamp(value / ZOOM_STEP))}>−</button>
-        <span class="time" aria-live="polite">${Math.round(zoom * 100)}%</span>
-        <button class="button" type="button" aria-label="Zoom in" disabled=${zoom >= 8} onClick=${() => setZoom((value) => clamp(value * ZOOM_STEP))}>+</button>
-        <button class="button" type="button" autofocus onClick=${() => dialog.current.close()}>Close</button>
-      </div>
-      <div class="viewer-stage" ref=${stage} onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up} onWheel=${wheel}>
-        ${base !== null && html`<img src=${diagram.url} alt="Diagram" draggable=${false}
-          width=${Math.round(diagram.width * scale)} height=${Math.round(diagram.height * scale)} />`}
-      </div>
-    </dialog>`;
-}
 
 // `fallback` is the diagram's source as a code block, shown when it cannot be drawn.
 export function Diagram({ source, fallback }) {
   const scheme = useScheme();
   const [diagram, setDiagram] = useState(null);
   const [turned, setTurned] = useState(null);
-  const [open, setOpen] = useState(false);
   useEffect(() => {
     let current = true;
     setDiagram(null);
@@ -189,7 +130,7 @@ export function Diagram({ source, fallback }) {
   // sideways in its own block, with a fade on the side that holds more. Before that, a
   // sideways flowchart is drawn top to bottom, and shown so when that fits (as Pygmalion does).
   const frame = useRef();
-  // Safari does not focus a tapped button, so the way back is kept here.
+  // Safari does not focus a tapped button, so the way back is kept here (viewer.js).
   const opener = useRef();
   const [width, setWidth] = useState(null);
   const [more, setMore] = useState("");
@@ -224,12 +165,11 @@ export function Diagram({ source, fallback }) {
   return html`
     <div class="diagram">
       <div class="diagram-scroll" ref=${frame} data-more=${more || null} onScroll=${edges}>
-        <button class="diagram-open" type="button" ref=${opener} aria-label="Open the diagram full screen" onClick=${() => setOpen(true)}>
+        <button class="diagram-open" type="button" ref=${opener} aria-label="Open the diagram full screen" onClick=${() => openViewer([{ src: shown.url, alt: "Diagram", width: shown.width, height: shown.height }], 0, opener.current, { dark: false })}>
           <img src=${shown.url} alt="Diagram"
             width=${Math.round(shown.width * (scale ?? 1))} height=${Math.round(shown.height * (scale ?? 1))} />
         </button>
       </div>
       ${upright && html`<p class="note">Drawn top to bottom to fit this screen</p>`}
-      ${open && html`<${Viewer} diagram=${shown} onClose=${() => { setOpen(false); opener.current.focus(); }} />`}
     </div>`;
 }
