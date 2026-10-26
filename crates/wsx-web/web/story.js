@@ -54,8 +54,7 @@ export function ProjectFacts({ project, overview }) {
     ? `Main checkout on ${ledger.main.branch}, ${ledger.main.changed_files ? `${plural(ledger.main.changed_files, "uncommitted file")}` : "clean"}.`
     : null;
   // ^ The end of the newest failed attempt's output, folded under the facts (docs/tasks.md "Ledger").
-  const failures = ["deploy", "release"].map((kind) => ({ kind, failed: ledger.deploys?.[kind]?.failed_since ? ledger.deploys[kind].failed : null }))
-    .filter(({ failed }) => failed?.output);
+  const failures = ["deploy", "release"].map((kind) => ({ kind, failed: ledger.deploys?.[kind]?.failed })).filter(({ failed }) => failed?.output);
   if (!deploys.length && !checkout) return null;
   return html`
     <div class="facts-line">
