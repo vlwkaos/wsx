@@ -253,6 +253,7 @@ async function viewImages(name, links) {
   await open();
   const first = await at(0);
   if (first.place !== before) await fail(`${what}: opening the image navigated: ${first.place}, was ${before}`);
+  await until("document.querySelector('dialog.viewer').getAnimations({ subtree: true }).length === 0", `${what}: the viewer kept moving`);
   await shot(`viewer-${name}`);
   if (phone()) await swipe(size[0] - 60, 60);
   else await key("ArrowRight", 39);
