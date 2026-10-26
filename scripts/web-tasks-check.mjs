@@ -1226,6 +1226,31 @@ await until(`${sentWithFile} || !!document.querySelector('.composer .error')`, "
 if (!(await evaluate(sentWithFile))) await fail(`the message with a file was not sent: ${await evaluate("document.querySelector('.composer .error')?.textContent ?? ''")}; bubbles ${JSON.stringify(await bubbles())}`);
 if (await count(".composer .chips li")) await fail("the sent file stayed in the composer");
 
+// The first item's Fail: × opens a note sent with Send, with no Cancel; × again or Escape closes it
+// and leaves the sheet open; an empty note is not sent. Ends with a note typed in the open form.
+async function failForm() {
+  const item = "document.querySelector('.check-item')";
+  const fail_ = `${item}.querySelector('.check-acts .check-act[data-tone="danger"]')`;
+  await evaluate(`${fail_}.click()`);
+  await until(`!!${item}.querySelector('.need-form input')`, "Fail did not ask for a note");
+  const form = await evaluate(`[[...${item}.querySelectorAll('.need-form button')].map((node) => node.textContent).join(), ${fail_}.getAttribute('aria-expanded')]`);
+  if (JSON.stringify(form) !== JSON.stringify(["Send", "true"])) await fail(`the fail form reads ${JSON.stringify(form)}`);
+  await evaluate(`${item}.querySelector('.need-form').requestSubmit()`);
+  await pause(300);
+  if (await count(".check-item") !== 3) await fail("a fail without a note was sent");
+  await key("Escape", 27);
+  await until(`!${item}.querySelector('.need-form') && document.activeElement === ${fail_}`, "Escape did not close the note and give the focus back to ×");
+  if (!await evaluate("!!document.querySelector('dialog.task-sheet[open]')")) await fail("Escape in the note closed the To check sheet");
+  await evaluate(`${fail_}.click()`);
+  await until(`!!${item}.querySelector('.need-form input')`, "× did not open the note again");
+  await evaluate(`${fail_}.click()`);
+  await until(`!${item}.querySelector('.need-form')`, "× did not close the note");
+  await evaluate(`${fail_}.click()`);
+  await until(`!!${item}.querySelector('.need-form input')`, "× did not open the note a third time");
+  await typeInto(".check-item .need-form input", "the text is cut off");
+  await shot("to-check-fail", ".composer-send");
+}
+
 // --- To check: the reservoir's row opens the list; Fail needs a note and starts a task that
 // fixes it; Pass; All passed empties the list.
 // ^ The actions above spent this device's burst (10, then one per 3 s); this part sends four.
@@ -1242,49 +1267,51 @@ await oneMotion("To check on a phone", async () => {
 await closeSheet("the To check list", chat);
 await resize([1280, 800, 1]);
 await oneMotion("To check on a wide screen", () => go(`#/p/${project}/checks`));
+// ^ Wide, Try, Fail and Pass are a column right of each item's words, level with its title line.
+const wideRoom = await evaluate(`[...document.querySelectorAll('.check-item')].map((node) => { const box = (part) => node.querySelector(part).getBoundingClientRect();
+  return [Math.round(box('.check-acts').left - box('.check-words').right), Math.round(box('.check-acts').top - box('.check-task').top), Math.round(box('.check-acts').right)]; })`);
+if (!wideRoom.every(([gap, top, right]) => gap >= 8 && Math.abs(top) <= 12 && Math.abs(right - wideRoom[0][2]) <= 1)) await fail(`the wide To check buttons are not in one column: ${JSON.stringify(wideRoom)}`);
+await shot("to-check", ".composer-send");
+await failForm();
+await key("Escape", 27);
+await until("!document.querySelector('.check-item .need-form')", "Escape did not close the wide note");
 await closeSheet("the wide To check list", chat);
 await resize([390, 844, 2]);
 await oneMotion("To check opened again on a phone", () => go(`#/p/${project}/checks`));
-const listed = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [node.querySelector('.task-chip').textContent.trim(), node.querySelector('.check-what').textContent, node.querySelector('.check-end .check-pass').textContent])");
-if (JSON.stringify(listed) !== JSON.stringify([["#7", "open the file", "Passes if it has text"], ["#8", "open the file", "Passes if it has text"], ["#2", "open the file", "Passes if it has text"]])) await fail(`the To check list reads ${JSON.stringify(listed)}`);
+const listed = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [node.querySelector('.task-chip').textContent.trim(), node.querySelector('.check-what').textContent, node.querySelector('.check-pass').textContent])");
+if (JSON.stringify(listed) !== JSON.stringify([["#7", "open the file", "it has text"], ["#8", "open the file", "it has text"], ["#2", "open the file", "it has text"]])) await fail(`the To check list reads ${JSON.stringify(listed)}`);
 if (await sheetState() !== "3 open") await fail(`the list's top row reads ${await sheetState()}`);
 // ^ Each item says what its task did; #8's says where to look and shows its capture. Three short
 // items fit: the sheet is as high as its rows, on the bottom, with no empty band under them.
-const context = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [(node.querySelector('.check-task')?.textContent ?? '').replace(node.querySelector('.task-chip').textContent, '').trim(), [...node.querySelectorAll('.check-pass')].map((line) => line.textContent).join('|')])");
-if (!context.every(([did]) => did.startsWith("did: WORK")) || context[1][1] !== "Look at /#/x|Passes if it has text") await fail(`the items' context reads ${JSON.stringify(context)}`);
+const context = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [(node.querySelector('.check-task')?.textContent ?? '').replace(node.querySelector('.task-chip').textContent, '').trim(), [...node.querySelectorAll('.check-facts > *')].map((line) => line.textContent).join('|')])");
+if (!context.every(([did]) => did.startsWith("did: WORK")) || context[1][1] !== "Check|open the file|Look at|/#/x|Passes if|it has text" || context[0][1] !== "Check|open the file|Passes if|it has text") await fail(`the items' context reads ${JSON.stringify(context)}`);
 await until("document.querySelector('.check-capture img')?.naturalWidth === 1", "#8's capture did not load");
 if (await count(".check-capture") !== 1) await fail("an item without a capture shows one");
 await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
 const fitted = await evaluate("(() => { const sheet = document.querySelector('dialog.task-sheet').getBoundingClientRect(); const last = [...document.querySelectorAll('.check-item')].pop().getBoundingClientRect(); return [Math.round(innerHeight - sheet.bottom), Math.round(sheet.bottom - last.bottom), Math.round(sheet.height / innerHeight * 100)]; })()");
 if (Math.abs(fitted[0]) > 1 || fitted[1] > 48 || fitted[2] >= 85) await fail(`the To check sheet does not fit its rows: ${JSON.stringify(fitted)}`);
-// ^ On a phone the item's words use the list's width: the chip starts the first line, nothing
-// sits beside the words above the pass line, and Try, Fail and Pass end that line when it is short
-// (#2's "Passes if it has text"). A long pass line takes its row whole and the buttons wrap under it.
-// All passed is in the top bar.
-await evaluate(`document.querySelectorAll('.check-item')[2].querySelector('.check-end .check-pass').append(' and the words of the page'.repeat(4))`);
+// ^ On a phone the item's words use the list's width: the chip starts the title line, the labels
+// are muted, and Try, Fail and Pass are a row under the words at the same right edge on every
+// item, also under #2's long pass line. All passed is in the top bar.
+await evaluate(`document.querySelectorAll('.check-item')[2].querySelector('.check-pass').append(' and the words of the page'.repeat(4))`);
 const room = await evaluate(`(() => { const list = document.querySelector('.check-list').getBoundingClientRect(); const box = (node) => node.getBoundingClientRect();
-  const item = (index) => document.querySelectorAll('.check-item')[index]; const chip = item(0).querySelector('.task-chip');
-  const above = (node) => [...node.querySelector('.check-line').children].filter((child) => !child.matches('.check-end'));
-  const [short, long] = [item(0), item(2)].map((node) => ({ pass: box(node.querySelector('.check-end .check-pass')), acts: box(node.querySelector('.check-acts')) }));
-  return { inline: chip.closest('p') === item(0).querySelector('.check-line > p'),
-    full: [item(0), item(2)].every((node) => above(node).every((child) => box(child).width / list.width > 0.85 && box(child).bottom <= box(node.querySelector('.check-acts')).top)),
-    shared: short.pass.right <= short.acts.left && short.pass.top < short.acts.bottom && short.acts.top < short.pass.bottom,
-    wrapped: long.acts.top >= long.pass.bottom && long.pass.width / list.width > 0.85,
+  const items = [...document.querySelectorAll('.check-item')]; const chip = items[0].querySelector('.task-chip');
+  const acts = items.map((node) => box(node.querySelector('.check-acts')));
+  const label = items[0].querySelector('.check-facts dt'), value = items[0].querySelector('.check-facts dd');
+  return { inline: chip.closest('p') === items[0].querySelector('.check-task'),
+    full: items.every((node) => box(node.querySelector('.check-words')).width / list.width > 0.85),
+    under: items.every((node, index) => acts[index].top >= box(node.querySelector('.check-words')).bottom),
+    edge: acts.every((place) => Math.abs(place.right - acts[0].right) <= 1),
+    muted: getComputedStyle(label).color !== getComputedStyle(value).color,
     all: !!document.querySelector('dialog.task-sheet header.bar .check-all'), intro: !!document.querySelector('.check-intro') }; })()`);
-if (!room.inline || !room.full || !room.shared || !room.wrapped || !room.all || room.intro) await fail(`the To check items waste room on a phone: ${JSON.stringify(room)}`);
+if (!room.inline || !room.full || !room.under || !room.edge || !room.muted || !room.all || room.intro) await fail(`the To check items are not laid out on a phone: ${JSON.stringify(room)}`);
 await shot("to-check", ".composer-send");
 const firstItem = "document.querySelector('.check-item')";
 // ^ Try starts the preview of the item's task and becomes a link to it (docs/tasks.md "Preview").
 await evaluate(`${firstItem}.querySelector('.check-act[title="Try it on a preview"]').click()`);
 await until(`!!${firstItem}.querySelector('a.check-act[href^="https://host.example.ts.net:"]')`, "Try did not become a preview link", 300);
 await shot("to-check-try", ".composer-send");
-await evaluate(`${firstItem}.querySelector('.check-act[title="Fail"]').click()`);
-await until(`!!${firstItem}.querySelector('.need-form input')`, "Fail did not ask for a note");
-await evaluate(`${firstItem}.querySelector('.need-form').requestSubmit()`);
-await pause(300);
-if (await count(".check-item") !== 3) await fail("a fail without a note was sent");
-await typeInto(".check-item .need-form input", "the text is cut off");
-await shot("to-check-fail", ".composer-send");
+await failForm();
 await evaluate(`${firstItem}.querySelector('.need-form').requestSubmit()`);
 await until("document.querySelectorAll('.check-item').length === 2", "the failed item stayed in the list", 60);
 await evaluate(`${firstItem}.querySelector('.check-act[title="Pass"]').click()`);

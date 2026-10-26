@@ -35,20 +35,22 @@ export function TryButton({ project, task, icon = false }) {
 function Place({ where }) {
   if (!where) return null;
   const link = /^(https?:\/\/|\/|#)/.test(where);
-  return html`<p class="check-pass">Look at ${link
+  return html`<dt>Look at</dt><dd class="check-where">${link
     ? html`<a href=${where} target="_blank" rel="noopener">${where}</a>`
-    : where}</p>`;
+    : where}</dd>`;
 }
 
-// One item at the full width: the task chip starting what the task did, the check, where to
-// look and its capture, then when it passes with Try, Fail and Pass as icons at its right end;
-// a long pass line takes the whole row and the icons wrap under it, so no words wrap beside them.
-// A fail needs a note, which goes to the task that fixes it. `revision` is the task's current one: an item of an older revision names its own.
+// One item: the task chip with what the task did as its title, then the check, where to look,
+// its capture and when it passes as labeled lines. Try, Fail and Pass are icons in one place on
+// every item: the bottom right on a phone, a column right of the words on a wide screen.
+// Fail opens a required note sent with Send; × again or Escape closes it. The note goes to the
+// task that fixes it. `revision` is the task's current one: an item of an older revision names its own.
 export function CheckRow({ project, item, revision, onChanged }) {
   const [failing, setFailing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const note = useRef();
+  const toggle = useRef();
   useEffect(() => { if (failing) note.current.focus(); }, [failing]);
   const decide = async (decision, body = {}) => {
     setBusy(true);
@@ -68,41 +70,50 @@ export function CheckRow({ project, item, revision, onChanged }) {
     const text = note.current.value.trim();
     if (text) decide("fail", { note: text });
   };
+  // ^ Escape closes the note, not the sheet around it (tasks.js `Sheet` closes on the dialog's cancel).
+  const escape = (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    setFailing(false);
+    toggle.current.focus();
+  };
   const acting = can("task_act") && item.state === "open";
   const older = revision != null && item.revision !== revision ? ` (r${item.revision})` : "";
   const capture = `api/tasks/${project}/checks/${item.id}/capture`;
   const did = item.did ?? item.title;
-  const chip = html`<${TaskChip} project=${project} id=${item.task} />`;
   return html`
     <li class="check-item" data-state=${item.state}>
       <div class="check-line">
-        ${did && html`<p class="check-task">${chip} ${did}</p>`}
-        <p class="check-what">${!did && html`${chip} `}${item.check}${older}</p>
-        <${Place} where=${item.where} />
-        ${item.capture && html`
-          <a class="check-capture" href=${capture} target="_blank" rel="noopener" aria-label=${`Capture of: ${item.check}`}>
-            <img src=${capture} alt="" />
-          </a>`}
-        <div class="check-end">
-          <p class="check-pass">Passes if ${item.pass_if}</p>
-          ${acting && !failing && html`
-            <span class="check-acts">
-              <${TryButton} project=${project} task=${item.task} icon />
-              <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy} title="Fail"
-                aria-label=${`Fail: ${item.check}`} onClick=${() => setFailing(true)}><${Icon} name="fail" /></button>
-              <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Pass"
-                aria-label=${`Pass: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
-            </span>`}
+        <div class="check-words">
+          <p class="check-task"><${TaskChip} project=${project} id=${item.task} /> ${did}</p>
+          <dl class="facts check-facts">
+            <dt>Check</dt><dd class="check-what">${item.check}${older}</dd>
+            <${Place} where=${item.where} />
+            <dt>Passes if</dt><dd class="check-pass">${item.pass_if}</dd>
+          </dl>
+          ${item.capture && html`
+            <a class="check-capture" href=${capture} target="_blank" rel="noopener" aria-label=${`Capture of: ${item.check}`}>
+              <img src=${capture} alt="" />
+            </a>`}
+          ${item.state === "failed" && html`<p class="check-state">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
+          ${item.state === "passed" && html`<p class="check-state">Passed</p>`}
         </div>
-        ${item.state === "failed" && html`<p class="check-pass">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
-        ${item.state === "passed" && html`<p class="check-pass">Passed</p>`}
+        ${acting && html`
+          <span class="check-acts">
+            <${TryButton} project=${project} task=${item.task} icon />
+            <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy} ref=${toggle}
+              title=${failing ? "Close the note" : "Fail"} aria-expanded=${failing}
+              aria-label=${failing ? `Do not fail: ${item.check}` : `Fail: ${item.check}`} onClick=${() => setFailing(!failing)}><${Icon} name="fail" /></button>
+            <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Pass"
+              aria-label=${`Pass: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
+          </span>`}
       </div>
       ${failing && html`
-        <form class="need-form" onSubmit=${fail}>
-          <input class="input" ref=${note} type="text" autocomplete="off" disabled=${busy}
+        <form class="need-form check-form" onSubmit=${fail}>
+          <input class="input" ref=${note} type="text" autocomplete="off" disabled=${busy} required onKeyDown=${escape}
             aria-label=${`What is wrong with: ${item.check}`} placeholder="What is wrong (a task fixes it)" />
-          <button class="button" type="button" disabled=${busy} onClick=${() => setFailing(false)}>Cancel</button>
-          <button class="button" type="submit" disabled=${busy}>Fail</button>
+          <button class="button" type="submit" disabled=${busy}>Send</button>
         </form>`}
       ${error && html`<p class="error need-error" role="alert">${error}</p>`}
     </li>`;
