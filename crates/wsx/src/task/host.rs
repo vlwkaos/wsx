@@ -1053,7 +1053,7 @@ impl Host {
         });
     }
 
-    /// Run `commands` in a thread, holding the machine's check slot unless `priority` is
+    /// Run `checks` in a thread, holding the machine's check slot unless `priority` is
     /// `None`; each check's timeout counts from the slot. Check `n`'s whole output goes to
     /// `<kind>-<n>.log` in the task folder. ref: docs/tasks.md "Checks, revisions and report"
     fn spawn_checks(
@@ -1759,7 +1759,8 @@ fn run_check(
     }
     process.envs(env);
     // ^ The pipes get only what the shell says before its redirection, such as a log it
-    // cannot open.
+    // cannot open; then no earlier run's log stands in for this one.
+    let _ = std::fs::remove_file(log);
     let ran = output_with_timeout_tail(&mut process, timeout, CHECK_OUTPUT_BYTES);
     let mut output = log_tail(log).unwrap_or_default();
     let said = match &ran {
