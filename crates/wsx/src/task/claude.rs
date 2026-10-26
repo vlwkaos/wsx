@@ -58,6 +58,18 @@ pub struct TurnResult {
     pub usage: TurnUsage,
 }
 
+impl TurnResult {
+    /// No result and no model call: Claude's own turn for a background-task notification
+    /// (a job that ended or was killed, also on `--resume`), which answers no message.
+    /// ref: docs/tasks.md "Claude adapter"
+    pub fn answers_nothing(&self) -> bool {
+        !self.is_error
+            && self.structured.is_none()
+            && self.usage.input_tokens == 0
+            && self.usage.output_tokens == 0
+    }
+}
+
 pub struct ClaudeAgent {
     child: Child,
     stdin: ChildStdin,
@@ -226,8 +238,9 @@ fn steps_note(record: &TaskRecord) -> String {
     let names: Vec<&str> = record.steps.iter().map(|step| step.name.as_str()).collect();
     format!(
         "The task runs in steps, one turn each: {}. Each turn names its step: do that step \
-         only, then return status done as the turn's last call: nothing runs after it. When a step needs a decision that is the owner's, \
-         return status blocked with the question; otherwise decide yourself and go on. ",
+         only, then return status done as the turn's last call: nothing runs after it. When \
+         a step needs a decision that is the owner's, return status blocked with the \
+         question; otherwise decide yourself and go on. ",
         names.join(", ")
     )
 }

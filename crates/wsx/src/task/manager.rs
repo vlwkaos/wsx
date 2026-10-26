@@ -1175,6 +1175,9 @@ impl Manager {
     }
 
     fn on_result(&mut self, result: TurnResult) {
+        if result.answers_nothing() {
+            return;
+        }
         let to = self.turn.take().unwrap_or_default();
         let id = self.next_id();
         // ^ The last model call's context: the summed usage counts it once per call.
