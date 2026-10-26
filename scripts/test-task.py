@@ -940,7 +940,7 @@ def run(wsx, wsxd, work, owned):
     assert len(raw.encode()) <= 16 * 1024 and ledger['open_omitted'] == 0
     assert ledger['to_check'] == 0 and ledger['auto_land'] is False and 'verification' not in ledger['open'][0]
     assert [(row['id'], row['state']) for row in ledger['open']] == [(blocked_task, 'waiting'), (ready_task, 'ready')]
-    assert ledger['open'][0]['waiting']['on'] == 'owner' , ledger['open'][0]
+    assert ledger['open'][0]['waiting']['on'] == 'owner', ledger['open'][0]
     assert ledger['open'][1]['summary'] == 'did: WORK l.txt could not run the browser test' and ledger['open'][1]['human_verify'] == 0
     assert ledger['open'][1]['checks'] == [{'command': 'test ! -e broken.txt', 'outcome': 'passed'}], ledger['open'][1]
     assert 0 < len(ledger['recent']) <= 10 and all(row['state'] in ('landed', 'closed') for row in ledger['recent'])
