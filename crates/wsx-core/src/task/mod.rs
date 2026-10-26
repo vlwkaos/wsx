@@ -66,6 +66,9 @@ pub enum WaitOn {
     Permission,
     /// `tasks.minFreeGb` of free disk; the host resumes by itself.
     Disk,
+    /// A `--plan` task's first result is its plan: the manager reads it and answers with an
+    /// `add` (go, or what to change). ref: docs/tasks.md "Workflow"
+    Plan,
     /// The owner works in the working copy; nothing runs until `handback`.
     /// ref: docs/tasks.md "By hand"
     Hand,
@@ -80,6 +83,7 @@ impl WaitOn {
             Self::Owner => "owner",
             Self::Permission => "permission",
             Self::Disk => "disk",
+            Self::Plan => "plan",
             Self::Hand => "hand",
             Self::CheckSlot => "check_slot",
         }
@@ -198,14 +202,17 @@ pub struct TaskRecord {
     /// The `checks.jsonl` item whose fail started this task (docs/tasks.md "To check").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixes: Option<String>,
-    /// Who ran `task new`. A ready task the manager created waits for its review instead of
-    /// landing by itself (docs/tasks.md "Landing").
+    /// Who ran `task new`. A ready task the manager created waits for its review
+    /// (docs/tasks.md "Landing").
     #[serde(default)]
     pub created_by: Actor,
     /// Why the owner tries this task before it lands. A held task never lands by itself.
     /// ref: docs/tasks.md "Hold and trial"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<String>,
+    /// `task new --plan`: the first result is a plan, with no checks; set until it arrives.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan: bool,
     /// Set while the state is `waiting`, and on `check_slot` while checks wait for the slot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<Waiting>,
@@ -394,10 +401,14 @@ impl TaskRecord {
             .is_some_and(|waiting| waiting.on == on)
     }
 
-    /// A ready task the manager created waits for the manager's review, not the owner's;
-    /// a held one waits for the owner.
-    pub fn manager_reviews(&self) -> bool {
-        self.state == TaskState::Ready && self.created_by == Actor::Manager && self.hold.is_none()
+    /// A ready task waits for the manager's review when the manager created it, or when the
+    /// project lands by itself (`tasks.land.auto`) and checks prove it: an owner task never
+    /// lands by itself. A held one waits for the owner, as does any other ready task. A plan
+    /// waits for the manager. ref: docs/tasks.md "Landing"
+    pub fn manager_reviews(&self, land_auto: bool) -> bool {
+        let reviewed = self.created_by == Actor::Manager || (land_auto && !self.checks.is_empty());
+        (self.state == TaskState::Ready && self.hold.is_none() && reviewed)
+            || self.waits_on(WaitOn::Plan)
     }
 }
 

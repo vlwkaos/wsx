@@ -189,6 +189,30 @@ async function act(project, item, action, body = {}) {
   return answer;
 }
 
+// The approvals a manager reply asked for, with Deny and Approve in the bubble: one tap. The
+// decision settles the request, which leaves the bubble and the reservoir.
+export function ChatApprovals({ project, items }) {
+  const [busy, setBusy] = useState(null);
+  if (!can("task_act")) return null;
+  const run = async (item, action) => {
+    setBusy(item.approval);
+    try {
+      await act(project, item, action);
+    } catch (failure) {
+      toast(`${item.label}: ${failure.message}`, { failure: true });
+    }
+    setBusy(null);
+  };
+  return items.map((item) => html`
+    <div class="bubble-approval" key=${item.approval} role="group" aria-label=${item.label}>
+      <span>${item.label}</span>
+      <button class="button need-action" type="button" data-tone="danger" disabled=${busy === item.approval}
+        onClick=${() => run(item, "deny")} aria-label=${`Deny: ${item.label}`}>Deny</button>
+      <button class="button need-action" type="button" data-tone="accent" disabled=${busy === item.approval}
+        onClick=${() => run(item, "approve")} aria-label=${item.label}>${busy === item.approval ? "Running…" : "Approve"}</button>
+    </div>`);
+}
+
 // One open item in the reservoir: its state dot, its title and number (an approval names its
 // task in its label) and what it waits for, with its one action. The title opens the task's sheet, where the
 // other actions are. `onActing` says an action started, `onFailed` that it failed: the
@@ -792,7 +816,7 @@ export function Manager({ project: id, task, page, checks }) {
   const entries = chat?.entries ?? [];
   const items = overview?.needs ?? [];
   const words = withChips(id);
-  const rows = chat ? conversation(entries, overview?.resolutions ?? []) : [];
+  const rows = chat ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval")) : [];
   // The sent message shows until the log has it.
   if (sent && !entries.some((entry) => entry.kind === "message" && entry.id === sent.id)) {
     const last = rows.at(-1);

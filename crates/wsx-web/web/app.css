@@ -630,6 +630,9 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 }
 .bubble[data-side="out"] .bubble-box { background: var(--color-raised); border-color: transparent; }
 .bubble[data-pending] .bubble-box { color: var(--color-muted); }
+/* An approval the reply asked for: its words, then Deny and Approve, wrapping on a narrow screen. */
+.bubble-approval { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-2); padding-top: var(--space-2); border-top: var(--border-width) solid var(--color-hairline); }
+.bubble-approval > span { flex: 1 1 auto; min-width: 0; font-weight: var(--font-weight-medium); }
 .bubble-head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1); font-size: var(--font-size-sm); }
 .bubble-state { color: var(--color-muted); }
 /* Wide content scrolls inside its bubble, never the page. */

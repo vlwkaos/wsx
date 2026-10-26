@@ -28,7 +28,8 @@ Started without -p it is an interactive pane (`wsx task hand`): it traces its ar
 writes one line to the transcript it resumes, a new one with --fork-session, and waits.
 
 Started with the manager's instructions it is a scripted manager instead: per turn
-  RUN <command>  run that shell command (the wsx task commands it names) and quote its output
+  RUN <command>  run that shell command (the wsx task commands it names) and quote its output;
+                 OWNER_SAID in it becomes the id of the turn's first owner message
   SCRIPT         (a line) run the rest of the message as one shell script, heredocs too
   TABLE          answer with a wide markdown table that names #4 twice and #2
   TABLE5         answer "Five columns:" with a table of five columns and 30 lines after it
@@ -200,8 +201,11 @@ def manager_turn(text, project, settings):
     if '\nSCRIPT\n' in '\n' + text:
         done = subprocess.run(('\n' + text).split('\nSCRIPT\n', 1)[1], shell=True, capture_output=True, text=True)
         return 'script -> %d %s' % (done.returncode, (done.stdout + done.stderr).strip()[:600])
+    said = next((line.split('(message ', 1)[1].split(')', 1)[0] for line in text.splitlines()
+                 if line.startswith('Owner (message ')), '0')
     for line in text.splitlines():
         if line.startswith('RUN '):
+            line = line.replace('OWNER_SAID', said)
             done = subprocess.run(line[4:], shell=True, capture_output=True, text=True)
             replies.append('ran: %s -> %d %s' % (line[4:], done.returncode, (done.stdout + done.stderr).strip()[:300]))
     for line in text.splitlines():

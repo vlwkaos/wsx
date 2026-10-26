@@ -810,12 +810,16 @@ pub fn append_approval(
         if id.is_empty() {
             let mut text = String::new();
             (&file).read_to_string(&mut text)?;
-            let requests = text
+            // ^ After the highest id of any line, also one this wsx cannot parse (an action
+            // it no longer has): counting parsed requests reused a decided id, which hid
+            // the new request.
+            let highest = text
                 .lines()
-                .filter_map(|line| serde_json::from_str::<ApprovalLine>(line).ok())
-                .filter(|line| matches!(line, ApprovalLine::Request { .. }))
-                .count();
-            *id = format!("a{}", requests + 1);
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .filter_map(|line| line["id"].as_str()?.strip_prefix('a')?.parse::<u64>().ok())
+                .max()
+                .unwrap_or(0);
+            *id = format!("a{}", highest + 1);
         }
     }
     let mut bytes = serde_json::to_vec(&line)?;

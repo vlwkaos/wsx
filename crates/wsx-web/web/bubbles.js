@@ -5,7 +5,7 @@ import { clock, html } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { Quoted, quoteOf } from "./reply.js";
-import { TaskChip } from "./tasks.js";
+import { ChatApprovals, TaskChip } from "./tasks.js";
 
 // Bubbles of one author closer together than this read as one group.
 const GROUP_MS = 5 * 60_000;
@@ -15,18 +15,22 @@ const LINE_MS = 60_000;
 const EVENT_WORDS = { landed: "done" };
 
 // One line written by wsx in its short form: `#3 ready r2: title; summary` → `#3 ready`,
-// `approval a3 (land #5) approved; done` → `Approved land #5`.
+// `approval a3 (land #5) approved; done` → `Approved land #5`, a dropped one with its reason:
+// `approval a9 (discard #42) dropped; #42 is closed` → `Dropped discard #42: #42 is closed`.
 export function shortLine(line) {
   const task = /^#(\d+) (\w+) r\d+:/.exec(line);
   if (task) return `#${task[1]} ${EVENT_WORDS[task[2]] ?? task[2]}`;
-  const decision = /^approval \S+ \((.+?)\) (approved|denied)\b/.exec(line);
+  const decision = /^approval \S+ \((.+?)\) (approved|denied|dropped)\b(?:; (.*))?/.exec(line);
+  if (decision?.[2] === "dropped") return `Dropped ${decision[1]}: ${decision[3] ?? ""}`;
   if (decision) return `${decision[2] === "approved" ? "Approved" : "Denied"} ${decision[1]}`;
   return line.split("; ")[0];
 }
 
 // The conversation in time order: bubbles and status lines. A wsx line that a resolution
-// says too ("#3 landed", "Approved land #3") shows once; lines close together join.
-export function conversation(entries, resolutions) {
+// says too ("#3 landed", "Approved land #3") shows once; lines close together join. A pending
+// approval goes into the manager's reply that ended the turn which asked for it
+// (docs/web-client-tasks.md "Project screen").
+export function conversation(entries, resolutions, approvals = []) {
   const rows = [];
   // ^ wsx's recap request is not shown; the manager's answer to it is tagged Recap
   // (docs/tasks.md "Recap").
@@ -72,6 +76,10 @@ export function conversation(entries, resolutions) {
     rows.push({ kind: "line", at: resolution.unix_ms, key: `res-${index}-${resolution.unix_ms}`, parts: [resolution.text] });
   });
   rows.sort((left, right) => left.at - right.at);
+  for (const approval of approvals) {
+    const reply = rows.find((row) => row.entry?.kind === "reply" && row.at >= approval.unix_ms);
+    if (reply) reply.approvals = [...(reply.approvals ?? []), approval];
+  }
   // ^ Adjacent lines join; adjacent bubbles of one author group (author once, time last).
   const joined = [];
   for (const row of rows) {
@@ -112,7 +120,8 @@ export function Bubble({ project, row, words, names, fresh }) {
   } else if (out) {
     body = html`<div class="bubble-body" id=${id}><${Quoted} text=${row.entry.text} words=${words} /></div><${Attachments} files=${row.entry.attachments} />`;
   } else {
-    body = html`<div class="bubble-body" id=${id}><${Markdown} text=${row.entry.text} words=${words} prose /></div>`;
+    body = html`<div class="bubble-body" id=${id}><${Markdown} text=${row.entry.text} words=${words} prose /></div>
+      ${row.approvals && html`<${ChatApprovals} project=${project} items=${row.approvals} />`}`;
   }
   return html`
     <article class="bubble" data-side=${out ? "out" : "in"} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}

@@ -42,6 +42,21 @@ pub fn read_result(dir: &TaskDir) -> Option<Value> {
 
 /// What wsx ran on the task's latest revision, each check as `passed`, `failed` or
 /// `timed out`: the manager states these, not the worker's words (docs/tasks.md "Ledger").
+/// A task whose work resolves a landing conflict: its last conflict came after its last
+/// revision. ref: docs/tasks.md "Landing"
+pub fn resolving_conflict(dir: &TaskDir) -> bool {
+    dir.read_log()
+        .unwrap_or_default()
+        .iter()
+        .rev()
+        .find_map(|entry| match entry.event {
+            super::LogEvent::Conflict { .. } => Some(true),
+            super::LogEvent::Revision { .. } => Some(false),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
 pub fn check_outcomes(result: &Value) -> Vec<(String, &'static str)> {
     result["checks"]
         .as_array()

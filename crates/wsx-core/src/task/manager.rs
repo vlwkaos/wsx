@@ -176,11 +176,16 @@ pub struct ManagerState {
     pub turn_seen: Option<BTreeMap<u32, Seen>>,
     /// The conversation's last `session_cost_micro_usd`, which a resumed process counts on from.
     pub session_cost_micro_usd: u64,
-    /// The last task the host started with `tasks.workflow.idle`.
+    /// The last task the host started with `tasks.workflow.idle`, and when it started it:
+    /// the next one waits for session notes newer than that. ref: docs/tasks.md "Workflow"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_task: Option<u32>,
-    /// A task other than the idle task landed since the idle task was started.
-    pub landed_since_idle: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_ms: Option<u64>,
+    /// When the last recap was asked for: the next one needs a change after it, and names
+    /// the token cost since. ref: docs/tasks.md "Recap"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recap_ms: Option<u64>,
     /// Paths the owner let the manager's Bash write, applied at each agent start.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub grants: Vec<ManagerGrant>,
@@ -256,23 +261,71 @@ pub enum ApprovalLine {
         note: Option<String>,
         /// What running the approved action said, or why it was not run.
         outcome: String,
+        /// The owner message of the manager's turn that approved it: the owner asked for
+        /// the action in the chat, so no button was needed. ref: docs/tasks.md "Approvals"
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner_said: Option<u64>,
         unix_ms: u64,
     },
 }
 
-/// Requests with no decision yet, oldest first.
+impl ApprovalLine {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Request { id, .. } | Self::Decision { id, .. } => id,
+        }
+    }
+}
+
+/// Requests with no decision yet, oldest first. A decision settles the requests of its id
+/// before it: an id reused by an older wsx (which miscounted lines it could not read) is a
+/// new request.
 pub fn pending_approvals(lines: &[ApprovalLine]) -> Vec<&ApprovalLine> {
     lines
         .iter()
-        .filter(|line| {
-            let ApprovalLine::Request { id, .. } = line else {
-                return false;
-            };
-            !lines.iter().any(|other| {
-                matches!(other, ApprovalLine::Decision { id: decided, .. } if decided == id)
-            })
+        .enumerate()
+        .filter(|(at, line)| {
+            matches!(line, ApprovalLine::Request { .. })
+                && !lines[at + 1..].iter().any(|later| {
+                    matches!(later, ApprovalLine::Decision { .. }) && later.id() == line.id()
+                })
         })
+        .map(|(_, line)| line)
         .collect()
+}
+
+/// The request a decision at `at` settles: the last one of its id before it.
+pub fn decided_request(lines: &[ApprovalLine], at: usize) -> Option<&ApprovalLine> {
+    let id = lines.get(at)?.id();
+    lines[..at]
+        .iter()
+        .rev()
+        .find(|line| matches!(line, ApprovalLine::Request { .. }) && line.id() == id)
+}
+
+/// Whether the owner's message `id` is in the manager's running turn: the last delivered
+/// turn has no reply yet and holds that message from the owner. ref: docs/tasks.md "Approvals"
+pub fn owner_said_in_turn(log: &[ManagerEntry], id: u64) -> Result<(), String> {
+    let turn = log.iter().rev().find_map(|entry| match &entry.event {
+        ManagerEvent::Reply { .. } => Some(None),
+        ManagerEvent::Delivered { ids } => Some(Some(ids)),
+        _ => None,
+    });
+    let Some(Some(ids)) = turn else {
+        return Err("no manager turn runs".into());
+    };
+    if !ids.contains(&id) {
+        return Err(format!("message {id} is not in the running turn"));
+    }
+    let from = log.iter().find_map(|entry| match &entry.event {
+        ManagerEvent::Message { id: said, from, .. } if *said == id => Some(from),
+        _ => None,
+    });
+    match from {
+        Some(Author::Owner) => Ok(()),
+        Some(_) => Err(format!("message {id} is not from the owner")),
+        None => Err(format!("there is no message {id}")),
+    }
 }
 
 /// One request on the manager host's control socket.

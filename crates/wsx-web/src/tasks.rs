@@ -18,7 +18,10 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
     self, call_host_waiting, call_socket, checks, copy, ledger,
-    manager::{pending_approvals, ApprovalLine, ManagerEvent, ManagerRequest, ManagerResponse},
+    manager::{
+        decided_request, pending_approvals, ApprovalLine, ManagerEvent, ManagerRequest,
+        ManagerResponse,
+    },
     owner,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
     view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
@@ -73,8 +76,8 @@ fn internal(error: anyhow::Error) -> Fault {
 /// The three states the owner sees (docs/web-client-tasks.md); the store keeps the rest.
 /// A ready task waits for a land by hand: auto land is off, there are no checks, or it stopped.
 /// One the manager created waits for the manager's review, not the owner.
-fn stage(record: &TaskRecord) -> &'static str {
-    if record.manager_reviews() {
+fn stage(record: &TaskRecord, land_auto: bool) -> &'static str {
+    if record.manager_reviews(land_auto) {
         return "working";
     }
     match record.state {
@@ -87,23 +90,9 @@ fn stage(record: &TaskRecord) -> &'static str {
     }
 }
 
-/// A working task whose turn resolves a landing conflict: its last conflict came after its
-/// last revision.
-fn resolving_conflict(dir: &TaskDir) -> bool {
-    let log = dir.read_log().unwrap_or_default();
-    log.iter()
-        .rev()
-        .find_map(|entry| match entry.event {
-            LogEvent::Conflict { .. } => Some(true),
-            LogEvent::Revision { .. } => Some(false),
-            _ => None,
-        })
-        .unwrap_or(false)
-}
-
 /// Why a ready task waits for the owner: its landing stopped, it has no checks, or the
 /// project lands by hand.
-fn land_reason(dir: &TaskDir, record: &TaskRecord) -> String {
+fn land_reason(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> String {
     let log = dir.read_log().unwrap_or_default();
     let stopped = log.iter().rev().find_map(|entry| match &entry.event {
         LogEvent::LandStopped { reason } => Some(Some(reason.clone())),
@@ -116,7 +105,7 @@ fn land_reason(dir: &TaskDir, record: &TaskRecord) -> String {
     if let Some(hold) = &record.hold {
         return format!("try it first: {hold}");
     }
-    if record.manager_reviews() {
+    if record.manager_reviews(land_auto) {
         return "the manager reviews it".into();
     }
     if record.checks.is_empty() {
@@ -137,6 +126,7 @@ pub fn overview(scope: &Scope) -> Value {
     let mut listed: Vec<(u8, u64, Value)> = Vec::new();
     let mut working = 0;
     let mut titles: HashMap<u32, String> = HashMap::new();
+    let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
     for (dir, record) in &tasks {
         let Ok(record) = record else { continue };
         let title = view::readable_title(dir, record).unwrap_or_default();
@@ -146,12 +136,12 @@ pub fn overview(scope: &Scope) -> Value {
             order,
             u64::MAX - record.updated_unix_ms,
             json!({
-                "id": record.id, "title": title, "state": record.state, "stage": stage(record),
+                "id": record.id, "title": title, "state": record.state, "stage": stage(record, land_auto),
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
                 "waiting": record.waiting,
                 "hold": record.hold,
                 "step": step_label(record),
-                "conflict": record.state == TaskState::Working && resolving_conflict(dir),
+                "conflict": record.state == TaskState::Working && view::resolving_conflict(dir),
             }),
         ));
         let result = matches!(
@@ -168,7 +158,7 @@ pub fn overview(scope: &Scope) -> Value {
                 "summary": result["result"]["summary"].as_str().map(|text| view::clip(text, SUMMARY_CHARS)),
             })
         };
-        if stage(record) == "working" {
+        if stage(record, land_auto) == "working" {
             working += 1;
             continue;
         }
@@ -177,7 +167,7 @@ pub fn overview(scope: &Scope) -> Value {
             TaskState::Failed => (1, item("failed")),
             TaskState::Ready => {
                 let mut row = item("land");
-                row["reason"] = json!(land_reason(dir, record));
+                row["reason"] = json!(land_reason(dir, record, land_auto));
                 (3, row)
             }
             _ => continue,
@@ -326,26 +316,26 @@ fn resolutions(
             rows.push((entry.unix_ms, Some(id), text));
         }
     }
-    for line in lines {
+    for (at, line) in lines.iter().enumerate() {
         let ApprovalLine::Decision {
-            id,
             approved,
+            outcome,
             unix_ms,
             ..
         } = line
         else {
             continue;
         };
-        let asked = lines.iter().find(
-            |line| matches!(line, ApprovalLine::Request { id: requested, .. } if requested == id),
-        );
-        let Some(request @ ApprovalLine::Request { task, .. }) = asked else {
+        let Some(request @ ApprovalLine::Request { task, .. }) = decided_request(lines, at) else {
             continue;
         };
         let task = *task;
         let label = owner::approval_label(request);
-        let word = if *approved { "Approved" } else { "Denied" };
-        rows.push((*unix_ms, task, label.replacen("Approve", word, 1)));
+        rows.push((
+            *unix_ms,
+            task,
+            owner::decision_words(&label, *approved, outcome),
+        ));
     }
     // ^ A failed check says which task fixes it; passes are the owner's own taps.
     for item in checks::read(store_id).unwrap_or_default() {
@@ -369,27 +359,26 @@ fn resolutions(
 fn decisions(lines: &[ApprovalLine]) -> Value {
     let rows: Vec<Value> = lines
         .iter()
+        .enumerate()
         .rev()
-        .filter_map(|line| {
+        .filter_map(|(at, line)| {
             let ApprovalLine::Decision {
                 id,
                 approved,
                 note,
                 outcome,
                 unix_ms,
+                ..
             } = line
             else {
                 return None;
             };
-            let asked = lines.iter().find_map(|line| match line {
-                ApprovalLine::Request {
-                    id: requested,
-                    action,
-                    task,
-                    ..
-                } if requested == id => Some((owner::action_name(*action), *task)),
+            let asked = match decided_request(lines, at) {
+                Some(ApprovalLine::Request { action, task, .. }) => {
+                    Some((owner::action_name(*action), *task))
+                }
                 _ => None,
-            });
+            };
             Some(json!({
                 "approval": id, "approved": approved, "note": note, "outcome": outcome,
                 "unix_ms": unix_ms, "action": asked.map(|(action, _)| action),
@@ -469,10 +458,12 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     } else {
         json!([])
     };
-    summary["stage"] = json!(stage(&record));
-    summary["conflict"] = json!(record.state == TaskState::Working && resolving_conflict(&dir));
+    let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
+    summary["stage"] = json!(stage(&record, land_auto));
+    summary["conflict"] =
+        json!(record.state == TaskState::Working && view::resolving_conflict(&dir));
     if record.state == TaskState::Ready {
-        summary["land_reason"] = json!(land_reason(&dir, &record));
+        summary["land_reason"] = json!(land_reason(&dir, &record, land_auto));
     }
     // ^ This task's items of the project's "To check" list, and the task a fail started.
     let items = checks::read(&scope.store).unwrap_or_default();
@@ -1178,11 +1169,12 @@ fn notice(scope: &Scope, watch: &mut Watch) {
         let Ok(record) = record else { continue };
         let now = (record.state, record.revision);
         let before = seen.insert(record.id, now);
-        // ^ Hands at work need no push.
+        // ^ Hands at work and a plan for the manager need no push.
         if !first
             && before != Some(now)
             && record.state == TaskState::Waiting
             && !record.waits_on(WaitOn::Hand)
+            && !record.waits_on(WaitOn::Plan)
         {
             watch.pending.add((scope.project, Key::Task(record.id)));
         }
