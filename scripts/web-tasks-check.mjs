@@ -1230,22 +1230,22 @@ if (await count(".composer .chips li")) await fail("the sent file stayed in the 
 // and leaves the sheet open; an empty note is not sent. Ends with a note typed in the open form.
 async function failForm() {
   const item = "document.querySelector('.check-item')";
-  const fail_ = `${item}.querySelector('.check-acts .check-act[data-tone="danger"]')`;
-  await evaluate(`${fail_}.click()`);
+  const failButton = `${item}.querySelector('.check-acts .check-act[data-tone="danger"]')`;
+  await evaluate(`${failButton}.click()`);
   await until(`!!${item}.querySelector('.need-form input')`, "Fail did not ask for a note");
-  const form = await evaluate(`[[...${item}.querySelectorAll('.need-form button')].map((node) => node.textContent).join(), ${fail_}.getAttribute('aria-expanded')]`);
+  const form = await evaluate(`[[...${item}.querySelectorAll('.need-form button')].map((node) => node.textContent).join(), ${failButton}.getAttribute('aria-expanded')]`);
   if (JSON.stringify(form) !== JSON.stringify(["Send", "true"])) await fail(`the fail form reads ${JSON.stringify(form)}`);
   await evaluate(`${item}.querySelector('.need-form').requestSubmit()`);
   await pause(300);
   if (await count(".check-item") !== 3) await fail("a fail without a note was sent");
   await key("Escape", 27);
-  await until(`!${item}.querySelector('.need-form') && document.activeElement === ${fail_}`, "Escape did not close the note and give the focus back to ×");
+  await until(`!${item}.querySelector('.need-form') && document.activeElement === ${failButton}`, "Escape did not close the note and give the focus back to ×");
   if (!await evaluate("!!document.querySelector('dialog.task-sheet[open]')")) await fail("Escape in the note closed the To check sheet");
-  await evaluate(`${fail_}.click()`);
+  await evaluate(`${failButton}.click()`);
   await until(`!!${item}.querySelector('.need-form input')`, "× did not open the note again");
-  await evaluate(`${fail_}.click()`);
+  await evaluate(`${failButton}.click()`);
   await until(`!${item}.querySelector('.need-form')`, "× did not close the note");
-  await evaluate(`${fail_}.click()`);
+  await evaluate(`${failButton}.click()`);
   await until(`!!${item}.querySelector('.need-form input')`, "× did not open the note a third time");
   await typeInto(".check-item .need-form input", "the text is cut off");
   await shot("to-check-fail", ".composer-send");
