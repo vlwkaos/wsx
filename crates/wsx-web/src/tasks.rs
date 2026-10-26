@@ -240,6 +240,7 @@ pub fn overview(scope: &Scope) -> Value {
     let settings = load_task_config(&scope.path).ok();
     json!({
         "project": scope.project,
+        "manager": settings.as_ref().map_or(scope.name.as_str(), |settings| settings.manager_shown_name(&scope.name)),
         "busy": busy,
         "needs": needs.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
         "working": working,
