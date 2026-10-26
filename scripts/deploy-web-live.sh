@@ -23,9 +23,10 @@ step=start
 step() { step=$1; echo "== deploy step: $1 ($(date '+%H:%M:%S'))"; }
 trap 'code=$?; [ $code -eq 0 ] || echo "deploy failed at step: $step (exit $code); full output in $live/deploy.log"' EXIT
 
-# ^ The end-to-end gate runs here, once for the newest commit after a batch of lands, not in
-# each task's checks. A failure stops the deploy and the manager sees it in the ledger.
-# ^ Each script holds the host-wide check slot that task checks take (crates/wsx/src/task/slot.rs,
+# ^ The deploy gate is the PTY and stream smoke test only, so a land reaches the live site in
+# minutes. The task and web end-to-end scripts are `tasks.scenarios`: the worker whose change
+# touches their area runs them by name (wsx.config.yml `workflow.build`).
+# ^ The smoke test holds the host-wide check slot that task checks take (crates/wsx/src/task/slot.rs,
 # an flock on tasks/check-slot/slot.lock), so it never runs beside another task's checks.
 in_slot() {
   python3 -c 'import fcntl, os, subprocess, sys
@@ -42,10 +43,6 @@ sys.exit(subprocess.call(sys.argv[1:]))' "$@"
 }
 step "debug build"
 cargo build --locked -p wsx -p wsx-daemon
-step "test-task.py"
-in_slot python3 -B scripts/test-task.py
-step "test-web-client.py --browser"
-in_slot python3 -B scripts/test-web-client.py --browser
 step "runtime-smoke.py"
 in_slot python3 -B scripts/runtime-smoke.py
 step "release build"

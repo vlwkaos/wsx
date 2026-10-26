@@ -196,7 +196,7 @@ impl Default for TaskConfig {
             // more than the turn saved (scripts/bench-manager.py, docs/tasks.md "Manager").
             manager_event_model: None,
             manager_rotate_tokens: 150_000,
-            manager_recap_secs: 60 * 60,
+            manager_recap_secs: 0,
         }
     }
 }

@@ -13,8 +13,8 @@ tasks:
   env:
     CARGO_INCREMENTAL: "0"
   minFreeGb: 3
-  # ^ Fast checks after each result and each land. The slow end-to-end scripts run once per
-  # batch of lands, in the deploy of main (scripts/deploy-web-live.sh).
+  # ^ Fast checks after each result and each land. The slow end-to-end scripts are the
+  # scenarios below, run by the worker whose change touches their area.
   checks:
     - cargo fmt --all --check
     - cargo build -p wsx -p wsx-daemon
@@ -33,7 +33,10 @@ tasks:
     # ^ The steps (context, plan, build, review, memo) are the owner's, in ~/.config/wsx/wsx.config.yml.
     build: >-
       Follow CLAUDE.md and AGENTS.md. Keep the change lean: reuse what exists, remove what your
-      change makes dead; prefer removing code to adding it. Run owner:memo to save durable
+      change makes dead; prefer removing code to adding it. Before your result, run the
+      scenario of each area you changed: `wsx task check-run task` for crates/wsx/src/task or
+      scripts/test-task.py, `web` for crates/wsx-web, `smoke` for the daemon or terminal; fix
+      what fails, also an assert your change made stale. Run owner:memo to save durable
       lessons into knowledge/sessions/, and never commit knowledge/: it is git-ignored.
     # ^ When session notes are newer than the last idle task, the manager host starts one task
     # with this prompt.

@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- The live site gets each land again within minutes. The deploy (`scripts/deploy-web-live.sh`) ran the task and web end-to-end scripts as its gate, and a stale assert in them failed 19 deploys in a row, so the site stayed 38 commits behind. The gate is now the build and `scripts/runtime-smoke.py`; workers run the end-to-end script of the area they change (`wsx task check-run task`, `web`, `smoke`).
 - Task workers and the manager start again. The Seatbelt profile wsx wrote for its boundary had filters without parentheses, which sandbox-exec refuses (exit 65), so every agent ended at once and every deploy since failed at `fake launch timeout`. A host that cannot apply the boundary, also one that runs inside another sandbox, now fails the task at once with sandbox-exec's words in the log, the result and the ledger ([docs/tasks.md](docs/tasks.md) "Permissions").
 - The deploy's end-to-end scripts (`scripts/deploy-web-live.sh`) hold the machine's check slot, so they no longer run beside other tasks' checks.
 - A land no longer refuses because the main checkout has uncommitted files the land does not touch: they stay as they are and the land goes on. It refuses only for changed files the land changes too, names only those, and says where to commit or stash them; the message starts with words, so a copy no longer drops the path's leading `/`. The ledger (`land_blocked_by`) and the web task sheet, under *Land*, say before the press which files would stop a ready task's land ([docs/tasks.md](docs/tasks.md) "Landing").
@@ -29,6 +30,8 @@
 
 ### Changed
 
+- The manager chat reads as a chat. A manager reply to wsx's task events is a muted line, not a bubble, and `-` shows nothing; a worker's report stays in the task sheet. The manager answers in a few short lines and hands the owner no chores (commands, deletes, settings to edit, tasks to verify). Its instructions are about half as long. The quiet-period recap is off by default (`tasks.manager.recapMinutes`) and at most 8 lines when on ([docs/tasks.md](docs/tasks.md) "Manager", "Recap").
+- The idle task that consolidates project knowledge runs as one turn, without the owner's workflow steps.
 - The web client's home-screen icon shows split panes, the active one in the theme's green with a prompt, instead of a generic `>_` on blue. The manifest marks the icons `any maskable`, so Android crops them to its own shape without cutting the mark.
 - The web chats read better on a phone. The session chat and the manager chat open at the first reply this device has not read, under a "New" line, with "↓ 3 new" to go to the end; with nothing unread they open where you left them. Scrolled up, a new reply does not move the chat and the button counts it.
 - Reply to one message in either chat: swipe it right, or long-press it (right-click on a computer) and choose Reply. The quote shows over the text box with ×, the message goes out starting with `> <its first line>`, and a tap on that quote in the chat goes to the quoted message.

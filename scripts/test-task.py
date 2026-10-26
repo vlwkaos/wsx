@@ -988,14 +988,15 @@ def run(wsx, wsxd, work, owned):
     running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
     asked = js('task', 'say', 'STATUS')
     assert asked['ok'] and asked['id'] == 1, asked
-    assert ('#%d working' % running) in reply_to(asked['id'])['text']
+    asked_reply = reply_to(asked['id'])
+    assert ('#%d working' % running) in asked_reply['text'] and 'quiet' not in asked_reply, asked_reply
     launch = next(t for t in traces() if t.get('launch') and t.get('manager'))
     # ^ The message ends with the host's ledger summary; a fresh conversation gets every open task.
     opening = next(t['message'] for t in traces() if t.get('manager') and 'message' in t)
     summary = opening.split('\n\nLedger summary from wsx (`wsx task ledger -p demo` has the details):\n', 1)[1]
     assert summary.startswith('- open: ') and 'working; to check: ' in summary, summary
     assert '#%d working r' % running in summary.split('- open tasks:\n', 1)[1], summary
-    assert '`wsx task ledger -p demo` when you need more' in launch['instructions'], launch['instructions']
+    assert '`wsx task ledger -p demo` for more' in launch['instructions'], launch['instructions']
     page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md')
     # ^ It uses the owner's skills (docs/tasks.md "Manager"); no tool list: nothing prompts.
     assert not {'--allowedTools', '--disallowedTools'} & set(launch['argv']), launch['argv']
@@ -1008,31 +1009,26 @@ def run(wsx, wsxd, work, owned):
     assert launch['model'] == 'fake-manager' and Path(page).read_text().startswith('# demo\n\n## Goal')
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     assert launch['git_optional_locks'] == '0', launch
-    # Its rules: talk and size first, a complete prompt, parallel on different files or a small overlap, a
-    # lean review without rebase send-backs, and one housekeeping task after a request lands.
-    for rule in ('Talk before work', 'Then ask whether to go', 'Start tasks only after the owner agrees',
-                 'own section with a mermaid diagram', 'complete on its own, since a worker cannot ask',
-                 'Run tasks at once when they change different files', '`overlaps` names open tasks',
-                 'in every task new', 'never delete a worktree yourself',
-                 'you decide the orchestration and say it in one line', 'run it in parallel when the overlap is small',
-                 'Never ask the owner to hold off or wait', "When an owner message has '@<project>'",
-                 'for lean code', 'Never send a task back to rebase', 'Check the fixture rule.',
-                 'start one housekeeping task', 'Fold the fixture tasks.',
-                 '`sonnet` may do', 'critical fix or heavy, complex work',
-                 "carries it as 'memo:'", 'fold each memo into', 'in case one was missed', '/manager/notes/context.md', 'waits for your review',
-                 'never give the owner commands to run', '/manager/notes/decisions.md', 'starts with that file and',
-                 '--from-manager --reply', 'use it and do not answer it',
-                 'also in a pipe or with a heredoc', 'report each check as passed or failed from them',
-                 "trust them over the worker's words", 'nothing asks you for permission', 'only after the owner says yes, commit',
-                 'never tell the owner to edit settings', 'read-only git in Bash',
-                 '`auto_land` is true', 'Never ask the owner to verify a',
-                 'never pass or fail items yourself', 'A release refuses while items are open',
-                 'the Skill tool as `owner:<name>`', 'look at the skills and subagents you have',
-                 'fits lookup, context, memory or research', 'check rather than guess',
-                 'use Read, Grep, WebSearch and the Explore subagent', 'the likely next step',
-                 'say what you checked in one short line', 'On `hand`, the owner works in its copy',
-                 'docs tools the project settings allow',
-                 'Keep turns short', 'Present every reply to the owner by this rule', 'The reader sees one screen', 'update that section in place'):
+    # Its rules: chat, not reports; quiet replies to events and no chores for the owner; plan
+    # first; a complete prompt; parallel on different files; a lean review without rebase
+    # send-backs; one housekeeping task after a request lands; the owner's word; memory.
+    for rule in ('Talk like a person in a chat, not a report', 'The reader sees one screen',
+                 'A turn of only Events is your work', 'or with exactly `-` when nothing',
+                 'Never hand the owner chores', 'and ask whether to go', 'with a mermaid diagram',
+                 'stands alone, since a worker cannot ask', 'in every task new', 'Add `--plan`',
+                 'Run tasks at once when they change', 'Never ask the owner to wait',
+                 'for lean code', 'never send a task back to rebase', 'trust them over the worker',
+                 'Check the fixture rule.', 'start one housekeeping task', 'Fold the fixture tasks.',
+                 'tell that worker to prove it', 'never pass or fail items yourself',
+                 'A release refuses while items are open', '`wsx task trial <n>`',
+                 '`--owner-said <id>`', 'never name a message that did not ask',
+                 'call a change live only when', 'On `hand`, the owner works in its copy',
+                 'nothing asks you for permission', 'read-only git in Bash',
+                 'only after the owner says yes, commit', 'also in a pipe or with a heredoc',
+                 'the Skill tool as `owner:<name>`', 'check rather than guess',
+                 '/manager/notes/decisions.md', '/manager/notes/context.md', "worker's 'memo:'",
+                 "'Handover'", 'Update a section in place',
+                 '--from-manager --reply', 'use it and do not answer it', "'@<project>'"):
         assert rule in launch['instructions'], rule
     assert 'brief' not in launch['instructions'].lower(), launch['instructions']
     # ^ No skill is named: the owner's skills are whatever their folder holds.
@@ -1076,7 +1072,7 @@ def run(wsx, wsxd, work, owned):
     assert 'ran: wsx --version -> 2 wsx: only `wsx task` commands run here' in text, text
     assert 'ran: wsx task host' in text and "-> 2 wsx: `wsx task host` is not for the manager" in text, text
     with socket.socket(socket.AF_UNIX) as raw:
-        raw.connect(broker[0])
+        raw.connect(launch['broker'])
         raw.sendall(json.dumps({'argv': ['daemon', 'stop'], 'stdin': None, 'cwd': str(project)}).encode())
         raw.shutdown(socket.SHUT_WR)
         direct = json.loads(raw.makefile().read())
@@ -1102,8 +1098,8 @@ def run(wsx, wsxd, work, owned):
     # waits for its review: the manager's own model reviews it.
     review = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
                                 and '#%d ready' % manager_task in e['text']), None), 'review event')
-    reviewed = wait(lambda: turn_with('Events (message %d)' % review['id']), 'review turn')
-    assert reviewed['model'] == 'fake-manager', reviewed
+    review_turn = wait(lambda: turn_with('Events (message %d)' % review['id']), 'review turn')
+    assert review_turn['model'] == 'fake-manager', review_turn
     # Rotation: past rotateTokens the next turn starts a fresh conversation.
     # ^ Without a skills folder the next launch has no plugin, keeps the Skill tool and
     # the generic guidance.
@@ -1134,6 +1130,15 @@ def run(wsx, wsxd, work, owned):
     cli('task', 'release', '--json', ok=False)
     wait(lambda: events_with('release of %s failed (exit 3); its output ends:\n    52\n' % git('rev-parse', 'main')[:12],
                              '\n    60\n    release broke here'), 'the failed release event')
+    # ^ The close events of the tasks above may still run a turn: SLOW must start its own.
+    def manager_idle():
+        entries = manager_entries()
+        delivered = {n for e in entries if e['kind'] == 'delivered' for n in e['ids']}
+        turns = [e['kind'] for e in entries if e['kind'] in ('delivered', 'reply')]
+        return all(e['id'] in delivered for e in entries if e['kind'] == 'message') and turns[-1:] != ['delivered']
+    wait(manager_idle, 'the manager idle before SLOW', 60)
+    time.sleep(3.5)
+    wait(manager_idle, 'the manager idle before SLOW', 60)
     busy = js('task', 'say', 'SLOW')
     first = js('task', 'new', 'NOOP')['id']
     second = js('task', 'new', 'NOOP')['id']
@@ -1149,9 +1154,12 @@ def run(wsx, wsxd, work, owned):
     delivered = wait(lambda: (lambda ids: ids if any(merged[0]['id'] in batch for batch in ids) else None)(
         [e['ids'] for e in manager_entries() if e['kind'] == 'delivered']), 'merged events delivered')
     batch = lambda message_id: next(n for n, ids in enumerate(delivered) if message_id in ids)
-    assert delivered[batch(waiting['id'])] == [waiting['id']] and batch(waiting['id']) < batch(merged[0]['id']), delivered
+    assert delivered[batch(waiting['id'])] == [waiting['id']] and batch(waiting['id']) < batch(merged[0]['id']), (
+        delivered, waiting['id'], merged[0]['id'],
+        [(e.get('id'), e['kind'], e.get('from'), e.get('text', '')[:60]) for e in manager_entries() if e['kind'] in ('message', 'reply')][-12:])
     event_reply = reply_to(merged[0]['id'])
-    assert 'noted events' in event_reply['text']
+    # ^ A reply to a turn of only events is quiet: the chat shows it as a muted line.
+    assert 'noted events' in event_reply['text'] and event_reply.get('quiet') is True, event_reply
     # ^ Nothing waits for the manager's review: the events turn runs on eventModel in the same
     # process, and the next owner turn switches back (docs/tasks.md "Manager").
     event_turn = turn_with('Events (message %d)' % merged[0]['id'])
@@ -2073,7 +2081,7 @@ def run(wsx, wsxd, work, owned):
         return [e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'recap']
 
     recap = wait(lambda: next(iter(recaps()), None), 'the recap request after a quiet period', 120)
-    assert 'two weeks' in recap['text'] and 'Start no task' in recap['text'], recap
+    assert 'at most 8 lines' in recap['text'] and 'Start no' in recap['text'], recap
     assert 'Token cost since the last recap: ' in recap['text'] and 'workers ' in recap['text'], recap
     assert 'in 1 turn(s) (#%d ' % other_land in recap['text'], recap
     wait(lambda: next((e for e in other_entries() if e['kind'] == 'reply' and recap['id'] in e['to']), None),
@@ -2097,6 +2105,8 @@ def run(wsx, wsxd, work, owned):
          'the other manager answers', 60)
     time.sleep(20)
     assert len(recaps()) == 1 and not idle_tasks(), (recaps(), other_tasks())
+    # ^ The owner has workflow steps; the idle task still runs as one turn.
+    owner_config.write_text('tasks:\n  workflow:\n    steps:\n      - name: plan\n        prompt: PLAN only\n')
     notes = other / 'knowledge/sessions/other'
     notes.mkdir(parents=True)
     (notes / 'session-1.md').write_text('a lesson\n')
@@ -2107,6 +2117,9 @@ def run(wsx, wsxd, work, owned):
     assert idle_shown['state'] == 'ready' and idle_shown['record']['created_by'] == 'manager', idle_shown
     prompt = json.loads(Path(idle_shown['log']).read_text().splitlines()[1])
     assert prompt['kind'] == 'message' and prompt['text'] == idle_text, prompt
+    # ^ One turn: the idle task runs no workflow steps (`task new --no-steps`).
+    assert not idle_shown['record'].get('steps'), idle_shown['record']
+    owner_config.unlink()
     js('task', 'close', idle[0]['id'], '--discard', '-p', 'other')
     wait(lambda: len(recaps()) == 2, 'the recap after the idle task closed', 150)
     time.sleep(3)

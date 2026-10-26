@@ -213,7 +213,9 @@ pub fn overview(scope: &Scope) -> Value {
         .and_then(|dir| dir.read_tail(MANAGER_TAIL_BYTES).ok())
         .unwrap_or_default();
     let last_reply = tail.iter().rev().find_map(|entry| match &entry.event {
-        ManagerEvent::Reply { text, .. } => Some(view::clip(text.trim(), LAST_REPLY_CHARS)),
+        ManagerEvent::Reply {
+            text, quiet: false, ..
+        } => Some(view::clip(text.trim(), LAST_REPLY_CHARS)),
         _ => None,
     });
     let last_unix_ms = tasks
@@ -602,7 +604,6 @@ pub fn chat(
         .collect();
     let skipped = entries.len().saturating_sub(CHAT_ENTRIES);
     entries.drain(..skipped);
-    let mut logs: HashMap<u32, Vec<task::LogEntry>> = HashMap::new();
     let entries: Vec<Value> = entries
         .into_iter()
         .map(|entry| {
@@ -618,17 +619,6 @@ pub fn chat(
                 if !attachments.is_empty() {
                     value["text"] = json!(text);
                     value["attachments"] = json!(attachments);
-                }
-            }
-            if let ManagerEvent::Message {
-                from: task::manager::Author::Events,
-                text,
-                ..
-            } = &entry.event
-            {
-                let reports = worker_reports(scope, text, entry.unix_ms, &mut logs);
-                if !reports.is_empty() {
-                    value["reports"] = json!(reports);
                 }
             }
             value
@@ -680,65 +670,6 @@ fn manager_name(path: &Path) -> String {
         .to_string()
 }
 
-/// A worker's report for each events line that carries a worker result (`#3 ready r2: …`):
-/// the full summary of the result logged before the events message.
-/// ref: docs/web-client-tasks.md "Project screen"
-fn worker_reports(
-    scope: &Scope,
-    text: &str,
-    at: u64,
-    logs: &mut HashMap<u32, Vec<task::LogEntry>>,
-) -> Vec<Value> {
-    let mut reports = Vec::new();
-    for line in text.lines() {
-        let mut words = line.splitn(3, ' ');
-        let (Some(id), Some(state), Some(revision)) = (words.next(), words.next(), words.next())
-        else {
-            continue;
-        };
-        let Some(id) = id.strip_prefix('#').and_then(|id| id.parse::<u32>().ok()) else {
-            continue;
-        };
-        let Some(revision) = revision
-            .strip_prefix('r')
-            .and_then(|rest| rest.split(':').next()?.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        if !matches!(state, "ready" | "failed" | "waiting" | "landed") {
-            continue;
-        }
-        let Ok(dir) = open_task(scope, id) else {
-            continue;
-        };
-        let log = logs
-            .entry(id)
-            .or_insert_with(|| dir.read_log().unwrap_or_default());
-        let before = log.iter().rev().filter(|entry| entry.unix_ms <= at);
-        let report = before
-            .clone()
-            .find_map(|entry| match &entry.event {
-                LogEvent::Result {
-                    status, summary, ..
-                } => Some((status.clone(), summary.clone())),
-                _ => None,
-            })
-            .map(|(status, summary)| match state {
-                "failed" => ("failed".to_string(), summary),
-                // ^ Ready waits for a land by hand; landed is the task done.
-                "ready" => ("ready".to_string(), summary),
-                "landed" => ("done".to_string(), summary),
-                _ => (status, summary),
-            });
-        if let Some((head, summary)) = report.filter(|(_, summary)| !summary.trim().is_empty()) {
-            reports.push(json!({
-                "task": id, "state": state, "revision": revision, "head": head, "summary": summary,
-            }));
-        }
-    }
-    reports
-}
-
 /// The project page (docs/tasks.md "Project page"): its text and last change, or `null`s.
 pub fn page(scope: &Scope) -> Outcome<Value> {
     let page = store::read_page(&scope.store).map_err(internal)?;
@@ -783,7 +714,8 @@ pub fn since(scope: &Scope, after: u64) -> Value {
         .map_or(0, |log| {
             log.iter()
                 .filter(|entry| {
-                    entry.unix_ms > after && matches!(entry.event, ManagerEvent::Reply { .. })
+                    entry.unix_ms > after
+                        && matches!(entry.event, ManagerEvent::Reply { quiet: false, .. })
                 })
                 .count()
         });
