@@ -1068,10 +1068,10 @@ impl Host {
         let env = self.record.env.clone();
         let events = self.events.clone();
         let label = format!("{} t{}", self.record.project, self.record.id);
-        let checks: Vec<(String, std::path::PathBuf)> = checks
+        let checks = checks
             .into_iter()
             .map(|(index, command)| (command, self.dir.file(&format!("{kind}-{}.log", index + 1))))
-            .collect();
+            .collect::<Vec<_>>();
         std::thread::spawn(move || {
             let results = {
                 let _slot = priority.and_then(|priority| {
@@ -1761,25 +1761,20 @@ fn run_check(
     // ^ The pipes get only what the shell says before its redirection, such as a log it
     // cannot open; then no earlier run's log stands in for this one.
     let _ = std::fs::remove_file(log);
-    let ran = output_with_timeout_tail(&mut process, timeout, CHECK_OUTPUT_BYTES);
-    let mut output = log_tail(log).unwrap_or_default();
-    let said = match &ran {
-        Ok(output) => output_text(output),
-        Err(error) => error.to_string(),
-    };
-    if !said.is_empty() {
-        if !output.is_empty() {
-            output.push('\n');
-        }
-        output.push_str(&said);
-    }
+    let (exit, timed_out, said) =
+        match output_with_timeout_tail(&mut process, timeout, CHECK_OUTPUT_BYTES) {
+            Ok(output) => (output.status.code(), false, output_text(&output)),
+            Err(error) => (
+                None,
+                error.kind() == std::io::ErrorKind::TimedOut,
+                error.to_string(),
+            ),
+        };
     CheckResult {
         command: command.into(),
-        exit: ran.as_ref().ok().and_then(|output| output.status.code()),
-        timed_out: ran
-            .as_ref()
-            .is_err_and(|error| error.kind() == std::io::ErrorKind::TimedOut),
-        output,
+        exit,
+        timed_out,
+        output: joined([log_tail(log).unwrap_or_default(), said]),
     }
 }
 
@@ -1793,30 +1788,30 @@ fn log_tail(log: &Path) -> std::io::Result<String> {
     file.seek(SeekFrom::Start(size.saturating_sub(keep)))?;
     let mut bytes = Vec::new();
     file.take(keep).read_to_end(&mut bytes)?;
-    let text = String::from_utf8_lossy(&bytes).trim_end().to_string();
-    Ok(match size > keep {
-        true => format!(
-            "[the first {} bytes are cut; the whole output is in {}]\n{text}",
-            size - keep,
-            log.display()
-        ),
-        false => text,
-    })
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    if size <= keep {
+        return Ok(text);
+    }
+    Ok(format!(
+        "[the first {} bytes are cut; the whole output is in {}]\n{text}",
+        size - keep,
+        log.display()
+    ))
 }
 
 /// A command's output as one text: stdout, then stderr.
 pub(super) fn output_text(output: &std::process::Output) -> String {
-    let mut text = String::from_utf8_lossy(&output.stdout)
-        .trim_end()
-        .to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !stderr.trim().is_empty() {
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        text.push_str(stderr.trim_end());
-    }
-    text
+    joined([&output.stdout, &output.stderr].map(|bytes| String::from_utf8_lossy(bytes).into()))
+}
+
+/// `parts` with trailing whitespace trimmed, the empty ones left out, one per line.
+fn joined(parts: [String; 2]) -> String {
+    let parts: Vec<&str> = parts
+        .iter()
+        .map(|part| part.trim_end())
+        .filter(|part| !part.is_empty())
+        .collect();
+    parts.join("\n")
 }
 
 /// The failed checks for the worker: each command, how it ended and the end of its output.
