@@ -684,8 +684,12 @@ fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
 // that follows does not defer it, and a deferred handoff continues when the blocker leaves.
 #[test]
 fn restart_into_the_same_build_waits_only_for_a_tui_that_cannot_follow() {
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_wsxd"));
     let mut fixture = Fixture::new();
+    // ^ The daemon re-validates the handoff executable by device, inode, size and mtime
+    // after the deferral. Another task's build can relink the shared target/debug/wsxd in
+    // that window, so the test hands off its own copy.
+    let binary = fixture.root.join("bin/wsxd");
+    fs::copy(env!("CARGO_BIN_EXE_wsxd"), &binary).unwrap();
     fixture.source = Some(fixture.command(&binary).spawn().unwrap());
     wait_for_socket(&fixture.socket);
     let client = Client::new(fixture.socket.clone());

@@ -1,2 +1,4 @@
 # Preserve pinned upstream bytes; project-owned files remain whitespace checked.
 vendor/libghostty-vt/** -whitespace
+# Parallel tasks append bullets to the same changelog list; keep both sides instead of conflicting.
+CHANGELOG.md merge=union
