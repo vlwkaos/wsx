@@ -296,8 +296,8 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .viewer-bar .button { min-width: var(--size-control); }
 .viewer-bar .icon-button { color: var(--color-text); }
 .viewer-zoom { display: flex; align-items: center; gap: var(--space-1); margin-left: auto; }
-/* On a phone the fingers zoom: the percent gives the bar's room to the image count. */
-@media (max-width: 599px) { .viewer-zoom .time { display: none; } }
+/* On a touch screen the fingers zoom: the percent gives the bar's room to the image count. */
+@media (pointer: coarse) { .viewer-zoom .time { display: none; } }
 .viewer-note { margin: auto; }
 .viewer-stage { flex: 1; min-height: 0; overflow: auto; display: flex; touch-action: none; cursor: grab; }
 .viewer-stage img { margin: auto; flex: 0 0 auto; }
