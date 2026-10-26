@@ -21,6 +21,7 @@
 
 ### Changed
 
+- A task's checks are the main checkout's `tasks.checks` at the time they run, not the ones the task started with. A task started before the checks changed lands through the current gate.
 - The web's task buttons are only *Land*, *Answer*, *Work by hand* and *Try*. *Try live*, *Hold for me* and *Release hold* are gone; the manager still holds a task or starts a trial when it cannot judge a change itself. A working row says when the task waits to run checks or runs them.
 - The web's To check list leaves more room for the items on a phone. The task chip starts the item's first line and Try, Fail and Pass sit at its top right with the words flowing beside them, so no row holds only the chip and buttons and the words use the full width below them; *All passed* moved into the top bar, and the intro sentence is gone.
 - The open reservoir in the manager chat no longer spends a row on its chevron alone. The chevron sits at the right end of the list's first row, so the list starts at the top and its first label ("Running") is no longer cut off.

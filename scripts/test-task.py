@@ -80,6 +80,21 @@ def tui_text(wsx, env, cwd, until, seconds=15):
     return text
 
 
+# ^ Each numbered part marks its start; the result names the slowest parts, so a slow run
+# says where its time went.
+PARTS = []
+
+
+def mark(name):
+    PARTS.append((name, time.monotonic()))
+
+
+def slowest(count=8):
+    ends = [at for _, at in PARTS[1:]] + [time.monotonic()]
+    spans = [(name, round(end - at, 1)) for (name, at), end in zip(PARTS, ends)]
+    return sorted(spans, key=lambda span: -span[1])[:count]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wsx', type=Path, default=ROOT / 'target/debug/wsx')
@@ -92,10 +107,11 @@ def main():
     work = ROOT / '.work' / ('tk' + str(os.getpid()))
     work.mkdir(mode=0o700, parents=True, exist_ok=False)
     started = time.monotonic()
+    PARTS.append(('setup', started))
     owned = {}
     try:
         run(wsx, wsxd, work, owned)
-        print(json.dumps({'ok': True, 'seconds': round(time.monotonic() - started, 1)}))
+        print(json.dumps({'ok': True, 'seconds': round(time.monotonic() - started, 1), 'slowest': slowest()}))
     finally:
         # ^ Stop the isolated wsxd also after a failure: its hosts and fake agents end with it.
         if 'env' in owned:
@@ -242,6 +258,7 @@ def run(wsx, wsxd, work, owned):
     assert 'empty' in cli('task', 'new', '-', stdin='\n', ok=False).stderr
 
     # 1. New: a working turn in its own working copy.
+    mark('1')
     created = js('task', 'new', 'SLOW WORK a.txt')
     assert created['id'] == 1 and created['state'] == 'working', created
     copy = Path(created['working_copy'])
@@ -286,6 +303,7 @@ def run(wsx, wsxd, work, owned):
     assert launch['settings']['attribution'] == {'commit': '', 'pr': ''}
 
     # 2. Steer during the turn: Claude does not save it, so the host logs it.
+    mark('2')
     steered = js('task', 'steer', '1', 'use capitals')
     assert steered['ok'] and 'steered' in steered['message'], steered
     ready = wait_state(1, 'ready', 'failed')
@@ -306,6 +324,7 @@ def run(wsx, wsxd, work, owned):
     assert agent['provider'] == 'task'
 
     # 3. Add after the turn, blocked on a denied tool, then allow resumes the same conversation.
+    mark('3')
     added = js('task', 'add', '1', 'NEEDS WebSearch WORK b.txt')
     assert added['ok'] and 'new turn' in added['message'], added
     blocked = wait_state(1, 'waiting')
@@ -325,6 +344,7 @@ def run(wsx, wsxd, work, owned):
     assert relaunch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'], relaunch['allowed']
 
     # 3b. Denials the worker worked around do not block: checks run and the denials are evidence.
+    mark('3b')
     js('task', 'add', '1', 'DENIED rm-tmp WORK d.txt')
     ready = wait_state(1, 'ready', 'failed', 'waiting')
     assert ready['state'] == 'ready', ready
@@ -333,11 +353,13 @@ def run(wsx, wsxd, work, owned):
     assert report.index('`Bash(rm-tmp)`') > report.index('## Evidence'), report
 
     # 3c. A stdout line past the reader's 4 MiB bound is dropped and the turn still ends.
+    mark('3c')
     js('task', 'add', '1', 'HUGE NOOP')
     assert wait_state(1, 'ready', 'failed')['state'] == 'ready'
     assert not any(len(e.get('text', '')) > 1000 for e in log(1) if e['kind'] == 'agent')
 
     # 4. A failing check makes the task failed with the evidence.
+    mark('4')
     js('task', 'add', '1', 'WORK broken.txt')
     failed = wait_state(1, 'failed')
     assert [c['exit'] for c in failed['result']['checks']] == [0, 1], failed['result']
@@ -346,6 +368,7 @@ def run(wsx, wsxd, work, owned):
     git('commit', '-q', '-m', 'drop broken', cwd=copy)
 
     # 5. Live daemon handoff while the host runs a turn.
+    mark('5')
     js('task', 'add', '1', 'SLOW WORK c.txt')
     wait_state(1, 'working')
     before = daemon_call('lifecycle_status')['data']['epoch']
@@ -359,6 +382,7 @@ def run(wsx, wsxd, work, owned):
     wait(lambda: (pane_agent(1) or {}).get('state') == 'done', 'agent report after handoff')
 
     # 6. Stop interrupts; the next add resumes the same conversation.
+    mark('6')
     js('task', 'add', '1', 'SLOW NOOP')
     wait_state(1, 'working')
     stopped = js('task', 'stop', '1')
@@ -371,11 +395,13 @@ def run(wsx, wsxd, work, owned):
     assert last['resume'] and last['session'] == launch['session']
 
     # 7. Close refuses unlanded commits and changes nothing.
+    mark('7')
     refused = cli('task', 'close', '1', ok=False)
     assert 'not on main' in refused.stderr and '--discard' in refused.stderr, refused.stderr
     assert show(1)['host_running'] and copy.exists()
 
     # 8. A task without commits closes without --discard; nothing is left.
+    mark('8')
     second = js('task', 'new', 'NOOP')
     assert second['id'] == 2
     wait_state(2, 'ready', 'failed')
@@ -389,6 +415,7 @@ def run(wsx, wsxd, work, owned):
     assert not leftovers('task host ' + project_id + ' 2')
 
     # 9. Close with --discard removes everything of task 1, including its revision refs.
+    mark('9')
     closed = js('task', 'close', '1', '--discard')
     assert closed['discarded'] and closed['state'] == 'closed', closed
     assert not copy.exists() and not git('branch', '--list', 'wsx/t1')
@@ -401,6 +428,7 @@ def run(wsx, wsxd, work, owned):
     assert log(1)[-1]['kind'] == 'closed'
 
     # 10. A failed start leaves nothing and does not reuse the number.
+    mark('10')
     (base / 'project-t3').mkdir()
     blocked_path = cli('task', 'new', 'NOOP', ok=False)
     assert 'already exists' in blocked_path.stderr and 'not reused' in blocked_path.stderr, blocked_path.stderr
@@ -412,6 +440,7 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', '4')
 
     # 11. --from starts at another commit and records it; a bad ref leaves nothing.
+    mark('11')
     first = git('rev-parse', 'main')
     (project / 'later.txt').write_text('later')
     git('add', 'later.txt')
@@ -425,6 +454,7 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', '6')
 
     # 12. Two concurrent starts get distinct numbers and both work.
+    mark('12')
     starts = [subprocess.Popen([str(wsx), 'task', 'new', 'NOOP', '--json'], cwd=project, env=env,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(2)]
     outputs = [start.communicate(timeout=60) for start in starts]
@@ -439,6 +469,7 @@ def run(wsx, wsxd, work, owned):
         js('task', 'close', n)
 
     # 13. A check that runs past tasks.checkTimeoutSeconds is killed and fails the task.
+    mark('13')
     (project / 'wsx.config.yml').write_text(
         'tasks:\n  minFreeGb: 0\n  agent:\n    tools: [Read]\n  checks: ["sleep 37"]\n  checkTimeoutSeconds: 1\n')
     timed = js('task', 'new', 'NOOP')
@@ -471,6 +502,7 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', left, '--discard')
 
     # 13b. Workflow steps: the owner's own steps apply to a project that names none; the host
+    mark('13b')
     # sends each step as its own turn and runs the checks after the last.
     owner_config = work / 'c' / 'wsx' / 'wsx.config.yml'
     owner_config.parent.mkdir(parents=True, exist_ok=True)
@@ -493,6 +525,21 @@ def run(wsx, wsxd, work, owned):
         '      - {name: a, prompt: x}\n      - {name: a, prompt: y}\n')
     assert 'named twice' in cli('task', 'new', 'NOOP', ok=False).stderr
     owner_config.unlink()
+    # 13c. The checks are the main checkout's as they are when a result comes: a task started
+    # under a failing check passes once the project's checks change.
+    mark('13c')
+    (project / 'wsx.config.yml').write_text(
+        'tasks:\n  minFreeGb: 0\n  agent:\n    tools: [Read]\n  checks: ["false"]\n')
+    release = work / 'release-13c'
+    followed = js('task', 'new', 'WAIT %s' % release)['id']
+    wait(lambda: show(followed)['record']['agent_session'], 't%s started' % followed)
+    (project / 'wsx.config.yml').write_text(
+        'tasks:\n  minFreeGb: 0\n  agent:\n    tools: [Read]\n  checks: ["true"]\n')
+    release.write_text('go')
+    done = wait_state(followed, 'ready', 'failed')
+    assert done['state'] == 'ready' and done['record']['checks'] == ['true'], done
+    assert [check['command'] for check in done['result']['checks']] == ['true'], done['result']
+    js('task', 'close', followed, '--discard')
 
     # M2: the landing steps use a committed config without the a.txt check.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
@@ -501,6 +548,7 @@ def run(wsx, wsxd, work, owned):
     git('commit', '-q', '-am', 'land config')
 
     # 14. Each revision records its paths; list and show report overlap between open tasks.
+    mark('14')
     x1 = js('task', 'new', 'WORK x.txt alpha')['id']
     y1 = js('task', 'new', 'WORK y.txt')['id']
     x2 = js('task', 'new', 'WORK x.txt beta')['id']
@@ -529,6 +577,7 @@ def run(wsx, wsxd, work, owned):
     assert show(x2)['overlaps'] == [{'id': x1, 'count': 1, 'complete': True, 'paths': ['x.txt']}]
 
     # 14b. Declared `--files` globs overlap before any revision; disjoint ones do not; bad ones
+    mark('14b')
     # create no task (docs/tasks.md "Store").
     gate = work / 'files-gate'
     d1 = js('task', 'new', 'WAIT %s' % gate, '--files', 'src/*.rs', '--files', 'docs/a.md')['id']
@@ -557,6 +606,7 @@ def run(wsx, wsxd, work, owned):
     assert max(row['id'] for row in js('task', 'list', '--all')['tasks']) == last
 
     # 14c. The ledger lists the project's other worktrees with their flags, never a task's copy.
+    mark('14c')
     git('worktree', 'add', '-q', '-b', 'stray-merged', str(base / 'stray-merged'))
     git('worktree', 'add', '-q', '-b', 'stray-dirty', str(base / 'stray-dirty'))
     (base / 'stray-dirty/new.txt').write_text('ahead\n')
@@ -600,6 +650,7 @@ def run(wsx, wsxd, work, owned):
              and not git('branch', '--list', 'wsx/t%d' % n), 't%s closed after landing' % n, 60)
 
     # 15. Landing, local-merge. A dirty default-branch checkout refuses and names the file.
+    mark('15')
     (project / 'README').write_text('dirty\n')
     refused = land(y1, ok=False)
     assert not refused['ok'] and 'README' in refused['message'] and 'land again' in refused['message'], refused
@@ -631,6 +682,7 @@ def run(wsx, wsxd, work, owned):
         wait_closed(n)
 
     # 16. Auto land (the default; docs/tasks.md "Landing"): a ready task lands by itself with no
+    mark('16')
     # owner action, its Human Verify items join the To check list, and a conflict lands after
     # the worker's fix. With main not checked out, the ref moves with the old tip as guard.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', ''))
@@ -710,6 +762,7 @@ def run(wsx, wsxd, work, owned):
     git('commit', '-q', '-am', 'land by hand')
 
     # 17. Deploy and release records. Each runs in a temporary copy of a default-branch commit.
+    mark('17')
     unset = cli('task', 'deploy', ok=False)
     assert 'tasks.deploy.command is not set' in unset.stderr and 'nothing was run' in unset.stderr
     (project / 'wsx.config.yml').write_text(LAND_CONFIG + '''  deploy:
@@ -752,6 +805,7 @@ def run(wsx, wsxd, work, owned):
     assert js('task', 'deployed')['deploy']['behind'] == 3
 
     # 18. The ledger: open tasks by attention order, recent ones, deploys, the main checkout.
+    mark('18')
     # ^ The worker doubts a check it could not run; the ledger says what the host's checks did.
     ready_task = js('task', 'new', 'WORK l.txt could not run the browser test')['id']
     blocked_task = js('task', 'new', 'NEEDS WebSearch WORK m.txt')['id']
@@ -773,6 +827,7 @@ def run(wsx, wsxd, work, owned):
         js('task', 'close', n, '--discard')
 
     # 20. The manager: started by the first say, answers from the ledger, acts through wsx task.
+    mark('20')
     (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text()
                                             + '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, '
                                               'rotateTokens: 100000, tools: [mcp__docs__search] }\n'
@@ -952,6 +1007,7 @@ def run(wsx, wsxd, work, owned):
         js('task', 'close', n, '--discard')
 
     # 21. Events: task state changes reach the manager, merged while it is busy; an owner
+    mark('21')
     # message waiting at the same time goes first; a host restart loses no event.
     def events_with(*needles):
         return [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
@@ -1050,6 +1106,7 @@ def run(wsx, wsxd, work, owned):
     for n in (first, second, unseen):
         js('task', 'close', n, '--discard')
     # 21b. Memo (docs/tasks.md "Memo"): each task that leaves brings its worker's memo to the
+    mark('21b')
     # manager in its event, also past the ledger's 10 recent tasks.
     memo_tasks = [js('task', 'new', 'WORK m%d.txt MEMO lesson %d kept' % (i, i))['id'] for i in range(11)]
     for n in memo_tasks:
@@ -1060,6 +1117,7 @@ def run(wsx, wsxd, work, owned):
     assert len(js('task', 'ledger')['recent']) == 10
 
     # 22. Approvals: what the manager may not do alone becomes a request the owner decides.
+    mark('22')
     # ^ By default the manager lands alone: only what goes public or is lost asks.
     free = js('task', 'new', 'WORK free.txt MEMO landing brings it')['id']
     assert wait_state(free, 'ready', 'failed')['state'] == 'ready'
@@ -1105,6 +1163,7 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', keep, '--discard')
 
     # 23. Asks and grants (docs/tasks.md "Permissions"): a block names what the sandbox
+    mark('23')
     # stopped, a grant resumes the task with it, a project grant reaches the next task.
     def launches_in(n):
         copy = os.path.realpath(show(n)['record']['working_copy'])
@@ -1165,6 +1224,7 @@ def run(wsx, wsxd, work, owned):
         js('task', 'close', n, '--discard')
 
     # 25. A done result whose checks fail goes back to the worker with the failed command and
+    mark('25')
     # its output, at most twice, then the task fails as before.
     fixable = 'test -f fixed.txt || { echo "WORK fixed.txt"; exit 1; }'
     (project / 'wsx.config.yml').write_text(CONFIG.replace('    - "test -f a.txt"\n    - "test ! -e broken.txt"\n',
@@ -1191,6 +1251,7 @@ def run(wsx, wsxd, work, owned):
         js('task', 'close', n, '--discard')
 
     # 26. A host follows a replaced wsx binary (docs/tasks.md "Host"): the next turn execs the
+    mark('26')
     # new file in the same process, which resumes the agent with the new launch.
     (project / 'wsx.config.yml').write_text(CONFIG.split('  checks:')[0])
     git('commit', '-q', '-am', 'no checks')
@@ -1224,6 +1285,7 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', r, '--discard')
 
     # 27. The worker runs the checks itself through its host's broker, outside its sandbox and
+    mark('27')
     # as after its result; any other command is refused (docs/tasks.md "Checks, revisions and report").
     # `tasks.env` reaches the worker and every check run, so both build with the same settings.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace(
@@ -1262,6 +1324,7 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', dw, '--discard')
 
     # 28. A land deploys by itself with tasks.deploy.auto; deploys run one at a time and a
+    mark('28')
     # deploy that waited runs for the newest commit, so quick lands skip the ones between.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG + """  deploy:
     command: 'sleep 8; echo "$WSX_DEPLOY_COMMIT" >> ../auto-deploy.log'
@@ -1288,6 +1351,7 @@ def run(wsx, wsxd, work, owned):
     assert 'already deployed' in follow_up.read_text(), follow_up.read_text()[-2000:]
 
     # 29. A preview on request (docs/tasks.md "Preview"): a fake tailscale records its argv.
+    mark('29')
     tailscale_log = work / 'tailscale.log'
     (bin_dir / 'tailscale').write_text('#!/bin/sh\necho "$@" >> ' + str(tailscale_log) + '\n'
                                        'if [ "$1" = status ]; then echo \'{"Self":{"DNSName":"host.example.ts.net."}}\'; fi\n')
@@ -1327,6 +1391,7 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', plain, '--discard')
 
     # 30. By hand (docs/tasks.md "By hand"): the owner takes a running build over in its own
+    mark('30')
     # working copy with a fork of the worker's conversation; nothing else writes there until
     # handback, whose commits are checked, land by themselves and close the task.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', ''))
@@ -1401,6 +1466,7 @@ def run(wsx, wsxd, work, owned):
     git('commit', '-q', '-am', 'land by hand again')
 
     # 31. `wsx worktree delete` refuses uncommitted work before it closes anything, ignores
+    mark('31')
     # build output, and keeps a branch with unmerged commits.
     cli('worktree', 'create', 'feat/keep')
     keep = Path(next(line.split(' ', 1)[1] for line in git('worktree', 'list', '--porcelain').splitlines()
@@ -1430,6 +1496,7 @@ def run(wsx, wsxd, work, owned):
     git('branch', '-D', 'feat/keep')
 
     # 32. Hold and trial (docs/tasks.md "Hold and trial"): a held task waits for the owner while
+    mark('32')
     # pipeline work lands; its trial puts the rebased revision on the live site, holds the
     # default branch's deploys, and ends on Pass (it lands), End, or a message to the worker.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', '') + """  deploy:
@@ -1570,6 +1637,7 @@ def run(wsx, wsxd, work, owned):
     assert not fresh['resume'] and str(granted) not in writes(fresh), fresh
     assert 'grants' not in json.loads((manager_log.parent / 'state.json').read_text())
     # 32b. A wsx older than its config (docs/tasks.md "Config"): unknown keys at any level are
+    mark('32b')
     # ignored with one warning that names them, so the ledger, a new task and its land work.
     (project / 'wsx.config.yml').write_text(LAND_CONFIG + '  futureSetting: { on: true }\nfutureTop: 1\n')
     git('commit', '-q', '-am', 'a newer config')
@@ -1588,6 +1656,7 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
     git('commit', '-q', '-am', 'config as before')
     # 32c. The check slot (docs/tasks.md "Checks, revisions and report"): one check run at a
+    mark('32c')
     # time on the machine. The run that waits shows queued; a killed holder frees the slot.
     spans, release = base / 'slot-spans.log', base / 'slot-release'
     slot_check = base / 'slot-check.py'
@@ -1675,13 +1744,14 @@ def run(wsx, wsxd, work, owned):
     git('commit', '-q', '-am', 'no slot checks')
 
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
+    mark('33')
     # ledger and messages its manager, which answers once; nothing else crosses projects.
     other = base / 'other'
     other.mkdir(mode=0o700)
     git('init', '-q', '-b', 'main', cwd=other)
     (other / 'README').write_text('other\n')
     # ^ A recap one quiet minute after its last message (docs/tasks.md "Recap").
-    other_config = 'tasks:\n  minFreeGb: 0\n  manager:\n    recapMinutes: 1\n'
+    other_config = 'tasks:\n  minFreeGb: 0\n  manager:\n    recapMinutes: 0.2\n'
     (other / 'wsx.config.yml').write_text(other_config)
     git('add', '.', cwd=other)
     git('commit', '-q', '-m', 'start', cwd=other)
@@ -1726,7 +1796,8 @@ def run(wsx, wsxd, work, owned):
         js('task', 'land', other_land, '-p', 'other')
     wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and '#%d landed' % other_land in e['text']
                      and 'memo: other lesson' in e['text'] for e in other_entries()), 'the other land event', 60)
-    # 34. Recap: once the other project is quiet for its minute, wsx asks its manager for one
+    # 34. Recap: once the other project is quiet for its 12 s, wsx asks its manager for one
+    mark('34')
     # recap, and the manager answers it in the chat.
     recap = wait(lambda: next((e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'recap'), None),
                  'the recap request after a quiet minute', 120)
@@ -1735,6 +1806,7 @@ def run(wsx, wsxd, work, owned):
          'the manager answers the recap', 60)
     assert [e['from'] for e in other_entries() if e['kind'] == 'message'].count('recap') == 1
     # 35. Idle task (docs/tasks.md "Workflow"): with tasks.workflow.idle empty, the recap after a
+    mark('35')
     # land starts no task. With it set, the next recap starts exactly one, as the manager; a
     # later quiet period with no new land starts none.
     assert [t['id'] for t in other_tasks()] == [other_land], other_tasks()

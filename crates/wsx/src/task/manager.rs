@@ -332,8 +332,8 @@ pub fn run(project_id: &str) -> Result<()> {
         observed_decisions: 0,
         pending_events: Vec::new(),
         last_event: None,
-        recap_quiet: (settings.manager_recap_minutes > 0)
-            .then(|| Duration::from_secs(settings.manager_recap_minutes * 60)),
+        recap_quiet: (settings.manager_recap_secs > 0)
+            .then(|| Duration::from_secs(settings.manager_recap_secs)),
         last_activity: Instant::now(),
         since_recap: false,
         binary: hosting::Binary::capture(),

@@ -802,6 +802,21 @@ class Events(threading.Thread):
                 self.ready.wait(remaining)
 
 
+# ^ The time since the previous passed check, by check: the result names the slowest ones.
+TIMES = []
+LAST = [time.monotonic()]
+
+
+def timed(label):
+    now = time.monotonic()
+    TIMES.append((label[:70], round(now - LAST[0], 1)))
+    LAST[0] = now
+
+
+def slowest(count=8):
+    return sorted(TIMES, key=lambda span: -span[1])[:count]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wsx', type=Path, default=ROOT / 'target/debug/wsx')
@@ -838,6 +853,7 @@ def web_journey(args):
 
     def ok(label):
         checks.append(label)
+        timed(label)
 
     try:
         for name in ('home', 'state', 'project', 'project2', 'project3', 'design', 'design-login', 'bare', 'bin'):
@@ -2639,7 +2655,7 @@ capabilities = ["terminal_view"]
         else:
             print('diagnostics retained at ' + str(work), file=sys.stderr)
     print(json.dumps({'result': 'PASS', 'seconds': round(time.monotonic() - started, 2), 'model_calls': 0,
-                      'checks': checks}, indent=1))
+                      'slowest': slowest(), 'checks': checks}, indent=1))
 
 
 # ^ Ready tasks land by hand here, so the fixture keeps tasks that wait at ready; test-task.py
@@ -2691,6 +2707,7 @@ def task_journey(args):
 
     def ok(label):
         checks.append(label)
+        timed(label)
 
     def wait(test, label, timeout=20):
         deadline = time.monotonic() + timeout
@@ -3380,7 +3397,7 @@ digest_max_seconds = 6
         else:
             print('diagnostics retained at ' + str(work), file=sys.stderr)
     print(json.dumps({'result': 'PASS', 'part': 'tasks', 'seconds': round(time.monotonic() - started, 2),
-                      'model_calls': 0, 'checks': checks}, indent=1))
+                      'model_calls': 0, 'slowest': slowest(), 'checks': checks}, indent=1))
 
 
 def _up(site):

@@ -172,7 +172,7 @@ struct TaskManagerFile {
     #[serde(rename = "rotateTokens", skip_serializing_if = "Option::is_none")]
     rotate_tokens: Option<u64>,
     #[serde(rename = "recapMinutes", skip_serializing_if = "Option::is_none")]
-    recap_minutes: Option<u64>,
+    recap_minutes: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<String>>,
 }
@@ -623,12 +623,16 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
             config.manager_rotate_tokens = tokens;
         }
         if let Some(minutes) = manager.recap_minutes {
-            if minutes > MAX_RECAP_MINUTES {
+            if !(0.0..=MAX_RECAP_MINUTES as f64).contains(&minutes) {
                 return Err(format!(
                     "tasks.manager.recapMinutes must be 0 (off) to {MAX_RECAP_MINUTES}"
                 ));
             }
-            config.manager_recap_minutes = minutes;
+            // ^ A fraction of a minute is a shorter quiet period, at least one second.
+            config.manager_recap_secs = match minutes {
+                0.0 => 0,
+                minutes => ((minutes * 60.0).round() as u64).max(1),
+            };
         }
         if let Some(tools) = manager.tools {
             config.manager_tools = validate_tools(tools, "tasks.manager.tools")?;

@@ -986,6 +986,7 @@ impl Host {
         if self.record.waits_on(WaitOn::Hand) {
             return refuse(format!("{:#}", self.by_hand_refusal()));
         }
+        self.follow_checks();
         let checks = &self.record.checks;
         let picked: Result<Vec<(usize, String)>, String> = match numbers {
             [] => Ok(checks.iter().cloned().enumerate().collect()),
@@ -1067,6 +1068,28 @@ impl Host {
         });
     }
 
+    /// Take `tasks.checks` and their timeout from the main checkout's config as it is now:
+    /// the gate a task lands through is the default branch's, also for a task started
+    /// before it changed. A config that does not load keeps the record's.
+    /// ref: docs/tasks.md "Checks, revisions and report"
+    fn follow_checks(&mut self) {
+        let Ok(settings) = load_task_config(&self.record.project_path) else {
+            return;
+        };
+        if settings.checks == self.record.checks
+            && settings.check_timeout_secs == self.record.check_timeout_secs
+        {
+            return;
+        }
+        self.say(&format!(
+            "the project's checks changed: {}",
+            settings.checks.join(" | ")
+        ));
+        self.record.checks = settings.checks;
+        self.record.check_timeout_secs = settings.check_timeout_secs;
+        self.save();
+    }
+
     fn start_checks(&mut self) {
         if self.record.waits_on(WaitOn::Hand) {
             return;
@@ -1074,6 +1097,7 @@ impl Host {
         if self.wait_for_disk(DiskWait::Checks) {
             return;
         }
+        self.follow_checks();
         self.set_state(TaskState::Checking);
         let priority = match self.after_rebase {
             Some(AfterRebase::Land { .. }) => Priority::Land,
