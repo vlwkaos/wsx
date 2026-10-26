@@ -714,17 +714,16 @@ impl Host {
         let structured = turn
             .structured
             .and_then(|value| serde_json::from_value::<WorkerResult>(value).ok());
+        self.turn_active = false;
         // ^ A model turn that left out its result is asked for it once.
         if structured.is_none()
             && !turn.is_error
             && !std::mem::replace(&mut self.result_asked, true)
         {
-            self.turn_active = false;
             self.say("the turn ended without a result: asked for it once");
             self.start_turn(RESULT_RETRY);
             return;
         }
-        self.turn_active = false;
         self.result_asked = false;
         let mut result = structured.unwrap_or_else(|| WorkerResult {
             status: "failed".into(),
