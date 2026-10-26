@@ -536,7 +536,7 @@ if (await evaluate("document.querySelector('.manager .bar-state')?.textContent ?
 // result is a muted line ("#5 ready"), never a bubble: its report is in the task sheet.
 let shown = await bubbles();
 const ownerAsk = shown.find((bubble) => bubble.side === "out" && bubble.text.startsWith("RUN wsx task land 3"));
-// ^ ui's manager is named "Atlas" (tasks.manager.name); plans' reads "Manager".
+// ^ ui's manager is named "Atlas" (tasks.manager.name); plans' reads "plans", its project.
 const managerReply = shown.find((bubble) => bubble.side === "in" && bubble.author === "Atlas");
 if (!ownerAsk || ownerAsk.author || !managerReply) await fail(`the bubbles are ${JSON.stringify(shown)}`);
 await until(statusSays(5, "ready"), "#5's result left no muted line");
@@ -1208,7 +1208,21 @@ await closeSheet("#4 again");
 await go(chat);
 await until("!!document.querySelector('.composer .icon-button[aria-label=\"Attach files\"]')", "the manager chat has no attach button");
 const peers = await bubbles();
-if (!peers.some(({ author }) => author === "Manager plans") || !peers.some(({ tag }) => tag === "Reply to Manager plans")) await fail(`the managers' messages read ${JSON.stringify(peers)}`);
+if (!peers.some(({ author }) => author === "plans") || !peers.some(({ tag }) => tag === "Reply to plans")) await fail(`the managers' messages read ${JSON.stringify(peers)}`);
+// ^ Each kind of speaker has its own color: the owner's box edge, this manager's and the other
+// manager's names, and wsx's muted lines (docs/web-client-tasks.md "Project screen").
+const speakerColors = () => evaluate(`(() => { const color = (selector, property) => { const node = document.querySelector(selector);
+  return node && getComputedStyle(node)[property]; };
+  return [color('.log .bubble[data-speaker="owner"] .bubble-box', 'borderInlineEndColor'), color('.log .bubble[data-speaker="manager"] .bubble-author', 'color'),
+    color('.log .bubble[data-speaker="peer"] .bubble-author', 'color'), color('.log .status-line', 'color')]; })()`);
+for (const scheme of ["dark", "light"]) {
+  await evaluate(scheme === "light" ? "document.documentElement.dataset.scheme = 'light'" : "delete document.documentElement.dataset.scheme");
+  const colors = await speakerColors();
+  if (colors.some((color) => !color) || new Set(colors).size !== colors.length) await fail(`the speakers' colors in the ${scheme} scheme: ${JSON.stringify(colors)}`);
+  await evaluate("document.querySelector('.log .bubble[data-speaker=\"peer\"]').scrollIntoView({ block: 'center' })");
+  await shot(`speakers-${scheme}`);
+}
+await evaluate("delete document.documentElement.dataset.scheme; [...document.querySelectorAll('.log .bubble, .log .status-line')].at(-1).scrollIntoView({ block: 'end' })");
 await pause(6000);
 await evaluate(`(() => { const input = document.querySelector('.composer input[type=file]'); const files = new DataTransfer();
   files.items.add(new File(['notes for the manager'], 'notes.txt', { type: 'text/plain' })); input.files = files.files;
@@ -1348,7 +1362,7 @@ if (taskReads.length !== 1 || !taskReads[0].endsWith("/api/tasks")) await fail(`
 await evaluate("history.back()");
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Back after a deep link did not close the sheet");
 
-// --- A task that waits for the owner's answer: in plans' chat its manager reads "Manager" and
+// --- A task that waits for the owner's answer: in plans' chat its manager reads "plans" and
 // ui's "Atlas". #1's reservoir row with Answer, whose chip opens its sheet: the story asks for
 // the answer, the field says so, and the answer is a bubble; then the list cleared one row
 // after another: Land #2, Land #1, and then no reservoir with the focus on the composer.
@@ -1359,7 +1373,7 @@ await go(`#/p/${plans}`);
 await until("!!document.querySelector('.reservoir-head')", "plans has no reservoir");
 await until("document.querySelectorAll('.log .bubble').length >= 2", "plans' chat shows no managers' bubbles", 30);
 const plansAuthors = await bubbles();
-if (!plansAuthors.some(({ author, tag }) => author === "Manager" && tag === "To Atlas") || !plansAuthors.some(({ author }) => author === "Atlas")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
+if (!plansAuthors.some(({ author, tag }) => author === "plans" && tag === "To Atlas") || !plansAuthors.some(({ author }) => author === "Atlas")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
 await openReservoir();
 await until(`!!${rowOf("#1")}`, "the waiting task has no reservoir row");
 const waitRow = (await rows()).find((row) => row[0] === "#1");
@@ -1578,6 +1592,6 @@ await pause(300);
 const shifted = (await rowAt(reading.key)) - reading.down;
 if (Math.abs(shifted) > 2) await fail(`Show earlier moved the row in view by ${shifted} px`);
 await toLatest("390 px");
-console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach, the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

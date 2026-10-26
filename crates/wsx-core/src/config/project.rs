@@ -575,7 +575,7 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         .transpose()?
         .flatten();
     if let Some(manager) = file.manager {
-        // ^ Trimmed first: an empty name is no name, and the default "Manager" shows.
+        // ^ Trimmed first: an empty name is no name, and the project's name shows.
         config.manager_name = validate_optional_text(
             manager.name.map(|name| name.trim().to_string()),
             "tasks.manager.name",

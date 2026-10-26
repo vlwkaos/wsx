@@ -585,9 +585,9 @@ pub fn run(command: TaskCmd) -> Result<()> {
             let (started, dir) = ensure_manager(project.as_deref())?;
             let state = if started { "started" } else { "running" };
             if json {
-                let (_, main) = project_entry(project.as_deref())?;
+                let (project, main) = project_entry(project.as_deref())?;
                 let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
-                let name = settings.manager_shown_name();
+                let name = settings.manager_shown_name(&project);
                 print_json(&json!({ "state": state, "socket": dir.socket_path(), "name": name }))
             } else {
                 println!("manager {state}");
