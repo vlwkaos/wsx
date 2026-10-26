@@ -760,6 +760,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .task-approval { flex-basis: 100%; }
 .project-page { padding-top: var(--space-3); }
 .project-page .facts-line { padding: 0 var(--space-4) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
+.deploy-output pre { max-height: 50vh; overflow-y: auto; color: var(--color-text); }
 .task-body { padding: 0 var(--space-4); max-width: calc(var(--size-prose) + 2 * var(--space-4)); }
 /* A closed fold says what it holds: "4 checks passed", "2 open". */
 .fold-note { font-weight: normal; color: var(--color-muted); }

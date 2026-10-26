@@ -16,6 +16,7 @@ Each user message is a small script of words:
   WAIT <file>  keep working until <file> exists, at most 10 minutes
   CHECKRUN_AGAIN  start `wsx task check-run`, kill it after 1 s, run it again and trace that answer
   CHECKRUN_TWICE  run `wsx task check-run` twice on the same tree and trace both answers
+  CHECKRUN_WITH <a,b>  run `wsx task check-run a b`, then a bare `wsx task check-run`, and trace both
   PROBE <script> <spec> <out>  run the test's boundary probe script (python3 <script> <spec> <out>)
                and trace what it wrote to <out>
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
@@ -308,6 +309,11 @@ def main():
         if 'CHECKRUN_TWICE' in words:
             answers = [subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True) for _ in range(2)]
             trace({'check_run_twice': [[ran.returncode, ran.stdout + ran.stderr] for ran in answers]})
+        if 'CHECKRUN_WITH' in words:
+            named = words[words.index('CHECKRUN_WITH') + 1].split(',')
+            answers = [subprocess.run(['wsx', 'task', 'check-run', *argv], capture_output=True, text=True)
+                       for argv in (named, [])]
+            trace({'check_run_with': [[ran.returncode, ran.stdout + ran.stderr] for ran in answers]})
         blocked = bool(denials) and 'NEEDS' in words
         if not blocked and 'WORK' in words:
             name = words[words.index('WORK') + 1]

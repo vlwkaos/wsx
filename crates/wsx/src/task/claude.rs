@@ -243,11 +243,30 @@ fn check_run_note(record: &TaskRecord) -> String {
         .enumerate()
         .map(|(index, check)| format!("{}. `{check}`", index + 1))
         .collect();
+    // ^ The scenarios run only by name or number, never after a result (host.rs check_run).
+    let scenarios = wsx_core::config::project::load_task_config(&record.project_path)
+        .map(|settings| settings.scenarios)
+        .unwrap_or_default();
+    let scenarios = match scenarios.is_empty() {
+        true => String::new(),
+        false => format!(
+            "The project's end-to-end scenarios run only when you name them, by name or by \
+             number: {}. ",
+            scenarios
+                .iter()
+                .enumerate()
+                .map(|(at, (name, command))| {
+                    format!("{}. `{name}` (`{command}`)", record.checks.len() + at + 1)
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+    };
     format!(
-        "After your result wsx runs all of the project's checks once: {}. \
-         `wsx task check-run 2 3` runs checks by number: the task host runs them exactly as \
-         it will after your result, so a test that needs a terminal or a browser works \
-         there. Run only the checks your change touches, never the full set: \
+        "After your result wsx runs all of the project's checks once: {}. {scenarios}\
+         `wsx task check-run 2 3` runs checks or scenarios by number or name: the task host \
+         runs them outside your boundary exactly as it will after your result, so a test \
+         that needs a terminal or a browser works there. Run only the checks your change touches, never the full set: \
          each run waits for the machine's one check slot. A check that already ran on the \
          same commit, with nothing uncommitted, answers from its stored result. Fix what \
          fails in code you changed. A check that fails in code you did not touch is not \

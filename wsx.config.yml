@@ -20,6 +20,13 @@ tasks:
     - cargo build -p wsx -p wsx-daemon
     - cargo nextest run --workspace --locked
   checkTimeoutSeconds: 1200
+  # ^ The end-to-end scripts, for a worker to run by name (`wsx task check-run web`) outside its
+  # boundary in the check slot; never after a result. Each builds the binaries it runs first.
+  scenarios:
+    task: cargo build -p wsx -p wsx-daemon && python3 -B scripts/test-task.py
+    web: cargo build -p wsx -p wsx-daemon && python3 -B scripts/test-web-client.py --browser
+    smoke: cargo build -p wsx -p wsx-daemon && python3 -B scripts/runtime-smoke.py
+    boundary: cargo build -p wsx -p wsx-daemon && python3 -B scripts/test-manager-boundary.py
   # ^ Workers get the owner's skills; the project's words for each stage (docs/tasks.md "Workflow").
   skills: owner
   workflow:

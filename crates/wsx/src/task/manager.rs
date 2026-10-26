@@ -56,6 +56,8 @@ fn one_line(text: &str) -> String {
 const HANDOVER_ENTRIES: usize = 4;
 const HANDOVER_CHARS: usize = 600;
 const EVENT_SUMMARY_CHARS: usize = 160;
+/// A failed deploy's event carries this many last lines of its output.
+const DEPLOY_EVENT_LINES: usize = 10;
 /// The ledger summary at the end of a turn's message: at most this many task lines.
 const SUMMARY_ROWS: usize = 12;
 const SUMMARY_TITLE_CHARS: usize = 60;
@@ -113,6 +115,8 @@ struct Manager {
     observed: BTreeMap<u32, Seen>,
     /// Approval decisions seen, including ones not yet reported.
     observed_decisions: u64,
+    /// The `unix_ms` of the newest deploy record seen.
+    observed_deploys_ms: u64,
     /// Event lines not yet logged as a message, and when the last one came.
     pending_events: Vec<String>,
     last_event: Option<Instant>,
@@ -325,6 +329,7 @@ pub fn run(project_id: &str) -> Result<()> {
         started: Instant::now(),
         observed: BTreeMap::new(),
         observed_decisions: 0,
+        observed_deploys_ms: 0,
         pending_events: Vec::new(),
         last_event: None,
         recap_quiet: (settings.manager_recap_secs > 0)
@@ -489,13 +494,19 @@ impl Manager {
             Some(seen) => {
                 self.observed = seen;
                 self.observed_decisions = self.state.decisions_seen;
+                self.observed_deploys_ms = match self.state.deploys_seen_ms {
+                    Some(ms) => ms,
+                    None => self.newest_deploy_ms(),
+                };
             }
             None => {
                 // ^ First start: what already happened is the baseline, not news.
                 self.observed = self.current_tasks().into_iter().collect();
                 self.observed_decisions = self.approval_lines().len() as u64;
+                self.observed_deploys_ms = self.newest_deploy_ms();
                 self.state.seen = Some(self.observed.clone());
                 self.state.decisions_seen = self.observed_decisions;
+                self.state.deploys_seen_ms = Some(self.observed_deploys_ms);
                 self.save();
             }
         }
@@ -580,9 +591,56 @@ impl Manager {
         self.observed_decisions = decisions.len() as u64;
     }
 
+    fn newest_deploy_ms(&self) -> u64 {
+        store::read_deploys(&self.dir.project_id)
+            .ok()
+            .and_then(|records| records.iter().map(|record| record.unix_ms).max())
+            .unwrap_or(0)
+    }
+
+    /// Turn each new failed deploy or release into an event line with the end of its output.
+    /// ref: docs/tasks.md "Manager"
+    fn watch_deploys(&mut self) {
+        let Ok(records) = store::read_deploys(&self.dir.project_id) else {
+            return;
+        };
+        for record in &records {
+            if record.unix_ms <= self.observed_deploys_ms {
+                continue;
+            }
+            self.observed_deploys_ms = record.unix_ms;
+            if record.exit == Some(0) {
+                continue;
+            }
+            let lines: Vec<String> = ledger::tail_lines(
+                record.output.as_deref().unwrap_or_default(),
+                DEPLOY_EVENT_LINES,
+            )
+            .lines()
+            .map(|line| format!("    {}", clip(line, EVENT_SUMMARY_CHARS)))
+            .collect();
+            self.pending_events.push(format!(
+                "{} of {:.12} failed ({}){}{}",
+                ledger::kind_name(record.kind),
+                record.commit,
+                record
+                    .exit
+                    .map_or("no exit code".into(), |code| format!("exit {code}")),
+                if lines.is_empty() {
+                    ""
+                } else {
+                    "; its output ends:\n"
+                },
+                lines.join("\n")
+            ));
+            self.last_event = Some(Instant::now());
+        }
+    }
+
     /// Turn task state changes into event lines.
     fn watch_tasks(&mut self) {
         self.watch_approvals();
+        self.watch_deploys();
         let Ok(tasks) = project_tasks(&self.dir.project_id) else {
             return;
         };
@@ -670,6 +728,7 @@ impl Manager {
                 self.pending_events.clear();
                 self.state.seen = Some(self.observed.clone());
                 self.state.decisions_seen = self.observed_decisions;
+                self.state.deploys_seen_ms = Some(self.observed_deploys_ms);
                 self.save();
             }
             Err(error) => self.say(&format!("cannot log the events: {error:#}")),
