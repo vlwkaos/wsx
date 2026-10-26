@@ -1029,15 +1029,16 @@ async function readAndReply(where) {
   // the quote; a long press opens the menu too.
   const point = await pressPoint(fiveColumns);
   const quote = "(document.querySelector('.composer .reply-quote-text')?.textContent ?? '').replace('Replying to: ', '')";
-  const rightClickReply = async (at) => {
+  const menuReply = "[...document.querySelectorAll('.reply-menu button')].find((node) => node.textContent.trim() === 'Reply').click()";
+  const rightClickMenu = async (at) => {
     await evaluate(`${fiveColumns}.querySelector('.bubble-body p').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: ${at.x}, clientY: ${at.y}, button: 2 }))`);
     await until("!!document.querySelector('.reply-menu')", `${where}: a right click opened no menu`);
   };
   if (phone()) await touch(point, 90);
   else {
-    await rightClickReply(point);
+    await rightClickMenu(point);
     await shot("reply-menu");
-    await evaluate("[...document.querySelectorAll('.reply-menu button')].find((node) => node.textContent.trim() === 'Reply').click()");
+    await evaluate(menuReply);
   }
   await until(`${quote} === 'Five columns:'`, `${where}: the reply shows no quote over the composer`);
   if (await evaluate(`${fiveColumns}.style.translate`)) await fail(`${where}: the swiped bubble did not come back`);
@@ -1047,8 +1048,8 @@ async function readAndReply(where) {
   if (phone()) {
     await touch(await pressPoint(fiveColumns), 0, 700);
     await until("!!document.querySelector('.reply-menu')", `${where}: a long press opened no menu`);
-  } else await rightClickReply(await pressPoint(fiveColumns));
-  await evaluate("[...document.querySelectorAll('.reply-menu button')].find((node) => node.textContent.trim() === 'Reply').click()");
+  } else await rightClickMenu(await pressPoint(fiveColumns));
+  await evaluate(menuReply);
   await until(`${quote} === 'Five columns:'`, `${where}: Reply in the menu shows no quote`);
   if (await evaluate("document.activeElement?.matches('.composer-field')") !== true) await fail(`${where}: the reply did not focus the composer`);
   await shot("reply-quote", ".composer-send");
