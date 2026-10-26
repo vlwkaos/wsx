@@ -483,7 +483,7 @@ async function markdown() {
       raw: root.innerText.includes('<b>Raw HTML stays text</b>') && root.innerText.includes('[script link](javascript:alert(1))') && root.innerText.includes('a local link stay'),
       code: { font: getComputedStyle(pre.querySelector('code')).fontFamily.split(',')[0], scrolls: pre.scrollWidth > pre.clientWidth, language: root.querySelector('.code-language').textContent,
         radius: getComputedStyle(root.querySelector('.code-block')).borderRadius, copy: all('.code-head button').map((button) => button.textContent).join() },
-      table: { head: all('th').map((cell) => cell.textContent).join(), sticky: getComputedStyle(root.querySelector('th')).position, scrolls: wrap.scrollWidth > wrap.clientWidth + 1,
+      table: { head: all('th').map((cell) => cell.textContent).join(), scrolls: wrap.scrollWidth > wrap.clientWidth + 1,
         right: getComputedStyle(all('td')[2]).textAlign, fold: wrap.hasAttribute('data-fold') },
       user: document.querySelector('.message-user .prose').textContent, plain: !document.querySelector('.message-user .markdown'),
       remote: performance.getEntriesByType('resource').filter((entry) => !entry.name.startsWith(location.origin)).map((entry) => entry.name) }; })()`);
@@ -495,10 +495,15 @@ async function markdown() {
   if (seen.links.length !== 3 || !seen.links.every(([href, target, rel]) => /^https:\/\/example\.com\//.test(href) && target === "_blank" && rel === "noopener noreferrer")) await fail(`links are ${JSON.stringify(seen.links)}`);
   if (seen.live || !seen.raw || seen.alt.join() !== "A remote picture" || seen.remote.length) await fail(`a message produced live markup or a remote request: ${JSON.stringify(seen)}`);
   if (!/JetBrains Mono/.test(seen.code.font) || !seen.code.scrolls || seen.code.language !== "rust" || seen.code.copy !== "Copy,Copy") await fail(`the code block is wrong: ${JSON.stringify(seen.code)}`);
-  if (seen.table.head !== "Part,Change,Files,Tests,Bytes,Status" || seen.table.sticky !== "sticky" || !seen.table.fold
+  if (seen.table.head !== "Part,Change,Files,Tests,Bytes,Status" || !seen.table.fold
     // ^ On a phone its six columns fold into two that fit; wide, the numbers keep their right alignment.
     || (phone() ? seen.table.scrolls : seen.table.right !== "right")) await fail(`the table is wrong: ${JSON.stringify(seen.table)}`);
   if (seen.user !== "say markdown.md" || !seen.plain) await fail("the person's message is not plain text");
+  // A table wider than its block scrolls sideways and still takes its full height.
+  const narrow = await evaluate(`(() => { const wrap = document.querySelector('.message:not(.message-user) .table-wrap'); wrap.style.maxWidth = '80px';
+    wrap.scrollLeft = 40; const seen = { wide: wrap.scrollWidth - wrap.clientWidth, left: wrap.scrollLeft, tall: wrap.scrollHeight - wrap.clientHeight };
+    wrap.scrollLeft = 0; wrap.removeAttribute('style'); return seen; })()`);
+  if (narrow.wide < 1 || narrow.left < 1 || narrow.tall > 1) await fail(`a wide table does not scroll only sideways: ${JSON.stringify(narrow)}`);
   // Prose keeps its reading width; a table or a code block may take the width of the
   // conversation minus the gutter, centered on the reading column, and no wider.
   const blocks = await evaluate(`(() => { const box = (node) => node.getBoundingClientRect();

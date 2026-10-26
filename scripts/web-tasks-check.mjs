@@ -1007,11 +1007,12 @@ async function readAndReply(where) {
   const table = await evaluate(`(() => { const wrap = ${fiveColumns}.querySelector('.table-wrap'), cells = [...wrap.querySelectorAll('tbody td')];
     const second = wrap.querySelector('tbody td:nth-child(2)').getBoundingClientRect(), third = wrap.querySelector('tbody td:nth-child(3)').getBoundingClientRect();
     return { fold: wrap.hasAttribute('data-fold'), heads: [...wrap.querySelectorAll('th')].filter((node) => node.getBoundingClientRect().width > 0).map((node) => node.textContent),
-      sideways: wrap.scrollWidth > wrap.clientWidth + 1, hidden: cells.filter((cell) => !cell.textContent.trim() || cell.getBoundingClientRect().width === 0).length, cells: cells.length,
+      sideways: wrap.scrollWidth > wrap.clientWidth + 1, tall: wrap.scrollHeight - wrap.clientHeight, hidden: cells.filter((cell) => !cell.textContent.trim() || cell.getBoundingClientRect().width === 0).length, cells: cells.length,
       named: wrap.querySelector('tbody td:nth-child(5)').dataset.head, under: Math.abs(third.left - second.left) < 1 && third.top >= second.bottom - 1 }; })()`);
   const tableOk = phone() ? table.fold && table.heads.join() === "Name,State" && table.under && table.named === "Note"
     : table.heads.join() === "Name,State,Owner,Since,Note" && !table.under;
-  if (!tableOk || table.sideways || table.hidden || table.cells !== 20) await fail(`${where}: the five-column table reads ${JSON.stringify(table)}`);
+  // ^ Twenty rows take their full height in the message: the table has no scroll of its own.
+  if (!tableOk || table.sideways || table.tall > 1 || table.hidden || table.cells !== 100) await fail(`${where}: the five-column table reads ${JSON.stringify(table)}`);
   await capture(`${size[0]}x${size[1]}-table-five`, await evaluate(`(() => { const r = ${fiveColumns}.querySelector('.table-wrap').getBoundingClientRect(); return { x: Math.max(0, r.left - 8), y: Math.max(0, r.top - 8), width: Math.min(innerWidth, r.width + 16), height: Math.min(innerHeight - r.top, r.height + 16), scale: 1 }; })()`));
   await toLatest(where);
   if (await count(".jump")) await fail(`${where}: the button stayed at the end`);

@@ -293,12 +293,12 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .viewer-bar .button { min-width: var(--size-control); }
 .viewer-stage { flex: 1; min-height: 0; overflow: auto; display: flex; touch-action: none; cursor: grab; }
 .viewer-stage img { margin: auto; flex: 0 0 auto; }
-/* A table keeps its header row in view while it scrolls both ways in its own block. */
-.table-wrap { max-height: calc(var(--size-rail) * 1.4); overflow: auto; border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent; }
+/* A table takes its full height in the message; only a table wider than its block scrolls, sideways. */
+.table-wrap { overflow-x: auto; overflow-y: hidden; border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent; }
 .table-wrap table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--font-size-sm); overflow-wrap: normal; }
 .table-wrap :is(th, td) { padding: var(--space-2) var(--space-3); text-align: left; vertical-align: top; border-bottom: var(--border-width) solid var(--color-hairline); }
 .table-wrap td { max-width: 40ch; }
-.table-wrap th { position: sticky; top: 0; background: var(--color-surface); font-weight: var(--font-weight-medium); white-space: nowrap; }
+.table-wrap th { background: var(--color-surface); font-weight: var(--font-weight-medium); white-space: nowrap; }
 .table-wrap tr:last-child > td { border-bottom: 0; }
 .table-wrap [data-align="right"] { text-align: right; font-variant-numeric: tabular-nums; }
 .table-wrap [data-align="center"] { text-align: center; }
