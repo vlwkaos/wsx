@@ -112,6 +112,9 @@ struct Host {
     disk_slot: Option<slot::Slot>,
     /// The worker's queued or running `check-run`.
     check_run: Option<CheckRun>,
+    /// The queued or running checks of a result: the commit they check, and whether a newer
+    /// result came meanwhile.
+    gate: Option<(Option<String>, bool)>,
     /// The check-run results of one clean tree: a repeat on that tree answers from them.
     stored_checks: Option<StoredChecks>,
     /// The Human Verify items of the revision whose landing conflicted: the turn that
@@ -152,6 +155,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         disk_queue: None,
         disk_slot: None,
         check_run: None,
+        gate: None,
         stored_checks: None,
         carried_verify: Vec::new(),
         started: Instant::now(),
@@ -774,6 +778,18 @@ impl Host {
         self.last_denials = turn.denials.clone();
         self.write_result(&result, &[]);
         self.last_result = Some(result.clone());
+        // ^ A result before its own check-run's answer waits for it: no second run queues.
+        // ref: docs/tasks.md "Checks, revisions and report"
+        if let Some(run) = &mut self.check_run {
+            run.result_waits = true;
+            self.say("the result waits for its check-run");
+            return;
+        }
+        // ^ Claude's own turn (a background task's notice) can answer while the checks of an
+        // earlier result run: those checks answer it, never a second run beside them.
+        if let Some((_, newer)) = &mut self.gate {
+            *newer = true;
+        }
         // ^ Only the worker's own word blocks a task. Denials it worked around are evidence.
         if result.status == "blocked" {
             self.log(LogEvent::Blocked {
@@ -828,11 +844,11 @@ impl Host {
             self.start_turn(&text);
             return;
         }
-        // ^ A result before its own check-run's answer waits for it: no second run queues.
-        // ref: docs/tasks.md "Checks, revisions and report"
-        if let Some(run) = &mut self.check_run {
-            run.result_waits = true;
-            self.say("the result waits for its check-run");
+        if self.gate.is_some() {
+            self.say("the checks of an earlier result still run: they answer this one");
+            if self.record.state != TaskState::Checking {
+                self.set_state(TaskState::Checking);
+            }
             return;
         }
         self.start_checks();
@@ -1107,6 +1123,7 @@ impl Host {
         }
         self.follow_checks();
         self.set_state(TaskState::Checking);
+        self.gate = Some((head(&self.record.working_copy), false));
         let priority = match self.after_rebase {
             Some(AfterRebase::Land { .. }) => Priority::Land,
             _ => Priority::Normal,
@@ -1188,6 +1205,24 @@ impl Host {
     }
 
     fn on_checks(&mut self, results: Vec<CheckResult>) {
+        // ^ A result that came during the checks: a block keeps its wait, a turn that runs
+        // gives the next result, and a new commit runs them once more.
+        // ref: docs/tasks.md "Checks, revisions and report"
+        if let Some((commit, true)) = self.gate.take() {
+            let blocked = self
+                .last_result
+                .as_ref()
+                .is_some_and(|r| r.status == "blocked");
+            if blocked || self.turn_active {
+                self.log(LogEvent::Checks { results });
+                return;
+            }
+            if commit.is_none() || commit != head(&self.record.working_copy) {
+                self.say("a newer result is on another commit: the checks run again");
+                self.start_checks();
+                return;
+            }
+        }
         // ^ A full disk is not the worker's failure: the checks run again once there is space.
         if results.iter().any(|check| check.output.contains(NO_SPACE)) {
             self.log(LogEvent::Checks { results });
@@ -1595,14 +1630,8 @@ impl Host {
 
     fn record_revision(&mut self) -> Result<(u32, String)> {
         let working_copy = &self.record.working_copy;
-        let head = git_cmd(working_copy)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .context("cannot run git rev-parse")?;
-        if !head.status.success() {
-            bail!("git rev-parse HEAD failed in {}", working_copy.display());
-        }
-        let commit = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        let commit = head(working_copy)
+            .with_context(|| format!("git rev-parse HEAD failed in {}", working_copy.display()))?;
         let revision = self.record.revision + 1;
         let reference = format!("refs/wsx/task/{}/r{revision}", self.record.id);
         let status = git_cmd(working_copy)
@@ -1739,6 +1768,16 @@ fn check_message(text: &str) -> Result<()> {
 
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
+}
+
+/// The working copy's HEAD commit.
+fn head(working_copy: &Path) -> Option<String> {
+    let output = git_cmd(working_copy)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// A tree id and the check results that ran on it, by check index.

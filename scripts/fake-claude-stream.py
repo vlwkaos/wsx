@@ -20,6 +20,7 @@ Each user message is a small script of words:
   CHECKRUN_TWICE  run `wsx task check-run` twice on the same tree and trace both answers
   CHECKRUN_WITH <a,b>  run `wsx task check-run a b`, then a bare `wsx task check-run`, and trace both
   CHECKRUN_LATE <a>  start `wsx task check-run a` in the background and finish before its answer
+  REPEAT       return the result again 1 s later, as Claude's own turn for a background notice
   PROBE <script> <spec> <out>  run the test's boundary probe script (python3 <script> <spec> <out>)
                and trace what it wrote to <out>
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
@@ -370,14 +371,17 @@ def main():
             no_result = end_without_result(session, int(words[words.index('NORESULT') + 1]))
             continue
         summary = 'did: ' + text + (' | steers: ' + '; '.join(steers) if steers else '')
-        emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': summary,
-              'session_id': session, 'permission_denials': denials,
-              'structured_output': {'status': status, 'summary': summary,
-                                    'decisions': [{'choice': 'fake choice', 'reason': 'fixture'}],
-                                    'evidence': [{'check': 'the fixture ran', 'proof': 'fake-claude-stream.py'}] if status == 'done' else [],
-                                    'human_verify': verify,
-                                    'left_open': ['nothing real'], 'notes': '',
-                                    'memo': rest_of_line(text, 'MEMO') if 'MEMO' in words else ''}})
+        for repeat in range(2 if 'REPEAT' in words else 1):
+            if repeat:
+                time.sleep(1)
+            emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': summary,
+                  'session_id': session, 'permission_denials': denials,
+                  'structured_output': {'status': status, 'summary': summary,
+                                        'decisions': [{'choice': 'fake choice', 'reason': 'fixture'}],
+                                        'evidence': [{'check': 'the fixture ran', 'proof': 'fake-claude-stream.py'}] if status == 'done' else [],
+                                        'human_verify': verify,
+                                        'left_open': ['nothing real'], 'notes': '',
+                                        'memo': rest_of_line(text, 'MEMO') if 'MEMO' in words else ''}})
 
 
 def end_without_result(session, left):
