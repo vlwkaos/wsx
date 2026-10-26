@@ -4,7 +4,7 @@
 use super::view::{
     attention, check_outcomes, clip, overlaps, project_tasks, read_result, task_summary,
 };
-use super::{checks, copy, store, DeployKind, DeployRecord, TaskRecord, TaskState, WaitOn};
+use super::{checks, copy, store, DeployKind, DeployRecord, TaskRecord, TaskState};
 use crate::config::project::load_task_config;
 use crate::model::workspace::TaskConfig;
 use crate::{ops, runtime};
@@ -69,14 +69,10 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
                 "checks": result.as_ref().map(check_outcomes).unwrap_or_default().into_iter()
                     .map(|(command, outcome)| json!({ "command": command, "outcome": outcome }))
                     .collect::<Vec<_>>(),
-                // ^ What a waiting task waits for: the owner, a grant, disk or a person's hands.
+                // ^ What a waiting task waits for: the owner, disk, the check slot or a person's hands.
                 "waiting": record.waiting,
                 // ^ Held for the owner to try before it lands (docs/tasks.md "Hold and trial").
                 "hold": record.hold,
-                // ^ What it asks to be granted; the manager may grant it (docs/tasks.md "Permissions").
-                "asks": record.waits_on(WaitOn::Permission)
-                    .then(|| result.as_ref().map(|r| r["asks"].clone()))
-                    .flatten(),
                 // ^ The main checkout's changed files this land would overwrite: pressing
                 // Land refuses until they are committed or stashed (docs/tasks.md "Ledger").
                 "land_blocked_by": (record.state == TaskState::Ready).then(|| land_blockers(record)),

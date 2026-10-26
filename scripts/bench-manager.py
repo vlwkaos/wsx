@@ -11,8 +11,8 @@ them at BEFORE_COMMIT (no ledger summary, rotation on the summed usage, one mode
 from the working copy (ledger summary, rotation on the last call's context, eventModel for
 event-only turns), `after-nof` as `after` with every turn on the manager model. It prints one
 JSON line per turn; the host itself is tested by scripts/test-task.py.
-Claude's own Bash sandbox is off here (the benchmark may itself run in one), so Bash runs
-with bypassPermissions, as sandboxed Bash runs without asking in the real manager.
+Bash runs with bypassPermissions here, so no auto-mode classifier call adds to the measured
+cost; the real manager runs in auto mode.
 """
 import argparse
 import json
@@ -124,9 +124,8 @@ def fixture(base):
                                             memo='Config is read from bench.yml beside the binary.')},
         {'id': 3, 'open': True, 'row': row(3, 'Add JSON output', 'working', 1, checks=[], summary=None)},
         {'id': 4, 'open': True, 'row': row(4, 'Fetch release notes', 'waiting', 1,
-                                           summary='needs network to api.github.com',
-                                           waiting={'on': 'permission', 'reason': 'needs to reach api.github.com'},
-                                           asks=[{'kind': 'network', 'host': 'api.github.com'}])},
+                                           summary='Which release feed should it read?',
+                                           waiting={'on': 'owner', 'reason': 'Which release feed should it read?'})},
         {'id': 5, 'open': True, 'row': row(5, 'Fix a typo in the README', 'ready', 1,
                                            checks=[{'command': 'python3 -m py_compile src/cli.py', 'outcome': 'passed'}],
                                            summary='fixed the typo')},
@@ -195,8 +194,7 @@ class Agent:
                                       'stream-json', '--verbose', '--setting-sources', 'project,local',
                                       '--permission-mode', 'bypassPermissions', '--model', model,
                                       '--append-system-prompt', launch, '--allowedTools', 'Read', 'Glob', 'Grep',
-                                      'WebFetch', 'WebSearch', 'Skill', 'Agent', '--disallowedTools', 'Edit',
-                                      'Write', 'NotebookEdit'],
+                                      'WebFetch', 'WebSearch', 'Skill', 'Agent'],
                                      cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         self.model, self.cost_base, self.requests = model, 0.0, 0
 

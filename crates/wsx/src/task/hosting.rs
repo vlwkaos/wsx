@@ -38,15 +38,6 @@ pub fn bind(socket: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-/// The socket's path through the real folder: on macOS `/var` and `/tmp` are links to
-/// `/private/...`, and a sandbox rule matches only the real path. The folder must exist.
-pub fn real_socket_path(socket: &Path) -> PathBuf {
-    match (socket.parent().map(Path::canonicalize), socket.file_name()) {
-        (Some(Ok(folder)), Some(name)) => folder.join(name),
-        _ => socket.to_path_buf(),
-    }
-}
-
 /// Serve one JSON request per connection: hand it to the host's loop as an event and
 /// write the answer back. A request that is too large or not valid JSON is dropped.
 pub fn serve<Request, Response, Event>(

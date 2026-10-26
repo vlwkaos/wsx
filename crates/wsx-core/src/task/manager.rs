@@ -3,7 +3,7 @@
 //!
 //! The manager host is the only writer of these files; `wsx task chat` reads the log.
 
-use super::{Access, Actor, TaskRecord, TaskState, TurnUsage};
+use super::{TaskRecord, TaskState, TurnUsage};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -111,14 +111,6 @@ pub enum ManagerEvent {
     Stopped {
         reason: String,
     },
-    /// The owner let the manager's Bash write a path (`wsx task allow manager`), until
-    /// `until_ms` or else for this conversation. ref: docs/tasks.md "Permissions"
-    Granted {
-        access: Access,
-        by: Actor,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        until_ms: Option<u64>,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,24 +178,6 @@ pub struct ManagerState {
     /// the token cost since. ref: docs/tasks.md "Recap"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recap_ms: Option<u64>,
-    /// Paths the owner let the manager's Bash write, applied at each agent start.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub grants: Vec<ManagerGrant>,
-}
-
-/// A write grant of the manager: until `until_ms`, or with none until its conversation ends
-/// or the host restarts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManagerGrant {
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub until_ms: Option<u64>,
-}
-
-impl ManagerGrant {
-    pub fn live(&self, now_ms: u64) -> bool {
-        self.until_ms.is_none_or(|until| until > now_ms)
-    }
 }
 
 /// A stable digest of an agent's instructions, to tell whether a conversation began with them.
@@ -224,17 +198,6 @@ pub enum ApprovalAction {
     Release,
     /// `close --discard`
     Discard,
-    /// `allow`: a project-wide grant or a tool rule the manager asked for.
-    Grant,
-}
-
-/// What a `Grant` request would give.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GrantAsk {
-    pub access: Access,
-    /// For every task of the project, not only the named one.
-    #[serde(default)]
-    pub project_wide: bool,
 }
 
 /// One line of `approvals.jsonl`.
@@ -250,8 +213,6 @@ pub enum ApprovalLine {
         revision: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        grant: Option<GrantAsk>,
         unix_ms: u64,
     },
     Decision {
@@ -338,12 +299,6 @@ pub enum ManagerRequest {
         /// Another project's manager; none is the owner.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<Author>,
-    },
-    /// The owner's write grant for the manager; the CLI refuses it for the manager actor.
-    Grant {
-        path: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        until_ms: Option<u64>,
     },
 }
 

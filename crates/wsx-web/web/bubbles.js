@@ -61,10 +61,6 @@ export function conversation(entries, resolutions, approvals = []) {
       for (const report of reports) {
         rows.push({ kind: "bubble", at, key: `${key}-r${report.task}`, author: `worker-${report.task}`, report });
       }
-    } else if (entry.kind === "granted") {
-      // ^ The owner's write grant for the manager (docs/tasks.md "Permissions").
-      const until = entry.until_ms ? `until ${clock(entry.until_ms)}` : "for this conversation";
-      rows.push({ kind: "line", at, key, parts: [`Allowed by the ${entry.by}: the manager writes ${entry.access.path} ${until}`] });
     } else if (entry.kind === "rotated" || entry.kind === "stopped") {
       rows.push({ kind: "note", at, key, entry });
     }

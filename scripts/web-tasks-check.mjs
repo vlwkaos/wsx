@@ -344,7 +344,7 @@ await until(`[...document.querySelectorAll('.home-row .row-label')].map((node) =
 const homeRows = await evaluate(`[...document.querySelectorAll('.home-row')].map((row) => ({ name: row.querySelector('.row-label').textContent,
   count: row.querySelector('.count')?.textContent ?? '', status: row.querySelector('.row-context').textContent, state: row.querySelector('.row-state').textContent }))`);
 const uiRow = homeRows.find((row) => row.name === "ui");
-if (uiRow.count !== "6" || uiRow.status !== "#1 needs to reach crates.io" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
+if (uiRow.count !== "6" || uiRow.status !== "#1 needs an answer" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
 const calmRow = homeRows.at(-1);
 if (calmRow.name !== "calm" || calmRow.count || calmRow.status !== "No tasks yet" || calmRow.state) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
 const plansRow = homeRows.find((row) => row.name === "plans");
@@ -519,8 +519,6 @@ const done = await evaluate(`({ head: ${workerBubble(7)}.querySelector('.bubble-
   body: ${workerBubble(7)}.querySelector('.bubble-body').textContent.trim(), more: !!${workerBubble(7)}.querySelector('button.link-action') })`);
 if (done.head !== "#7 · done" || !done.body.startsWith("did: WORK d.txt HV done.") || !/More words follow/.test(done.body) || done.more) await fail(`the done bubble reads ${JSON.stringify(done)}`);
 if (await evaluate("[...document.querySelectorAll('.status-line')].some((node) => /#[78] (landed|done)/.test(node.textContent))")) await fail("a muted line repeats a landing");
-// ^ The owner's write grant for the manager is a settled line (docs/tasks.md "Permissions").
-await until("[...document.querySelectorAll('.status-line')].some((node) => /Allowed by the owner: the manager writes \\S+\\/granted until /.test(node.textContent))", "the manager's grant left no muted line", 30);
 
 // --- The reservoir: one line over the composer that names the running task (its pulsing chip
 // and its title without "Owner asked:") and the items to check; a tap opens the decision list,
@@ -607,9 +605,9 @@ const listedRows = await rows();
 const rowWords = listedRows.map((row) => `${row[0]} ${row[3]}`);
 // ^ Done tasks (#7, #8) are not in it; the To check list is one row at its end. A task
 // without --title is named by its worker summary's first sentence ("did: WORK b.txt").
-const expectedRows = ["#1 Allow", "#4 Allow", " Deny+Approve", " Deny+Approve", "#2 Land", "#3 Land", "#6 ", " "];
+const expectedRows = ["#1 Answer", "#4 Answer", " Deny+Approve", " Deny+Approve", "#2 Land", "#3 Land", "#6 ", " "];
 if (rowWords.join("|") !== expectedRows.join("|")) await fail(`the reservoir rows are ${JSON.stringify(listedRows)}`);
-if (listedRows[0][2] !== "needs to reach crates.io" || listedRows[2][1] !== "Approve land #3" || listedRows[3][1] !== "Approve discard #4" || listedRows[2][2] !== "did: WORK b.txt"
+if (listedRows[0][2] !== "needs an answer" || listedRows[2][1] !== "Approve land #3" || listedRows[3][1] !== "Approve discard #4" || listedRows[2][2] !== "did: WORK b.txt"
   || listedRows[4][2] !== "ready to land" || listedRows[7][1] !== "2 to check") await fail(`the reservoir rows read ${JSON.stringify(listedRows)}`);
 if (!/^keep a worker busy WAIT /.test(listedRows[6][1])) await fail(`the running task's title is ${listedRows[6][1]}`);
 // ^ The manager's reply that asked for both approvals holds them, each with Deny and Approve:
@@ -647,22 +645,25 @@ await shot("reservoir-short", ".composer-send");
 await resize([320, 568, 2]);
 await shot("reservoir-narrow", ".composer-send");
 await resize([390, 844, 2]);
-// Clear in place, one row after another: Allow #1 grants its host and resumes it, the focus
-// moves to #4's Allow; Approve land #3 lands it; #1, ready, lands. The chat stays at its end,
-// and the settled items become muted lines that join when close together.
-let moved = await clearRow("#1", "Allow");
-if (`${moved[0]} ${moved[2]}` !== "#4 Allow") await fail(`after Allow #1 the focus is on ${JSON.stringify(moved)}`);
-// ^ The chat says what Allow did as a status line; no notice repeats it.
-await until("[...document.querySelectorAll('.status-line')].some((node) => /#1 may reach crates\\.io \\(owner\\)/.test(node.textContent))", "Allow in the reservoir left no status line", 60);
-if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /#1:/.test(node.textContent))")) await fail("a notice repeats the status line of Allow");
-moved = await clearRow("Approve land #3", "Approve");
+// Clear in place, one row after another: Answer #1 sends its answer and resumes it;
+// Approve land #3 lands it; #1, ready, lands. The chat stays at its end, and the settled
+// items become muted lines that join when close together.
+const answerKey = await evaluate(`${rowOf("#1")}.dataset.key`);
+await evaluate(`${rowOf("#1")}.querySelector('.need-action').click()`);
+await until(`!!document.querySelector('.reservoir .need[data-key=${JSON.stringify(answerKey)}] .need-form input')`, "Answer did not open the field");
+await typeInto(`.reservoir .need[data-key=${JSON.stringify(answerKey)}] .need-form input`, "WORK answered.txt");
+await evaluate(`document.querySelector('.reservoir .need[data-key=${JSON.stringify(answerKey)}] .need-form').requestSubmit()`);
+await until(`!document.querySelector('.reservoir .need[data-key=${JSON.stringify(answerKey)}]')`, "the answer did not clear the row of #1", 300);
+// ^ The chat says the answer as a status line.
+await until("[...document.querySelectorAll('.status-line')].some((node) => /#1 got an answer/.test(node.textContent))", "the answer in the reservoir left no status line", 60);
+let moved = await clearRow("Approve land #3", "Approve");
 if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))")) await fail("a notice repeats the status line of Approve");
 await until(`!${rowOf("Approve land #3")} && !${rowOf("#3")}`, "the reservoir kept the approved landing", 300);
 // ^ The approval is a muted line; the landing is #3's "done" bubble, not a second line.
 await until("[...document.querySelectorAll('.status-line')].some((node) => /Approved land #3/.test(node.textContent))", "the approval left no muted line", 300);
 await until(`!!${workerBubble(3)}`, "the landing of #3 has no done bubble", 300);
 if (await evaluate("[...document.querySelectorAll('.status-line')].some((node) => /#3 landed/.test(node.textContent))")) await fail("a muted line repeats the landing of #3");
-await until(`(${rowOf("#1")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#1 is not ready to land after Allow", 300);
+await until(`(${rowOf("#1")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#1 is not ready to land after its answer", 300);
 moved = await clearRow("#1", "Land");
 // ^ A bubble that arrives with the landing sticks the chat to its end one frame later: on a
 // loaded machine that frame comes late, so the check waits for it. A chat the action moved
@@ -1102,7 +1103,7 @@ const history = await text(".timeline-what");
 if ((await text(".timeline > .fold-head")).join() !== "History" || !history.includes("Landed") || history.some((line) => /Verified|without verification/.test(line))) await fail(`the history reads ${history}`);
 await shot("task-landed");
 
-// --- #4: a pending approval in the sentence and its buttons. Deny, then Allow for project.
+// --- #4: a pending approval in the sentence and its buttons. Deny, then answer in the sheet.
 await go(page(4));
 await until("!!document.querySelector('.task-next button[aria-label=\"Approve discard #4\"]')", "#4 shows no pending approval");
 // ^ The story says what an action is for; its row holds the buttons alone.
@@ -1119,9 +1120,10 @@ await resize([390, 844, 2]);
 await evaluate("[...document.querySelectorAll('.task-next button')].find((node) => node.textContent === 'Deny').click()");
 await until("!document.querySelector('.task-next button[aria-label=\"Approve discard #4\"]')", "the denied approval stayed", 300);
 told = await story();
-if (told.next !== "The worker waits for you to let it reach crates.io, or to answer.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
-await evaluate("[...document.querySelectorAll('.task-next button')].find((node) => node.textContent === 'Allow for project').click()");
-await until("document.querySelector('.story-next')?.textContent === 'Land it to put it on main.'", "#4 did not resume after Allow", 300);
+if (told.next !== "The worker waits for your answer.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
+await typeInto(".task-message .composer-field", "WORK answered4.txt");
+await click(".task-message .composer-send");
+await until("document.querySelector('.story-next')?.textContent === 'Land it to put it on main.'", "#4 did not resume after its answer", 300);
 
 // --- Notices lie over the screen, one at a time. An approved action that did not run stays
 // until dismissed, also when a later outcome comes; an outcome clears itself.
@@ -1472,6 +1474,6 @@ problems.splice(quietFrom);
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
-console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, a whole worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Allow, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, Allow for project, Shared files only in a conflict), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, a whole worker report, grouping), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done bubbles out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach and the other manager's bubbles, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

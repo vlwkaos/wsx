@@ -3,7 +3,7 @@
 
 Each user message is a small script of words:
   SLOW         take about 2 s and accept steers during the turn
-  NEEDS <rule> deny once unless <rule> is in --allowedTools, and report blocked
+  NEEDS <rule> deny <rule> and report blocked
   DENIED <rule> deny <rule> but carry on and report done
   WORK <file>  write <file> and commit it
   NOOP         change nothing
@@ -11,15 +11,15 @@ Each user message is a small script of words:
   HV           return one Human Verify item
   LINE <file> <n>  replace line n of <file> with the message and commit
   EDIT <file>  try the Edit tool on <file>: auto mode allows it in the copy unless Edit is disallowed
-  NEEDS_HOST <host>  curl <host>: a sandbox violation and blocked unless the launch's allowedDomains has it
-  NEEDS_PATH <path>  touch <path>: "Operation not permitted" and blocked unless an allowWrite folder holds it
-  RETRY_HOST <host>  a violation, then the same command with allowed_domains that succeeds (no ask)
   MEMO <words> return the rest of the line as the result's memo
   CAPTURE      (with HV) the item has a page path and a small PNG capture
   CMDHV        return a Human Verify item that names a command
   WAIT <file>  keep working until <file> exists, at most 10 minutes
   CHECKRUN_AGAIN  start `wsx task check-run`, kill it after 1 s, run it again and trace that answer
   CHECKRUN_TWICE  run `wsx task check-run` twice on the same tree and trace both answers
+  PROBE <secret> <other copy> <state file> <library dir>  try each through wsx's boundary and trace
+               what it allowed: read the secret, write the other copy and the state file, move
+               main's ref, write the main repository's hooks, write under the library folder, listen on 127.0.0.1, open a PTY
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
 conflict with the line "resolved".
 Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE, and each
@@ -34,8 +34,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   TABLE          answer with a wide markdown table that names #4 twice and #2
   TABLE5         answer "Five columns:" with a table of five columns and 30 lines after it
   DIAGRAM        answer with a tall mermaid diagram, drawn after the bubble shows
-  PAGE <section> <words>  replace that section of the project page (its sandbox entry names it)
-  WRITE <path>   write <path> when an allowWrite entry and no denyWrite entry holds it, as Bash would
+  PAGE <section> <words>  replace that section of the project page (its instructions name it)
   STATUS         answer from `wsx task ledger`
   SLOW           take about 3 s
   BIG            a last model call of 200k tokens, so the host rotates the conversation
@@ -97,41 +96,47 @@ def tool_result(use_id, text, failed):
         {'type': 'tool_result', 'tool_use_id': use_id, 'is_error': failed, 'content': text}]}})
 
 
-def violation(host):
-    return ("curl: (56) CONNECT tunnel failed, response 403\n<sandbox_violations>\ndeny network-outbound %s:443 "
-            "(not in this command's allowed_domains)\n</sandbox_violations>" % host)
+def attempt(action):
+    try:
+        action()
+        return True
+    except OSError:
+        return False
 
 
-def sandbox_stops(words, settings):
-    """What the sandbox of this launch stops; True when the turn must block on it."""
-    sandbox = settings.get('sandbox', {})
-    domains = sandbox.get('network', {}).get('allowedDomains', [])
-    writes = [os.path.expanduser(path) for path in sandbox.get('filesystem', {}).get('allowWrite', [])]
-    stopped = False
-    if 'RETRY_HOST' in words:
-        host = words[words.index('RETRY_HOST') + 1]
-        tool_use('r1', 'curl https://' + host)
-        tool_result('r1', violation(host), True)
-        tool_use('r2', 'curl https://' + host, allowed_domains=[host])
-        tool_result('r2', '200', False)
-    if 'NEEDS_HOST' in words:
-        host = words[words.index('NEEDS_HOST') + 1]
-        tool_use('h1', 'curl https://' + host)
-        if host not in domains:
-            tool_result('h1', violation(host), True)
-            stopped = True
-        else:
-            tool_result('h1', '200', False)
-    if 'NEEDS_PATH' in words:
-        path = words[words.index('NEEDS_PATH') + 1]
-        tool_use('p1', 'touch ' + path)
-        if not any(path.startswith(folder.rstrip('/') + '/') for folder in writes):
-            tool_result('p1', '(eval):1: operation not permitted: %s' % path, True)
-            stopped = True
-        else:
-            tool_result('p1', '', False)
-    trace({'sandbox_stopped': stopped, 'words': words})
-    return stopped
+def probe(secret, other, state_file, library):
+    """What the boundary around this process allows; True is allowed."""
+    def write(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as out:
+            out.write('probe\n')
+
+    def listen():
+        import socket
+        server = socket.socket()
+        server.bind(('127.0.0.1', 0))
+        server.listen(1)
+        client = socket.create_connection(server.getsockname())
+        server.accept()[0].close()
+        client.close()
+        server.close()
+
+    def pty():
+        for fd in os.openpty():
+            os.close(fd)
+    moved = subprocess.run(['git', 'update-ref', 'refs/heads/main', 'HEAD'], capture_output=True).returncode == 0
+    common = subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+                            capture_output=True, text=True).stdout.strip()
+    trace({'probe': {'read_secret': attempt(lambda: open(secret).read()),
+                     'write_other_copy': attempt(lambda: write(os.path.join(other, 'probe.txt'))),
+                     'write_state': attempt(lambda: write(state_file)),
+                     'move_main': moved,
+                     'write_hooks': attempt(lambda: write(os.path.join(common, 'hooks', 'pre-commit'))),
+                     'write_library': attempt(lambda: write(os.path.join(library, 'probe.txt'))),
+                     'write_own_copy': attempt(lambda: write('probe.txt')),
+                     'listen': attempt(listen), 'pty': attempt(pty)}})
+    if os.path.exists('probe.txt'):
+        os.remove('probe.txt')
 
 
 def png_chunk(kind, data):
@@ -170,9 +175,7 @@ def try_edit(words, allowed, disallowed, denials):
     trace({'edited': name})
 
 
-def edit_page(settings, section, words):
-    # ^ The manager's Bash may write one file, the page: the sandbox's one file entry.
-    page = next(path for path in settings['sandbox']['filesystem']['allowWrite'] if path.endswith('/page.md'))
+def edit_page(page, section, words):
     with open(page) as source:
         text = source.read()
     head = '## %s\n\n' % section
@@ -182,19 +185,7 @@ def edit_page(settings, section, words):
         out.write(text[:start] + words + text[end:])
 
 
-def sandbox_write(settings, path):
-    filesystem = settings['sandbox']['filesystem']
-    holds = lambda entries: any(os.path.realpath(path) == os.path.realpath(os.path.expanduser(entry))
-                                or os.path.realpath(path).startswith(os.path.realpath(os.path.expanduser(entry)) + '/')
-                                for entry in entries)
-    if not holds(filesystem.get('allowWrite', [])) or holds(filesystem.get('denyWrite', [])):
-        return '%s: Operation not permitted' % path
-    with open(path, 'w') as out:
-        out.write('written\n')
-    return 'wrote %s' % path
-
-
-def manager_turn(text, project, settings):
+def manager_turn(text, project, page):
     replies = []
     if 'SLOW' in text.split():
         time.sleep(3)
@@ -209,12 +200,9 @@ def manager_turn(text, project, settings):
             done = subprocess.run(line[4:], shell=True, capture_output=True, text=True)
             replies.append('ran: %s -> %d %s' % (line[4:], done.returncode, (done.stdout + done.stderr).strip()[:300]))
     for line in text.splitlines():
-        if line.startswith('WRITE '):
-            replies.append(sandbox_write(settings, line[6:]))
-    for line in text.splitlines():
         if line.startswith('PAGE '):
             _, section, words = line.split(' ', 2)
-            edit_page(settings, section, words)
+            edit_page(page, section, words)
             replies.append('I updated the %s of the project page.' % section)
     if 'TABLE' in text.split():
         cell = 'a long cell that keeps going ' * 4
@@ -302,7 +290,7 @@ def main():
             text = text.split('\n\nLedger summary from wsx', 1)[0]
             # ^ A handover quotes earlier messages; only the messages after it are this turn's.
             answer = manager_turn(text.split('\n\n', 1)[1] if text.startswith('Handover') else text, project,
-                                    json.loads(options.get('--settings', '{}')))
+                                  instructions.split('The project page ', 1)[1].split(' ', 1)[0])
             # ^ A line of its own: a handover quotes earlier messages as `Owner: BIG`.
             calls = [200000] if 'BIG' in text.splitlines() else [50000] * 4 if 'SUMMED' in text.splitlines() else [5000]
             for tokens in calls:
@@ -346,8 +334,9 @@ def main():
         denials = []
         if 'NEEDS' in words:
             rule = words[words.index('NEEDS') + 1]
-            if rule not in allowed:
-                denials.append({'tool_name': 'Bash', 'tool_use_id': 'x', 'tool_input': {'command': rule}})
+            denials.append({'tool_name': 'Bash', 'tool_use_id': 'x', 'tool_input': {'command': rule}})
+        if 'PROBE' in words:
+            probe(*words[words.index('PROBE') + 1:words.index('PROBE') + 5])
         if 'rebased' in words and 'onto' in words:
             tip = words[words.index('onto') + 1]
             rebase_env = dict(os.environ, GIT_EDITOR='true', GIT_AUTHOR_NAME='fake', GIT_AUTHOR_EMAIL='fake@example.invalid',
@@ -381,8 +370,7 @@ def main():
             answers = [subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True) for _ in range(2)]
             trace({'check_run_twice': [[ran.returncode, ran.stdout + ran.stderr] for ran in answers]})
         try_edit(words, allowed, disallowed, denials)
-        stopped = sandbox_stops(words, json.loads(options.get('--settings', '{}')))
-        blocked = (bool(denials) and 'NEEDS' in words) or stopped
+        blocked = bool(denials) and 'NEEDS' in words
         if not blocked and 'WORK' in words:
             name = words[words.index('WORK') + 1]
             emit({'type': 'assistant', 'message': {'content': [

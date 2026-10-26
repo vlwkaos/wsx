@@ -4,7 +4,6 @@
 import { api } from "./api.js";
 import { firstSentence, html, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
-import { askWords } from "./tasks.js";
 
 const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 // `refs/heads/main` reads as `main`, `refs/remotes/origin/main` as `origin/main`.
@@ -71,7 +70,6 @@ export function nextWords(detail) {
     case "waiting": switch (detail.waiting?.on) {
       case "disk": return `${detail.waiting.reason}. It goes on by itself once there is space.`;
       case "hand": return "You work on it by hand in its session. Commit, then hand it back: its checks run and it lands as usual.";
-      case "permission": return `The worker waits for you to let it ${askWords(detail.asks ?? [])}, or to answer.`;
       default: return detail.waiting?.reason === "stopped by request"
         ? "The worker stopped. Add a message to resume it." : "The worker waits for your answer.";
     }

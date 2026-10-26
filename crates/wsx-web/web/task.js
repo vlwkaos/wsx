@@ -6,7 +6,7 @@ import { clock, html, Icon, Loading, readMap, useEffect, useLayoutEffect, useRef
 import { can, events, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { grow, isolate, release } from "./chat.js";
-import { announce, askWords, grantBody, loadTasks, taskStage, TaskChip, TaskTitle, withChips } from "./tasks.js";
+import { announce, loadTasks, taskStage, TaskChip, TaskTitle, withChips } from "./tasks.js";
 import { Bubble } from "./bubbles.js";
 import { TaskStory } from "./story.js";
 import { CheckRow, TryButton } from "./checks.js";
@@ -26,9 +26,7 @@ function described(entry) {
     case "created": return [`Created on ${entry.branch}`, `from ${short(entry.base)}`];
     case "message": return [MESSAGE_WORDS[entry.mode] ?? "Message", entry.text];
     case "steps": return [`${entry.count} ${entry.count === 1 ? "step" : "steps"}`, entry.last];
-    case "blocked": return ["Blocked", entry.asks?.length ? `needs to ${askWords(entry.asks)}`
-      : entry.denials.length ? `denied: ${entry.denials.join(", ")}` : "", "attention"];
-    case "granted": return [`Allowed by the ${entry.by}${entry.project ? " for every task" : ""}`, askWords([entry.access]) || `use ${entry.access.rule}`];
+    case "blocked": return ["Blocked", entry.denials.length ? `denied: ${entry.denials.join(", ")}` : "", "attention"];
     case "result": return [`Result: ${entry.status}`, entry.summary, entry.status === "done" ? null : "danger"];
     case "checks": {
       const failed = entry.results.filter((check) => check.exit !== 0);
@@ -220,22 +218,12 @@ export function TaskPage({ project, task, onClose, grip }) {
   const button = (label, onClick, extra = {}, icon = null) => html`
     <button class="button" type="button" disabled=${busy} title=${icon ? label : null} onClick=${onClick} ...${extra}>
       ${icon && html`<${Icon} name=${icon} />`}<span class="button-words">${label}</span></button>`;
-  // ^ What the block asks for, never a command; one grant per ask, the last one resumes the task.
-  const asks = detail.asks ?? [];
-  const grant = async (project_wide) => {
-    for (const ask of asks) {
-      if (!await act.run("allow", `api/tasks/${project}/t/${task}/allow`, grantBody(ask, project_wide))) return;
-    }
-  };
   // ^ The story above says what each action is for; the row holds the buttons alone.
   const buttons = acting ? [
     ...detail.approvals.map((request) => html`
       ${detail.approvals.length > 1 && html`<p class="task-approval">${request.label}</p>`}
       ${button("Deny", () => act.run("deny", `api/tasks/${project}/approvals/${request.id}/deny`, {}, null, request.label), { "aria-label": `Deny: ${request.label}` }, "fail")}
       ${button("Approve", () => act.run("approve", `api/tasks/${project}/approvals/${request.id}/approve`, {}, null, request.label), { "aria-label": request.label }, "pass")}`),
-    actions.includes("allow") && asks.length > 0 && html`
-      ${button("Allow", () => grant(false), { "aria-label": `Allow #${task} to ${askWords(asks)}` }, "pass")}
-      ${button("Allow for project", () => grant(true), { "aria-label": `Allow every task of this project to ${askWords(asks)}` })}`,
     // ^ A trial: this revision on the live site before it lands (docs/tasks.md "Hold and trial").
     // Pass lands it; a message to the worker fails it; End only frees the live site.
     trial && html`<p class="task-approval" role="status">${TRIAL_WORDS[trial.stage]}</p>`,

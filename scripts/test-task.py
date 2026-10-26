@@ -35,7 +35,6 @@ CONFIG = '''tasks:
   land: { auto: false }
   agent:
     model: fake-model
-    tools: [WebFetch]
   checks:
     - "test -f a.txt"
     - "test ! -e broken.txt"
@@ -44,8 +43,6 @@ CONFIG = '''tasks:
 LAND_CONFIG = '''tasks:
   minFreeGb: 0
   land: { auto: false }
-  agent:
-    tools: [WebFetch]
   checks:
     - "test ! -e broken.txt"
 '''
@@ -290,14 +287,6 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text('tasks:\n  agent:\n    adapter: nope\n')
     refused = cli('task', 'new', 'WORK a.txt', ok=False)
     assert 'tasks.agent.adapter' in refused.stderr and 'no task was created' in refused.stderr, refused.stderr
-    # ^ The sandbox replaces Bash rules; a bare file-tool rule would skip the classifier.
-    for tools, word in (('["Bash(make:*)"]', 'the sandbox replaces Bash rules'), ('[Write]', 'file tools are always on')):
-        (project / 'wsx.config.yml').write_text('tasks:\n  agent:\n    tools: %s\n' % tools)
-        assert word in cli('task', 'new', 'WORK a.txt', ok=False).stderr
-    # ^ The manager's extra tools have the same refusals.
-    for tools in ('["Bash(git:*)"]', '[Edit]', '[MultiEdit]'):
-        (project / 'wsx.config.yml').write_text('tasks:\n  manager:\n    tools: %s\n' % tools)
-        assert 'tasks.manager.tools has' in cli('task', 'new', 'WORK a.txt', ok=False).stderr
     # ^ The manager's name is one short line (docs/tasks.md "Config").
     for name, word in (('"At\\nlas"', 'control characters'), ('"%s"' % ('x' * 65), 'at most 64 bytes')):
         (project / 'wsx.config.yml').write_text('tasks:\n  manager:\n    name: %s\n' % name)
@@ -313,9 +302,7 @@ def run(wsx, wsxd, work, owned):
         (project / 'wsx.config.yml').write_text('tasks:\n' + bad)
         refused = cli('task', 'new', 'WORK a.txt', ok=False).stderr
         assert word in refused, refused
-    (project / 'wsx.config.yml').write_text('tasks:\n  sandbox:\n    allowWrite: ["~/"]\n')
-    assert 'tasks.sandbox.allowWrite' in cli('task', 'new', 'WORK a.txt', ok=False).stderr
-    (project / 'wsx.config.yml').write_text(CONFIG + '  sandbox:\n    allowedDomains: [crates.io]\n    allowWrite: ["~/.cargo/registry"]\n')
+    (project / 'wsx.config.yml').write_text(CONFIG)
     assert 'invalid task number' in cli('task', 'show', '../1', ok=False).stderr
     assert 'a prompt is required' in cli('task', 'new', ok=False).stderr
     assert 'empty' in cli('task', 'new', '-', stdin='\n', ok=False).stderr
@@ -344,31 +331,13 @@ def run(wsx, wsxd, work, owned):
     assert host_socket.parent == tmp / ('wsx-%d' % os.getuid()), host_socket
     assert oct(host_socket.parent.stat().st_mode & 0o777) == '0o700'
     launch = wait(lambda: next((t for t in traces() if t.get('launch')), None), 'fake launch')
-    # ^ One wsx variable: the host's broker for `wsx task check-run`, its one reachable socket.
-    assert launch['wsx_env'] == ['WSX_TASK_BROKER'] and launch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch'] and launch['schema']
-    worker_sockets = launch['settings']['sandbox']['network']['allowUnixSockets']
-    assert len(worker_sockets) == 1 and Path(worker_sockets[0]).name.startswith('w-') and Path(worker_sockets[0]).is_socket()
-    assert launch['model'] == 'fake-model' and not launch['resume'] and launch['mode'] == 'auto'
+    # ^ One wsx variable: the host's broker for `wsx task check-run`.
+    assert launch['wsx_env'] == ['WSX_TASK_BROKER'] and launch['allowed'] == [] and launch['schema']
+    assert launch['model'] == 'fake-model' and not launch['resume'] and launch['mode'] == 'bypassPermissions'
     assert "put in the result's memo a short, lean memo of durable" in launch['instructions'], launch['instructions']
     assert 'memo' in launch['schema_required'], launch['schema_required']
-    # One permission model (docs/tasks.md "Permissions"): the sandbox bounds Bash, never a Bash rule.
-    sandbox, common = launch['settings']['sandbox'], Path(git('rev-parse', '--path-format=absolute', '--git-common-dir'))
-    assert (sandbox['enabled'], sandbox['failIfUnavailable'], sandbox['autoAllowBashIfSandboxed'],
-            sandbox['allowUnsandboxedCommands']) == (True, True, True, False), sandbox
-    assert sandbox['network']['allowedDomains'] == ['crates.io'] and 'excludedCommands' not in sandbox
-    admin = Path(git('rev-parse', '--path-format=absolute', '--git-dir', cwd=copy))
-    assert sandbox['filesystem']['allowWrite'] == [str(common / 'objects'), str(admin), str(common / 'refs/heads/wsx'),
-                                                    str(common / 'logs/refs/heads/wsx'), '~/.cargo/registry'], sandbox
-    assert sandbox['filesystem']['denyWrite'] == [str(common / 'hooks'), str(common / 'config'), str(common / 'refs/heads/main'),
-                                                   str(common / 'logs/refs/heads/main')], sandbox
-    deny = launch['settings']['permissions']['deny']
-    # ^ The main checkout's entries other than .git: a rule on all of it would also stop commits.
-    assert 'Edit(/%s)' % (project / 'README') in deny and 'Edit(/%s/**)' % (project / 'target') in deny, deny
-    assert not any(rule in ('Edit(/%s/.git/**)' % project, 'Edit(/%s/**)' % project) for rule in deny), deny
-    assert 'Edit(/%s/**)' % (state / 'wsx') in deny, deny
-    assert 'Edit(/%s/**)' % (home / 'Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'c/wsx') in deny
-    assert not any(str(copy) in rule for rule in deny), deny
-    assert launch['settings']['attribution'] == {'commit': '', 'pr': ''}
+    # One permission model (docs/tasks.md "Permissions"): wsx's boundary, no agent settings for it.
+    assert launch['settings'] == {'attribution': {'commit': '', 'pr': ''}, 'includeCoAuthoredBy': False}, launch
 
     # 2. Steer during the turn: Claude does not save it, so the host logs it.
     mark('2')
@@ -391,7 +360,7 @@ def run(wsx, wsxd, work, owned):
     agent = wait(lambda: (a := pane_agent(1)) and a['state'] == 'done' and a, 'agent done')
     assert agent['provider'] == 'task'
 
-    # 3. Add after the turn, blocked on a denied tool, then allow resumes the same conversation.
+    # 3. Add after the turn, blocked on a denied tool, then an answer resumes the same conversation.
     mark('3')
     added = js('task', 'add', '1', 'NEEDS WebSearch WORK b.txt')
     assert added['ok'] and 'new turn' in added['message'], added
@@ -400,16 +369,10 @@ def run(wsx, wsxd, work, owned):
     assert any(e['kind'] == 'blocked' and e['denials'] == ['Bash(WebSearch)'] for e in log(1)), log(1)
     wait(lambda: (pane_agent(1) or {}).get('state') == 'blocked', 'agent blocked')
     assert blocked['revision'] == 1
-    for rule in ('Bash(make:*)', 'Edit'):
-        refused = cli('task', 'allow', '1', rule, '--json', ok=False)
-        assert 'the sandbox replaces Bash rules' in refused.stdout + refused.stderr or 'file tools' in refused.stdout + refused.stderr, refused
-    allowed = js('task', 'allow', '1', 'WebSearch')
-    assert allowed['ok'] and 'resumed' in allowed['message'], allowed
+    assert js('task', 'add', '1', 'WORK b.txt')['ok']
     ready = wait_state(1, 'ready', 'failed')
     assert ready['state'] == 'ready' and ready['revision'] == 2, ready
-    relaunch = [t for t in traces() if t.get('launch')][-1]
-    assert relaunch['resume'] and relaunch['session'] == launch['session']
-    assert relaunch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'], relaunch['allowed']
+    assert {t['session'] for t in traces() if 'message' in t and not t.get('manager')} == {launch['session']}
 
     # 3b. Denials the worker worked around do not block: checks run and the denials are evidence.
     mark('3b')
@@ -541,7 +504,7 @@ def run(wsx, wsxd, work, owned):
     # ^ `land: { auto: false }`: the uncommitted config no longer stops an auto land, and
     # these tasks must stay ready (docs/tasks.md "Landing").
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    tools: [Read]\n  checks: ["sleep 37"]\n  checkTimeoutSeconds: 1\n')
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  checks: ["sleep 37"]\n  checkTimeoutSeconds: 1\n')
     timed = js('task', 'new', 'NOOP')
     failed = wait_state(timed['id'], 'failed', 'ready')
     check = failed['result']['checks'][0]
@@ -553,7 +516,7 @@ def run(wsx, wsxd, work, owned):
     # A check that prints far past the kept output runs to its end: its exit decides, and the
     # output it keeps is the end, where a test run puts its summary.
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    tools: [Read]\n'
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n'
         '  checks: ["seq 1 40000; seq 1 40000 >&2; echo tail end"]\n')
     loud = js('task', 'new', 'NOOP')['id']
     check = wait_state(loud, 'ready', 'failed')['result']['checks'][0]
@@ -562,7 +525,7 @@ def run(wsx, wsxd, work, owned):
     # A check that leaves a process holding its output ends with its shell: the leftover
     # cannot keep the check, and the machine's check slot, waiting for that output to close.
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    tools: [Read]\n'
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n'
         '  checks: ["(sleep 47 &); echo left running"]\n')
     left = js('task', 'new', 'NOOP')['id']
     check = wait_state(left, 'ready', 'failed')['result']['checks'][0]
@@ -580,7 +543,7 @@ def run(wsx, wsxd, work, owned):
                             '      - name: plan\n        prompt: PLAN only\n'
                             '      - name: build\n        prompt: WORK s.txt\n')
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    tools: [Read]\n  checks: ["test -f s.txt"]\n')
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  checks: ["test -f s.txt"]\n')
     stepped = js('task', 'new', 'NOOP')['id']
     done = wait_state(stepped, 'ready', 'failed')
     assert done['state'] == 'ready' and done['record']['step'] == 1, done
@@ -599,12 +562,12 @@ def run(wsx, wsxd, work, owned):
     # under a failing check passes once the project's checks change.
     mark('13c')
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    tools: [Read]\n  checks: ["false"]\n')
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  checks: ["false"]\n')
     release = work / 'release-13c'
     followed = js('task', 'new', 'WAIT %s' % release)['id']
     wait(lambda: show(followed)['record']['agent_session'], 't%s started' % followed)
     (project / 'wsx.config.yml').write_text(
-        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent:\n    tools: [Read]\n  checks: ["true"]\n')
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  checks: ["true"]\n')
     release.write_text('go')
     done = wait_state(followed, 'ready', 'failed')
     assert done['state'] == 'ready' and done['record']['checks'] == ['true'], done
@@ -934,7 +897,7 @@ def run(wsx, wsxd, work, owned):
     assert len(raw.encode()) <= 16 * 1024 and ledger['open_omitted'] == 0
     assert ledger['to_check'] == 0 and ledger['auto_land'] is False and 'verification' not in ledger['open'][0]
     assert [(row['id'], row['state']) for row in ledger['open']] == [(blocked_task, 'waiting'), (ready_task, 'ready')]
-    assert ledger['open'][0]['waiting']['on'] == 'owner' and ledger['open'][0]['asks'] is None, ledger['open'][0]
+    assert ledger['open'][0]['waiting']['on'] == 'owner' and 'asks' not in ledger['open'][0], ledger['open'][0]
     assert ledger['open'][1]['summary'] == 'did: WORK l.txt could not run the browser test' and ledger['open'][1]['human_verify'] == 0
     assert ledger['open'][1]['checks'] == [{'command': 'test ! -e broken.txt', 'outcome': 'passed'}], ledger['open'][1]
     assert 0 < len(ledger['recent']) <= 10 and all(row['state'] in ('landed', 'closed') for row in ledger['recent'])
@@ -947,7 +910,7 @@ def run(wsx, wsxd, work, owned):
     mark('20')
     (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text()
                                             + '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, '
-                                              'rotateTokens: 100000, tools: [mcp__docs__search] }\n'
+                                              'rotateTokens: 100000 }\n'
                                             + '  skills: owner\n  workflow:\n    build: "Run the fixture rule."\n'
                                               '    review: "Check the fixture rule."\n    batch: "Fold the fixture tasks."\n')
     git('commit', '-q', '-am', 'manager config')
@@ -980,33 +943,15 @@ def run(wsx, wsxd, work, owned):
     assert '#%d working r' % running in summary.split('- open tasks:\n', 1)[1], summary
     assert '`wsx task ledger -p demo` when you need more' in launch['instructions'], launch['instructions']
     page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md')
-    # ^ It reads as a worker does, uses the owner's skills and subagents (docs/tasks.md "Manager"),
-    # plus `tasks.manager.tools`.
-    assert launch['allowed'] == ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Skill', 'Agent',
-                                 'mcp__docs__search'], launch['allowed']
+    # ^ It uses the owner's skills (docs/tasks.md "Manager"); no tool list: nothing prompts.
+    assert launch['allowed'] == [], launch['allowed']
     plugin = Path(launch['plugin_dir'])
     assert plugin.parent.name == 'manager' and plugin.resolve().is_relative_to(state.resolve()), plugin
     assert json.loads((plugin / '.claude-plugin/plugin.json').read_text())['name'] == 'owner'
     assert os.readlink(plugin / 'skills') == str(owner_skills), os.readlink(plugin / 'skills')
-    # ^ File tools are denied by name in the settings, which bind subagents and a skill's
-    # `allowed-tools` too; the manager's writes are its Bash alone (docs/tasks.md "Permissions").
-    deny = launch['settings']['permissions']['deny']
-    assert {'Edit', 'Write', 'NotebookEdit'} <= set(deny) and launch['disallowed'] == [], deny
-    assert not any(rule.startswith(('Edit(', 'Write(')) for rule in launch['allowed']), launch['allowed']
+    # ^ No prompts inside wsx's boundary (docs/tasks.md "Permissions").
+    assert launch['mode'] == 'bypassPermissions' and 'permissions' not in launch['settings'], launch['settings']
     assert launch['model'] == 'fake-manager' and Path(page).read_text().startswith('# demo\n\n## Goal')
-    # ^ Its Bash is plain sandboxed Bash that writes only its notes folder and reaches one socket,
-    # the manager host's broker, which runs its `wsx task` commands.
-    sandbox = launch['settings']['sandbox']
-    assert launch['mode'] == 'auto' and 'excludedCommands' not in sandbox, sandbox
-    broker = sandbox['network']['allowUnixSockets']
-    assert len(broker) == 1 and Path(broker[0]).is_socket() and len(broker[0]) < 104, broker
-    # ^ The sandbox matches the real path: the rule names the socket through the real folder.
-    assert broker[0] == os.path.realpath(broker[0]) and '/t-real/' in broker[0], broker
-    # ^ Its Bash writes the notes folder and one file, the project page (docs/tasks.md "Project page").
-    assert len(sandbox['filesystem']['allowWrite']) == 2 and sandbox['filesystem']['allowWrite'][0].endswith('/manager/notes')
-    assert sandbox['filesystem']['allowWrite'][1] == page, sandbox['filesystem']
-    assert Path(sandbox['filesystem']['allowWrite'][0]).is_dir() and sandbox['filesystem']['denyWrite'] == [str(project)]
-    assert 'Edit(/%s/**)' % project in launch['settings']['permissions']['deny'], launch['settings']
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     assert launch['git_optional_locks'] == '0', launch
     # Its rules: talk and size first, a complete prompt, parallel on different files or a small overlap, a
@@ -1024,7 +969,7 @@ def run(wsx, wsxd, work, owned):
                  'never give the owner commands to run', '/manager/notes/decisions.md', 'starts with that file and',
                  '--from-manager --reply', 'use it and do not answer it',
                  'also in a pipe or with a heredoc', 'report each check as passed or failed from them',
-                 "trust them over the worker's words", 'grant it with `wsx task allow <n> --host <host>`',
+                 "trust them over the worker's words", 'nothing asks you for permission', 'only after the owner says yes, commit',
                  'never tell the owner to edit settings', 'read-only git in Bash',
                  '`auto_land` is true', 'Never ask the owner to verify a',
                  'never pass or fail items yourself', 'A release refuses while items are open',
@@ -1032,8 +977,8 @@ def run(wsx, wsxd, work, owned):
                  'fits lookup, context, memory or research', 'check rather than guess',
                  'use Read, Grep, WebSearch and the Explore subagent', 'the likely next step',
                  'say what you checked in one short line', 'On `hand`, the owner works in its copy',
-                 'docs tools the project settings allow', 'Write and NotebookEdit are denied to them',
-                 'Keep turns short', 'Present every reply to the owner by this rule', 'The reader sees one screen', 'update that section in place with Bash'):
+                 'docs tools the project settings allow',
+                 'Keep turns short', 'Present every reply to the owner by this rule', 'The reader sees one screen', 'update that section in place'):
         assert rule in launch['instructions'], rule
     assert 'brief' not in launch['instructions'].lower(), launch['instructions']
     # ^ No skill is named: the owner's skills are whatever their folder holds.
@@ -1058,7 +1003,7 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(manager_task, 'ready', 'failed')['state'] == 'ready'
     # ^ tasks.skills: owner lends the worker the owner's skills; tasks.workflow.build is its rule.
     skilled = [t for t in traces() if t.get('launch') and not t.get('manager')][-1]
-    assert skilled['plugin_dir'].endswith('/%d/skills-plugin' % manager_task) and 'Skill' in skilled['allowed'], skilled
+    assert skilled['plugin_dir'].endswith('/%d/skills-plugin' % manager_task), skilled
     assert 'Run the fixture rule.' in skilled['instructions'] and 'as `owner:<name>`' in skilled['instructions']
     added = js('task', 'say', 'RUN wsx task add %d "WORK s2.txt" -p demo --json' % running)
     assert '-> 0' in reply_to(added['id'])['text']
@@ -1117,7 +1062,7 @@ def run(wsx, wsxd, work, owned):
     manager_launches = [t for t in traces() if t.get('launch') and t.get('manager')]
     assert not manager_launches[-1]['resume'] and manager_launches[-1]['session'] != launch['session']
     bare = manager_launches[-1]
-    assert bare['plugin_dir'] is None and 'Skill' in bare['allowed'], bare
+    assert bare['plugin_dir'] is None, bare
     assert 'owner:' not in bare['instructions'] and 'check rather than guess' in bare['instructions']
     assert [e['id'] for e in chat(after=big['id']) if e['kind'] == 'message' and e['from'] == 'owner'] == [after_rotation['id']]
     for n in (running, manager_task, heredoc_task):
@@ -1279,65 +1224,52 @@ def run(wsx, wsxd, work, owned):
     wait_closed(ap)
     js('task', 'close', keep, '--discard')
 
-    # 23. Asks and grants (docs/tasks.md "Permissions"): a block names what the sandbox
+    # 23. wsx's boundary (docs/tasks.md "Permissions"): one Seatbelt profile per role over the
     mark('23')
-    # stopped, a grant resumes the task with it, a project grant reaches the next task.
+    # whole agent process tree, so this fake worker, which is not Claude, is inside it too.
     def launches_in(n):
         copy = os.path.realpath(show(n)['record']['working_copy'])
         return [t for t in traces() if t.get('launch') and os.path.realpath(t['cwd']) == copy]
 
-    def sandbox_of(launch):
-        return launch['settings']['sandbox']
-
-    crate = home / '.cargo/registry/cache/x.crate'
-    g = js('task', 'new', 'NEEDS_HOST example.org NEEDS_PATH %s RETRY_HOST reached.example' % crate)['id']
-    blocked = wait_state(g, 'waiting')
-    assert blocked['record']['waiting'] == {'on': 'permission', 'reason': 'needs to reach example.org, write ~/.cargo'}, blocked
-    asks = [{'kind': 'network', 'host': 'example.org'}, {'kind': 'write', 'path': '~/.cargo'}]
-    assert blocked['result']['asks'] == asks, blocked['result']
-    assert [e['asks'] for e in log(g) if e['kind'] == 'blocked'] == [asks], log(g)
-    assert next(r for r in js('task', 'ledger')['open'] if r['id'] == g)['asks'] == asks
-    bad = cli('task', 'allow', g, '--host', 'bad host', '--json', ok=False)
-    assert 'is not a host name' in bad.stdout + bad.stderr, bad
-    # ^ The block resumes once every ask is granted, so one resume carries both.
-    granted = js('task', 'allow', g, '--host', 'example.org')
-    assert granted['message'] == 'may now reach example.org; still asks to write ~/.cargo', granted
-    assert show(g)['state'] == 'waiting' and len(launches_in(g)) == 1
-    # A project-wide grant goes to grants.json (owner-only) and every next agent start.
-    granted = js('task', 'allow', g, '--path', '~/.cargo', '--project-wide')
-    assert granted['message'] == 'may now write ~/.cargo; resumed the task', granted
-    wait(lambda: len(launches_in(g)) == 2, 'relaunch with the grants')
-    relaunch = launches_in(g)[-1]
-    assert relaunch['resume'] and 'example.org' in sandbox_of(relaunch)['network']['allowedDomains'], relaunch
-    assert '~/.cargo' in sandbox_of(relaunch)['filesystem']['allowWrite'], relaunch
-    wait_state(g, 'ready', 'failed')
-    assert show(g)['record']['grants'] == [{'kind': 'network', 'host': 'example.org'}]
-    grants_file = Path(show(g)['log']).parent.parent / 'grants.json'
-    assert json.loads(grants_file.read_text()) == [{'kind': 'write', 'path': '~/.cargo'}]
-    assert oct(grants_file.stat().st_mode & 0o777) == '0o600'
-    h = js('task', 'new', 'NEEDS_PATH %s WORK h.txt' % crate)['id']
-    assert wait_state(h, 'ready', 'failed')['state'] == 'ready'
-    assert '~/.cargo' in sandbox_of(launches_in(h)[0])['filesystem']['allowWrite']
-    assert [e['kind'] for e in log(g) if e['kind'] == 'granted'] == ['granted', 'granted']
-    # The manager grants a host for one task alone; a project-wide grant asks the owner.
-    wait_state(g, 'ready', 'failed')
-    asked = js('task', 'say', 'RUN wsx task allow %d --host crates.io -p demo --json\n'
-                              'RUN wsx task allow %d --host npmjs.org --project-wide -p demo --json\n'
-                              'RUN wsx task allow %d WebSearch -p demo --json' % (g, g, g))
-    text = reply_to(asked['id'])['text']
-    assert 'may now reach crates.io from the next turn' in text, text
-    assert any(e['kind'] == 'granted' and e['by'] == 'manager' and e['access'] == {'kind': 'network', 'host': 'crates.io'}
-               for e in log(g)), log(g)
-    requests = re.findall(r'the owner was asked \((a\d+)\)', text)
-    assert len(requests) == 2, text
-    pending = {p['id']: p for p in js('task', 'ledger')['approvals']}
-    assert pending[requests[0]]['grant'] == {'access': {'kind': 'network', 'host': 'npmjs.org'}, 'project_wide': True}
-    assert pending[requests[1]]['grant'] == {'access': {'kind': 'tool', 'rule': 'WebSearch'}, 'project_wide': False}
-    assert 'revision' not in pending[requests[0]], pending
-    assert js('task', 'approve', requests[0])['ok']
-    assert {'kind': 'network', 'host': 'npmjs.org'} in json.loads(grants_file.read_text())
-    js('task', 'deny', requests[1])
-    for n in (g, h):
+    secret = home / '.ssh/id_fixture'
+    secret.parent.mkdir(mode=0o700, exist_ok=True)
+    secret.write_text('secret\n')
+    other_copy, library = base / 'project-t999', home / 'Library/Caches/wsx-probe'
+    store_file = Path(created['task_dir']).parent / 'probe.txt'
+    main_tip = git('rev-parse', 'main')
+    probed = js('task', 'new', 'PROBE %s %s %s %s WORK p.txt' % (secret, other_copy, store_file, library))['id']
+    assert wait_state(probed, 'ready', 'failed')['state'] == 'ready'
+    seen = next(t['probe'] for t in traces() if 'probe' in t)
+    assert seen == {'read_secret': False, 'write_other_copy': False, 'write_state': False, 'move_main': False,
+                    'write_hooks': False, 'write_library': True, 'write_own_copy': True, 'listen': True, 'pty': True}, seen
+    assert git('rev-parse', 'main') == main_tip and not other_copy.exists() and not store_file.exists()
+    assert not (project / '.git/hooks/pre-commit').exists()
+    # The manager's `wsx task` commands run through its broker with no denial.
+    held = js('task', 'new', 'WAIT %s NOOP' % (base / 'never'))['id']
+    wait(lambda: show(held)['state'] == 'working' and launches_in(held), 'held worker')
+    stopped = js('task', 'say', 'RUN wsx task stop %d -p demo --json' % held)
+    assert 'ran: wsx task stop %d -p demo --json -> 0' % held in reply_to(stopped['id'])['text']
+    assert wait_state(held, 'waiting')['record']['waiting']['on'] == 'owner'
+    # A land refused on the owner's uncommitted change on main that the task's change overlaps:
+    # on the owner's yes the manager commits it in the main checkout, which its boundary allows,
+    # and the land passes.
+    shared = project / 'shared.txt'
+    shared.write_text('one\ntwo\nthree\nfour\nfive\n')
+    git('add', 'shared.txt')
+    git('commit', '-q', '-m', 'shared file')
+    shared.write_text('one\ntwo\nthree\nfour\nowner edit\n')
+    dirty = js('task', 'new', 'LINE shared.txt 1')['id']
+    assert wait_state(dirty, 'ready', 'failed')['state'] == 'ready'
+    refused = land(dirty, ok=False)
+    assert 'shared.txt' in refused['message'] and 'land again' in refused['message'], refused
+    commit = js('task', 'say', 'RUN git -c user.name=o -c user.email=o@example.invalid commit -q -m '
+                               '"owner edit: shared.txt" -- shared.txt')
+    assert '-> 0' in reply_to(commit['id'])['text']
+    assert git('log', '-1', '--format=%s', 'main') == 'owner edit: shared.txt'
+    assert land(dirty)['ok']
+    wait_closed(dirty)
+    assert git('show', 'main:shared.txt').splitlines()[4] == 'owner edit'
+    for n in (probed, held):
         js('task', 'close', n, '--discard')
 
     # 25. A done result whose checks fail goes back to the worker with the failed command and
@@ -1401,7 +1333,7 @@ def run(wsx, wsxd, work, owned):
     assert not (Path(show(r)['log']).parent / 'handoff.txt').exists()
     js('task', 'close', r, '--discard')
 
-    # 27. The worker runs the checks itself through its host's broker, outside its sandbox and
+    # 27. The worker runs the checks itself through its host's broker, in its host's queue and
     mark('27')
     # as after its result; any other command is refused (docs/tasks.md "Checks, revisions and report").
     # `tasks.env` reaches the worker and every check run, so both build with the same settings.
@@ -1420,8 +1352,6 @@ def run(wsx, wsxd, work, owned):
     assert '1. `test ! -e broken.txt` 2. `test "$TASK_PROBE" = "a b"`' in worker_launch['instructions']
     assert worker_launch['task_probe'] == 'a b' and launch['task_probe'] is None, worker_launch
     assert all(c['exit'] == 0 for c in show(cr)['result']['checks']), show(cr)['result']
-    sockets = worker_launch['settings']['sandbox']['network']['allowUnixSockets']
-    assert len(sockets) == 1 and Path(sockets[0]).is_socket() and len(sockets[0]) < 104, sockets
     assert 'WSX_TASK_BROKER' in worker_launch['wsx_env'], worker_launch['wsx_env']
     js('task', 'close', cr, '--discard')
     # Below tasks.minFreeGb a task waits, says why, and goes on by itself without a retry.
@@ -1700,63 +1630,6 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)
     git('commit', '-q', '-am', 'no trial')
 
-    # The manager's write grant (docs/tasks.md "Permissions"): only the owner widens the
-    # manager's Bash writes. Between turns its agent restarts into the same conversation with
-    # the path; the grant ends at --until, or without it with the conversation.
-    granted, elsewhere, expired = (base / name for name in ('granted', 'elsewhere', 'expired'))
-    for folder in (granted, elsewhere, expired):
-        folder.mkdir(mode=0o700)
-
-    def manager_launches():
-        return [t for t in traces() if t.get('launch') and t.get('manager')]
-
-    def writes(launch):
-        return launch['settings']['sandbox']['filesystem']['allowWrite']
-
-    refused = subprocess.run([str(wsx), 'task', 'allow', 'manager', '--path', str(granted)], cwd=project,
-                             env=manager_env, capture_output=True, text=True)
-    assert refused.returncode != 0 and 'only the owner widens' in refused.stderr, refused.stderr
-    brokered = js('task', 'say', 'RUN wsx task allow manager --path %s --json' % granted)
-    assert 'only the owner widens' in reply_to(brokered['id'])['text']
-    assert 'main checkout' in cli('task', 'allow', 'manager', '--path', project / 'src', ok=False).stderr
-    assert "manager's own state" in cli('task', 'allow', 'manager', '--path', state, ok=False).stderr
-    assert 'HH:MM' in cli('task', 'allow', 'manager', '--path', granted, '--until', '25:00', ok=False).stderr
-    assert '--path <dir> alone' in cli('task', 'allow', 'manager', '--host', 'crates.io', ok=False).stderr
-    assert '--until is for' in cli('task', 'allow', '1', '--path', granted, '--until', '1h', ok=False).stderr
-    assert not any(e['kind'] == 'granted' for e in manager_entries())
-    # ^ A grant restarts the agent between turns; one that expired before the start is not
-    # applied. This start also takes the rotation the earlier config changes bring.
-    assert js('task', 'allow', 'manager', '--path', expired, '--until', '2s')['ok']
-    time.sleep(2.5)
-    reply_to(js('task', 'say', 'STATUS')['id'])
-    before = manager_launches()[-1]
-    assert str(expired) not in writes(before), writes(before)
-    assert js('task', 'allow', 'manager', '--path', granted)['ok']
-    probes = [granted / 'a.txt', elsewhere / 'b.txt', expired / 'c.txt', project / 'd.txt']
-    asked = js('task', 'say', '\n'.join('WRITE %s' % path for path in probes))
-    said = reply_to(asked['id'])['text']
-    after = manager_launches()[-1]
-    restart = [(launch['resume'], launch['session'], launch['pid']) for launch in (before, after)]
-    assert after['resume'] and after['session'] == before['session'] and after['pid'] != before['pid'], (restart, said)
-    assert str(granted) in writes(after) and str(expired) not in writes(after), writes(after)
-    assert writes(after)[:2] == writes(before), (writes(before), writes(after))
-    granted_turn = turn_with('WRITE %s' % probes[0])
-    assert 'The owner lets your Bash also write, for a limited time: %s.' % granted in granted_turn['message'], (granted_turn, restart)
-    assert [path.exists() for path in probes] == [True, False, False, False], said
-    assert said.count('Operation not permitted') == 3, said
-    grants = [e for e in manager_entries() if e['kind'] == 'granted']
-    assert [(e['access'], e['by'], 'until_ms' in e) for e in grants] == [
-        ({'kind': 'write', 'path': str(expired)}, 'owner', True),
-        ({'kind': 'write', 'path': str(granted)}, 'owner', False)], grants
-    manager_state = json.loads((manager_log.parent / 'state.json').read_text())
-    assert manager_state['grants'] == [{'path': str(granted)}], manager_state['grants']
-    # ^ A new conversation ends the grant without --until.
-    reply_to(js('task', 'say', 'BIG')['id'])
-    again = js('task', 'say', 'WRITE %s' % (granted / 'e.txt'))
-    assert 'Operation not permitted' in reply_to(again['id'])['text']
-    fresh = manager_launches()[-1]
-    assert not fresh['resume'] and str(granted) not in writes(fresh), fresh
-    assert 'grants' not in json.loads((manager_log.parent / 'state.json').read_text())
     # 32b. A wsx older than its config (docs/tasks.md "Config"): unknown keys at any level are
     mark('32b')
     # ignored with one warning that names them, so the ledger, a new task and its land work.
@@ -1973,6 +1846,59 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(planned, 'ready', 'failed')['state'] == 'ready'
     assert [e['kind'] for e in log(planned) if e['kind'] in ('checks', 'revision')] == ['checks', 'revision']
     js('task', 'close', planned, '--discard')
+    # 32h. The real Claude in wsx's boundary (docs/tasks.md "Permissions"): with no prompt it
+    # writes under ~/Library, listens on 127.0.0.1 and opens a PTY; it cannot read ~/.ssh, write
+    # another task's copy or move main's ref. Skipped, and said so, when no claude is on PATH.
+    mark('32h')
+    real = shutil.which('claude')
+    if real is None:
+        print('32h skipped: no real claude on PATH', file=sys.stderr)
+    else:
+        # ^ `tasks.env` reaches the worker's launch: the wrapper runs the real claude, signed in
+        # through the real home, for this task alone.
+        (bin_dir / 'claude').write_text('#!/bin/sh\nif [ -n "$REAL_CLAUDE" ]; then HOME=%s exec %s "$@"; fi\n%s'
+                                        % (json.dumps(str(Path.home())), json.dumps(os.path.realpath(real)),
+                                           fake.read_text().split('\n', 1)[1]))
+        (project / 'wsx.config.yml').write_text(LAND_CONFIG + '  env: { REAL_CLAUDE: "1" }\n')
+        git('commit', '-q', '-am', 'real claude')
+        probe, answer = work / 'probe.py', work / 'probe.json'
+        probe.write_text('''import json, os, socket, subprocess, sys
+def tried(action):
+    try:
+        action()
+        return True
+    except OSError:
+        return False
+def write(path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, "w").write("probe")
+def listen():
+    server = socket.socket(); server.bind(("127.0.0.1", 0)); server.listen(1)
+    socket.create_connection(server.getsockname()); server.accept()
+secret, other, library, out = sys.argv[1:]
+json.dump({"read_secret": tried(lambda: open(secret).read()),
+           "write_other_copy": tried(lambda: write(os.path.join(other, "probe.txt"))),
+           "move_main": subprocess.run(["git", "update-ref", "refs/heads/main", "HEAD"]).returncode == 0,
+           "write_library": tried(lambda: write(os.path.join(library, "probe.txt"))),
+           "listen": tried(listen), "pty": tried(os.openpty)}, open(out, "w"))
+''')
+        tip = git('rev-parse', 'main')
+        command = 'python3 %s %s %s %s %s' % (probe, secret, other_copy, library / 'real', answer)
+        auto = js('task', 'new', '--model', 'sonnet', '--title', 'Boundary probe',
+                  'This is a wsx test of the worker boundary. Run this one Bash command exactly as written: '
+                  '`%s`. It records what the boundary allows in a file outside the working copy. Then change '
+                  'no file, commit nothing and return status done with the command and its exit code as '
+                  'evidence.' % command)['id']
+        ended = wait(lambda: (current := show(auto))['state'] in ('ready', 'failed', 'waiting') and current,
+                     'real claude turn', 600)
+        assert ended['state'] == 'ready', ended
+        assert json.loads(answer.read_text()) == {'read_secret': False, 'write_other_copy': False, 'move_main': False,
+                                                  'write_library': True, 'listen': True, 'pty': True}, answer.read_text()
+        assert git('rev-parse', 'main') == tip and not any(e['kind'] == 'blocked' for e in log(auto))
+        js('task', 'close', auto, '--discard')
+        fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(fake_script) + ' "$@"\n')
+        (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+        git('commit', '-q', '-am', 'fake claude')
 
     # 32h. A dirty main checkout (docs/tasks.md "Landing"): a changed file the land does not
     # touch stays dirty and the land goes on; one the land changes too refuses it, naming only
