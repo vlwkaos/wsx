@@ -621,7 +621,10 @@ await until(`!!${workerBubble(3)}`, "the landing of #3 has no done bubble", 300)
 if (await evaluate("[...document.querySelectorAll('.status-line')].some((node) => /#3 landed/.test(node.textContent))")) await fail("a muted line repeats the landing of #3");
 await until(`(${rowOf("#1")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#1 is not ready to land after Allow", 300);
 moved = await clearRow("#1", "Land");
-if (!(await evaluate(atEnd)) || await count(".jump")) await fail("acting in the reservoir moved the chat");
+// ^ A bubble that arrives with the landing sticks the chat to its end one frame later: on a
+// loaded machine that frame comes late, so the check waits for it. A chat the action moved
+// stays moved and shows the jump button.
+await until(`(${atEnd}) && !document.querySelector('.jump')`, "acting in the reservoir moved the chat", 30);
 if (await count(".need-card, .tray")) await fail("an action brought back a card or the tray");
 await shot("reservoir-acted", ".composer-send");
 await closeReservoir();
