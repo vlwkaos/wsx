@@ -183,12 +183,11 @@ impl Reader {
                 return reply;
             }
         };
-        let submitted = Node::submitted;
         let nodes = &loaded.nodes;
         reply.path = Some(loaded.path.clone());
         let Some(start) = nodes
             .iter()
-            .rposition(|node| submitted(node) && node.text.contains(marker))
+            .rposition(|node| node.submitted() && node.text.contains(marker))
         else {
             reply.status = "delivery_not_in_history";
             return reply;
@@ -196,7 +195,7 @@ impl Reader {
         // The round ends where the next input was submitted.
         let end = nodes[start + 1..]
             .iter()
-            .position(submitted)
+            .position(Node::submitted)
             .map_or(nodes.len(), |offset| start + 1 + offset);
         match nodes[start + 1..end]
             .iter()
@@ -574,7 +573,7 @@ fn timeline_of(loaded: Loaded, count: usize, budget: usize) -> Timeline {
                 results.insert(call, *error);
             }
         }
-        if node.role == "user" && !node.text.is_empty() && !node.meta {
+        if node.submitted() {
             last_turn = position;
         }
     }
