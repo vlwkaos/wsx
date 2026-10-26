@@ -42,7 +42,8 @@ trace.with_suffix('.pid').write_text(str(os.getpid()))
 conversation = os.environ.get('WSX_FIXTURE_CONVERSATION', 'fixture')
 cooked = termios.tcgetattr(0)
 tty.setraw(0)
-draft, pending, leaf, sequence, dialog, taken, working = '', b'', None, 0, None, None, False
+# A test that writes an older transcript first names its newest record, so the agent goes on from it.
+draft, pending, leaf, sequence, dialog, taken, working = '', b'', os.environ.get('WSX_FIXTURE_LEAF'), 0, None, None, False
 def report(state, attached=True, compacting=False):
  # ^ As Claude's hook does, the first Working report of a turn says which prompt it took.
  global taken, working
@@ -1593,6 +1594,61 @@ capabilities = ["terminal_view"]
             assert call('session_close', {'session_id': sessions[name], 'expected_revision': session['revision']})['type'] == 'ack'
         ok('compaction: the summary is one item where it happened (Claude: first, Pi: in place), Claude\'s preamble, closing instructions and transcript path removed; '
            'Claude 2.1.300 /compact: working then done, the kept answer after the summary, the command as typed, the next message delivered (exchange %s)' % facts_compact['state'])
+
+        # --- Older transcripts in the shapes real sessions saved (Claude Code 2.1.302 to 2.1.310, 2026-10).
+        def old_record(kind, uuid, parent, content=None, **extra):
+            line = {'type': kind, 'uuid': uuid, 'parentUuid': parent, 'sessionId': 'fixture', 'timestamp': '2026-10-20T10:00:00.000Z'}
+            if content is not None:
+                line['message'] = {'role': kind, 'content': content}
+            line.update(extra)
+            return json.dumps(line) + '\n'
+        # A `deferred_tools_record` attachment whose parent Claude never saved: the conversation
+        # before it must still show. A long turn of more than 1 MiB of tool results after the
+        # person's message: that message must still show.
+        steps = ''.join(old_record('assistant', 'call-%d' % index, 'old-answer' if index == 0 else 'result-%d' % (index - 1),
+                                   [{'type': 'tool_use', 'id': 'tool-%d' % index, 'name': 'Bash', 'input': {'description': 'Step %d' % index}}])
+                        + old_record('user', 'result-%d' % index, 'call-%d' % index,
+                                     [{'type': 'tool_result', 'tool_use_id': 'tool-%d' % index, 'content': 'x' * 150_000}])
+                        for index in range(10))
+        fixtures = {
+            'old-dangling': (old_record('user', 'old-question', None, 'the old question')
+                             + old_record('assistant', 'old-answer', 'old-question', [{'type': 'text', 'text': 'the old answer'}])
+                             + old_record('attachment', 'deferred', 'never-saved', attachment={'type': 'deferred_tools_record'})
+                             + old_record('assistant', 'newest', 'deferred', [{'type': 'text', 'text': 'the newest answer'}]),
+                             'newest', [('user', 'the old question'), ('assistant', 'the old answer'), ('assistant', 'the newest answer')]),
+            'old-long-turn': (old_record('user', 'old-question', None, 'the long task')
+                              + old_record('assistant', 'old-answer', 'old-question', [{'type': 'text', 'text': 'starting'}])
+                              + steps + old_record('assistant', 'newest', 'result-9', [{'type': 'text', 'text': 'the task is done'}]),
+                              'newest', [('user', 'the long task'), ('assistant', 'starting')]),
+        }
+        for name, (content, leaf, head) in fixtures.items():
+            (work / (name + '.jsonl')).write_text(content)
+            created = call('session_create', {'worktree_id': worktrees['project3'], 'label': name,
+                'command': ['/usr/bin/env', 'WSX_FIXTURE_LEAF=' + leaf, sys.executable, str(actor), str(work / (name + '.jsonl')),
+                            str(work / (name + '.trace')), str(third_root), str(chart), str(outside)], 'rows': 12, 'cols': 100})
+            assert created['type'] == 'created', created
+            sessions[name] = created['data']['id']
+            pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == sessions[name])
+            wait(lambda: (next(p for p in call('snapshot')['data']['panes'] if p['id'] == pane)['agent'] or {}).get('session_ref'), name + ' agent')
+            status, opened = steady(root, 'GET', '/api/chat/%d/timeline' % sessions[name])
+            assert status == 200 and opened['status'] == 'available', opened
+            shown = [(item['kind'], item.get('text')) for item in opened['items'] if item['kind'] in ('user', 'assistant')]
+            assert shown[:len(head)] == head, (name, shown)
+            # A message to the old conversation is delivered, answered and shown after it.
+            settle(name)
+            before = len(traces(name))
+            status, sent = steady(root, 'POST', '/api/chat/%d/send' % sessions[name], {'text': 'continue it'})
+            assert status == 200, sent
+            wait(lambda: len(traces(name)) > before, name + ' delivery')
+            settle(name)
+            items = wait(lambda: (lambda items: items if items[-1].get('text') == 'echo: continue it' else None)(
+                steady(root, 'GET', '/api/chat/%d/timeline' % sessions[name])[1]['items']), name + ' answer')
+            shown = [(item['kind'], item.get('text')) for item in items if item['kind'] in ('user', 'assistant')]
+            assert shown[:len(head)] == head and shown[-2:] == [('user', 'continue it'), ('assistant', 'echo: continue it')], (name, shown)
+            session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == sessions[name])
+            assert call('session_close', {'session_id': sessions[name], 'expected_revision': session['revision']})['type'] == 'ack'
+        ok('older transcripts: a record whose parent Claude never saved keeps the conversation before it; '
+           'a person message more than 1 MiB before the end still shows; a message to either is answered after it')
 
         # --- Media: upload, attach to a prompt, agent-produced files, sniffing.
         photo = png(20, 5)
