@@ -39,13 +39,16 @@ export function viewImageLinks() {
   });
 }
 
+// An image's size when the opener knows it (a diagram); others are measured when they load.
+const known = (image) => image.width ? { width: image.width, height: image.height } : null;
+
 function Viewer({ images, start, dark, onClosed }) {
   const dialog = useRef();
   const stage = useRef();
   const picture = useRef();
   const [at, setAt] = useState(start);
   const image = images[at];
-  const [natural, setNatural] = useState(image.width ? { width: image.width, height: image.height } : null);
+  const [natural, setNatural] = useState(known(image));
   const [room, setRoom] = useState(null);
   const [zoom, setZoom] = useState(1);
   const pointers = useRef(new Map());
@@ -85,7 +88,7 @@ function Viewer({ images, start, dark, onClosed }) {
     setAt(next);
     setZoom(1);
     setBroken(false);
-    setNatural(images[next].width ? { width: images[next].width, height: images[next].height } : null);
+    setNatural(known(images[next]));
   };
   // At zoom 1 the whole image fits the screen.
   const fit = natural && room ? Math.min(room.width / natural.width, room.height / natural.height) : null;
