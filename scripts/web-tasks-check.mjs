@@ -181,6 +181,28 @@ const rows = () => evaluate(`[...document.querySelectorAll('.reservoir-list .nee
   [...row.querySelectorAll('.need-action')].map((node) => node.title).join('+')])`);
 const rowOf = (label) => `[...document.querySelectorAll('.reservoir-list .need')].find((row) => ((row.querySelector('.task-number')?.textContent.trim() ?? '') + ' ' + row.querySelector('.row-label').textContent).trim().startsWith(${JSON.stringify(label)}))`;
 // The closed line as read: "6 need you · #6 <title> +1 more".
+// The open of a sheet in frames: its top and left on each animation frame, from before the tap
+// to 700 ms after the sheet is first seen open.
+const watchSheet = () => evaluate(`(() => { window.sheetFrames = []; window.sheetWatched = false; let seen = null;
+  const step = (now) => { const sheet = document.querySelector('dialog.task-sheet[open]');
+    if (sheet) { const box = sheet.getBoundingClientRect(); window.sheetFrames.push([box.top, box.left]); seen ??= now; }
+    if (seen === null || now - seen < 700) requestAnimationFrame(step); else window.sheetWatched = true; };
+  requestAnimationFrame(step); })()`);
+// One motion: on each axis the sheet moves one way only, never back, and its last frame is where
+// it rests. On a phone it rises from below; on a wide screen it comes in from the right.
+async function oneMotion(where) {
+  await until("window.sheetWatched", `${where}: the sheet did not open`);
+  const { frames, end } = await evaluate("({ frames: window.sheetFrames, end: (({ top, left }) => [top, left])(document.querySelector('dialog.task-sheet').getBoundingClientRect()) })");
+  const moving = phone() ? 0 : 1;
+  for (const axis of [0, 1]) {
+    const values = frames.map((frame) => frame[axis]);
+    const way = Math.sign(end[axis] - values[0]);
+    const back = values.findIndex((value, index) => index > 0 && (value - values[index - 1]) * way < -0.5 || way === 0 && Math.abs(value - end[axis]) > 0.5);
+    if (back !== -1 || Math.abs(values.at(-1) - end[axis]) > 0.5 || (axis === moving) !== (Math.abs(values[0] - end[axis]) > 50)) {
+      await fail(`${where}: the sheet does not open in one motion on ${axis ? "left" : "top"}: ${JSON.stringify(values.map(Math.round))}, rests at ${Math.round(end[axis])}`);
+    }
+  }
+}
 const reservoirWords = () => evaluate("document.querySelector('.reservoir-head')?.textContent.trim().replace(/\\s+/g, ' ') ?? ''");
 async function openReservoir() {
   if (!(await evaluate("!!document.querySelector('.reservoir[data-open]')"))) await click(".reservoir-head");
@@ -1204,8 +1226,23 @@ await go(chat);
 await until("!!document.querySelector('.reservoir-head')", "the chat did not come back for To check");
 await openReservoir();
 await until(`!!${rowOf("3 to check")}`, "the reservoir has no To check row", 60);
+await watchSheet();
 await evaluate(`${rowOf("3 to check")}.querySelector('.row-open').click()`);
 await until(`location.hash === '#/p/${project}/checks' && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open");
+// ^ The list and #8's capture are in the sheet before it moves, so it rises once and stays.
+await oneMotion("To check on a phone");
+await key("Escape", 27);
+await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the To check list");
+await resize([1280, 800, 1]);
+await watchSheet();
+await go(`#/p/${project}/checks`);
+await oneMotion("To check on a wide screen");
+await key("Escape", 27);
+await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Escape did not close the wide To check list");
+await resize([390, 844, 2]);
+await watchSheet();
+await go(`#/p/${project}/checks`);
+await oneMotion("To check opened again on a phone");
 const listed = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [node.querySelector('.task-chip').textContent.trim(), node.querySelector('.check-what').textContent, node.querySelector('.check-end .check-pass').textContent])");
 if (JSON.stringify(listed) !== JSON.stringify([["#7", "open the file", "Passes if it has text"], ["#8", "open the file", "Passes if it has text"], ["#2", "open the file", "Passes if it has text"]])) await fail(`the To check list reads ${JSON.stringify(listed)}`);
 if (await sheetState() !== "3 open") await fail(`the list's top row reads ${await sheetState()}`);

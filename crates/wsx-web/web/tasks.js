@@ -682,13 +682,23 @@ function More({ project }) {
 // A task or the project page over the chat, about 85% of the height (a `fit` sheet only as
 // high as its content): Back, Escape, a tap
 // beside it or a swipe down on its top closes it, and the chat under it keeps its scroll and
-// its draft.
+// its draft. A fit sheet's top follows its height, so it opens once its content calls `ready`
+// (or after a second): rows that came after the slide would lift it again.
 function Sheet({ label, fit = false, onClose, children }) {
   const dialog = useRef();
   const drag = useRef(null);
+  const [ready, setReady] = useState(!fit);
+  useEffect(() => {
+    if (ready) return;
+    const timer = setTimeout(() => setReady(true), 1000);
+    return () => clearTimeout(timer);
+  }, [ready]);
   useEffect(() => {
     const node = dialog.current;
-    if (!node.open) node.showModal();
+    if (ready && !node.open) node.showModal();
+  }, [ready]);
+  useEffect(() => {
+    const node = dialog.current;
     return () => { if (node.open) node.close(); };
   }, []);
   const cancel = (event) => { event.preventDefault(); onClose(); };
@@ -714,7 +724,7 @@ function Sheet({ label, fit = false, onClose, children }) {
       <div class="task-sheet-top" onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up}>
         <span class="sheet-grip" aria-hidden="true"></span>
       </div>
-      ${children({ down, move, up })}
+      ${children({ down, move, up, ready: () => setReady(true) })}
     </dialog>`;
 }
 
