@@ -113,16 +113,12 @@ GLYPHS = {'C': ['###', '#..', '#..', '#..', '###'], 'A': ['###', '#.#', '###', '
           ' ': ['...'] * 5}
 
 
-def capture_png(label, width=480, height=300):
+def capture_png(label):
     """A visible, non-square capture: a light border, a grid, a blue corner block and `label`
     in large letters, so a viewer's fit, centering and edges show in a screenshot."""
-    scale, x0, y0 = 10, 60, 120
-    on = set()
-    for index, char in enumerate(label):
-        for row, line in enumerate(GLYPHS.get(char, GLYPHS[' '])):
-            for col, cell in enumerate(line):
-                if cell == '#':
-                    on.add((index * 4 + col, row))
+    width, height, scale, x0, y0 = 480, 300, 10, 60, 120
+    on = {(index * 4 + col, row) for index, char in enumerate(label)
+          for row, line in enumerate(GLYPHS.get(char, GLYPHS[' '])) for col, cell in enumerate(line) if cell == '#'}
     rows = []
     for y in range(height):
         row = bytearray(b'\x00')
