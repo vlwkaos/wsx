@@ -36,6 +36,9 @@
 
 ### Changed
 
+- A manager without `tasks.manager.name` reads as its project's name, not "Manager": the web chat's author and typing bubble, another project's chat ("plans", "To plans"), the TUI row (`task-manager (wsx)`) and `wsx task manager --json`. A set name still wins ([docs/tasks.md](docs/tasks.md) "Config").
+- Each kind of speaker in the web manager chat has its own color on its name and the edge of its box: the owner the accent, this manager the text color, wsx's lines muted, and another project's manager one of four new theme tokens `color-peer-1` to `color-peer-4`, chosen by its project so it keeps its color. The name stays, so the color is never the only cue ([docs/web-themes.md](docs/web-themes.md) "Tokens").
+
 - The web To check items read in a clear order: the task chip and what the task did as the title, then *Check*, *Look at* and *Passes if* as lines with muted labels. *Try*, *Fail* and *Pass* sit in one place on every item, a row under the words on a phone and a column at the right on a wide screen, instead of moving with the length of the pass line. *Fail*'s note is sent with *Send*; the Cancel button is gone, and × again or Escape closes the note ([docs/web-client-tasks.md](docs/web-client-tasks.md) "To check").
 - The manager chat reads as a chat. A manager reply to wsx's task events is a muted line, not a bubble, and `-` shows nothing; a worker's report stays in the task sheet. The manager answers in a few short lines and hands the owner no chores (commands, deletes, settings to edit, tasks to verify). Its instructions are about half as long. The quiet-period recap is off by default (`tasks.manager.recapMinutes`) and at most 8 lines when on ([docs/tasks.md](docs/tasks.md) "Manager", "Recap").
 - The idle task that consolidates project knowledge runs as one turn, without the owner's workflow steps.
