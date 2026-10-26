@@ -2057,8 +2057,8 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(twice, 'ready', 'failed')['state'] == 'failed'
     assert len(asked(twice)) == 1
     assert show(twice)['result']['result']['summary'] == 'the agent ended with success and no result'
-    for n in (once, twice):
-        js('task', 'close', n, '--discard')
+    js('task', 'close', once, '--discard')
+    js('task', 'close', twice, '--discard')
 
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     mark('33')
