@@ -13,6 +13,8 @@ const GROUP_MS = 5 * 60_000;
 const LINE_MS = 60_000;
 
 const EVENT_WORDS = { landed: "done" };
+const TASK = /^#(\d+) /;
+const CLOSED = /^#\d+ was closed\b/;
 
 // One line written by wsx in its short form: `#3 ready r2: title; summary` → `#3 ready`,
 // `approval a3 (land #5) approved; done` → `Approved land #5`, a dropped one with its reason:
@@ -27,8 +29,8 @@ function shortLine(line) {
 }
 
 // The conversation in time order: bubbles, status lines and quiet replies. A wsx line that a
-// resolution says too ("#3 landed", "Approved land #3") shows once, and so does a line said again
-// within a minute. A pending approval goes into the manager's reply that ended the turn which
+// resolution says too ("Approved land #3", or "#3 closed" and "#3 was closed") shows once, as the
+// wsx line, and so does a line said again within a minute. A pending approval goes into the manager's reply that ended the turn which
 // asked for it (docs/web-client-tasks.md "Project screen").
 export function conversation(entries, resolutions, approvals = []) {
   const rows = [];
@@ -59,7 +61,11 @@ export function conversation(entries, resolutions, approvals = []) {
   const said = rows.filter((row) => row.kind === "line");
   resolutions.forEach((resolution, index) => {
     const near = (row) => Math.abs(row.at - resolution.unix_ms) < 10 * LINE_MS;
-    if (said.some((row) => near(row) && row.text === resolution.text)) return;
+    // ^ A close is a task change the events say too ("#7 closed", "#7 done"): the event line
+    // about that task stays. An answer or a failed check has no event line of its own.
+    const closed = CLOSED.test(resolution.text);
+    const same = (row) => row.text === resolution.text || (closed && TASK.exec(row.text)?.[1] === String(resolution.task));
+    if (said.some((row) => near(row) && same(row))) return;
     rows.push({ kind: "line", at: resolution.unix_ms, key: `res-${index}-${resolution.unix_ms}`, text: resolution.text });
   });
   rows.sort((left, right) => left.at - right.at);

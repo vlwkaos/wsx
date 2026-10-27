@@ -636,6 +636,11 @@ await click(".jump");
 await until(`!document.querySelector('.jump') && ${atEnd}`, "Jump to latest did not go to the end of the manager chat");
 // A landed task is the muted line "#7 done".
 await until(`${statusSays(7, "done")} && ${statusSays(8, "done")}`, "the landed tasks have no muted line");
+// ^ One line per task change: #5's close is the events line "#5 closed", never also its
+// resolution "#5 was closed and discarded".
+await until(statusSays(5, "closed"), "#5's close left no muted line");
+const closeLines = await evaluate("[...document.querySelectorAll('.status-line')].map((node) => node.textContent.trim()).filter((words) => /^#5 (closed|was closed)/.test(words))");
+if (closeLines.length !== 1) await fail(`#5's close shows as ${JSON.stringify(closeLines)}`);
 // ^ The manager's reply to a turn of only events (the fake says "noted events") is a muted line
 // under the manager's name, never a bubble and never joined to an event.
 await until("[...document.querySelectorAll('.reply-line .reply-text')].some((node) => node.textContent.includes('noted events'))", "a reply to events is not a muted line", 60);
