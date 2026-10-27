@@ -294,6 +294,39 @@ impl State {
         Ok(())
     }
 
+    /// Drops what a pane's process observed or was granted while it ran: its runtime
+    /// generation, wake and presence leases, Claude reconciliation, foreground job and
+    /// listeners. A pane whose process exited keeps its runtime entry, leases and operation
+    /// lock, so `record_terminal_exit` calls only this. A dead pane must stop reporting a live
+    /// foreground job or listener; the periodic scan skips exited runtimes and never clears them.
+    fn forget_pane_observations(&mut self, pane_id: PaneId) {
+        self.runtime_generations.remove(&pane_id);
+        clear_agent_wake(self, pane_id);
+        self.agent_presence_leases.remove(&pane_id);
+        self.claude_reconciliations.remove(&pane_id);
+        self.foreground_jobs.remove(&pane_id);
+        self.listening_ports.remove(&pane_id);
+    }
+
+    /// Ends the terminal lease and the transferred-stream records of a pane, so a stream that
+    /// belonged to the old runtime has no authority over its successor.
+    fn forget_pane_leases(&mut self, pane_id: PaneId) {
+        self.leases.remove(&pane_id);
+        self.transferred_streams
+            .retain(|stream| stream.pane_id != pane_id);
+    }
+
+    /// Removes every trace of a closed pane and returns its runtime for the caller to
+    /// terminate after it drops the state lock. `agent_presence_leases` was missing from
+    /// the close paths. The entry could not matter: `expire_agent_presence` skips a pane
+    /// that is gone and drops its entry within the TTL.
+    fn forget_pane(&mut self, pane_id: PaneId) -> Option<Arc<TerminalRuntime>> {
+        self.forget_pane_observations(pane_id);
+        self.forget_pane_leases(pane_id);
+        self.terminal_operation_locks.remove(&pane_id);
+        self.runtimes.remove(&pane_id)
+    }
+
     /// Adds to the bounded event ring that `poll` serves.
     fn push_event(&mut self, event: Event) {
         self.events.push_back(event);
@@ -4206,22 +4239,11 @@ fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<R
     persisted.panes.retain(|pane| pane.session_id != id);
     persisted.sessions.retain(|session| session.id != id);
     commit_persisted(daemon, &mut state, persisted)?;
-    let mut runtimes = Vec::new();
-    for pane_id in &session.panes {
-        if let Some(runtime) = state.runtimes.remove(pane_id) {
-            runtimes.push(runtime);
-        }
-        state.runtime_generations.remove(pane_id);
-        clear_agent_wake(&mut state, *pane_id);
-        state.claude_reconciliations.remove(pane_id);
-        state.leases.remove(pane_id);
-        state
-            .transferred_streams
-            .retain(|stream| stream.pane_id != *pane_id);
-        state.terminal_operation_locks.remove(pane_id);
-        state.listening_ports.remove(pane_id);
-        state.foreground_jobs.remove(pane_id);
-    }
+    let runtimes = session
+        .panes
+        .iter()
+        .filter_map(|pane_id| state.forget_pane(*pane_id))
+        .collect::<Vec<_>>();
     publish(daemon, &mut state, revision, "session.closed", id.0);
     drop(state);
     for runtime in runtimes {
@@ -4336,10 +4358,7 @@ fn restart_session(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Re
         return Err(error);
     }
     // ^ The dead pane's stream has no authority over the replacement runtime.
-    state.leases.remove(&id);
-    state
-        .transferred_streams
-        .retain(|stream| stream.pane_id != id);
+    state.forget_pane_leases(id);
     state.runtimes.insert(id, Arc::clone(&runtime));
     publish(daemon, &mut state, revision, "session.restarted", id.0);
     if !live {
@@ -4385,17 +4404,7 @@ fn close_pane(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Respons
     );
     persisted.panes.retain(|candidate| candidate.id != id);
     commit_persisted(daemon, &mut state, persisted)?;
-    let runtime = state.runtimes.remove(&id);
-    state.runtime_generations.remove(&id);
-    clear_agent_wake(&mut state, id);
-    state.claude_reconciliations.remove(&id);
-    state.leases.remove(&id);
-    state
-        .transferred_streams
-        .retain(|stream| stream.pane_id != id);
-    state.terminal_operation_locks.remove(&id);
-    state.listening_ports.remove(&id);
-    state.foreground_jobs.remove(&id);
+    let runtime = state.forget_pane(id);
     publish(daemon, &mut state, revision, "pane.closed", id.0);
     drop(state);
     if let Some(runtime) = runtime {
@@ -6715,14 +6724,7 @@ fn next_runtime_generation(daemon: &Daemon) -> String {
 }
 
 fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
-    state.runtime_generations.remove(&pane_id);
-    clear_agent_wake(state, pane_id);
-    state.agent_presence_leases.remove(&pane_id);
-    state.claude_reconciliations.remove(&pane_id);
-    // ^ A dead pane must stop reporting a live foreground job or listener; the periodic
-    // scan can never re-attribute them because it skips exited runtimes.
-    state.foreground_jobs.remove(&pane_id);
-    state.listening_ports.remove(&pane_id);
+    state.forget_pane_observations(pane_id);
     let Some(pane) = state
         .persisted
         .panes
