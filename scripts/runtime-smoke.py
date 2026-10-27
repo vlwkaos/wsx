@@ -294,17 +294,34 @@ burst_terminals = {}
 for pane_id, _ in burst_panes + burst_idle_panes:
     pane = next(item for item in call("snapshot")["data"]["panes"] if item["id"] == pane_id)
     burst_terminals[pane_id] = pane["terminal_id"]
-# ^ A TUI holds one terminal stream per visible pane, reads it and types through it.
-# A stream that ends is a reconnect.
+# ^ A TUI holds one terminal stream per visible pane, reads it, types through it and renews
+# its lease with a heartbeat each second. A stream that ends is a reconnect.
 burst_streams = {}
 burst_stream_ends = []
+burst_send_lock = threading.Lock()
+burst_done = threading.Event()
+
+
+def send_burst_stream(pane_id, message):
+    with burst_send_lock:
+        burst_streams[pane_id].sendall(json.dumps(message).encode() + b"\n")
+
+
+def heartbeat_burst_streams():
+    while not burst_done.wait(1):
+        for pane_id in burst_streams:
+            try:
+                send_burst_stream(pane_id, {"type": "heartbeat"})
+            except OSError:
+                pass
 
 
 def drain_burst_stream(pane_id, stream):
+    last = b""
     try:
-        while stream.recv(65536):
-            pass
-        burst_stream_ends.append((pane_id, "closed"))
+        while chunk := stream.recv(65536):
+            last = (last + chunk)[-300:]
+        burst_stream_ends.append((pane_id, last.decode(errors="replace")))
     except OSError as error:
         burst_stream_ends.append((pane_id, repr(error)))
 
@@ -318,6 +335,7 @@ for client_id, (pane_id, _) in enumerate(burst_panes, start=600):
     stream.settimeout(None)
     threading.Thread(target=drain_burst_stream, args=(pane_id, stream), daemon=True).start()
     burst_streams[pane_id] = stream
+threading.Thread(target=heartbeat_burst_streams, daemon=True).start()
 BURST_ROUNDS = 3
 for round_index in range(BURST_ROUNDS):
     markers = []
@@ -327,13 +345,17 @@ for round_index in range(BURST_ROUNDS):
         markers.append(marker)
         # ^ A per-directory profile (direnv) moves HOME and XDG_STATE_HOME inside the pane.
         profile = f"export HOME={path}/.home XDG_STATE_HOME={path}/.state; " if index % 3 == 0 else ""
-        burst_streams[pane_id].sendall(json.dumps({"type": "input", "data": list((
+        assert not burst_stream_ends, (
+            f"terminal streams ended before burst {round_index}: {burst_stream_ends}, "
+            f"wsxd exit {burst_process.poll()}"
+        )
+        send_burst_stream(pane_id, {"type": "input", "data": list((
             f"cd {path} && {profile}"
             "i=0; while [ $i -lt 8 ]; do for s in working blocked idle done; do "
             f"\"$WSX_AGENT_REPORT_BIN\" agent report \"$WSX_PANE_ID\" --provider {provider} "
             f"--state $s --lifecycle >/dev/null 2>>{marker}.err & done; i=$((i+1)); done; "
             f"wait; touch {marker}\r"
-        ).encode())}).encode() + b"\n")
+        ).encode())})
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline and not all(marker.exists() for marker in markers):
         assert burst_process.poll() is None, f"wsxd exited during report burst {round_index}"
@@ -346,6 +368,7 @@ assert (burst_after["epoch"], burst_after["started_unix_ms"]) == (
     burst_identity["epoch"], burst_identity["started_unix_ms"]
 ), "wsxd restarted or handed off under concurrent agent reports"
 assert not burst_stream_ends, f"terminal streams ended under concurrent agent reports: {burst_stream_ends}"
+burst_done.set()
 for stream in burst_streams.values():
     stream.shutdown(socket.SHUT_RDWR)
     stream.close()
