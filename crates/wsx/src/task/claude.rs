@@ -11,6 +11,7 @@ use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::TaskWorkflow;
+use wsx_core::task::view::clip;
 use wsx_core::task::{worker_result_schema, TaskRecord, TurnUsage};
 
 /// Longest stdout line the host reads; a longer one (a huge tool result) is skipped.
@@ -617,7 +618,7 @@ fn denial_text(denial: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("tool");
     match denial.get("tool_input").and_then(key_argument) {
-        Some(argument) => format!("{tool}({})", clip(&argument)),
+        Some(argument) => format!("{tool}({})", clip(&argument, PROGRESS_CHARS)),
         None => tool.to_string(),
     }
 }
@@ -633,26 +634,15 @@ fn progress_text(item: &Value) -> Option<String> {
         "tool_use" => {
             let name = item.get("name")?.as_str()?;
             Some(match item.get("input").and_then(key_argument) {
-                Some(argument) => format!("{name} {}", clip(&argument)),
+                Some(argument) => format!("{name} {}", clip(&argument, PROGRESS_CHARS)),
                 None => name.to_string(),
             })
         }
         "text" => {
             let text = item.get("text")?.as_str()?.trim();
-            (!text.is_empty()).then(|| clip(text.lines().next().unwrap_or(text)))
+            (!text.is_empty()).then(|| clip(text, PROGRESS_CHARS))
         }
         _ => None,
-    }
-}
-
-fn clip(text: &str) -> String {
-    let line = text.lines().next().unwrap_or_default();
-    if line.chars().count() <= PROGRESS_CHARS {
-        line.to_string()
-    } else {
-        let mut clipped: String = line.chars().take(PROGRESS_CHARS).collect();
-        clipped.push('…');
-        clipped
     }
 }
 

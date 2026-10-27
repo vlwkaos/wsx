@@ -2,7 +2,7 @@
 //! ^ wsxd allows one active exchange per pane. The web server keeps what cannot be
 //! delivered yet, per session and in order, and the event observer delivers it.
 //! The file is owner-only site state and survives a restart of the server.
-use crate::devices::{now_unix_ms, write_private};
+use crate::devices::write_private;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -11,6 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
+use wsx_core::task::now_unix_ms;
 
 pub const MAX_QUEUED: usize = 5;
 /// Delivered messages kept per session until the conversation shows them; older ones go.

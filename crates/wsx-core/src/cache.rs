@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::unix::{fs::MetadataExt, fs::OpenOptionsExt, io::AsRawFd};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::{
     config::global::{
@@ -230,7 +230,7 @@ impl WorkspaceCache {
 
     fn save_to(&self, path: &std::path::Path, sync: bool) -> anyhow::Result<()> {
         let mut cache = self.clone();
-        cache.written_at_unix_ms = Some(now_unix_ms());
+        cache.written_at_unix_ms = Some(crate::task::now_unix_ms());
         let text = toml::to_string(&cache)?;
         atomic_write_private(path, text.as_bytes(), sync)?;
         Ok(())
@@ -247,15 +247,6 @@ fn read_cache_files(canonical: &Path, legacy: &Path) -> io::Result<Option<(Strin
         }
     }
     Ok(None)
-}
-
-fn now_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 fn cached_project_touch_unix_ms(
@@ -371,7 +362,7 @@ fn apply_workspace_cache(
     let mut project_touched_unix_ms = HashMap::new();
     let mut stale_collapsed_projects = HashSet::new();
     let mut adaptive_collapse = HashMap::new();
-    let loaded_at_unix_ms = now_unix_ms();
+    let loaded_at_unix_ms = crate::task::now_unix_ms();
     let legacy_seeded_touch = legacy_seeded_touch_cohort(&cache);
     let mut seeded_touches = false;
     for project in &mut workspace.projects {
@@ -644,7 +635,8 @@ impl WorkspaceCacheChanges {
                             });
                     state.observe(proposed.base_hours, activity);
                     if change.stale == Some(true) {
-                        if now_unix_ms().saturating_sub(activity.max(state.last_activity_unix_ms))
+                        if crate::task::now_unix_ms()
+                            .saturating_sub(activity.max(state.last_activity_unix_ms))
                             <= state.window_ms()
                         {
                             continue;
@@ -858,6 +850,7 @@ pub fn resolve_cursor_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn adaptive_collapse_credits_one_active_day_without_rapid_inflation() {
@@ -1293,7 +1286,7 @@ pane_id = "pane-1"
     #[test]
     fn cursor_identity_round_trips_through_stable_terminal_id() {
         use crate::{
-            model::workspace::{flatten_tree, Project, SessionInfo, WorktreeInfo},
+            model::workspace::{flatten_tree_filtered, Project, SessionInfo, WorktreeInfo},
             runtime::{AgentState, PaneId, SessionId, TerminalId},
         };
         let workspace = WorkspaceState {
@@ -1338,7 +1331,7 @@ pane_id = "pane-1"
                 missing: false,
             }],
         };
-        let flat = flatten_tree(&workspace);
+        let flat = flatten_tree_filtered(&workspace, &[0].into());
         let identity = resolve_cursor_identity(&workspace, &flat, 2).unwrap();
         assert_eq!(
             identity,
