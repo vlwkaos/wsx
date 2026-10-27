@@ -40,6 +40,14 @@ impl TerminalSurfaces {
             .retain(|pane_id, frame| self.identities.get(pane_id) == Some(&frame.terminal_id));
     }
 
+    /// Drop a pane whose program exited, as the next snapshot will: a restart keeps its
+    /// terminal identity but starts again at a lower frame revision, so the old frame would
+    /// hide the new ones.
+    pub(crate) fn forget(&mut self, pane_id: PaneId) {
+        self.identities.remove(&pane_id);
+        self.frames.remove(&pane_id);
+    }
+
     pub(crate) fn activate_stream(&mut self, epoch: u64, pane_id: PaneId, terminal_id: TerminalId) {
         if self.epoch != Some(epoch) {
             self.frames.clear();
