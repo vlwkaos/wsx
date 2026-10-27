@@ -157,12 +157,14 @@ export const pasteFiles = (onFiles) => can("media_upload") ? (event) => {
     : new File([file], `pasted-${time}${index ? `-${index}` : ""}.${(file.type.split("/")[1] ?? "").split("+")[0] || "bin"}`, { type: file.type })));
 } : null;
 
-// The files a message will carry, each with Remove, and the ones still uploading.
+// The files a message will carry, an image as its thumbnail and another file as its name, each
+// with its remove (×), and the ones still uploading.
 export const FileChips = ({ files, onRemove }) => files.attachments.length || files.uploads.length ? html`
   <ul class="chips" aria-label="Files to send">
     ${files.attachments.map((item) => html`
-      <li key=${item.hash}><span>${item.name} (${bytes(item.size)})</span>
-        <button class="link-action" type="button" aria-label=${`Remove ${item.name}`} onClick=${() => onRemove(item)}>Remove</button>
+      <li key=${item.hash}>
+        ${item.image ? html`<img src=${resolve(item.url)} alt=${item.name} />` : html`<span>${item.name} (${bytes(item.size)})</span>`}
+        <button class="icon-button" type="button" title="Remove" aria-label=${`Remove ${item.name}`} onClick=${() => onRemove(item)}><${Icon} name="fail" /></button>
       </li>`)}
     ${files.uploads.map((item) => html`<li data-uploading><span>${item.name}</span><span class="note" role="status">Uploading…</span></li>`)}
   </ul>` : null;
