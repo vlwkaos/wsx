@@ -19,8 +19,8 @@ use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
     self, call_host_waiting, call_socket, checks, copy, ledger,
     manager::{
-        decided_request, pending_approvals, ApprovalLine, ManagerEvent, ManagerRequest,
-        ManagerResponse,
+        chat_window, decided_request, pending_approvals, ApprovalLine, ManagerEvent,
+        ManagerRequest, ManagerResponse,
     },
     owner,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
@@ -37,7 +37,6 @@ const RESOLUTION_WITHIN_MS: u64 = 7 * 24 * 3600 * 1000;
 const LAST_REPLY_CHARS: usize = 120;
 /// The home row's last reply and activity come from this much of the manager log's end.
 const MANAGER_TAIL_BYTES: u64 = 64 * 1024;
-const CHAT_ENTRIES: usize = 200;
 const TIMELINE_ENTRIES: usize = 300;
 const MAX_REPORT_BYTES: u64 = 1024 * 1024;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
@@ -93,12 +92,14 @@ fn stage(record: &TaskRecord, land_auto: bool) -> &'static str {
 /// Why a ready task waits for the owner: its landing stopped, it has no checks, or the
 /// project lands by hand.
 fn land_reason(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> String {
-    let log = dir.read_log().unwrap_or_default();
-    let stopped = log.iter().rev().find_map(|entry| match &entry.event {
-        LogEvent::LandStopped { reason } => Some(Some(reason.clone())),
-        LogEvent::Revision { .. } => Some(None),
-        _ => None,
-    });
+    let stopped = dir
+        .last_event(|event| match event {
+            LogEvent::LandStopped { reason } => Some(Some(reason.clone())),
+            LogEvent::Revision { .. } => Some(None),
+            _ => None,
+        })
+        .ok()
+        .flatten();
     if let Some(Some(reason)) = stopped {
         return format!("could not land: {}", view::clip(&reason, SUMMARY_CHARS));
     }
@@ -583,9 +584,6 @@ pub fn chat(
         );
     };
     let log = dir.read_log().map_err(internal)?;
-    let start = after
-        .and_then(|after| log.iter().position(|entry| entry.id() == Some(after)))
-        .map_or(0, |index| index + 1);
     // ^ What the manager does now: its last step after its last reply.
     let activity = log
         .iter()
@@ -595,17 +593,7 @@ pub fn chat(
             ManagerEvent::Agent { text } => Some(text.clone()),
             _ => None,
         });
-    let mut entries: Vec<_> = log[start..]
-        .iter()
-        .filter(|entry| {
-            !matches!(
-                entry.event,
-                ManagerEvent::Delivered { .. } | ManagerEvent::Agent { .. }
-            )
-        })
-        .collect();
-    let skipped = entries.len().saturating_sub(CHAT_ENTRIES);
-    entries.drain(..skipped);
+    let (entries, skipped) = chat_window(&log, after);
     let entries: Vec<Value> = entries
         .into_iter()
         .map(|entry| {

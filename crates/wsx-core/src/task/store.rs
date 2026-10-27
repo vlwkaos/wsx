@@ -5,7 +5,7 @@ use super::{now_unix_ms, LogEntry, LogEvent, TaskRecord};
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -16,6 +16,8 @@ const MAX_LOG_LINE_BYTES: usize = 160 * 1024;
 const MAX_LOG_BYTES: u64 = 8 * 1024 * 1024;
 /// Hard stop, so a stream of steers cannot fill the disk either.
 const MAX_LOG_HARD_BYTES: u64 = 16 * 1024 * 1024;
+/// `TaskDir::last_event` looks at this much of the log's end before it reads all of it.
+const LOG_TAIL_SCAN_BYTES: u64 = 512 * 1024;
 const MAX_PROJECT_ID_BYTES: usize = 64;
 pub const RECORD_FILE: &str = "task.json";
 pub const LOG_FILE: &str = "log.jsonl";
@@ -187,8 +189,33 @@ pub(super) fn open_locked(path: &Path, options: &mut OpenOptions) -> Result<File
     flock(file.as_raw_fd(), libc::LOCK_EX, path)?;
     Ok(file)
 }
+
+/// `open_nofollow` for reading; `None` when `path` does not exist (a dangling link counts as
+/// missing). Any other failure is an error.
+pub(super) fn open_if_exists(path: &Path) -> Result<Option<File>> {
+    match open_nofollow(path, OpenOptions::new().read(true)) {
+        Ok(file) => Ok(Some(file)),
+        Err(_) if !path.exists() => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 pub(super) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
-    let file = open_nofollow(path, OpenOptions::new().read(true))?;
+    read_open_bounded(
+        open_nofollow(path, OpenOptions::new().read(true))?,
+        path,
+        limit,
+    )
+}
+
+/// `read_bounded`, or `None` when `path` does not exist.
+pub(super) fn read_bounded_if_exists(path: &Path, limit: u64) -> Result<Option<Vec<u8>>> {
+    open_if_exists(path)?
+        .map(|file| read_open_bounded(file, path, limit))
+        .transpose()
+}
+
+fn read_open_bounded(file: File, path: &Path, limit: u64) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     file.take(limit + 1)
         .read_to_end(&mut bytes)
@@ -197,6 +224,28 @@ pub(super) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
         bail!("{} is larger than {limit} bytes", path.display());
     }
     Ok(bytes)
+}
+
+/// The last `limit` bytes of `file`, and how many bytes came before them. When that count
+/// is not 0 the first line of the bytes may be cut (see `after_cut_line`).
+pub fn read_tail_bytes(file: &mut File, limit: u64) -> std::io::Result<(Vec<u8>, u64)> {
+    let start = file.metadata()?.len().saturating_sub(limit);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    Read::take(&mut *file, limit).read_to_end(&mut bytes)?;
+    Ok((bytes, start))
+}
+
+/// The bytes of `read_tail_bytes` without the first line when the read started inside the
+/// file, since that line may be cut.
+fn after_cut_line(bytes: &[u8], skipped: u64) -> &[u8] {
+    if skipped == 0 {
+        return bytes;
+    }
+    match bytes.iter().position(|byte| *byte == b'\n') {
+        Some(end) => &bytes[end + 1..],
+        None => &[],
+    }
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -322,10 +371,8 @@ impl TaskDir {
 
     pub fn read_log(&self) -> Result<Vec<LogEntry>> {
         let path = self.file(LOG_FILE);
-        let file = match open_nofollow(&path, OpenOptions::new().read(true)) {
-            Ok(file) => file,
-            Err(_) if !path.exists() => return Ok(Vec::new()),
-            Err(error) => return Err(error),
+        let Some(file) = open_if_exists(&path)? else {
+            return Ok(Vec::new());
         };
         let mut entries = Vec::new();
         for (index, line) in BufReader::new(file.take(MAX_LOG_HARD_BYTES + 1))
@@ -346,6 +393,32 @@ impl TaskDir {
             }
         }
         Ok(entries)
+    }
+
+    /// What `pick` makes of the newest event it accepts, scanning the log from its end: the
+    /// last `LOG_TAIL_SCAN_BYTES` first, the whole log only when they hold no hit. Gives
+    /// the answer of `read_log().iter().rev().find_map(..)` without a full parse per call.
+    pub fn last_event<T>(&self, pick: impl Fn(&LogEvent) -> Option<T>) -> Result<Option<T>> {
+        let path = self.file(LOG_FILE);
+        let Some(mut file) = open_if_exists(&path)? else {
+            return Ok(None);
+        };
+        let (bytes, skipped) = read_tail_bytes(&mut file, LOG_TAIL_SCAN_BYTES)
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        // ^ A line that does not parse is skipped, as `read_log` does.
+        let hit = after_cut_line(&bytes, skipped)
+            .split(|byte| *byte == b'\n')
+            .rev()
+            .filter_map(|line| serde_json::from_slice::<LogEntry>(line).ok())
+            .find_map(|entry| pick(&entry.event));
+        if hit.is_some() || skipped == 0 {
+            return Ok(hit);
+        }
+        Ok(self
+            .read_log()?
+            .iter()
+            .rev()
+            .find_map(|entry| pick(&entry.event)))
     }
 
     /// The original prompt, read from the start of the log only.
@@ -369,11 +442,7 @@ impl TaskDir {
     }
 
     pub fn read_file(&self, name: &str, limit: u64) -> Result<Option<Vec<u8>>> {
-        let path = self.file(name);
-        if !path.exists() {
-            return Ok(None);
-        }
-        read_bounded(&path, limit).map(Some)
+        read_bounded_if_exists(&self.file(name), limit)
     }
 
     pub fn socket_path(&self) -> PathBuf {
@@ -393,8 +462,12 @@ impl TaskDir {
 }
 
 const DEPLOYS_FILE: &str = "deploys.jsonl";
+const DEPLOYS_OLD_FILE: &str = "deploys.1.jsonl";
 /// Deploy records are read from the end of the file only.
 const MAX_DEPLOYS_READ_BYTES: u64 = 1024 * 1024;
+/// The deploy file rolls over to `deploys.1.jsonl` past this size; one old file is kept,
+/// and `read_deploys` reads across both.
+const MAX_DEPLOYS_BYTES: u64 = 4 * 1024 * 1024;
 
 const DEPLOY_LOCK_FILE: &str = "deploy.lock";
 const FOLLOW_UP_LOG_FILE: &str = "follow-up.log";
@@ -455,7 +528,12 @@ pub fn adopt_deploy_lock(project_id: &str, fd: i32) -> Result<File> {
 
 /// Append one deploy or release record to `tasks/<project-id>/deploys.jsonl`.
 pub fn append_deploy(project_id: &str, record: &super::DeployRecord) -> Result<()> {
-    let path = ensure_project_dir(project_id)?.join(DEPLOYS_FILE);
+    let dir = ensure_project_dir(project_id)?;
+    let path = dir.join(DEPLOYS_FILE);
+    if fs::symlink_metadata(&path).is_ok_and(|meta| meta.len() > MAX_DEPLOYS_BYTES) {
+        fs::rename(&path, dir.join(DEPLOYS_OLD_FILE))
+            .with_context(|| format!("cannot roll over {}", path.display()))?;
+    }
     let mut line = serde_json::to_vec(record)?;
     line.push(b'\n');
     open_nofollow(&path, OpenOptions::new().append(true).create(true))?
@@ -463,28 +541,29 @@ pub fn append_deploy(project_id: &str, record: &super::DeployRecord) -> Result<(
         .with_context(|| format!("cannot append to {}", path.display()))
 }
 
-/// The project's deploy and release records, oldest first, from the last MiB of the file.
+/// The project's deploy and release records, oldest first, from the last MiB of the
+/// records: the end of the current file, and when that is shorter, the end of the old one.
 pub fn read_deploys(project_id: &str) -> Result<Vec<super::DeployRecord>> {
-    let path = project_dir(project_id)?.join(DEPLOYS_FILE);
-    let mut file = match open_nofollow(&path, OpenOptions::new().read(true)) {
-        Ok(file) => file,
-        Err(_) if !path.exists() => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    let size = file.metadata()?.len();
-    let start = size.saturating_sub(MAX_DEPLOYS_READ_BYTES);
-    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(start))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    let mut lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
-    if start > 0 && !lines.is_empty() {
-        // ^ The first line may start mid-record.
-        lines.remove(0);
+    let dir = project_dir(project_id)?;
+    let mut records = Vec::new();
+    let mut room = MAX_DEPLOYS_READ_BYTES;
+    for name in [DEPLOYS_FILE, DEPLOYS_OLD_FILE] {
+        let Some(mut file) = open_if_exists(&dir.join(name))? else {
+            continue;
+        };
+        let (bytes, skipped) = read_tail_bytes(&mut file, room)?;
+        let found: Vec<super::DeployRecord> = after_cut_line(&bytes, skipped)
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| serde_json::from_slice(line).ok())
+            .collect();
+        records.splice(0..0, found);
+        // ^ The old file only fills what the current one left of the MiB.
+        room = room.saturating_sub(bytes.len() as u64);
+        if skipped > 0 || room == 0 {
+            break;
+        }
     }
-    Ok(lines
-        .into_iter()
-        .filter_map(|line| serde_json::from_slice(line).ok())
-        .collect())
+    Ok(records)
 }
 
 const TRIAL_FILE: &str = "trial.json";
@@ -494,10 +573,9 @@ const MAX_TRIAL_BYTES: u64 = 4096;
 /// The project's trial, when one holds the live site. ref: docs/tasks.md "Hold and trial"
 pub fn read_trial(project_id: &str) -> Result<Option<super::Trial>> {
     let path = project_dir(project_id)?.join(TRIAL_FILE);
-    if !path.exists() {
+    let Some(bytes) = read_bounded_if_exists(&path, MAX_TRIAL_BYTES)? else {
         return Ok(None);
-    }
-    let bytes = read_bounded(&path, MAX_TRIAL_BYTES)?;
+    };
     Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
         format!("cannot parse {}", path.display())
     })?))
@@ -631,11 +709,13 @@ impl ManagerDir {
     pub fn read_log(&self) -> Result<Vec<super::manager::ManagerEntry>> {
         let mut entries = Vec::new();
         for name in [MANAGER_OLD_LOG, MANAGER_LOG] {
-            let path = self.path.join(name);
-            if !path.exists() {
+            let Some(bytes) = read_bounded_if_exists(
+                &self.path.join(name),
+                MAX_MANAGER_LOG_BYTES + MAX_LOG_LINE_BYTES as u64,
+            )?
+            else {
                 continue;
-            }
-            let bytes = read_bounded(&path, MAX_MANAGER_LOG_BYTES + MAX_LOG_LINE_BYTES as u64)?;
+            };
             entries.extend(
                 bytes
                     .split(|byte| *byte == b'\n')
@@ -648,32 +728,24 @@ impl ManagerDir {
     /// The entries in the last `bytes` of the current log, for a quick look at the latest
     /// ones; a line cut at the start is skipped.
     pub fn read_tail(&self, bytes: u64) -> Result<Vec<super::manager::ManagerEntry>> {
-        use std::io::{Seek, SeekFrom};
         let path = self.path.join(MANAGER_LOG);
-        let mut file = match open_nofollow(&path, OpenOptions::new().read(true)) {
-            Ok(file) => file,
-            Err(_) if !path.exists() => return Ok(Vec::new()),
-            Err(error) => return Err(error),
+        let Some(mut file) = open_if_exists(&path)? else {
+            return Ok(Vec::new());
         };
-        let size = file.metadata()?.len();
-        let start = size.saturating_sub(bytes);
-        file.seek(SeekFrom::Start(start))?;
-        let mut tail = Vec::new();
-        file.take(bytes).read_to_end(&mut tail)?;
-        let lines = tail.split(|byte| *byte == b'\n');
-        Ok(lines
-            .skip(usize::from(start > 0))
+        let (tail, skipped) = read_tail_bytes(&mut file, bytes)
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        Ok(after_cut_line(&tail, skipped)
+            .split(|byte| *byte == b'\n')
             .filter_map(super::manager::ManagerEntry::read)
             .collect())
     }
 
     pub fn read_state(&self) -> Result<super::manager::ManagerState> {
         let path = self.path.join(MANAGER_STATE);
-        if !path.exists() {
+        let Some(bytes) = read_bounded_if_exists(&path, MAX_MANAGER_STATE_BYTES)? else {
             return Ok(Default::default());
-        }
-        serde_json::from_slice(&read_bounded(&path, MAX_MANAGER_STATE_BYTES)?)
-            .with_context(|| format!("cannot parse {}", path.display()))
+        };
+        serde_json::from_slice(&bytes).with_context(|| format!("cannot parse {}", path.display()))
     }
 
     pub fn write_state(&self, state: &super::manager::ManagerState) -> Result<()> {
@@ -753,10 +825,9 @@ pub fn ensure_page(project_id: &str, project: &str) -> Result<PathBuf> {
 /// The page's text and when it last changed, or none when it is missing.
 pub fn read_page(project_id: &str) -> Result<Option<(String, u64)>> {
     let path = page_path(project_id)?;
-    if !path.exists() {
+    let Some(bytes) = read_bounded_if_exists(&path, MAX_PAGE_BYTES)? else {
         return Ok(None);
-    }
-    let bytes = read_bounded(&path, MAX_PAGE_BYTES)?;
+    };
     let modified = fs::symlink_metadata(&path)?
         .modified()?
         .duration_since(std::time::UNIX_EPOCH)
@@ -810,10 +881,11 @@ pub fn append_approval(
 
 pub fn read_approvals(project_id: &str) -> Result<Vec<super::manager::ApprovalLine>> {
     let path = project_dir(project_id)?.join(APPROVALS_FILE);
-    if !path.exists() {
+    let Some(bytes) =
+        read_bounded_if_exists(&path, MAX_APPROVALS_BYTES + MAX_LOG_LINE_BYTES as u64)?
+    else {
         return Ok(Vec::new());
-    }
-    let bytes = read_bounded(&path, MAX_APPROVALS_BYTES + MAX_LOG_LINE_BYTES as u64)?;
+    };
     Ok(bytes
         .split(|byte| *byte == b'\n')
         .filter_map(|line| serde_json::from_slice(line).ok())

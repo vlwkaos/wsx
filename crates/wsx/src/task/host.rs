@@ -1487,29 +1487,29 @@ impl Host {
     /// rotation came after it: a host that starts again (after a session limit, a re-exec)
     /// rotates a large conversation on its first turn.
     fn last_context(&self) -> u64 {
-        let log = self.dir.read_log().unwrap_or_default();
-        log.iter()
-            .rev()
-            .find_map(|entry| match &entry.event {
+        self.dir
+            .last_event(|event| match event {
                 LogEvent::Result {
                     usage: Some(usage), ..
                 } if usage.context_tokens > 0 => Some(usage.context_tokens),
                 LogEvent::Rotated { .. } => Some(0),
                 _ => None,
             })
+            .ok()
+            .flatten()
             .unwrap_or(0)
     }
 
     /// The worker conversation's last `session_cost_micro_usd`.
     fn session_cost(&self) -> u64 {
-        let log = self.dir.read_log().unwrap_or_default();
-        log.iter()
-            .rev()
-            .find_map(|entry| match &entry.event {
-                LogEvent::Result { usage, .. } => usage.as_ref(),
+        self.dir
+            .last_event(|event| match event {
+                LogEvent::Result { usage, .. } => usage.as_ref().map(|u| u.session_cost_micro_usd),
                 _ => None,
             })
-            .map_or(0, |usage| usage.session_cost_micro_usd)
+            .ok()
+            .flatten()
+            .unwrap_or(0)
     }
 
     /// Rewrite `report.md` for the current revision as it will read in `state`.
@@ -2032,20 +2032,14 @@ fn run_check(
 /// The last `CHECK_OUTPUT_BYTES` of a check's log: a long output (a test run) ends with its
 /// failures and summary. A cut log is named first, so the reader can open the whole of it.
 fn log_tail(log: &Path) -> std::io::Result<String> {
-    use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(log)?;
-    let size = file.metadata()?.len();
-    let keep = CHECK_OUTPUT_BYTES as u64;
-    file.seek(SeekFrom::Start(size.saturating_sub(keep)))?;
-    let mut bytes = Vec::new();
-    file.take(keep).read_to_end(&mut bytes)?;
+    let (bytes, cut) = store::read_tail_bytes(&mut file, CHECK_OUTPUT_BYTES as u64)?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
-    if size <= keep {
+    if cut == 0 {
         return Ok(text);
     }
     Ok(format!(
-        "[the first {} bytes are cut; the whole output is in {}]\n{text}",
-        size - keep,
+        "[the first {cut} bytes are cut; the whole output is in {}]\n{text}",
         log.display()
     ))
 }
