@@ -667,6 +667,8 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .status-line, .reply-text { max-width: var(--size-prose); padding-inline: var(--space-1); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
 .reply-line { display: flex; flex-direction: column; align-items: flex-start; }
 .reply-text { white-space: pre-line; }
+/* More keeps its 44 px hit area without making its line taller. */
+.reply-text .link-action { margin-block: calc(-1 * var(--space-3)); }
 .page-link { color: var(--color-accent); }
 /* What needs the owner and what runs, pinned over the composer: one line, a tap opens the
    decision list. */
