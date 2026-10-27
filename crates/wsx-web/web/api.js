@@ -59,6 +59,9 @@ export function openEvents(handlers) {
     };
   };
   open();
-  // ^ A stream that is connecting calls `up` once it opens.
-  return () => (stream.readyState === 2 ? open() : stream.readyState === 1 && handlers.up?.());
+  return () => {
+    if (stream.readyState === 2) open();
+    // ^ A stream that is connecting calls `up` once it opens.
+    else if (stream.readyState === 1) handlers.up?.();
+  };
 }

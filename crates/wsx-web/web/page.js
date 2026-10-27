@@ -20,7 +20,7 @@ export function ProjectPage({ project, onClose, grip }) {
       (value) => { if (live.current) { setPage(value); setFailure(""); } },
       (error) => { if (live.current) setFailure(error.message); });
     read();
-    const changed = (event) => { if (event.detail.project === project) read(); };
+    const changed = (event) => { if (event.detail.project == null || event.detail.project === project) read(); };
     events.addEventListener("page", changed);
     return () => {
       live.current = false;

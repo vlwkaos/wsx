@@ -163,7 +163,7 @@ A page opens one `EventSource` (`api/events`) and has no polling timer. Events: 
 
 ### Event stream
 
-Events that fire while the stream is down, or while iOS keeps the page in the background, are lost. So each time the stream opens, and each time the page comes back (`visibilitychange` to visible, `online`, `pageshow` from the back-forward cache), the page reads again what the events would have changed: the task overviews, the open session chat and the open manager chat, with its typing state (`busy`). A stream that gave up opens again then. A visible page with a live stream reads nothing more; no timer polls.
+Events that fire while the stream is down, or while iOS keeps the page in the background, are lost. So each time the stream opens, and each time the page comes back (`visibilitychange` to visible, `online`, `pageshow` from the back-forward cache), the page reads again what the events would have changed: the task overviews, the open session chat, the open manager chat with its typing state (`busy`), and an open task or project page sheet. A stream that gave up opens again then. A visible page with a live stream reads nothing more; no timer polls.
 
 While an agent writes, `history` arrives about once a second. A chat page reads its timeline once per change, from its last turn ([web-client-chat.md](web-client-chat.md) "Timeline"), and runs one read at a time: changes during a read cause one more read after it. Measured by the browser check on a 200 KB conversation at 390 px with the processor slowed four times, during a 21 s turn: 26 `history` and 2 `exchange` events, 29 reads of 16 KB each (215 KB before), 43 ms in the server per read, 28 ms of main-thread work per read.
 
