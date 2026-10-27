@@ -16,6 +16,7 @@ use ratatui::{
 use crate::{
     action::Action,
     event::{poll_event, EscapeSequence, EventMode},
+    runtime_util::{api_error, api_error_text, expect_ack},
     search::SearchIndex,
     session_state::{self, AppSessionState},
     terminal_surface::{SurfaceUpdate, TerminalSurfaces},
@@ -673,26 +674,23 @@ fn send_terminal_bytes_once(
     // reconnecting Terminal stream, whose lease has a separate incarnation. A key
     // press is explicit, so it takes the pane from another controller.
     let client_id = runtime::new_client_id();
-    match client.call(&runtime::Request::TerminalAcquire {
-        pane_id,
-        client_id,
-        takeover: TerminalControlIntent::Explicit.takeover(),
-    })? {
-        runtime::Response::Ack { .. } => {}
-        runtime::Response::Error(error) => anyhow::bail!("{}: {}", error.code, error.message),
-        _ => anyhow::bail!("unexpected terminal lease response"),
-    }
-    let result = match client.call(&runtime::Request::TerminalInput {
-        pane_id,
-        client_id,
-        bytes,
-    })? {
-        runtime::Response::Ack { .. } => Ok(()),
-        runtime::Response::Error(error) => {
-            Err(anyhow::anyhow!("{}: {}", error.code, error.message))
-        }
-        _ => Err(anyhow::anyhow!("unexpected terminal input response")),
-    };
+    expect_ack(
+        client.call(&runtime::Request::TerminalAcquire {
+            pane_id,
+            client_id,
+            takeover: TerminalControlIntent::Explicit.takeover(),
+        })?,
+        "unexpected terminal lease response",
+    )?;
+    let result = expect_ack(
+        client.call(&runtime::Request::TerminalInput {
+            pane_id,
+            client_id,
+            bytes,
+        })?,
+        "unexpected terminal input response",
+    )
+    .map(|_| ());
     let _ = client.call(&runtime::Request::TerminalRelease { pane_id, client_id });
     result
 }
@@ -3564,9 +3562,7 @@ impl App {
                 generation,
             }) {
                 Ok(runtime::Response::PluginView(view)) => Ok(view),
-                Ok(runtime::Response::Error(error)) => {
-                    Err(anyhow::anyhow!("{}: {}", error.code, error.message))
-                }
+                Ok(runtime::Response::Error(error)) => Err(api_error(error)),
                 Ok(_) => Err(anyhow::anyhow!("unexpected daemon plugin view response")),
                 Err(error) => Err(error.into()),
             };
@@ -3631,9 +3627,7 @@ impl App {
                     .pop()
                     .map(|frame| (snapshot.epoch, frame))
                     .ok_or_else(|| anyhow::anyhow!("pane frame is unavailable")),
-                Ok(runtime::Response::Error(error)) => {
-                    Err(anyhow::anyhow!("{}: {}", error.code, error.message))
-                }
+                Ok(runtime::Response::Error(error)) => Err(api_error(error)),
                 Ok(_) => Err(anyhow::anyhow!("unexpected daemon view response")),
                 Err(error) => Err(error.into()),
             };
@@ -5155,7 +5149,7 @@ impl App {
         })? {
             runtime::Response::Ack { revision } => revision,
             runtime::Response::Error(error) => {
-                self.set_error(format!("{}: {}", error.code, error.message));
+                self.set_error(api_error_text(&error));
                 return Ok(());
             }
             _ => {
@@ -5467,7 +5461,7 @@ impl App {
                 self.set_status("Pane created");
             }
             runtime::Response::Error(error) => {
-                self.set_error(format!("{}: {}", error.code, error.message));
+                self.set_error(api_error_text(&error));
             }
             _ => self.set_error("Unexpected pane split response"),
         }
@@ -6371,7 +6365,7 @@ impl App {
                             self.set_status("Pane closed");
                         }
                         runtime::Response::Error(error) => {
-                            self.set_error(format!("{}: {}", error.code, error.message));
+                            self.set_error(api_error_text(&error));
                         }
                         _ => self.set_error("Unexpected pane close response"),
                     }
