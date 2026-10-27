@@ -974,6 +974,7 @@ fn new_state(persisted: Persisted) -> State {
 
 fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     install_shutdown_signals()?;
+    raise_descriptor_limit();
     let socket = default_socket_path();
     let state_path = state_path(&socket);
     secure_parent(&socket)?;
@@ -1122,7 +1123,7 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
                     }
                 });
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            Err(error) if accept_error_is_transient(&error) => {
                 thread::sleep(Duration::from_millis(20))
             }
             Err(error) => {
@@ -1556,6 +1557,40 @@ fn install_shutdown_signals() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+// ^ A GUI terminal passes launchd's soft limit of 256 descriptors on to wsxd. Each pane
+// holds about five and each connection two, so agents reporting from many panes at once
+// ran out of descriptors. Raise the soft limit to the hard one, as Go's runtime does;
+// macOS refuses a soft limit above OPEN_MAX (10240). Failure keeps the inherited limit.
+fn raise_descriptor_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    let target = limit.rlim_max.min(10240);
+    #[cfg(not(target_os = "macos"))]
+    let target = limit.rlim_max;
+    if limit.rlim_cur < target {
+        limit.rlim_cur = target;
+        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) };
+    }
+}
+
+// ^ An accept error that belongs to one connection or to a short resource shortage ends
+// that connection only. Before 0.40.0 it stopped wsxd and ended every PTY at once.
+fn accept_error_is_transient(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted
+    ) || matches!(
+        error.raw_os_error(),
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM | libc::EPROTO)
+    )
 }
 
 // ^ A missing resident-adapter renewal revokes only its verified attachment.
