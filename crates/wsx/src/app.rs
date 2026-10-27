@@ -1022,7 +1022,8 @@ pub struct App {
     cached_flat: Vec<FlatEntry>,
     flat_dirty: bool,
     /// Logical hits projected onto visible ancestors; rebuilt with the flat cache.
-    search_index: SearchIndex,
+    /// Built when Search mode needs it; `ensure_flat` drops it on every rebuild.
+    search_index: Option<SearchIndex>,
     git_local_tx: mpsc::Sender<(PathBuf, Option<GitInfo>)>,
     git_local_rx: mpsc::Receiver<(PathBuf, Option<GitInfo>)>,
     git_local_pending: HashSet<PathBuf>,
@@ -1185,7 +1186,7 @@ impl App {
             }
         });
         let worktree_index = build_worktree_index(&workspace);
-        let search_index = SearchIndex::new(&workspace, &cached_flat);
+        let search_index = None;
         let terminal_controller_id = runtime::new_client_id();
         let terminal_escape_chord = EscapeSequence::parse(&config.terminal_escape_chord)
             .ok_or_else(|| {
@@ -1576,11 +1577,21 @@ impl App {
     fn ensure_flat(&mut self) {
         if self.flat_dirty {
             self.cached_flat = flatten_tree_filtered(&self.workspace, &self.visible_projects);
-            self.search_index = SearchIndex::new(&self.workspace, &self.cached_flat);
-            if let Mode::Search { query, .. } = &self.mode {
-                self.search_index.update(query);
-            }
+            self.search_index = None;
             self.flat_dirty = false;
+            self.ensure_search_index();
+        }
+    }
+
+    /// Builds the search index while Search mode is active and none is current.
+    fn ensure_search_index(&mut self) {
+        let Mode::Search { query, .. } = &self.mode else {
+            return;
+        };
+        if self.search_index.is_none() {
+            let mut index = SearchIndex::new(&self.workspace, &self.cached_flat);
+            index.update(query);
+            self.search_index = Some(index);
         }
     }
 
@@ -4506,6 +4517,9 @@ impl App {
                     query: String::new(),
                     match_idx: 0,
                 };
+                // ^ An index left from an earlier search holds that search's counts.
+                self.search_index = None;
+                self.ensure_search_index();
             }
             Action::GroupNext => self.action_group_next(),
             Action::GroupPrev => self.action_group_prev(),
@@ -4923,15 +4937,25 @@ impl App {
     }
 
     fn search_matches(&self, query: &str) -> Vec<usize> {
-        self.search_index.matches(query)
+        match &self.search_index {
+            Some(index) => index.matches(query),
+            // ^ Outside Search mode nothing keeps an index; build a throwaway one.
+            None => SearchIndex::new(&self.workspace, &self.cached_flat).matches(query),
+        }
     }
 
     pub(crate) fn search_counts(&self) -> Option<&[usize]> {
-        matches!(self.mode, Mode::Search { .. }).then_some(self.search_index.counts.as_slice())
+        matches!(self.mode, Mode::Search { .. })
+            .then(|| {
+                self.search_index
+                    .as_ref()
+                    .map(|index| index.counts.as_slice())
+            })
+            .flatten()
     }
 
     pub(crate) fn search_total(&self) -> usize {
-        self.search_index.total
+        self.search_index.as_ref().map_or(0, |index| index.total)
     }
 
     fn search_apply(&mut self) {
@@ -4939,7 +4963,10 @@ impl App {
             Mode::Search { query, .. } => query.clone(),
             _ => return,
         };
-        self.search_index.update(&query);
+        self.ensure_search_index();
+        if let Some(index) = self.search_index.as_mut() {
+            index.update(&query);
+        }
         let matches = self.search_matches(&query);
         if matches.is_empty() {
             return;
@@ -7327,7 +7354,7 @@ mod tests {
             .position(|candidate| candidate == &active_group)
             .unwrap_or(0);
         let cached_flat = flatten_tree_filtered(&workspace, &visible_projects);
-        let search_index = SearchIndex::new(&workspace, &cached_flat);
+        let search_index = None;
         let worktree_index = build_worktree_index(&workspace);
         let (bg_tx, bg_rx) = std::sync::mpsc::channel();
         let terminal_input_tx = spawn_terminal_input_worker(test_runtime_client(), bg_tx.clone());
