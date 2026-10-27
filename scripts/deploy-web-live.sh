@@ -29,8 +29,10 @@ trap 'code=$?; [ $code -eq 0 ] || echo "deploy failed at step: $step (exit $code
 # ^ The smoke test holds the host-wide check slot that task checks take (crates/wsx/src/task/slot.rs,
 # an flock on tasks/check-slot/slot.lock), so it never runs beside another task's checks.
 in_slot() {
-  python3 -c 'import fcntl, os, subprocess, sys
-state = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+  python3 -c 'import fcntl, os, subprocess, sys, tempfile
+# ^ runtime::state_dir (docs/daemon-discovery.md): an empty or relative value is ignored.
+state, home = os.environ.get("XDG_STATE_HOME", ""), os.environ.get("HOME", "")
+state = state if os.path.isabs(state) else os.path.join(home, ".local/state") if os.path.isabs(home) else tempfile.gettempdir()
 folder = os.path.join(state, "wsx", "tasks", "check-slot")
 os.makedirs(folder, mode=0o700, exist_ok=True)
 slot = open(os.path.join(folder, "slot.lock"), "a")

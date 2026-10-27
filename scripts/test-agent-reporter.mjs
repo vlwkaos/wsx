@@ -64,6 +64,16 @@ try {
   fs.chmodSync(binary, 0o755);
   fs.chmodSync(work, 0o755);
   assert.equal((await invoke(missing, { PATH: installed })).code, "ENOENT");
+  // docs/daemon-discovery.md: an empty WSX_SOCKET and a relative XDG_STATE_HOME are ignored,
+  // as runtime::state_dir ignores them, so recovery finds the HOME state folder's entry.
+  const homeState = path.join(work, "home/.local/state/wsx");
+  fs.mkdirSync(homeState, { recursive: true });
+  fs.chmodSync(homeState, 0o700);
+  fs.symlinkSync(binary, path.join(homeState, "wsx.reporter"));
+  const beforeHome = fs.readFileSync(log, "utf8").trim().split("\n").length;
+  assert.equal(await invoke(missing, { WSX_SOCKET: "", XDG_STATE_HOME: "relative-state", HOME: path.join(work, "home") }), null,
+    "a relative XDG_STATE_HOME must be ignored");
+  assert.equal(fs.readFileSync(log, "utf8").trim().split("\n").length, beforeHome + 1);
   console.log("agent reporter: pre-handoff/current-CLI and dangling-entry recovery, no rejection replay, unsafe-path refusal, bounded absence PASS");
 } finally {
   if (oldSocket === undefined) delete process.env.WSX_SOCKET;
