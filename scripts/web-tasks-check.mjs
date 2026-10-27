@@ -1534,8 +1534,7 @@ await until("document.querySelectorAll('.task-talk .bubble').length === 1", "the
 if (await evaluate("document.querySelector('.task-talk .bubble').dataset.side") !== "out") await fail("the answer is not the owner's bubble");
 await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '') === 'needs you' && [...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === 'Land')", "#1 did not get ready after the answer", 120);
 await closeSheet("the waiting sheet", `#/p/${plans}`);
-// ^ Closing the sheet gives the composer the focus after the next paint: wait for it, or it
-// takes the focus back from the row button pressed below.
+// ^ Closing the sheet gives the composer the focus.
 await until("document.activeElement?.classList.contains('composer-field') && !document.activeElement.closest('dialog')", "closing the sheet did not focus the composer");
 // --- An uncommitted change in the main checkout to the file #2 writes: Land stays, a line
 // under the buttons names it and wraps on a phone; a commit ends the line. The commit is then
