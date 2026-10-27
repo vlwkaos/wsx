@@ -22,7 +22,7 @@ use axum::{
     http::{header, request::Parts, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{
-        sse::{Event, KeepAlive, Sse},
+        sse::{Event, Sse},
         IntoResponse, Response,
     },
     routing::{delete, get, post, put},
@@ -45,6 +45,8 @@ const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-
 media-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'self'; \
 form-action 'none'; frame-ancestors 'none'";
 const MAX_STREAMS_PER_DEVICE: usize = 4;
+/// A quiet event stream sends `ping` this often; it also keeps proxies from closing it.
+const PING: Duration = Duration::from_secs(10);
 
 type Shared = Arc<App>;
 
@@ -451,27 +453,79 @@ async fn session(State(app): State<Shared>, Paired(device): Paired) -> Json<Valu
 }
 
 /// One of a device's long-lived connections of one kind: event streams or terminals.
-struct StreamSlot(Shared, String);
+pub(crate) struct OpenStream {
+    serial: u64,
+    page: Option<String>,
+    /// Told when a newer event stream of the device takes this one's place.
+    ended: Arc<tokio::sync::Notify>,
+}
+
+struct StreamSlot {
+    app: Shared,
+    key: String,
+    serial: u64,
+    ended: Arc<tokio::sync::Notify>,
+}
 impl StreamSlot {
+    /// A terminal past the device's limit is refused.
     fn take(app: &Shared, key: String, what: &str) -> Outcome<Self> {
-        let mut streams = crate::locked(&app.streams);
-        let count = streams.entry(key.clone()).or_insert(0);
-        if *count >= MAX_STREAMS_PER_DEVICE {
+        let open = crate::locked(&app.streams).get(&key).map_or(0, Vec::len);
+        if open >= MAX_STREAMS_PER_DEVICE {
             return Err(Fault::new(
                 429,
                 "too_many_streams",
                 format!("too many open {what} on this device"),
             ));
         }
-        *count += 1;
-        Ok(Self(app.clone(), key))
+        Ok(Self::open(app, key, None))
+    }
+
+    /// An event stream ends the device's older stream of the same page and, past the limit,
+    /// its oldest one: a phone that changed networks or slept leaves streams that look open
+    /// to the server for minutes (docs/web-client.md "Limits").
+    fn take_newest(app: &Shared, key: String, page: Option<&str>) -> Self {
+        {
+            let mut streams = crate::locked(&app.streams);
+            let open = streams.entry(key.clone()).or_default();
+            open.retain(|stream| {
+                let same = page.is_some() && stream.page.as_deref() == page;
+                if same {
+                    stream.ended.notify_one();
+                }
+                !same
+            });
+            while open.len() >= MAX_STREAMS_PER_DEVICE {
+                open.remove(0).ended.notify_one();
+            }
+        }
+        Self::open(app, key, page)
+    }
+
+    fn open(app: &Shared, key: String, page: Option<&str>) -> Self {
+        static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let ended = Arc::new(tokio::sync::Notify::new());
+        crate::locked(&app.streams)
+            .entry(key.clone())
+            .or_default()
+            .push(OpenStream {
+                serial,
+                page: page.map(str::to_owned),
+                ended: ended.clone(),
+            });
+        Self {
+            app: app.clone(),
+            key,
+            serial,
+            ended,
+        }
     }
 }
 impl Drop for StreamSlot {
     fn drop(&mut self) {
-        let mut streams = crate::locked(&self.0.streams);
-        if let Some(count) = streams.get_mut(&self.1) {
-            *count = count.saturating_sub(1);
+        let mut streams = crate::locked(&self.app.streams);
+        if let Some(open) = streams.get_mut(&self.key) {
+            open.retain(|stream| stream.serial != self.serial);
         }
     }
 }
@@ -562,7 +616,7 @@ async fn events(
     Query(query): Query<EventsQuery>,
     headers: HeaderMap,
 ) -> Outcome<Response> {
-    let page = match query.page {
+    let page = match query.page.clone() {
         Some(id) => {
             page_id(&id)?;
             Some(PageSlot::take(&app, id, &device.id)?)
@@ -570,13 +624,13 @@ async fn events(
         None => None,
     };
     // The slot is released when the stream task ends, however it ends.
-    let slot = StreamSlot::take(&app, device.id, "pages")?;
+    let slot = StreamSlot::take_newest(&app, device.id, query.page.as_deref());
     let mut source = app.events.subscribe();
     let first = crate::locked(&app.workspace).clone();
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(64);
     tokio::spawn(async move {
         let _page = page;
-        let app = &slot.0;
+        let app = &slot.app;
         let event =
             |message: Message| Ok(Event::default().event(message.event).data(&*message.data));
         if sender
@@ -593,9 +647,11 @@ async fn events(
             let next = tokio::select! {
                 // The page went away: free its stream slot now, not at the next event.
                 _ = sender.closed() => return,
-                next = tokio::time::timeout(Duration::from_secs(20), source.recv()) => next,
+                // A newer stream of the device took this one's place.
+                _ = slot.ended.notified() => return,
+                next = tokio::time::timeout(PING, source.recv()) => next,
             };
-            // Revocation is checked on every event and at least every 20 seconds.
+            // Revocation is checked on every event and at least every ping.
             if blocking(|| authenticate(app, &headers)).is_err() {
                 let _ = sender
                     .send(Ok(Event::default().event("revoked").data("{}")))
@@ -603,7 +659,12 @@ async fn events(
                 return;
             }
             let message = match next {
-                Err(_) => continue,
+                // ^ A named event, not a comment: the page sees it, so a stream that says
+                // nothing for longer is dead (docs/web-client.md "Event stream").
+                Err(_) => Message {
+                    event: "ping",
+                    data: "{}".into(),
+                },
                 Ok(Ok(message)) => message,
                 // The page missed events: tell it to reload its state.
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => Message {
@@ -617,9 +678,7 @@ async fn events(
             }
         }
     });
-    Ok(Sse::new(ReceiverStream::new(receiver))
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(25)))
-        .into_response())
+    Ok(Sse::new(ReceiverStream::new(receiver)).into_response())
 }
 
 /// Closes a session the site reaches, as `wsx session delete` does (docs/web-client.md

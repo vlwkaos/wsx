@@ -52,7 +52,7 @@ pub(crate) struct App {
     events: tokio::sync::broadcast::Sender<events::Message>,
     /// Latest workspace event, replayed first on every new stream.
     workspace: Mutex<Option<events::Message>>,
-    streams: Mutex<HashMap<String, usize>>,
+    streams: Mutex<HashMap<String, Vec<http::OpenStream>>>,
     /// Each open page by its id: its device, its event streams and the project it shows.
     pages: Mutex<HashMap<String, Page>>,
     /// Approvals whose action runs now, as `<store>/<id>`; a second tap is refused.
