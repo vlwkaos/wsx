@@ -155,14 +155,16 @@ export function announce(name, action, answer) {
 }
 
 // An approved action that did not run is a failure the owner acts on: it stays until
-// dismissed. Decisions seen before this page loaded say nothing.
+// dismissed. Decisions seen before this page loaded say nothing, and neither does one the
+// owner gave in the chat: the manager runs that action itself and replies with its result.
 const seenDecisions = new Map();
 export function noteDecisions(overview) {
   const known = seenDecisions.get(overview.project);
   seenDecisions.set(overview.project, new Set((overview.decisions ?? []).map((decision) => decision.approval)));
   if (!known) return;
   for (const decision of overview.decisions ?? []) {
-    if (known.has(decision.approval) || !decision.approved || decision.outcome?.startsWith("done")) continue;
+    if (known.has(decision.approval) || !decision.approved || decision.owner_said != null
+      || decision.outcome?.startsWith("done")) continue;
     const what = [decision.action, decision.task != null && `#${decision.task}`].filter(Boolean).join(" ");
     toast(`${what.charAt(0).toUpperCase()}${what.slice(1)} did not run: ${decision.outcome}`, { failure: true });
   }

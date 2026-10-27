@@ -1339,6 +1339,15 @@ if (!(await evaluate("/Land #6 did not run/.test(document.querySelector('.notice
 await closeSheet("#4");
 await evaluate("document.querySelector('.notice[data-tone=danger] button').click()");
 await until("!document.querySelector('.notice')", "Dismiss did not clear the failure");
+// An action the owner approved in the chat leaves no failure notice, even while it runs:
+// the manager runs it itself and replies with its result.
+await go(chat);
+await until("!!document.querySelector('.composer-field')", "the chat did not come back for the owner's word");
+await typeInto(".composer-field", "land #6\nRUN wsx task land 6 --owner-said OWNER_SAID -p ui --json");
+await click(".composer-send");
+await until("/--owner-said \\d+ -p ui --json -> /.test(document.body.textContent)", "the manager did not run the land the owner asked for", 60);
+await pause(4000);
+if (await evaluate("!!document.querySelector('.notice[data-tone=danger]')")) await fail("an action the owner approved in the chat left a failure notice: " + (await evaluate("document.querySelector('.notice')?.textContent")));
 // An outcome alone clears itself.
 await go(page(4));
 await until("!!document.querySelector('.task-message .composer-field')", "#4 offers no message field again");

@@ -354,8 +354,8 @@ fn decisions(lines: &[ApprovalLine]) -> Value {
                 approved,
                 note,
                 outcome,
+                owner_said,
                 unix_ms,
-                ..
             } = line
             else {
                 return None;
@@ -368,7 +368,8 @@ fn decisions(lines: &[ApprovalLine]) -> Value {
             };
             Some(json!({
                 "approval": id, "approved": approved, "note": note, "outcome": outcome,
-                "unix_ms": unix_ms, "action": asked.map(|(action, _)| action),
+                "unix_ms": unix_ms, "owner_said": owner_said,
+                "action": asked.map(|(action, _)| action),
                 "task": asked.and_then(|(_, task)| task),
             }))
         })
