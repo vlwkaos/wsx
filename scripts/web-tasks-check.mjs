@@ -227,13 +227,21 @@ async function viewImages(name, links, many = 2) {
   const place = "JSON.stringify([location.pathname, location.search, location.hash, [...document.querySelectorAll('.scroll, .log')].map((node) => Math.round(node.scrollTop))])";
   // ^ The set's images are in and the log has followed them to its end before the page's place is read.
   await evaluate(`Promise.all([...document.querySelectorAll(${JSON.stringify(links)})].map((link) => link.querySelector('img').decode().catch(() => {})))`);
+  await evaluate(`document.querySelector(${JSON.stringify(links)}).scrollIntoView({ block: 'nearest' })`);
   await pause(500);
   const before = await evaluate(place);
   const sources = await evaluate(`[...document.querySelectorAll(${JSON.stringify(links)})].map((link) => link.href)`);
   if (sources.length !== many) await fail(`${what}: the set has ${sources.length} image links, not ${many}`);
   const shown = "document.querySelector('dialog.viewer[open] .viewer-stage img:not([data-loading])')";
+  const press = async ([x, y]) => {
+    for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
+  };
+  // ^ A real click, as a person opens it: Chrome closes a dialog opened without a user action
+  // together with the dialog under it on one Escape (the sheet over the To check list).
   const open = async () => {
-    await evaluate(`document.querySelector(${JSON.stringify(links)}).click()`);
+    await press((await evaluate(`(() => { const box = document.querySelector(${JSON.stringify(links)}).getBoundingClientRect(); const at = [box.left + box.width / 2, box.top + box.height / 2];
+      if (!document.querySelector(${JSON.stringify(links)}).contains(document.elementFromPoint(...at))) throw new Error('the first image is covered');
+      return at; })()`)).map(Math.round));
     await until(`!!${shown} && history.state?.viewer === true`, `${what}: the image did not open full screen`);
   };
   const closed = async (how) => {
@@ -278,7 +286,7 @@ async function viewImages(name, links, many = 2) {
   await open();
   const [x, y] = (await state()).beside.map(Math.round);
   if (phone()) await touch({ x, y }, 0);
-  else for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1 });
+  else await press([x, y]);
   await closed("a tap beside the image");
 }
 // The closed line as read: "6 need you · #6 <title> +1 more".
