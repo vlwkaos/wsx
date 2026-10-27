@@ -13,7 +13,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Condvar, Mutex, MutexGuard,
+        mpsc, Arc, Condvar, Mutex, MutexGuard,
     },
     thread,
     time::{Duration, Instant},
@@ -36,6 +36,7 @@ const MAX_ARGS: usize = 256;
 const MAX_ARG_BYTES: usize = 64 * 1024;
 const MAX_STARTUP_INPUT_BYTES: usize = 64 * 1024;
 const STARTUP_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const QUERY_REPLY_QUEUE: usize = 256;
 const BRACKETED_PASTE_MODE: u16 = 2004;
 const MOUSE_SCROLL_LINES: isize = 3;
 // ^ vendor/libghostty-vt/include/ghostty/vt/selection.h requires embedder-driven ticks.
@@ -1409,13 +1410,27 @@ fn make_emulator(
     error: Arc<Mutex<Option<String>>>,
 ) -> Result<Emulator, TerminalError> {
     let mut terminal = ghostty::Terminal::new(cols, rows, MAX_SCROLLBACK_ROWS)?;
+    // ^ The callback runs inside `terminal.write` with the emulator lock held, on the reader
+    // thread. A blocking PTY write there deadlocks with a child that stopped reading its input
+    // and blocks on its output: the reader cannot drain, the child cannot read. One thread
+    // writes the replies in order instead; the callback only queues them.
+    let (replies, queued) = mpsc::sync_channel::<Vec<u8>>(QUERY_REPLY_QUEUE);
+    thread::Builder::new()
+        .name("wsx-terminal-reply".into())
+        .spawn(move || {
+            for reply in queued {
+                if let Err(write_error) = write_pty(&writer, &reply) {
+                    set_error(
+                        &error,
+                        format!("terminal query response failed: {write_error}"),
+                    );
+                }
+            }
+        })?;
     terminal.set_write_pty_callback(move |bytes| {
-        if let Err(write_error) = write_pty(&writer, bytes) {
-            set_error(
-                &error,
-                format!("terminal query response failed: {write_error}"),
-            );
-        }
+        // A full queue means the child reads no input and cannot use a reply: drop it
+        // rather than block the reader.
+        let _ = replies.try_send(bytes.to_vec());
     })?;
     let render = ghostty::RenderState::new()?;
     let mut keys = ghostty::KeyEncoder::new()?;
@@ -2525,6 +2540,57 @@ mod tests {
         }
         runtime.terminate();
         assert!(observed);
+    }
+
+    // ^ A query reply must not block the reader: a child that reads no input and floods its
+    // output would otherwise wait for the reader while the reader waits for its input.
+    #[cfg(unix)]
+    #[test]
+    fn query_reply_to_a_child_that_reads_no_input_does_not_stall_its_output() {
+        let flag = std::env::temp_dir().join(format!("wsx-reply-stall-{}", std::process::id()));
+        let _ = std::fs::remove_file(&flag);
+        let script = format!(
+            "stty raw -echo; printf ready; while [ ! -e '{}' ]; do sleep 0.05; done; \
+             printf '\\033[c'; head -c 3000000 /dev/zero | tr '\\0' x",
+            flag.display()
+        );
+        let runtime = TerminalRuntime::spawn(
+            PaneId(1),
+            TerminalId(2),
+            &std::env::current_dir().unwrap(),
+            &["/bin/sh".into(), "-c".into(), script],
+            &[],
+            None,
+            4,
+            40,
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let wait_until = |what: &str, done: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !done() {
+                assert!(Instant::now() < deadline, "timed out: {what}");
+                thread::sleep(Duration::from_millis(20));
+            }
+        };
+        wait_until("child ready", &|| {
+            runtime
+                .frame()
+                .unwrap()
+                .cells
+                .iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+                .contains("ready")
+        });
+        // Fill the input queue so that any write to the PTY blocks.
+        assert!(runtime
+            .write_within(&vec![b'a'; 1 << 20], Instant::now() + Duration::from_millis(500))
+            .is_err());
+        std::fs::write(&flag, b"").unwrap();
+        wait_until("child output drained", &|| runtime.exited());
+        let _ = std::fs::remove_file(&flag);
+        runtime.terminate();
     }
 
     #[cfg(unix)]
