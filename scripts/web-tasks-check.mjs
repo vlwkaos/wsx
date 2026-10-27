@@ -928,7 +928,9 @@ for (const away of ["offline", "hidden"]) {
     `the typing dots stayed or the reply did not show after the page was ${away}`, 50);
 }
 await evaluate("delete document.visibilityState");
-// ^ The chat follows the reply to the end; the next part scrolls it only once that settled.
+// ^ The stream opens again (its "Connection lost" notice goes) and reads once more; the next
+// part scrolls the chat only once that settled.
+await until("!document.querySelector('.notice[data-offline]')", "the stream did not open again after the page was offline", 150);
 await pause(1500);
 
 // --- The task sheet: a chip or a reservoir row opens it over the chat, and the chat does not
