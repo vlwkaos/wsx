@@ -2760,8 +2760,10 @@ impl App {
 
         if self.slow_timer.ready() {
             // Staleness is wall-clock based and can change without a runtime event.
+            let cursor = self.cursor_identity();
             self.collapse_stale_projects();
-            self.recompute_visible();
+            self.rebuild_flat();
+            self.restore_cursor(cursor);
             self.write_cache_if_dirty();
             self.spawn_follow_check();
             self.spawn_background_runtime_refresh();
@@ -3220,14 +3222,7 @@ impl App {
             return;
         }
         self.applied_revision = Some((snapshot.epoch, snapshot.revision));
-        // ^ docs/ui-state-ownership.md: the cursor stays on the row the owner looks at. Task
-        // sessions and worktrees come and go above it, so a row number would move the view.
-        self.ensure_flat();
-        let cursor = wsx_core::cache::resolve_cursor_identity(
-            &self.workspace,
-            self.flat(),
-            self.tree_selected,
-        );
+        let cursor = self.cursor_identity();
         self.review_available = snapshot.capabilities.worktree_review_available;
         if self.plugin_sidecars != snapshot.plugin_sidecars {
             self.plugin_sidecars = snapshot.plugin_sidecars.clone();
@@ -3341,12 +3336,7 @@ impl App {
                 .is_some_and(|pane| pane.outcome_acknowledged);
         }
         self.rebuild_flat();
-        if let Some(index) = cursor.and_then(|identity| {
-            wsx_core::cache::find_cursor_index(&self.workspace, self.flat(), &identity)
-        }) {
-            self.tree_selected = index;
-        }
-        self.clamp_selected();
+        self.restore_cursor(cursor);
         self.cancel_pending_terminal_entry_if_stale();
         self.runtime_health = RuntimeHealth::Healthy {
             last_success: Instant::now(),
@@ -3735,6 +3725,24 @@ impl App {
             | Selection::Pane(pi, wi, _, _) => Some((pi, wi)),
             _ => None,
         }
+    }
+
+    // ^ docs/ui-state-ownership.md "Selected row": a refresh keeps the cursor on its row by
+    // identity, not by row number. Task sessions and worktrees come and go above it, and a
+    // project above it collapses on a timer.
+    fn cursor_identity(&mut self) -> Option<wsx_core::cache::CursorIdentity> {
+        self.ensure_flat();
+        wsx_core::cache::resolve_cursor_identity(&self.workspace, self.flat(), self.tree_selected)
+    }
+
+    /// After `rebuild_flat`: the row `cursor` named, else the same row number, clamped.
+    fn restore_cursor(&mut self, cursor: Option<wsx_core::cache::CursorIdentity>) {
+        if let Some(index) = cursor.and_then(|identity| {
+            wsx_core::cache::find_cursor_index(&self.workspace, self.flat(), &identity)
+        }) {
+            self.tree_selected = index;
+        }
+        self.clamp_selected();
     }
 
     fn clamp_selected(&mut self) {
