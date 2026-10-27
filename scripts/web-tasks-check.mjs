@@ -1088,7 +1088,9 @@ await followEnd("390 px");
 // --- Opening a chat and replying (docs/web-client-chat.md "Opening a chat", "Replies"). This
 // device keeps how far it read each chat and where it left it.
 const jumpWords = () => evaluate("document.querySelector('.jump')?.textContent.trim() ?? ''");
-const replyCount = "document.querySelectorAll('.log > .bubble[data-in]').length";
+// ^ The newest reply by its key: a count of replies stays the same once the log shows only its
+// newest rows (`useRecent` in chat.js).
+const lastReply = "[...document.querySelectorAll('.log > .bubble[data-in]')].at(-1)?.dataset.key";
 const fiveColumns = "[...document.querySelectorAll('.log > .bubble[data-in]')].findLast((node) => node.dataset.quote === 'Five columns:')";
 // The first named row that starts in view, and its distance from the log's top.
 const rowInView = () => evaluate(`(() => { const top = document.querySelector('.log').getBoundingClientRect().top;
@@ -1121,9 +1123,9 @@ async function readAndReply(where) {
   await evaluate("document.querySelector('.log').scrollTop = 0");
   await pause(300);
   const held = await rowInView();
-  const before = await evaluate(replyCount);
+  const before = await evaluate(lastReply);
   if (await say("TABLE5") !== 200) await fail(`${where}: the message for a table reply was not taken`);
-  await until(`${replyCount} > ${before} && !!${fiveColumns} && !document.querySelector('.log .typing')`, `${where}: the table reply did not arrive`, 60);
+  await until(`${lastReply} !== ${JSON.stringify(before)} && !!${fiveColumns} && !document.querySelector('.log .typing')`, `${where}: the table reply did not arrive`, 60);
   await pause(300);
   const drift = (await rowAt(held.key)) - held.down;
   if (Math.abs(drift) > 2) await fail(`${where}: a reply below moved the row in view by ${drift} px`);
