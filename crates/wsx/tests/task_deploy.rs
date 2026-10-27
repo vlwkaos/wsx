@@ -24,7 +24,12 @@ impl Fixture {
             .join("target")
             .join(format!("deploy-it-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let config = root.join("home/Library/Application Support/wsx");
+        // ^ dirs::config_dir(): macOS ignores XDG_CONFIG_HOME, Linux uses it.
+        let config = if cfg!(target_os = "macos") {
+            root.join("home/Library/Application Support/wsx")
+        } else {
+            root.join("config/wsx")
+        };
         let project = root.join("project");
         fs::create_dir_all(&config).expect("create the config folder");
         fs::create_dir_all(&project).expect("create the project");
