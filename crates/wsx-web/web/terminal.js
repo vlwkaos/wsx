@@ -1,6 +1,7 @@
 // Terminal view of one session: xterm.js on the pane's raw byte stream over one WebSocket.
 // Contract: docs/web-client-terminal.md. Input behaviour follows remotty's Terminal.tsx.
 // ^ wsxd's own emulator already answers terminal queries, so this one must stay silent.
+import { QUIET_MS, RETRY_MS } from "./api.js";
 import { add, fill, h } from "./dom.js";
 import { can, state as store, touch as touchDevice } from "./store.js";
 
@@ -19,7 +20,6 @@ const SCROLLBACK = 10000;
 const FONT_PHONE = 11;
 const FONT_DESKTOP = 14;
 const REPLAY = "\x1bc"; // full reset, written in the stream so it stays in order with queued bytes
-const RETRY_MS = [500, 1000, 2000, 5000];
 const MAX_FRAME = 32 * 1024;
 const SIZE_KEY = "wsx-terminal-size";
 const SVG = "http://www.w3.org/2000/svg";
@@ -118,6 +118,7 @@ export function terminalView(mount, current, tools) {
   let generation = 0;
   let retries = 0;
   let retryTimer = 0;
+  let quietTimer = null;
   let state = "loading";
 
   const sizeToggle = h("button", { type: "button", class: "icon-button terminal-size", onclick: toggleSize });
@@ -142,6 +143,8 @@ export function terminalView(mount, current, tools) {
 
   // One line above the screen. `action` is [label, handler] for a decision the reader must take.
   function say(text, action) {
+    clearTimeout(quietTimer);
+    quietTimer = null;
     notice.hidden = !text;
     noticeText.textContent = text ?? "";
     noticeText.title = text ?? "";
@@ -196,7 +199,9 @@ export function terminalView(mount, current, tools) {
 
   function retryLater(text) {
     setState("reconnecting");
-    say(text);
+    // ^ docs/web-client-terminal.md "Reconnect": the screen stays as it was, and the line says
+    // so only when the stream is still away after QUIET_MS.
+    quietTimer ??= setTimeout(() => say(text), QUIET_MS);
     clearTimeout(retryTimer);
     retryTimer = setTimeout(connect, RETRY_MS[Math.min(retries++, RETRY_MS.length - 1)]);
   }
@@ -496,6 +501,7 @@ export function terminalView(mount, current, tools) {
       closed = true;
       generation += 1;
       clearTimeout(retryTimer);
+      clearTimeout(quietTimer);
       socket?.close();
       for (const dispose of disposers) dispose();
       // xterm.js starts a zero-delay timer when it opens; disposing before that timer

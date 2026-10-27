@@ -8,8 +8,10 @@ import re
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
+import termios
 import time
 
 import wsxd_client
@@ -1465,6 +1467,96 @@ assert notice_text.stderr == (
     "wsx: wsxd recovered a corrupt primary state from its last-known-good backup\n"
 ), notice_text.stderr
 shutdown(recovered_from_backup)
+
+# docs/ui-state-ownership.md: the TUI's cursor stays on the session the owner looks at
+# while sessions above it close, new ones open and wsxd hands off. The cursor the TUI keeps
+# in its cache is the oracle.
+cursor_daemon = start()
+assert call("synchronize_projects", {"projects": [{
+    "path": str(PROJECT), "name": "smoke", "worktrees": [{"path": str(PROJECT), "branch": "main"}],
+}]})["type"] == "ack"
+CURSOR_CACHE = (HOME / "Library" / "Caches" if sys.platform == "darwin" else WORK / "cache") / "wsx" / "workspace-v3.toml"
+
+
+def cursor_terminal():
+    match = re.search(r'\[cursor_identity\.Session\][^\[]*?terminal_id = "(\d+)"',
+                      CURSOR_CACHE.read_text() if CURSOR_CACHE.exists() else "")
+    return match and int(match.group(1))
+
+
+def cursor_session(label):
+    created = call("session_create", {"worktree_id": call("snapshot")["data"]["worktrees"][0]["id"],
+                                      "label": label, "command": ["/bin/sh"], "rows": 24, "cols": 80})
+    assert created["type"] == "created", created
+    return next(pane["terminal_id"] for pane in call("snapshot")["data"]["panes"]
+                if pane["session_id"] == created["data"]["id"]), created["data"]["id"]
+
+
+def wait_for(test, label, seconds=10):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if test():
+            return
+        time.sleep(0.1)
+    raise AssertionError(label)
+
+
+cursor_sessions = {label: cursor_session(label) for label in ("keep-a", "keep-b", "keep-c")}
+tui_master, tui_slave = os.openpty()
+fcntl.ioctl(tui_slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+tui = subprocess.Popen([str(WSX)], cwd=PROJECT, env={k: v for k, v in env.items() if k != "WSX_PANE_ID"},
+                       stdin=tui_slave, stdout=tui_slave, stderr=tui_slave, close_fds=True)
+os.close(tui_slave)
+os.set_blocking(tui_master, False)
+
+
+tui_screen = bytearray()
+
+
+def drain_tui():
+    try:
+        while chunk := os.read(tui_master, 65536):
+            tui_screen.extend(chunk)
+    except BlockingIOError:
+        pass
+
+
+try:
+    # The last row is keep-c, the newest session.
+    deadline = time.monotonic() + 15
+    while cursor_terminal() != cursor_sessions["keep-c"][0] and time.monotonic() < deadline:
+        os.write(tui_master, b"j")
+        drain_tui()
+        time.sleep(0.1)
+    assert cursor_terminal() == cursor_sessions["keep-c"][0], CURSOR_CACHE.read_text()
+    viewed = cursor_sessions["keep-c"][0]
+    # A session above the viewed one closes and a new one opens below it: the row number of
+    # the viewed session changes, the session does not.
+    closing = next(item for item in call("snapshot")["data"]["sessions"]
+                   if item["id"] == cursor_sessions["keep-a"][1])
+    assert call("session_close", {"session_id": closing["id"],
+                                  "expected_revision": closing["revision"]})["type"] == "ack"
+    cursor_session("keep-d")
+    # ^ The TUI writes its cache when it applies a snapshot; keep-d on its screen says it did.
+    wait_for(lambda: drain_tui() or b"keep-d" in tui_screen, "the TUI did not show keep-d")
+    time.sleep(0.5)
+    assert cursor_terminal() == viewed, ("the cursor left the viewed session", CURSOR_CACHE.read_text())
+    # A live handoff into the same build reconnects the TUI; the cursor stays.
+    epoch = call("lifecycle_status")["data"]["epoch"]
+    restarted = wsx("daemon", "restart")
+    assert restarted.returncode == 0, restarted
+    wait_for(lambda: call("lifecycle_status")["data"]["epoch"] != epoch, "wsxd did not hand off")
+    cursor_session("keep-e")
+    wait_for(lambda: drain_tui() or b"keep-e" in tui_screen, "the TUI did not show keep-e")
+    time.sleep(0.5)
+    assert cursor_terminal() == viewed, ("the cursor moved across the handoff", CURSOR_CACHE.read_text())
+finally:
+    tui.terminate()
+    tui.wait(timeout=5)
+    os.close(tui_master)
+assert call("shutdown")["type"] == "ack"
+wait_socket_stopped()
+cursor_daemon.wait(timeout=5)
 
 latency_passes = 0
 latency_failures = 0
