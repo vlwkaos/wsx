@@ -12,6 +12,7 @@ import struct
 import subprocess
 import sys
 import termios
+import threading
 import time
 
 import wsxd_client
@@ -1511,32 +1512,37 @@ def settled_cursor():
     # ^ The TUI applies a snapshot within about a second of the event and writes a changed
     # cursor to its cache then.
     time.sleep(2.5)
-    drain_tui()
     return cursor_terminal()
 tui_master, tui_slave = os.openpty()
 fcntl.ioctl(tui_slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
 tui = subprocess.Popen([str(WSX)], cwd=PROJECT, env={k: v for k, v in env.items() if k != "WSX_PANE_ID"},
                        stdin=tui_slave, stdout=tui_slave, stderr=tui_slave, close_fds=True)
 os.close(tui_slave)
-os.set_blocking(tui_master, False)
-
-
 tui_screen = bytearray()
 
 
-def drain_tui():
+def read_tui():
+    # ^ Read the TUI's output all the time: a full PTY blocks its draw, and then its keys.
     try:
         while chunk := os.read(tui_master, 65536):
             tui_screen.extend(chunk)
-    except BlockingIOError:
+    except OSError:
         pass
+
+
+threading.Thread(target=read_tui, daemon=True).start()
+
+
+def in_terminal_mode():
+    # ^ The mode line drawn last names the mode.
+    return tui_screen.rfind(b"TERMINAL") > tui_screen.rfind(b"WORKSPACE")
 
 
 try:
     # The last row is keep-c, the newest session.
-    wait_for(lambda: drain_tui() or b"keep-c" in tui_screen, "the TUI did not show keep-c")
+    wait_for(lambda: b"keep-c" in tui_screen, "the TUI did not show keep-c")
     os.write(tui_master, b"j" * 12)
-    wait_for(lambda: drain_tui() or cursor_terminal() == cursor_sessions["keep-c"][0],
+    wait_for(lambda: cursor_terminal() == cursor_sessions["keep-c"][0],
              "the cursor did not reach keep-c")
     viewed = cursor_sessions["keep-c"][0]
 
@@ -1547,9 +1553,11 @@ try:
         time.sleep(2.5)
         answer = f"{marker}-{40 + value}".encode()
         deadline = time.monotonic() + 20
-        while drain_tui() or answer not in tui_screen:
+        while answer not in tui_screen:
             assert time.monotonic() < deadline, f"the TUI does not show the viewed shell's answer {marker}"
-            os.write(tui_master, f"echo {marker}-$((40+{value}))\r".encode())
+            # ^ Keys typed outside Terminal mode are commands ('e' opens an editor).
+            if in_terminal_mode():
+                os.write(tui_master, f"echo {marker}-$((40+{value}))\r".encode())
             time.sleep(1)
         assert settled_cursor() == viewed, (marker, CURSOR_CACHE.read_text())
 
@@ -1562,7 +1570,7 @@ try:
     cursor_session("keep-d")
     assert settled_cursor() == viewed, ("the cursor left the viewed session", cursor_sessions, CURSOR_CACHE.read_text())
     os.write(tui_master, b"\r")
-    wait_for(lambda: drain_tui() or b"TERMINAL" in tui_screen, "the TUI did not open keep-c")
+    wait_for(in_terminal_mode, "the TUI did not open keep-c")
     viewed_shell_answers("opened", 1)
     # A live handoff into the same build reconnects the TUI; the view stays.
     epoch = call("lifecycle_status")["data"]["epoch"]
@@ -1571,6 +1579,18 @@ try:
     wait_for(lambda: call("lifecycle_status")["data"]["epoch"] != epoch, "wsxd did not hand off")
     cursor_session("keep-e")
     viewed_shell_answers("handed-off", 2)
+
+    # docs/terminal-exit-ordering.md: the viewed program exits. The TUI says so and how to go
+    # on, and Enter starts the session's command again in the same pane.
+    def viewed_exited():
+        return next(pane for pane in call("snapshot")["data"]["panes"]
+                    if pane["terminal_id"] == viewed)["exited"]
+    os.write(tui_master, b"exit\r")
+    wait_for(lambda: b"Enter starts it again" in tui_screen, "the TUI did not say the program exited")
+    assert viewed_exited()
+    os.write(tui_master, b"\r")
+    viewed_shell_answers("restarted", 3)
+    assert not viewed_exited()
 finally:
     tui.terminate()
     tui.wait(timeout=5)

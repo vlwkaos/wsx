@@ -771,12 +771,8 @@ pub fn run_resume_supervisor(mut arguments: impl Iterator<Item = OsString>) -> i
     // on; the shell would then get CSI u codes for typed keys and draw on a screen that
     // goes away. Leave them as a fresh terminal has them.
     // ref: https://sw.kovidgoyal.net/kitty/keyboard-protocol/ (CSI = 0 ; 1 u sets no flags)
-    {
-        use std::io::Write;
-        let mut out = io::stdout();
-        let _ = out.write_all(AGENT_MODES_RESET);
-        let _ = out.flush();
-    }
+    let mut out = io::stdout();
+    let _ = out.write_all(AGENT_MODES_RESET).and_then(|()| out.flush());
     if !status.success() {
         eprintln!("wsxd resumed agent exited with {status}; opening a shell");
     }

@@ -1018,6 +1018,9 @@ pub struct App {
     follow_resume_pane: Option<runtime::PaneId>,
     upgrade: Option<UpgradeGate>,
     suspend_detector: SuspendDetector,
+    /// Epoch and revision of the newest daemon state this window applied or caused: a
+    /// snapshot read before it (a refresh still in flight) must not undo what came after.
+    applied_revision: Option<(u64, u64)>,
     terminal_escape_chord: EscapeSequence,
     terminal_sidebar_override: Option<TerminalSidebar>,
     update_rx: mpsc::Receiver<String>,
@@ -1234,6 +1237,7 @@ impl App {
                     retry_at: None,
                 }),
             suspend_detector: SuspendDetector::new(),
+            applied_revision: None,
             terminal_escape_chord,
             terminal_sidebar_override: None,
             update_rx,
@@ -1920,10 +1924,28 @@ impl App {
                 }
                 runtime::TerminalServerMessage::Exited => {
                     self.clear_active_terminal_selection();
-                    self.terminal_stream = None;
+                    // ^ The stream says it before the next snapshot does, and Enter on the
+                    // pane must already start it again.
+                    if let Some(pane_id) = self.terminal_stream.take().map(|active| active.pane_id)
+                    {
+                        self.terminal_surfaces.forget(pane_id);
+                        for pane in self
+                            .workspace
+                            .projects
+                            .iter_mut()
+                            .flat_map(|project| &mut project.worktrees)
+                            .flat_map(|worktree| &mut worktree.sessions)
+                            .flat_map(|session| &mut session.panes)
+                            .filter(|pane| pane.pane_id == pane_id)
+                        {
+                            pane.exited = true;
+                        }
+                    }
                     self.pending_terminal_entry = None;
                     self.mode = Mode::Workspace;
-                    self.set_warning("Terminal process exited");
+                    self.set_warning(
+                        "Terminal process exited\nEnter starts it again; d closes the session",
+                    );
                     break;
                 }
             }
@@ -3192,6 +3214,12 @@ impl App {
         mut snapshot: runtime::Snapshot,
         worktrees: Option<Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>>,
     ) {
+        if self.applied_revision.is_some_and(|(epoch, revision)| {
+            epoch == snapshot.epoch && snapshot.revision < revision
+        }) {
+            return;
+        }
+        self.applied_revision = Some((snapshot.epoch, snapshot.revision));
         // ^ docs/ui-state-ownership.md: the cursor stays on the row the owner looks at. Task
         // sessions and worktrees come and go above it, so a row number would move the view.
         self.ensure_flat();
@@ -5105,6 +5133,23 @@ impl App {
             self.unmute_on_interaction(left);
         }
         self.unmute_on_interaction(pane_id);
+        // ^ docs/terminal-exit-ordering.md: an exited pane keeps its last screen, often empty
+        // after an agent quits. Opening it starts its saved command again (an agent resumes
+        // its conversation), so the session is usable at once.
+        let exited = self
+            .workspace
+            .projects
+            .iter()
+            .flat_map(|project| &project.worktrees)
+            .flat_map(|worktree| &worktree.sessions)
+            .flat_map(|session| &session.panes)
+            .any(|pane| pane.pane_id == pane_id && pane.exited);
+        if exited {
+            if let Err(error) = self.restart_exited_pane(pane_id) {
+                self.set_error(format!("Cannot start {target} again: {error:#}"));
+                return Ok(());
+            }
+        }
         let (rows, cols) = self.terminal_pane_size(terminal);
         match runtime::TerminalStream::connect(
             &self.runtime_client,
@@ -5136,6 +5181,38 @@ impl App {
             Err(error) => self.set_error(terminal_stream_error_notice(&error, &target)),
         }
         Ok(())
+    }
+
+    /// `SessionRestart` with the pane's revision as wsxd has it now: the exit itself moved it.
+    fn restart_exited_pane(&mut self, pane_id: runtime::PaneId) -> Result<()> {
+        let runtime::Response::Snapshot(snapshot) =
+            self.runtime_client.call(&runtime::Request::Snapshot)?
+        else {
+            anyhow::bail!("unexpected snapshot response");
+        };
+        let expected_revision = snapshot
+            .panes
+            .iter()
+            .find(|pane| pane.id == pane_id)
+            .map(|pane| pane.revision)
+            .context("the pane is gone")?;
+        match self
+            .runtime_client
+            .call(&runtime::Request::SessionRestart {
+                pane_id,
+                expected_revision,
+            })? {
+            runtime::Response::Ack { revision } => {
+                // ^ A refresh read before the restart still says exited and would end the
+                // new stream.
+                if let Some((_, applied)) = self.applied_revision.as_mut() {
+                    *applied = (*applied).max(revision);
+                }
+                Ok(())
+            }
+            runtime::Response::Error(error) => anyhow::bail!("{}", error.message),
+            _ => anyhow::bail!("unexpected session restart response"),
+        }
     }
 
     fn leave_terminal_mode(&mut self, pane_id: runtime::PaneId) {
@@ -7311,6 +7388,7 @@ mod tests {
             follow_resume_pane: None,
             upgrade: None,
             suspend_detector: SuspendDetector::new(),
+            applied_revision: None,
             terminal_escape_chord,
             terminal_sidebar_override: None,
             update_rx,
