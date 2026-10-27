@@ -681,7 +681,6 @@ impl Manager {
         }
     }
 
-    /// Turn task state changes into event lines.
     /// Remove the capture files of items decided more than 7 days ago, at the start and hourly.
     /// ref: docs/tasks.md "To check"
     fn sweep_captures(&mut self) {
@@ -701,6 +700,7 @@ impl Manager {
         }
     }
 
+    /// Turn task state changes into event lines.
     fn watch_tasks(&mut self) {
         self.watch_approvals();
         self.watch_deploys();

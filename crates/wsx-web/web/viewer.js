@@ -1,8 +1,9 @@
 // Images full screen over the page (docs/web-client.md "Image viewer"): a To check capture, a
-// chat image, a drawn diagram. A To check video plays here with its own controls and no zoom. Pinch, the buttons, a double tap or ctrl+wheel zoom; a drag moves
-// a zoomed image; a swipe or an arrow key goes to the other images of the same set. ×, Escape, a
-// tap beside the image (not zoomed) and Back close it: it has its own history entry, so the
-// phone's back gesture closes it and the page under it keeps its place.
+// chat image, a drawn diagram; a To check video plays here with its own controls and no zoom.
+// Pinch, the buttons, a double tap or ctrl+wheel zoom; a drag moves a zoomed image; a swipe or
+// an arrow key goes to the other images of the same set. ×, Escape, a tap beside the image (not
+// zoomed) and Back close it: it has its own history entry, so the phone's back gesture closes it
+// and the page under it keeps its place.
 import { html, Icon, render, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
 
 const ZOOM_STEP = 1.5;
@@ -12,7 +13,8 @@ const TAP_MS = 300;
 const TAP_PX = 10;
 const SWIPE_PX = 50;
 
-// Show `images` ([{ src, alt, width?, height?, video?, poster? }]) from `index`; the focus goes back to `opener`.
+// Show `images` ([{ src, alt, width?, height?, video?, poster? }]) from `index`; the focus goes
+// back to `opener`.
 // `dark` puts the images on the dark scheme whatever the page's is (a diagram keeps the page's:
 // it is drawn in it).
 export function openViewer(images, index, opener, { dark = true } = {}) {
