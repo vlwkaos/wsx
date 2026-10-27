@@ -52,8 +52,8 @@ tasks:
   deploy:
     command: sh scripts/deploy-web-live.sh
     auto: true
-  # ^ Publishes the version of one main commit: the 0.31 handoff proof, the push, CI, the tag and
-  # release.yml (scripts/release.sh). The owner approves each release.
+  # ^ Publishes the version of one main commit: the 0.31 handoff proof, the push, the tag and
+  # release.yml, which tests first (scripts/release.sh). The owner approves each release.
   release:
     command: sh scripts/release.sh
     approve: true
