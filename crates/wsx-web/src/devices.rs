@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::Read,
     os::{
         fd::AsRawFd,
         unix::fs::{DirBuilderExt, OpenOptionsExt},
@@ -88,16 +88,11 @@ pub fn private_dir(path: &Path) -> Result<()> {
 
 /// Replace a private file without leaving a partly written one behind.
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    let temporary = path.with_extension("tmp");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    fs::rename(&temporary, path)?;
+    wsx_core::fs_util::write_atomic(
+        path,
+        bytes,
+        wsx_core::fs_util::AtomicWrite::replace().mode(0o600),
+    )?;
     Ok(())
 }
 
