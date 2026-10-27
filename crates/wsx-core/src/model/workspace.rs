@@ -462,55 +462,8 @@ pub enum FlatEntry {
     },
 }
 
-/// Flatten workspace into visible tree entries based on expand state.
-#[allow(dead_code)]
-pub fn flatten_tree(workspace: &WorkspaceState) -> Vec<FlatEntry> {
-    let mut result = Vec::new();
-    for (pi, project) in workspace.projects.iter().enumerate() {
-        result.push(FlatEntry::Project { idx: pi });
-        if project.expanded {
-            for (wi, wt) in project.worktrees.iter().enumerate() {
-                result.push(FlatEntry::Worktree {
-                    project_idx: pi,
-                    worktree_idx: wi,
-                });
-                if wt.expanded {
-                    for (si, session) in wt.sessions.iter().enumerate() {
-                        result.push(FlatEntry::Session {
-                            project_idx: pi,
-                            worktree_idx: wi,
-                            session_idx: si,
-                        });
-                        if session.panes.len() > 1 {
-                            for (pane_idx, _) in session.panes.iter().enumerate() {
-                                result.push(FlatEntry::Pane {
-                                    project_idx: pi,
-                                    worktree_idx: wi,
-                                    session_idx: si,
-                                    pane_idx,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            if !project.routines.is_empty() {
-                result.push(FlatEntry::RoutinesHeader { project_idx: pi });
-                if project.routines_expanded {
-                    for (ri, _) in project.routines.iter().enumerate() {
-                        result.push(FlatEntry::Routine {
-                            project_idx: pi,
-                            routine_idx: ri,
-                        });
-                    }
-                }
-            }
-        }
-    }
-    result
-}
-
-/// Like `flatten_tree` but skips projects whose index is not in `visible`.
+/// Flatten workspace into visible tree entries based on expand state, skipping projects
+/// whose index is not in `visible`.
 pub fn flatten_tree_filtered(
     workspace: &WorkspaceState,
     visible: &HashSet<usize>,
