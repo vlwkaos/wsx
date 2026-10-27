@@ -405,7 +405,7 @@ async function motion() {
   const restore = () => evaluate(`(async () => (await ${pageModule("store.js")}).update(globalThis.motionKept))()`);
   for (let attempt = 1; attempt < 3 && !good(seen); attempt++) { await restore(); await pause(1000); seen = await run(false); }
   if (!good(seen)) await fail(`motion at ${w}px: ${JSON.stringify(seen)}`);
-  await expectAll("typing dots", ".row-typing .typing-dot", "pulse");
+  await expectAll("typing dots", ".row-typing .typing-dot", "typing");
   await expectAll("a working row", ".home-row .pulse", "pulse");
   await expectAll("the count badge", ".home-row .count", "pop");
   await expectAll("the status line", ".home-row .row-context:not([data-loading])", "arrive");
@@ -807,11 +807,13 @@ await evaluate(`document.querySelector('.reservoir .need[data-key=${JSON.stringi
 await until(`!document.querySelector('.reservoir .need[data-key=${JSON.stringify(answerKey)}]')`, "the answer did not clear the row of #1", 300);
 // ^ The chat says the answer as a status line.
 await until(`${statusLines}.some((node) => /#1 got an answer/.test(node.textContent))`, "the answer in the reservoir left no status line", 60);
-// ^ A line keeps its row while newer lines arrive: a line of the first read never slides in.
-// A row made again would play its entry and take the scroll anchor with it.
-const calmLines = `${statusLines}.filter((node) => !node.hasAttribute('data-fresh')).map((node) => node.textContent)`;
-const calmBefore = await evaluate(calmLines);
-if (!calmBefore.some((line) => /was closed|got an answer|failed a check/.test(line))) await fail(`no resolution line of the first read: ${calmBefore}`);
+// ^ A line keeps its element while newer lines arrive: a row made again would play its entry
+// again and take the scroll anchor with it. A message after the line ends its run, so no fold
+// takes it in.
+await typeInto(".composer-field", "STATUS after the answer");
+await click(".composer-send");
+await until("[...document.querySelectorAll('.log .bubble[data-side=in]')].at(-1)?.textContent.includes('open:') && !document.querySelector('.log .typing')", "no reply after the answer", 300);
+await evaluate(`window.answerLine = ${statusLines}.find((node) => /#1 got an answer/.test(node.textContent))`);
 let moved = await clearRow("Approve land #3", "Approve");
 if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))")) await fail("a notice repeats the status line of Approve");
 await until(`!${rowOf("Approve land #3")} && !${rowOf("#3")}`, "the reservoir kept the approved landing", 300);
@@ -825,8 +827,7 @@ moved = await clearRow("#1", "Land");
 // stays moved and shows the jump button.
 await until(`(${atEnd}) && !document.querySelector('.jump')`, "acting in the reservoir moved the chat", 30);
 if (await count(".need-card, .tray")) await fail("an action brought back a card or the tray");
-const calmAfter = await evaluate(calmLines);
-if (calmBefore.some((line) => !calmAfter.includes(line))) await fail(`lines of the first read slid in again when newer resolutions arrived: ${calmBefore.filter((line) => !calmAfter.includes(line))}`);
+if (!(await evaluate("window.answerLine.isConnected"))) await fail("a status line was made again when newer resolutions arrived");
 await shot("reservoir-acted", ".composer-send");
 await closeReservoir();
 
@@ -876,7 +877,7 @@ await click(".composer-send");
 await until("document.querySelector('.composer-field').value === ''", "the second message was not sent");
 await until("!!document.querySelector('.log .typing') && document.querySelector('.manager .bar-state')?.textContent === 'typing'", "no typing bubble while the manager's turn runs", 30);
 const headDots = await evaluate("[...document.querySelectorAll('.manager .bar-state .typing-dot')].map((dot) => getComputedStyle(dot).animationName + ' ' + getComputedStyle(dot).animationDelay)");
-if (headDots.join() !== "pulse 0s,pulse 0.32s,pulse 0.64s") await fail(`the header's typing dots are ${headDots}`);
+if (headDots.join() !== "typing 0s,typing 0.32s,typing 0.64s") await fail(`the header's typing dots are ${headDots}`);
 const typing = await evaluate("({ author: document.querySelector('.log .typing').closest('.bubble').querySelector('.bubble-author').textContent, said: document.querySelector('.log .typing .visually-hidden').textContent })");
 if (typing.author !== "Atlas" || typing.said !== "Atlas is typing") await fail(`the typing bubble reads ${JSON.stringify(typing)}`);
 if (await evaluate("document.querySelector('.log .bubble:last-child .typing') === null")) await fail("the typing bubble is not the last message");
@@ -977,6 +978,50 @@ await evaluate("delete document.visibilityState");
 await until("!document.querySelector('.notice[data-offline]')", "the stream did not open again after the page was offline", 150);
 // ^ The reads the page tried while offline failed, as they should.
 problems.splice(offlineFrom, problems.length - offlineFrom, ...problems.slice(offlineFrom).filter((problem) => !/ERR_INTERNET_DISCONNECTED/.test(problem)));
+
+// --- The typing bubble is as wide as its dots, with even padding, and every dot shows whole
+// (docs/web-client-tasks.md "Project screen").
+await typeInto(".composer-field", "LONG STATUS");
+await click(".composer-send");
+await until("!!document.querySelector('.log .typing')", "no typing bubble for a long turn", 50);
+const typingFit = `(() => { const box = document.querySelector('.log .typing'), outer = box.getBoundingClientRect();
+  const dots = [...box.querySelectorAll('.typing-dot')].map((dot) => [dot, dot.getBoundingClientRect()]);
+  const style = getComputedStyle(box), inner = { left: outer.left + parseFloat(style.borderLeftWidth), right: outer.right - parseFloat(style.borderRightWidth) };
+  const hidden = dots.filter(([dot, at]) => [[at.left + 1, at.top + at.height / 2], [at.right - 1, at.top + at.height / 2], [at.left + at.width / 2, at.top + at.height / 2]]
+    .some(([x, y]) => document.elementFromPoint(x, y) !== dot) || at.left < inner.left || at.right > inner.right).length;
+  return { dots: dots.length, hidden, left: Math.round(dots[0][1].left - inner.left), right: Math.round(inner.right - dots.at(-1)[1].right) }; })()`;
+for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
+  await resize([width, height, scale]);
+  await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
+  await pause(400);
+  const fit = await evaluate(typingFit);
+  if (fit.dots !== 3 || fit.hidden || Math.abs(fit.left - fit.right) > 1) await fail(`the typing bubble does not fit its dots at ${width} px: ${JSON.stringify(fit)}`);
+  await shot(`typing-bubble-${width}`, ".composer-send");
+}
+await resize([390, 844, 2]);
+// The dots loop after a step back in history and after a return from the back-forward cache,
+// also when the engine left them standing as WebKit can after an iOS swipe back: each
+// animation runs and the dot moves (docs/web-client.md "Motion").
+const dotRuns = (selector) => evaluate(`new Promise((done) => { const dot = document.querySelector(${JSON.stringify(selector)});
+  if (!dot) { done({ found: false }); return; }
+  const states = dot.getAnimations().map((animation) => animation.playState), tops = [];
+  const timer = setInterval(() => { tops.push(dot.getBoundingClientRect().top);
+    if (tops.length === 15) { clearInterval(timer); done({ found: true, states, moved: Math.max(...tops) - Math.min(...tops) }); } }, 100); })`);
+const stand = () => evaluate("document.getAnimations().forEach((animation) => animation.pause())");
+const runs = async (where, selector) => {
+  const seen = await dotRuns(selector);
+  if (!seen.found || !seen.states.length || seen.states.some((state) => state !== "running") || seen.moved < 0.5) await fail(`the typing dots stand still ${where}: ${JSON.stringify(seen)}`);
+};
+await go(`#/p/${project}/t/2`);
+await until("!!document.querySelector('dialog.task-sheet[open]')", "the task sheet did not open over the long turn");
+await stand();
+await evaluate("history.back()");
+await until(`location.hash === '#/p/${project}' && !document.querySelector('dialog.task-sheet')`, "history.back() did not close the sheet");
+await runs("after history.back()", ".log .typing .typing-dot");
+await stand();
+await evaluate("dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))");
+await runs("after a pageshow from the back-forward cache", ".log .typing .typing-dot");
+await until("!document.querySelector('.log .typing')", "the long turn did not end", 400);
 
 // --- The task sheet: a chip or a reservoir row opens it over the chat, and the chat does not
 // scroll; Escape, Back and a swipe down close it, the composer keeps its draft and gets the
@@ -1585,8 +1630,33 @@ await shot("to-check-try", ".composer-send");
 await failForm();
 await evaluate(`${firstItem}.querySelector('.need-form').requestSubmit()`);
 await until("document.querySelectorAll('.check-item').length === 2", "the failed item stayed in the list", 60);
-await evaluate(`${firstItem}.querySelector('.check-act[title="Pass"]').click()`);
-await until("document.querySelectorAll('.check-item').length === 1", "the passed item stayed in the list", 60);
+await closeSheet("the To check list after a fail", chat);
+// ^ Each To check item is also a bubble in the chat at the time it was added: its words, its
+// capture (the image viewer opens it) and Try, Fail and Pass; a decided one shows its result
+// (docs/web-client-tasks.md "Project screen").
+const checkBubbles = "[...document.querySelectorAll('.log .check-bubble')]";
+await until(`${checkBubbles}.length >= 3`, "the chat has no To check bubbles", 60);
+const bubbleOf = (task) => `${checkBubbles}.find((node) => node.querySelector('.check-task .task-chip')?.textContent.trim() === '#${task}')`;
+await until(`(${bubbleOf(8)}?.querySelector('.check-capture img')?.naturalWidth ?? 0) > 0`, "the To check bubble's capture did not load", 60);
+const inChat = await evaluate(`(() => { const open = ${bubbleOf(8)}, failed = ${bubbleOf(7)};
+  return { tag: open?.querySelector('.bubble-tag')?.textContent, author: open?.querySelector('.bubble-author')?.textContent, image: open?.querySelector('.check-capture img')?.naturalWidth ?? 0,
+    acts: [...(open?.querySelectorAll('.check-acts .check-act') ?? [])].map((node) => node.title), failed: failed?.querySelector('.check-state')?.textContent ?? '',
+    failedActs: failed?.querySelectorAll('.check-acts').length ?? -1, unread: open?.hasAttribute('data-in') }; })()`);
+if (inChat.tag !== "To check" || inChat.author !== "Atlas" || inChat.image !== 480 || !inChat.acts.includes("Fail") || !inChat.acts.includes("Pass")
+  || !/^Failed: .* fixes it$/.test(inChat.failed) || inChat.failedActs !== 0 || !inChat.unread) await fail(`the To check bubbles read ${JSON.stringify(inChat)}`);
+await evaluate(`${bubbleOf(8)}.scrollIntoView({ block: 'center' })`);
+await pause(300);
+await shot("to-check-bubble", ".composer-send");
+await viewImages("to-check-bubble", `.log .check-bubble .check-capture`, 1);
+await resize([1280, 800, 1]);
+await evaluate(`${bubbleOf(8)}.scrollIntoView({ block: 'center' })`);
+await pause(300);
+await shot("to-check-bubble-wide", ".composer-send");
+await resize([390, 844, 2]);
+await evaluate(`${bubbleOf(8)}.querySelector('.check-act[title="Pass"]').click()`);
+await until(`(${bubbleOf(8)}?.querySelector('.check-state')?.textContent ?? '') === 'Passed' && !${bubbleOf(8)}.querySelector('.check-acts')`, "Pass in the bubble did not settle it", 60);
+await go(`#/p/${project}/checks`);
+await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 1", "the item passed in the chat stayed in the list", 60);
 await evaluate("document.querySelector('.check-all').click()");
 await until("(document.querySelector('dialog.task-sheet .empty')?.textContent ?? '') === 'Nothing to check.'", "All passed did not empty the list", 60);
 await shot("to-check-done");
@@ -1607,6 +1677,26 @@ await pause(400);
 if ((await chevronInFirstRow("with only running tasks")).first !== "Running") await fail("the first row is not the Running label");
 await shot("reservoir-running-first", ".composer-send");
 await closeReservoir();
+
+// --- Home marks a project with a message its chat has that this device has not read: an accent
+// mark and the message's first line; opening the chat clears it (docs/web-client-tasks.md "Home").
+await go("#/");
+await until("!!document.querySelector('.home-row')", "home did not open for the new message");
+const newsRow = `document.querySelector('.home-rows > .row[data-key="${project}"]')`;
+if (await evaluate(`!!${newsRow}.querySelector('.news-mark')`)) await fail("a project whose chat was read is marked new");
+await evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'STATUS for home' }) })`);
+await until(`!!${newsRow}?.querySelector('.news-mark') && /^open: /.test(${newsRow}.querySelector('.row-news')?.textContent ?? '')`, "the new reply did not mark the project's home row", 300);
+const marked = await evaluate(`(() => { const mark = getComputedStyle(${newsRow}.querySelector('.news-mark')).backgroundColor;
+  const probe = document.createElement('span'); probe.style.color = 'var(--color-accent)'; document.body.append(probe); const accent = getComputedStyle(probe).color; probe.remove();
+  return { mark, accent, others: [...document.querySelectorAll('.home-rows > .row:not([data-news]) .news-mark')].length }; })()`);
+if (marked.mark !== marked.accent || marked.others) await fail(`the new message's mark is not the accent alone: ${JSON.stringify(marked)}`);
+await shot("home-news");
+await go(chat);
+await until("!!document.querySelector('.log .bubble') && !document.querySelector('.jump')", "the chat did not open at its end for the new reply", 100);
+await pause(500);
+await go("#/");
+await until(`!!${newsRow} && !${newsRow}.querySelector('.news-mark') && !${newsRow}.querySelector('.row-news')`, "opening the chat did not clear the home row's mark", 50);
+await shot("home-read");
 
 // --- A deep link to a task opens the chat with the sheet over it; Back closes the sheet, then
 // the chat is the first entry, so the next Back leaves the page.
