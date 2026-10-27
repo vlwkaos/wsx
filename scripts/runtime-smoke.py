@@ -304,20 +304,21 @@ burst_terminals = {pane["id"]: pane["terminal_id"] for pane in call("snapshot")[
 # its lease with a heartbeat each second. A stream that ends is a reconnect.
 burst_streams = {}
 burst_stream_ends = []
-burst_send_lock = threading.Lock()
 burst_done = threading.Event()
+stream_send_lock = threading.Lock()
 
 
-def send_burst_stream(pane_id, message):
-    with burst_send_lock:
-        burst_streams[pane_id].sendall(json.dumps(message).encode() + b"\n")
+def send_stream(stream, message):
+    with stream_send_lock:
+        stream.sendall(json.dumps(message).encode() + b"\n")
 
 
-def heartbeat_burst_streams():
-    while not burst_done.wait(1):
-        for pane_id in burst_streams:
+def heartbeat_streams(streams, done):
+    """Renew each stream's lease every second until `done`; a closed stream is skipped."""
+    while not done.wait(1):
+        for stream in list(streams):
             try:
-                send_burst_stream(pane_id, {"type": "heartbeat"})
+                send_stream(stream, {"type": "heartbeat"})
             except OSError:
                 pass
 
@@ -341,7 +342,9 @@ for client_id, (pane_id, _) in enumerate(burst_panes, start=600):
     stream.settimeout(None)
     threading.Thread(target=drain_burst_stream, args=(pane_id, stream), daemon=True).start()
     burst_streams[pane_id] = stream
-threading.Thread(target=heartbeat_burst_streams, daemon=True).start()
+threading.Thread(
+    target=heartbeat_streams, args=(burst_streams.values(), burst_done), daemon=True
+).start()
 BURST_ROUNDS = 3
 for round_index in range(BURST_ROUNDS):
     markers = []
@@ -355,7 +358,7 @@ for round_index in range(BURST_ROUNDS):
             f"terminal streams ended before burst {round_index}: {burst_stream_ends}, "
             f"wsxd exit {burst_process.poll()}"
         )
-        send_burst_stream(pane_id, {"type": "input", "data": list((
+        send_stream(burst_streams[pane_id], {"type": "input", "data": list((
             f"cd {path} && {profile}"
             "i=0; while [ $i -lt 8 ]; do for s in working blocked idle done; do "
             f"\"$WSX_AGENT_REPORT_BIN\" agent report \"$WSX_PANE_ID\" --provider {provider} "
@@ -1085,12 +1088,21 @@ def raw_subscribe(target, client_id, takeover, rows, cols):
             "rows": rows, "cols": cols,
         },
     }).encode() + b"\n")
-    return client, recv_line(client)
+    response = recv_line(client)
+    if response["type"] == "ack":
+        raw_streams.append(client)
+    return client, response
 
 
 def raw_send(client, kind, data=None):
-    message = {"type": kind} if data is None else {"type": kind, "data": data}
-    client.sendall(json.dumps(message).encode() + b"\n")
+    send_stream(client, {"type": kind} if data is None else {"type": kind, "data": data})
+
+
+# ^ docs/terminal-raw-stream.md: a raw client renews its lease with a heartbeat each second,
+# as the web client does, so a pause in reading never costs it the lease.
+raw_streams = []
+raw_done = threading.Event()
+threading.Thread(target=heartbeat_streams, args=(raw_streams, raw_done), daemon=True).start()
 
 
 def raw_output_until(client, marker):
@@ -1193,9 +1205,10 @@ while displaced["type"] != "error":
 assert displaced["data"]["code"] == "lease_transferred", displaced
 first.close()
 # A subscriber that stops reading while the pane writes more than the tap holds
-# is resynchronized with a new replay.
+# is resynchronized with a new replay. It pauses past the lease's 3 s and keeps the
+# lease by its heartbeat alone.
 raw_send(second, "input", list(b"flood:4194304"))
-time.sleep(1.5)
+time.sleep(3.5)
 output, replays = raw_output_until(second, b"[flood-end]")
 assert replays, "a subscriber behind the tap must get a new replay"
 raw_send(second, "input", list(b"after-flood"))
@@ -1215,6 +1228,7 @@ while True:
     output += bytes(message["data"])
 assert output.endswith(b"[bye]"), output
 second.close()
+raw_done.set()
 raw_session = next(
     item for item in call("snapshot")["data"]["sessions"] if item["id"] == raw_session_id
 )
