@@ -2700,7 +2700,10 @@ impl App {
                         self.tree_selected,
                     )
                 });
-                let project = &mut self.workspace.projects[project_idx];
+                // ^ The snapshot may have removed the project while the request ran.
+                let Some(project) = self.workspace.projects.get_mut(project_idx) else {
+                    return;
+                };
                 project.routine_revision = revision;
                 project.routines = routines;
                 let expansion_changed = expand && !project.routines_expanded;
@@ -2815,9 +2818,10 @@ impl App {
             .review
             .as_ref()
             .is_some_and(|review| match self.current_selection() {
-                Selection::Worktree(pi, wi) => {
-                    self.workspace.projects[pi].worktrees[wi].path != review.path
-                }
+                Selection::Worktree(pi, wi) => self
+                    .workspace
+                    .worktree(pi, wi)
+                    .is_none_or(|worktree| worktree.path != review.path),
                 _ => true,
             })
         {
@@ -4818,7 +4822,10 @@ impl App {
                 return Ok(());
             }
         };
-        let project = &self.workspace.projects[project_idx];
+        let Some(project) = self.workspace.projects.get(project_idx) else {
+            self.set_status("Project is no longer available");
+            return Ok(());
+        };
         let project_path = project.path.clone();
         let revision = project.routine_revision;
         let action = if let Some(old_name) = original_name.clone() {
@@ -6283,10 +6290,15 @@ impl App {
                     project_idx: pi,
                     worktree_idx: wi,
                 } => {
-                    let (repo, wt_path, branch) = {
-                        let p = &self.workspace.projects[pi];
-                        let wt = &p.worktrees[wi];
-                        (p.path.clone(), wt.path.clone(), wt.branch.clone())
+                    // ^ A snapshot may have removed the target while the prompt was open.
+                    let Some((repo, wt_path, branch)) =
+                        self.workspace.projects.get(pi).and_then(|p| {
+                            let wt = p.worktrees.get(wi)?;
+                            Some((p.path.clone(), wt.path.clone(), wt.branch.clone()))
+                        })
+                    else {
+                        self.set_status("Worktree is no longer available");
+                        return Ok(());
                     };
                     let label = format!("Deleted: {}", branch);
                     // Optimistically remove before spawning so the tree updates this frame
@@ -6303,16 +6315,17 @@ impl App {
                     project_idx: pi,
                     branch,
                 } => {
-                    let (config, project_name, repo_path, default_branch, proj_config) = {
-                        let p = &self.workspace.projects[pi];
-                        (
-                            self.config.clone(),
-                            p.name.clone(),
-                            p.path.clone(),
-                            p.default_branch.clone(),
-                            p.config.clone().unwrap_or_default(),
-                        )
+                    let Some(p) = self.workspace.projects.get(pi) else {
+                        self.set_status("Project is no longer available");
+                        return Ok(());
                     };
+                    let (config, project_name, repo_path, default_branch, proj_config) = (
+                        self.config.clone(),
+                        p.name.clone(),
+                        p.path.clone(),
+                        p.default_branch.clone(),
+                        p.config.clone().unwrap_or_default(),
+                    );
                     let label = format!("Created worktree: {branch}");
                     self.spawn_bg(format!("create {branch}"), move || {
                         let created = ops::create_configured_worktree(
@@ -6431,10 +6444,12 @@ impl App {
         session_label: String,
         command: Option<String>,
     ) -> Result<()> {
-        let (proj_name, wt_path, wt_slug) = {
-            let p = &self.workspace.projects[pi];
-            let wt = &p.worktrees[wi];
-            (p.name.clone(), wt.path.clone(), wt.session_slug(&p.name))
+        let Some((proj_name, wt_path, wt_slug)) = self.workspace.projects.get(pi).and_then(|p| {
+            let wt = p.worktrees.get(wi)?;
+            Some((p.name.clone(), wt.path.clone(), wt.session_slug(&p.name)))
+        }) else {
+            self.set_status("Worktree is no longer available");
+            return Ok(());
         };
         let explicit_name = if session_label.is_empty() {
             None
@@ -6457,9 +6472,14 @@ impl App {
     }
 
     fn do_delete_project(&mut self, pi: usize) -> Result<()> {
-        let (name, path) = {
-            let p = &self.workspace.projects[pi];
-            (p.name.clone(), p.path.clone())
+        let Some((name, path)) = self
+            .workspace
+            .projects
+            .get(pi)
+            .map(|p| (p.name.clone(), p.path.clone()))
+        else {
+            self.set_status("Project is no longer available");
+            return Ok(());
         };
         self.workspace.projects.remove(pi);
         self.rebuild_flat();
@@ -6471,7 +6491,10 @@ impl App {
     }
 
     fn do_delete_session(&mut self, pi: usize, wi: usize, si: usize) -> Result<()> {
-        let session = &self.workspace.projects[pi].worktrees[wi].sessions[si];
+        let Some(session) = self.workspace.session(pi, wi, si) else {
+            self.set_status("Session is no longer available");
+            return Ok(());
+        };
         let session_id = session.session_id;
         let display_name = session.display_name.clone();
         self.spawn_bg(format!("kill {display_name}"), move || {
@@ -6485,14 +6508,21 @@ impl App {
     }
 
     fn do_apply_alias(&mut self, pi: usize, wi: usize, alias: String) -> Result<()> {
-        let branch = self.workspace.projects[pi].worktrees[wi].branch.clone();
-        let proj_path = self.workspace.projects[pi].path.clone();
+        let Some((branch, proj_path)) = self
+            .workspace
+            .worktree(pi, wi)
+            .map(|wt| (wt.branch.clone(), self.workspace.projects[pi].path.clone()))
+        else {
+            self.set_status("Worktree is no longer available");
+            return Ok(());
+        };
 
         ops::set_alias(&mut self.config, &proj_path, &branch, &alias);
         self.config.save()?;
 
-        let wt = &mut self.workspace.projects[pi].worktrees[wi];
-        wt.alias = (!alias.is_empty()).then(|| alias.clone());
+        if let Some(wt) = self.workspace.worktree_mut(pi, wi) {
+            wt.alias = (!alias.is_empty()).then(|| alias.clone());
+        }
 
         self.set_status(if alias.is_empty() {
             format!("Alias cleared for '{}'", branch)
@@ -6509,12 +6539,17 @@ impl App {
         si: usize,
         new_name: String,
     ) -> Result<()> {
-        let session = &self.workspace.projects[pi].worktrees[wi].sessions[si];
+        let Some(session) = self.workspace.session(pi, wi, si) else {
+            self.set_status("Session is no longer available");
+            return Ok(());
+        };
         let session_id = session.session_id;
         let pane_id = session.pane_id;
         self.unmute_on_interaction(pane_id);
         ops::rename_session(session_id, &new_name)?;
-        self.workspace.projects[pi].worktrees[wi].sessions[si].display_name = new_name.clone();
+        if let Some(session) = self.workspace.session_mut(pi, wi, si) {
+            session.display_name = new_name.clone();
+        }
         self.mark_dirty();
         self.set_status(format!("Session renamed to '{}'", new_name));
         Ok(())
@@ -6607,8 +6642,11 @@ impl App {
             return Ok(());
         }
         let new_si = new_si as usize;
-        let sessions = &mut self.workspace.projects[pi].worktrees[wi].sessions;
-        if new_si >= sessions.len() {
+        let Some(worktree) = self.workspace.worktree_mut(pi, wi) else {
+            return Ok(());
+        };
+        let sessions = &mut worktree.sessions;
+        if new_si >= sessions.len() || si >= sessions.len() {
             return Ok(());
         }
         let session_id = sessions[si].session_id;
