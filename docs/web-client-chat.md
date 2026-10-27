@@ -121,7 +121,7 @@ Typing `/` at the start of the composer opens the agent's commands above the fie
 
 # Conversations
 
-The chat belongs to the session, not to one agent process (docs/chat-terminal-bridge.md).
+The chat belongs to the session, not to one agent process.
 
 - The server remembers the conversations each session's agent reported (`provider` and `session_ref`, the newest 10 per session, in `queue.json`). The session view's `conversation` says one is remembered; the page then keeps the Chat tab after the agent is gone, and the timeline reads the last remembered conversation when the pane has no agent.
 - When the agent exits (it reports itself detached, or its pane loses it), the conversation gets the line "Claude exited.". The composer then reads "Message · resumes the conversation".

@@ -51,7 +51,6 @@ wsx worktree delete <branch> -p <project>                    # when the branch i
 - **Staged-tree Cargo isolation**: validate an exported Git index with an export-local `CARGO_TARGET_DIR`; a shared target can retain binaries built from concurrent worktree sources.
 - **Post-audit Cargo freshness**: if diagnostics cite `.work/index-check-*` or newly added tests are absent from `cargo test -- --list`, refresh touched source mtimes and clean only affected packages before retrying; a newer audit mirror can otherwise leave stale shared artifacts.
 - **Filtered Cargo tests**: `cargo test` accepts one positional `TESTNAME` filter; run distinct filters as separate commands.
-- **Formatting baseline**: whole-workspace `cargo fmt --all -- --check` currently reports pre-existing drift in `crates/wsx-core/src/config/global.rs`; format touched Rust files directly until that baseline is repaired.
 - **Touched-file formatting**: `cargo fmt -- <paths>` still formats the workspace; use `rustfmt --edition 2021 <paths>` to format only selected Rust files.
 - **Sibling-repo formatting sandbox**: when the active workspace is `auwsx`, formatting `wsx` source can require escalation even for `rustfmt --edition 2021 <paths>`.
 - **Sibling-repo Cargo sandbox**: from an `auwsx` session, `wsx` check/Clippy can require escalation to acquire `target/debug/.cargo-lock`; rerun the same Cargo command with permission.
