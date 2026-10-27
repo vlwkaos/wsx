@@ -377,7 +377,7 @@
 
 ### Known limitations
 
-- The missing identity of one already-running Codex session remains under separate investigation. Current hook discovery reports trusted handlers, but does not expose that session's cached authorization. This release fixes removed-reporter ENOENT recovery, not every cause of missing agent identity. See [Codex reporting follow-up](docs/codex-reporting-followup.md).
+- The missing identity of one already-running Codex session remains under separate investigation. Current hook discovery reports trusted handlers, but does not expose that session's cached authorization. This release fixes removed-reporter ENOENT recovery, not every cause of missing agent identity. See [Codex reporting follow-up](https://github.com/vlwkaos/wsx/blob/v0.29.1/docs/codex-reporting-followup.md).
 
 ### Documentation
 
