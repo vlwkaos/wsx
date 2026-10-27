@@ -187,7 +187,7 @@ Start discovery with `wsx agent context --metadata-only --json -p <project>` to 
 
 `wsx task new "<prompt>" -p <project>` starts a headless worker on branch `wsx/t<n>` in its own copy-on-write working copy. `wsx task say "<request>" -p <project>` talks to the project's manager, which sizes the work, asks before it starts tasks, reviews them, lands them and deploys. The web client shows the manager chat, the tasks and the To check items. The states, checks, landing, permissions and config are in [docs/tasks.md](docs/tasks.md).
 
-Each routine `--arg` is one direct argv item. wsx never invokes a shell for routine argv. Inspect untrusted routines with `wsx routine show <name>` before enabling or running them.
+Each routine `--arg` is one direct argv item. wsx never invokes a shell for routine argv. Inspect untrusted routines with `wsx routine show <name>` before enabling or running them. A project's manager uses the same command as `wsx task routine`; it adds, edits or deletes a routine only when your message asks for it, and each run's result reaches it as an event ([docs/tasks.md](docs/tasks.md) "Routines").
 
 See [Executable plugins](docs/plugins.md) for the versioned event, Terminal-sidecar, and worktree-review contracts. With a review provider installed, Tab on a worktree opens keyboard-driven file and diff review inside its preview. The [reference Git provider setup](docs/worktree-review.md) does not change the agent terminal.
 

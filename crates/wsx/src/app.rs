@@ -2799,7 +2799,8 @@ impl App {
 
     fn spawn_routine_refresh(&mut self) {
         let registered = match crate::cli::registered_routine_paths() {
-            Ok(paths) => paths.into_iter().collect::<HashSet<_>>(),
+            // ^ The scheduler's rule: without a registry it runs every project's routines.
+            Ok(paths) => paths.map(|paths| paths.into_iter().collect::<HashSet<_>>()),
             Err(error) => {
                 self.set_status(format!("Routines unavailable: {error}"));
                 return;
@@ -2808,7 +2809,10 @@ impl App {
         let mut paths = Vec::new();
         let mut cleared = false;
         for project in &mut self.workspace.projects {
-            if registered.contains(&project.path) {
+            if registered
+                .as_ref()
+                .is_none_or(|paths| paths.contains(&project.path))
+            {
                 paths.push(project.path.clone());
             } else if !project.routines.is_empty() || project.routine_revision != 0 {
                 project.routines.clear();

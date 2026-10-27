@@ -175,6 +175,7 @@ impl Command {
                 subcommand,
                 DaemonCmd::Stop { json: true, .. } | DaemonCmd::Restart { json: true }
             ),
+            Command::Routine { subcommand } => subcommand.json(),
             Command::Task { subcommand } => subcommand.json_output(),
             _ => false,
         }
@@ -494,6 +495,8 @@ pub enum RoutineCmd {
         project: Option<String>,
         #[arg(long)]
         revision: Option<u64>,
+        #[arg(long)]
+        json: bool,
     },
     Edit {
         name: String,
@@ -509,6 +512,8 @@ pub enum RoutineCmd {
         project: Option<String>,
         #[arg(long)]
         revision: Option<u64>,
+        #[arg(long)]
+        json: bool,
     },
     Delete {
         name: String,
@@ -516,6 +521,8 @@ pub enum RoutineCmd {
         project: Option<String>,
         #[arg(long)]
         revision: Option<u64>,
+        #[arg(long)]
+        json: bool,
     },
     /// Enable cron scheduling for a routine
     Enable {
@@ -524,6 +531,8 @@ pub enum RoutineCmd {
         project: Option<String>,
         #[arg(long)]
         revision: Option<u64>,
+        #[arg(long)]
+        json: bool,
     },
     /// Disable cron scheduling without cancelling an active run
     Disable {
@@ -532,6 +541,8 @@ pub enum RoutineCmd {
         project: Option<String>,
         #[arg(long)]
         revision: Option<u64>,
+        #[arg(long)]
+        json: bool,
     },
     Run {
         name: String,
@@ -545,6 +556,8 @@ pub enum RoutineCmd {
         name: String,
         #[arg(short, long)]
         project: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     Logs {
         name: String,
@@ -566,6 +579,24 @@ pub enum RoutineCmd {
         #[arg(long)]
         json: bool,
     },
+}
+
+impl RoutineCmd {
+    pub fn json(&self) -> bool {
+        match self {
+            Self::List { json, .. }
+            | Self::Show { json, .. }
+            | Self::Add { json, .. }
+            | Self::Edit { json, .. }
+            | Self::Delete { json, .. }
+            | Self::Enable { json, .. }
+            | Self::Disable { json, .. }
+            | Self::Run { json, .. }
+            | Self::Cancel { json, .. }
+            | Self::Logs { json, .. }
+            | Self::Fire { json, .. } => *json,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -1041,7 +1072,7 @@ pub fn run(cmd: Command) -> Result<()> {
     }
 }
 
-fn cmd_routine(command: RoutineCmd) -> Result<()> {
+pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
     use asched_core::routine::{ipc::Action, Routine, Trigger};
 
     let (project_arg, action, json) = match command {
@@ -1072,6 +1103,7 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
             prompt,
             project,
             revision,
+            json,
         } => {
             let path = routine_project(project.as_deref())?;
             let revision = revision.unwrap_or(fetch_revision(&path)?);
@@ -1085,7 +1117,7 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
             .validated()?;
             return print_routine_response(
                 send_routine(&path, Action::Add { revision, routine })?,
-                false,
+                json,
             );
         }
         RoutineCmd::Edit {
@@ -1096,6 +1128,7 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
             prompt,
             project,
             revision,
+            json,
         } => {
             let path = routine_project(project.as_deref())?;
             let (current_revision, routines) = fetch_routines(&path)?;
@@ -1121,37 +1154,44 @@ fn cmd_routine(command: RoutineCmd) -> Result<()> {
                         routine,
                     },
                 )?,
-                false,
+                json,
             );
         }
         RoutineCmd::Delete {
             name,
             project,
             revision,
+            json,
         } => {
             let path = routine_project(project.as_deref())?;
             let revision = revision.unwrap_or(fetch_revision(&path)?);
             return print_routine_response(
                 send_routine(&path, Action::Delete { revision, name })?,
-                false,
+                json,
             );
         }
         RoutineCmd::Enable {
             name,
             project,
             revision,
-        } => return set_routine_enabled(project.as_deref(), &name, revision, true),
+            json,
+        } => return set_routine_enabled(project.as_deref(), &name, revision, true, json),
         RoutineCmd::Disable {
             name,
             project,
             revision,
-        } => return set_routine_enabled(project.as_deref(), &name, revision, false),
+            json,
+        } => return set_routine_enabled(project.as_deref(), &name, revision, false, json),
         RoutineCmd::Run {
             name,
             project,
             json,
         } => (project, Action::Run { name }, json),
-        RoutineCmd::Cancel { name, project } => (project, Action::Cancel { name }, false),
+        RoutineCmd::Cancel {
+            name,
+            project,
+            json,
+        } => (project, Action::Cancel { name }, json),
         RoutineCmd::Logs {
             name,
             project,
@@ -1194,13 +1234,20 @@ fn routine_root() -> Result<PathBuf> {
     Ok(asched_core::registry::RegistryStore::default_root()?)
 }
 
-pub(crate) fn registered_routine_paths() -> Result<Vec<PathBuf>> {
-    let registry = asched_core::registry::RegistryStore::new(routine_root()?).load()?;
-    Ok(registry
-        .projects
-        .into_iter()
-        .map(|project| project.working_dir)
-        .collect())
+/// The projects the scheduler runs routines for; `None` without a registry: every project.
+pub(crate) fn registered_routine_paths() -> Result<Option<Vec<PathBuf>>> {
+    let store = asched_core::registry::RegistryStore::new(routine_root()?);
+    if !store.path().exists() {
+        return Ok(None);
+    }
+    Ok(Some(
+        store
+            .load()?
+            .projects
+            .into_iter()
+            .map(|project| project.working_dir)
+            .collect(),
+    ))
 }
 
 fn routine_project(value: Option<&str>) -> Result<PathBuf> {
@@ -1264,6 +1311,7 @@ fn set_routine_enabled(
     name: &str,
     revision: Option<u64>,
     enabled: bool,
+    json: bool,
 ) -> Result<()> {
     let path = routine_project(project)?;
     let (current_revision, routines) = fetch_routines(&path)?;
@@ -1282,7 +1330,7 @@ fn set_routine_enabled(
                 routine,
             },
         )?,
-        false,
+        json,
     )
 }
 
@@ -1322,7 +1370,7 @@ fn print_routine_response(response: asched_core::routine::ipc::Response, json: b
                     } else {
                         "disabled"
                     },
-                    format_trigger(&view.routine.trigger),
+                    wsx_core::task::ledger::trigger_text(&view.routine.trigger),
                     format_argv(&view.routine.command)
                 );
             }
@@ -1331,7 +1379,7 @@ fn print_routine_response(response: asched_core::routine::ipc::Response, json: b
             "revision {revision}\nname: {}\nenabled: {}\ntrigger: {}\ncommand: {}\nprompt: {}",
             routine.routine.name,
             routine.routine.enabled,
-            format_trigger(&routine.routine.trigger),
+            wsx_core::task::ledger::trigger_text(&routine.routine.trigger),
             format_argv(&routine.routine.command),
             routine.routine.prompt
         ),
@@ -1356,13 +1404,6 @@ fn print_routine_response(response: asched_core::routine::ipc::Response, json: b
         Response::Error { kind, message } => bail!("{kind}: {message}"),
     }
     Ok(())
-}
-
-fn format_trigger(trigger: &asched_core::routine::Trigger) -> String {
-    match trigger {
-        asched_core::routine::Trigger::Cron(cron) => cron.clone(),
-        asched_core::routine::Trigger::Event { kind } => format!("event:{kind}"),
-    }
 }
 
 fn format_argv(argv: &[String]) -> String {

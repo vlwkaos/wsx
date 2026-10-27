@@ -2140,6 +2140,8 @@ pub fn routine_daemon_command() -> Command {
     let mut command = Command::new(daemon_binary());
     command
         .arg(ROUTINE_DAEMON_ARG)
+        // ^ Its routines run as the owner, also when the manager's command started it.
+        .env_remove(crate::task::owner::ACTOR_ENV)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

@@ -266,6 +266,14 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// The project's scheduled routines: `wsx routine` (docs/tasks.md "Routines")
+    Routine {
+        #[command(subcommand)]
+        action: crate::cli::RoutineCmd,
+        /// The manager: the owner's message of this turn that asked to add, edit or delete it
+        #[arg(long, value_name = "MESSAGE", global = true)]
+        owner_said: Option<u64>,
+    },
     /// Start the project's manager agent, or report the running one
     Manager {
         #[arg(short, long)]
@@ -363,6 +371,7 @@ impl TaskCmd {
             | Self::Approve { json, .. }
             | Self::Deny { json, .. } => *json,
             Self::Ledger { .. } => true,
+            Self::Routine { action, .. } => action.json(),
             Self::CheckRun { .. }
             | Self::Host { .. }
             | Self::ManagerHost { .. }
@@ -598,6 +607,21 @@ pub fn run(command: TaskCmd) -> Result<()> {
         ),
         TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
         TaskCmd::Ledger { project, .. } => ledger::ledger(project.as_deref()),
+        TaskCmd::Routine { action, owner_said } => {
+            use crate::cli::RoutineCmd::{Add, Delete, Edit};
+            // ^ wsxd runs a routine outside the agent boundary: only the owner writes one.
+            if let Add { project, .. } | Edit { project, .. } | Delete { project, .. } = &action {
+                if acting_as_manager() {
+                    let said = owner_said.context(
+                        "the owner adds, edits and deletes routines: pass --owner-said <id> \
+                         when the owner's message of this turn asks for it; nothing was run",
+                    )?;
+                    let (name, main) = project_entry(project.as_deref())?;
+                    owner::check_owner_said(&store::project_id(&name, &main), said)?;
+                }
+            }
+            crate::cli::cmd_routine(action)
+        }
         TaskCmd::Manager { project, json } => {
             let (started, dir) = ensure_manager(project.as_deref())?;
             let state = if started { "started" } else { "running" };
