@@ -243,3 +243,12 @@ wsxd refuses with `steer_unsupported` for another provider, `agent_not_working` 
 ## Claude's empty editor
 
 Draft stashing needs an editor that is visibly idle. A fresh Claude shows a suggestion in its empty editor, such as `❯ Try "fix typecheck errors"`. Claude draws it dimmed; text a person typed is not dimmed. After a turn, Claude 2.1.300 may instead suggest a next prompt in plain words, such as `❯ commit the scout skill in dotfiles`, also dimmed. The editor line counts as empty when every character of that line is dimmed in the terminal frame, whatever its words. wsxd then sends no Ctrl+S, because Ctrl+S on an empty editor restores an older stash. After a stash, an editor that shows a dimmed suggestion again counts as emptied. A line that starts with `Try "` and is not dimmed is still refused as ambiguous.
+
+## Resumed agents
+
+After an unplanned daemon loss, wsxd resumes a saved agent under `wsxd __wsx_resume_supervisor <agent argv>` (`run_resume_supervisor` in `crates/wsx-daemon/src/lib.rs`). When the agent quits, the supervisor opens `$SHELL` in the same pane, so the pane stays a terminal:
+
+1. It writes a reset of the modes an agent can leave on: the alternate screen, kitty keyboard flags (`CSI = 0 ; 1 u`), modifyOtherKeys, mouse and focus reports, bracketed paste, application cursor keys and keypad, a hidden cursor. Without it, the pane's emulator kept encoding typed keys as `CSI u` codes, which the shell printed as text, and the shell drew on a screen the agent had cleared.
+2. It clears the agent's record (`AgentClear` with its runtime generation). When that fails (a stale generation, a full disk), it says so in the pane and still opens the shell; before revision 34 it exited, and the pane ended as an empty, dead screen.
+
+A supervisor runs the `wsxd` that started it, so a pane resumed by an older wsxd keeps the older behavior until it is restarted. `crates/wsx-daemon/tests/live_handoff.rs` `a_resumed_agent_that_quits_leaves_a_usable_shell` quits an agent in its alternate screen with all kitty flags and mouse reports on and a stale generation, then types a line as key events and reads the shell's answer.
