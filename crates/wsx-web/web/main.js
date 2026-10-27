@@ -166,13 +166,16 @@ function noteUpgrade(reason) {
   toast(`wsxd upgrade failed: ${reason}; sessions keep running`, { failure: true });
 }
 
+// A stream event to the page's own listeners.
+const relay = (name, detail = {}) => events.dispatchEvent(new CustomEvent(name, { detail }));
+
 // The open chats, sheets and task overviews read again, after events may have been missed.
 // An event without a session or a project is for every one.
 function reread() {
-  events.dispatchEvent(new CustomEvent("history", { detail: {} }));
+  relay("history");
   if (!can("task_view")) return;
   loadTasks();
-  for (const name of ["manager", "task", "page"]) events.dispatchEvent(new CustomEvent(name, { detail: {} }));
+  for (const name of ["manager", "task", "page"]) relay(name);
 }
 
 function start(session) {
@@ -180,12 +183,11 @@ function start(session) {
   noteBuild(session.build?.id);
   noteUpgrade(session.upgrade_failed);
   const resume = openEvents({
+    ...Object.fromEntries(["history", "exchange", "task", "manager", "page"].map((name) => [name, (data) => relay(name, data)])),
     workspace: (data) => {
       update({ projects: data.projects, sessions: data.sessions, loaded: true, daemon: true });
       noteBuild(data.build);
     },
-    history: (data) => events.dispatchEvent(new CustomEvent("history", { detail: data })),
-    exchange: (data) => events.dispatchEvent(new CustomEvent("exchange", { detail: data })),
     daemon: (data) => {
       update(data.available ? { daemon: true } : { daemon: false, sessions: [], projects: [], loaded: true });
       noteUpgrade(data.upgrade_failed);
@@ -195,9 +197,6 @@ function start(session) {
       noteDecisions(data);
       update({ tasks: { ...state.tasks, [data.project]: data } });
     },
-    task: (data) => events.dispatchEvent(new CustomEvent("task", { detail: data })),
-    manager: (data) => events.dispatchEvent(new CustomEvent("manager", { detail: data })),
-    page: (data) => events.dispatchEvent(new CustomEvent("page", { detail: data })),
     revoked: () => location.reload(),
     down: () => update({ online: false }),
     // Everything is read again once the stream is open, so no change falls between the read

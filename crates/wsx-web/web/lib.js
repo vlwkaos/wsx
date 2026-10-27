@@ -62,13 +62,13 @@ export function clock(ms) {
     : `${date.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
 }
 
-// The first sentence of a text, on one line, at most about 200 characters: what a worker's
+// The first sentence of a text, on one line, at most about `max` characters: what a worker's
 // summary says first ("did x. Then y" → "did x.").
-export function firstSentence(text) {
+export function firstSentence(text, max = 200) {
   const line = (text ?? "").trim().split("\n")[0].trim();
   const end = /[.!?](\s|$)/.exec(line);
   const sentence = end ? line.slice(0, end.index + 1) : line;
-  return sentence.length > 200 ? `${sentence.slice(0, 199).trimEnd()}…` : sentence;
+  return sentence.length > max ? `${sentence.slice(0, max - 1).trimEnd()}…` : sentence;
 }
 
 // A map kept per device. A private window, cleared site data or a broken value reads as

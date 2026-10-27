@@ -650,15 +650,15 @@ if (eventLines.length) await fail(`the event lines read ${JSON.stringify(eventLi
 // ^ A long reply shows its first sentence whole and More; More shows the rest.
 const longReply = "[...document.querySelectorAll('.reply-text')].find((node) => node.querySelector('button'))";
 await until(`${longReply}?.firstChild?.textContent === 'noted events.'`, "a long reply to events does not show its first sentence and More", 60);
+// ^ The page in a scheme once its marks have faded to the scheme's colors (app.css transitions).
+const inScheme = async (scheme) => { await evaluate(scheme === "light" ? "document.documentElement.dataset.scheme = 'light'" : "delete document.documentElement.dataset.scheme"); await pause(1000); };
 for (const scheme of ["dark", "light"]) {
-  await evaluate(scheme === "light" ? "document.documentElement.dataset.scheme = 'light'" : "delete document.documentElement.dataset.scheme");
-  await pause(1000);
+  await inScheme(scheme);
   await evaluate(`${longReply}.scrollIntoView({ block: 'center' })`);
   await shot(`events-${scheme}`);
 }
-// ^ The marks fade back to the dark scheme's colors (app.css transitions) before a later check reads them.
-await evaluate("delete document.documentElement.dataset.scheme");
-await pause(1000);
+// ^ Back to the dark scheme's colors before a later check reads them.
+await inScheme("dark");
 await evaluate(`${longReply}.querySelector('button').click()`);
 await until("[...document.querySelectorAll('.reply-text')].some((node) => /^noted events\\. #\\d+ landed, so its change is on main and nothing else waits for you\\.$/.test(node.textContent))", "More did not show the whole reply");
 await evaluate("[...document.querySelectorAll('.log .bubble, .log .status-line, .log .reply-line')].at(-1).scrollIntoView({ block: 'end' })");
@@ -1362,9 +1362,7 @@ const sideBorders = () => evaluate(`[...document.querySelectorAll('.log .bubble-
     || (node.closest('.bubble').dataset.side === 'out' && style.borderInlineEndColor !== 'rgba(0, 0, 0, 0)'); }).length`);
 if (!(await count('.log .bubble[data-speaker="owner"]')) || await count('.log .bubble[data-speaker="owner"] .bubble-author')) await fail("the chat has no owner bubble, or it shows a name");
 for (const scheme of ["dark", "light"]) {
-  await evaluate(scheme === "light" ? "document.documentElement.dataset.scheme = 'light'" : "delete document.documentElement.dataset.scheme");
-  // ^ The bubbles fade to the new scheme's colors (app.css transitions); read them after.
-  await pause(1000);
+  await inScheme(scheme);
   const colors = await speakerColors();
   if (colors.some((color) => !color) || new Set(colors).size !== colors.length) await fail(`the speakers' colors in the ${scheme} scheme: ${JSON.stringify(colors)}`);
   const sides = await sideBorders();
