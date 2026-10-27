@@ -1,14 +1,13 @@
 // Canonical per-project configuration and legacy .gtrconfig migration.
 // ref: README.md#project-configuration
 
+use crate::fs_util::{write_atomic, AtomicWrite, Publish};
 use crate::model::workspace::{DefaultSessionConfig, ProjectConfig, TaskConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MAX_MIN_FREE_GB: u64 = 100_000;
 
@@ -64,13 +63,6 @@ const MAX_RECAP_MINUTES: u64 = 1_440;
 const MAX_ROTATE_TOKENS: u64 = 2_000_000;
 const TASK_ADAPTERS: &[&str] = &["claude"];
 const PROJECT_CONFIG_TEMPLATE: &str = "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\ngit:\n  subtrees: []\nworktree:\n  branchPrefix:\n  # defaultSession:\n  #   enabled: true\n  #   command:\n";
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Clone, Copy)]
-enum PublishMode {
-    Create,
-    Replace,
-}
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -285,7 +277,7 @@ pub fn prepare_project_config_for_edit(repo_path: &Path) -> Result<PathBuf, Stri
             }
             let text = read_bounded(&canonical)?;
             if text.trim().is_empty() {
-                write_text_atomic(&canonical, PROJECT_CONFIG_TEMPLATE, PublishMode::Replace)?;
+                write_text_atomic(&canonical, PROJECT_CONFIG_TEMPLATE, Publish::Replace)?;
             }
             return Ok(canonical);
         }
@@ -304,7 +296,7 @@ pub fn prepare_project_config_for_edit(repo_path: &Path) -> Result<PathBuf, Stri
         }));
     }
 
-    write_text_atomic(&canonical, PROJECT_CONFIG_TEMPLATE, PublishMode::Create)?;
+    write_text_atomic(&canonical, PROJECT_CONFIG_TEMPLATE, Publish::Create)?;
     Ok(canonical)
 }
 
@@ -837,44 +829,15 @@ fn write_yaml(path: &Path, config: &ProjectConfig) -> Result<(), String> {
         tasks: None,
     };
     let text = yaml_serde::to_string(&document).map_err(|error| error.to_string())?;
-    write_text_atomic(path, &text, PublishMode::Create)
+    write_text_atomic(path, &text, Publish::Create)
 }
 
-fn write_text_atomic(path: &Path, text: &str, mode: PublishMode) -> Result<(), String> {
-    let tmp = temporary_path(path);
-    let result = (|| {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .map_err(|error| error.to_string())?;
-        file.write_all(text.as_bytes())
-            .map_err(|error| error.to_string())?;
-        file.sync_all().map_err(|error| error.to_string())?;
-        drop(file);
-        match mode {
-            PublishMode::Replace => fs::rename(&tmp, path).map_err(|error| error.to_string()),
-            PublishMode::Create => {
-                fs::hard_link(&tmp, path).map_err(|error| error.to_string())?;
-                let _ = fs::remove_file(&tmp);
-                Ok(())
-            }
-        }
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    result
-}
-
-fn temporary_path(path: &Path) -> PathBuf {
-    let mut name = path.as_os_str().to_os_string();
-    name.push(format!(
-        ".{}.{}.tmp",
-        std::process::id(),
-        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    PathBuf::from(name)
+fn write_text_atomic(path: &Path, text: &str, publish: Publish) -> Result<(), String> {
+    let options = AtomicWrite {
+        publish,
+        ..AtomicWrite::replace()
+    };
+    write_atomic(path, text.as_bytes(), options).map_err(|error| error.to_string())
 }
 
 fn load_legacy(config_path: &Path) -> ProjectConfig {

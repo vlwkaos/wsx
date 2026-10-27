@@ -2,19 +2,17 @@
 // ref: toml crate — https://docs.rs/toml/
 // ^ [[wsx Architecture]] Groups are the sole project organization and workspace selection contract.
 
+use crate::fs_util::{write_atomic, AtomicWrite};
 use anyhow::{Context, Result};
 use serde::{de::Error as _, ser::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
-use std::io::{self, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MILLIS_PER_HOUR: u64 = 60 * 60 * 1_000;
 pub const ADAPTIVE_COLLAPSE_MIN_HOURS: u64 = 24;
 pub const ADAPTIVE_COLLAPSE_STEP_HOURS: u64 = 12;
 pub const ADAPTIVE_COLLAPSE_MAX_HOURS: u64 = 24 * 28;
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const CONFIG_V2_FILE: &str = "config-v2.toml";
 const LEGACY_CONFIG_FILE: &str = "config.toml";
 
@@ -723,70 +721,23 @@ fn prepare_private_file_for_edit(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 fn atomic_create_private(path: &Path, bytes: &[u8], sync: bool) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    std::fs::create_dir_all(parent)?;
-    let temporary = private_temporary_path(path);
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        file.write_all(bytes)?;
-        if sync {
-            file.sync_all()?;
-        }
-        drop(file);
-        std::fs::hard_link(&temporary, path)?;
-        let _ = std::fs::remove_file(&temporary);
-        if sync {
-            std::fs::File::open(parent)?.sync_all()?;
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
-}
-
-fn private_temporary_path(path: &Path) -> PathBuf {
-    path.with_extension(format!(
-        "tmp.{}.{}",
-        std::process::id(),
-        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ))
+    write_private(path, bytes, AtomicWrite::create().mode(0o600).durable(sync))
 }
 
 pub(crate) fn atomic_write_private(path: &Path, bytes: &[u8], sync: bool) -> io::Result<()> {
+    write_private(
+        path,
+        bytes,
+        AtomicWrite::replace().mode(0o600).durable(sync),
+    )
+}
+
+fn write_private(path: &Path, bytes: &[u8], options: AtomicWrite) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     std::fs::create_dir_all(parent)?;
-    let temporary = private_temporary_path(path);
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        file.write_all(bytes)?;
-        if sync {
-            file.sync_all()?;
-        }
-        std::fs::rename(&temporary, path)?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        if sync {
-            std::fs::File::open(parent)?.sync_all()?;
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
+    write_atomic(path, bytes, options)
 }
 
 #[cfg(test)]

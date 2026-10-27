@@ -5,6 +5,7 @@
 
 pub mod cache;
 pub mod config;
+pub mod fs_util;
 pub mod git;
 pub mod hooks;
 pub mod integration;

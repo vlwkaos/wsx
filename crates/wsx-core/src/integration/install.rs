@@ -2,10 +2,9 @@ use super::{
     assets, availability, config_edit, opencode_config, paths, status, InstallResult,
     IntegrationTarget,
 };
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 fn safe_metadata(path: &Path, directory: bool) -> io::Result<()> {
@@ -78,29 +77,13 @@ fn atomic_write(path: &Path, content: &str, executable: bool) -> io::Result<()> 
         return Ok(());
     }
 
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let temporary = parent.join(format!(".wsx.{}.{}.tmp", std::process::id(), nonce));
-    let result: io::Result<()> = (|| {
-        #[cfg(unix)]
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(if executable { 0o700 } else { 0o600 });
-        let mut file = options.open(&temporary)?;
-        file.write_all(content.as_bytes())?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        fs::File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
+    crate::fs_util::write_atomic(
+        path,
+        content.as_bytes(),
+        crate::fs_util::AtomicWrite::replace()
+            .mode(if executable { 0o700 } else { 0o600 })
+            .durable(true),
+    )
 }
 
 fn read_or_empty(path: &Path) -> io::Result<String> {
