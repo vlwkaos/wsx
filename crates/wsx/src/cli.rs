@@ -20,6 +20,17 @@ pub enum Format {
     Compact,
 }
 
+/// `--json`, `--format` and `--group` of the commands that print the workspace.
+#[derive(clap::Args)]
+pub struct ListOutput {
+    #[arg(long)]
+    json: bool,
+    #[arg(short = 'f', long, value_enum, default_value = "normal")]
+    format: Format,
+    #[arg(short = 'g', long = "group", value_parser = parse_group_key)]
+    group: Option<GroupKey>,
+}
+
 #[derive(Parser)]
 #[command(
     name = "wsx",
@@ -43,12 +54,8 @@ pub struct Args {
 pub enum Command {
     /// Print workspace state
     Status {
-        #[arg(long)]
-        json: bool,
-        #[arg(short = 'f', long, value_enum, default_value = "normal")]
-        format: Format,
-        #[arg(short = 'g', long = "group", value_parser = parse_group_key)]
-        group: Option<GroupKey>,
+        #[command(flatten)]
+        output: ListOutput,
     },
     /// Worktree operations
     Worktree {
@@ -149,17 +156,24 @@ impl Command {
     /// True when the caller asked for JSON, so stderr must stay free of notices.
     pub fn json_output(&self) -> bool {
         match self {
-            Command::Status { json, .. } => *json,
+            Command::Status { output, .. } => output.json,
             Command::Worktree { subcommand } => matches!(
                 subcommand,
-                WorktreeCmd::Create { json: true, .. } | WorktreeCmd::List { json: true, .. }
+                WorktreeCmd::Create { json: true, .. }
+                    | WorktreeCmd::List {
+                        output: ListOutput { json: true, .. },
+                        ..
+                    }
             ),
             Command::Session { subcommand } => matches!(
                 subcommand,
                 SessionCmd::Create { json: true, .. }
                     | SessionCmd::Delete { json: true, .. }
                     | SessionCmd::Restart { json: true, .. }
-                    | SessionCmd::List { json: true, .. }
+                    | SessionCmd::List {
+                        output: ListOutput { json: true, .. },
+                        ..
+                    }
             ),
             Command::Agent { subcommand } => matches!(
                 subcommand,
@@ -639,12 +653,8 @@ pub enum WorktreeCmd {
     List {
         #[arg(short, long)]
         project: Option<String>,
-        #[arg(long)]
-        json: bool,
-        #[arg(short = 'f', long, value_enum, default_value = "normal")]
-        format: Format,
-        #[arg(short = 'g', long = "group", value_parser = parse_group_key)]
-        group: Option<GroupKey>,
+        #[command(flatten)]
+        output: ListOutput,
     },
 }
 
@@ -808,21 +818,20 @@ pub enum SessionCmd {
     List {
         #[arg(short, long)]
         project: Option<String>,
-        #[arg(long)]
-        json: bool,
-        #[arg(short = 'f', long, value_enum, default_value = "normal")]
-        format: Format,
-        #[arg(short = 'g', long = "group", value_parser = parse_group_key)]
-        group: Option<GroupKey>,
+        #[command(flatten)]
+        output: ListOutput,
     },
 }
 
 pub fn run(cmd: Command) -> Result<()> {
     match cmd {
         Command::Status {
-            json,
-            format,
-            group,
+            output:
+                ListOutput {
+                    json,
+                    format,
+                    group,
+                },
         } => cmd_status(json, format, group.as_ref()),
         Command::Worktree { subcommand } => match subcommand {
             WorktreeCmd::Create {
@@ -836,9 +845,12 @@ pub fn run(cmd: Command) -> Result<()> {
             }
             WorktreeCmd::List {
                 project,
-                json,
-                format,
-                group,
+                output:
+                    ListOutput {
+                        json,
+                        format,
+                        group,
+                    },
             } => cmd_worktree_list(project.as_deref(), json, format, group.as_ref()),
         },
         Command::Session { subcommand } => match subcommand {
@@ -890,9 +902,12 @@ pub fn run(cmd: Command) -> Result<()> {
             } => cmd_session_rename(&old, &new_name, &scope),
             SessionCmd::List {
                 project,
-                json,
-                format,
-                group,
+                output:
+                    ListOutput {
+                        json,
+                        format,
+                        group,
+                    },
             } => cmd_session_list(project.as_deref(), json, format, group.as_ref()),
         },
         Command::Group { subcommand } => match subcommand {
@@ -1497,8 +1512,8 @@ mod group_command_tests {
         let args = Args::try_parse_from(["wsx", "status", "--group", "recent"]).unwrap();
         assert!(matches!(
             args.command,
-            Some(Command::Status { group, .. })
-                if group == Some(GroupKey::Named("recent".into()))
+            Some(Command::Status { output })
+                if output.group == Some(GroupKey::Named("recent".into()))
         ));
         assert!(
             Args::try_parse_from(["wsx", "status", "--group", "work", "--group", "recent"])
@@ -1507,7 +1522,7 @@ mod group_command_tests {
         let ungrouped = Args::try_parse_from(["wsx", "status", "--group", "UNGROUPED"]).unwrap();
         assert!(matches!(
             ungrouped.command,
-            Some(Command::Status { group, .. }) if group == Some(GroupKey::Ungrouped)
+            Some(Command::Status { output }) if output.group == Some(GroupKey::Ungrouped)
         ));
         assert!(Args::try_parse_from(["wsx", "status", "--group", "Default"]).is_err());
     }
