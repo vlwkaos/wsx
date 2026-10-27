@@ -1832,6 +1832,7 @@ impl Host {
         }
         for (index, item) in verify.iter_mut().enumerate() {
             if item.capture.is_empty() {
+                item.poster.clear();
                 continue;
             }
             let kept = checks::keep_capture(
@@ -1845,6 +1846,22 @@ impl Host {
                 self.say(&format!("capture not kept: {error:#}"));
             }
             item.capture = kept.unwrap_or_default();
+            // ^ A poster only goes with a video capture.
+            if !item.capture.ends_with(".mp4") || item.poster.is_empty() {
+                item.poster.clear();
+                continue;
+            }
+            let kept = checks::keep_poster(
+                &self.dir,
+                &self.record.working_copy,
+                self.record.revision,
+                index + 1,
+                &item.poster,
+            );
+            if let Err(error) = &kept {
+                self.say(&format!("poster not kept: {error:#}"));
+            }
+            item.poster = kept.unwrap_or_default();
         }
         if let Err(error) = checks::collect(
             &self.record.project_id,

@@ -143,7 +143,7 @@ Motion shows that something arrived, changed or left; nothing moves for its own 
 
 ## Image viewer
 
-`viewer.js`. A tap on an image opens it full screen over the page, without a navigation: a To check capture, an image attached to a message or shown in one, and a drawn diagram. The image links stay real links (`a[data-view]`), so a link opened with a modifier key opens as a link does.
+`viewer.js`. A tap on an image opens it full screen over the page, without a navigation: a To check capture, an image attached to a message or shown in one, and a drawn diagram. A To check video plays there with its own controls (no autoplay, no zoom, its touches go to the controls). The image links stay real links (`a[data-view]`), so a link opened with a modifier key opens as a link does.
 
 - The image fits the screen on a dark backdrop (a diagram keeps the page's scheme, which it is drawn in). The `<img>` is the original URL, so a long press reaches it.
 - Zoom: pinch, a double tap on the image (2.5×, at that point, and back), ctrl+wheel, or − and + in the top bar. A drag moves a zoomed image. The page itself never zooms.

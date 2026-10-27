@@ -567,8 +567,11 @@ pub struct HumanVerify {
     /// Where a person looks: a URL, a page path such as `/#/p/wsx/checks`, or a screen name.
     #[serde(rename = "where")]
     pub place: String,
-    /// A capture of it: the image's path in the working copy, kept with the task at the land.
+    /// A capture of it: the path of an image or a short MP4 video in the working copy, kept
+    /// with the task at the land.
     pub capture: String,
+    /// A video capture's thumbnail image in the working copy, or empty.
+    pub poster: String,
     pub pass_if: String,
 }
 
@@ -609,8 +612,8 @@ pub fn worker_result_schema() -> serde_json::Value {
             "human_verify": { "type": "array", "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["check", "where", "capture", "pass_if"],
-                "properties": { "check": text, "where": text, "capture": text, "pass_if": text },
+                "required": ["check", "where", "capture", "poster", "pass_if"],
+                "properties": { "check": text, "where": text, "capture": text, "poster": text, "pass_if": text },
             } },
             "left_open": { "type": "array", "items": text },
             "notes": text,

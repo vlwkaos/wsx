@@ -2970,9 +2970,9 @@ def task_journey(args):
             js('task', 'close', 5, '--discard', '-p', 'ui')
             js('task', 'new', 'Owner asked: keep a worker busy WAIT ' + str(work / 'release'), '-p', 'ui')
             wait(lambda: js('task', 'show', 6, '-p', 'ui')['state'] == 'working', 'ui #6 working')
-            # #7 and #8 landed with an item each to check, each with a capture (the image viewer
-            # goes from one to the other); the manager hears of both ("#7 · done").
-            for n, prompt in ((7, 'WORK d.txt HV CAPTURE done. More words follow'), (8, 'WORK e.txt HV CAPTURE')):
+            # #7 and #8 landed with an item each to check, #7's with an image capture and #8's
+            # with a video and its poster; the manager hears of both ("#7 · done").
+            for n, prompt in ((7, 'WORK d.txt HV CAPTURE done. More words follow'), (8, 'WORK e.txt HV VIDEO')):
                 assert js('task', 'new', prompt, '-p', 'ui')['id'] == n
                 wait(lambda: js('task', 'show', n, '-p', 'ui')['state'] == 'ready', 'ui #%d' % n)
                 assert js('task', 'land', n, '-p', 'ui')['state'] == 'landed'

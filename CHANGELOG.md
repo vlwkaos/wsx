@@ -15,6 +15,9 @@
 
 - A task worker whose context passes `tasks.agent.rotateTokens` (default 350000) continues in a fresh conversation. It first writes handoff notes in its task folder; the fresh conversation opens with the task's prompt, those notes and the current step, and loads the project knowledge again. Each model call reads the whole context, so a long task no longer pays for 450k tokens on every call. A host started again after a session limit knows the size from the log and rotates on its first turn ([docs/tasks.md](docs/tasks.md) "Context rotation").
 - Internals: wsxd, the TUI and the CLI are split into modules by responsibility, with their tests in separate files, and repeated code (state saves, pane cleanup, event pushes, lease checks, daemon reply checks, text-form keys) is shared. No behavior change.
+- Tasks: a To check item can carry a short MP4 video (at most 25 MiB) with a `poster` image; the web plays it in the image viewer, served with byte ranges for iPhone Safari. Captures of items passed or failed more than 7 days ago are removed; their rows stay.
+
+## [0.40.1] - 2026-10-27
 
 ### Fixed
 

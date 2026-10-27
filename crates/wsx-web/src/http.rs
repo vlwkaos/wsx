@@ -1098,20 +1098,68 @@ async fn tasks_checks(
     with_scope(&app, project, crate::tasks::checks).map(Json)
 }
 
-/// The capture kept with a "To check" item: `GET .../checks/<id>/capture`.
+/// The capture kept with a "To check" item, `GET .../checks/<id>/capture`, and a video's
+/// poster, `.../poster`. One byte range is answered 206, so iPhone Safari plays a video.
 async fn check_capture(
     State(app): State<Shared>,
     Paired(_): Paired,
     UrlPath((project, id, part)): UrlPath<(u64, String, String)>,
+    headers: HeaderMap,
 ) -> Outcome<Response> {
     tasks_allowed(&app, false)?;
-    if part != "capture" {
-        return Err(Fault::not_found());
-    }
+    let poster = match part.as_str() {
+        "capture" => false,
+        "poster" => true,
+        _ => return Err(Fault::not_found()),
+    };
     let (bytes, media) = with_scope(&app, project, |scope| {
-        crate::tasks::check_capture(scope, &id)
+        crate::tasks::check_capture(scope, &id, poster)
     })?;
-    Ok(typed(media, bytes))
+    let size = bytes.len() as u64;
+    let range = match byte_range(&headers, size) {
+        Ok(range) => range,
+        Err(refused) => return Ok(refused),
+    };
+    let (start, end) = range.unwrap_or((0, size - 1));
+    let mut response = Response::builder()
+        .status(if range.is_some() {
+            StatusCode::PARTIAL_CONTENT
+        } else {
+            StatusCode::OK
+        })
+        .header(header::CONTENT_TYPE, media)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CACHE_CONTROL, "no-cache");
+    if range.is_some() {
+        response = response.header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}"));
+    }
+    response
+        .body(Body::from(bytes[start as usize..=end as usize].to_vec()))
+        .map_err(|_| Fault::new(500, "task_capture", "cannot build the response"))
+}
+
+/// One `bytes=a-b` or `bytes=a-` range of a file of `size` bytes, or none for the whole file:
+/// several ranges are answered with the whole file. A range past the end is refused with 416.
+fn byte_range(headers: &HeaderMap, size: u64) -> Result<Option<(u64, u64)>, Response> {
+    let Some((start, end)) = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("bytes="))
+        .filter(|value| !value.contains(','))
+        .and_then(|value| value.split_once('-'))
+        .and_then(|(start, end)| Some((start.parse::<u64>().ok()?, end.parse::<u64>().ok())))
+    else {
+        return Ok(None);
+    };
+    let end = end.unwrap_or(size - 1).min(size - 1);
+    if start > end {
+        return Err((
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            [(header::CONTENT_RANGE, format!("bytes */{size}"))],
+        )
+            .into_response());
+    }
+    Ok(Some((start, end)))
 }
 
 /// Pass or fail one "To check" item, or pass them all (`all/pass`).
@@ -1183,27 +1231,9 @@ async fn media_get(
         return Err(Fault::forbidden("media"));
     }
     let (entry, remaining) = app.media.get(&file).ok_or_else(Fault::not_found)?;
-    // One `bytes=a-b` range. Several ranges are answered with the whole file.
-    let range = headers
-        .get(header::RANGE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("bytes="))
-        .filter(|value| !value.contains(','))
-        .and_then(|value| value.split_once('-'))
-        .and_then(|(start, end)| Some((start.parse::<u64>().ok()?, end.parse::<u64>().ok())));
-    let range = match range {
-        Some((start, end)) => {
-            let end = end.unwrap_or(entry.size - 1).min(entry.size - 1);
-            if start > end {
-                return Ok((
-                    StatusCode::RANGE_NOT_SATISFIABLE,
-                    [(header::CONTENT_RANGE, format!("bytes */{}", entry.size))],
-                )
-                    .into_response());
-            }
-            Some((start, end))
-        }
-        None => None,
+    let range = match byte_range(&headers, entry.size) {
+        Ok(range) => range,
+        Err(refused) => return Ok(refused),
     };
     let (start, end) = range.unwrap_or((0, entry.size - 1));
     let mut source = std::fs::File::open(app.media.path(&entry)).map_err(|_| Fault::not_found())?;
