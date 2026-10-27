@@ -1,4 +1,5 @@
 use super::*;
+use crate::presentation::{AGENT_OBSERVATION_TEXT_BYTES, AGENT_OBSERVATION_TITLE_BYTES};
 
 // ^ docs/ui-state-ownership.md: observe final VT cells, not contiguous output bytes.
 #[test]
