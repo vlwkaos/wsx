@@ -47,6 +47,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   STATUS         answer from `wsx task ledger`
   NOTIFY         first end a 0-token turn with no result, as Claude's own turn for a notification
   SLOW           take about 3 s
+  LONG           take about 25 s
   BIG            a last model call of 200k tokens, so the host rotates the conversation
   SUMMED         four model calls of 50k each: the result's usage sums 200k, the context is 50k
 Each manager turn's message ends with the host's ledger summary, cut off before the words
@@ -170,6 +171,8 @@ def manager_turn(text, project, page):
     replies = []
     if 'SLOW' in text.split():
         time.sleep(3)
+    if 'LONG' in text.split():
+        time.sleep(25)
     if '\nSCRIPT\n' in '\n' + text:
         done = subprocess.run(('\n' + text).split('\nSCRIPT\n', 1)[1], shell=True, capture_output=True, text=True)
         return 'script -> %d %s' % (done.returncode, (done.stdout + done.stderr).strip()[:600])
