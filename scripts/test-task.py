@@ -1190,7 +1190,7 @@ def run(wsx, wsxd, work, owned):
     records_before = len(deploy_records())
     started = js('task', 'say', 'RUN wsx task release -p demo --json')
     text = reply_to(started['id'])['text']
-    assert 'ran: wsx task release -p demo --json -> 0' in text and '"started": true' in text, text
+    assert 'ran: wsx task release -p demo --json -> 0' in text and 'release of %s started; ' % long_tip[:12] in text, text
     assert not (base / 'long-release.log').exists() and len(deploy_records()) == records_before
     busy = cli('task', 'release', ok=False).stderr
     assert 'a deploy or release of demo runs' in busy and 'Nothing was run' in busy, busy
