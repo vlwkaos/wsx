@@ -38,6 +38,7 @@ The task workers and the manager are the headline of this release. A worker buil
 
 ### Changed
 
+- `wsx task release` still refuses while To check items are open, except when the owner's own message asked for the release (`--owner-said`). Some items can be checked only on the released build, so the release runs and its answer lists them as still to check on the release ([docs/tasks.md](docs/tasks.md) "Deploy and release").
 - A wsx older than its project's `wsx.config.yml` keeps working. An unknown key is now a warning that names its path and the file, not an error that refuses the whole file. A known key with a wrong type or value still fails.
 - Claude started in a wsx pane uses its full-screen renderer (`CLAUDE_CODE_NO_FLICKER=1`, unless you set the variable), so a resize no longer leaves copies of a tall reply in the scrollback.
 - `wsx status --json` adds `exchange` to each session and `work` to each worktree (uncommitted paths, and commits the default branch does not have). `wsx session create --json` adds `pane_id` and `agent`, and `wsx session list --json` rows add `project`, `branch` and `worktree`.
