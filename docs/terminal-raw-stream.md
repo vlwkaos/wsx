@@ -30,7 +30,7 @@ Protocol 16 (an added request, no protocol change), daemon revision 23, capabili
 ## Rules
 
 1. **No gap and no repeat.** `Emulator::ingest` (`crates/wsx-terminal/src/lib.rs`) counts every PTY byte and, from the first replay on, keeps the last 1 MiB in a ring. `raw_replay` reads the screen and the byte count under one emulator lock, so the replay plus the bytes after it are exactly the pane's output.
-2. **A slow client gets a replay, not a gap.** When the next byte is no longer in the ring, the stream sends a new `replay`. A client that does not read for 5 seconds loses the connection.
+2. **A slow client gets a replay, not a gap.** When the next byte is no longer in the ring, the stream sends a new `replay`. A client that does not read for 5 seconds loses the connection. The lease lasts 3 seconds after the last `input` or `heartbeat`, whether the client reads or not, so a client sends heartbeats from a thread that does not wait on reads (as `wsx-core`'s stream writer does); otherwise the stream ends with `lease_lost`.
 3. **A resize restarts from a replay.** Two emulators reflow a resized screen differently. The byte stream cannot keep them equal, so `wsxd`'s screen is sent again after each size change.
 4. **The replay is the handoff screen.** It uses `bounded_handoff_ansi` for at most 512 KiB of scrollback, scrolls exactly those lines off the client screen, writes the screen rows from row 1, then the modes that differ from a reset emulator (cursor keys, wrap, cursor visibility, mouse tracking and encoding, focus events, bracketed paste) and the cursor position. With the alternate screen active it holds that screen only.
 5. **Messages are written outside the pane operation lock.** A client that stops reading cannot delay a takeover.
