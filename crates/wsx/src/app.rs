@@ -608,6 +608,8 @@ pub enum PendingAction {
 // ── Background jobs ───────────────────────────────────────────────────────────
 
 pub struct BgJob {
+    /// Unique per `spawn_bg` call, so a result clears only its own job.
+    pub id: u64,
     pub label: String,
 }
 
@@ -628,11 +630,71 @@ pub enum BgOutcome {
         installed: Vec<wsx_core::integration::IntegrationTarget>,
         failures: Vec<String>,
     },
+    /// A one-shot terminal input failed on the worker thread (`TerminalInputWorker`).
+    TerminalInputFailed(String),
 }
 
+/// Result id for work that never had a `BgJob`, so it clears no job.
+const NO_JOB_ID: u64 = u64::MAX;
+
 struct BgResult {
+    id: u64,
     label: String,
     outcome: Result<BgOutcome>,
+}
+
+/// Starts the one thread that sends one-shot terminal bytes (Workspace actions
+/// such as Ctrl-C). It ends when the App drops the sender.
+fn spawn_terminal_input_worker(
+    client: runtime::Client,
+    results: mpsc::Sender<BgResult>,
+) -> mpsc::Sender<(runtime::PaneId, Vec<u8>)> {
+    let (tx, rx) = mpsc::channel::<(runtime::PaneId, Vec<u8>)>();
+    std::thread::spawn(move || {
+        while let Ok((pane_id, bytes)) = rx.recv() {
+            if let Err(error) = send_terminal_bytes_once(&client, pane_id, bytes) {
+                let _ = results.send(BgResult {
+                    id: NO_JOB_ID,
+                    label: "terminal input".into(),
+                    outcome: Ok(BgOutcome::TerminalInputFailed(error.to_string())),
+                });
+            }
+        }
+    });
+    tx
+}
+
+fn send_terminal_bytes_once(
+    client: &runtime::Client,
+    pane_id: runtime::PaneId,
+    bytes: Vec<u8>,
+) -> Result<()> {
+    // ^ A one-shot Workspace action must never share identity with a live or
+    // reconnecting Terminal stream, whose lease has a separate incarnation. A key
+    // press is explicit, so it takes the pane from another controller.
+    let client_id = runtime::new_client_id();
+    match client.call(&runtime::Request::TerminalAcquire {
+        pane_id,
+        client_id,
+        takeover: TerminalControlIntent::Explicit.takeover(),
+    })? {
+        runtime::Response::Ack { .. } => {}
+        runtime::Response::Error(error) => anyhow::bail!("{}: {}", error.code, error.message),
+        _ => anyhow::bail!("unexpected terminal lease response"),
+    }
+    let result = match client.call(&runtime::Request::TerminalInput {
+        pane_id,
+        client_id,
+        bytes,
+    })? {
+        runtime::Response::Ack { .. } => Ok(()),
+        runtime::Response::Error(error) => {
+            Err(anyhow::anyhow!("{}: {}", error.code, error.message))
+        }
+        _ => Err(anyhow::anyhow!("unexpected terminal input response")),
+    };
+    let _ = client.call(&runtime::Request::TerminalRelease { pane_id, client_id });
+    result
 }
 
 enum RoutineSelection {
@@ -940,9 +1002,11 @@ pub struct App {
     notice_started: Option<Instant>,
     notice_queue: VecDeque<Notice>,
     pub jobs: Vec<BgJob>,
+    next_job_id: u64,
     pub spinner_frame: usize,
     bg_tx: mpsc::Sender<BgResult>,
     bg_rx: mpsc::Receiver<BgResult>,
+    terminal_input_tx: mpsc::Sender<(runtime::PaneId, Vec<u8>)>,
     needs_redraw: bool,
     should_quit: bool,
     force_terminal_redraw: bool,
@@ -1105,6 +1169,7 @@ impl App {
         let (bg_tx, bg_rx) = mpsc::channel();
         let (runtime_tx, runtime_rx) = mpsc::channel();
         let runtime_client = runtime::Client::local();
+        let terminal_input_tx = spawn_terminal_input_worker(runtime_client.clone(), bg_tx.clone());
         // ^ Register TUI presence only after initial ensure_available, or this TUI blocks its own handoff.
         let (_runtime_event_tx, runtime_event_rx) = mpsc::channel();
         let (update_tx, update_rx) = mpsc::channel::<String>();
@@ -1159,7 +1224,9 @@ impl App {
             notice_started: initial_notice.as_ref().map(|_| Instant::now()),
             notice_queue: VecDeque::new(),
             jobs: vec![],
+            next_job_id: 0,
             spinner_frame: 0,
+            terminal_input_tx,
             bg_tx,
             bg_rx,
             needs_redraw: true,
@@ -1385,19 +1452,22 @@ impl App {
         F: FnOnce() -> Result<BgOutcome> + Send + 'static,
     {
         let label = label.into();
+        let id = self.next_job_id;
+        self.next_job_id += 1;
         self.jobs.push(BgJob {
+            id,
             label: label.clone(),
         });
         self.needs_redraw = true;
         let tx = self.bg_tx.clone();
         std::thread::spawn(move || {
             let outcome = f();
-            let _ = tx.send(BgResult { label, outcome });
+            let _ = tx.send(BgResult { id, label, outcome });
         });
     }
 
     fn apply_bg_result(&mut self, result: BgResult) {
-        self.jobs.retain(|j| j.label != result.label);
+        self.jobs.retain(|j| j.id != result.id);
         self.needs_redraw = true;
         match result.outcome {
             Err(e) => {
@@ -1452,6 +1522,9 @@ impl App {
                 self.mark_dirty();
                 self.spawn_runtime_refresh();
                 self.set_status(format!("Killed session: {display_name}"));
+            }
+            Ok(BgOutcome::TerminalInputFailed(error)) => {
+                self.set_error(format!("Action failed: {error}"));
             }
             Ok(BgOutcome::IntegrationsInstalled {
                 installed,
@@ -4332,37 +4405,13 @@ impl App {
         }
     }
 
+    /// Queues one-shot bytes for the terminal input worker. The worker runs the
+    /// lease round trips off the UI thread, in queue order, so input to one pane
+    /// keeps its order. A failure comes back as `BgOutcome::TerminalInputFailed`.
     fn send_terminal_bytes_once(&self, pane_id: runtime::PaneId, bytes: Vec<u8>) -> Result<()> {
-        // ^ A one-shot Workspace action must never share identity with a live or
-        // reconnecting Terminal stream, whose lease has a separate incarnation. A key
-        // press is explicit, so it takes the pane from another controller.
-        let client_id = runtime::new_client_id();
-        match self
-            .runtime_client
-            .call(&runtime::Request::TerminalAcquire {
-                pane_id,
-                client_id,
-                takeover: TerminalControlIntent::Explicit.takeover(),
-            })? {
-            runtime::Response::Ack { .. } => {}
-            runtime::Response::Error(error) => anyhow::bail!("{}: {}", error.code, error.message),
-            _ => anyhow::bail!("unexpected terminal lease response"),
-        }
-        let result = match self.runtime_client.call(&runtime::Request::TerminalInput {
-            pane_id,
-            client_id,
-            bytes,
-        })? {
-            runtime::Response::Ack { .. } => Ok(()),
-            runtime::Response::Error(error) => {
-                Err(anyhow::anyhow!("{}: {}", error.code, error.message))
-            }
-            _ => Err(anyhow::anyhow!("unexpected terminal input response")),
-        };
-        let _ = self
-            .runtime_client
-            .call(&runtime::Request::TerminalRelease { pane_id, client_id });
-        result
+        self.terminal_input_tx
+            .send((pane_id, bytes))
+            .map_err(|_| anyhow::anyhow!("terminal input worker stopped"))
     }
 
     fn is_workspace_click(&self, mouse: crossterm::event::MouseEvent) -> bool {
@@ -7281,6 +7330,7 @@ mod tests {
         let search_index = SearchIndex::new(&workspace, &cached_flat);
         let worktree_index = build_worktree_index(&workspace);
         let (bg_tx, bg_rx) = std::sync::mpsc::channel();
+        let terminal_input_tx = spawn_terminal_input_worker(test_runtime_client(), bg_tx.clone());
         let (git_local_tx, git_local_rx) = std::sync::mpsc::channel();
         let (fetch_tx, fetch_rx) = std::sync::mpsc::channel();
         let (runtime_tx, runtime_rx) = std::sync::mpsc::channel();
@@ -7315,7 +7365,9 @@ mod tests {
             notice_started: None,
             notice_queue: VecDeque::new(),
             jobs: Vec::new(),
+            next_job_id: 0,
             spinner_frame: 0,
+            terminal_input_tx,
             bg_tx,
             bg_rx,
             needs_redraw: false,
@@ -10843,10 +10895,12 @@ mod tests {
     fn partial_default_session_failure_keeps_worktree_refresh_and_error_visible() {
         let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
         app.jobs.push(BgJob {
+            id: 1,
             label: "create feature/4".into(),
         });
 
         app.apply_bg_result(BgResult {
+            id: 1,
             label: "create feature/4".into(),
             outcome: Ok(BgOutcome::WorktreeCreated {
                 label: "Created worktree: feature/4".into(),
@@ -10878,10 +10932,12 @@ mod tests {
             None,
         );
         app.jobs.push(BgJob {
+            id: 1,
             label: "kill session".into(),
         });
 
         app.apply_bg_result(BgResult {
+            id: 1,
             label: "kill session".into(),
             outcome: Ok(BgOutcome::SessionKilled {
                 session_id: runtime::SessionId(1),
