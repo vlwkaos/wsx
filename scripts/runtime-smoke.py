@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import resource
 import shutil
 import signal
 import socket
@@ -200,9 +201,13 @@ def wait_singleton_released():
         os.close(descriptor)
 
 
-def start():
+def start(descriptor_limit=None):
     wait_singleton_released()
-    process = subprocess.Popen([str(DAEMON)], env=env)
+    limit = None
+    if descriptor_limit is not None:
+        hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+        limit = lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (descriptor_limit, hard))
+    process = subprocess.Popen([str(DAEMON)], env=env, preexec_fn=limit)
     wait_ready(process)
     return process
 
@@ -247,6 +252,114 @@ def shutdown_from_incompatible_client(process):
         assert response["type"] == "ack", response
     process.wait(timeout=5)
     wait_socket_stopped()
+
+# Concurrent agent reports. Owner report on 0.31: the TUI kept reconnecting, then every
+# session ended at once while agents in several projects and worktrees reported together.
+# ^ wsxd started from a macOS GUI terminal inherits launchd's soft descriptor limit, 256.
+burst_projects = []
+for name in ("smoke", "burst-b", "burst-c"):
+    root = PROJECT if name == "smoke" else WORK / name
+    if root != PROJECT:
+        subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True, env=env)
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=smoke", "-c",
+                        "user.email=smoke@example.invalid", "commit", "-q", "--allow-empty",
+                        "-m", "base"], check=True, env=env)
+    worktrees = [{"path": str(root), "branch": "main"}]
+    for branch in (f"burst-{name}-1", f"burst-{name}-2"):
+        path = WORK / f"{name}-{branch}"
+        subprocess.run(["git", "-C", str(root), "worktree", "add", "-q", "-b", branch, str(path)],
+                       check=True, env=env)
+        worktrees.append({"path": str(path), "branch": branch})
+    burst_projects.append({"path": str(root), "name": name, "worktrees": worktrees})
+burst_process = start(descriptor_limit=256)
+assert call("synchronize_projects", {"projects": burst_projects})["type"] == "ack"
+burst_identity = call("lifecycle_status")["data"]
+burst_panes = []
+burst_idle_panes = []
+# ^ Each worktree has one agent pane and three idle sessions; every pane holds about five
+# wsxd descriptors.
+for index, worktree in enumerate(call("snapshot")["data"]["worktrees"]):
+    for slot in range(4):
+        created = call("session_create", {
+            "worktree_id": worktree["id"], "label": f"burst-{index}-{slot}", "command": [],
+            "rows": 12, "cols": 80,
+        })
+        assert created["type"] == "created", created
+        session = next(item for item in call("snapshot")["data"]["sessions"]
+                       if item["id"] == created["data"]["id"])
+        pane = (session["focused_pane"], Path(worktree["path"]))
+        (burst_idle_panes if slot else burst_panes).append(pane)
+assert len(burst_panes) == 9 and len(call("snapshot")["data"]["projects"]) == 3, burst_panes
+burst_terminals = {}
+for pane_id, _ in burst_panes + burst_idle_panes:
+    pane = next(item for item in call("snapshot")["data"]["panes"] if item["id"] == pane_id)
+    burst_terminals[pane_id] = pane["terminal_id"]
+# ^ A TUI holds one terminal stream per visible pane, reads it and types through it.
+# A stream that ends is a reconnect.
+burst_streams = {}
+burst_stream_ends = []
+
+
+def drain_burst_stream(pane_id, stream):
+    try:
+        while stream.recv(65536):
+            pass
+        burst_stream_ends.append((pane_id, "closed"))
+    except OSError as error:
+        burst_stream_ends.append((pane_id, repr(error)))
+
+
+for client_id, (pane_id, _) in enumerate(burst_panes, start=600):
+    stream = wsxd_client.connect(SOCKET, 5)
+    wsxd_client.send(stream, "terminal_subscribe", {
+        "pane_id": pane_id, "client_id": client_id, "takeover": False, "rows": 12, "cols": 80,
+    })
+    assert recv_line(stream)["type"] == "ack"
+    stream.settimeout(None)
+    threading.Thread(target=drain_burst_stream, args=(pane_id, stream), daemon=True).start()
+    burst_streams[pane_id] = stream
+BURST_ROUNDS = 3
+for round_index in range(BURST_ROUNDS):
+    markers = []
+    for index, (pane_id, path) in enumerate(burst_panes):
+        provider = "claude" if index % 2 else "codex"
+        marker = WORK / f"burst-{pane_id}-{round_index}.done"
+        markers.append(marker)
+        # ^ A per-directory profile (direnv) moves HOME and XDG_STATE_HOME inside the pane.
+        profile = f"export HOME={path}/.home XDG_STATE_HOME={path}/.state; " if index % 3 == 0 else ""
+        burst_streams[pane_id].sendall(json.dumps({"type": "input", "data": list((
+            f"cd {path} && {profile}"
+            "i=0; while [ $i -lt 8 ]; do for s in working blocked idle done; do "
+            f"\"$WSX_AGENT_REPORT_BIN\" agent report \"$WSX_PANE_ID\" --provider {provider} "
+            f"--state $s --lifecycle >/dev/null 2>>{marker}.err & done; i=$((i+1)); done; "
+            f"wait; touch {marker}\r"
+        ).encode())}).encode() + b"\n")
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and not all(marker.exists() for marker in markers):
+        assert burst_process.poll() is None, f"wsxd exited during report burst {round_index}"
+        time.sleep(0.1)
+    assert all(marker.exists() for marker in markers), f"report burst {round_index} did not finish"
+assert burst_process.poll() is None, "wsxd exited under concurrent agent reports"
+burst_after = call("lifecycle_status")["data"]
+assert burst_after["phase"] == "ready", burst_after
+assert (burst_after["epoch"], burst_after["started_unix_ms"]) == (
+    burst_identity["epoch"], burst_identity["started_unix_ms"]
+), "wsxd restarted or handed off under concurrent agent reports"
+assert not burst_stream_ends, f"terminal streams ended under concurrent agent reports: {burst_stream_ends}"
+for stream in burst_streams.values():
+    stream.shutdown(socket.SHUT_RDWR)
+    stream.close()
+burst_snapshot = call("snapshot")["data"]
+for pane_id, _ in burst_panes + burst_idle_panes:
+    pane = next(item for item in burst_snapshot["panes"] if item["id"] == pane_id)
+    assert pane["exited"] is False and pane["terminal_id"] == burst_terminals[pane_id], pane
+shutdown(burst_process)
+# ^ The steps below start from one project with one worktree.
+for branch in ("burst-smoke-1", "burst-smoke-2"):
+    git("worktree", "remove", "--force", str(WORK / f"smoke-{branch}"))
+    git("branch", "-D", branch)
+shutil.rmtree(STATE / "wsx")
+print("concurrent agent reports: PASS", flush=True)
 
 process = start()
 assert SOCKET.stat().st_mode & 0o777 == 0o600

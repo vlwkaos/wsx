@@ -53,6 +53,8 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Revision 34: a resumed agent that quits leaves a shell that takes typed keys: its supervisor
 // resets the agent's screen and keyboard modes and opens the shell also when the agent's record
 // cannot be cleared (docs/agent-orchestration.md "Resumed agents").
+// Revision 34 also survives a burst of connections: it raises its open-file limit at start
+// and drops only the connection whose accept failed (wsx-daemon `accept_error_is_transient`).
 pub const DAEMON_REVISION: u32 = 34;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
