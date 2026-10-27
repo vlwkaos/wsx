@@ -353,10 +353,13 @@ fn capture_path(dir: &TaskDir, name: &str) -> Result<std::path::PathBuf> {
 /// The width and height of a kept PNG capture, read from its first bytes only.
 pub fn capture_size(dir: &TaskDir, name: &str) -> Option<(u32, u32)> {
     let mut head = [0; 24];
-    open_nofollow(&capture_path(dir, name).ok()?, OpenOptions::new().read(true))
-        .ok()?
-        .read_exact(&mut head)
-        .ok()?;
+    open_nofollow(
+        &capture_path(dir, name).ok()?,
+        OpenOptions::new().read(true),
+    )
+    .ok()?
+    .read_exact(&mut head)
+    .ok()?;
     png_size(&head)
 }
 
