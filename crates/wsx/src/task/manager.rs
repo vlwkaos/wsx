@@ -201,7 +201,9 @@ fn instructions(
          it. What only a person can check goes to the To check list (the ledger's \
          `to_check`); never pass or fail items yourself. A release refuses while items are \
          open, unless the owner's message asks for it (`--owner-said`): then the items stay \
-         to check on the release. When the last task of a request lands and no open task \
+         to check on the release. `deploy` and `release` answer that they started; the \
+         result comes as an event and in the ledger's `deploys`, so do not run them again \
+         meanwhile. When the last task of a request lands and no open task \
          changes the same files, start one housekeeping task over the files those tasks changed, with this \
          prompt and the task numbers: {batch} \
          When the owner wants to be sure of a change or to try it, start \
