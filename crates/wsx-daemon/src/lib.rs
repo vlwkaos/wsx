@@ -7304,8 +7304,16 @@ fn spawn_plugin_dispatcher(daemon: &Arc<Daemon>) -> io::Result<thread::JoinHandl
         })
 }
 
+/// The pane's operation lock. A pane id with no runtime and no persisted record gets a lock that nothing keeps:
+/// the caller's own check then answers with its usual error, and a client that sends made-up
+/// pane ids cannot grow `terminal_operation_locks`.
 fn terminal_operation_lock(daemon: &Daemon, pane_id: PaneId) -> Arc<Mutex<()>> {
     let mut state = lock(&daemon.state);
+    let known = state.runtimes.contains_key(&pane_id)
+        || state.persisted.panes.iter().any(|pane| pane.id == pane_id);
+    if !known {
+        return Arc::new(Mutex::new(()));
+    }
     Arc::clone(
         state
             .terminal_operation_locks
