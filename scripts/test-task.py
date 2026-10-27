@@ -261,6 +261,7 @@ def run(wsx, wsxd, work, owned):
     # ^ A copy per run: the leftover checks then see this run's fake workers, not another run's.
     fake_script = bin_dir / 'fake-claude-stream.py'
     shutil.copy(ROOT / 'scripts/fake-claude-stream.py', fake_script)
+    shutil.copytree(ROOT / 'scripts/fixtures', bin_dir / 'fixtures')
     fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(fake_script) + ' "$@"\n')
     fake.chmod(0o755)
     daemon_socket = work / 'd.sock'
