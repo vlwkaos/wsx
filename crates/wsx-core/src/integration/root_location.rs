@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::{ffi::OsString, io};
 
 pub(super) struct RootLocation {
-    variables: &'static [&'static str],
+    pub(super) variables: &'static [&'static str],
     home: &'static [&'static str],
     suffix: &'static [&'static str],
 }

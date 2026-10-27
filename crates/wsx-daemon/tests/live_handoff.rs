@@ -1079,7 +1079,7 @@ fn a_resumed_agent_that_quits_leaves_a_usable_shell() {
     wait_for_socket(&fixture.socket);
     let client = Client::new(fixture.socket.clone());
     let command = format!(
-        "SHELL=/bin/sh WSX_RUNTIME_GENERATION=stale exec '{}' __wsx_resume_supervisor /bin/sh -c 'printf \"agent-quit\\033[?1049h\\033[>31u\\033[?1000h\"'",
+        "SHELL=/bin/sh WSX_RUNTIME_GENERATION=stale exec '{}' __wsx_resume_supervisor -- /bin/sh -c 'printf \"agent-quit\\033[?1049h\\033[>31u\\033[?1000h\"'",
         binary.display()
     );
     let pane = sessions(&client, "resume", &[("agent", &command)])[0];

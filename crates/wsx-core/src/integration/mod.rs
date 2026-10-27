@@ -24,6 +24,17 @@ pub use model::{
 };
 pub use status::{metadata, scan};
 
+/// The variables that choose a provider's config root, highest priority first
+/// (`CLAUDE_CONFIG_DIR` for Claude). A resume restores them; see
+/// docs/agent-orchestration.md "Resumed agents".
+pub fn root_variables(provider: &str) -> &'static [&'static str] {
+    provider
+        .parse::<IntegrationTarget>()
+        .ok()
+        .and_then(root_location::location)
+        .map_or(&[], |location| location.variables)
+}
+
 /// How every wsx agent presents a reply: the manager's and the workers' instructions,
 /// and the Claude output style that `wsx agent install claude` writes (docs/agent-reporting.md
 /// "Output style").

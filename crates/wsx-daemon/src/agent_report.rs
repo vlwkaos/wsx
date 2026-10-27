@@ -139,10 +139,16 @@ pub(crate) fn agent_report_with_attachment(
     };
     let conversation_id = conversation_id.map(|value| truncate_utf8(value, 512));
     let explicit_session_ref = validated_session_ref(session_ref)?;
-    if explicit_session_ref
-        .as_ref()
-        .is_some_and(|session_ref| resume::plan(&provider, session_ref).is_none())
-    {
+    if explicit_session_ref.as_ref().is_some_and(|session_ref| {
+        resume::plan(&provider, session_ref).is_none()
+            || session_ref.launch.as_ref().is_some_and(|launch| {
+                let variables = integration::root_variables(&provider);
+                !launch
+                    .environment
+                    .keys()
+                    .all(|name| variables.contains(&name.as_str()))
+            })
+    }) {
         return Err(api(
             "invalid_agent_session",
             "provider does not support this agent session reference",
@@ -182,11 +188,15 @@ pub(crate) fn agent_report_with_attachment(
                 .filter(|previous| previous.attached && previous.provider == provider),
         ) {
             if let Some(old) = &previous.session_ref {
-                if current.kind == old.kind
-                    && current.value == old.value
-                    && current.transcript_path.is_none()
-                {
-                    current.transcript_path = old.transcript_path.clone();
+                if current.kind == old.kind && current.value == old.value {
+                    if current.transcript_path.is_none() {
+                        current.transcript_path = old.transcript_path.clone();
+                    }
+                    // ^ The session's first report knows where it started; a later hook
+                    // may run after the agent changed directory.
+                    if old.launch.is_some() {
+                        current.launch = old.launch.clone();
+                    }
                 }
             }
         }

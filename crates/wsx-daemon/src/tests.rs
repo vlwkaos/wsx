@@ -1685,6 +1685,7 @@ fn agent_report_rejects_invalid_structured_id_without_mutation() {
             kind: AgentSessionRefKind::Id,
             value: "invalid\nid".into(),
             transcript_path: None,
+            launch: None,
         }),
         AgentCapabilities::default(),
     )

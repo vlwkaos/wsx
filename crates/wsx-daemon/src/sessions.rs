@@ -504,7 +504,7 @@ pub(crate) fn restart_session(
             .iter()
             .find(|session| session.id == pane.session_id)
             .ok_or_else(|| api("not_found", "session not found"))?;
-        let cwd = state
+        let mut cwd = state
             .persisted
             .worktrees
             .iter()
@@ -518,16 +518,11 @@ pub(crate) fn restart_session(
             .unwrap_or_else(default_launch_recipe);
         let mut agent = pane.agent.clone();
         let launch = recovery_launch(agent.as_mut(), &recipe, true);
-        let launch = match prepare_recovery_launch(launch, &cwd) {
+        let launch = match prepare_recovery_launch(launch, &mut cwd) {
             Ok(launch) => launch,
             Err(error) => {
                 eprintln!("wsxd restart pane {}: {error}", id.0);
-                RecoveryLaunch {
-                    recipe: shell_launch_recipe(recipe.rows, recipe.cols),
-                    resume_key: None,
-                    provider: None,
-                    await_readiness: false,
-                }
+                RecoveryLaunch::plain(shell_launch_recipe(recipe.rows, recipe.cols))
             }
         };
         // ^ A saved identity only authorizes a resume plan; the replacement runtime must report its own generation.

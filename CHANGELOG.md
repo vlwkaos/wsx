@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 - Tasks: a To check item can carry a short MP4 video (at most 25 MiB) with a `poster` image; the web plays it in the image viewer, served with byte ranges for iPhone Safari. Captures of items passed or failed more than 7 days ago are removed; their rows stay.
+### Fixed
+
+- A resumed agent gets back the profile it ran with. After a crash or restart, wsxd resumed Claude with wsxd's own environment and PATH in the worktree root, so a session that ran with a work profile (`CLAUDE_CONFIG_DIR`) came back with the personal one. The agent's report now records its cwd and its config-root variables (`CLAUDE_CONFIG_DIR`, `CODEX_HOME` and the others wsx installs into), and the resume sets them on the agent; a variable the agent did not have is removed. Daemon revision 36, [docs/agent-orchestration.md](docs/agent-orchestration.md) "Resumed agents".
 
 ## [0.40.3] - 2026-10-28
 

@@ -11,7 +11,7 @@ pub(crate) fn recover_runtimes(daemon: &Arc<Daemon>, resume_agents: bool) -> io:
         let RecoveryAttempt {
             pane_id,
             terminal_id,
-            cwd,
+            mut cwd,
             launch,
         } = attempt;
         let (stopping, pane_exists) = {
@@ -32,7 +32,7 @@ pub(crate) fn recover_runtimes(daemon: &Arc<Daemon>, resume_agents: bool) -> io:
         if had_resume && launch.resume_key.is_none() {
             clear_pending_recovery_agent(daemon, pane_id)?;
         }
-        let launch = match prepare_recovery_launch(launch, &cwd) {
+        let launch = match prepare_recovery_launch(launch, &mut cwd) {
             Ok(launch) => launch,
             Err(error) => {
                 eprintln!("wsxd recovery pane {}: {error}", pane_id.0);
@@ -310,20 +310,10 @@ pub(crate) fn recovery_launch(
     resume_agents: bool,
 ) -> RecoveryLaunch {
     if !resume_agents {
-        return RecoveryLaunch {
-            recipe: saved_recipe.clone(),
-            resume_key: None,
-            provider: None,
-            await_readiness: false,
-        };
+        return RecoveryLaunch::plain(saved_recipe.clone());
     }
     let Some(agent) = agent else {
-        return RecoveryLaunch {
-            recipe: saved_recipe.clone(),
-            resume_key: None,
-            provider: None,
-            await_readiness: false,
-        };
+        return RecoveryLaunch::plain(saved_recipe.clone());
     };
     let session_ref = agent.session_ref.clone().or_else(|| {
         agent
@@ -332,23 +322,13 @@ pub(crate) fn recovery_launch(
             .and_then(|value| AgentSessionRef::id(value.clone()))
     });
     let Some(session_ref) = session_ref else {
-        return RecoveryLaunch {
-            recipe: saved_recipe.clone(),
-            resume_key: None,
-            provider: None,
-            await_readiness: false,
-        };
+        return RecoveryLaunch::plain(saved_recipe.clone());
     };
     agent.session_ref = Some(session_ref.clone());
     let provider = agent.provider.clone();
     let await_readiness = agent.capabilities.lifecycle;
     let Some(plan) = resume::plan(&provider, &session_ref) else {
-        return RecoveryLaunch {
-            recipe: shell_launch_recipe(saved_recipe.rows, saved_recipe.cols),
-            resume_key: None,
-            provider: None,
-            await_readiness: false,
-        };
+        return RecoveryLaunch::plain(shell_launch_recipe(saved_recipe.rows, saved_recipe.cols));
     };
     RecoveryLaunch {
         recipe: LaunchRecipe {
@@ -360,6 +340,7 @@ pub(crate) fn recovery_launch(
         resume_key: Some(plan.dedupe_key),
         provider: Some(provider),
         await_readiness,
+        agent_launch: session_ref.launch,
     }
 }
 
@@ -372,12 +353,7 @@ pub(crate) fn deduplicate_recovery_launch(
         .as_ref()
         .is_some_and(|key| resumed_sessions.contains(key))
     {
-        RecoveryLaunch {
-            recipe: shell_launch_recipe(launch.recipe.rows, launch.recipe.cols),
-            resume_key: None,
-            provider: None,
-            await_readiness: false,
-        }
+        RecoveryLaunch::plain(shell_launch_recipe(launch.recipe.rows, launch.recipe.cols))
     } else {
         launch
     }
@@ -387,19 +363,27 @@ pub(crate) fn shell_launch_recipe(rows: u16, cols: u16) -> LaunchRecipe {
     launch_recipe(Vec::new(), None, rows, cols).unwrap_or_else(|_| default_launch_recipe())
 }
 
+/// Wraps a resume plan in the resume supervisor. A plan with the agent's launch context
+/// moves `cwd` to the agent's own directory when it still exists.
 pub(crate) fn prepare_recovery_launch(
     mut launch: RecoveryLaunch,
-    cwd: &Path,
+    cwd: &mut PathBuf,
 ) -> Result<RecoveryLaunch, String> {
     if launch.resume_key.is_none() {
         return Ok(launch);
     }
+    let agent_cwd = launch
+        .agent_launch
+        .as_ref()
+        .map(|agent_launch| agent_launch.cwd.clone())
+        .filter(|agent_cwd| agent_cwd.is_dir())
+        .unwrap_or_else(|| cwd.clone());
     let executable = launch
         .recipe
         .command
         .first()
         .ok_or_else(|| "native resume command is empty".to_string())?;
-    let resolved = resolve_executable(cwd, executable)
+    let resolved = resolve_executable(&agent_cwd, executable)
         .ok_or_else(|| format!("native resume executable is unavailable: {executable}"))?;
     launch.recipe.command[0] = resolved
         .to_str()
@@ -411,8 +395,20 @@ pub(crate) fn prepare_recovery_launch(
         .to_str()
         .ok_or_else(|| "wsxd resume supervisor path is not UTF-8".to_string())?;
     let mut command = vec![supervisor.to_string(), RESUME_SUPERVISOR_ARG.to_string()];
+    // ^ docs/agent-orchestration.md "Resumed agents": the supervisor sets the agent's config
+    // root on the agent alone, so the shell after it keeps the pane's own environment.
+    if let (Some(agent_launch), Some(provider)) = (&launch.agent_launch, &launch.provider) {
+        for name in integration::root_variables(provider) {
+            match agent_launch.environment.get(*name) {
+                Some(value) => command.extend(["--set".into(), format!("{name}={value}")]),
+                None => command.extend(["--unset".into(), name.to_string()]),
+            }
+        }
+    }
+    command.push("--".into());
     command.extend(launch.recipe.command);
     launch.recipe.command = command;
+    *cwd = agent_cwd;
     Ok(launch)
 }
 
@@ -451,15 +447,45 @@ pub(crate) const AGENT_MODES_RESET: &[u8] = b"\x1b[?1049l\x1b[=0;1u\x1b[>4;0m\
 \x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\
 \x1b[?1l\x1b>\x1b[?25h";
 
+/// `wsxd __wsx_resume_supervisor [--set NAME=VALUE | --unset NAME]... -- <agent argv>`
 pub fn run_resume_supervisor(mut arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
-    let executable = arguments.next().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "resume supervisor command is empty",
-        )
-    })?;
+    let invalid = |message: &str| io::Error::new(io::ErrorKind::InvalidInput, message.to_string());
+    let mut environment = Vec::new();
+    loop {
+        let option = arguments
+            .next()
+            .ok_or_else(|| invalid("resume supervisor command is empty"))?;
+        let mut value = || {
+            arguments
+                .next()
+                .ok_or_else(|| invalid("resume supervisor option has no value"))
+        };
+        match option.to_str() {
+            Some("--") => break,
+            Some("--set") => {
+                let assignment = value()?
+                    .into_string()
+                    .map_err(|_| invalid("resume supervisor variable is not UTF-8"))?;
+                let (name, value) = assignment
+                    .split_once('=')
+                    .ok_or_else(|| invalid("resume supervisor variable has no value"))?;
+                environment.push((OsString::from(name), Some(OsString::from(value))));
+            }
+            Some("--unset") => environment.push((value()?, None)),
+            _ => return Err(invalid("unknown resume supervisor option")),
+        }
+    }
+    let executable = arguments
+        .next()
+        .ok_or_else(|| invalid("resume supervisor command is empty"))?;
     let mut command = Command::new(executable);
     command.args(arguments);
+    for (name, value) in environment {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
     command
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())

@@ -188,6 +188,57 @@ fn cold_recovery_serves_shells_and_serializes_claude_loading() {
 }
 
 #[test]
+fn cold_recovery_resumes_claude_with_its_own_config_root_and_cwd() {
+    let (log, mut daemon) = start_multi_claude_recovery(false);
+    let worktree = daemon.root.join("worktree").canonicalize().unwrap();
+    let subdirectory = worktree.join("sub");
+    private_dir(&subdirectory);
+    let work_profile = daemon.root.join("claude-work");
+    let work_profile = work_profile.to_str().unwrap();
+
+    // ^ The hooks of the first daemon's agents report from the agent's own environment:
+    // session one runs with a work profile in a subdirectory, session two with none.
+    wait_for_claude_invocations(&log, &mut daemon, 1);
+    let first = read_claude_invocations(&log);
+    report_claude_through_wsx(&daemon, &first[0], &subdirectory, Some(work_profile));
+    wait_for_claude_invocations(&log, &mut daemon, 2);
+    let second = read_claude_invocations(&log);
+    report_claude_through_wsx(&daemon, &second[1], &worktree, None);
+    // ^ A crash: a graceful stop would end the agents, and their supervisors clear the records.
+    let state = daemon.root.join("state/wsx/state.json");
+    let deadline = Instant::now() + TIMEOUT;
+    while !fs::read_to_string(&state).unwrap().contains(work_profile) {
+        assert!(Instant::now() < deadline, "the work profile was not saved");
+        thread::sleep(POLL_INTERVAL);
+    }
+    let mut child = daemon.child.take().expect("daemon child is missing");
+    child.kill().expect("kill wsxd");
+    child.wait().expect("reap wsxd");
+
+    // ^ The restarted wsxd has a config root of its own; neither resume may take it.
+    let stray_profile = daemon.root.join("claude-stray");
+    daemon.child = Some(spawn_multi_claude_daemon(
+        &daemon.root,
+        Some(("CLAUDE_CONFIG_DIR", stray_profile.to_str().unwrap())),
+    ));
+    wait_for_claude_invocations(&log, &mut daemon, 3);
+    let resumed = read_claude_invocations(&log);
+    assert_eq!(resumed[2].args, ["--resume", "claude-session-one"]);
+    assert_eq!(resumed[2].config_dir.as_deref(), Some(work_profile));
+    assert_eq!(resumed[2].cwd.canonicalize().unwrap(), subdirectory);
+    report_claude_ready(&daemon, &resumed[2]);
+
+    wait_for_claude_invocations(&log, &mut daemon, 4);
+    let resumed = read_claude_invocations(&log);
+    assert_eq!(resumed[3].args, ["--resume", "claude-session-two"]);
+    assert_eq!(resumed[3].config_dir, None);
+    assert_eq!(resumed[3].cwd.canonicalize().unwrap(), worktree);
+    report_claude_ready(&daemon, &resumed[3]);
+    let status = daemon.stop().expect("gracefully shut down wsxd");
+    assert!(status.success(), "wsxd exited unsuccessfully: {status}");
+}
+
+#[test]
 fn cold_recovery_advances_after_a_resumed_agent_exits() {
     let (log, mut daemon) = start_multi_claude_recovery(true);
     wait_for_claude_invocations(&log, &mut daemon, 2);
@@ -261,6 +312,18 @@ fn start_cold_recovery(config: Option<&[u8]>) -> (PathBuf, DaemonGuard) {
 }
 
 fn start_multi_claude_recovery(first_exits: bool) -> (PathBuf, DaemonGuard) {
+    let root = seed_multi_claude_root();
+    let first_exits = first_exits.then_some(("WSX_TEST_FIRST_CLAUDE_EXITS", "1"));
+    let child = spawn_multi_claude_daemon(&root, first_exits);
+    let daemon = DaemonGuard {
+        socket: root.join("state/wsx/wsx.sock"),
+        root,
+        child: Some(child),
+    };
+    (daemon.root.join("claude-invocations.jsonl"), daemon)
+}
+
+fn seed_multi_claude_root() -> PathBuf {
     let root = test_root();
     private_dir(&root);
     let home = root.join("home");
@@ -274,17 +337,18 @@ fn start_multi_claude_recovery(first_exits: bool) -> (PathBuf, DaemonGuard) {
     let worktree_bin = worktree.join("bin");
     private_dir(&worktree_bin);
     write_fake_claude(&worktree_bin.join("claude"));
-    let fallback_shell = root.join("fallback-shell");
-    write_fake_shell(&fallback_shell);
-    let shell_marker = root.join("fallback-shell-started");
-    let log = root.join("claude-invocations.jsonl");
-
+    write_fake_shell(&root.join("fallback-shell"));
     let wsx_state = state_home.join("wsx");
     private_dir(&wsx_state);
-    let socket = wsx_state.join("wsx.sock");
     seed_multi_claude_state(&wsx_state.join("state.json"), &worktree);
+    root
+}
+
+/// Starts wsxd cold on the state under `root`; `extra` is one more variable in wsxd's own
+/// environment.
+fn spawn_multi_claude_daemon(root: &Path, extra: Option<(&str, &str)>) -> Child {
     let inherited_path = env::var_os("PATH").unwrap_or_default();
-    let mut child_paths = vec![PathBuf::from("bin")];
+    let mut child_paths = vec![root.join("worktree/bin")];
     child_paths.extend(env::split_paths(&inherited_path));
     let child_path = env::join_paths(child_paths).expect("PATH components must be valid");
     let mut command = Command::new(env!("CARGO_BIN_EXE_wsxd"));
@@ -292,27 +356,23 @@ fn start_multi_claude_recovery(first_exits: bool) -> (PathBuf, DaemonGuard) {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .env("HOME", &home)
-        .env("XDG_STATE_HOME", &state_home)
-        .env("XDG_CONFIG_HOME", &config_home)
-        .env("XDG_CACHE_HOME", &cache_home)
-        .env("WSX_SOCKET", &socket)
-        .env("WSX_TEST_CLAUDE_MARKER", &log)
-        .env("WSX_TEST_SHELL_MARKER", &shell_marker)
-        .env("SHELL", &fallback_shell)
-        .env("PATH", child_path);
-    if first_exits {
-        command.env("WSX_TEST_FIRST_CLAUDE_EXITS", "1");
+        .env("HOME", root.join("home"))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("WSX_SOCKET", root.join("state/wsx/wsx.sock"))
+        .env(
+            "WSX_TEST_CLAUDE_MARKER",
+            root.join("claude-invocations.jsonl"),
+        )
+        .env("WSX_TEST_SHELL_MARKER", root.join("fallback-shell-started"))
+        .env("SHELL", root.join("fallback-shell"))
+        .env("PATH", child_path)
+        .env_remove("CLAUDE_CONFIG_DIR");
+    if let Some((name, value)) = extra {
+        command.env(name, value);
     }
-    let child = command.spawn().expect("start wsxd");
-    (
-        log,
-        DaemonGuard {
-            root,
-            socket,
-            child: Some(child),
-        },
-    )
+    command.spawn().expect("start wsxd")
 }
 
 fn start_cold_recovery_with_seed(
@@ -452,6 +512,8 @@ record = {
     "args": sys.argv[1:],
     "pane": int(os.environ["WSX_PANE_ID"]),
     "generation": os.environ["WSX_RUNTIME_GENERATION"],
+    "config_dir": os.environ.get("CLAUDE_CONFIG_DIR"),
+    "cwd": os.getcwd(),
 }
 with open(os.environ["WSX_TEST_CLAUDE_MARKER"], "a", encoding="utf-8") as output:
     output.write(json.dumps(record) + "\n")
@@ -698,6 +760,8 @@ struct ClaudeInvocation {
     args: Vec<String>,
     pane: u64,
     generation: String,
+    config_dir: Option<String>,
+    cwd: PathBuf,
 }
 
 fn read_claude_invocations(log: &Path) -> Vec<ClaudeInvocation> {
@@ -732,6 +796,49 @@ fn wait_for_claude_invocations(log: &Path, daemon: &mut DaemonGuard, count: usiz
         );
         thread::sleep(POLL_INTERVAL);
     }
+}
+
+/// Reports like a Claude hook: the wsx beside wsxd, run in `cwd` with the agent's config root.
+fn report_claude_through_wsx(
+    daemon: &DaemonGuard,
+    invocation: &ClaudeInvocation,
+    cwd: &Path,
+    config_dir: Option<&str>,
+) {
+    let pane = invocation.pane.to_string();
+    let mut command = Command::new(PathBuf::from(env!("CARGO_BIN_EXE_wsxd")).with_file_name("wsx"));
+    command
+        .current_dir(cwd)
+        .env_clear()
+        .env("WSX_SOCKET", &daemon.socket)
+        .env("WSX_PANE_ID", &pane)
+        .env("WSX_RUNTIME_GENERATION", &invocation.generation)
+        .args([
+            "agent",
+            "report",
+            &pane,
+            "--provider",
+            "claude",
+            "--state",
+            "idle",
+        ])
+        .args([
+            "--session-id",
+            &invocation.args[1],
+            "--resume",
+            "--lifecycle",
+        ]);
+    if let Some(config_dir) = config_dir {
+        command.env("CLAUDE_CONFIG_DIR", config_dir);
+    }
+    let output = command
+        .output()
+        .expect("run the wsx beside wsxd; build both binaries first");
+    assert!(
+        output.status.success(),
+        "wsx agent report failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn report_claude_ready(daemon: &DaemonGuard, invocation: &ClaudeInvocation) {

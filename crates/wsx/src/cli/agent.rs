@@ -226,6 +226,36 @@ pub(super) struct AgentReportOptions {
     pub(super) compacting: bool,
 }
 
+fn with_agent_launch(
+    reference: runtime::AgentSessionRef,
+    provider: &str,
+) -> runtime::AgentSessionRef {
+    let Ok(cwd) = std::env::current_dir() else {
+        return reference;
+    };
+    // ^ A value that is not UTF-8 cannot be recorded; recording it as unset would drop it.
+    let environment = wsx_core::integration::root_variables(provider)
+        .iter()
+        .filter_map(|name| {
+            let value = std::env::var_os(name).filter(|value| !value.is_empty())?;
+            Some(value.into_string().map(|value| (name.to_string(), value)))
+        })
+        .collect::<Result<_, _>>();
+    let launch = environment.map(|environment| runtime::AgentLaunch { cwd, environment });
+    match launch
+        .ok()
+        .and_then(|launch| reference.clone().with_launch(launch))
+    {
+        Some(reference) => reference,
+        None => {
+            eprintln!(
+                "wsx: the agent's cwd or config root is not valid; a resume uses the defaults"
+            );
+            reference
+        }
+    }
+}
+
 pub(super) fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
     let AgentReportOptions {
         provider,
@@ -270,6 +300,9 @@ pub(super) fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Re
         (reference, None) => reference,
         (None, Some(_)) => bail!("transcript path requires an agent session identity"),
     };
+    // ^ docs/agent-orchestration.md "Resumed agents": the adapter runs in the agent's own
+    // environment, so this is where the agent's cwd and config root are known.
+    let session_ref = session_ref.map(|reference| with_agent_launch(reference, &provider));
     let conversation_id = conversation_id.or_else(|| {
         session_ref
             .as_ref()
