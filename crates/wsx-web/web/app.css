@@ -842,6 +842,11 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 }
 .check-form { padding: 0 var(--column-inset, var(--space-4)) var(--space-3); }
 .check-item:not([data-state="open"]) :is(.check-task, .check-facts dd) { color: var(--color-muted); }
+/* A To check item as a chat bubble: the bubble's box is its frame, and its buttons end it at the
+   right on every width (docs/web-client-tasks.md "Project screen"). */
+.bubble .check-line, .app[data-wide] .bubble .check-line { flex-direction: column; align-items: stretch; padding: 0; }
+.bubble .check-acts, .app[data-wide] .bubble .check-acts { align-self: flex-end; }
+.bubble :is(.check-form, .need-error) { padding: var(--space-2) 0 0; }
 /* All passed, in the top bar, lines up with the items' buttons. */
 .check-all { margin-right: var(--space-2); }
 .task-overlaps { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); overflow-wrap: anywhere; }

@@ -46,7 +46,8 @@ function Place({ where }) {
 // every item: the bottom right on a phone, a column right of the words on a wide screen.
 // Fail opens a required note sent with Send; × again or Escape closes it. The note goes to the
 // task that fixes it. `revision` is the task's current one: an item of an older revision names its own.
-export function CheckRow({ project, item, revision, onChanged }) {
+// `tag`: an `li` in the list, a `div` in its chat bubble (bubbles.js `CheckBubble`).
+export function CheckRow({ project, item, revision, onChanged, tag = "li" }) {
   const [failing, setFailing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -87,7 +88,7 @@ export function CheckRow({ project, item, revision, onChanged }) {
   const poster = video && item.poster ? `api/tasks/${project}/checks/${item.id}/poster` : undefined;
   const did = item.did ?? item.title;
   return html`
-    <li class="check-item" data-state=${item.state} data-gallery>
+    <${tag} class="check-item" data-state=${item.state} data-gallery>
       <div class="check-line">
         <div class="check-words">
           <p class="check-task"><${TaskChip} project=${project} id=${item.task} /> ${did}</p>
@@ -123,7 +124,7 @@ export function CheckRow({ project, item, revision, onChanged }) {
           <button class="button" type="submit" disabled=${busy}>Send</button>
         </form>`}
       ${error && html`<p class="error need-error" role="alert">${error}</p>`}
-    </li>`;
+    </${tag}>`;
 }
 
 // Every open item of the project in its sheet, oldest first, with All passed in the top bar.

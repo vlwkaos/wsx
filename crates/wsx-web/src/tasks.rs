@@ -40,6 +40,8 @@ const MANAGER_TAIL_BYTES: u64 = 64 * 1024;
 const TIMELINE_ENTRIES: usize = 300;
 const MAX_REPORT_BYTES: u64 = 1024 * 1024;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+/// The newest To check items the chat shows as bubbles.
+const CHAT_CHECKS: usize = 100;
 
 /// A granted project and its task store.
 pub struct Scope {
@@ -806,7 +808,15 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
 /// The open "To check" items, oldest first, each with its task's title and what the task
 /// did (the first sentence of its worker's summary, when it is not the title).
 pub fn checks(scope: &Scope) -> Outcome<Value> {
-    let items = checks::open_items(&scope.store).map_err(internal)?;
+    let mut items = checks::read(&scope.store).map_err(internal)?;
+    // ^ The chat shows each item once, as a bubble at the time it was added, decided or not:
+    // every open item and the newest decided ones.
+    let recent = items.len().saturating_sub(CHAT_CHECKS);
+    let mut index = 0;
+    items.retain(|item| {
+        index += 1;
+        index > recent || item.state == checks::CheckState::Open
+    });
     let rows: Vec<Value> = items
         .iter()
         .map(|item| {
@@ -833,7 +843,8 @@ pub fn checks(scope: &Scope) -> Outcome<Value> {
             row
         })
         .collect();
-    Ok(json!({ "open": rows }))
+    let open: Vec<&Value> = rows.iter().filter(|row| row["state"] == "open").collect();
+    Ok(json!({ "open": open, "items": rows }))
 }
 
 /// The capture kept with an item, an image or a video, or with `poster` the video's poster.
