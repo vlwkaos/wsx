@@ -399,7 +399,7 @@ div.steps .steps-summary { cursor: default; }
   .reservoir-reveal[data-closing] { animation-direction: reverse; animation-fill-mode: forwards; }
   .reservoir .need { animation: slide-up var(--motion-duration) var(--motion-easing); }
   .reservoir .need[data-leaving], .bubble[data-leaving] { animation: row-out calc(var(--motion-duration) * 1.25) var(--motion-easing) forwards; }
-  .bubble[data-fresh], .status-line[data-fresh] { animation: slide-up calc(var(--motion-duration) * 1.5) var(--motion-easing); }
+  .bubble[data-fresh], .status-line[data-fresh], .reply-line[data-fresh] { animation: slide-up calc(var(--motion-duration) * 1.5) var(--motion-easing); }
   .since { animation: since-in var(--motion-duration) var(--motion-easing); }
   .task-sheet[open] { animation: sheet-in calc(var(--motion-duration) * 2) var(--motion-easing); }
   .app[data-wide] .task-sheet[open] { animation-name: sheet-in-side; }
@@ -647,12 +647,12 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 }
 .bubble[data-side="out"] .bubble-box { background: var(--color-raised); border-color: transparent; }
 /* Each speaker's color on its name only, never on its box; the name stays (docs/web-themes.md). */
-.bubble[data-speaker="manager"] { --speaker: var(--color-text); }
+[data-speaker="manager"] { --speaker: var(--color-text); }
 .bubble[data-peer="1"] { --speaker: var(--color-peer-1); }
 .bubble[data-peer="2"] { --speaker: var(--color-peer-2); }
 .bubble[data-peer="3"] { --speaker: var(--color-peer-3); }
 .bubble[data-peer="4"] { --speaker: var(--color-peer-4); }
-.bubble[data-speaker] .bubble-author { color: var(--speaker); }
+[data-speaker] .bubble-author { color: var(--speaker); }
 .bubble[data-pending] .bubble-box { color: var(--color-muted); }
 /* An approval the reply asked for: its words, then Deny and Approve, wrapping on a narrow screen. */
 .bubble-approval { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-2); padding-top: var(--space-2); border-top: var(--border-width) solid var(--color-hairline); }
@@ -663,7 +663,11 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 /* The manager writes: three dots. They pulse only where motion is welcome. */
 .typing { display: inline-flex; align-items: center; gap: var(--space-1); min-height: calc(var(--font-size-md) * var(--line-height-prose)); }
 .typing-dot { width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-working); }
-.status-line { align-self: center; max-width: var(--size-prose); font-size: var(--font-size-sm); color: var(--color-muted); text-align: center; overflow-wrap: anywhere; }
+/* A task change and the manager's reply to events: one muted line each, left-aligned (docs/web-client-tasks.md "Project screen"). */
+.status-line, .reply-text { max-width: var(--size-prose); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
+.status-line { padding-inline: var(--space-1); }
+.reply-line { display: flex; flex-direction: column; align-items: flex-start; }
+.reply-text { padding-inline: var(--space-1); white-space: pre-line; }
 .page-link { color: var(--color-accent); }
 /* What needs the owner and what runs, pinned over the composer: one line, a tap opens the
    decision list. */
