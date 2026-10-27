@@ -928,6 +928,8 @@ for (const away of ["offline", "hidden"]) {
     `the typing dots stayed or the reply did not show after the page was ${away}`, 50);
 }
 await evaluate("delete document.visibilityState");
+// ^ The chat follows the reply to the end; the next part scrolls it only once that settled.
+await pause(1500);
 
 // --- The task sheet: a chip or a reservoir row opens it over the chat, and the chat does not
 // scroll; Escape, Back and a swipe down close it, the composer keeps its draft and gets the
