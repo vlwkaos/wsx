@@ -646,10 +646,10 @@ impl Chat {
         )
     }
 
-    /// Settle the rounds that carried delivered messages. A taken one leaves the queue when the
-    /// agent reports prompt receipts (its words may never show, as after a compaction), else it
-    /// stops being watched and waits for the conversation to show it. One the agent did not
-    /// take sends its message again once, then keeps it failed.
+    /// Settle the rounds that carried delivered messages once each round is over. A taken one
+    /// leaves the queue when the agent reports prompt receipts (its words may never show, as
+    /// after a compaction), else it stops being watched and waits for the conversation to show
+    /// it. One the agent did not take sends its message again once, then keeps it failed.
     /// Runs before every delivery, while the round is still the exchange's current one.
     /// Returns whether the queue changed. ref: docs/agent-orchestration.md "Taken, not typed"
     fn settle_rounds(&self, app: &App, target: &Target) -> bool {
@@ -679,25 +679,25 @@ impl Chat {
             else {
                 continue;
             };
-            let state = if exchange.round == sent.round {
-                exchange.state
-            } else {
-                // ^ A later round of the exchange started, so this one was over.
-                AgentExchangeState::Completed
-            };
-            let outcome = match state {
-                AgentExchangeState::Submitted | AgentExchangeState::Delivered => continue,
-                AgentExchangeState::DeliveryFailed
-                    if exchange
-                        .failure
-                        .as_deref()
-                        .is_some_and(|failure| failure.starts_with("not_taken:")) =>
-                {
-                    Round::NotTaken {
-                        reason: format!("not_taken: {provider} did not take this message"),
-                    }
+            // ^ A round that still runs keeps its message as sent, also once the agent took it:
+            // Claude's prompt hook reports the turn before Claude saves the prompt, and the
+            // message leaves when the conversation shows it (`Queue::settle`). A later round of
+            // the exchange means this one was over.
+            if exchange.round == sent.round && !exchange.is_terminal() {
+                continue;
+            }
+            let not_taken = exchange.round == sent.round
+                && exchange.state == AgentExchangeState::DeliveryFailed
+                && exchange
+                    .failure
+                    .as_deref()
+                    .is_some_and(|failure| failure.starts_with("not_taken:"));
+            let outcome = if not_taken {
+                Round::NotTaken {
+                    reason: format!("not_taken: {provider} did not take this message"),
                 }
-                _ => Round::Taken { remove: receipts },
+            } else {
+                Round::Taken { remove: receipts }
             };
             let settled = app.queue.settle_round(session, id, sent, outcome);
             if let Some(Settled::SentAgain) = settled {
