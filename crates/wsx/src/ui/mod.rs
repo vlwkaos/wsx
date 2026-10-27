@@ -481,15 +481,20 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
             render_input(frame, area, state, title);
         }
         Mode::Confirm { message, .. } => {
-            let msg = message.clone();
-            render_confirm(frame, area, &msg);
+            render_confirm(frame, area, message);
         }
         Mode::Config { project_idx } => {
             let pi = *project_idx;
             if let Some(project) = app.workspace.projects.get(pi) {
-                let config = project.config.clone().unwrap_or_default();
-                let name = project.name.clone();
-                render_config_modal(frame, area, &config, &name);
+                let default_config;
+                let config = match &project.config {
+                    Some(config) => config,
+                    None => {
+                        default_config = Default::default();
+                        &default_config
+                    }
+                };
+                render_config_modal(frame, area, config, &project.name);
             }
         }
         Mode::GlobalSettings { form } => render_global_settings(frame, area, form),
