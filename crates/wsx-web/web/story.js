@@ -2,13 +2,12 @@
 // task (from the record and the result), in plain words written by wsx, never by a model
 // (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
-import { firstSentence, html, Icon, useEffect, useRef, useState } from "./lib.js";
+import { firstSentence, html, Icon, short, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 
 const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 // `refs/heads/main` reads as `main`, `refs/remotes/origin/main` as `origin/main`.
 const branchName = (ref) => (ref ?? "").replace(/^refs\/(heads|remotes)\//, "");
-const short = (commit) => (commit ?? "").slice(0, 8);
 
 // What the deploy (or release) has, in words; null when its command is not set.
 function deployWords(status, kind, default_branch) {
@@ -75,7 +74,7 @@ function toEnd(event) {
 }
 
 // What the owner should know next, in one sentence, or nothing while the agents just work.
-export function nextWords(detail) {
+function nextWords(detail) {
   const main = detail.default_branch ?? "the default branch";
   const asked = detail.approvals?.[0];
   if (asked) return `The manager asks: ${asked.label}.`;

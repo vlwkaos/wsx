@@ -1,7 +1,7 @@
 // Chat: the agent's own saved conversation as a typed timeline, what the agent does
 // now, the messages that wait for it, and the composer (docs/web-client-chat.md).
 import { api, resolve } from "./api.js";
-import { bytes, elapsed, html, Icon, readMap, useCallback, useEffect, useExit, useFollowEnd, useLayoutEffect, useNow, useRef, useState, writeMap } from "./lib.js";
+import { bytes, elapsed, html, Icon, keepIn, readMap, useCallback, useEffect, useExit, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, events, shows, stateOf, state, touch } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { QuoteChip, Quoted, quoteOf, useReply, withQuote } from "./reply.js";
@@ -21,11 +21,8 @@ const draftFor = (id) => {
   return drafts.get(id);
 };
 function keepDraft(id) {
-  const all = stored();
   const { text, attachments } = drafts.get(id);
-  if (text || attachments.length) all[id] = { text, attachments };
-  else delete all[id];
-  writeMap(DRAFTS_KEY, all);
+  keepIn(DRAFTS_KEY, id, text || attachments.length ? { text, attachments } : null);
 }
 
 // ^ Owner's rule: a photo's long edge is at most 2000 px, as JPEG, and a PNG (a screenshot)

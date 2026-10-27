@@ -17,7 +17,7 @@ const EVENT_WORDS = { landed: "done" };
 // One line written by wsx in its short form: `#3 ready r2: title; summary` → `#3 ready`,
 // `approval a3 (land #5) approved; done` → `Approved land #5`, a dropped one with its reason:
 // `approval a9 (discard #42) dropped; #42 is closed` → `Dropped discard #42: #42 is closed`.
-export function shortLine(line) {
+function shortLine(line) {
   const task = /^#(\d+) (\w+) r\d+:/.exec(line);
   if (task) return `#${task[1]} ${EVENT_WORDS[task[2]] ?? task[2]}`;
   const decision = /^approval \S+ \((.+?)\) (approved|denied|dropped)\b(?:; (.*))?/.exec(line);

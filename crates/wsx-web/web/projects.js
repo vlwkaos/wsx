@@ -11,7 +11,7 @@ const waiting = (store, project) => {
   const count = can("task_view") ? store.tasks[project.id]?.needs.length ?? 0 : 0;
   return count ? ` · ${count} ${count === 1 ? "needs" : "need"} you` : "";
 };
-export const filesLink = (project) => shows("files") && can("files_read") && html`
+const filesLink = (project) => shows("files") && can("files_read") && html`
   <a class="link-action" href=${`#/p/${project.id}/files`} aria-label=${`Files of ${project.name}`}>Files</a>`;
 
 export function Projects({ rail }) {

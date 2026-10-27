@@ -3,7 +3,7 @@
 // task's or the project page's sheet over the chat (docs/web-client-tasks.md). Fixed actions
 // go straight to wsx.
 import { api } from "./api.js";
-import { html, Icon, readMap, useEffect, useFollowEnd, useLayoutEffect, useRef, useState, writeMap } from "./lib.js";
+import { html, Icon, keepIn, readMap, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, events, leaveFor, shows, state, touch, update, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
@@ -85,7 +85,7 @@ const STAGES = {
   working: ["working", "working"], needs_you: ["needs you", "attention"], done: ["done", "muted"], closed: ["closed", "muted"],
 };
 export const taskStage = (task) => STAGES[task?.stage] ?? [task?.stage ?? "", "muted"];
-export const taskLink = (project, task) => `#/p/${project}/t/${task}`;
+const taskLink = (project, task) => `#/p/${project}/t/${task}`;
 
 // A task the agents work on: its chip and its reservoir row pulse.
 export const running = (task) => task?.stage === "working";
@@ -431,13 +431,6 @@ function Reservoir({ project, items, tasks, checking }) {
 
 // Unsent manager messages by project, kept on this device.
 const DRAFTS_KEY = "wsx-manager-drafts";
-const readDrafts = () => readMap(DRAFTS_KEY);
-function keepDraft(project, text) {
-  const all = readDrafts();
-  if (text) all[project] = text;
-  else delete all[project];
-  writeMap(DRAFTS_KEY, all);
-}
 
 // While the word at the caret starts with `#` (a task), `@` (another project) or, as the whole
 // text so far, `/` (one of the owner's skills): what it names so far.
@@ -485,7 +478,7 @@ const foldedNote = (tasks, query) => {
 
 function ManagerComposer({ project, busy: thinking, reply, onReply, onSent, field }) {
   const store = useStore();
-  const [text, setText] = useState(() => readDrafts()[project] ?? "");
+  const [text, setText] = useState(() => readMap(DRAFTS_KEY)[project] ?? "");
   const [caret, setCaret] = useState(0);
   const [active, setActive] = useState(0);
   const [closed, setClosed] = useState(null);
@@ -526,7 +519,7 @@ function ManagerComposer({ project, busy: thinking, reply, onReply, onSent, fiel
     setText(node.value);
     setCaret(node.selectionStart);
     setActive(0);
-    keepDraft(project, node.value);
+    keepIn(DRAFTS_KEY, project, node.value);
     grow(node);
   };
   const pick = ({ insert }) => {
@@ -615,11 +608,7 @@ function ManagerComposer({ project, busy: thinking, reply, onReply, onSent, fiel
 // When this device last left each project's screen, for "since you left".
 const LEFT_KEY = "wsx-project-left";
 const readLeft = () => readMap(LEFT_KEY);
-function noteLeft(project) {
-  const all = readLeft();
-  all[project] = Date.now();
-  writeMap(LEFT_KEY, all);
-}
+const noteLeft = (project) => keepIn(LEFT_KEY, project, Date.now());
 // Shorter absences are a glance away, not an absence.
 const AWAY_MS = 60_000;
 const SINCE_WORDS = [["landed", "landed"], ["blocked", "blocked"], ["conflict", "conflicted"], ["revised", "got a new revision"], ["started", "started"]];

@@ -16,7 +16,7 @@ const SLOP_PX = 10;
 const OWN = "a, button, input, textarea, summary, pre, .table-wrap, .diagram";
 
 // The text after a leading quote line, and that line (or null).
-export function splitQuote(text) {
+function splitQuote(text) {
   const quoted = /^> (.*)\n\n?/.exec(text ?? "");
   return quoted ? [quoted[1], text.slice(quoted[0].length)] : [null, text ?? ""];
 }
