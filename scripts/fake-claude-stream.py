@@ -24,6 +24,9 @@ Each user message is a small script of words:
   REPEAT       return the result again 1 s later, as Claude's own turn for a background notice
   PROBE <script> <spec> <out>  run the test's boundary probe script (python3 <script> <spec> <out>)
                and trace what it wrote to <out>
+  BIG          a last model call of 400k tokens, past the worker's rotateTokens
+The host's request for handoff notes ("Write <path> for that fresh conversation") makes it
+write "NOTES from the fixture" to <path>.
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
 conflict with the line "resolved".
 Every received message and the launch arguments go to $FAKE_CLAUDE_TRACE, and each
@@ -410,6 +413,14 @@ def main():
         if 'NORESULT' in words:
             no_result = end_without_result(session, int(words[words.index('NORESULT') + 1]))
             continue
+        handoff = re.search(r'Write (\S+) for that fresh conversation', text)
+        if handoff:
+            with open(handoff.group(1), 'w') as out:
+                out.write('NOTES from the fixture\n')
+        if 'BIG' in words:
+            emit({'type': 'assistant', 'parent_tool_use_id': None, 'message': {
+                'model': model, 'content': [],
+                'usage': {'input_tokens': 10, 'cache_read_input_tokens': 399990, 'output_tokens': 5}}})
         summary = 'did: ' + text + (' | steers: ' + '; '.join(steers) if steers else '')
         for repeat in range(2 if 'REPEAT' in words else 1):
             time.sleep(repeat)

@@ -249,6 +249,11 @@ pub enum LogEvent {
         free_mb: u64,
         min_gb: u64,
     },
+    /// The worker's context reached `tasks.agent.rotateTokens`: after its handoff notes the
+    /// next turn starts a fresh conversation (docs/tasks.md "Context rotation").
+    Rotated {
+        tokens: u64,
+    },
     /// The checks wait for the machine's check slot (docs/tasks.md "Checks, revisions and report").
     CheckQueued {
         reason: String,

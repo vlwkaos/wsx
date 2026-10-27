@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- A task worker whose context passes `tasks.agent.rotateTokens` (default 350000) continues in a fresh conversation. It first writes handoff notes in its task folder; the fresh conversation opens with the task's prompt, those notes and the current step, and loads the project knowledge again. Each model call reads the whole context, so a long task no longer pays for 450k tokens on every call. A host started again after a session limit knows the size from the log and rotates on its first turn ([docs/tasks.md](docs/tasks.md) "Context rotation").
+
 ## [0.40.1] - 2026-10-27
 
 ### Fixed

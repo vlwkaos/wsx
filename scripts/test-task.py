@@ -602,6 +602,33 @@ def run(wsx, wsxd, work, owned):
     assert len(turns) == 2 and 'Step 1 of 2, plan: PLAN only' in turns[0]['summary'], turns
     assert 'Step 2 of 2, build: WORK s.txt' in turns[1]['summary'], turns
     js('task', 'close', stepped, '--discard')
+    # 13r. Context rotation: a step that ends past tasks.agent.rotateTokens writes handoff notes
+    # in its conversation; the next step runs in a fresh one that opens with the task's prompt,
+    # those notes and the step.
+    mark('13r')
+    owner_config.write_text('tasks:\n  workflow:\n    steps:\n'
+                            '      - name: plan\n        prompt: BIG PLAN\n'
+                            '      - name: build\n        prompt: WORK r.txt\n')
+    (project / 'wsx.config.yml').write_text(
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  checks: ["test -f r.txt"]\n'
+        '  agent: { rotateTokens: 300000 }\n')
+    rotated = js('task', 'new', 'NOOP')['id']
+    done = wait_state(rotated, 'ready', 'failed')
+    assert done['state'] == 'ready', done
+    assert [e['tokens'] for e in log(rotated) if e['kind'] == 'rotated'] == [400000], log(rotated)
+    sent = [t for t in traces() if 'message' in t and t.get('manager') is False]
+    asked = [t for t in sent if "past this task's limit" in t['message']]
+    fresh = [t for t in sent if 'handoff notes:\nNOTES from the fixture' in t['message']]
+    assert len(asked) == 1 and len(fresh) == 1, [t['message'][:80] for t in sent[-4:]]
+    assert asked[0]['session'] != fresh[0]['session'], (asked, fresh)
+    opening = fresh[0]['message']
+    assert 'The task as it was asked:\nNOOP' in opening and 'Step 2 of 2, build: WORK r.txt' in opening, opening
+    # ^ The handoff turn is not a result: one per step.
+    assert len([e for e in log(rotated) if e['kind'] == 'result']) == 2, log(rotated)
+    js('task', 'close', rotated, '--discard')
+    # A bad rotateTokens refuses the task.
+    (project / 'wsx.config.yml').write_text('tasks:\n  minFreeGb: 0\n  agent: { rotateTokens: 5 }\n')
+    assert 'tasks.agent.rotateTokens must be' in cli('task', 'new', 'NOOP', ok=False).stderr
     # A project's own steps win; a bad step refuses the task before anything starts.
     (project / 'wsx.config.yml').write_text(
         'tasks:\n  minFreeGb: 0\n  workflow:\n    steps:\n'

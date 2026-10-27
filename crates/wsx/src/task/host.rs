@@ -16,6 +16,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::git::{git_cmd, output_with_timeout_tail};
+use wsx_core::model::workspace::TaskConfig;
 use wsx_core::runtime;
 use wsx_core::task::view::checked_files;
 use wsx_core::task::{
@@ -68,6 +69,10 @@ enum DiskWait {
 const DISK_POLL: Duration = Duration::from_secs(30);
 /// What a check prints when the disk is full: the check then waits instead of failing.
 const NO_SPACE: &str = "No space left on device";
+/// The handoff notes a worker writes before its conversation rotates, in its task folder.
+const ROTATE_NOTES: &str = "rotate-notes.md";
+/// At most this much of the notes goes into the fresh conversation's first turn.
+const MAX_ROTATE_NOTES_BYTES: u64 = 16 * 1024;
 /// The one turn a worker gets when its turn ended without a result.
 const RESULT_RETRY: &str = "Your turn ended without a result. Return your result now: \
 StructuredOutput is the last call of a turn, and nothing runs after it.";
@@ -120,6 +125,11 @@ struct Host {
     /// The Human Verify items of the revision whose landing conflicted: the turn that
     /// resolves it rarely repeats them, and they still need a person.
     carried_verify: Vec<wsx_core::task::HumanVerify>,
+    /// The context of the worker's last model call, from the log when the host starts.
+    context_tokens: u64,
+    /// The turn that waits while the worker writes its handoff notes: it starts the fresh
+    /// conversation. ref: docs/tasks.md "Context rotation"
+    rotating: Option<String>,
     started: Instant,
 }
 
@@ -158,8 +168,11 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         gate: None,
         stored_checks: None,
         carried_verify: Vec::new(),
+        context_tokens: 0,
+        rotating: None,
         started: Instant::now(),
     };
+    host.context_tokens = host.last_context();
     let to_host = events.clone();
     std::thread::spawn(move || {
         broker::serve(brokered, move |request| {
@@ -579,6 +592,7 @@ impl Host {
         self.pending.clear();
         self.disk_wait = None;
         self.disk_queue = None;
+        self.rotating = None;
         self.log(LogEvent::Hand {
             by: Actor::Owner,
             dropped,
@@ -680,6 +694,15 @@ impl Host {
         if self.wait_for_disk(DiskWait::Turn(text.to_string())) {
             return Ok(());
         }
+        let handoff;
+        let text = match self.rotation_due(text) {
+            true => {
+                self.rotating = Some(text.to_string());
+                handoff = self.handoff_request();
+                handoff.as_str()
+            }
+            false => text,
+        };
         if self.agent.is_none() {
             let (session, resume) = match &self.record.agent_session {
                 Some(session) => (session.clone(), true),
@@ -721,6 +744,8 @@ impl Host {
             Some(AgentLine::Result(result)) => self.on_result(result),
             None => {
                 self.agent = None;
+                // ^ A handoff turn that never ended leaves no notes: no later result is one.
+                self.rotating = None;
                 if self.turn_active && !self.stop_requested {
                     self.turn_active = false;
                     self.log(LogEvent::Stopped {
@@ -737,6 +762,18 @@ impl Host {
             self.log(LogEvent::Agent {
                 text: "claude ended its own turn with no result: ignored".into(),
             });
+            return;
+        }
+        // ^ An error without a model call (a session limit) says nothing of the context.
+        if turn.usage.context_tokens > 0 {
+            self.context_tokens = turn.usage.context_tokens;
+        }
+        if let Some(waiting) = self.rotating.take() {
+            self.turn_active = false;
+            self.log(LogEvent::Agent {
+                text: format!("handoff notes: {}", first_line(&turn.text)),
+            });
+            self.rotate(waiting);
             return;
         }
         let structured = turn
@@ -856,6 +893,92 @@ impl Host {
             return;
         }
         self.start_checks();
+    }
+
+    /// Whether the turn `text` goes to a fresh conversation, after the handoff notes: the
+    /// context reached `tasks.agent.rotateTokens`. Never for the result the last turn left
+    /// out, nor while a `check-run` waits (its answer goes to this conversation).
+    fn rotation_due(&self, text: &str) -> bool {
+        let limit = load_task_config(&self.record.project_path)
+            .map_or(TaskConfig::default().rotate_tokens, |settings| {
+                settings.rotate_tokens
+            });
+        self.rotating.is_none()
+            && self.check_run.is_none()
+            && text != RESULT_RETRY
+            && self.record.agent_session.is_some()
+            && self.context_tokens >= limit
+    }
+
+    fn handoff_request(&self) -> String {
+        self.say(&format!(
+            "context {}k: the worker writes handoff notes, then a fresh conversation continues",
+            self.context_tokens / 1000
+        ));
+        format!(
+            "Your context is {}k tokens, past this task's limit. This conversation ends after \
+             this turn and a fresh one continues the task; your working copy and commits stay. \
+             Do no other work now. Write {} for that fresh conversation, at most 12 KB: what \
+             the task is doing now, what is done, what remains and the next action, decisions \
+             and why, the files and functions that matter, the checks you ran and how they \
+             ended, and what you learned that the code does not show. Then return your result: \
+             status done and a one-line summary. That result is not checked.",
+            self.context_tokens / 1000,
+            self.dir.file(ROTATE_NOTES).display()
+        )
+    }
+
+    /// End the conversation after its handoff notes and start `waiting` in a fresh one,
+    /// with the task's prompt, the notes and the current step.
+    fn rotate(&mut self, waiting: String) {
+        let tokens = self.context_tokens;
+        if let Some(agent) = self.agent.take() {
+            self.stop_requested = true;
+            agent.stop();
+        }
+        self.record.agent_session = None;
+        self.context_tokens = 0;
+        self.save();
+        self.log(LogEvent::Rotated { tokens });
+        // ^ Notes too long to inline are read from their file.
+        let notes = match self.dir.read_file(ROTATE_NOTES, MAX_ROTATE_NOTES_BYTES) {
+            Ok(Some(bytes)) if !bytes.trim_ascii().is_empty() => format!(
+                "The earlier conversation's handoff notes:\n{}",
+                String::from_utf8_lossy(&bytes)
+            ),
+            Ok(_) => "The earlier conversation wrote no handoff notes.".into(),
+            Err(_) => format!(
+                "Read the earlier conversation's handoff notes first: {}",
+                self.dir.file(ROTATE_NOTES).display()
+            ),
+        };
+        let mut text = vec![format!(
+            "You continue a task whose earlier conversation reached {}k tokens of context and \
+             was closed. Its working copy and commits are as that conversation left them; see \
+             them with git status, git log and git diff. Load the project knowledge you need \
+             again (the recall or seek skill when you have it), and read only the parts of \
+             files you need.",
+            tokens / 1000
+        )];
+        if let Ok(Some(prompt)) = self.dir.prompt() {
+            text.push(format!("The task as it was asked:\n{prompt}"));
+        }
+        text.push(notes);
+        let index = self.record.step as usize;
+        if let Some(step) = self.record.steps.get(index) {
+            if !waiting.contains(&step.prompt) {
+                text.push(format!(
+                    "You are in step {} of {}, {}: {}",
+                    index + 1,
+                    self.record.steps.len(),
+                    step.name,
+                    step.prompt
+                ));
+            }
+        }
+        text.push(waiting);
+        text.extend(self.pending.drain(..));
+        self.start_turn(&text.join("\n\n"));
     }
 
     /// The turn text of the current workflow step, when the task has steps.
@@ -1360,7 +1483,24 @@ impl Host {
         }
     }
 
-    /// The worker conversation's last `session_cost_micro_usd`: a task has one conversation.
+    /// The last result's context (a session limit's error result has none), or 0 when a
+    /// rotation came after it: a host that starts again (after a session limit, a re-exec)
+    /// rotates a large conversation on its first turn.
+    fn last_context(&self) -> u64 {
+        let log = self.dir.read_log().unwrap_or_default();
+        log.iter()
+            .rev()
+            .find_map(|entry| match &entry.event {
+                LogEvent::Result {
+                    usage: Some(usage), ..
+                } if usage.context_tokens > 0 => Some(usage.context_tokens),
+                LogEvent::Rotated { .. } => Some(0),
+                _ => None,
+            })
+            .unwrap_or(0)
+    }
+
+    /// The worker conversation's last `session_cost_micro_usd`.
     fn session_cost(&self) -> u64 {
         let log = self.dir.read_log().unwrap_or_default();
         log.iter()
