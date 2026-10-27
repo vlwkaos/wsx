@@ -15,6 +15,7 @@ use crate::{
         MILLIS_PER_HOUR,
     },
     model::workspace::{FlatEntry, WorkspaceState},
+    task::now_unix_ms,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -230,7 +231,7 @@ impl WorkspaceCache {
 
     fn save_to(&self, path: &std::path::Path, sync: bool) -> anyhow::Result<()> {
         let mut cache = self.clone();
-        cache.written_at_unix_ms = Some(crate::task::now_unix_ms());
+        cache.written_at_unix_ms = Some(now_unix_ms());
         let text = toml::to_string(&cache)?;
         atomic_write_private(path, text.as_bytes(), sync)?;
         Ok(())
@@ -362,7 +363,7 @@ fn apply_workspace_cache(
     let mut project_touched_unix_ms = HashMap::new();
     let mut stale_collapsed_projects = HashSet::new();
     let mut adaptive_collapse = HashMap::new();
-    let loaded_at_unix_ms = crate::task::now_unix_ms();
+    let loaded_at_unix_ms = now_unix_ms();
     let legacy_seeded_touch = legacy_seeded_touch_cohort(&cache);
     let mut seeded_touches = false;
     for project in &mut workspace.projects {
@@ -635,8 +636,7 @@ impl WorkspaceCacheChanges {
                             });
                     state.observe(proposed.base_hours, activity);
                     if change.stale == Some(true) {
-                        if crate::task::now_unix_ms()
-                            .saturating_sub(activity.max(state.last_activity_unix_ms))
+                        if now_unix_ms().saturating_sub(activity.max(state.last_activity_unix_ms))
                             <= state.window_ms()
                         {
                             continue;
