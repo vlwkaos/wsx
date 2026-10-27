@@ -1840,23 +1840,27 @@ fn background_recovery_allowed(socket: &Path) -> bool {
 // and the next step instead of "in progress". The code stays, so a retrying client still
 // reconnects when the daemon serves again.
 fn explain_stuck_handoff(client: &Client, error: &mut super::protocol::ApiError) {
-    let marker = lifecycle_marker_reason(client.socket());
-    if error.code == "daemon_replacing" && !marker.as_deref().is_some_and(handoff_marker_fresh) {
-        let since = marker
-            .as_deref()
-            .and_then(|reason| reason.strip_prefix(super::protocol::HANDOFF_MARKER_PREFIX))
-            .and_then(|value| value.parse::<u128>().ok())
-            .map(|started| format!(" {} s ago", unix_millis().saturating_sub(started) / 1000))
-            .unwrap_or_default();
-        let daemon = lifecycle_status(client).map_or_else(
-            |_| "wsxd".to_string(),
-            |status| format!("wsxd {}", lifecycle_version(&status)),
-        );
-        error.message = format!(
-            "{daemon} started a live handoff{since} that did not finish. Its sessions still run \
-             in it, out of reach. `wsx daemon stop --force` ends them and starts over"
-        );
+    if error.code != "daemon_replacing" {
+        return;
     }
+    let marker = lifecycle_marker_reason(client.socket());
+    if marker.as_deref().is_some_and(handoff_marker_fresh) {
+        return;
+    }
+    let since = marker
+        .as_deref()
+        .and_then(|reason| reason.strip_prefix(super::protocol::HANDOFF_MARKER_PREFIX))
+        .and_then(|value| value.parse::<u128>().ok())
+        .map(|started| format!(" {} s ago", unix_millis().saturating_sub(started) / 1000))
+        .unwrap_or_default();
+    let daemon = lifecycle_status(client).map_or_else(
+        |_| "wsxd".to_string(),
+        |status| format!("wsxd {}", lifecycle_version(&status)),
+    );
+    error.message = format!(
+        "{daemon} started a live handoff{since} that did not finish. Its sessions still run \
+         in it, out of reach. `wsx daemon stop --force` ends them and starts over"
+    );
 }
 
 fn unix_millis() -> u128 {
