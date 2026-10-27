@@ -166,13 +166,13 @@ function noteUpgrade(reason) {
   toast(`wsxd upgrade failed: ${reason}; sessions keep running`, { failure: true });
 }
 
-// The open chats and the task overviews read again, after events may have been missed.
-// A `manager` event without a project is for every project.
+// The open chats, sheets and task overviews read again, after events may have been missed.
+// An event without a session or a project is for every one.
 function reread() {
   events.dispatchEvent(new CustomEvent("history", { detail: {} }));
   if (!can("task_view")) return;
   loadTasks();
-  events.dispatchEvent(new CustomEvent("manager", { detail: {} }));
+  for (const name of ["manager", "task", "page"]) events.dispatchEvent(new CustomEvent(name, { detail: {} }));
 }
 
 function start(session) {

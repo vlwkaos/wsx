@@ -190,7 +190,7 @@ export function TaskPage({ project, task, onClose, grip }) {
   };
   useEffect(() => {
     load();
-    const changed = (event) => { if (event.detail.project === project && event.detail.task === task) load(); };
+    const changed = (event) => { if (event.detail.project == null || (event.detail.project === project && event.detail.task === task)) load(); };
     events.addEventListener("task", changed);
     return () => events.removeEventListener("task", changed);
   }, [project, task]);
