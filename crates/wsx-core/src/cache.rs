@@ -202,9 +202,9 @@ impl<'de> Deserialize<'de> for WorkspaceCache {
 
 impl WorkspaceCache {
     pub fn load() -> anyhow::Result<Self> {
-        let path = cache_path();
+        let path = cache_path()?;
         let _lock = CacheLock::acquire(&path)?;
-        Self::load_from_paths(&path, &legacy_cache_path())
+        Self::load_from_paths(&path, &legacy_cache_path()?)
     }
 
     fn load_from_paths(
@@ -224,7 +224,7 @@ impl WorkspaceCache {
 
     /// Explicit whole-cache replacement. Interactive clients use `WorkspaceCacheChanges`.
     pub fn save(&self, sync: bool) -> anyhow::Result<()> {
-        let path = cache_path();
+        let path = cache_path()?;
         let _lock = CacheLock::acquire(&path)?;
         self.save_to(&path, sync)
     }
@@ -281,18 +281,21 @@ fn legacy_seeded_touch_cohort(cache: &WorkspaceCache) -> Option<u64> {
         .map(|(timestamp, _)| timestamp)
 }
 
-fn cache_path() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("wsx")
-        .join("workspace-v3.toml")
+// ^ `dirs::cache_dir` is `None` only when the home directory is unknown too, so a
+// `$HOME/.cache` fallback could never apply: report the missing directory instead of
+// writing the cache to a shared, fixed `/tmp` path.
+fn cache_file(name: &str) -> anyhow::Result<PathBuf> {
+    let directory = dirs::cache_dir()
+        .ok_or_else(|| anyhow::anyhow!("no cache directory: the home directory is unknown"))?;
+    Ok(directory.join("wsx").join(name))
 }
 
-fn legacy_cache_path() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("wsx")
-        .join("workspace-v2.toml")
+fn cache_path() -> anyhow::Result<PathBuf> {
+    cache_file("workspace-v3.toml")
+}
+
+fn legacy_cache_path() -> anyhow::Result<PathBuf> {
+    cache_file("workspace-v2.toml")
 }
 
 #[derive(Serialize, Deserialize)]
@@ -300,15 +303,12 @@ struct GroupSelection {
     selected: GroupKey,
 }
 
-fn group_selection_path() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("wsx")
-        .join("group-selection-v1.toml")
+fn group_selection_path() -> anyhow::Result<PathBuf> {
+    cache_file("group-selection-v1.toml")
 }
 
 pub fn load_group_selection() -> anyhow::Result<Option<GroupKey>> {
-    load_group_selection_from(&group_selection_path())
+    load_group_selection_from(&group_selection_path()?)
 }
 
 fn load_group_selection_from(path: &std::path::Path) -> anyhow::Result<Option<GroupKey>> {
@@ -323,7 +323,7 @@ fn load_group_selection_from(path: &std::path::Path) -> anyhow::Result<Option<Gr
 }
 
 pub fn save_group_selection(selected: &GroupKey) -> anyhow::Result<()> {
-    save_group_selection_to(&group_selection_path(), selected)
+    save_group_selection_to(&group_selection_path()?, selected)
 }
 
 fn save_group_selection_to(path: &std::path::Path, selected: &GroupKey) -> anyhow::Result<()> {
@@ -348,9 +348,9 @@ pub type AppliedCache = (
 
 /// Apply only cached UI and local mute state. Sessions always come from wsxd.
 pub fn apply_cache(workspace: &mut WorkspaceState) -> anyhow::Result<AppliedCache> {
-    let path = cache_path();
+    let path = cache_path()?;
     let _lock = CacheLock::acquire(&path)?;
-    let cache = WorkspaceCache::load_from_paths(&path, &legacy_cache_path())?;
+    let cache = WorkspaceCache::load_from_paths(&path, &legacy_cache_path()?)?;
     apply_workspace_cache(workspace, cache, |cache| cache.save_to(&path, false))
 }
 
@@ -555,7 +555,7 @@ impl WorkspaceCacheChanges {
     }
 
     pub fn save(&self, sync: bool) -> anyhow::Result<HashMap<PathBuf, ProjectCacheState>> {
-        self.save_to(&cache_path(), &legacy_cache_path(), sync)
+        self.save_to(&cache_path()?, &legacy_cache_path()?, sync)
     }
 
     fn save_to(
