@@ -1,8 +1,8 @@
 #!/bin/sh
 # tasks.release.command for wsx: publish the version of one main commit (docs/tasks.md "Deploy
 # and release"). `wsx task release` runs it on the host in a temporary detached copy of that
-# commit with WSX_DEPLOY_COMMIT. The tag starts .github/workflows/release.yml, which builds the
-# archive, the GitHub release, wsx-core on crates.io and the Homebrew tap.
+# commit with WSX_DEPLOY_COMMIT. The tag starts .github/workflows/release.yml, which runs ci.yml's
+# tests, then builds the archive, the GitHub release, wsx-core on crates.io and the Homebrew tap.
 # WSX_RELEASE_DRY_RUN=1 runs every check and prints the builds, pushes and waits instead.
 set -eu
 commit=$(git rev-parse --verify "${WSX_DEPLOY_COMMIT:-HEAD}^{commit}")
@@ -72,10 +72,6 @@ watch_run() {
   gh run watch "$1" --exit-status --interval 30 >/dev/null 2>&1
 }
 
-step "ci.yml"
-ci=$(run_of ci.yml)
-watch_run "$ci" || { gh run view "$ci" --log-failed | tail -40; fail "ci.yml failed on $commit"; }
-
 step "push tag"
 git rev-parse -q --verify "refs/tags/$tag" >/dev/null || act git tag -a "$tag" -m "wsx $version" "$commit"
 act git push origin "refs/tags/$tag"
@@ -85,6 +81,15 @@ run=$(run_of release.yml)
 if ! watch_run "$run"; then
   failed=$(gh run view "$run" --json jobs --jq '.jobs[].steps[] | select(.conclusion == "failure") | .name')
   echo "release.yml failed at: $failed"
+  # ^ release.yml's first job runs ci.yml's tests; its jobs read "Tests / <os>" and nothing is built yet.
+  tests=$(gh run view "$run" --json jobs --jq '.jobs[] | select(.conclusion == "failure") | .name | select(startswith("Tests / "))')
+  if [ -n "$tests" ]; then
+    gh run view "$run" --log-failed | tail -40
+    echo "NOT PUBLISHED: tests failed for $tag: $(echo $tests)"
+    echo "The tag is on origin, but nothing was built or published. Fix the failure on main, then delete the tag"
+    echo "(git push origin :refs/tags/$tag && git tag -d $tag) and run the release again."
+    exit 1
+  fi
   # ^ Credentials are checked in release.yml's preflight job, before anything is published.
   if [ -n "$failed" ] && ! echo "$failed" | grep -Evx 'Verify Homebrew tap access|Verify crates.io Trusted Publisher|Authenticate to crates.io' >/dev/null; then
     echo "NOT PUBLISHED: $tag is pushed, but release.yml stopped at a credential step: $failed"
