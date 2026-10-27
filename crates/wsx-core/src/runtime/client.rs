@@ -1670,26 +1670,18 @@ fn record_start_attempt(file: &mut File, reset: bool) -> io::Result<()> {
     file.sync_all()
 }
 
-fn write_lifecycle_marker(socket: &Path, reason: &str) -> io::Result<()> {
-    let path = socket.with_extension("lifecycle");
-    let temporary = path.with_extension(format!("lifecycle.tmp.{}", std::process::id()));
-    let result = (|| {
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&temporary)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        writeln!(file, "{reason}")?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
+/// The lifecycle marker that sits beside `socket`.
+pub fn lifecycle_marker_path(socket: &Path) -> PathBuf {
+    socket.with_extension("lifecycle")
+}
+
+/// Replace the lifecycle marker at `path` (from [`lifecycle_marker_path`]) with `reason`.
+pub fn write_lifecycle_marker(path: &Path, reason: &str) -> io::Result<()> {
+    crate::fs_util::write_atomic(
+        path,
+        format!("{reason}\n").as_bytes(),
+        crate::fs_util::AtomicWrite::replace().mode(0o600),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1727,28 +1719,13 @@ fn consume_planned_marker(
         _ => PlannedStart::None,
     };
     if planned != PlannedStart::None {
-        write_lifecycle_marker(socket, "starting")?;
+        write_lifecycle_marker(&lifecycle_marker_path(socket), "starting")?;
     }
     Ok(planned)
 }
 
 fn lifecycle_marker_reason(socket: &Path) -> Option<String> {
-    let path = socket.with_extension("lifecycle");
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .ok()?;
-    let metadata = file.metadata().ok()?;
-    if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
-        || metadata.len() > 1024
-    {
-        return None;
-    }
-    let mut reason = String::new();
-    file.take(1025).read_to_string(&mut reason).ok()?;
+    let reason = crate::fs_util::read_private_small(&lifecycle_marker_path(socket), 1024)?;
     Some(reason.trim().to_string())
 }
 
@@ -1761,21 +1738,7 @@ fn failed_upgrade_path(socket: &Path) -> PathBuf {
 
 /// The reason of the failed upgrade from this daemon epoch into this target, if one failed.
 fn failed_upgrade(socket: &Path, epoch: u64, target_binary_id: &str) -> Option<String> {
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(failed_upgrade_path(socket))
-        .ok()?;
-    let metadata = file.metadata().ok()?;
-    if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
-        || metadata.len() > 4096
-    {
-        return None;
-    }
-    let mut line = String::new();
-    file.take(4097).read_to_string(&mut line).ok()?;
+    let line = crate::fs_util::read_private_small(&failed_upgrade_path(socket), 4096)?;
     let mut parts = line.trim_end().splitn(3, '|');
     let (Some(recorded_epoch), Some(recorded_target), Some(reason)) =
         (parts.next(), parts.next(), parts.next())
@@ -1823,7 +1786,7 @@ pub fn upgrade_failure(client: &Client) -> Option<String> {
 
 fn background_recovery_allowed(socket: &Path) -> bool {
     match lifecycle_marker_reason(socket).as_deref() {
-        None => !socket.with_extension("lifecycle").exists(),
+        None => !lifecycle_marker_path(socket).exists(),
         Some("ready" | "unexpected" | "starting") => true,
         Some(reason) if reason.starts_with("replacement:") => true,
         // A source daemon that died inside a handoff left a stale marker.

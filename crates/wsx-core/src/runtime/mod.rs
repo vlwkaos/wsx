@@ -10,9 +10,10 @@ mod protocol;
 mod review;
 
 pub use client::{
-    ensure_available, ensure_background_available, new_client_id, pending_upgrade, recover_daemon,
-    restart_daemon, routine_daemon_command, upgrade_failure, Availability, Client, DaemonRestart,
-    DaemonStatus, EventMonitor, EventSignal, PendingUpgrade, RawTerminalStream, TerminalStream,
+    ensure_available, ensure_background_available, lifecycle_marker_path, new_client_id,
+    pending_upgrade, recover_daemon, restart_daemon, routine_daemon_command, upgrade_failure,
+    write_lifecycle_marker, Availability, Client, DaemonRestart, DaemonStatus, EventMonitor,
+    EventSignal, PendingUpgrade, RawTerminalStream, TerminalStream,
 };
 pub use domain::*;
 pub use protocol::*;

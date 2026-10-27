@@ -200,21 +200,12 @@ pub(super) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let temporary = path.with_extension(format!("tmp.{}", std::process::id()));
-    let result = (|| -> Result<()> {
-        let mut file = open_nofollow(
-            &temporary,
-            OpenOptions::new().write(true).create(true).truncate(true),
-        )?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result.with_context(|| format!("cannot write {}", path.display()))
+    crate::fs_util::write_atomic(
+        path,
+        bytes,
+        crate::fs_util::AtomicWrite::replace().mode(0o600),
+    )
+    .with_context(|| format!("cannot write {}", path.display()))
 }
 
 /// One task's folder. Every path inside it is fixed; no caller-given name reaches the disk.
