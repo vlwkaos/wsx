@@ -779,10 +779,11 @@ export function Manager({ project: id, task, page, checks }) {
     events.addEventListener("manager", changed);
     return () => events.removeEventListener("manager", changed);
   }, [id]);
-  // Closing the sheet gives the focus back to the composer.
+  // Closing the sheet gives the focus back to the composer, in the same commit: after a paint
+  // it took the focus from a button tapped in the meantime (a reservoir row's Land).
   const sheet = task ?? (page || checks || null);
   const sheetWas = useRef(sheet);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (sheetWas.current && !sheet) field.current?.focus({ preventScroll: true });
     sheetWas.current = sheet;
   }, [sheet]);
