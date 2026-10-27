@@ -3454,6 +3454,15 @@ merge_seconds = 3
             kept = next(item for item in call('snapshot', None)['data']['sessions'] if item['id'] == plain_session)
             assert kept['label'] == 'old chat' and kept['worktree_id'] == ui_worktrees['ui-old']['id'], kept
             ok('plain worktree: its git worktree entry, branch head, status and session are unchanged after the page')
+            # A capture the manager's sweep removed (docs/tasks.md "To check"): the task's item says
+            # so, and its route answers 404 while the poster is still served.
+            captures = Path(js('task', 'show', 8, '-p', 'ui')['log']).parent / 'captures'
+            (captures / 'r1-1.mp4').unlink()
+            (video_item,) = steady(owner, 'GET', '/api/tasks/%d/t/8' % ids['ui'])[1]['to_check']
+            assert video_item.get('capture_removed') is True and video_item['capture'] == 'captures/r1-1.mp4', video_item
+            assert steady(owner, 'GET', '/api/tasks/%d/checks/%s/capture' % (ids['ui'], video_item['id']))[0] == 404
+            assert steady(owner, 'GET', '/api/tasks/%d/checks/%s/poster' % (ids['ui'], video_item['id']))[0] == 200
+            ok('a removed capture: capture_removed on the task\'s item, its route 404, the poster still served')
 
         # --- "Manager needs me": one push per device naming every open item, replacing the one
         # before; ready, failed and landed wait for the daily digest (docs/web-client.md "Notifications").
