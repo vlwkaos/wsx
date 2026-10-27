@@ -320,6 +320,8 @@ struct Loaded {
     path: PathBuf,
     nodes: Vec<Node>,
     truncated: bool,
+    /// The chain of parents goes on before the records read.
+    cut: bool,
     malformed: bool,
 }
 
@@ -352,8 +354,10 @@ fn read_file(
         }
     }
     // ^ A long turn (tool results, Claude's attachments) can push the person's last message
-    // out of the newest MiB: read further back, up to MAX_GROWN_READ, until it is in.
-    // docs/web-client-chat.md "Timeline"
+    // out of the newest MiB: read further back, up to MAX_GROWN_READ, until it is in. A chain
+    // cut by the newest MiB is read once more from 4 MiB back: the first turn after a Claude
+    // compaction (1 to 3 MiB in real transcripts, 2026-10) pushes the summary out of it while
+    // the person's message is still in. docs/web-client-chat.md "Timeline"
     let mut window = MAX_READ;
     loop {
         let start = metadata.len().saturating_sub(window);
@@ -362,7 +366,11 @@ fn read_file(
             && window < MAX_GROWN_READ
             && loaded.as_ref().map_or_else(
                 |status| *status == "record_limit",
-                |loaded| loaded.truncated && !loaded.nodes.iter().any(Node::submitted),
+                |loaded| {
+                    loaded.truncated
+                        && (loaded.cut && window == MAX_READ
+                            || !loaded.nodes.iter().any(Node::submitted))
+                },
             );
         if !short {
             return loaded;
@@ -388,6 +396,7 @@ fn read_tail(
         .read_to_end(&mut data)
         .map_err(|_| "history_unreadable")?;
     let mut truncated = start > 0;
+    let mut cut = false;
     if start > 0 {
         let Some(end) = data.iter().position(|b| *b == b'\n') else {
             return Err("record_limit");
@@ -469,6 +478,7 @@ fn read_tail(
                     None if node.role == "attachment" && position > 0 => Some(position - 1),
                     None => {
                         truncated = true;
+                        cut = true;
                         None
                     }
                 });
@@ -498,6 +508,7 @@ fn read_tail(
         path: path.into(),
         nodes,
         truncated,
+        cut,
         malformed,
     })
 }
@@ -508,6 +519,7 @@ fn messages_of(loaded: Loaded, count: usize, budget: usize) -> Memory {
         nodes,
         mut truncated,
         malformed,
+        ..
     } = loaded;
     let visible: Vec<_> = nodes.iter().filter(|node| !node.text.is_empty()).collect();
     // ^ Keep the latest persisted compaction even when it falls outside the
@@ -562,6 +574,7 @@ fn timeline_of(loaded: Loaded, count: usize, budget: usize) -> Timeline {
         nodes,
         mut truncated,
         malformed,
+        ..
     } = loaded;
     let model = nodes.iter().rev().find_map(|node| node.model.clone());
     // Outcome of each call, and where the last turn starts: at the newest message
