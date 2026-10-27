@@ -83,7 +83,7 @@ export function CheckRow({ project, item, revision, onChanged }) {
   const capture = `api/tasks/${project}/checks/${item.id}/capture`;
   const did = item.did ?? item.title;
   return html`
-    <li class="check-item" data-state=${item.state}>
+    <li class="check-item" data-state=${item.state} data-gallery>
       <div class="check-line">
         <div class="check-words">
           <p class="check-task"><${TaskChip} project=${project} id=${item.task} /> ${did}</p>
@@ -93,9 +93,11 @@ export function CheckRow({ project, item, revision, onChanged }) {
             <dt>Passes if</dt><dd class="check-pass">${item.pass_if}</dd>
           </dl>
           ${item.capture && html`
-            <a class="check-capture" href=${capture} data-view aria-label=${`Capture of: ${item.check}`}>
-              <img src=${capture} alt="" />
-            </a>`}
+            <div class="check-captures">
+              <a class="check-capture" href=${capture} data-view aria-label=${`Capture of: ${item.check}`}>
+                <img src=${capture} alt="" />
+              </a>
+            </div>`}
           ${item.state === "failed" && html`<p class="check-state">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
           ${item.state === "passed" && html`<p class="check-state">Passed</p>`}
         </div>
@@ -174,7 +176,7 @@ export function ChecksPage({ project, onClose, grip }) {
         ${!items ? (!failure && html`<${Loading} />`)
           : !items.length ? html`<p class="empty">Nothing to check.</p>`
           : html`
-            <ul class="check-list" aria-label="Items to check" data-gallery>
+            <ul class="check-list" aria-label="Items to check">
               ${items.map((item) => html`<${CheckRow} key=${item.id} project=${project} item=${item} onChanged=${read} />`)}
             </ul>`}
       </div>

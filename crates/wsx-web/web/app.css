@@ -609,6 +609,9 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .chips { list-style: none; margin: 0; padding: 0 var(--space-2) var(--space-1); display: flex; flex-wrap: wrap; gap: var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); }
 .chips li { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; }
 .chips li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chips img { display: block; height: var(--size-control); max-width: calc(var(--size-control) * 2); object-fit: cover; border-radius: var(--radius-key); }
+/* ^ The × keeps its 44 px hit area without making the row higher, as on the quote over the composer. */
+.chips .icon-button { margin-block: calc(-1 * var(--space-2)); }
 
 /* Hook: .bubble, .status-line, .reservoir, .more, .task-chip — manager mode on a project
    (docs/web-client-tasks.md "Project screen"). Each message is one bubble with its author and time;
@@ -803,6 +806,9 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .check-act { background: var(--color-raised); color: var(--color-text); }
 /* × while its note is open: it closes the note. */
 .check-act[aria-expanded="true"] { box-shadow: inset 0 0 0 var(--border-width) currentColor; }
+/* The item's captures, one row that scrolls sideways; each link is as wide as its image. */
+.check-captures { display: flex; align-items: flex-start; gap: var(--space-2); overflow-x: auto; }
+.check-capture { flex: 0 0 auto; }
 .check-capture img {
   display: block; max-width: 100%; max-height: calc(var(--size-rail) * 0.5);
   border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);

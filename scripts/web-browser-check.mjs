@@ -1085,7 +1085,7 @@ if (sent.edge !== 2000 || sent.size >= original || !/^IMG_0001\.(jpg|png)$/.test
 await send("Page.reload");
 await until("!!document.querySelector('.composer-field:not([disabled])')", "the done session did not reopen after a reload");
 await until(`(${notDelivered}).startsWith('Not delivered')`, "the message that was not delivered is gone after a reload");
-const kept = await evaluate("({ text: document.querySelector('.composer-field').value, files: [...document.querySelectorAll('.chips li span:first-child')].map((node) => node.textContent) })");
+const kept = await evaluate("({ text: document.querySelector('.composer-field').value, files: [...document.querySelectorAll('.chips li > :first-child')].map((node) => node.alt || node.textContent) })");
 if (kept.text !== "kept after a reload" || kept.files.length !== 1 || !kept.files[0].startsWith(sent.name)) await fail(`the draft was lost in a reload: ${JSON.stringify(kept)}`);
 // Leave no draft behind: removing the file and the text forgets it on this device too.
 await evaluate("document.querySelector('.chips button').click()");
