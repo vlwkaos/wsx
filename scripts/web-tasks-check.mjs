@@ -654,7 +654,9 @@ for (const scheme of ["dark", "light"]) {
   await evaluate(`${longReply}.scrollIntoView({ block: 'center' })`);
   await shot(`events-${scheme}`);
 }
+// ^ The marks fade back to the dark scheme's colors (app.css transitions) before a later check reads them.
 await evaluate("delete document.documentElement.dataset.scheme");
+await pause(1000);
 await evaluate(`${longReply}.querySelector('button').click()`);
 await until("[...document.querySelectorAll('.reply-text')].some((node) => /^noted events\\. #\\d+ landed, so its change is on main and nothing else waits for you\\.$/.test(node.textContent))", "More did not show the whole reply");
 await evaluate("[...document.querySelectorAll('.log .bubble, .log .status-line, .log .reply-line')].at(-1).scrollIntoView({ block: 'end' })");
