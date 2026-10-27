@@ -821,6 +821,14 @@ pub fn checks(scope: &Scope) -> Outcome<Value> {
                 .filter(|sentence| Some(sentence) != title.as_ref());
             row["title"] = json!(title);
             row["did"] = json!(did);
+            // ^ The page sizes the capture's box before the image arrives, so the sheet
+            // does not grow when it comes (docs/web-client-tasks.md "To check").
+            row["capture_size"] = json!(item
+                .capture
+                .as_deref()
+                .zip(dir.as_ref())
+                .and_then(|(name, dir)| checks::read_capture(dir, name).ok())
+                .and_then(|(bytes, _)| checks::png_size(&bytes)));
             row
         })
         .collect();
@@ -1254,7 +1262,8 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
         notice(scope, watch);
         // ^ A working agent appends a progress line about every second. Only a ready task's
         // log can change the overview (a landing that stopped), and the overview reads those
-        // logs whole.
+        // logs whole. The manager's log is `log.jsonl` too, outside a task's folder: its turn
+        // changes `busy` and `last_reply`, so it is never progress only.
         let ready = |id: u32| {
             watch
                 .seen
@@ -1270,7 +1279,7 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
                     && path
                         .parent()
                         .and_then(|parent| parent.file_name()?.to_str()?.parse().ok())
-                        .is_none_or(|id| !ready(id))
+                        .is_some_and(|id| !ready(id))
             });
         if !progress_only {
             let overview = overview(scope);
