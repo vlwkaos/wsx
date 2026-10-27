@@ -92,7 +92,7 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: WebCmd,
     },
-    /// Headless worker tasks: new, list, show, steer, add, allow, stop, close (docs/tasks.md)
+    /// Headless worker tasks and the project manager (docs/tasks.md)
     Task {
         #[command(subcommand)]
         subcommand: crate::task::TaskCmd,
