@@ -2923,7 +2923,7 @@ def task_journey(args):
             said, at = 9001 + len(old_log), first_ms + len(old_log) * 20_000
             old_log.extend([{'kind': 'message', 'id': said, 'from': author, 'text': text, 'unix_ms': at},
                             {'kind': 'delivered', 'ids': [said], 'unix_ms': at + 1},
-                            dict({'kind': 'reply', 'id': said + 1, 'to': [said], 'text': reply, 'unix_ms': at + 2000}, **({'quiet': True} if quiet else {}))])
+                            {'kind': 'reply', 'id': said + 1, 'to': [said], 'text': reply, 'quiet': quiet, 'unix_ms': at + 2000}])
         for line, reply in (('#89 ready r1: Fold the events', 'Landing #89.'), ('#89 landed r1: Fold the events', '#89 is on main.'),
                             ('#91 ready r1: Chat chips', "I'm landing #91. It touches the chat, so I read its captures first."),
                             ('#88 ready r1: Since line', 'Landing #88.'), ('#91 landed r1: Chat chips', '#91 is on main.'),

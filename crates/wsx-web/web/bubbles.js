@@ -15,6 +15,8 @@ const LINE_MS = 60_000;
 const EVENT_WORDS = { landed: "done" };
 const TASK = /^#(\d+) /;
 const CLOSED = /^#\d+ was closed\b/;
+// A line's leading task number and the words after it.
+const LEADING_TASK = /^#(\d+)\b(.*)$/s;
 
 // One line written by wsx in its short form: `#3 ready r2: title; summary` → `#3 ready`,
 // `approval a3 (land #5) approved; done` → `Approved land #5`, a dropped one with its reason:
@@ -120,7 +122,7 @@ function folded(rows) {
     }
     const chips = new Map();
     for (const row of run) {
-      const [, task, rest] = row.kind === "line" ? /^#(\d+)\b(.*)$/s.exec(row.text) ?? [] : [];
+      const [, task, rest] = row.kind === "line" ? LEADING_TASK.exec(row.text) ?? [] : [];
       if (task) chips.set(task, rest);
     }
     if (run[tail].kind === "quiet") run[tail].first = true;
@@ -192,7 +194,7 @@ export const Typing = ({ name, leaving }) => html`
 // One task change in a muted line: its task's chip, then its words as plain text ("#2 ready",
 // "Approved land #3").
 export function StatusLine({ project, text, fresh }) {
-  const [, task, rest] = /^#(\d+)\b(.*)$/s.exec(text) ?? [];
+  const [, task, rest] = LEADING_TASK.exec(text) ?? [];
   return html`<p class="status-line" data-fresh=${fresh ? "" : null}>${task ? html`<${TaskChip} project=${project} id=${Number(task)} />${rest}` : text}</p>`;
 }
 
