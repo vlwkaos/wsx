@@ -19,7 +19,16 @@ const HELLO = `${JSON.stringify({ method: "hello", params: { protocol: PROTOCOL 
 await send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
   const Native = WebSocket;
   window.__sockets = [];
-  window.WebSocket = class extends Native { constructor(...args) { super(...args); window.__sockets.push(this); } };
+  // ^ Each socket keeps its last control frames with the ms since it was made, for a failure report.
+  window.WebSocket = class extends Native { constructor(...args) {
+    super(...args);
+    window.__sockets.push(this);
+    const log = this.__log = { made: Date.now(), frames: [] };
+    const note = (what) => { log.frames.push([Date.now() - log.made, what]); if (log.frames.length > 20) log.frames.shift(); };
+    this.addEventListener("open", () => note("open"));
+    this.addEventListener("message", (event) => { if (typeof event.data === "string") note(event.data.slice(0, 200)); });
+    this.addEventListener("close", (event) => note("close " + event.code));
+  } };
 })()` });
 
 const rowsText = "[...document.querySelectorAll('.xterm-rows > div')].map((row) => row.textContent)";
@@ -106,7 +115,7 @@ async function live(label) {
   }
   await fail(`${label}: at ${await evaluate("location.href")}, state ${await evaluate("document.querySelector('.terminal')?.dataset.state")}, notice ${JSON.stringify(
     await evaluate("document.querySelector('.terminal-notice')?.textContent"))}, console ${JSON.stringify(problems)}, page ${JSON.stringify(
-    await evaluate("document.querySelector('#app').innerText.slice(0, 300)"))}`);
+    await evaluate("document.querySelector('#app').innerText.slice(0, 300)"))}, socket ${JSON.stringify(await evaluate("window.__sockets.at(-1)?.__log ?? null"))}`);
 }
 // The on-screen keyboard the way iOS reports it: `height` and `top` of the visual viewport
 // change and the layout viewport stays. `null` closes the keyboard.
