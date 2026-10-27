@@ -62,6 +62,16 @@
 - A task that is removed while the task list is read no longer blanks the whole list in `wsx task` and on the web; the list skips it. `deploys.jsonl` rolls over at 4 MiB instead of growing without end. The web server reads only the end of a task log to find a task's last land reason, conflict state, context size and cost.
 - Web: the manager, task, project and To check pages no longer show an answer for the page you left when you switch while a read is in flight.
 - Every atomic file write in wsx uses one helper with a unique temporary name, so two threads that write the same file no longer share one temporary file.
+### Fixed
+
+- The web manager chat shows replies and the end of a turn after a phone sleeps or changes networks, without a reload. Its event stream could stay open and silent, so the typing dots stayed and replies showed only after a reload. The server now sends a ping every 10 s; a stream that says nothing for 25 s opens again, and a page that comes back opens its stream at once.
+- A request on a dead connection no longer freezes the manager chat or its composer. A chat read gives up after 20 s and a message after 60 s, and the chat reads again when a change came while a read hung; before, one hung read held every later read until a reload, and Send stayed disabled.
+- A device no longer stays on "Connection lost" when streams it left behind fill its four event streams. A page's new stream ends its older one, and a fifth stream ends the device's oldest instead of being refused.
+- The home row's typing dots and last reply follow the manager's turns. A change to only the manager's log was read as a worker's progress, so the overview was not sent and the dots could stay after the turn ended.
+- Older status lines in the manager chat no longer slide in again, and an open fold no longer closes, when a new decision or answer arrives. Those lines were keyed by their place in the list, so each new one re-made the rows below it and could move the chat.
+- The manager's typing bubble fits its three dots with even padding, and every dot shows whole. Its box took the width of the manager's name, which left an empty space right of the dots. The dots now rise and brighten in turn.
+- The working pulses and typing dots move again after a swipe back on iPhone, a return from the background or a page from the back-forward cache. WebKit could leave them standing still; the page now starts every looping animation again after each route change and return.
+- The To check sheet rises once and stays when its captures come late. It opened after a second and then grew as the images arrived; a PNG capture's box now has its size before the image comes, and the sheet opens when its list is read.
 
 ## [0.40.0] - 2026-10-27
 

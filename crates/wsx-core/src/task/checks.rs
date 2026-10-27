@@ -3,7 +3,8 @@
 //! ref: docs/tasks.md "To check"
 
 use super::store::{
-    create_private_dir, ensure_project_dir, open_locked, project_dir, read_bounded, TaskDir,
+    create_private_dir, ensure_project_dir, open_locked, open_nofollow, project_dir, read_bounded,
+    TaskDir,
 };
 use super::{now_unix_ms, HumanVerify};
 use anyhow::{bail, Context, Result};
@@ -347,6 +348,16 @@ fn capture_path(dir: &TaskDir, name: &str) -> Result<std::path::PathBuf> {
         })
         .with_context(|| format!("{name} is not a kept capture"))?;
     Ok(dir.file(CAPTURES).join(file))
+}
+
+/// The width and height of a kept PNG capture, read from its first bytes only.
+pub fn capture_size(dir: &TaskDir, name: &str) -> Option<(u32, u32)> {
+    let mut head = [0; 24];
+    open_nofollow(&capture_path(dir, name).ok()?, OpenOptions::new().read(true))
+        .ok()?
+        .read_exact(&mut head)
+        .ok()?;
+    png_size(&head)
 }
 
 /// The width and height a PNG says in its IHDR; `None` for anything else.

@@ -39,9 +39,10 @@ export function conversation(entries, resolutions, approvals = []) {
   // ^ wsx's recap request is not shown; the manager's answer to it is tagged Recap
   // (docs/tasks.md "Recap").
   const recaps = new Set(entries.filter((entry) => entry.kind === "message" && entry.from === "recap").map((entry) => entry.id));
-  entries.forEach((entry, index) => {
+  entries.forEach((entry) => {
     const at = entry.unix_ms ?? 0;
-    const key = entry.id != null ? `${entry.kind}-${entry.id}` : `n${index}`;
+    // ^ A key never names a place in a list: a row keeps its element while rows come and go.
+    const key = entry.id != null ? `${entry.kind}-${entry.id}` : `${entry.kind}-${at}`;
     if (entry.kind === "message" && entry.from === "owner") {
       rows.push({ kind: "bubble", at, key, author: "owner", entry });
     } else if (entry.kind === "message" && entry.from === "recap") {
@@ -61,14 +62,14 @@ export function conversation(entries, resolutions, approvals = []) {
     }
   });
   const said = rows.filter((row) => row.kind === "line");
-  resolutions.forEach((resolution, index) => {
+  resolutions.forEach((resolution) => {
     const near = (row) => Math.abs(row.at - resolution.unix_ms) < 10 * LINE_MS;
     // ^ A close is a task change the events say too ("#7 closed", "#7 done"): the event line
     // about that task stays. An answer or a failed check has no event line of its own.
     const closed = CLOSED.test(resolution.text);
     const same = (row) => row.text === resolution.text || (closed && TASK.exec(row.text)?.[1] === String(resolution.task));
     if (said.some((row) => near(row) && same(row))) return;
-    rows.push({ kind: "line", at: resolution.unix_ms, key: `res-${index}-${resolution.unix_ms}`, text: resolution.text });
+    rows.push({ kind: "line", at: resolution.unix_ms, key: `res-${resolution.unix_ms}-${resolution.text}`, text: resolution.text });
   });
   rows.sort((left, right) => left.at - right.at);
   for (const approval of approvals) {

@@ -823,12 +823,13 @@ pub fn checks(scope: &Scope) -> Outcome<Value> {
             row["did"] = json!(did);
             // ^ The page sizes the capture's box before the image arrives, so the sheet
             // does not grow when it comes (docs/web-client-tasks.md "To check").
+            // ^ A video shows its poster, so the box is the poster's.
             row["capture_size"] = json!(item
-                .capture
+                .poster
                 .as_deref()
+                .or(item.capture.as_deref())
                 .zip(dir.as_ref())
-                .and_then(|(name, dir)| checks::read_capture(dir, name).ok())
-                .and_then(|(bytes, _)| checks::png_size(&bytes)));
+                .and_then(|(name, dir)| checks::capture_size(dir, name)));
             row
         })
         .collect();

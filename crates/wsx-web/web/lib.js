@@ -118,11 +118,15 @@ export function useCoalescedLoad(step, fail, deps) {
       try {
         do {
           state.again = false;
-          await latest.current.step(current);
+          // ^ A read that failed (one that gave up on a dead connection) still runs again
+          // when a change came during it (docs/web-client.md "Event stream").
+          try {
+            await latest.current.step(current);
+          } catch (error) {
+            if (current()) latest.current.fail(error);
+          }
           if (!current()) return;
         } while (state.again);
-      } catch (error) {
-        if (current()) latest.current.fail(error);
       } finally {
         if (current()) state.loading = false;
       }
