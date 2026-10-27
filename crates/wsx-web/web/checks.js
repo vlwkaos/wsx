@@ -93,11 +93,9 @@ export function CheckRow({ project, item, revision, onChanged }) {
             <dt>Passes if</dt><dd class="check-pass">${item.pass_if}</dd>
           </dl>
           ${item.capture && html`
-            <div class="check-captures">
-              <a class="check-capture" href=${capture} data-view aria-label=${`Capture of: ${item.check}`}>
-                <img src=${capture} alt="" />
-              </a>
-            </div>`}
+            <a class="check-capture" href=${capture} data-view aria-label=${`Capture of: ${item.check}`}>
+              <img src=${capture} alt="" />
+            </a>`}
           ${item.state === "failed" && html`<p class="check-state">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
           ${item.state === "passed" && html`<p class="check-state">Passed</p>`}
         </div>

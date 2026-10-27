@@ -1,7 +1,7 @@
 // The manager chat as messages: one bubble per owner message and manager reply, each with its
 // author and time, task changes as muted lines, one each, and the manager's replies to them as
 // lines under its name (docs/web-client-tasks.md "Project screen").
-import { clock, html, useState } from "./lib.js";
+import { clock, firstSentence, html, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { Quoted, quoteOf } from "./reply.js";
@@ -145,14 +145,12 @@ export function StatusLine({ project, text, fresh }) {
   return html`<p class="status-line" data-fresh=${fresh ? "" : null}>${task ? html`<${TaskChip} project=${project} id=${Number(task)} />${rest}` : text}</p>`;
 }
 
-// ^ A quiet reply's first sentence, or its first line when that ends sooner.
-const firstSentence = (text) => /^[^\n]*?[.!?](?=\s|$)|^[^\n]*/.exec(text)[0];
-
 // The manager's reply to events: a muted line under its name, in full when it is one sentence,
 // else its first sentence and More.
 export function QuietReply({ row, name, fresh }) {
   const [open, setOpen] = useState(false);
-  const first = firstSentence(row.text);
+  // ^ Its first sentence, or its first line when that ends sooner, never cut inside.
+  const first = firstSentence(row.text, Infinity);
   const whole = open || first === row.text;
   return html`
     <article class="reply-line" data-speaker="manager" data-fresh=${fresh ? "" : null} data-key=${row.key} data-at=${row.at} aria-label=${`${name}, ${clock(row.at)}`}>
