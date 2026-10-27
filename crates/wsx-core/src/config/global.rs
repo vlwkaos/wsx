@@ -545,44 +545,43 @@ impl GlobalConfig {
     }
 
     fn load_from_paths(canonical: &Path, legacy: &Path) -> Result<(Self, Option<String>)> {
+        // A file that does not parse gives defaults and a warning, never an error.
+        let parse = |text: &str| {
+            toml::from_str::<Self>(text).map_err(|error| {
+                (
+                    Self::default(),
+                    Some(format!("config parse error (using defaults): {error}")),
+                )
+            })
+        };
         if canonical.exists() {
             let text = std::fs::read_to_string(canonical)
                 .with_context(|| format!("reading {}", canonical.display()))?;
-            return match toml::from_str::<Self>(&text) {
-                Err(error) => Ok((
-                    Self::default(),
-                    Some(format!("config parse error (using defaults): {error}")),
-                )),
-                Ok(config) => {
-                    if stored_data_needs_migration(&text) {
-                        config.save_to(canonical)?;
-                    }
-                    Ok((config, None))
-                }
+            let config = match parse(&text) {
+                Ok(config) => config,
+                Err(fallback) => return Ok(fallback),
             };
+            if stored_data_needs_migration(&text) {
+                config.save_to(canonical)?;
+            }
+            return Ok((config, None));
         }
         if !legacy.exists() {
             return Ok((Self::default(), None));
         }
         let text = std::fs::read_to_string(legacy)
             .with_context(|| format!("reading {}", legacy.display()))?;
-        match toml::from_str::<Self>(&text) {
-            Err(error) => Ok((
-                Self::default(),
-                Some(format!("config parse error (using defaults): {error}")),
-            )),
-            Ok(config) => {
-                let encoded = toml::to_string_pretty(&config)?;
-                match atomic_create_private(canonical, encoded.as_bytes(), true) {
-                    Ok(()) => Ok((config, None)),
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                        Self::load_from_paths(canonical, legacy)
-                    }
-                    Err(error) => {
-                        Err(error).with_context(|| format!("writing {}", canonical.display()))
-                    }
-                }
+        let config = match parse(&text) {
+            Ok(config) => config,
+            Err(fallback) => return Ok(fallback),
+        };
+        let encoded = toml::to_string_pretty(&config)?;
+        match atomic_create_private(canonical, encoded.as_bytes(), true) {
+            Ok(()) => Ok((config, None)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                Self::load_from_paths(canonical, legacy)
             }
+            Err(error) => Err(error).with_context(|| format!("writing {}", canonical.display())),
         }
     }
 
