@@ -811,6 +811,64 @@ class Events(threading.Thread):
                 self.ready.wait(remaining)
 
 
+class Relay(threading.Thread):
+    """The network between the browser and a site: a TCP relay that can go silent without an
+    error, as a phone's connection does after a network change or a sleep. A word written to
+    `control` acts once, then `<control>.done` says so: `events` silences every connection that
+    carries an event stream, `chat` the next one that asks for a manager chat. A silent
+    connection takes bytes and passes none, and its close never reaches the other end."""
+
+    def __init__(self, port, target, control):
+        super().__init__(daemon=True)
+        self.listener = socket.create_server(('127.0.0.1', port))
+        self.target, self.control, self.links, self.armed = target, control, [], set()
+        self.start()
+        threading.Thread(target=self.watch, daemon=True).start()
+
+    def run(self):
+        while True:
+            client, _ = self.listener.accept()
+            try:
+                server = socket.create_connection(('127.0.0.1', self.target))
+            except OSError:
+                client.close()
+                continue
+            link = {'events': False, 'silent': False}
+            self.links.append(link)
+            threading.Thread(target=self.pump, args=(client, server, link, True), daemon=True).start()
+            threading.Thread(target=self.pump, args=(server, client, link, False), daemon=True).start()
+
+    def pump(self, source, sink, link, upstream):
+        try:
+            while data := source.recv(65536):
+                if upstream and data.startswith(b'GET /api/events'):
+                    link['events'] = True
+                elif upstream and 'chat' in self.armed and b'/chat' in data.split(b'\r\n', 1)[0]:
+                    self.armed.discard('chat')
+                    link['silent'] = True
+                if not link['silent']:
+                    sink.sendall(data)
+        except OSError:
+            pass
+        if not link['silent']:
+            for end in (source, sink):
+                with contextlib.suppress(OSError):
+                    end.shutdown(socket.SHUT_RDWR)
+
+    def watch(self):
+        while True:
+            if self.control.exists():
+                word = self.control.read_text().strip()
+                self.control.unlink()
+                if word == 'events':
+                    for link in self.links:
+                        link['silent'] |= link['events']
+                else:
+                    self.armed.add(word)
+                self.control.with_name(self.control.name + '.done').write_text(word)
+            time.sleep(0.1)
+
+
 # ^ The time since the previous passed check, by check: the result names the slowest ones.
 TIMES = []
 LAST = [time.monotonic()]
@@ -3112,7 +3170,9 @@ def task_journey(args):
         push_origin = 'http://127.0.0.1:%d' % receiver['port']
         vapid = cli('web', 'vapid').stdout
         private_key = next(line.split('"')[1] for line in vapid.splitlines() if line.startswith('private_key'))
-        ports = {name: free_port() for name in ('owner', 'viewer', 'plain')}
+        ports = {name: free_port() for name in ('owner', 'viewer', 'plain', 'relay')}
+        # ^ The browser reaches the owner's site through `Relay`, so its public origin is the relay's.
+        public = {name: 'http://127.0.0.1:%d' % ports['relay' if name == 'owner' else name] for name in ('owner', 'viewer', 'plain')}
         grants = {
             'owner': ('"all"', '"task_view", "task_act", "push", "media_upload", "media_download"'),
             'viewer': (json.dumps([str(project)]), '"task_view", "push"'),
@@ -3124,7 +3184,7 @@ def task_journey(args):
             files[name].write_text(f'''id = "{name}"
 name = "{name}"
 port = {ports[name]}
-public_origin = "http://127.0.0.1:{ports[name]}"
+public_origin = "{public[name]}"
 panels = ["chat"]
 [access]
 projects = {projects_value}
@@ -3139,7 +3199,7 @@ merge_seconds = 3
             files[name].chmod(0o600)
             servers[name] = start(work, [str(wsx), 'web', 'serve', '--site', str(files[name])], env=env, cwd=project,
                                   stdout=subprocess.DEVNULL, stderr=(work / (name + '.log')).open('a'))
-            sites[name] = Site(ports[name], '')
+            sites[name] = Site(ports[name], '', origin=public[name])
         for site in sites.values():
             wait(lambda: _up(site), 'web server')
         for name, site in sites.items():
@@ -3195,7 +3255,7 @@ merge_seconds = 3
         assert act(2, 'add', {'text': 'x' * (64 * 1024 + 1)})[0] == 413
         assert act(2, 'explode', {})[0] == 404 and act(99, 'add', {'text': 'hi'})[0] == 404
         # ^ A second device of the owner: these steps keep to their own request budget.
-        trier = Site(ports['owner'], '')
+        trier = Site(ports['owner'], '', origin=public['owner'])
         code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
         status, headers, body = trier.request('POST', '/api/pair', {'code': code.lower(), 'name': 'trier'}, raw=True)
         assert status == 200, body
@@ -3287,6 +3347,28 @@ merge_seconds = 3
         assert all(e['kind'] not in ('delivered', 'agent') for e in chat['entries'])
         later = steady(owner, 'GET', '/api/tasks/%d/chat?after=%d' % (demo, reply['id']))[1]
         assert all(e.get('id', reply['id'] + 1) > reply['id'] for e in later['entries']), later
+        # A manager turn alone changes the overview: its `busy` (the home row's typing dots) goes
+        # true while the turn runs and false after it (docs/web-client-tasks.md "Home").
+        watcher = Events(owner)
+        watcher.expect('workspace')
+        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'SLOW STATUS'})
+        assert status == 200, body
+        watcher.expect('tasks', lambda data: data['project'] == demo and data['busy'], timeout=20)
+        watcher.expect('tasks', lambda data: data['project'] == demo and not data['busy'], timeout=20)
+        # ^ A quiet stream pings every 10 s, so a page can tell a silent dead stream from a quiet one.
+        watcher.expect('ping', timeout=15)
+        # Streams a phone left behind cannot lock the device out (docs/web-client.md "Limits"):
+        # a page's new stream ends its older one, and past four the device's oldest one ends.
+        first = Events(owner, page='relay-page-1')
+        again = Events(owner, page='relay-page-1')
+        assert first.closed.wait(5) and not again.closed.is_set()
+        fourth = Events(owner)
+        fifth = Events(owner)
+        assert events.closed.wait(5) and not any(stream.closed.is_set() for stream in (watcher, again, fourth))
+        fifth.expect('workspace')
+        events = Events(owner)
+        events.expect('workspace')
+        ok('manager: a turn alone sends the overview with busy and then without; a quiet stream pings; a page replaces its stream, past four streams the oldest ends')
         # An approval request from the manager, approved on the web; its outcome is the decision.
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'RUN wsx task land 3 -p demo --json'})
         assert status == 200, body
@@ -3489,10 +3571,11 @@ merge_seconds = 3
             # ^ Settings saves the browser's subscription: the local receiver's endpoint and keys.
             os.environ['WSX_PUSH_FIXTURE'] = json.dumps({'endpoint': push_origin + '/push/browser',
                                                          'keys': {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}})
+            Relay(ports['relay'], ports['owner'], work / 'relay')
             result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,
                                   str(ids['ui']), str(args.captures), ','.join(home_order),
                                   str(audit) if audit.exists() else '', str(ids['plans']), str(restart),
-                                  str(plans), LONG_NAME], timeout=360)
+                                  str(plans), LONG_NAME, str(work / 'relay')], timeout=480)
             assert result.returncode == 0, result.stdout + result.stderr
             # ^ Try started #7's preview: its mapping goes with it.
             assert js('task', 'preview', 7, '--stop', '-p', 'ui')['stopped'] is True

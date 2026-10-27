@@ -20,10 +20,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { launch, mobileAudit, pause } from "./web-cdp.mjs";
 
-const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, plansCheckout, longName] = process.argv.slice(2);
+const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, plansCheckout, longName, relayFile] = process.argv.slice(2);
 const project = Number(projectArg);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key } = await launch({
-  captures, prefix: "tasks-", timeoutSeconds: 300,
+  captures, prefix: "tasks-", timeoutSeconds: 420,
 });
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
 const { file: mobilePath, source: mobileSource } = mobileAudit();
@@ -807,6 +807,11 @@ await evaluate(`document.querySelector('.reservoir .need[data-key=${JSON.stringi
 await until(`!document.querySelector('.reservoir .need[data-key=${JSON.stringify(answerKey)}]')`, "the answer did not clear the row of #1", 300);
 // ^ The chat says the answer as a status line.
 await until(`${statusLines}.some((node) => /#1 got an answer/.test(node.textContent))`, "the answer in the reservoir left no status line", 60);
+// ^ A line keeps its row while newer lines arrive: a line of the first read never slides in.
+// A row made again would play its entry and take the scroll anchor with it.
+const calmLines = `${statusLines}.filter((node) => !node.hasAttribute('data-fresh')).map((node) => node.textContent)`;
+const calmBefore = await evaluate(calmLines);
+if (!calmBefore.some((line) => /was closed|got an answer|failed a check/.test(line))) await fail(`no resolution line of the first read: ${calmBefore}`);
 let moved = await clearRow("Approve land #3", "Approve");
 if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))")) await fail("a notice repeats the status line of Approve");
 await until(`!${rowOf("Approve land #3")} && !${rowOf("#3")}`, "the reservoir kept the approved landing", 300);
@@ -820,6 +825,8 @@ moved = await clearRow("#1", "Land");
 // stays moved and shows the jump button.
 await until(`(${atEnd}) && !document.querySelector('.jump')`, "acting in the reservoir moved the chat", 30);
 if (await count(".need-card, .tray")) await fail("an action brought back a card or the tray");
+const calmAfter = await evaluate(calmLines);
+if (calmBefore.some((line) => !calmAfter.includes(line))) await fail(`lines of the first read slid in again when newer resolutions arrived: ${calmBefore.filter((line) => !calmAfter.includes(line))}`);
 await shot("reservoir-acted", ".composer-send");
 await closeReservoir();
 
@@ -933,6 +940,37 @@ for (const away of ["offline", "hidden"]) {
   if (away === "hidden") await visibility("visible");
   await until(`!document.querySelector('.log .typing') && !document.querySelector('.manager .bar-state') && ${replies} > ${before}`,
     `the typing dots stayed or the reply did not show after the page was ${away}`, 50);
+}
+await evaluate("delete document.visibilityState");
+// ^ The network between the page and the server goes silent without an error, as a phone's
+// does after a network change or a sleep (`Relay` in test-web-client.py): the stream looks
+// open and says nothing. A page back from the background opens its stream again at once; a
+// visible page opens it again when its pings stop. A chat read that never answers gives up,
+// so the next one runs (docs/web-client.md "Event stream").
+const relay = async (word) => {
+  fs.writeFileSync(relayFile, word);
+  for (let waited = 0; !fs.existsSync(`${relayFile}.done`); waited += 100) {
+    if (waited > 10_000) await fail(`the relay did not take ${word}`);
+    await pause(100);
+  }
+  fs.unlinkSync(`${relayFile}.done`);
+};
+for (const [away, within] of [["silent and back", 8], ["silent", 40], ["a read that never answers", 40]]) {
+  const before = await evaluate(replies);
+  await typeInto(".composer-field", `SLOW STATUS while ${away}`);
+  await click(".composer-send");
+  await until("!!document.querySelector('.log .typing')", `no typing dots before ${away}`, 30);
+  await relay(away === "a read that never answers" ? "chat" : "events");
+  if (away === "a read that never answers") {
+    // ^ The next chat read (the event of the reply) hangs; a message during it reads again.
+    await pause(5000);
+    await typeInto(".composer-field", `STATUS after ${away}`);
+    await click(".composer-send");
+  }
+  if (away === "silent and back") { await visibility("hidden"); await visibility("visible"); }
+  const sent = Date.now();
+  await until(`!document.querySelector('.log .typing') && ${replies} > ${before}`, `the typing dots stayed or the reply did not show: ${away}`, (within + 10) * 10);
+  if ((Date.now() - sent) / 1000 > within) await fail(`the reply took ${Math.round((Date.now() - sent) / 1000)} s to show: ${away}`);
 }
 await evaluate("delete document.visibilityState");
 // ^ The stream opens again (its "Connection lost" notice goes) and reads once more.
@@ -1457,6 +1495,18 @@ await oneMotion("To check on a phone", async () => {
   await until(`location.hash === '#/p/${project}/checks' && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open");
 });
 await closeSheet("the To check list", chat);
+// ^ On a slow network the list and then its captures come late: the sheet still rises once,
+// since each capture's box has its size before the image arrives.
+await send("Network.setCacheDisabled", { cacheDisabled: true });
+await send("Network.emulateNetworkConditions", { offline: false, latency: 1500, downloadThroughput: -1, uploadThroughput: -1 });
+await oneMotion("To check on a slow network", () => go(`#/p/${project}/checks`));
+await until("[...document.querySelectorAll('.check-capture img')].every((image) => image.complete && image.naturalWidth)", "the captures did not load on a slow network", 100);
+await pause(500);
+const slowRest = await evaluate("document.querySelector('dialog.task-sheet').getBoundingClientRect().top");
+if (Math.abs(slowRest - (await evaluate("window.sheetFrames.at(-1)[0]"))) > 0.5) await fail(`the To check sheet moved when its captures came: ${Math.round((await evaluate("window.sheetFrames.at(-1)[0]")))} to ${Math.round(slowRest)}`);
+await send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+await send("Network.setCacheDisabled", { cacheDisabled: false });
+await closeSheet("the To check list on a slow network", chat);
 await resize([1280, 800, 1]);
 await oneMotion("To check on a wide screen", () => go(`#/p/${project}/checks`));
 // ^ Wide, Try, Fail and Pass are a column right of each item's words, level with its title line.
