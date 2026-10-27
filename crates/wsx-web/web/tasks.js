@@ -3,8 +3,8 @@
 // task's or the project page's sheet over the chat (docs/web-client-tasks.md). Fixed actions
 // go straight to wsx.
 import { api } from "./api.js";
-import { html, Icon, keepIn, readMap, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
-import { can, events, leaveFor, shows, state, touch, update, useStore } from "./store.js";
+import { html, Icon, keepIn, readMap, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
+import { can, leaveFor, shows, state, touch, update, useEventLoad, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
 import { Bubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
@@ -730,46 +730,26 @@ export function Manager({ project: id, task, page, checks }) {
   const field = useRef();
   const [reply, setReply] = useState(null);
   const [gestures, menu] = useReply((line) => { setReply(line); field.current?.focus(); });
-  const loading = useRef(false);
-  const again = useRef(false);
   const shown = useRef([]);
   const cut = useRef(false);
 
   // Reads after the last entry it has; one read at a time, one more after a change during it.
-  const load = async () => {
-    if (loading.current) {
-      again.current = true;
-      return;
-    }
-    loading.current = true;
-    try {
-      do {
-        again.current = false;
-        const last = shown.current.findLast((entry) => entry.id != null)?.id;
-        const next = await api(`api/tasks/${id}/chat`, { query: last != null ? { after: last } : undefined });
-        // ^ A rotation or a stop has no id, so every read after the last id returns it again
-        // until the next message: it joins once.
-        const known = (entry) => entry.id == null
-          && shown.current.some((seen) => seen.id == null && seen.kind === entry.kind && seen.unix_ms === entry.unix_ms);
-        const all = [...shown.current, ...next.entries.filter((entry) => !known(entry))];
-        if (next.skipped || all.length > 400) cut.current = true;
-        shown.current = all.slice(-400);
-        setChat({ ...next, entries: shown.current });
-        setFailure("");
-      } while (again.current);
-    } catch (error) {
-      setFailure(error.message);
-    } finally {
-      loading.current = false;
-    }
-  };
-  useEffect(() => {
-    if (!overview) loadTasks(id, { missing: true });
-    load();
-    const changed = (event) => { if (event.detail.project == null || event.detail.project === id) load(); };
-    events.addEventListener("manager", changed);
-    return () => events.removeEventListener("manager", changed);
-  }, [id]);
+  const load = useCoalescedLoad(async (current) => {
+    const last = shown.current.findLast((entry) => entry.id != null)?.id;
+    const next = await api(`api/tasks/${id}/chat`, { query: last != null ? { after: last } : undefined });
+    if (!current()) return;
+    // ^ A rotation or a stop has no id, so every read after the last id returns it again
+    // until the next message: it joins once.
+    const known = (entry) => entry.id == null
+      && shown.current.some((seen) => seen.id == null && seen.kind === entry.kind && seen.unix_ms === entry.unix_ms);
+    const all = [...shown.current, ...next.entries.filter((entry) => !known(entry))];
+    if (next.skipped || all.length > 400) cut.current = true;
+    shown.current = all.slice(-400);
+    setChat({ ...next, entries: shown.current });
+    setFailure("");
+  }, (error) => setFailure(error.message), [id]);
+  useEffect(() => { if (!overview) loadTasks(id, { missing: true }); }, [id]);
+  useEventLoad("manager", load, (detail) => detail.project == null || detail.project === id, [id]);
   // Closing the sheet gives the focus back to the composer, in the same commit: after a paint
   // it took the focus from a button tapped in the meantime (a reservoir row's Land).
   const sheet = task ?? (page || checks || null);

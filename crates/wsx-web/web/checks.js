@@ -1,9 +1,10 @@
 // The project's To check list: what only a person can check of the landed tasks, passed or
 // failed at the owner's own time (docs/tasks.md "To check", docs/web-client-tasks.md "To check").
 import { api } from "./api.js";
-import { html, Icon, Loading, useEffect, useRef, useState } from "./lib.js";
+import { html, Icon, Loading, useCoalescedLoad, useEffect, useRef, useState } from "./lib.js";
 import { can, useStore } from "./store.js";
 import { loadTasks, TaskChip } from "./tasks.js";
+import { SheetBar } from "./ui.js";
 
 // Try: start the task's preview, or find the running one, then a link to open it. A link
 // the person opens keeps popup blockers out of the way. Only for projects with
@@ -125,14 +126,12 @@ export function ChecksPage({ project, onClose, grip }) {
   const [items, setItems] = useState(null);
   const [failure, setFailure] = useState("");
   const [busy, setBusy] = useState(false);
-  const live = useRef(true);
-  const read = () => api(`api/tasks/${project}/checks`).then(
-    (value) => { if (live.current) { setItems(value.open); setFailure(""); } },
-    (error) => { if (live.current) setFailure(error.message); });
-  useEffect(() => {
-    live.current = true;
-    return () => { live.current = false; };
-  }, []);
+  const read = useCoalescedLoad(async (current) => {
+    const value = await api(`api/tasks/${project}/checks`);
+    if (!current()) return;
+    setItems(value.open);
+    setFailure("");
+  }, (error) => setFailure(error.message), [project]);
   // ^ The overview counts the open items; a change anywhere reads the list again.
   const count = store.tasks[project]?.to_check;
   useEffect(() => { read(); }, [project, count]);
@@ -158,17 +157,13 @@ export function ChecksPage({ project, onClose, grip }) {
   };
   return html`
     <div class="page task-page" ref=${page}>
-      <header class="bar" onPointerDown=${grip?.down} onPointerMove=${grip?.move} onPointerUp=${grip?.up} onPointerCancel=${grip?.up}>
-        <button class="icon-button" type="button" aria-label="Back to the chat" onClick=${onClose}><${Icon} name="back" /></button>
-        <div class="bar-title">
-          <span class="bar-label">To check</span>
-          ${items && html`<span class="bar-state">${items.length ? `${items.length} open` : "nothing open"}</span>`}
-        </div>
-        ${items?.length > 0 && can("task_act") && html`
-          <div class="bar-tools">
-            <button class="button check-all" type="button" disabled=${busy} onClick=${passAll}>${busy ? "Passing…" : "All passed"}</button>
-          </div>`}
-      </header>
+      <${SheetBar} grip=${grip} onClose=${onClose} tools=${items?.length > 0 && can("task_act") && html`
+        <div class="bar-tools">
+          <button class="button check-all" type="button" disabled=${busy} onClick=${passAll}>${busy ? "Passing…" : "All passed"}</button>
+        </div>`}>
+        <span class="bar-label">To check</span>
+        ${items && html`<span class="bar-state">${items.length ? `${items.length} open` : "nothing open"}</span>`}
+      </${SheetBar}>
       <div class="scroll">
         ${failure && html`<p class="error" role="alert">${failure}</p>`}
         ${!items ? (!failure && html`<${Loading} />`)

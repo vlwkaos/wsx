@@ -2,12 +2,13 @@
 // the owner, then the report folded (Changes, Evidence, To check, Left open), the messages to
 // the worker and its history (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
-import { clock, html, Icon, keepIn, Loading, readMap, short, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
-import { can, events, useStore } from "./store.js";
+import { clock, html, Icon, keepIn, Loading, readMap, short, useCoalescedLoad, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
+import { can, useEventLoad, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { grow, isolate, release } from "./chat.js";
 import { announce, loadTasks, taskStage, TaskChip, TaskTitle, withChips } from "./tasks.js";
 import { Bubble } from "./bubbles.js";
+import { SheetBar } from "./ui.js";
 import { TaskStory } from "./story.js";
 import { CheckRow, TryButton } from "./checks.js";
 
@@ -160,32 +161,13 @@ export function TaskPage({ project, task, onClose, grip }) {
   const store = useStore();
   const [detail, setDetail] = useState(null);
   const [failure, setFailure] = useState("");
-  const loading = useRef(false);
-  const again = useRef(false);
-  const load = async () => {
-    if (loading.current) {
-      again.current = true;
-      return;
-    }
-    loading.current = true;
-    try {
-      do {
-        again.current = false;
-        setDetail(await api(`api/tasks/${project}/t/${task}`));
-        setFailure("");
-      } while (again.current);
-    } catch (error) {
-      setFailure(error.status === 404 ? "This task is not in this site's projects." : error.message);
-    } finally {
-      loading.current = false;
-    }
-  };
-  useEffect(() => {
-    load();
-    const changed = (event) => { if (event.detail.project == null || (event.detail.project === project && event.detail.task === task)) load(); };
-    events.addEventListener("task", changed);
-    return () => events.removeEventListener("task", changed);
-  }, [project, task]);
+  const load = useCoalescedLoad(async (current) => {
+    const next = await api(`api/tasks/${project}/t/${task}`);
+    if (!current()) return;
+    setDetail(next);
+    setFailure("");
+  }, (error) => setFailure(error.status === 404 ? "This task is not in this site's projects." : error.message), [project, task]);
+  useEventLoad("task", load, (detail) => detail.project == null || (detail.project === project && detail.task === task), [project, task]);
   // An approval or a decision changes the overview, not this task's files.
   const overview = store.tasks[project];
   useEffect(() => { if (detail) load(); }, [overview?.decisions?.[0]?.approval, overview?.needs?.length]);
@@ -193,13 +175,10 @@ export function TaskPage({ project, task, onClose, grip }) {
   const words = withChips(project);
 
   const top = html`
-    <header class="bar" onPointerDown=${grip?.down} onPointerMove=${grip?.move} onPointerUp=${grip?.up} onPointerCancel=${grip?.up}>
-      <button class="icon-button" type="button" aria-label="Back to the chat" onClick=${onClose}><${Icon} name="back" /></button>
-      <div class="bar-title">
-        ${detail?.title ? html`<${TaskTitle} title=${detail.title} id=${task} />` : html`<span class="bar-label">#${task}</span>`}
-        ${detail && html`<span class="bar-state" data-tone=${taskStage(detail)[1]}>${taskStage(detail)[0]}</span>`}
-      </div>
-    </header>`;
+    <${SheetBar} grip=${grip} onClose=${onClose}>
+      ${detail?.title ? html`<${TaskTitle} title=${detail.title} id=${task} />` : html`<span class="bar-label">#${task}</span>`}
+      ${detail && html`<span class="bar-state" data-tone=${taskStage(detail)[1]}>${taskStage(detail)[0]}</span>`}
+    </${SheetBar}>`;
   if (!detail) return html`<div class="page">${top}${failure ? html`<p class="error empty">${failure}</p>` : html`<${Loading} />`}</div>`;
 
   const actions = detail.actions;
