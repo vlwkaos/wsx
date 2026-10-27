@@ -15,6 +15,7 @@ pub mod routine_editor;
 pub mod search_feedback;
 pub mod tasks;
 pub mod terminal_title;
+pub(crate) mod text_form;
 pub mod theme;
 pub mod upgrade;
 pub mod workspace_nav;
