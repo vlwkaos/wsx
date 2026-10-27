@@ -775,7 +775,7 @@ export function Manager({ project: id, task, page, checks }) {
   useEffect(() => {
     if (!overview) loadTasks(id, { missing: true });
     load();
-    const changed = (event) => { if (event.detail.project === id) load(); };
+    const changed = (event) => { if (event.detail.project == null || event.detail.project === id) load(); };
     events.addEventListener("manager", changed);
     return () => events.removeEventListener("manager", changed);
   }, [id]);
