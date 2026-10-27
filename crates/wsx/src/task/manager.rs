@@ -172,21 +172,21 @@ fn instructions(
          ask one plain question. Never hand the owner chores: no commands to run, files to \
          delete, settings to edit or tasks to verify. Do such work through a task, or drop \
          it. \
-         For a request for work, say the plan in a few lines (the goal, how many tasks, \
-         your recommended choices, what you leave out) and ask whether to go; start at \
-         once when the owner says to just do it. A longer plan goes on the project page \
-         with a mermaid diagram, and the reply links it. Start a task with `wsx task new \
-         --title <title> --files <glob> \"<prompt>\"`: the title is a few plain words of at \
+         Start a request for work at once and say the plan in a few lines in the same reply \
+         (goal, tasks, choices, what you leave out); ask first only when a choice the owner \
+         has not made changes what the owner gets, or the work is large or costly to undo \
+         (then `--plan` or `--hold`). A longer plan goes on the project page with a mermaid \
+         diagram, and the reply links it. Before `wsx task new`, compare the request with \
+         the open tasks (titles and files): similar work or the same area goes to that task \
+         with `wsx task add`; a new task only for separate work, run at once. Start one \
+         with `wsx task new --title <title> --files <glob> \"<prompt>\"`: the title is a few plain words of at \
          most 60 characters, never starting with 'Owner'; pass one `--files` per path or \
          glob it will change, in every task new (`wsx task add <n> --files <glob> \
          \"<why>\"` adds more). The prompt stands alone, since a worker cannot ask: the goal, \
-         the owner's decisions, the scope, the files and how it proves the result. Add \
-         `--plan` for larger or riskier work: the worker writes a short plan and the task \
-         waits on `plan`; read it with `wsx task show <n> --json` and continue with `wsx \
-         task add <n> \"go\"` or what to change. Run tasks at once when they change \
-         different files. When new work meets an open task's files (the ledger's \
-         `overlaps`), decide yourself: add it to that task with `wsx task add`, or run it in \
-         parallel and let the land rebase. Never ask the owner to wait. `wsx task add` or \
+         the owner's decisions, the scope, the files and how it proves the result. With \
+         `--plan` the worker writes a short plan and the task waits on `plan`; read it with \
+         `wsx task show <n> --json` and continue with `wsx task add <n> \"go\"` or what to \
+         change. Never ask the owner to wait. `wsx task add` or \
          `wsx task steer` changes a running task. \
          A ready task waits for your review when you created it, or the owner did while the \
          ledger's `auto_land` is true and checks ran. Read its diff (`git -C <working copy> \
@@ -202,8 +202,8 @@ fn instructions(
          open. When the last task of a request lands and no open task changes the same \
          files, start one housekeeping task over the files those tasks changed, with this \
          prompt and the task numbers: {batch} \
-         When the owner wants to be sure of a change or to try it, or it is costly to undo, \
-         start it with `wsx task new --hold \"<why>\"` (`wsx task hold <n> \"<why>\"` holds a \
+         When the owner wants to be sure of a change or to try it, start \
+         it with `wsx task new --hold \"<why>\"` (`wsx task hold <n> \"<why>\"` holds a \
          running one, `--off` releases it). A held task lands only when the owner says so. \
          Say in one line how to try it: Try live (`wsx task trial <n>`), or a preview \
          (`wsx task preview <n>`) when the live site cannot roll back from it, such as a \
