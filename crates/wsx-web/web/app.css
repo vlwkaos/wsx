@@ -646,16 +646,13 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
   background: var(--color-surface); border: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere;
 }
 .bubble[data-side="out"] .bubble-box { background: var(--color-raised); border-color: transparent; }
-/* Each speaker's color on its name and the edge of its box; the name stays (docs/web-themes.md). */
-.bubble[data-speaker="owner"] { --speaker: var(--color-accent); }
+/* Each speaker's color on its name only, never on its box; the name stays (docs/web-themes.md). */
 .bubble[data-speaker="manager"] { --speaker: var(--color-text); }
 .bubble[data-peer="1"] { --speaker: var(--color-peer-1); }
 .bubble[data-peer="2"] { --speaker: var(--color-peer-2); }
 .bubble[data-peer="3"] { --speaker: var(--color-peer-3); }
 .bubble[data-peer="4"] { --speaker: var(--color-peer-4); }
 .bubble[data-speaker] .bubble-author { color: var(--speaker); }
-.bubble[data-speaker][data-side="in"] .bubble-box { border-inline-start: calc(var(--border-width) * 3) solid var(--speaker); }
-.bubble[data-speaker][data-side="out"] .bubble-box { border-inline-end: calc(var(--border-width) * 3) solid var(--speaker); }
 .bubble[data-pending] .bubble-box { color: var(--color-muted); }
 /* An approval the reply asked for: its words, then Deny and Approve, wrapping on a narrow screen. */
 .bubble-approval { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-2); padding-top: var(--space-2); border-top: var(--border-width) solid var(--color-hairline); }

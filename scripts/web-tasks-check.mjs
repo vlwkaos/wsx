@@ -1290,18 +1290,24 @@ await go(chat);
 await until("!!document.querySelector('.composer .icon-button[aria-label=\"Attach files\"]')", "the manager chat has no attach button");
 const peers = await bubbles();
 if (!peers.some(({ author }) => author === "plans") || !peers.some(({ tag }) => tag === "Reply to plans")) await fail(`the managers' messages read ${JSON.stringify(peers)}`);
-// ^ Each kind of speaker has its own color: the owner's box edge, this manager's and the other
-// manager's names, and wsx's muted lines (docs/web-client-tasks.md "Project screen").
-const speakerColors = () => evaluate(`(() => { const color = (selector, property) => { const node = document.querySelector(selector);
-  return node && getComputedStyle(node)[property]; };
-  return [color('.log .bubble[data-speaker="owner"] .bubble-box', 'borderInlineEndColor'), color('.log .bubble[data-speaker="manager"] .bubble-author', 'color'),
-    color('.log .bubble[data-speaker="peer"] .bubble-author', 'color'), color('.log .status-line', 'color')]; })()`);
+// ^ Each speaker with a name has its own color on that name, never on its box: this manager's
+// and the other manager's names and wsx's muted lines; the owner's bubble has no name and no color
+// (docs/web-themes.md "Tokens").
+const speakerColors = () => evaluate(`(() => { const color = (selector) => { const node = document.querySelector(selector);
+  return node && getComputedStyle(node).color; };
+  return [color('.log .bubble[data-speaker="manager"] .bubble-author'), color('.log .bubble[data-speaker="peer"] .bubble-author'), color('.log .status-line')]; })()`);
+// ^ A box whose inline edges differ from its top edge has a side border.
+const sideBorders = () => evaluate(`[...document.querySelectorAll('.log .bubble-box')].map((node) => getComputedStyle(node))
+  .filter((style) => ['Start', 'End'].some((side) => style['borderInline' + side + 'Width'] !== style.borderTopWidth || style['borderInline' + side + 'Color'] !== style.borderTopColor)).length`);
+if (!(await count('.log .bubble[data-speaker="owner"]')) || await count('.log .bubble[data-speaker="owner"] .bubble-author')) await fail("the chat has no owner bubble, or it shows a name");
 for (const scheme of ["dark", "light"]) {
   await evaluate(scheme === "light" ? "document.documentElement.dataset.scheme = 'light'" : "delete document.documentElement.dataset.scheme");
   // ^ The bubbles fade to the new scheme's colors (app.css transitions); read them after.
   await pause(1000);
   const colors = await speakerColors();
   if (colors.some((color) => !color) || new Set(colors).size !== colors.length) await fail(`the speakers' colors in the ${scheme} scheme: ${JSON.stringify(colors)}`);
+  const sides = await sideBorders();
+  if (sides) await fail(`${sides} bubbles have a side border in the ${scheme} scheme`);
   await evaluate("document.querySelector('.log .bubble[data-speaker=\"peer\"]').scrollIntoView({ block: 'center' })");
   await shot(`speakers-${scheme}`);
 }
