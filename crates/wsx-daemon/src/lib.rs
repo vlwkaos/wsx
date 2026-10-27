@@ -35,7 +35,7 @@ use std::{
 };
 use wsx_core::{
     config::global::GlobalConfig,
-    integration::{claude_status, resume},
+    integration::{self, claude_status, resume},
     runtime::*,
 };
 use wsx_terminal::{validate_launch, AgentTerminalObservation, TerminalRuntime};
@@ -112,6 +112,20 @@ struct RecoveryLaunch {
     resume_key: Option<String>,
     provider: Option<String>,
     await_readiness: bool,
+    /// The resumed agent's own cwd and config root, from its reports.
+    agent_launch: Option<AgentLaunch>,
+}
+
+impl RecoveryLaunch {
+    fn plain(recipe: LaunchRecipe) -> Self {
+        Self {
+            recipe,
+            resume_key: None,
+            provider: None,
+            await_readiness: false,
+            agent_launch: None,
+        }
+    }
 }
 
 struct RecoveryAttempt {

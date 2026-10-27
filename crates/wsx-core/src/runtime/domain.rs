@@ -1,5 +1,5 @@
 use serde::{ser::SerializeTuple, Deserialize, Deserializer, Serialize, Serializer};
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 macro_rules! id_type {
     ($name:ident) => {
@@ -180,9 +180,43 @@ pub struct AgentSessionRef {
     /// Adapter-reported history, not a resume argument. See docs/agent-orchestration.md.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_path: Option<PathBuf>,
+    /// Where and with which config root the agent ran; a resume reuses both.
+    /// See docs/agent-orchestration.md "Resumed agents".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<AgentLaunch>,
+}
+
+/// The agent's cwd and the config-root variables it had set (`CLAUDE_CONFIG_DIR`, ...).
+/// A variable of the provider that is absent here was unset.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AgentLaunch {
+    pub cwd: PathBuf,
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
 }
 
 impl AgentSessionRef {
+    pub fn with_launch(mut self, launch: AgentLaunch) -> Option<Self> {
+        let valid_cwd = launch.cwd.is_absolute()
+            && launch
+                .cwd
+                .to_str()
+                .is_some_and(|cwd| valid_agent_session_value(cwd, MAX_AGENT_SESSION_PATH_BYTES));
+        let valid_environment = launch.environment.iter().all(|(name, value)| {
+            !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                && valid_agent_session_value(value, MAX_AGENT_SESSION_PATH_BYTES)
+        });
+        if !valid_cwd || !valid_environment {
+            return None;
+        }
+        self.launch = Some(launch);
+        Some(self)
+    }
+
     pub fn with_transcript_path(mut self, path: String) -> Option<Self> {
         if !valid_agent_session_value(&path, MAX_AGENT_SESSION_PATH_BYTES)
             || !PathBuf::from(&path).is_absolute()
@@ -200,6 +234,7 @@ impl AgentSessionRef {
                 kind: AgentSessionRefKind::Id,
                 value,
                 transcript_path: None,
+                launch: None,
             })
     }
 
@@ -211,6 +246,7 @@ impl AgentSessionRef {
             kind: AgentSessionRefKind::Path,
             value,
             transcript_path: None,
+            launch: None,
         })
     }
 }

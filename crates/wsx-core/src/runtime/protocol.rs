@@ -59,7 +59,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // rewrite the marker or bind the socket at once, and a successor that dies after the commit
 // gives the sessions back to the source (docs/daemon-live-upgrade.md "A stuck handoff",
 // "A successor that dies").
-pub const DAEMON_REVISION: u32 = 35;
+// Revision 36 resumes an agent in its own cwd with its own config root (`AgentLaunch` on the
+// session reference; docs/agent-orchestration.md "Resumed agents").
+pub const DAEMON_REVISION: u32 = 36;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 

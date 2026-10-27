@@ -80,6 +80,7 @@ pub(crate) fn validated_session_ref(
         return Ok(None);
     };
     let transcript_path = session_ref.transcript_path;
+    let launch = session_ref.launch;
     let validated = match session_ref.kind {
         AgentSessionRefKind::Id => AgentSessionRef::id(session_ref.value),
         AgentSessionRefKind::Path => AgentSessionRef::path(session_ref.value),
@@ -95,6 +96,12 @@ pub(crate) fn validated_session_ref(
             .ok_or_else(|| api("invalid_agent_session", "invalid transcript path"))?
     } else {
         validated
+    };
+    let validated = match launch {
+        Some(launch) => validated
+            .with_launch(launch)
+            .ok_or_else(|| api("invalid_agent_session", "invalid agent launch context"))?,
+        None => validated,
     };
     Ok(Some(validated))
 }
