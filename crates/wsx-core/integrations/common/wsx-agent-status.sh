@@ -84,12 +84,13 @@ set -- agent report "$WSX_PANE_ID" --provider "@PROVIDER@" --state "$state"
 [ -n "$conversation" ] && set -- "$@" --session-id "$conversation"
 [ -n "$conversation" ] && [ -n "$transcript" ] && set -- "$@" --transcript-path "$transcript"
 result=$("$report_bin" "$@" 2>&1) && exit 0
-# ^ docs/agent-reporting.md "Hook exit": a pane the daemon no longer knows, a stale runtime
-# generation or an unreachable daemon is expected after a restart or upgrade and stays quiet.
+# ^ docs/agent-reporting.md "Hook exit": a pane the daemon no longer knows, a pane runtime that
+# is stale or gone, or an unreachable daemon or reporter is expected after a restart or upgrade
+# and stays quiet.
 # Any other rejection must not look like a healthy hook; keep its line bounded, with no
 # vendor input or terminal contents.
 case "$result" in
-  *stale_runtime*|*not_found*|*'Connection refused'*|*'No such file or directory'*) exit 0 ;;
+  *stale_runtime*|*terminal_unavailable*|*not_found*|*'Connection refused'*|*'No such file or directory'*) exit 0 ;;
 esac
 printf 'wsx %s %s report failed (report_failed)\n' '@PROVIDER@' "$action" >&2
 exit 1

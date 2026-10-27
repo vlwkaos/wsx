@@ -135,6 +135,19 @@ mod tests {
                 "{target}"
             );
         }
+        // A hook another build wrote at the same version is offered for refresh.
+        let copilot = parent.join(IntegrationTarget::Copilot.cli_value());
+        let hook = paths::asset_path_in(&copilot, IntegrationTarget::Copilot);
+        let older = fs::read_to_string(&hook)
+            .unwrap()
+            .replace("exit 0 ;;", "exit 1 ;;");
+        fs::write(&hook, older).unwrap();
+        assert_eq!(
+            status::metadata_for_test(IntegrationTarget::Copilot, &copilot)
+                .unwrap()
+                .install_status,
+            InstallStatus::Outdated
+        );
         let grok_hooks = fs::read_to_string(parent.join("grok/hooks/wsx.json")).unwrap();
         assert!(grok_hooks.contains("SessionEnd") && grok_hooks.contains("detached"));
         fs::remove_dir_all(parent).unwrap();
@@ -287,7 +300,11 @@ mod tests {
         let reporter = root.join("wsx");
         for target in [IntegrationTarget::Claude, IntegrationTarget::Codex] {
             fs::write(&hook, assets::primary(target)).unwrap();
-            for (reason, failed) in [("stale_runtime", false), ("io_error", true)] {
+            for (reason, failed) in [
+                ("stale_runtime", false),
+                ("terminal_unavailable", false),
+                ("io_error", true),
+            ] {
                 fs::write(
                     &reporter,
                     format!(
