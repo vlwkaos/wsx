@@ -3122,7 +3122,7 @@ merge_seconds = 3
         detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
         assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'add', 'hand'], detail['actions']
         assert detail['land_reason'] == 'ready to land' and detail['to_check'] == [] and detail['fixes'] is None, detail
-        assert detail['result']['human_verify'] == [{'check': 'open the file', 'where': 'a real device', 'capture': '', 'pass_if': 'it has text'}]
+        assert detail['result']['human_verify'] == [{'check': 'open the file', 'where': 'a real device', 'capture': '', 'poster': '', 'pass_if': 'it has text'}]
         headings = [line for line in detail['report'].splitlines() if line.startswith('## ')]
         assert headings == ['## Summary', '## Changes', '## Evidence', '## To check', '## Left open'], headings
         kinds = [entry['kind'] for entry in detail['timeline']['entries']]

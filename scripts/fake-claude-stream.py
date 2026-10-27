@@ -414,6 +414,11 @@ def main():
             verify.append({'check': 'open the file', 'where': '/#/x' if shown else 'a real device',
                            'capture': 'clip.mp4' if 'VIDEO' in words else 'shot.png' if 'CAPTURE' in words else '',
                            'poster': 'poster.png' if 'VIDEO' in words else '', 'pass_if': 'it has text'})
+            if 'CAPTURE' in words:
+                # ^ Labeled by the first worked file's stem, so two captures differ: "CAPTURE D".
+                stem = words[words.index('WORK') + 1][:1].upper() if 'WORK' in words else ''
+                with open('shot.png', 'wb') as out:
+                    out.write(capture_png('CAPTURE ' + stem))
             if 'VIDEO' in words:
                 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'check-clip.mp4'), 'rb') as clip:
                     with open('clip.mp4', 'wb') as out:
@@ -429,11 +434,6 @@ def main():
             with open('notes.mp4', 'w') as out:
                 out.write('not a video\n')
             verify.append({'check': 'the text video plays', 'where': '/#/x', 'capture': 'notes.mp4', 'poster': '', 'pass_if': 'it plays'})
-            if 'CAPTURE' in words:
-                # ^ Labeled by the first worked file's stem, so two captures differ: "CAPTURE D".
-                stem = words[words.index('WORK') + 1][:1].upper() if 'WORK' in words else ''
-                with open('shot.png', 'wb') as out:
-                    out.write(capture_png('CAPTURE ' + stem))
         if 'CMDHV' in words:
             verify.append({'check': 'run `wsx task list`', 'where': '', 'capture': '', 'pass_if': 'it lists the task'})
         if 'BAREHV' in words:
