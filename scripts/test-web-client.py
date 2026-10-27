@@ -3383,7 +3383,8 @@ merge_seconds = 3
         assert again[0] == 202 and (again[1].get('running') or again[1].get('decided')), again
         decided = events.expect('tasks', lambda data: data['project'] == demo and data['decisions'], timeout=30)
         assert decided['decisions'][0]['approval'] == 'a1' and decided['decisions'][0]['outcome'].startswith('done'), decided
-        assert task_state(3) == 'landed'
+        # ^ When main moved since #3's revision the land rebases, checks again and then lands.
+        wait_state(3, 'landed')
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'RUN wsx task close 1 --discard -p demo --json'})
         wait(lambda: any(item['kind'] == 'approval' and item['approval'] == 'a2'
                          for item in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['needs']), 'discard request', timeout=30)
