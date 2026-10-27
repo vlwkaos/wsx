@@ -36,6 +36,7 @@
 
 ### Changed
 
+- The manager starts a request for work at once and says its plan in the same reply. Before, it asked "go?" first. It asks first only for a choice that changes what the owner gets and that the owner has not made, or for large work or work that is costly to undo (then with `--plan` or `--hold`). Before it opens a task, it compares the request with the open tasks' titles and files. Similar work or work in the same area goes to that task with `wsx task add`, so near-duplicate tasks no longer open beside it. The instructions are not longer than before ([docs/tasks.md](docs/tasks.md) "Manager").
 - A manager without `tasks.manager.name` reads as its project's name, not "Manager": the web chat's author and typing bubble, another project's chat ("plans", "To plans"), the TUI row (`task-manager (wsx)`) and `wsx task manager --json`. A set name still wins ([docs/tasks.md](docs/tasks.md) "Config").
 - Each kind of speaker in the web manager chat has its own color on its name and the edge of its box: the owner the accent, this manager the text color, wsx's lines muted, and another project's manager one of four new theme tokens `color-peer-1` to `color-peer-4`, chosen by its project so it keeps its color. The name stays, so the color is never the only cue ([docs/web-themes.md](docs/web-themes.md) "Tokens").
 

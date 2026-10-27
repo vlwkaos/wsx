@@ -1015,14 +1015,14 @@ def run(wsx, wsxd, work, owned):
     assert launch['model'] == 'fake-manager' and Path(page).read_text().startswith('# demo\n\n## Goal')
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     assert launch['git_optional_locks'] == '0', launch
-    # Its rules: chat, not reports; quiet replies to events and no chores for the owner; plan
-    # first; a complete prompt; parallel on different files; a lean review without rebase
+    # Its rules: chat, not reports; quiet replies to events and no chores for the owner; start
+    # at once; an open task before a new one; a complete prompt; a lean review without rebase
     # send-backs; one housekeeping task after a request lands; the owner's word; memory.
     for rule in ('Talk like a person in a chat, not a report', 'The reader sees one screen',
                  'A turn of only Events is your work', 'or with exactly `-` when nothing',
-                 'Never hand the owner chores', 'and ask whether to go', 'with a mermaid diagram',
-                 'stands alone, since a worker cannot ask', 'in every task new', 'Add `--plan`',
-                 'Run tasks at once when they change', 'Never ask the owner to wait',
+                 'Never hand the owner chores', 'Start a request for work at once', 'with a mermaid diagram',
+                 'stands alone, since a worker cannot ask', 'in every task new', 'With `--plan` the worker',
+                 'Before `wsx task new`, compare the request', 'Never ask the owner to wait',
                  'for lean code', 'never send a task back to rebase', 'trust them over the worker',
                  'Check the fixture rule.', 'start one housekeeping task', 'Fold the fixture tasks.',
                  'tell that worker to prove it', 'never pass or fail items yourself',
