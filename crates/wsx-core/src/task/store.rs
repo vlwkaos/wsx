@@ -444,8 +444,7 @@ pub fn adopt_deploy_lock(project_id: &str, fd: i32) -> Result<File> {
         fs::symlink_metadata(&path).with_context(|| format!("cannot read {}", path.display()))?;
     // SAFETY: fstat only writes the zeroed struct it is given.
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-    if fd < 0
-        || unsafe { libc::fstat(fd, &mut stat) } != 0
+    if unsafe { libc::fstat(fd, &mut stat) } != 0
         || stat.st_dev as u64 != expected.dev()
         || stat.st_ino as u64 != expected.ino()
     {

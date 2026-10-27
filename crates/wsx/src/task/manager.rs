@@ -27,9 +27,9 @@ use wsx_core::task::owner;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
-use wsx_core::task::DeployKind;
 use wsx_core::task::{
-    checks, ledger, now_unix_ms, LogEvent, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
+    checks, ledger, now_unix_ms, DeployKind, LogEvent, TaskRecord, TaskState, WaitOn,
+    MAX_MESSAGE_BYTES,
 };
 
 use wsx_core::task::owner::ACTOR_ENV;
