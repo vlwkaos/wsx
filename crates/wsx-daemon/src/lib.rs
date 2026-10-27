@@ -285,6 +285,16 @@ struct State {
     /// Exchange rounds that the PTY is taking now. A live handoff waits for none.
     deliveries_in_flight: usize,
 }
+
+impl State {
+    /// Saves `persisted`, then makes it the in-memory copy. A failed save changes nothing.
+    fn persist(&mut self, path: &Path, persisted: Persisted) -> io::Result<()> {
+        save_state(path, &persisted)?;
+        self.persisted = persisted;
+        Ok(())
+    }
+}
+
 struct Daemon {
     state: Mutex<State>,
     mutation_lock: Mutex<()>,
@@ -470,8 +480,7 @@ fn prepare_recovery_attempts(
             launch,
         });
     }
-    save_state(&daemon.state_path, &persisted)?;
-    state.persisted = persisted;
+    state.persist(&daemon.state_path, persisted)?;
     Ok(attempts)
 }
 
@@ -528,8 +537,7 @@ fn clear_pending_recovery_agent(daemon: &Daemon, pane_id: PaneId) -> io::Result<
     if let Some(pane) = persisted.panes.iter_mut().find(|pane| pane.id == pane_id) {
         pane.agent = None;
     }
-    save_state(&daemon.state_path, &persisted)?;
-    state.persisted = persisted;
+    state.persist(&daemon.state_path, persisted)?;
     Ok(())
 }
 
@@ -557,8 +565,7 @@ fn replace_timed_out_recovery_with_shell(
         };
         pane.agent = None;
         pane.exited = true;
-        save_state(&daemon.state_path, &persisted)?;
-        state.persisted = persisted;
+        state.persist(&daemon.state_path, persisted)?;
         state.runtimes.remove(&pane_id);
         state.runtime_generations.remove(&pane_id);
     }
@@ -572,13 +579,12 @@ fn replace_timed_out_recovery_with_shell(
     let mut persisted = state.persisted.clone();
     if let Some(pane) = persisted.panes.iter_mut().find(|pane| pane.id == pane_id) {
         pane.exited = replacement.exited();
-        if let Err(error) = save_state(&daemon.state_path, &persisted) {
+        if let Err(error) = state.persist(&daemon.state_path, persisted) {
             state.runtime_generations.remove(&pane_id);
             drop(state);
             replacement.terminate();
             return Err(error);
         }
-        state.persisted = persisted;
         state.runtimes.insert(pane_id, replacement);
     } else {
         state.runtime_generations.remove(&pane_id);
@@ -3830,9 +3836,14 @@ fn synchronize_projects(
     persisted.worktrees.retain(|worktree| {
         retained_worktrees.contains(&worktree.id) || session_worktrees.contains(&worktree.id)
     });
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
-    publish(daemon, &mut state, revision, "projects.synchronized", 0);
+    commit_publish(
+        daemon,
+        &mut state,
+        persisted,
+        revision,
+        "projects.synchronized",
+        0,
+    )?;
     Ok(Response::Ack { revision })
 }
 
@@ -3894,15 +3905,14 @@ fn create_session(
             layout: PaneLayout::Leaf { pane_id },
             revision,
         });
-        save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-        state.persisted = persisted;
-        publish(
+        commit_publish(
             daemon,
             &mut state,
+            persisted,
             revision,
             "session.created",
             session_id.0,
-        );
+        )?;
         (cwd, session_id, pane_id, terminal_id, revision)
     };
     let runtime = spawn_runtime(daemon, pane_id, terminal_id, &cwd, &recipe)?;
@@ -3927,12 +3937,11 @@ fn create_session(
         if let Some(pane) = persisted.panes.iter_mut().find(|pane| pane.id == pane_id) {
             pane.exited = false;
         }
-        if let Err(error) = save_state(&daemon.state_path, &persisted).map_err(io_api) {
+        if let Err(error) = commit_persisted(daemon, &mut state, persisted) {
             drop(state);
             runtime.terminate();
             return Err(error);
         }
-        state.persisted = persisted;
     }
     state.runtimes.insert(pane_id, Arc::clone(&runtime));
     if runtime.exited() {
@@ -3986,8 +3995,7 @@ fn split_pane(
         let mut persisted = state.persisted.clone();
         let pane_id = PaneId(next_id(&mut persisted)?);
         let terminal_id = TerminalId(next_id(&mut persisted)?);
-        save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-        state.persisted = persisted;
+        commit_persisted(daemon, &mut state, persisted)?;
         (cwd, pane_id, terminal_id)
     };
     let runtime = Arc::new(spawn_runtime(daemon, pane_id, terminal_id, &cwd, &recipe)?);
@@ -4042,12 +4050,11 @@ fn split_pane(
         recovery: Some(recipe),
         recovery_quarantined: false,
     });
-    if let Err(error) = save_state(&daemon.state_path, &persisted).map_err(io_api) {
+    if let Err(error) = commit_persisted(daemon, &mut state, persisted) {
         drop(state);
         runtime.terminate();
         return Err(error);
     }
-    state.persisted = persisted;
     state.runtimes.insert(pane_id, Arc::clone(&runtime));
     publish(daemon, &mut state, revision, "pane.created", pane_id.0);
     if runtime.exited() {
@@ -4082,8 +4089,7 @@ fn reorder_session(
         .find(|session| session.id == session_id)
         .expect("reordered session must remain present")
         .revision = revision;
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
+    commit_persisted(daemon, &mut state, persisted)?;
     let bumped = bump(daemon, &mut state, "session.reordered", session_id.0);
     debug_assert_eq!(bumped, revision);
     Ok(Response::Ack { revision })
@@ -4155,8 +4161,7 @@ fn close_session(daemon: &Arc<Daemon>, id: SessionId, expected: u64) -> Result<R
     );
     persisted.panes.retain(|pane| pane.session_id != id);
     persisted.sessions.retain(|session| session.id != id);
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
+    commit_persisted(daemon, &mut state, persisted)?;
     let mut runtimes = Vec::new();
     for pane_id in &session.panes {
         if let Some(runtime) = state.runtimes.remove(pane_id) {
@@ -4279,14 +4284,13 @@ fn restart_session(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Re
     pane.exited = !live;
     pane.revision = revision;
     pane.agent = agent;
-    if let Err(error) = save_state(&daemon.state_path, &persisted).map_err(io_api) {
+    if let Err(error) = commit_persisted(daemon, &mut state, persisted) {
         // ^ A failed restart must not leave a generation that could authorize agent reports.
         state.runtime_generations.remove(&id);
         drop(state);
         runtime.terminate();
         return Err(error);
     }
-    state.persisted = persisted;
     // ^ The dead pane's stream has no authority over the replacement runtime.
     state.leases.remove(&id);
     state
@@ -4336,8 +4340,7 @@ fn close_pane(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Respons
         revision,
     );
     persisted.panes.retain(|candidate| candidate.id != id);
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
+    commit_persisted(daemon, &mut state, persisted)?;
     let runtime = state.runtimes.remove(&id);
     state.runtime_generations.remove(&id);
     clear_agent_wake(&mut state, id);
@@ -4489,8 +4492,7 @@ fn touch_terminal_project(daemon: &Arc<Daemon>, pane_id: PaneId) -> Result<(), A
     let revision = state.revision.saturating_add(1);
     persisted.projects[project_index].last_terminal_active_unix_ms = Some(unix_time_millis());
     persisted.projects[project_index].revision = revision;
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
+    commit_persisted(daemon, &mut state, persisted)?;
     bump(daemon, &mut state, "project.terminal_entered", pane_id.0);
     Ok(())
 }
@@ -4664,9 +4666,14 @@ fn fail_untaken_rounds(daemon: &Daemon, state: &mut State) -> Result<bool, ApiEr
             exchange.revision = revision;
         }
     }
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
-    publish(daemon, state, revision, "agent_exchange.not_taken", 0);
+    commit_publish(
+        daemon,
+        state,
+        persisted,
+        revision,
+        "agent_exchange.not_taken",
+        0,
+    )?;
     Ok(true)
 }
 
@@ -4890,8 +4897,7 @@ fn agent_report_with_attachment(
         revision,
         unix_time_millis(),
     );
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
+    commit_persisted(daemon, &mut state, persisted)?;
     if presence_id.is_some() {
         state.agent_presence_leases.insert(pane_id, now);
     } else {
@@ -5034,8 +5040,7 @@ fn agent_clear(
         AgentExchangeState::TargetReplaced,
         revision,
     );
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
+    commit_persisted(daemon, &mut state, persisted)?;
     clear_agent_wake(&mut state, pane_id);
     state.agent_presence_leases.remove(&pane_id);
     state.claude_reconciliations.remove(&pane_id);
@@ -5522,15 +5527,14 @@ fn deliver_exchange_round(
     exchange.updated_unix_ms = unix_time_millis();
     exchange.revision = revision;
     let response = exchange.clone();
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
-    publish(
+    commit_publish(
         daemon,
         &mut state,
+        persisted,
         revision,
         "agent_exchange.delivery",
         id.0,
-    );
+    )?;
     Ok(Response::AgentExchange {
         exchange: response,
         frame: None,
@@ -5556,9 +5560,14 @@ fn expire_due_agent_exchanges(daemon: &Daemon, state: &mut State) -> Result<(), 
             exchange.revision = revision;
         }
     }
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
-    publish(daemon, state, revision, "agent_exchange.expired", 0);
+    commit_publish(
+        daemon,
+        state,
+        persisted,
+        revision,
+        "agent_exchange.expired",
+        0,
+    )?;
     Ok(())
 }
 
@@ -5769,15 +5778,14 @@ fn create_agent_exchange_with(
         command: input.command,
         revision,
     });
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
-    publish(
+    commit_publish(
         daemon,
         &mut state,
+        persisted,
         revision,
         "agent_exchange.submitted",
         id.0,
-    );
+    )?;
 
     let text = input.terminal_text(id, 1, access);
     deliver_exchange_round(
@@ -5925,15 +5933,14 @@ fn continue_agent_exchange_with(
     exchange.deadline_unix_ms = now.saturating_add(timeout_ms);
     exchange.delivery_revision = revision;
     exchange.revision = revision;
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
-    publish(
+    commit_publish(
         daemon,
         &mut state,
+        persisted,
         revision,
         "agent_exchange.continued",
         id.0,
-    );
+    )?;
     let text = input.terminal_text(id, next_round, previous.access);
     deliver_exchange_round(
         daemon,
@@ -5992,9 +5999,14 @@ fn expire_agent_exchange(
     exchange.state = AgentExchangeState::Expired;
     exchange.updated_unix_ms = now;
     exchange.revision = revision;
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
-    publish(daemon, state, revision, "agent_exchange.expired", id.0);
+    commit_publish(
+        daemon,
+        state,
+        persisted,
+        revision,
+        "agent_exchange.expired",
+        id.0,
+    )?;
     Ok(())
 }
 
@@ -6262,9 +6274,14 @@ fn report_agent_exchange_receipt_with_binding(
     exchange.updated_unix_ms = unix_time_millis();
     exchange.revision = revision;
     let response = exchange.clone();
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
-    publish(daemon, &mut state, revision, "agent_exchange.receipt", id.0);
+    commit_publish(
+        daemon,
+        &mut state,
+        persisted,
+        revision,
+        "agent_exchange.receipt",
+        id.0,
+    )?;
     Ok(Response::AgentExchange {
         exchange: response,
         frame: None,
@@ -6412,15 +6429,14 @@ fn cancel_agent_exchange(
     exchange.updated_unix_ms = unix_time_millis();
     exchange.revision = revision;
     let response = exchange.clone();
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
-    publish(
+    commit_publish(
         daemon,
         &mut state,
+        persisted,
         revision,
         "agent_exchange.cancel_requested",
         id.0,
-    );
+    )?;
     drop(state);
     // Claude has no interrupt hook: only its screen shows that the turn ended. Without
     // this the agent stays working here and the exchange stays in cancel_requested.
@@ -6474,6 +6490,30 @@ fn unix_time_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// The clone-mutate-save-assign tail: the durable file first, then the in-memory copy, so a
+/// failed save leaves `state.persisted` as it was. The fsync stays under the caller's lock.
+fn commit_persisted(
+    daemon: &Daemon,
+    state: &mut State,
+    persisted: Persisted,
+) -> Result<(), ApiError> {
+    state.persist(&daemon.state_path, persisted).map_err(io_api)
+}
+
+/// `commit_persisted`, then publish the change under `revision`.
+fn commit_publish(
+    daemon: &Daemon,
+    state: &mut State,
+    persisted: Persisted,
+    revision: u64,
+    entity: &str,
+    id: u64,
+) -> Result<(), ApiError> {
+    commit_persisted(daemon, state, persisted)?;
+    publish(daemon, state, revision, entity, id);
+    Ok(())
+}
+
 fn mutate<F>(daemon: &Arc<Daemon>, mutation: F) -> Result<Response, ApiError>
 where
     F: FnOnce(&mut Persisted, u64) -> Result<(&'static str, u64), ApiError>,
@@ -6489,8 +6529,7 @@ where
     {
         session.revision = revision;
     }
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
+    commit_persisted(daemon, &mut state, persisted)?;
     publish(daemon, &mut state, revision, entity, id);
     Ok(Response::Ack { revision })
 }
@@ -6783,8 +6822,7 @@ fn apply_claude_terminal_observation(
         revision,
         unix_time_millis(),
     );
-    save_state(&daemon.state_path, &persisted).map_err(io_api)?;
-    state.persisted = persisted;
+    commit_persisted(daemon, &mut state, persisted)?;
     state.claude_reconciliations.insert(pane_id, reconciliation);
     if effective != AgentState::Working {
         clear_agent_wake(&mut state, pane_id);
