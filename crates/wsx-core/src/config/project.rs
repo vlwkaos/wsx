@@ -195,6 +195,8 @@ struct TaskAgentFile {
     adapter: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(rename = "rotateTokens", skip_serializing_if = "Option::is_none")]
+    rotate_tokens: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -476,6 +478,14 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
         if let Some(model) = validate_word(agent.model, "tasks.agent.model")? {
             config.model = model;
+        }
+        if let Some(tokens) = agent.rotate_tokens {
+            if !(MIN_ROTATE_TOKENS..=MAX_ROTATE_TOKENS).contains(&tokens) {
+                return Err(format!(
+                    "tasks.agent.rotateTokens must be {MIN_ROTATE_TOKENS}..={MAX_ROTATE_TOKENS}"
+                ));
+            }
+            config.rotate_tokens = tokens;
         }
     }
     config.owner_skills = match file.skills.as_deref() {

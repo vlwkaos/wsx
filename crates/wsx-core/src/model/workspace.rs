@@ -65,6 +65,9 @@ pub const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 20 * 60;
 pub struct TaskConfig {
     pub adapter: String,
     pub model: String,
+    /// Context size after which a worker's next turn starts a fresh conversation from its
+    /// handoff notes (`tasks.agent.rotateTokens`). ref: docs/tasks.md "Context rotation"
+    pub rotate_tokens: u64,
     /// `tasks.skills: owner` lends workers the owner's skills, as the manager has them.
     pub owner_skills: bool,
     pub workflow: TaskWorkflow,
@@ -174,6 +177,7 @@ impl Default for TaskConfig {
         Self {
             adapter: "claude".into(),
             model: "opus".into(),
+            rotate_tokens: 350_000,
             owner_skills: false,
             workflow: TaskWorkflow::default(),
             checks: Vec::new(),
