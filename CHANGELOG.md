@@ -62,6 +62,10 @@
 - A task that is removed while the task list is read no longer blanks the whole list in `wsx task` and on the web; the list skips it. `deploys.jsonl` rolls over at 4 MiB instead of growing without end. The web server reads only the end of a task log to find a task's last land reason, conflict state, context size and cost.
 - Web: the manager, task, project and To check pages no longer show an answer for the page you left when you switch while a read is in flight.
 - Every atomic file write in wsx uses one helper with a unique temporary name, so two threads that write the same file no longer share one temporary file.
+### Added
+
+- Each To check item shows once in the web manager chat, as a bubble from the manager at the time it was added: what to check, its capture (a tap opens the image viewer) and Try, Fail and Pass, so the owner checks it right in the chat. A decided item's bubble shows its result. The To check list over the composer stays.
+
 ### Fixed
 
 - The web manager chat shows replies and the end of a turn after a phone sleeps or changes networks, without a reload. Its event stream could stay open and silent, so the typing dots stayed and replies showed only after a reload. The server now sends a ping every 10 s; a stream that says nothing for 25 s opens again, and a page that comes back opens its stream at once.

@@ -7,7 +7,7 @@ import { html, Icon, keepIn, readMap, useCoalescedLoad, useEffect, useFollowEnd,
 import { can, leaveFor, shows, state, touch, update, useEventLoad, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
-import { Bubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
+import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
 import { QuoteChip, useReply, withQuote } from "./reply.js";
 import { TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
@@ -723,9 +723,19 @@ export function Manager({ project: id, task, page, checks }) {
   const project = store.projects.find((candidate) => candidate.id === id);
   const overview = store.tasks[id];
   const [chat, setChat] = useState(null);
+  // ^ The To check items, each a bubble at the time it was added; read again when the open
+  // count changes (a new item, a pass or a fail).
+  const [checks, setChecks] = useState(null);
+  const toCheck = overview?.to_check;
+  useEffect(() => {
+    let live = true;
+    api(`api/tasks/${id}/checks`).then((value) => { if (live) setChecks(value.items); }, () => { if (live) setChecks((now) => now ?? []); });
+    return () => { live = false; };
+  }, [id, toCheck]);
+  const ready = Boolean(chat) && checks !== null;
   const [failure, setFailure] = useState("");
   const [sent, setSent] = useState(null);
-  const { log, away, unread, since, scrolled, toEnd } = useFollowEnd(`project-${id}`, Boolean(chat));
+  const { log, away, unread, since, scrolled, toEnd } = useFollowEnd(`project-${id}`, ready);
   const field = useRef();
   const [reply, setReply] = useState(null);
   const [gestures, menu] = useReply((line) => { setReply(line); field.current?.focus(); });
@@ -768,7 +778,7 @@ export function Manager({ project: id, task, page, checks }) {
   const entries = chat?.entries ?? [];
   const items = overview?.needs ?? [];
   const words = withChips(id);
-  const rows = chat ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval")) : [];
+  const rows = ready ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checks) : [];
   // The sent message shows until the log has it.
   if (sent && !entries.some((entry) => entry.kind === "message" && entry.id === sent.id)) {
     const last = rows.at(-1);
@@ -785,7 +795,7 @@ export function Manager({ project: id, task, page, checks }) {
   // message this device just sent, do not.
   const known = useRef(null);
   const fresh = useRef(new Set());
-  if (chat) {
+  if (ready) {
     if (!known.current) known.current = new Set(rows.map((row) => row.key));
     for (const row of rows) {
       if (known.current.has(row.key)) continue;
@@ -801,6 +811,7 @@ export function Manager({ project: id, task, page, checks }) {
     : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} text=${row.text} fresh=${fresh.current.has(row.key)} />`
     : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} name=${names.manager} fresh=${fresh.current.has(row.key)} />`
     : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} />`
+    : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${fresh.current.has(row.key)} />`
     : html`<${Note} key=${row.key} entry=${row.entry} />`;
   return html`
     <div class="page manager">
@@ -819,7 +830,7 @@ export function Manager({ project: id, task, page, checks }) {
         <div class="log-wrap">
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation with the manager" tabindex="0" ...${gestures}>
             ${cut.current ? html`<p class="note">Older messages are not shown.</p>` : null}
-            ${chat && !rows.length ? html`<p class="empty">No messages yet. Ask the manager for a task or a status; it answers from the ledger.</p>` : null}
+            ${ready && !rows.length ? html`<p class="empty">No messages yet. Ask the manager for a task or a status; it answers from the ledger.</p>` : null}
             ${earlier}
             ${withNewLine(recent, firstNew, show)}
             ${typingShown && html`<${Typing} name=${names.manager} leaving=${!typing} />`}

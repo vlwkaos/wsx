@@ -6,6 +6,7 @@ import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { Quoted, quoteOf } from "./reply.js";
 import { ChatApprovals, TaskChip } from "./tasks.js";
+import { CheckRow } from "./checks.js";
 
 // Bubbles of one author closer together than this read as one group.
 const GROUP_MS = 5 * 60_000;
@@ -33,8 +34,9 @@ function shortLine(line) {
 // The conversation in time order: bubbles, status lines and quiet replies. A wsx line that a
 // resolution says too ("Approved land #3", or "#3 closed" and "#3 was closed") shows once, as the
 // wsx line, and so does a line said again within a minute. A pending approval goes into the
-// manager's reply that ended the turn which asked for it (docs/web-client-tasks.md "Project screen").
-export function conversation(entries, resolutions, approvals = []) {
+// manager's reply that ended the turn which asked for it, and each To check item is a bubble at
+// the time it was added (docs/web-client-tasks.md "Project screen").
+export function conversation(entries, resolutions, approvals = [], checks = []) {
   const rows = [];
   // ^ wsx's recap request is not shown; the manager's answer to it is tagged Recap
   // (docs/tasks.md "Recap").
@@ -71,6 +73,7 @@ export function conversation(entries, resolutions, approvals = []) {
     if (said.some((row) => near(row) && same(row))) return;
     rows.push({ kind: "line", at: resolution.unix_ms, key: `res-${resolution.unix_ms}-${resolution.text}`, text: resolution.text });
   });
+  for (const item of checks) rows.push({ kind: "check", at: item.unix_ms, key: `check-${item.id}`, item });
   rows.sort((left, right) => left.at - right.at);
   for (const approval of approvals) {
     const reply = rows.find((row) => row.entry?.kind === "reply" && row.at >= approval.unix_ms);
@@ -181,6 +184,19 @@ export function Bubble({ project, row, words, names, fresh }) {
       ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${authorName(row.author, names)}</p>`}
       <div class="bubble-box">${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
       ${row.last && html`<p class="bubble-time" aria-hidden="true">${row.pending ? "Sending…" : clock(row.at)}</p>`}
+    </article>`;
+}
+
+// A To check item in the chat: from the manager, with what to check, its capture and Try, Fail
+// and Pass, or its result once decided (checks.js `CheckRow`). It counts as a new message.
+export function CheckBubble({ project, row, names, fresh }) {
+  return html`
+    <article class="bubble check-bubble" data-side="in" data-speaker="manager" data-first="" data-last=""
+      data-fresh=${fresh ? "" : null} data-at=${row.at} data-key=${row.key} data-in=""
+      aria-label=${`${names.manager}, to check, ${clock(row.at)}`}>
+      <p class="bubble-author" aria-hidden="true">${names.manager}</p>
+      <div class="bubble-box"><p class="bubble-tag">To check</p><${CheckRow} project=${project} item=${row.item} tag="div" /></div>
+      <p class="bubble-time" aria-hidden="true">${clock(row.at)}</p>
     </article>`;
 }
 
