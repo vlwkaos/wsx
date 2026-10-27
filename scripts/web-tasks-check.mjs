@@ -1318,9 +1318,12 @@ if (!peers.some(({ author }) => author === "plans") || !peers.some(({ tag }) => 
 const speakerColors = () => evaluate(`(() => { const color = (selector) => { const node = document.querySelector(selector);
   return node && getComputedStyle(node).color; };
   return [color('.log .bubble[data-speaker="manager"] .bubble-author'), color('.log .bubble[data-speaker="peer"] .bubble-author'), color('.log .status-line')]; })()`);
-// ^ A box whose inline edges differ from its top edge has a side border.
-const sideBorders = () => evaluate(`[...document.querySelectorAll('.log .bubble-box')].map((node) => getComputedStyle(node))
-  .filter((style) => ['Start', 'End'].some((side) => style['borderInline' + side + 'Width'] !== style.borderTopWidth || style['borderInline' + side + 'Color'] !== style.borderTopColor)).length`);
+// ^ A box whose inline edges differ from its top edge has a side border, and a gradient, a shadow
+// or a drawn pseudo-element can tint an edge; the owner's box has no colored border at all.
+const sideBorders = () => evaluate(`[...document.querySelectorAll('.log .bubble-box')].filter((node) => { const style = getComputedStyle(node);
+  return ['Start', 'End'].some((side) => style['borderInline' + side + 'Width'] !== style.borderTopWidth || style['borderInline' + side + 'Color'] !== style.borderTopColor)
+    || style.backgroundImage !== 'none' || style.boxShadow !== 'none' || ['::before', '::after'].some((part) => getComputedStyle(node, part).content !== 'none')
+    || (node.closest('.bubble').dataset.side === 'out' && style.borderInlineEndColor !== 'rgba(0, 0, 0, 0)'); }).length`);
 if (!(await count('.log .bubble[data-speaker="owner"]')) || await count('.log .bubble[data-speaker="owner"] .bubble-author')) await fail("the chat has no owner bubble, or it shows a name");
 for (const scheme of ["dark", "light"]) {
   await evaluate(scheme === "light" ? "document.documentElement.dataset.scheme = 'light'" : "delete document.documentElement.dataset.scheme");
@@ -1329,9 +1332,12 @@ for (const scheme of ["dark", "light"]) {
   const colors = await speakerColors();
   if (colors.some((color) => !color) || new Set(colors).size !== colors.length) await fail(`the speakers' colors in the ${scheme} scheme: ${JSON.stringify(colors)}`);
   const sides = await sideBorders();
-  if (sides) await fail(`${sides} bubbles have a side border in the ${scheme} scheme`);
+  if (sides) await fail(`${sides} bubbles have a side border or a tinted edge in the ${scheme} scheme`);
   await evaluate("document.querySelector('.log .bubble[data-speaker=\"peer\"]').scrollIntoView({ block: 'center' })");
   await shot(`speakers-${scheme}`);
+  // ^ The owner's bubbles beside the manager's, with no tint on their right edge.
+  await evaluate("[...document.querySelectorAll('.log .bubble[data-side=\"out\"]')].at(-1).scrollIntoView({ block: 'center' })");
+  await shot(`owner-${scheme}`);
 }
 await evaluate("delete document.documentElement.dataset.scheme; [...document.querySelectorAll('.log .bubble, .log .status-line')].at(-1).scrollIntoView({ block: 'end' })");
 await pause(6000);

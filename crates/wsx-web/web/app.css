@@ -664,10 +664,9 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .typing { display: inline-flex; align-items: center; gap: var(--space-1); min-height: calc(var(--font-size-md) * var(--line-height-prose)); }
 .typing-dot { width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-working); }
 /* A task change and the manager's reply to events: one muted line each, left-aligned (docs/web-client-tasks.md "Project screen"). */
-.status-line, .reply-text { max-width: var(--size-prose); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
-.status-line { padding-inline: var(--space-1); }
+.status-line, .reply-text { max-width: var(--size-prose); padding-inline: var(--space-1); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
 .reply-line { display: flex; flex-direction: column; align-items: flex-start; }
-.reply-text { padding-inline: var(--space-1); white-space: pre-line; }
+.reply-text { white-space: pre-line; }
 .page-link { color: var(--color-accent); }
 /* What needs the owner and what runs, pinned over the composer: one line, a tap opens the
    decision list. */
