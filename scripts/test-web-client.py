@@ -2917,10 +2917,10 @@ def task_journey(args):
         # the ones it counts from.
         manager_dir = state / 'wsx/tasks' / ('plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]) / 'manager'
         manager_dir.mkdir(mode=0o700, parents=True)
-        old_log, start = [], int(time.time() * 1000) - 3_600_000
+        old_log, first_ms = [], int(time.time() * 1000) - 3_600_000
 
         def logged(author, text, reply, quiet=True):
-            said, at = 9001 + len(old_log), start + len(old_log) * 20_000
+            said, at = 9001 + len(old_log), first_ms + len(old_log) * 20_000
             old_log.extend([{'kind': 'message', 'id': said, 'from': author, 'text': text, 'unix_ms': at},
                             {'kind': 'delivered', 'ids': [said], 'unix_ms': at + 1},
                             dict({'kind': 'reply', 'id': said + 1, 'to': [said], 'text': reply, 'unix_ms': at + 2000}, **({'quiet': True} if quiet else {}))])
