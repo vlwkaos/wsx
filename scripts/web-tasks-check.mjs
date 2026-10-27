@@ -399,7 +399,9 @@ async function motion() {
   // manager's turn, a project list read) can undo it, so one of 3 tries must show it all.
   const good = (seen) => seen.typing === 3 && seen.notice && seen.moved && seen.glides >= 1 && seen.ghosts === 1 && seen.loading === "status";
   let seen = await run(false);
-  for (let attempt = 1; attempt < 3 && !good(seen); attempt++) { await pause(1000); seen = await run(false); }
+  // ^ A try that failed left calm the newest: the next one starts from the kept state.
+  const restore = () => evaluate(`(async () => (await ${pageModule("store.js")}).update(globalThis.motionKept))()`);
+  for (let attempt = 1; attempt < 3 && !good(seen); attempt++) { await restore(); await pause(1000); seen = await run(false); }
   if (!good(seen)) await fail(`motion at ${w}px: ${JSON.stringify(seen)}`);
   await expectAll("typing dots", ".row-typing .typing-dot", "pulse");
   await expectAll("a working row", ".home-row .pulse", "pulse");
