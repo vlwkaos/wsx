@@ -87,6 +87,8 @@ const inWords = (reason) => reason.replace(/^[a-z_]+: /, "");
 
 // The most items the server sends (crates/wsx-web/src/chat.rs TIMELINE_ITEMS).
 const TIMELINE_ITEMS = 400;
+// How soon a read that failed is tried again.
+const READ_AGAIN_MS = 2000;
 
 const EMPTY_WORDS = {
   no_agent: "No agent runs in this session.",
@@ -582,6 +584,7 @@ export function Chat({ session, onModel }) {
   const [jump, leaving] = useExit(away);
   // The timeline the page shows.
   const shown = useRef(null);
+  const retry = useRef(null);
   const draft = draftFor(id);
   const [reply, setReply] = useState(null);
   const quote = (line) => {
@@ -594,6 +597,7 @@ export function Chat({ session, onModel }) {
   // the whole timeline (about 200 KB on a long conversation). Now the page asks from the
   // start of its last turn; the server sends the full timeline only when that item is gone.
   const load = useCoalescedLoad(async (current) => {
+    clearTimeout(retry.current);
     const known = shown.current;
     const turn = known?.items.findLast((item) => item.kind === "user" && item.at_unix_ms != null);
     const next = await api(`api/chat/${id}/timeline`, { query: turn ? { from: turn.id, at: turn.at_unix_ms } : undefined });
@@ -605,10 +609,15 @@ export function Chat({ session, onModel }) {
     shown.current = next;
     setData(next);
     setFailure("");
-  }, (error) => setFailure(error.message), [id]);
+  }, (error) => {
+    setFailure(error.message);
+    // ^ No other change may come soon, as at the end of a turn or over the device's request
+    // budget: the chat would keep its old state until a reload.
+    retry.current = setTimeout(load, READ_AGAIN_MS);
+  }, [id]);
   useEventLoad(["history", "exchange"], load, (detail) => detail.session_id === undefined || detail.session_id === id, [id]);
   // ^ An answer for the session that was left is dropped (the load's generation), and the next one starts fresh.
-  useEffect(() => () => { shown.current = null; }, [id]);
+  useEffect(() => () => { shown.current = null; clearTimeout(retry.current); }, [id]);
   // The session list says first that the agent started or stopped working.
   const status = stateOf(session);
   useEffect(() => { if (data) load(); }, [status.key]);
@@ -620,6 +629,17 @@ export function Chat({ session, onModel }) {
       setFailure("");
     } catch (error) {
       setFailure(error.message);
+    }
+    load();
+  };
+
+  // ^ The send's own answer shows the message at once, before the chat is read again.
+  const showSent = (answer) => {
+    toEnd();
+    const known = shown.current;
+    if (answer?.queued && known && !known.queue.some((queued) => queued.id === answer.queued.id)) {
+      shown.current = { ...known, queue: [...known.queue, answer.queued] };
+      setData(shown.current);
     }
     load();
   };
@@ -713,6 +733,6 @@ export function Chat({ session, onModel }) {
           ${terminalLink}
         </div>`
       : html`${held}${can("chat_send") && html`<${Composer} session=${session} working=${Boolean(working) || waiting.some((queued) => !queued.failed)}
-        reply=${reply} onReply=${setReply} onSent=${() => { toEnd(); load(); }} />`}`}
+        reply=${reply} onReply=${setReply} onSent=${showSent} />`}`}
     </div>`;
 }

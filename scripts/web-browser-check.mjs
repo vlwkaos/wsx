@@ -1119,6 +1119,17 @@ const carried = await evaluate("window.sentBodies");
 if (carried.length !== 1 || JSON.stringify(carried[0].attachments) !== JSON.stringify([pasted.hash])) await fail(`Send carried ${JSON.stringify(carried)}, not ${pasted.hash}`);
 await until("!document.querySelector('.chips li')", "the sent pasted image stayed in the composer");
 
+// A sent message shows from the send's own answer, before the chat is read again; a read that
+// fails is tried again by itself, since no other change may come (docs/web-client-chat.md "Queue and Stop").
+await send("Network.setBlockedURLs", { urls: ["*/timeline*"] });
+await typeInto("shown before the next read");
+await evaluate("document.querySelector('.composer .button-primary').click()");
+await until("[...document.querySelectorAll('.chat .queued-text, .chat .message-user')].some((row) => row.textContent.includes('shown before the next read'))",
+  "the sent message did not show from its answer");
+await until("!!document.querySelector('.chat-error')", "a failed read did not say so");
+await send("Network.setBlockedURLs", { urls: [] });
+await until("!document.querySelector('.chat-error')", "a failed read was not tried again", 60);
+
 // Sub-path surfaces as the browser resolved them.
 const facts = await evaluate(`(async () => {
   const registration = await navigator.serviceWorker.ready;
