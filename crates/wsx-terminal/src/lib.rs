@@ -169,13 +169,19 @@ impl RawTap {
         if after < start || after > self.end {
             return None;
         }
-        Some(
-            ring.iter()
-                .skip((after - start) as usize)
-                .take(max_bytes)
-                .copied()
-                .collect(),
-        )
+        let skip = (after - start) as usize;
+        let (head, tail) = ring.as_slices();
+        let mut bytes = Vec::with_capacity((ring.len() - skip).min(max_bytes));
+        if skip < head.len() {
+            let head = &head[skip..];
+            bytes.extend_from_slice(&head[..head.len().min(max_bytes)]);
+        }
+        let taken = bytes.len();
+        if taken < max_bytes {
+            let tail = &tail[skip.saturating_sub(head.len())..];
+            bytes.extend_from_slice(&tail[..tail.len().min(max_bytes - taken)]);
+        }
+        Some(bytes)
     }
 }
 
