@@ -66,12 +66,20 @@ fn metadata_in(
     compatible: bool,
     compatibility_note: Option<&'static str>,
 ) -> io::Result<IntegrationMetadata> {
-    let installed_version = fs::read_to_string(paths::asset_path_in(root, target))
-        .ok()
-        .and_then(|content| version(&content));
+    let installed = fs::read_to_string(paths::asset_path_in(root, target)).ok();
+    let installed_version = installed.as_deref().and_then(version);
+    // ^ The same version is current only as this build writes it, so a shared asset that
+    // changed without a version bump (the shell hook of twelve providers) is still refreshed.
+    // A newer version stays: an older wsx does not offer a downgrade.
     let mut install_status = match installed_version {
         None => InstallStatus::Missing,
-        Some(version) if version >= target.expected_version() => InstallStatus::Current,
+        Some(version) if version > target.expected_version() => InstallStatus::Current,
+        Some(version)
+            if version == target.expected_version()
+                && installed.as_deref() == Some(super::assets::primary(target).as_str()) =>
+        {
+            InstallStatus::Current
+        }
         Some(_) => InstallStatus::Outdated,
     };
     let (reporter_name, reporter_content) = super::assets::reporter(target);
