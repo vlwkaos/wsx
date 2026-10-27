@@ -8,7 +8,6 @@ pub mod input;
 pub mod integration_manager;
 pub mod layout;
 pub mod notice;
-pub mod picker;
 pub mod plugin_sidecar;
 pub mod preview;
 pub mod review;

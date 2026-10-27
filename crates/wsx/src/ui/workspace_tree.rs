@@ -810,7 +810,7 @@ mod tests {
 
     #[test]
     fn folded_project_and_worktree_render_attention_active_count_and_stale_provenance() {
-        use wsx_core::model::workspace::{flatten_tree, WorktreeInfo};
+        use wsx_core::model::workspace::{flatten_tree_filtered, WorktreeInfo};
         let project = Project {
             name: "project界e\u{301}👩‍💻long-name".into(),
             path: "/project".into(),
@@ -850,7 +850,7 @@ mod tests {
         };
         for expanded in [false, true] {
             workspace.projects[0].expanded = expanded;
-            let flat = flatten_tree(&workspace);
+            let flat = flatten_tree_filtered(&workspace, &[0, 1].into());
             let row = usize::from(expanded) as u16;
             for width in [1, 2, 4, 8, 18, 26, 60] {
                 let mut terminal =
