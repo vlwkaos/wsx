@@ -959,9 +959,8 @@ fn new_state(persisted: Persisted) -> State {
 fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     install_shutdown_signals()?;
     let socket = default_socket_path();
-    let state_path = state_path();
+    let state_path = state_path(&socket);
     secure_parent(&socket)?;
-    secure_parent(&state_path)?;
 
     let (singleton_lock, persisted, recovered_from_backup, import) = match import {
         Some(handoff::Received {
@@ -6454,9 +6453,13 @@ fn terminal_agent_environment(pane_id: PaneId, runtime_generation: &str) -> Vec<
             runtime_generation.to_string(),
         ),
     ];
+    // ^ docs/daemon-discovery.md: a shell profile may change XDG_STATE_HOME or HOME per
+    // directory; the pane's clients keep the socket of the daemon that owns the pane.
+    let socket = default_socket_path();
+    environment.push(("WSX_SOCKET".into(), socket.to_string_lossy().into_owned()));
     environment.push((
         "WSX_AGENT_REPORT_BIN".into(),
-        default_socket_path()
+        socket
             .with_extension("reporter")
             .to_string_lossy()
             .into_owned(),
@@ -7432,12 +7435,10 @@ fn default_launch_recipe() -> LaunchRecipe {
     })
 }
 
-fn state_path() -> PathBuf {
-    let root = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
-        .unwrap_or_else(std::env::temp_dir);
-    root.join("wsx/state.json")
+// ^ docs/daemon-discovery.md: the state and its singleton lock live beside the socket, where
+// a client waits for the lock, so two sockets are two daemons that never share a state file.
+fn state_path(socket: &Path) -> PathBuf {
+    socket.with_file_name("state.json")
 }
 
 fn lifecycle_marker_path(socket: &Path) -> PathBuf {

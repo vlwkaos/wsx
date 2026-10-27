@@ -86,6 +86,8 @@ PLUGIN.chmod(0o700)
 env = os.environ.copy()
 # ^ wsxd chooses Claude's renderer for its panes only when the owner has not.
 env.pop("CLAUDE_CODE_NO_FLICKER", None)
+# ^ A wsx pane exports its daemon's socket; the smoke daemon is found from XDG_STATE_HOME.
+env.pop("WSX_SOCKET", None)
 env.update({
     "HOME": str(HOME),
     "XDG_STATE_HOME": str(STATE),
@@ -1158,6 +1160,53 @@ while time.monotonic() < deadline:
         break
     time.sleep(0.05)
 assert recovery_pane["agent"] is not None, recovery_snapshot
+
+# docs/daemon-discovery.md: a shell profile that changes XDG_STATE_HOME and HOME per
+# directory (direnv) still reaches the daemon that owns its pane and starts no second one.
+PROFILE = WORK / "profile-b"
+profile_status = WORK / "profile-status.json"
+send_shell_command(
+    recovery_pane_id,
+    f'XDG_STATE_HOME={PROFILE}/state HOME={PROFILE}/home "$WSX_AGENT_REPORT_BIN" '
+    f'runtime status --json > {profile_status}.tmp 2>&1; mv {profile_status}.tmp {profile_status}',
+    41,
+)
+deadline = time.monotonic() + 10
+while time.monotonic() < deadline and not profile_status.exists():
+    time.sleep(0.05)
+profile_text = profile_status.read_text() if profile_status.exists() else "no answer"
+assert not (PROFILE / "state" / "wsx" / "wsx.sock").exists(), ("second wsxd", profile_text)
+assert json.loads(profile_text)["socket"] == str(SOCKET), profile_text
+
+
+def second_root(extra):
+    # ^ A second root is its own daemon with its own state, beside the first, never against it.
+    root_env = env | {"WSX_DAEMON_BIN": str(DAEMON)} | extra
+    started = subprocess.run([str(WSX), "status", "--json"], cwd=PROJECT, env=root_env,
+                             check=False, capture_output=True, text=True, timeout=30)
+    assert started.returncode == 0, ("second root start", extra, started.stdout, started.stderr)
+    status = subprocess.run([str(WSX), "runtime", "status", "--json"], cwd=PROJECT, env=root_env,
+                            check=False, capture_output=True, text=True, timeout=30)
+    stop = subprocess.run([str(WSX), "daemon", "stop", "--force"], cwd=PROJECT, env=root_env,
+                          check=False, capture_output=True, text=True, timeout=30)
+    assert status.returncode == 0, ("second root", extra, status.stdout, status.stderr)
+    assert stop.returncode == 0, ("second root stop", extra, stop.stdout, stop.stderr)
+    return Path(json.loads(status.stdout)["socket"])
+
+
+# Another socket on the same XDG state root: before, its wsxd found the first one's lock.
+other_socket = WORK / "other" / "wsx.sock"
+assert second_root({"WSX_SOCKET": str(other_socket)}) == other_socket
+assert (other_socket.parent / "state.json").is_file()
+# An empty XDG_STATE_HOME is ignored; it never makes the socket relative to the directory.
+assert second_root({"XDG_STATE_HOME": ""}) == HOME / ".local" / "state" / "wsx" / "wsx.sock"
+assert call("snapshot")["type"] == "snapshot"
+# A client that finds no daemon names the error kind and the socket it tried.
+missing_socket = WORK / "missing" / "wsx.sock"
+missed = wsx("agent", "report", str(recovery_pane_id), "--provider", "codex", "--state", "idle",
+             extra_env={"WSX_SOCKET": str(missing_socket)}, pane_id=recovery_pane_id)
+assert missed.returncode != 0, missed
+assert f"NotFound at {missing_socket}" in missed.stderr, missed.stderr
 project_before_restart = call("snapshot")["data"]["projects"][0]
 activity_before_restart = project_before_restart["last_agent_active_unix_ms"]
 terminal_activity_before_restart = project_before_restart["last_terminal_active_unix_ms"]

@@ -34,17 +34,12 @@ fn notice_view_for<'a>(
         });
     }
     match runtime_health {
-        RuntimeHealth::Reconnecting {
-            last_success,
-            error,
-        } => Some(NoticeView {
+        // ^ docs/daemon-discovery.md: the error names its kind and socket even before the
+        // first snapshot, when it is the only clue to a client that looks in the wrong place.
+        RuntimeHealth::Reconnecting { error, .. } => Some(NoticeView {
             level: NoticeLevel::Error,
             title: "Runtime disconnected; retrying",
-            body: Some(if last_success.is_some() {
-                error.as_str()
-            } else {
-                "No current snapshot is available"
-            }),
+            body: Some(error.as_str()),
             sticky: true,
         }),
         RuntimeHealth::Connecting => Some(NoticeView {

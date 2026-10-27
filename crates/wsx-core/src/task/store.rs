@@ -25,15 +25,7 @@ pub const REPORT_FILE: &str = "report.md";
 pub const SOCKET_FILE: &str = "host.sock";
 const COUNTER_FILE: &str = "next";
 
-/// wsx's state folder, `$XDG_STATE_HOME/wsx`: the task store and the daemon's socket.
-pub fn state_dir() -> PathBuf {
-    std::env::var_os("XDG_STATE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join("wsx")
-}
+pub use crate::runtime::state_dir;
 
 fn tasks_root() -> PathBuf {
     state_dir().join("tasks")
