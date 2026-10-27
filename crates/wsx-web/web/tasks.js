@@ -725,14 +725,14 @@ export function Manager({ project: id, task, page, checks }) {
   const [chat, setChat] = useState(null);
   // ^ The To check items, each a bubble at the time it was added; read again when the open
   // count changes (a new item, a pass or a fail).
-  const [checks, setChecks] = useState(null);
+  const [checkItems, setCheckItems] = useState(null);
   const toCheck = overview?.to_check;
   useEffect(() => {
     let live = true;
-    api(`api/tasks/${id}/checks`).then((value) => { if (live) setChecks(value.items); }, () => { if (live) setChecks((now) => now ?? []); });
+    api(`api/tasks/${id}/checks`).then((value) => { if (live) setCheckItems(value.items); }, () => { if (live) setCheckItems((now) => now ?? []); });
     return () => { live = false; };
   }, [id, toCheck]);
-  const ready = Boolean(chat) && checks !== null;
+  const ready = Boolean(chat) && checkItems !== null;
   const [failure, setFailure] = useState("");
   const [sent, setSent] = useState(null);
   const { log, away, unread, since, scrolled, toEnd } = useFollowEnd(`project-${id}`, ready);
@@ -778,7 +778,7 @@ export function Manager({ project: id, task, page, checks }) {
   const entries = chat?.entries ?? [];
   const items = overview?.needs ?? [];
   const words = withChips(id);
-  const rows = ready ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checks) : [];
+  const rows = ready ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems) : [];
   // The sent message shows until the log has it.
   if (sent && !entries.some((entry) => entry.kind === "message" && entry.id === sent.id)) {
     const last = rows.at(-1);
