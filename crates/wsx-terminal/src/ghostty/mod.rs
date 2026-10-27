@@ -86,8 +86,6 @@ pub enum SelectionAutoscroll {
     Down,
 }
 
-impl RowSelection {}
-
 impl Dirty {
     fn from_raw(value: ffi::GhosttyRenderStateDirty) -> Self {
         match value {
