@@ -314,7 +314,9 @@ def send_stream(stream, message):
 
 
 def heartbeat_streams(streams, done):
-    """Renew each stream's lease every second until `done`; a closed stream is skipped."""
+    """Renew each stream's lease every second until `done`; a stream wsxd ended is skipped.
+
+    Close a stream under `stream_send_lock`, so a heartbeat never reaches a reused descriptor."""
     while not done.wait(1):
         for stream in list(streams):
             try:
@@ -378,9 +380,10 @@ assert (burst_after["epoch"], burst_after["started_unix_ms"]) == (
 ), "wsxd restarted or handed off under concurrent agent reports"
 assert not burst_stream_ends, f"terminal streams ended under concurrent agent reports: {burst_stream_ends}"
 burst_done.set()
-for stream in burst_streams.values():
-    stream.shutdown(socket.SHUT_RDWR)
-    stream.close()
+with stream_send_lock:
+    for stream in burst_streams.values():
+        stream.shutdown(socket.SHUT_RDWR)
+        stream.close()
 burst_snapshot = call("snapshot")["data"]
 for pane_id, _ in burst_panes + burst_idle_panes:
     pane = next(item for item in burst_snapshot["panes"] if item["id"] == pane_id)
@@ -1098,6 +1101,12 @@ def raw_send(client, kind, data=None):
     send_stream(client, {"type": kind} if data is None else {"type": kind, "data": data})
 
 
+def raw_close(client):
+    with stream_send_lock:
+        raw_streams.remove(client)
+        client.close()
+
+
 # ^ docs/terminal-raw-stream.md: a raw client renews its lease with a heartbeat each second,
 # as the web client does, so a pause in reading never costs it the lease.
 raw_streams = []
@@ -1203,7 +1212,7 @@ displaced = recv_line(first)
 while displaced["type"] != "error":
     displaced = recv_line(first)
 assert displaced["data"]["code"] == "lease_transferred", displaced
-first.close()
+raw_close(first)
 # A subscriber that stops reading while the pane writes more than the tap holds
 # is resynchronized with a new replay. It pauses past the lease's 3 s and keeps the
 # lease by its heartbeat alone.
@@ -1227,7 +1236,7 @@ while True:
     assert message["type"] == "output", message
     output += bytes(message["data"])
 assert output.endswith(b"[bye]"), output
-second.close()
+raw_close(second)
 raw_done.set()
 raw_session = next(
     item for item in call("snapshot")["data"]["sessions"] if item["id"] == raw_session_id
