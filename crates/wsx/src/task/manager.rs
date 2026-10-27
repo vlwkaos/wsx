@@ -200,8 +200,8 @@ fn instructions(
          it. What only a person can check goes to the To check list (the ledger's \
          `to_check`); never pass or fail items yourself. A release refuses while items are \
          open, unless the owner's message asks for it (`--owner-said`): then the items stay \
-         to check on the release. When the last task of a request lands and no open task changes the same \
-         files, start one housekeeping task over the files those tasks changed, with this \
+         to check on the release. When the last task of a request lands and no open task \
+         changes the same files, start one housekeeping task over the files those tasks changed, with this \
          prompt and the task numbers: {batch} \
          When the owner wants to be sure of a change or to try it, start \
          it with `wsx task new --hold \"<why>\"` (`wsx task hold <n> \"<why>\"` holds a \

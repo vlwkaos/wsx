@@ -1,7 +1,7 @@
 # Daemon discovery
 
 How `wsx` (TUI and CLI), the agent hook reporter and `wsxd` find each other.
-Code: `crates/wsx-core/src/runtime/protocol.rs` (`state_dir`, `default_socket_path`). The same rule is copied where Rust cannot run: the agent hook reporters (`integrations/common/wsx-reporter.py`, `.mjs`) and the check slot in `scripts/deploy-web-live.sh`. Change them together; a reporter change bumps every integration version.
+Code: `crates/wsx-core/src/runtime/protocol.rs` (`state_dir`, `default_socket_path`). The same rule is copied where Rust cannot run: the agent hook reporters (`integrations/common/wsx-reporter.py`, `.mjs`) and the check slot in `scripts/check-slot.py`. Change them together; a reporter change bumps every integration version.
 
 ## The socket is the daemon
 
