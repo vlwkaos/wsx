@@ -2049,8 +2049,17 @@ fn serve_terminal_stream(
     let resized = if keep_size {
         Ok(())
     } else {
-        resize_terminal_for_stream(&daemon, pane_id, client_id, lease_generation, rows, cols)
-            .map(|_| ())
+        resize_terminal(
+            &daemon,
+            pane_id,
+            LeaseAccess::Stream {
+                client_id,
+                generation: lease_generation,
+            },
+            rows,
+            cols,
+        )
+        .map(|_| ())
     };
     if let Err(error) = resized {
         release_stream_lease(&daemon, pane_id, client_id, lease_generation);
@@ -2536,7 +2545,7 @@ fn release_client_lease(daemon: &Daemon, pane_id: PaneId, client_id: u64) -> Res
     let operation_lock = terminal_operation_lock(daemon, pane_id);
     let _operation = lock(&operation_lock);
     let mut state = lock(&daemon.state);
-    require_lease(&state, pane_id, client_id)?;
+    require_lease(&state, pane_id, LeaseAccess::Client(client_id))?;
     state.leases.remove(&pane_id);
     let revision = state.revision;
     let runtime = state.runtimes.get(&pane_id).cloned();
@@ -2556,7 +2565,14 @@ fn with_stream_runtime<T>(
 ) -> Result<T, ApiError> {
     let operation_lock = terminal_operation_lock(daemon, pane_id);
     let _operation = lock(&operation_lock);
-    let (runtime, _) = leased_runtime_for_stream(daemon, pane_id, client_id, lease_generation)?;
+    let (runtime, _) = leased_runtime(
+        daemon,
+        pane_id,
+        LeaseAccess::Stream {
+            client_id,
+            generation: lease_generation,
+        },
+    )?;
     operation(&runtime)
 }
 
@@ -2650,12 +2666,21 @@ fn handle_terminal_stream_input(
             })
         }
         TerminalClientMessage::Resize { rows, cols } => {
-            resize_terminal_for_stream(daemon, pane_id, client_id, lease_generation, rows, cols)?;
+            resize_terminal(
+                daemon,
+                pane_id,
+                LeaseAccess::Stream {
+                    client_id,
+                    generation: lease_generation,
+                },
+                rows,
+                cols,
+            )?;
             Ok(())
         }
         TerminalClientMessage::Heartbeat => {
             let mut state = lock(&daemon.state);
-            refresh_lease_with_access(
+            refresh_lease(
                 &mut state,
                 pane_id,
                 LeaseAccess::Stream {
@@ -2875,9 +2900,9 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             let revision = release_client_lease(daemon, pane_id, client_id)?;
             Ok(Response::Ack { revision })
         }
-        Request::TerminalHeartbeat { pane_id, client_id } => {
-            mutate_runtime(daemon, |state| refresh_lease(state, pane_id, client_id))
-        }
+        Request::TerminalHeartbeat { pane_id, client_id } => mutate_runtime(daemon, |state| {
+            refresh_lease(state, pane_id, LeaseAccess::Client(client_id))
+        }),
         Request::TerminalSubscribe { .. } | Request::TerminalRawSubscribe { .. } => Err(api(
             "invalid_request",
             "a terminal subscribe is only valid as a connection upgrade",
@@ -2890,7 +2915,8 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             if bytes.len() > MAX_INPUT_BYTES {
                 return Err(api("invalid_input", "input exceeds limit"));
             }
-            let (runtime, revision) = leased_runtime(daemon, pane_id, client_id)?;
+            let (runtime, revision) =
+                leased_runtime(daemon, pane_id, LeaseAccess::Client(client_id))?;
             runtime.write(&bytes).map_err(terminal_api)?;
             request_claude_reconcile(daemon, pane_id, bytes == [3]);
             Ok(Response::Ack { revision })
@@ -2900,7 +2926,8 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             client_id,
             key,
         } => {
-            let (runtime, revision) = leased_runtime(daemon, pane_id, client_id)?;
+            let (runtime, revision) =
+                leased_runtime(daemon, pane_id, LeaseAccess::Client(client_id))?;
             runtime.key(&key).map_err(terminal_api)?;
             request_claude_reconcile(daemon, pane_id, key_interrupts_agent(&key));
             Ok(Response::Ack { revision })
@@ -2913,7 +2940,8 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             if text.len() > MAX_INPUT_BYTES {
                 return Err(api("invalid_input", "paste exceeds limit"));
             }
-            let (runtime, revision) = leased_runtime(daemon, pane_id, client_id)?;
+            let (runtime, revision) =
+                leased_runtime(daemon, pane_id, LeaseAccess::Client(client_id))?;
             runtime.paste(&text).map_err(terminal_api)?;
             Ok(Response::Ack { revision })
         }
@@ -2922,7 +2950,8 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             client_id,
             mouse,
         } => {
-            let (runtime, revision) = leased_runtime(daemon, pane_id, client_id)?;
+            let (runtime, revision) =
+                leased_runtime(daemon, pane_id, LeaseAccess::Client(client_id))?;
             runtime.mouse(&mouse).map_err(terminal_api)?;
             Ok(Response::Ack { revision })
         }
@@ -2931,7 +2960,7 @@ fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Response, ApiE
             client_id,
             rows,
             cols,
-        } => resize_terminal(daemon, pane_id, client_id, rows, cols),
+        } => resize_terminal(daemon, pane_id, LeaseAccess::Client(client_id), rows, cols),
         Request::View { pane_ids } => view(daemon, pane_ids),
         Request::AgentReport {
             pane_id,
@@ -4416,43 +4445,13 @@ fn close_pane(daemon: &Arc<Daemon>, id: PaneId, expected: u64) -> Result<Respons
 fn resize_terminal(
     daemon: &Daemon,
     pane_id: PaneId,
-    client_id: u64,
-    rows: u16,
-    cols: u16,
-) -> Result<Response, ApiError> {
-    resize_terminal_with_access(daemon, pane_id, LeaseAccess::Client(client_id), rows, cols)
-}
-
-fn resize_terminal_for_stream(
-    daemon: &Daemon,
-    pane_id: PaneId,
-    client_id: u64,
-    generation: u64,
-    rows: u16,
-    cols: u16,
-) -> Result<Response, ApiError> {
-    resize_terminal_with_access(
-        daemon,
-        pane_id,
-        LeaseAccess::Stream {
-            client_id,
-            generation,
-        },
-        rows,
-        cols,
-    )
-}
-
-fn resize_terminal_with_access(
-    daemon: &Daemon,
-    pane_id: PaneId,
     access: LeaseAccess,
     rows: u16,
     cols: u16,
 ) -> Result<Response, ApiError> {
     let operation_lock = terminal_operation_lock(daemon, pane_id);
     let _operation = lock(&operation_lock);
-    let (runtime, _) = leased_runtime_with_access(daemon, pane_id, access)?;
+    let (runtime, _) = leased_runtime(daemon, pane_id, access)?;
     runtime.resize(rows, cols).map_err(terminal_api)?;
     let mut state = lock(&daemon.state);
     if let Some(recipe) = state
@@ -7325,30 +7324,6 @@ fn terminal_operation_lock(daemon: &Daemon, pane_id: PaneId) -> Arc<Mutex<()>> {
 fn leased_runtime(
     daemon: &Daemon,
     pane_id: PaneId,
-    client_id: u64,
-) -> Result<(Arc<TerminalRuntime>, u64), ApiError> {
-    leased_runtime_with_access(daemon, pane_id, LeaseAccess::Client(client_id))
-}
-
-fn leased_runtime_for_stream(
-    daemon: &Daemon,
-    pane_id: PaneId,
-    client_id: u64,
-    generation: u64,
-) -> Result<(Arc<TerminalRuntime>, u64), ApiError> {
-    leased_runtime_with_access(
-        daemon,
-        pane_id,
-        LeaseAccess::Stream {
-            client_id,
-            generation,
-        },
-    )
-}
-
-fn leased_runtime_with_access(
-    daemon: &Daemon,
-    pane_id: PaneId,
     access: LeaseAccess,
 ) -> Result<(Arc<TerminalRuntime>, u64), ApiError> {
     let mut state = lock(&daemon.state);
@@ -7358,7 +7333,7 @@ fn leased_runtime_with_access(
             "wsxd is replacing its runtime owner",
         ));
     }
-    refresh_lease_with_access(&mut state, pane_id, access)?;
+    refresh_lease(&mut state, pane_id, access)?;
     Ok((
         Arc::clone(require_runtime(&state, pane_id)?),
         state.revision,
@@ -7370,15 +7345,7 @@ fn require_runtime(state: &State, pane_id: PaneId) -> Result<&Arc<TerminalRuntim
         .get(&pane_id)
         .ok_or_else(|| api("terminal_unavailable", "terminal process is not running"))
 }
-fn require_lease(state: &State, pane_id: PaneId, client_id: u64) -> Result<(), ApiError> {
-    require_lease_with_access(state, pane_id, LeaseAccess::Client(client_id))
-}
-
-fn require_lease_with_access(
-    state: &State,
-    pane_id: PaneId,
-    access: LeaseAccess,
-) -> Result<(), ApiError> {
+fn require_lease(state: &State, pane_id: PaneId, access: LeaseAccess) -> Result<(), ApiError> {
     let owned = state.leases.get(&pane_id).is_some_and(|lease| {
         let identity_matches = match access {
             LeaseAccess::Client(client_id) => lease.client_id == client_id,
@@ -7399,16 +7366,8 @@ fn require_lease_with_access(
     }
 }
 
-fn refresh_lease(state: &mut State, pane_id: PaneId, client_id: u64) -> Result<(), ApiError> {
-    refresh_lease_with_access(state, pane_id, LeaseAccess::Client(client_id))
-}
-
-fn refresh_lease_with_access(
-    state: &mut State,
-    pane_id: PaneId,
-    access: LeaseAccess,
-) -> Result<(), ApiError> {
-    require_lease_with_access(state, pane_id, access)?;
+fn refresh_lease(state: &mut State, pane_id: PaneId, access: LeaseAccess) -> Result<(), ApiError> {
+    require_lease(state, pane_id, access)?;
     if let Some(lease) = state.leases.get_mut(&pane_id) {
         lease.expires_at = Instant::now() + LEASE_TTL;
     }
@@ -7446,30 +7405,37 @@ fn bounded_label(value: String) -> Result<String, ApiError> {
         Ok(value.into())
     }
 }
-fn bounded_provider(value: String) -> Result<String, ApiError> {
-    let value = value.trim().to_ascii_lowercase();
-    if value.is_empty()
-        || value.len() > 64
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        Err(api("invalid_provider", "invalid provider name"))
+/// A non-empty value of at most `max` bytes, every byte accepted by `allowed`.
+fn bounded_ascii(
+    value: String,
+    max: usize,
+    allowed: impl Fn(u8) -> bool,
+    code: &str,
+    message: &str,
+) -> Result<String, ApiError> {
+    if value.is_empty() || value.len() > max || !value.bytes().all(allowed) {
+        Err(api(code, message))
     } else {
         Ok(value)
     }
 }
+fn bounded_provider(value: String) -> Result<String, ApiError> {
+    bounded_ascii(
+        value.trim().to_ascii_lowercase(),
+        64,
+        |byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'),
+        "invalid_provider",
+        "invalid provider name",
+    )
+}
 fn bounded_wake_token(value: String) -> Result<String, ApiError> {
-    if value.is_empty()
-        || value.len() > 128
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    {
-        Err(api("invalid_wake_token", "wake token is malformed"))
-    } else {
-        Ok(value)
-    }
+    bounded_ascii(
+        value,
+        128,
+        |byte| byte.is_ascii_alphanumeric() || byte == b'-',
+        "invalid_wake_token",
+        "wake token is malformed",
+    )
 }
 fn validate_presence_id(value: String) -> Result<String, ApiError> {
     let bytes = value.as_bytes();
@@ -7488,19 +7454,13 @@ fn validate_presence_id(value: String) -> Result<String, ApiError> {
     }
 }
 fn bounded_runtime_generation(value: String) -> Result<String, ApiError> {
-    if value.is_empty()
-        || value.len() > 128
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() || byte == b':')
-    {
-        Err(api(
-            "invalid_runtime_generation",
-            "runtime generation is malformed",
-        ))
-    } else {
-        Ok(value)
-    }
+    bounded_ascii(
+        value,
+        128,
+        |byte| byte.is_ascii_hexdigit() || byte == b':',
+        "invalid_runtime_generation",
+        "runtime generation is malformed",
+    )
 }
 
 fn validated_session_ref(
@@ -8547,9 +8507,7 @@ mod tests {
                 generation: 1,
             };
             assert_eq!(
-                require_lease_with_access(&state, pane_id, stale)
-                    .unwrap_err()
-                    .code,
+                require_lease(&state, pane_id, stale).unwrap_err().code,
                 "lease_required"
             );
         }
