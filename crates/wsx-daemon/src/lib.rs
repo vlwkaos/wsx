@@ -429,30 +429,8 @@ fn state_path(socket: &Path) -> PathBuf {
     socket.with_file_name("state.json")
 }
 
-fn lifecycle_marker_path(socket: &Path) -> PathBuf {
-    socket.with_extension("lifecycle")
-}
+use wsx_core::runtime::{lifecycle_marker_path, write_lifecycle_marker};
 
-fn write_lifecycle_marker(path: &Path, reason: &str) -> io::Result<()> {
-    let temporary = path.with_extension(format!("lifecycle.tmp.{}", std::process::id()));
-    let result = (|| {
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&temporary)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        writeln!(file, "{reason}")?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
-}
 fn secure_parent(path: &Path) -> io::Result<()> {
     let parent = path
         .parent()

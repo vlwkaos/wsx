@@ -124,7 +124,7 @@ function clearPendingSettlement(): void {
   pendingSettlement = undefined;
 }
 
-// ^ crates/wsx-daemon/src/lib.rs owns expiry; keep renewal independent of
+// ^ crates/wsx-daemon/src/server.rs owns expiry; keep renewal independent of
 // persisted state reports so idle agents do not write snapshots every ten seconds.
 function renewPresence(): void {
   if (!presenceActive || presenceInFlight || !paneId) return;

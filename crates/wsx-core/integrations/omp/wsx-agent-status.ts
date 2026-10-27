@@ -72,7 +72,7 @@ function drain(): void {
   });
 }
 
-// ^ crates/wsx-daemon/src/lib.rs expires this ephemeral presence lease without
+// ^ crates/wsx-daemon/src/server.rs expires this ephemeral presence lease without
 // changing the separately reported lifecycle state on each renewal.
 function renewPresence(): void {
   if (!presenceActive || presenceInFlight || !pane) return;
