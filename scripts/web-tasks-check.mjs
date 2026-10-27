@@ -1637,7 +1637,7 @@ await closeSheet("the To check list after a fail", chat);
 const checkBubbles = "[...document.querySelectorAll('.log .check-bubble')]";
 await until(`${checkBubbles}.length >= 3`, "the chat has no To check bubbles", 60);
 const bubbleOf = (task) => `${checkBubbles}.find((node) => node.querySelector('.check-task .task-chip')?.textContent.trim() === '#${task}')`;
-await until(`(${bubbleOf(8)}?.querySelector('.check-capture img')?.naturalWidth ?? 0) > 0`, "the To check bubble's capture did not load", 60);
+await until(`(${bubbleOf(8)}?.querySelector('.check-capture img')?.naturalWidth ?? 0) > 0 && /fixes it$/.test(${bubbleOf(7)}?.querySelector('.check-state')?.textContent ?? '')`, "the To check bubbles did not load their capture and result", 100);
 const inChat = await evaluate(`(() => { const open = ${bubbleOf(8)}, failed = ${bubbleOf(7)};
   return { tag: open?.querySelector('.bubble-tag')?.textContent, author: open?.querySelector('.bubble-author')?.textContent, image: open?.querySelector('.check-capture img')?.naturalWidth ?? 0,
     acts: [...(open?.querySelectorAll('.check-acts .check-act') ?? [])].map((node) => node.title), failed: failed?.querySelector('.check-state')?.textContent ?? '',
