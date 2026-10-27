@@ -108,14 +108,13 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     });
     // ^ Memos go first, then the least urgent open tasks, when the ledger is over its size.
     if serde_json::to_vec(&ledger)?.len() > MAX_LEDGER_BYTES {
-        for row in ledger["recent"].as_array_mut().expect("recent is an array") {
+        for row in ledger["recent"].as_array_mut().into_iter().flatten() {
             row.as_object_mut().map(|fields| fields.remove("memo"));
         }
     }
     let mut omitted = 0;
     while serde_json::to_vec(&ledger)?.len() > MAX_LEDGER_BYTES {
-        let rows = ledger["open"].as_array_mut().expect("open is an array");
-        if rows.pop().is_none() {
+        if ledger["open"].as_array_mut().and_then(Vec::pop).is_none() {
             ledger["recent"] = json!([]);
             break;
         }

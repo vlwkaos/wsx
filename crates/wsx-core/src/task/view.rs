@@ -45,16 +45,14 @@ pub fn read_result(dir: &TaskDir) -> Option<Value> {
 /// A task whose work resolves a landing conflict: its last conflict came after its last
 /// revision. ref: docs/tasks.md "Landing"
 pub fn resolving_conflict(dir: &TaskDir) -> bool {
-    dir.read_log()
-        .unwrap_or_default()
-        .iter()
-        .rev()
-        .find_map(|entry| match entry.event {
-            super::LogEvent::Conflict { .. } => Some(true),
-            super::LogEvent::Revision { .. } => Some(false),
-            _ => None,
-        })
-        .unwrap_or(false)
+    dir.last_event(|event| match event {
+        super::LogEvent::Conflict { .. } => Some(true),
+        super::LogEvent::Revision { .. } => Some(false),
+        _ => None,
+    })
+    .ok()
+    .flatten()
+    .unwrap_or(false)
 }
 
 pub fn check_outcomes(result: &Value) -> Vec<(String, &'static str)> {
@@ -272,16 +270,24 @@ pub fn task_summary(dir: &TaskDir, record: &TaskRecord) -> Value {
     })
 }
 
-/// Every task of a project with its record, or the error that hid it.
+/// Every task of a project with its record, or the error that hid it. A task whose folder
+/// is removed while the list is read is left out.
 pub fn project_tasks(project_id: &str) -> Result<Vec<(TaskDir, Result<TaskRecord>)>> {
-    store::task_numbers(project_id)?
-        .into_iter()
-        .map(|id| {
-            let dir = TaskDir::open(project_id, id)?;
-            let record = dir.read_record();
-            Ok((dir, record))
-        })
-        .collect()
+    let root = store::project_dir(project_id)?;
+    let mut tasks = Vec::new();
+    for id in store::task_numbers(project_id)? {
+        let dir = match TaskDir::open(project_id, id) {
+            Ok(dir) => dir,
+            Err(_) if !root.join(id.to_string()).exists() => continue,
+            Err(error) => return Err(error),
+        };
+        let record = dir.read_record();
+        if record.is_err() && !dir.path.exists() {
+            continue;
+        }
+        tasks.push((dir, record));
+    }
+    Ok(tasks)
 }
 
 /// The other open tasks whose paths meet this task's. A task's paths are the ones its

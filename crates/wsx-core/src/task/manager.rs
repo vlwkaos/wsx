@@ -154,6 +154,30 @@ impl ManagerEntry {
     }
 }
 
+/// Most entries the chat shows at once.
+pub const CHAT_ENTRIES: usize = 200;
+
+/// The chat after message `after` (all of it when `after` is none or unknown): messages,
+/// replies, rotations and stops, the newest `CHAT_ENTRIES` of them, and how many older ones
+/// were left out. `Delivered` and `Agent` entries are not conversation.
+pub fn chat_window(log: &[ManagerEntry], after: Option<u64>) -> (Vec<&ManagerEntry>, usize) {
+    let start = after
+        .and_then(|after| log.iter().position(|entry| entry.id() == Some(after)))
+        .map_or(0, |index| index + 1);
+    let mut entries: Vec<&ManagerEntry> = log[start..]
+        .iter()
+        .filter(|entry| {
+            !matches!(
+                entry.event,
+                ManagerEvent::Delivered { .. } | ManagerEvent::Agent { .. }
+            )
+        })
+        .collect();
+    let skipped = entries.len().saturating_sub(CHAT_ENTRIES);
+    entries.drain(..skipped);
+    (entries, skipped)
+}
+
 /// A task as the manager last reported it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Seen {

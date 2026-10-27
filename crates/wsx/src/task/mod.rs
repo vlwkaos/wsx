@@ -25,7 +25,7 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::git::output_with_timeout_tail;
 use wsx_core::task::checks::{self, CheckItem};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
-use wsx_core::task::manager::{ApprovalAction, ApprovalLine, ManagerEvent};
+use wsx_core::task::manager::{chat_window, ApprovalAction, ApprovalLine, ManagerEvent};
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{
@@ -1812,9 +1812,6 @@ fn deployed(project: Option<&str>, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Most entries `chat` prints at once.
-const MAX_CHAT_ENTRIES: usize = 200;
-
 /// Reuse the project's manager host, or start one in a hidden session in the main checkout.
 /// Returns whether it was started.
 /// Create the manager's hidden session, starting wsxd when it does not run.
@@ -1878,20 +1875,7 @@ fn chat(project: Option<&str>, after: Option<u64>, json: bool) -> Result<()> {
     let (name, main) = project_entry(project)?;
     let dir = ManagerDir::open(&store::project_id(&name, &main))?;
     let log = dir.read_log()?;
-    let start = after
-        .and_then(|after| log.iter().position(|entry| entry.id() == Some(after)))
-        .map_or(0, |index| index + 1);
-    let mut entries: Vec<_> = log[start..]
-        .iter()
-        .filter(|entry| {
-            !matches!(
-                entry.event,
-                ManagerEvent::Delivered { .. } | ManagerEvent::Agent { .. }
-            )
-        })
-        .collect();
-    let skipped = entries.len().saturating_sub(MAX_CHAT_ENTRIES);
-    entries.drain(..skipped);
+    let (entries, skipped) = chat_window(&log, after);
     if json {
         return print_json(&json!({ "entries": entries, "skipped": skipped }));
     }
