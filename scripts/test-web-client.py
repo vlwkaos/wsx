@@ -2985,11 +2985,15 @@ def task_journey(args):
             js('task', 'say', 'RUN wsx task say -p plans --from-manager --reply "ui is fine" --json', '-p', 'ui')
             wait(lambda: any(e['kind'] == 'sent' for e in js('task', 'chat', '-p', 'ui')['entries']), 'ui answered plans', timeout=30)
             # A deploy of the default branch tip: the brief says it is up to date until a task lands.
-            assert js('task', 'deploy', '-p', 'ui')['exit'] == 0
+            # A deploy by hand answers that it started; its detached run records the result.
+            assert js('task', 'deploy', '-p', 'ui')['started'] is True
+            wait(lambda: js('task', 'deployed', '-p', 'ui')['deploy'].get('behind') == 0, 'the deploy of ui was recorded', timeout=60)
             # plans' deploy fails with 60 lines: its project page folds their end.
             failed = subprocess.run([str(wsx), 'task', 'deploy', '-p', 'plans', '--json'], env=dict(env, WSX_FIXTURE_DEPLOY_FAIL='1'),
                                     cwd=project, capture_output=True, text=True, timeout=60)
-            assert json.loads(failed.stdout)['exit'] == 3, (failed.stdout, failed.stderr)
+            assert json.loads(failed.stdout)['started'] is True, (failed.stdout, failed.stderr)
+            wait(lambda: js('task', 'deployed', '-p', 'plans')['deploy'].get('failed_since') == 1,
+                 'the failed deploy of plans was recorded', timeout=60)
             # Sessions without tasks, oldest first: an agent that exited (`gone`), one done
             # (`quiet`), two working (`busy`).
             agent_script = work / 'session-agent.py'
