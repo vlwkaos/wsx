@@ -203,12 +203,13 @@ fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResul
     );
     let mut prepared = Vec::<(PathBuf, String, bool)>::new();
 
+    let directory = asset
+        .parent()
+        .expect("adapter asset has a parent")
+        .to_path_buf();
     let (reporter_name, reporter_content) = assets::reporter(target);
     prepared.push((
-        asset
-            .parent()
-            .expect("adapter asset has a parent")
-            .join(reporter_name),
+        directory.join(reporter_name),
         reporter_content.into(),
         false,
     ));
@@ -221,7 +222,6 @@ fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResul
         ));
     }
     if target == IntegrationTarget::Hermes {
-        let directory = asset.parent().expect("Hermes asset has a parent");
         prepared.push((
             directory.join("plugin.yaml"),
             assets::HERMES_MANIFEST.into(),
@@ -281,9 +281,7 @@ fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResul
         written.push(path);
     }
     // ^ The 0.30.1 hook inspection is retired; remove its files beside the hook.
-    if let (IntegrationTarget::Claude | IntegrationTarget::Codex, Some(directory)) =
-        (target, written.last().and_then(|asset| asset.parent()))
-    {
+    if matches!(target, IntegrationTarget::Claude | IntegrationTarget::Codex) {
         for name in RETIRED_INSPECTION {
             let path = directory.join(name);
             if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
