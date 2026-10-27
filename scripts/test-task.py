@@ -1044,7 +1044,7 @@ def run(wsx, wsxd, work, owned):
                  'for lean code', 'never send a task back to rebase', 'trust them over the worker',
                  'Check the fixture rule.', 'start one housekeeping task', 'Fold the fixture tasks.',
                  'tell that worker to prove it', 'never pass or fail items yourself',
-                 'A release refuses while items are open', '`wsx task trial <n>`',
+                 'A release refuses while items are open, unless the owner', '`wsx task trial <n>`',
                  '`--owner-said <id>`', 'never name a message that did not ask',
                  'call a change live only when', 'On `hand`, the owner works in its copy',
                  'nothing asks you for permission', 'read-only git in Bash',
@@ -2002,6 +2002,26 @@ def run(wsx, wsxd, work, owned):
     wait(lambda: events_with('approval a92 (discard #%d) dropped; #%d is closed' % (gone, gone)), 'the dropped request event')
     assert js('task', 'ledger')['approvals'] == [] and approval_lines()[-1]['outcome'] == 'dropped; #%d is closed' % gone
     assert not events_with('approval a91'), 'an approval by the owner message became an event'
+    # ^ A release refuses while items are open (docs/tasks.md "Deploy and release"), but one the
+    # owner's message asked for runs, and its answer lists the items still to check on the release.
+    item_task = js('task', 'new', 'WORK said-release.txt HV')['id']
+    assert wait_state(item_task, 'ready', 'failed')['state'] == 'ready'
+    assert land(item_task)['state'] == 'landed'
+    wait_closed(item_task)
+    open_ids = [i['id'] for i in js('task', 'check')['open']]
+    assert open_ids, js('task', 'check')
+    (project / 'wsx.config.yml').write_text(
+        LAND_CONFIG + "  release:\n    command: 'echo released >> ../said-release.log'\n    approve: true\n")
+    git('commit', '-q', '-am', 'release config')
+    refused = cli('task', 'release', ok=False).stderr
+    assert 'item(s) to check are open' in refused and 'Nothing was run' in refused, refused
+    asked = js('task', 'say', 'release\nRUN wsx task release --owner-said OWNER_SAID -p demo')
+    text = reply_to(asked['id'])['text']
+    assert ': exit 0; still to check on the release: %s' % ', '.join(open_ids) in text, text
+    assert (base / 'said-release.log').read_text() == 'released\n'
+    assert [i['id'] for i in js('task', 'check')['open']] == open_ids
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
+    git('commit', '-q', '-am', 'release as before')
     # 32g. A plan first (docs/tasks.md "Workflow"): the first turn of a `--plan` task is told to
     # plan and stop; its result runs no check and waits on plan for the manager, and an add
     # continues it as an ordinary task.

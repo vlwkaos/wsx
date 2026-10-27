@@ -1473,16 +1473,22 @@ fn deploy(
         format!("tasks.{name}.command is not set in wsx.config.yml; nothing was run")
     })?;
     let project_id = store::project_id(&project_name, &main);
-    // ^ Only public output waits for what the owner has to check (docs/tasks.md "To check").
-    let to_check = checks::open_items(&project_id)?.len();
+    // ^ Only public output waits for what the owner has to check, and a release the owner's
+    // message asked for runs: some items can be checked only on the released build.
+    // ref: docs/tasks.md "Deploy and release"
+    let open = checks::open_items(&project_id)?;
+    let to_check = open.len();
     let public = match kind {
         DeployKind::Deploy => settings.deploy_public,
         DeployKind::Release => true,
     };
     if public && to_check > 0 {
-        bail!(
-            "{to_check} item(s) to check are open; the owner checks them first (`wsx task check`). Nothing was run"
-        );
+        match (kind, owner_said) {
+            (DeployKind::Release, Some(said)) => owner::check_owner_said(&project_id, said)?,
+            _ => bail!(
+                "{to_check} item(s) to check are open; the owner checks them first (`wsx task check`). Nothing was run"
+            ),
+        }
     }
     let approve = match kind {
         DeployKind::Deploy => settings.deploy_approve,
@@ -1617,7 +1623,18 @@ fn deploy(
         exit.map_or("none".into(), |code| code.to_string())
     );
     if status.success() && to_check > 0 {
-        message.push_str(&format!("; {to_check} to check on the deployed site"));
+        match kind {
+            DeployKind::Deploy => {
+                message.push_str(&format!("; {to_check} to check on the deployed site"))
+            }
+            DeployKind::Release => message.push_str(&format!(
+                "; still to check on the release: {}",
+                open.iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
     }
     if json {
         let mut value = serde_json::to_value(&record)?;

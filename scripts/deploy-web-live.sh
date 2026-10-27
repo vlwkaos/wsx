@@ -26,27 +26,11 @@ trap 'code=$?; [ $code -eq 0 ] || echo "deploy failed at step: $step (exit $code
 # ^ The deploy gate is the PTY and stream smoke test only, so a land reaches the live site in
 # minutes. The task and web end-to-end scripts are `tasks.scenarios`: the worker whose change
 # touches their area runs them by name (wsx.config.yml `workflow.build`).
-# ^ The smoke test holds the host-wide check slot that task checks take (crates/wsx/src/task/slot.rs,
-# an flock on tasks/check-slot/slot.lock), so it never runs beside another task's checks.
-in_slot() {
-  python3 -c 'import fcntl, os, subprocess, sys, tempfile
-# ^ runtime::state_dir (docs/daemon-discovery.md): an empty or relative value is ignored.
-state, home = os.environ.get("XDG_STATE_HOME", ""), os.environ.get("HOME", "")
-state = state if os.path.isabs(state) else os.path.join(home, ".local/state") if os.path.isabs(home) else tempfile.gettempdir()
-folder = os.path.join(state, "wsx", "tasks", "check-slot")
-os.makedirs(folder, mode=0o700, exist_ok=True)
-slot = open(os.path.join(folder, "slot.lock"), "a")
-try:
-    fcntl.flock(slot, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except BlockingIOError:
-    print("waiting for the check slot", flush=True)
-    fcntl.flock(slot, fcntl.LOCK_EX)
-sys.exit(subprocess.call(sys.argv[1:]))' "$@"
-}
+# ^ The smoke test holds the host-wide check slot that task checks take (scripts/check-slot.py).
 step "debug build"
 cargo build --locked -p wsx -p wsx-daemon
 step "runtime-smoke.py"
-in_slot python3 -B scripts/runtime-smoke.py
+python3 -B scripts/check-slot.py python3 -B scripts/runtime-smoke.py
 step "release build"
 cargo build --release --locked -p wsx -p wsx-daemon
 # ^ wsxd sits next to wsx so the web build and the daemon it hands off to stay one revision.

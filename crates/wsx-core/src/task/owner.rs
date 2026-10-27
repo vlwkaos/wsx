@@ -240,10 +240,7 @@ pub fn drop_request(project_id: &str, id: &str, why: &str) -> Result<()> {
 /// owner's message `said` of its running turn, and the action runs without a button.
 /// The id of the recorded request is returned. ref: docs/tasks.md "Approvals"
 pub fn approve_by_message(project_id: &str, request: ApprovalLine, said: u64) -> Result<String> {
-    let manager = ManagerDir::existing(project_id)?
-        .context("the project has no manager, so no owner message")?;
-    super::manager::owner_said_in_turn(&manager.read_log()?, said)
-        .map_err(|why| anyhow::anyhow!("--owner-said {said}: {why}; nothing was run"))?;
+    check_owner_said(project_id, said)?;
     let line = store::append_approval(project_id, request)?;
     let id = line.id().to_string();
     store::append_approval(
@@ -258,6 +255,14 @@ pub fn approve_by_message(project_id: &str, request: ApprovalLine, said: u64) ->
         },
     )?;
     Ok(id)
+}
+
+/// Refuse unless `said` is an owner message of the manager's running turn.
+pub fn check_owner_said(project_id: &str, said: u64) -> Result<()> {
+    let manager = ManagerDir::existing(project_id)?
+        .context("the project has no manager, so no owner message")?;
+    super::manager::owner_said_in_turn(&manager.read_log()?, said)
+        .map_err(|why| anyhow::anyhow!("--owner-said {said}: {why}; nothing was run"))
 }
 
 fn decide(
