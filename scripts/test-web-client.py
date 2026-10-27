@@ -1622,9 +1622,9 @@ capabilities = ["terminal_view"]
             'old-long-turn': (old_record('user', 'old-question', None, 'the long task')
                               + old_record('assistant', 'old-answer', 'old-question', [{'type': 'text', 'text': 'starting'}])
                               + steps + old_record('assistant', 'newest', 'result-9', [{'type': 'text', 'text': 'the task is done'}]),
-                              # ^ After the next message the newest MiB holds a person message, so the long turn
-                              # before it is older than the read and not shown.
-                              [('user', 'the long task'), ('assistant', 'starting')], False),
+                              # ^ After the next message the newest MiB holds a person message, but the chain goes
+                              # on before it: the read goes back 4 MiB once, so the long turn before it still shows.
+                              [('user', 'the long task'), ('assistant', 'starting')], True),
         }
         for name, (content, head, kept) in fixtures.items():
             (work / (name + '.jsonl')).write_text(content)
