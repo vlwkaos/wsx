@@ -1,4 +1,5 @@
-//! A failed deploy keeps the end of its output, and `wsx task deployed` shows it
+//! A failed deploy keeps the end of its output, and `wsx task deployed` shows it once its
+//! detached run ends
 //! (docs/tasks.md "Deploy and release"). Drives the public CLI on an isolated HOME and
 //! state; a deploy needs no wsxd.
 
@@ -7,6 +8,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
+    time::{Duration, Instant},
 };
 
 struct Fixture {
@@ -98,18 +100,28 @@ fn a_failed_deploy_shows_the_end_of_its_output() {
     let fixture = Fixture::new("seq 1 60; echo deploy broke here >&2; exit 3");
     let tip = fixture.git(&["rev-parse", "main"]);
 
+    // ^ A deploy by hand answers that it started; its detached run records the result.
     let deploy = fixture.wsx(&["task", "deploy", "-p", "demo", "--json"]);
-    assert!(!deploy.status.success(), "{deploy:?}");
-    let stderr = String::from_utf8_lossy(&deploy.stderr);
-    assert!(stderr.contains("deploy broke here"), "{stderr}");
-    let record: Value = serde_json::from_slice(&deploy.stdout).expect("deploy JSON");
-    assert_eq!(record["exit"], 3, "{record}");
+    assert!(deploy.status.success(), "{deploy:?}");
+    let started: Value = serde_json::from_slice(&deploy.stdout).expect("deploy JSON");
+    assert_eq!(started["started"], true, "{started}");
+    assert_eq!(started["commit"], tip.as_str(), "{started}");
 
-    let deployed = fixture.wsx(&["task", "deployed", "-p", "demo", "--json"]);
-    assert!(deployed.status.success(), "{deployed:?}");
-    let status: Value = serde_json::from_slice(&deployed.stdout).expect("deployed JSON");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        let deployed = fixture.wsx(&["task", "deployed", "-p", "demo", "--json"]);
+        assert!(deployed.status.success(), "{deployed:?}");
+        let status: Value = serde_json::from_slice(&deployed.stdout).expect("deployed JSON");
+        if status["deploy"]["failed_since"] == 1 {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the deploy was not recorded: {status}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
     let deploy = &status["deploy"];
-    assert_eq!(deploy["failed_since"], 1, "{status}");
     assert_eq!(deploy["failed"]["commit"], tip.as_str(), "{status}");
     assert_eq!(deploy["failed"]["exit"], 3, "{status}");
     // ^ The last 40 lines: stdout's end, then stderr.
