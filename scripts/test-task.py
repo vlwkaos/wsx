@@ -264,6 +264,10 @@ def run(wsx, wsxd, work, owned):
             assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
+    def configure(text, message):
+        (project / 'wsx.config.yml').write_text(text)
+        git('commit', '-q', '-am', message)
+
     git('init', '-q', '-b', 'main')
     assert os.path.realpath(git('rev-parse', '--show-toplevel')) == os.path.realpath(project), 'fixture git escaped'
     (project / 'wsx.config.yml').write_text(CONFIG)
@@ -795,8 +799,7 @@ def run(wsx, wsxd, work, owned):
         wait_closed(n)
     # Two lands rebase onto one tip; the check slot runs p's checks first, so q's checks end
     # after p landed and main moved: q rebases and checks again by itself and lands.
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  checks:\n', '  checks:\n    - "sleep 1"\n'))
-    git('commit', '-q', '-am', 'slow checks')
+    configure(LAND_CONFIG.replace('  checks:\n', '  checks:\n    - "sleep 1"\n'), 'slow checks')
     p, q = (js('task', 'new', 'WORK %s.txt' % name)['id'] for name in ('p', 'q'))
     for n in (p, q):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', show(n)
@@ -818,8 +821,7 @@ def run(wsx, wsxd, work, owned):
     # step, its Human Verify items join the To check list, and a landing that conflicts lands by
     # itself after the worker's fix. With main not checked out, the ref moves with the old tip
     # as guard.
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', ''))
-    git('commit', '-q', '-am', 'auto land')
+    configure(LAND_CONFIG.replace('  land: { auto: false }\n', ''), 'auto land')
 
     def reviewed(n):
         """Wait for a ready task that stays ready, and land it as the manager's review would."""
@@ -877,9 +879,8 @@ def run(wsx, wsxd, work, owned):
     assert stored.parent.stat().st_mode & 0o777 == 0o700, oct(stored.parent.stat().st_mode)
     js('task', 'check', 'pass', kept[0]['id'])
     # No checks: nothing proves the work, so a ready task waits for a land by hand.
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', '').replace(
-        '  checks:\n    - "test ! -e broken.txt"\n', ''))
-    git('commit', '-q', '-am', 'no checks')
+    configure(LAND_CONFIG.replace('  land: { auto: false }\n', '').replace(
+        '  checks:\n    - "test ! -e broken.txt"\n', ''), 'no checks')
     unchecked = js('task', 'new', 'WORK n.txt')['id']
     assert wait_state(unchecked, 'ready', 'landed', 'failed')['state'] == 'ready'
     time.sleep(1)
@@ -909,8 +910,7 @@ def run(wsx, wsxd, work, owned):
         wait_closed(n)
     # ^ No checks prove the fix, so it waits ready; it has no commits and closes plainly.
     js('task', 'close', fix)
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
-    git('commit', '-q', '-am', 'land by hand')
+    configure(LAND_CONFIG, 'land by hand')
 
     # 17. Deploy and release records. Each runs in a temporary copy of a default-branch commit.
     mark('17')
@@ -939,12 +939,11 @@ def run(wsx, wsxd, work, owned):
 
     unset = cli('task', 'deploy', ok=False)
     assert 'tasks.deploy.command is not set' in unset.stderr and 'nothing was run' in unset.stderr
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG + '''  deploy:
+    configure(LAND_CONFIG + '''  deploy:
     command: 'printf "%s %s\\n" "$WSX_DEPLOY_COMMIT" "$(pwd)" >> ../deploy.log'
   release:
     command: 'seq 1 60; echo release broke here >&2; exit 3'
-''')
-    git('commit', '-q', '-am', 'deploy config')
+''', 'deploy config')
     assert js('task', 'deployed')['deploy']['commit'] is None
     # Open items stop only public output: a release, and a deploy marked public.
     refused = cli('task', 'release', '--json', ok=False)
@@ -1009,12 +1008,11 @@ def run(wsx, wsxd, work, owned):
 
     # 20. The manager: started by the first say, answers from the ledger, acts through wsx task.
     mark('20')
-    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text()
-                                            + '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, '
-                                              'rotateTokens: 100000 }\n'
-                                            + '  skills: owner\n  workflow:\n    build: "Run the fixture rule."\n'
-                                              '    review: "Check the fixture rule."\n    batch: "Fold the fixture tasks."\n')
-    git('commit', '-q', '-am', 'manager config')
+    configure((project / 'wsx.config.yml').read_text()
+              + '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, '
+                'rotateTokens: 100000 }\n'
+              + '  skills: owner\n  workflow:\n    build: "Run the fixture rule."\n'
+                '    review: "Check the fixture rule."\n    batch: "Fold the fixture tasks."\n', 'manager config')
     # ^ The owner's skills folder: the manager gets it as the `owner` plugin.
     owner_skills = home / '.claude/skills'
     (owner_skills / 'scribe').mkdir(parents=True)
@@ -1183,9 +1181,7 @@ def run(wsx, wsxd, work, owned):
     # started while the command runs, a second one is refused, and the result is recorded and
     # becomes an event.
     release_config = (project / 'wsx.config.yml').read_text()
-    (project / 'wsx.config.yml').write_text(
-        LAND_CONFIG + "  release:\n    command: 'sleep 6; echo released >> ../long-release.log'\n    approve: false\n")
-    git('commit', '-q', '-am', 'long release')
+    configure(LAND_CONFIG + "  release:\n    command: 'sleep 6; echo released >> ../long-release.log'\n    approve: false\n", 'long release')
     long_tip = git('rev-parse', 'main')
     records_before = len(deploy_records())
     started = js('task', 'say', 'RUN wsx task release -p demo --json')
@@ -1205,8 +1201,7 @@ def run(wsx, wsxd, work, owned):
     assert js('task', 'ledger')['deploys']['release']['commit'] == long_tip
     wait(lambda: events_with('release of %s succeeded after 6 s' % long_tip[:12]), 'the release event')
     wait(deploy_lock_free, 'the deploy lock')
-    (project / 'wsx.config.yml').write_text(release_config)
-    git('commit', '-q', '-am', 'release as before')
+    configure(release_config, 'release as before')
     # ^ The close events of the tasks above may still run a turn: SLOW must start its own.
     def manager_idle():
         entries = manager_entries()
@@ -1276,8 +1271,7 @@ def run(wsx, wsxd, work, owned):
     cli('session', 'delete', 'task-manager', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
-    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace('model: fake-manager, ', ''))
-    git('commit', '-q', '-am', 'default manager model')
+    configure((project / 'wsx.config.yml').read_text().replace('model: fake-manager, ', ''), 'default manager model')
     state_file = manager_log.parent / 'state.json'
     older = json.loads(state_file.read_text())
     assert older['agent_session'] and older.pop('instructions'), older
@@ -1340,9 +1334,8 @@ def run(wsx, wsxd, work, owned):
     assert 'owner was asked' not in reply_to(landed_alone['id'])['text'] and main_has('free.txt')
     wait_closed(free)
     wait(lambda: events_with('#%d landed' % free, 'memo: landing brings it'), 'the land event carries the memo')
-    (project / 'wsx.config.yml').write_text((project / 'wsx.config.yml').read_text().replace(
-        '  land: { auto: false }\n', '  land: { auto: false, approve: true }\n'))
-    git('commit', '-q', '-am', 'land asks')
+    configure((project / 'wsx.config.yml').read_text().replace(
+        '  land: { auto: false }\n', '  land: { auto: false, approve: true }\n'), 'land asks')
     ap = js('task', 'new', 'WORK ap.txt')['id']
     assert wait_state(ap, 'ready', 'failed')['state'] == 'ready'
     asked = js('task', 'say', 'RUN wsx task land %d -p demo --json' % ap)
@@ -1457,9 +1450,8 @@ def run(wsx, wsxd, work, owned):
     mark('25')
     # its output, at most twice, then the task fails as before.
     fixable = 'test -f fixed.txt || { echo "WORK fixed.txt"; exit 1; }'
-    (project / 'wsx.config.yml').write_text(CONFIG.replace('    - "test -f a.txt"\n    - "test ! -e broken.txt"\n',
-                                                           '    - %s\n' % json.dumps(fixable)))
-    git('commit', '-q', '-am', 'fixable check')
+    configure(CONFIG.replace('    - "test -f a.txt"\n    - "test ! -e broken.txt"\n',
+              '    - %s\n' % json.dumps(fixable)), 'fixable check')
     f = js('task', 'new', 'WORK retry1.txt')['id']
     fixed = wait_state(f, 'ready', 'failed')
     assert fixed['state'] == 'ready' and fixed['revision'] == 2, fixed
@@ -1467,9 +1459,8 @@ def run(wsx, wsxd, work, owned):
     assert [(e['revision'], e['attempt'], e['commands']) for e in retries] == [(1, 1, [fixable])], retries
     retry_message = next(t['message'] for t in traces() if fixable in t.get('message', ''))
     assert '(automatic retry 1 of 2)' in retry_message and fixable in retry_message and 'WORK fixed.txt' in retry_message
-    (project / 'wsx.config.yml').write_text(CONFIG.replace('    - "test -f a.txt"\n    - "test ! -e broken.txt"\n',
-                                                           '    - "echo stays broken; exit 3"\n'))
-    git('commit', '-q', '-am', 'broken check')
+    configure(CONFIG.replace('    - "test -f a.txt"\n    - "test ! -e broken.txt"\n',
+              '    - "echo stays broken; exit 3"\n'), 'broken check')
     b = js('task', 'new', 'WORK retry2.txt')['id']
     broken = wait_state(b, 'failed', 'ready')
     assert broken['state'] == 'failed' and broken['revision'] == 3, broken
@@ -1483,8 +1474,7 @@ def run(wsx, wsxd, work, owned):
     # 26. A host follows a replaced wsx binary (docs/tasks.md "Host"): the next turn execs the
     mark('26')
     # new file in the same process, which resumes the agent with the new launch.
-    (project / 'wsx.config.yml').write_text(CONFIG.split('  checks:')[0])
-    git('commit', '-q', '-am', 'no checks')
+    configure(CONFIG.split('  checks:')[0], 'no checks')
     moved = work / 'moved'
     moved.mkdir(mode=0o700)
     shutil.copy2(wsx, moved / 'wsx')
@@ -1518,10 +1508,9 @@ def run(wsx, wsxd, work, owned):
     mark('27')
     # as after its result; any other command is refused (docs/tasks.md "Checks, revisions and report").
     # `tasks.env` reaches the worker and every check run, so both build with the same settings.
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace(
+    configure(LAND_CONFIG.replace(
         '    - "test ! -e broken.txt"\n', '    - "test ! -e broken.txt"\n    - "test \\"$TASK_PROBE\\" = \\"a b\\""\n'
-    ) + '  env: { TASK_PROBE: "a b" }\n')
-    git('commit', '-q', '-am', 'two checks')
+    ) + '  env: { TASK_PROBE: "a b" }\n', 'two checks')
     cr = js('task', 'new', 'CHECKRUN WORK cr.txt')['id']
     assert wait_state(cr, 'ready', 'failed')['state'] == 'ready'
     ran = next(t for t in traces() if 'check_run' in t)
@@ -1536,8 +1525,7 @@ def run(wsx, wsxd, work, owned):
     assert 'WSX_TASK_BROKER' in worker_launch['wsx_env'], worker_launch['wsx_env']
     js('task', 'close', cr, '--discard')
     # Below tasks.minFreeGb a task waits, says why, and goes on by itself without a retry.
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('minFreeGb: 0', 'minFreeGb: 100000'))
-    git('commit', '-q', '-am', 'no disk')
+    configure(LAND_CONFIG.replace('minFreeGb: 0', 'minFreeGb: 100000'), 'no disk')
     dw = js('task', 'new', 'WORK dw.txt')['id']
     waiting = wait(lambda: (current := show(dw))['state'] == 'waiting' and current['record'].get('waiting') and current,
                    'disk wait')
@@ -1545,8 +1533,7 @@ def run(wsx, wsxd, work, owned):
     assert any(e['kind'] == 'disk_wait' for e in log(dw))
     row = next(r for r in js('task', 'ledger')['open'] if r['id'] == dw)
     assert row['waiting']['on'] == 'disk', row
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
-    git('commit', '-q', '-am', 'disk back')
+    configure(LAND_CONFIG, 'disk back')
     wait(lambda: show(dw)['state'] == 'ready', 'resumed after disk', 60)
     assert 'waiting' not in show(dw)['record'] and not any(e['kind'] == 'check_retry' for e in log(dw))
     js('task', 'close', dw, '--discard')
@@ -1554,11 +1541,10 @@ def run(wsx, wsxd, work, owned):
     # 28. A land deploys by itself with tasks.deploy.auto; deploys run one at a time and a
     mark('28')
     # deploy that waited runs for the newest commit, so quick lands skip the ones between.
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG + """  deploy:
+    configure(LAND_CONFIG + """  deploy:
     command: 'sleep 8; echo "$WSX_DEPLOY_COMMIT" >> ../auto-deploy.log'
     auto: true
-""")
-    git('commit', '-q', '-am', 'deploy after land')
+""", 'deploy after land')
     quick = [js('task', 'new', 'WORK d%d.txt' % i)['id'] for i in range(3)]
     for n in quick:
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
@@ -1584,11 +1570,10 @@ def run(wsx, wsxd, work, owned):
     (bin_dir / 'tailscale').write_text('#!/bin/sh\necho "$@" >> ' + str(tailscale_log) + '\n'
                                        'if [ "$1" = status ]; then echo \'{"Self":{"DNSName":"host.example.ts.net."}}\'; fi\n')
     (bin_dir / 'tailscale').chmod(0o755)
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG + """  preview:
+    configure(LAND_CONFIG + """  preview:
     command: 'exec python3 -m http.server "$PORT" --bind 127.0.0.1'
     ports: 9150-9199
-""")
-    git('commit', '-q', '-am', 'preview')
+""", 'preview')
     pv = js('task', 'new', 'WORK pv.txt')['id']
     assert wait_state(pv, 'ready', 'failed')['state'] == 'ready'
 
@@ -1611,8 +1596,7 @@ def run(wsx, wsxd, work, owned):
     again = js('task', 'preview', pv)['port']
     js('task', 'close', pv, '--discard')
     assert not answers(again) and tailscale_log.read_text().count('--https=%d off' % again) >= 1
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
-    git('commit', '-q', '-am', 'no preview')
+    configure(LAND_CONFIG, 'no preview')
     plain = js('task', 'new', 'WORK plain.txt')['id']
     assert wait_state(plain, 'ready', 'failed')['state'] == 'ready'
     assert 'configures no tasks.preview' in cli('task', 'preview', plain, ok=False).stderr
@@ -1622,8 +1606,7 @@ def run(wsx, wsxd, work, owned):
     mark('30')
     # working copy with a fork of the worker's conversation; nothing else writes there until
     # handback, whose commits are checked and, once reviewed, land and close the task.
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', ''))
-    git('commit', '-q', '-am', 'auto land for hand')
+    configure(LAND_CONFIG.replace('  land: { auto: false }\n', ''), 'auto land for hand')
     gate = work / 'hand-gate'
     handed = js('task', 'new', 'WAIT %s WORK late.txt' % gate)['id']
     hand_copy = Path(show(handed)['record']['working_copy'])
@@ -1691,8 +1674,7 @@ def run(wsx, wsxd, work, owned):
     # ^ The fork wrote its own transcript; the worker's is as it was.
     assert hashlib.sha256(worker_transcript.read_bytes()).hexdigest() == before
     assert any(path.name.startswith('fork-') for path in (home / '.claude/fake-sessions').iterdir())
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
-    git('commit', '-q', '-am', 'land by hand again')
+    configure(LAND_CONFIG, 'land by hand again')
 
     # 31. `wsx worktree delete` refuses uncommitted work before it closes anything, ignores
     mark('31')
@@ -1728,13 +1710,12 @@ def run(wsx, wsxd, work, owned):
     mark('32')
     # pipeline work lands; its trial puts the rebased revision on the live site, holds the
     # default branch's deploys, and ends on Pass (it lands), End, or a message to the worker.
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  land: { auto: false }\n', '') + """  deploy:
+    configure(LAND_CONFIG.replace('  land: { auto: false }\n', '') + """  deploy:
     command: 'echo "$WSX_DEPLOY_COMMIT" >> ../trial-deploy.log'
     auto: true
   release:
     command: 'echo released >> ../trial-release.log'
-""")
-    git('commit', '-q', '-am', 'hold and trial')
+""", 'hold and trial')
     live_log = base / 'trial-deploy.log'
 
     def live():
@@ -1808,14 +1789,12 @@ def run(wsx, wsxd, work, owned):
     js('task', 'hold', other_held, '--off')
     assert 'hold' not in show(other_held)['record']
     js('task', 'close', other_held, '--discard')
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
-    git('commit', '-q', '-am', 'no trial')
+    configure(LAND_CONFIG, 'no trial')
 
     # 32b. A wsx older than its config (docs/tasks.md "Config"): unknown keys at any level are
     mark('32b')
     # ignored with one warning that names them, so the ledger, a new task and its land work.
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG + '  futureSetting: { on: true }\nfutureTop: 1\n')
-    git('commit', '-q', '-am', 'a newer config')
+    configure(LAND_CONFIG + '  futureSetting: { on: true }\nfutureTop: 1\n', 'a newer config')
     warned = cli('task', 'ledger', '--json')
     assert 'unknown keys ignored: tasks.futureSetting, futureTop' in warned.stderr and 'wsx.config.yml' in warned.stderr, warned.stderr
     # ^ The TUI shows it as the project notice, not on stderr over its screen.
@@ -1828,8 +1807,7 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(newer, 'ready', 'failed')['state'] == 'ready'
     assert land(newer)['ok'] and main_has('newer.txt')
     wait_closed(newer)
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
-    git('commit', '-q', '-am', 'config as before')
+    configure(LAND_CONFIG, 'config as before')
     # 32c. The check slot (docs/tasks.md "Checks, revisions and report"): one check run at a
     mark('32c')
     # time on the machine. The run that waits shows queued; a killed holder frees the slot.
@@ -1847,9 +1825,8 @@ def run(wsx, wsxd, work, owned):
         'mark("end")\n' % (str(spans), str(release)))
 
     def slot_config(seconds):
-        (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace(
-            '"test ! -e broken.txt"', '"%s %s %d"' % (sys.executable, slot_check, seconds)))
-        git('commit', '-q', '-am', 'slot checks %d' % seconds)
+        configure(LAND_CONFIG.replace(
+            '"test ! -e broken.txt"', '"%s %s %d"' % (sys.executable, slot_check, seconds)), 'slot checks %d' % seconds)
 
     def slot_marks():
         marks = {}
@@ -1922,8 +1899,7 @@ def run(wsx, wsxd, work, owned):
     assert len(starts) == 2, spans.read_text()
     for n in (holder, again):
         js('task', 'close', n, '--discard')
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
-    git('commit', '-q', '-am', 'no slot checks')
+    configure(LAND_CONFIG, 'no slot checks')
 
     # 32b. Checks run once per tree (docs/tasks.md "Checks, revisions and report", "Landing"): a
     # repeat check-run on the same clean tree runs nothing, a land with an unmoved main runs no
@@ -1950,8 +1926,7 @@ def run(wsx, wsxd, work, owned):
     # bare check-run or after a result; the worker's instructions list it.
     mark('32s')
     scenario_log = base / 'scenario.log'
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG + '  scenarios:\n    probe: echo scenario-ran >> %s\n' % scenario_log)
-    git('commit', '-q', '-am', 'a scenario')
+    configure(LAND_CONFIG + '  scenarios:\n    probe: echo scenario-ran >> %s\n' % scenario_log, 'a scenario')
     scenario = js('task', 'new', 'CHECKRUN_WITH probe WORK scenario.txt')['id']
     assert wait_state(scenario, 'ready', 'failed')['state'] == 'ready'
     named, bare = next(t for t in traces() if 'check_run_with' in t)['check_run_with']
@@ -1965,8 +1940,7 @@ def run(wsx, wsxd, work, owned):
     # the answer in one turn, and only its next result runs the checks.
     mark('32t')
     late_gate = base / 'late-gate'
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n' % late_gate)
-    git('commit', '-q', '-am', 'a slow scenario')
+    configure(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n' % late_gate, 'a slow scenario')
     late = js('task', 'new', 'CHECKRUN_LATE slow WORK late.txt')['id']
     wait(lambda: kinds(late, 'result'), 'the result before the answer', 30)
     time.sleep(1)
@@ -1981,8 +1955,7 @@ def run(wsx, wsxd, work, owned):
     # background notice) is answered by those checks: one result, one run, one revision.
     mark('32u')
     gate_open = base / 'gate-open'
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('"test ! -e broken.txt"', '"while [ ! -e %s ]; do sleep 0.2; done"' % gate_open))
-    git('commit', '-q', '-am', 'a slow gate')
+    configure(LAND_CONFIG.replace('"test ! -e broken.txt"', '"while [ ! -e %s ]; do sleep 0.2; done"' % gate_open), 'a slow gate')
     twice = js('task', 'new', 'REPEAT WORK twice.txt')['id']
     wait(lambda: kinds(twice, 'result') == ['result'] * 2, 'the repeated result', 30)
     assert show(twice)['state'] == 'checking', show(twice)
@@ -1991,21 +1964,18 @@ def run(wsx, wsxd, work, owned):
     time.sleep(1)
     assert kinds(twice, 'checks', 'revision') == ['checks', 'revision'], log(twice)
     js('task', 'close', twice, '--discard')
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
-    git('commit', '-q', '-am', 'no scenario')
+    configure(LAND_CONFIG, 'no scenario')
     # 32d. The disk queue (docs/tasks.md "Checks, revisions and report"): tasks that wait for
     mark('32d')
     # disk resume one at a time, oldest first, so they do not fill the freed space at once.
     release.unlink()
     slot_config(120)
     roomy = (project / 'wsx.config.yml').read_text()
-    (project / 'wsx.config.yml').write_text(roomy.replace('minFreeGb: 0', 'minFreeGb: 100000'))
-    git('commit', '-q', '-am', 'no disk for two')
+    configure(roomy.replace('minFreeGb: 0', 'minFreeGb: 100000'), 'no disk for two')
     older, newer = [js('task', 'new', 'WORK disk%d.txt' % i)['id'] for i in (1, 2)]
     for n in (older, newer):
         wait(lambda: (show(n)['record'].get('waiting') or {}).get('on') == 'disk', 't%s disk wait' % n)
-    (project / 'wsx.config.yml').write_text(roomy)
-    git('commit', '-q', '-am', 'disk for one at a time')
+    configure(roomy, 'disk for one at a time')
     # ^ The older one's checks run until `release`; the newer one waits for its turn.
     wait(lambda: show(older)['state'] in ('working', 'checking'), 'the older disk wait resumed', 45)
     queued = wait(lambda: (w := show(newer)['record'].get('waiting') or {}).get('reason', '').startswith('queued') and w,
@@ -2018,8 +1988,7 @@ def run(wsx, wsxd, work, owned):
                 'the newer disk wait resumed', 60)['state'] == 'ready'
     for n in (older, newer):
         js('task', 'close', n, '--discard')
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
-    git('commit', '-q', '-am', 'disk as before')
+    configure(LAND_CONFIG, 'disk as before')
     # 32e. Approval from the owner's words (docs/tasks.md "Approvals"): in a turn that began with
     # an owner message, the manager names that message and the action runs without a new request;
     # approvals.jsonl records it as approved by that message, and no event repeats it. A message
@@ -2068,9 +2037,7 @@ def run(wsx, wsxd, work, owned):
     wait_closed(item_task)
     open_ids = [i['id'] for i in js('task', 'check')['open']]
     assert open_ids, js('task', 'check')
-    (project / 'wsx.config.yml').write_text(
-        LAND_CONFIG + "  release:\n    command: 'echo released >> ../said-release.log'\n    approve: true\n")
-    git('commit', '-q', '-am', 'release config')
+    configure(LAND_CONFIG + "  release:\n    command: 'echo released >> ../said-release.log'\n    approve: true\n", 'release config')
     refused = cli('task', 'release', ok=False).stderr
     assert 'item(s) to check are open' in refused and 'Nothing was run' in refused, refused
     asked = js('task', 'say', 'release\nRUN wsx task release --owner-said OWNER_SAID -p demo')
@@ -2079,8 +2046,7 @@ def run(wsx, wsxd, work, owned):
     wait(lambda: (base / 'said-release.log').exists() and deploy_lock_free(), 'the release the owner asked for')
     assert (base / 'said-release.log').read_text() == 'released\n'
     assert [i['id'] for i in js('task', 'check')['open']] == open_ids
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
-    git('commit', '-q', '-am', 'release as before')
+    configure(LAND_CONFIG, 'release as before')
     # 32g. A plan first (docs/tasks.md "Workflow"): the first turn of a `--plan` task is told to
     # plan and stop; its result runs no check and waits on plan for the manager, and an add
     # continues it as an ordinary task.
@@ -2107,8 +2073,7 @@ def run(wsx, wsxd, work, owned):
         (bin_dir / 'claude').write_text('#!/bin/sh\nif [ -n "$REAL_CLAUDE" ]; then HOME=%s exec %s "$@"; fi\n%s'
                                         % (json.dumps(str(Path.home())), json.dumps(os.path.realpath(real)),
                                            fake.read_text().split('\n', 1)[1]))
-        (project / 'wsx.config.yml').write_text(LAND_CONFIG + '  env: { REAL_CLAUDE: "1" }\n')
-        git('commit', '-q', '-am', 'real claude')
+        configure(LAND_CONFIG + '  env: { REAL_CLAUDE: "1" }\n', 'real claude')
         (base / 'project-t998').mkdir()
         tip = git('rev-parse', 'main')
         spec_file, answer = probe_files(next_task())
@@ -2129,8 +2094,7 @@ def run(wsx, wsxd, work, owned):
         (base / 'project-t998').rmdir()
         js('task', 'close', auto, '--discard')
         fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(fake_script) + ' "$@"\n')
-        (project / 'wsx.config.yml').write_text(LAND_CONFIG)
-        git('commit', '-q', '-am', 'fake claude')
+        configure(LAND_CONFIG, 'fake claude')
 
     # 32h. A dirty main checkout (docs/tasks.md "Landing"): a changed file the land does not
     # touch stays dirty and the land goes on; one the land changes too refuses it, naming only
@@ -2161,9 +2125,7 @@ def run(wsx, wsxd, work, owned):
     mark('32o')
     # "Checks, revisions and report"): the worker gets its exit code and the end of its output,
     # whose first line names the log in the task folder that holds all of it.
-    (project / 'wsx.config.yml').write_text(
-        LAND_CONFIG + '  scenarios:\n    loud: yes check-line | head -c 4000000; echo loud-end; exit 3\n')
-    git('commit', '-q', '-am', 'a loud scenario')
+    configure(LAND_CONFIG + '  scenarios:\n    loud: yes check-line | head -c 4000000; echo loud-end; exit 3\n', 'a loud scenario')
     loud = js('task', 'new', 'CHECKRUN_WITH loud WORK loud.txt')['id']
     assert wait_state(loud, 'ready', 'failed')['state'] == 'ready'
     code, said = [t for t in traces() if 'check_run_with' in t][-1]['check_run_with'][0]
@@ -2173,8 +2135,7 @@ def run(wsx, wsxd, work, owned):
     whole = Path(show(loud)['log']).parent / 'check-run-2.log'
     assert cut and os.path.samefile(cut.group(2), whole) and whole.stat().st_size == 4000000 + len('loud-end\n'), said[:300]
     js('task', 'close', loud, '--discard')
-    (project / 'wsx.config.yml').write_text(LAND_CONFIG)
-    git('commit', '-q', '-am', 'no loud scenario')
+    configure(LAND_CONFIG, 'no loud scenario')
 
     # 32p. A turn with no result (docs/tasks.md "Claude adapter"): Claude's own 0-token turn for
     mark('32p')
