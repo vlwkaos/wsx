@@ -50,7 +50,10 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // (docs/daemon-live-upgrade.md "Exited panes", "A failed handoff").
 // Revision 33 types a message into a working Claude for its next step, outside any exchange
 // (`AgentSteer`, capability `agent_steer`; docs/agent-orchestration.md "Steer").
-pub const DAEMON_REVISION: u32 = 33;
+// Revision 34: a resumed agent that quits leaves a shell that takes typed keys: its supervisor
+// resets the agent's screen and keyboard modes and opens the shell also when the agent's record
+// cannot be cleared (docs/agent-orchestration.md "Resumed agents").
+pub const DAEMON_REVISION: u32 = 34;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 

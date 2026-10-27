@@ -10,11 +10,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use wsx_core::runtime::{
-    binary_identity, AgentCapabilities, AgentState, Client, EventMonitor, EventSignal, PaneId,
-    ProjectSpec, RawTerminalStream, ReplacementBlocker, ReplacementDisposition, Request, Response,
-    TerminalClientMessage, TerminalRawServerMessage, TerminalServerMessage, TerminalStream,
-    TerminalUpdate, TuiClientPresence, WorktreeSpec, DAEMON_REVISION, PROTOCOL_VERSION,
-    WSX_VERSION,
+    binary_identity, AgentCapabilities, AgentState, Client, EventMonitor, EventSignal, KeyCode,
+    KeyEvent, PaneId, ProjectSpec, RawTerminalStream, ReplacementBlocker, ReplacementDisposition,
+    Request, Response, TerminalClientMessage, TerminalRawServerMessage, TerminalServerMessage,
+    TerminalStream, TerminalUpdate, TuiClientPresence, WorktreeSpec, DAEMON_REVISION,
+    PROTOCOL_VERSION, WSX_VERSION,
 };
 
 static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
@@ -1062,6 +1062,49 @@ fn a_failed_handoff_keeps_its_reason() {
     assert!(!pane_exited(&client, panes[0]));
     let stream = TerminalStream::connect(&client, panes[0], 202, true, 12, 60).unwrap();
     frame_text(&stream, "pid=[");
+    drop(stream);
+    client.shutdown().unwrap();
+    wait_for_socket_removal(&fixture.socket);
+}
+
+// docs/agent-orchestration.md: when a resumed agent quits, its supervisor opens a shell in
+// the same pane. Clearing the agent's record first can fail (a stale runtime generation, a
+// full disk), and the agent can quit in its alternate screen with its keyboard modes on;
+// the pane must still get a shell that takes typed keys, not a dead or empty screen.
+#[test]
+fn a_resumed_agent_that_quits_leaves_a_usable_shell() {
+    let mut fixture = Fixture::new();
+    let binary = fixture.wsxd();
+    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
+    wait_for_socket(&fixture.socket);
+    let client = Client::new(fixture.socket.clone());
+    let command = format!(
+        "SHELL=/bin/sh WSX_RUNTIME_GENERATION=stale exec '{}' __wsx_resume_supervisor /bin/sh -c 'printf \"agent-quit\\033[?1049h\\033[>31u\\033[?1000h\"'",
+        binary.display()
+    );
+    let pane = sessions(&client, "resume", &[("agent", &command)])[0];
+    let stream = TerminalStream::connect(&client, pane, 300, true, 12, 60).unwrap();
+    // Keys as the TUI sends them: the pane's emulator encodes them in its current modes.
+    let key = |code, text: &str| {
+        TerminalClientMessage::Key(KeyEvent {
+            code,
+            text: text.into(),
+            shift: false,
+            control: false,
+            alt: false,
+            super_key: false,
+            repeat: false,
+        })
+    };
+    thread::sleep(Duration::from_millis(500));
+    for character in "echo shell-$((40+2))".chars() {
+        stream
+            .try_send(key(KeyCode::Text, &character.to_string()))
+            .unwrap();
+    }
+    stream.try_send(key(KeyCode::Enter, "")).unwrap();
+    frame_text(&stream, "shell-42");
+    assert!(!pane_exited(&client, pane));
     drop(stream);
     client.shutdown().unwrap();
     wait_for_socket_removal(&fixture.socket);

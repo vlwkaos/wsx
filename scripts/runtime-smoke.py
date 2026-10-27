@@ -1501,7 +1501,18 @@ def wait_for(test, label, seconds=10):
     raise AssertionError(label)
 
 
+for leftover in call("snapshot")["data"]["sessions"]:
+    assert call("session_close", {"session_id": leftover["id"],
+                                  "expected_revision": leftover["revision"]})["type"] == "ack"
 cursor_sessions = {label: cursor_session(label) for label in ("keep-a", "keep-b", "keep-c")}
+
+
+def settled_cursor():
+    # ^ The TUI applies a snapshot within about a second of the event and writes a changed
+    # cursor to its cache then.
+    time.sleep(2.5)
+    drain_tui()
+    return cursor_terminal()
 tui_master, tui_slave = os.openpty()
 fcntl.ioctl(tui_slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
 tui = subprocess.Popen([str(WSX)], cwd=PROJECT, env={k: v for k, v in env.items() if k != "WSX_PANE_ID"},
@@ -1523,13 +1534,25 @@ def drain_tui():
 
 try:
     # The last row is keep-c, the newest session.
-    deadline = time.monotonic() + 15
-    while cursor_terminal() != cursor_sessions["keep-c"][0] and time.monotonic() < deadline:
-        os.write(tui_master, b"j")
-        drain_tui()
-        time.sleep(0.1)
-    assert cursor_terminal() == cursor_sessions["keep-c"][0], CURSOR_CACHE.read_text()
+    wait_for(lambda: drain_tui() or b"keep-c" in tui_screen, "the TUI did not show keep-c")
+    os.write(tui_master, b"j" * 12)
+    wait_for(lambda: drain_tui() or cursor_terminal() == cursor_sessions["keep-c"][0],
+             "the cursor did not reach keep-c")
     viewed = cursor_sessions["keep-c"][0]
+
+    def viewed_shell_answers(marker, value):
+        # ^ The shell's answer, not the typed line, on the TUI's screen: the screen is still
+        # the viewed pane, and keys still reach it. Keys typed while the stream reattaches
+        # are dropped, so the line is typed again until it is answered.
+        time.sleep(2.5)
+        answer = f"{marker}-{40 + value}".encode()
+        deadline = time.monotonic() + 20
+        while drain_tui() or answer not in tui_screen:
+            assert time.monotonic() < deadline, f"the TUI does not show the viewed shell's answer {marker}"
+            os.write(tui_master, f"echo {marker}-$((40+{value}))\r".encode())
+            time.sleep(1)
+        assert settled_cursor() == viewed, (marker, CURSOR_CACHE.read_text())
+
     # A session above the viewed one closes and a new one opens below it: the row number of
     # the viewed session changes, the session does not.
     closing = next(item for item in call("snapshot")["data"]["sessions"]
@@ -1537,19 +1560,17 @@ try:
     assert call("session_close", {"session_id": closing["id"],
                                   "expected_revision": closing["revision"]})["type"] == "ack"
     cursor_session("keep-d")
-    # ^ The TUI writes its cache when it applies a snapshot; keep-d on its screen says it did.
-    wait_for(lambda: drain_tui() or b"keep-d" in tui_screen, "the TUI did not show keep-d")
-    time.sleep(0.5)
-    assert cursor_terminal() == viewed, ("the cursor left the viewed session", CURSOR_CACHE.read_text())
-    # A live handoff into the same build reconnects the TUI; the cursor stays.
+    assert settled_cursor() == viewed, ("the cursor left the viewed session", cursor_sessions, CURSOR_CACHE.read_text())
+    os.write(tui_master, b"\r")
+    wait_for(lambda: drain_tui() or b"TERMINAL" in tui_screen, "the TUI did not open keep-c")
+    viewed_shell_answers("opened", 1)
+    # A live handoff into the same build reconnects the TUI; the view stays.
     epoch = call("lifecycle_status")["data"]["epoch"]
     restarted = wsx("daemon", "restart")
     assert restarted.returncode == 0, restarted
     wait_for(lambda: call("lifecycle_status")["data"]["epoch"] != epoch, "wsxd did not hand off")
     cursor_session("keep-e")
-    wait_for(lambda: drain_tui() or b"keep-e" in tui_screen, "the TUI did not show keep-e")
-    time.sleep(0.5)
-    assert cursor_terminal() == viewed, ("the cursor moved across the handoff", CURSOR_CACHE.read_text())
+    viewed_shell_answers("handed-off", 2)
 finally:
     tui.terminate()
     tui.wait(timeout=5)

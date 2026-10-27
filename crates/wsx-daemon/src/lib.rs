@@ -745,6 +745,12 @@ fn resolve_executable(cwd: &Path, executable: &str) -> Option<PathBuf> {
     })
 }
 
+/// Main screen, no kitty keyboard flags, no modifyOtherKeys, no mouse or focus reports, no
+/// bracketed paste, normal cursor keys and keypad, a visible cursor.
+const AGENT_MODES_RESET: &[u8] = b"\x1b[?1049l\x1b[=0;1u\x1b[>4;0m\
+\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\
+\x1b[?1l\x1b>\x1b[?25h";
+
 pub fn run_resume_supervisor(mut arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
     let executable = arguments.next().ok_or_else(|| {
         io::Error::new(
@@ -761,10 +767,24 @@ pub fn run_resume_supervisor(mut arguments: impl Iterator<Item = OsString>) -> i
     let signals = InteractiveSignalGuard::ignore()?;
     reset_child_interactive_signals(&mut command);
     let status = command.status()?;
+    // ^ An agent that quits can leave its alternate screen and its keyboard and mouse modes
+    // on; the shell would then get CSI u codes for typed keys and draw on a screen that
+    // goes away. Leave them as a fresh terminal has them.
+    // ref: https://sw.kovidgoyal.net/kitty/keyboard-protocol/ (CSI = 0 ; 1 u sets no flags)
+    {
+        use std::io::Write;
+        let mut out = io::stdout();
+        let _ = out.write_all(AGENT_MODES_RESET);
+        let _ = out.flush();
+    }
     if !status.success() {
         eprintln!("wsxd resumed agent exited with {status}; opening a shell");
     }
-    transition_resumed_agent_to_shell()?;
+    // ^ The shell is what the pane is for; a record wsxd could not clear (a stale runtime
+    // generation, a full disk) must not leave the pane as a dead screen.
+    if let Err(error) = transition_resumed_agent_to_shell() {
+        eprintln!("wsxd could not clear the resumed agent: {error}; opening a shell");
+    }
     let shell = std::env::var_os("SHELL").unwrap_or_else(|| OsString::from("/bin/sh"));
     let mut shell = Command::new(shell);
     // ^ A repeated Ctrl+C that ends the agent must not kill this supervisor before
