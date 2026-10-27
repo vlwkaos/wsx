@@ -7,7 +7,7 @@ import { html, Icon, keepIn, readMap, useEffect, useFollowEnd, useLayoutEffect, 
 import { can, events, leaveFor, shows, state, touch, update, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
-import { Bubble, conversation, Dots, QuietReply, StatusLine, Typing } from "./bubbles.js";
+import { Bubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
 import { QuoteChip, useReply, withQuote } from "./reply.js";
 import { TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
@@ -816,6 +816,11 @@ export function Manager({ project: id, task, page, checks }) {
   const stopped = chat && !chat.running && entries.at(-1)?.kind === "stopped";
   // ^ The manager's state only when it matters: typing or stopped (docs/web-client-tasks.md "Project screen").
   const managerWord = typing ? "typing" : stopped ? "stopped" : "";
+  const show = (row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${fresh.current.has(row.key)} />`
+    : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} text=${row.text} fresh=${fresh.current.has(row.key)} />`
+    : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} name=${names.manager} fresh=${fresh.current.has(row.key)} />`
+    : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} />`
+    : html`<${Note} key=${row.key} entry=${row.entry} />`;
   return html`
     <div class="page manager">
       <header class="bar">
@@ -835,10 +840,7 @@ export function Manager({ project: id, task, page, checks }) {
             ${cut.current ? html`<p class="note">Older messages are not shown.</p>` : null}
             ${chat && !rows.length ? html`<p class="empty">No messages yet. Ask the manager for a task or a status; it answers from the ledger.</p>` : null}
             ${earlier}
-            ${withNewLine(recent, firstNew, (row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${fresh.current.has(row.key)} />`
-              : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} text=${row.text} fresh=${fresh.current.has(row.key)} />`
-              : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} name=${names.manager} fresh=${fresh.current.has(row.key)} />`
-              : html`<${Note} key=${row.key} entry=${row.entry} />`)}
+            ${withNewLine(recent, firstNew, show)}
             ${typingShown && html`<${Typing} name=${names.manager} leaving=${!typing} />`}
           </div>
           ${away && html`<${JumpButton} unread=${unread} onClick=${toEnd} />`}

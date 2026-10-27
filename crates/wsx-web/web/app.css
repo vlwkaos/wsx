@@ -668,6 +668,17 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .reply-text { white-space: pre-line; }
 /* More keeps its 44 px hit area without making its line taller. */
 .reply-text .link-action { margin-block: calc(-1 * var(--space-3)); }
+/* A folded run of those lines: its tasks with their newest words and a count, one tap target;
+   open, its rows under it as the log spaces them (Fold in bubbles.js). */
+.fold { display: flex; flex-direction: column; gap: var(--space-3); }
+.fold-toggle {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); max-width: var(--size-prose);
+  min-height: var(--size-control); margin-block: calc(-1 * var(--space-2)); padding: var(--space-2) var(--space-1);
+  border: 0; border-radius: var(--radius-control); background: none; color: var(--color-muted); font: inherit; font-size: var(--font-size-sm); text-align: left; cursor: pointer;
+}
+.fold-task { font-variant-numeric: tabular-nums; font-weight: var(--font-weight-medium); }
+.fold-count { color: var(--color-text); font-weight: var(--font-weight-medium); }
+@media (hover: hover) { .fold-toggle:hover { background: var(--color-raised); } }
 .page-link { color: var(--color-accent); }
 /* What needs the owner and what runs, pinned over the composer: one line, a tap opens the
    decision list. */

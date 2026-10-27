@@ -53,6 +53,7 @@
   - A project in Projects opens its worktrees and their sessions, and Back returns to where you came from.
   - Inbox rows show project and worktree first and keep their order.
   - Every working state has one color, `--color-working` ([docs/web-themes.md](docs/web-themes.md) "Tokens").
+  - In the manager chat, three or more event lines and quiet manager replies in a row fold into one row. The row shows each task once with its newest state and the number of rows it hides ("#89 done  #91 done  #88 done  10 updates"). The newest event and its reply stay below it, and a tap shows or hides the rest ([docs/web-client-tasks.md](docs/web-client-tasks.md) "Project screen").
   - The home-screen icon shows split panes.
   - Modules load from `assets/<build>/`, so no cache mixes builds.
   - On a phone the terminal's Enter sits at the right of the second key row, with `^J` left of it.
