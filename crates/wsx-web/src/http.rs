@@ -10,6 +10,7 @@ use crate::{
     push::{Choices, SubscriptionInput},
     sandbox::{SandboxError, MAX_TEXT_BYTES},
     site::{Capability, Panel},
+    tasks::Scope,
     terminal, App,
 };
 use axum::{
@@ -69,8 +70,8 @@ pub fn router(app: Shared) -> Router {
             .route("/api/chat/{session}/commands", get(commands))
             .route("/api/chat/{session}/cancel", post(cancel))
             .route("/api/chat/{session}/answer", post(answer))
-            .route("/api/chat/{session}/queue/{id}", delete(queue_remove))
-            .route("/api/chat/{session}/queue/{id}/retry", post(queue_retry))
+            .route("/api/chat/{session}/queue/{id}", delete(queue_edit))
+            .route("/api/chat/{session}/queue/{id}/retry", post(queue_edit))
             .route("/api/chat/{session}/queue/{id}/steer", post(queue_steer))
             .route("/api/tasks", get(tasks_all))
             .route("/api/tasks/{project}", get(tasks_overview))
@@ -799,22 +800,17 @@ async fn send(
     })
 }
 
-async fn queue_remove(
+/// `DELETE .../queue/<id>` removes a queued message; `POST .../queue/<id>/retry` sends it
+/// again. The method tells them apart: the two routes share this handler.
+async fn queue_edit(
     State(app): State<Shared>,
     Paired(_): Paired,
+    method: Method,
     UrlPath((session, id)): UrlPath<(u64, u64)>,
 ) -> Outcome<Json<Value>> {
     need(&app, Panel::Chat)?;
-    blocking(|| app.chat.edit_queue(&app, session, id, false).map(Json))
-}
-
-async fn queue_retry(
-    State(app): State<Shared>,
-    Paired(_): Paired,
-    UrlPath((session, id)): UrlPath<(u64, u64)>,
-) -> Outcome<Json<Value>> {
-    need(&app, Panel::Chat)?;
-    blocking(|| app.chat.edit_queue(&app, session, id, true).map(Json))
+    let retry = method == Method::POST;
+    blocking(|| app.chat.edit_queue(&app, session, id, retry).map(Json))
 }
 
 // The same budget as messages: a steer is typed into the agent.
@@ -875,6 +871,24 @@ fn act_budget(app: &App, device: &Device) -> Outcome<()> {
     }
 }
 
+/// Run `work` on the project's scope: the short blocking call of a task route.
+fn with_scope<T>(app: &App, project: u64, work: impl FnOnce(&Scope) -> Outcome<T>) -> Outcome<T> {
+    blocking(|| work(&crate::tasks::scope(app, project)?))
+}
+
+/// `with_scope` for a call that may take minutes (a landing, a preview): `work` runs off
+/// the runtime workers, after the scope is found.
+async fn with_scope_long<T: Send + 'static>(
+    app: &App,
+    project: u64,
+    work: impl FnOnce(Scope) -> Outcome<T> + Send + 'static,
+) -> Outcome<T> {
+    let scope = blocking(|| crate::tasks::scope(app, project))?;
+    tokio::task::spawn_blocking(move || work(scope))
+        .await
+        .map_err(|_| Fault::new(500, "task_action", "the action stopped unexpectedly"))?
+}
+
 async fn tasks_all(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
     blocking(|| crate::tasks::overviews(&app).map(Json))
@@ -886,11 +900,7 @@ async fn tasks_overview(
     UrlPath(project): UrlPath<u64>,
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
-    blocking(|| {
-        Ok(Json(crate::tasks::overview(&crate::tasks::scope(
-            &app, project,
-        )?)))
-    })
+    with_scope(&app, project, |scope| Ok(crate::tasks::overview(scope))).map(Json)
 }
 
 #[derive(Deserialize)]
@@ -926,12 +936,7 @@ async fn tasks_since(
     let after = query
         .after
         .ok_or_else(|| Fault::new(400, "after_required", "since needs ?after=<unix ms>"))?;
-    blocking(|| {
-        Ok(Json(crate::tasks::since(
-            &crate::tasks::scope(&app, project)?,
-            after,
-        )))
-    })
+    with_scope(&app, project, |scope| Ok(crate::tasks::since(scope, after))).map(Json)
 }
 
 async fn tasks_mentions(
@@ -940,7 +945,7 @@ async fn tasks_mentions(
     UrlPath(project): UrlPath<u64>,
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, true)?;
-    blocking(|| crate::tasks::mentions(&app, &crate::tasks::scope(&app, project)?).map(Json))
+    with_scope(&app, project, |scope| crate::tasks::mentions(&app, scope)).map(Json)
 }
 
 async fn tasks_brief(
@@ -949,7 +954,7 @@ async fn tasks_brief(
     UrlPath(project): UrlPath<u64>,
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
-    blocking(|| crate::tasks::brief(&crate::tasks::scope(&app, project)?).map(Json))
+    with_scope(&app, project, crate::tasks::brief).map(Json)
 }
 
 async fn tasks_page(
@@ -958,7 +963,7 @@ async fn tasks_page(
     UrlPath(project): UrlPath<u64>,
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
-    blocking(|| crate::tasks::page(&crate::tasks::scope(&app, project)?).map(Json))
+    with_scope(&app, project, crate::tasks::page).map(Json)
 }
 
 async fn task_detail(
@@ -968,7 +973,10 @@ async fn task_detail(
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
     let can_act = app.site.allows(Capability::TaskAct);
-    blocking(|| crate::tasks::detail(&crate::tasks::scope(&app, project)?, task, can_act).map(Json))
+    with_scope(&app, project, |scope| {
+        crate::tasks::detail(scope, task, can_act)
+    })
+    .map(Json)
 }
 
 #[derive(Deserialize)]
@@ -1015,12 +1023,12 @@ async fn task_act(
         "preview" | "hand" | "handback" | "trial" | "trial_end"
     ) {
         act_budget(&app, &device)?;
-        let scope = blocking(|| crate::tasks::scope(&app, project))?;
         // ^ A preview waits for its command to answer, up to minutes.
-        return tokio::task::spawn_blocking(move || crate::tasks::run_task(&scope, &action, task))
-            .await
-            .map_err(|_| Fault::new(500, "task_action", "the action stopped unexpectedly"))?
-            .map(Json);
+        return with_scope_long(&app, project, move |scope| {
+            crate::tasks::run_task(&scope, &action, task)
+        })
+        .await
+        .map(Json);
     }
     let missing = |field: &str| Fault::new(400, "invalid_body", format!("{action} needs {field}"));
     let request = match action.as_str() {
@@ -1045,12 +1053,12 @@ async fn task_act(
         _ => return Err(Fault::not_found()),
     };
     act_budget(&app, &device)?;
-    let scope = blocking(|| crate::tasks::scope(&app, project))?;
     // A landing may take minutes; it must not hold a runtime worker.
-    tokio::task::spawn_blocking(move || crate::tasks::act(&scope, task, request))
-        .await
-        .map_err(|_| Fault::new(500, "task_action", "the action stopped unexpectedly"))?
-        .map(Json)
+    with_scope_long(&app, project, move |scope| {
+        crate::tasks::act(&scope, task, request)
+    })
+    .await
+    .map(Json)
 }
 
 #[derive(Deserialize, Default)]
@@ -1087,7 +1095,7 @@ async fn tasks_checks(
     UrlPath(project): UrlPath<u64>,
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
-    blocking(|| crate::tasks::checks(&crate::tasks::scope(&app, project)?)).map(Json)
+    with_scope(&app, project, crate::tasks::checks).map(Json)
 }
 
 /// The capture kept with a "To check" item: `GET .../checks/<id>/capture`.
@@ -1100,8 +1108,9 @@ async fn check_capture(
     if part != "capture" {
         return Err(Fault::not_found());
     }
-    let (bytes, media) =
-        blocking(|| crate::tasks::check_capture(&crate::tasks::scope(&app, project)?, &id))?;
+    let (bytes, media) = with_scope(&app, project, |scope| {
+        crate::tasks::check_capture(scope, &id)
+    })?;
     Ok(typed(media, bytes))
 }
 
@@ -1114,12 +1123,12 @@ async fn task_check(
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, true)?;
     act_budget(&app, &device)?;
-    let scope = blocking(|| crate::tasks::scope(&app, project))?;
     // ^ A fail starts a task, which waits for its host for a few seconds.
-    tokio::task::spawn_blocking(move || crate::tasks::check(&scope, &id, &decision, input.note))
-        .await
-        .map_err(|_| Fault::new(500, "task_action", "the action stopped unexpectedly"))?
-        .map(Json)
+    with_scope_long(&app, project, move |scope| {
+        crate::tasks::check(&scope, &id, &decision, input.note)
+    })
+    .await
+    .map(Json)
 }
 
 fn media_fault(error: MediaError) -> Fault {
