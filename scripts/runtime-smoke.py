@@ -290,10 +290,7 @@ for index, worktree in enumerate(call("snapshot")["data"]["worktrees"]):
         pane = (session["focused_pane"], Path(worktree["path"]))
         (burst_idle_panes if slot else burst_panes).append(pane)
 assert len(burst_panes) == 9 and len(call("snapshot")["data"]["projects"]) == 3, burst_panes
-burst_terminals = {}
-for pane_id, _ in burst_panes + burst_idle_panes:
-    pane = next(item for item in call("snapshot")["data"]["panes"] if item["id"] == pane_id)
-    burst_terminals[pane_id] = pane["terminal_id"]
+burst_terminals = {pane["id"]: pane["terminal_id"] for pane in call("snapshot")["data"]["panes"]}
 # ^ A TUI holds one terminal stream per visible pane, reads it, types through it and renews
 # its lease with a heartbeat each second. A stream that ends is a reconnect.
 burst_streams = {}

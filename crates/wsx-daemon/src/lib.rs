@@ -1561,8 +1561,9 @@ fn install_shutdown_signals() -> io::Result<()> {
 
 // ^ A GUI terminal passes launchd's soft limit of 256 descriptors on to wsxd. Each pane
 // holds about five and each connection two, so agents reporting from many panes at once
-// ran out of descriptors. Raise the soft limit to the hard one, as Go's runtime does;
-// macOS refuses a soft limit above OPEN_MAX (10240). Failure keeps the inherited limit.
+// ran out of descriptors. Raise the soft limit toward the hard one, at most to macOS's
+// OPEN_MAX (10240), which macOS requires and which keeps panes, that inherit it, from a
+// Linux hard limit of millions. Failure keeps the inherited limit.
 fn raise_descriptor_limit() {
     let mut limit = libc::rlimit {
         rlim_cur: 0,
@@ -1571,10 +1572,7 @@ fn raise_descriptor_limit() {
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
         return;
     }
-    #[cfg(target_os = "macos")]
     let target = limit.rlim_max.min(10240);
-    #[cfg(not(target_os = "macos"))]
-    let target = limit.rlim_max;
     if limit.rlim_cur < target {
         limit.rlim_cur = target;
         unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) };
