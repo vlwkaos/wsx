@@ -15,7 +15,6 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 yaml_serde = { workspace = true }
 serde_ignored = { workspace = true }
-thiserror = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
 glob = { workspace = true }

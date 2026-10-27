@@ -2194,7 +2194,6 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
  "toml",
  "wsx-core",
  "wsx-web",
@@ -2213,7 +2212,6 @@ dependencies = [
  "serde_ignored",
  "serde_json",
  "sha2",
- "thiserror 2.0.18",
  "toml",
  "yaml_serde",
 ]
@@ -2249,7 +2247,6 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "dirs",
  "hkdf",
  "libc",
  "p256",

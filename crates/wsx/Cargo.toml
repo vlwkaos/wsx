@@ -23,7 +23,6 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
-thiserror = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
 glob = { workspace = true }
