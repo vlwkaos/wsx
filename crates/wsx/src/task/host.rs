@@ -7,6 +7,7 @@
 use super::broker;
 use super::claude::{new_session_id, AgentLine, ClaudeAgent, Launch, TurnResult};
 use super::hosting;
+use super::limit;
 use super::slot::{self, Priority};
 use super::trial;
 use anyhow::{bail, Context, Result};
@@ -65,6 +66,18 @@ enum DiskWait {
     Checks,
 }
 
+/// A turn the agent's usage limit ended: the text that continues it, and when it may.
+struct LimitWait {
+    text: String,
+    until_ms: u64,
+    /// When the host looks next: `until_ms`, later while another task holds the limit slot.
+    next_ms: u64,
+}
+
+/// The turn that continues after a usage limit.
+const LIMIT_CONTINUE: &str = "The session limit has reset. Continue the task where it stopped.";
+/// How often a resumable task behind another in the limit queue looks again.
+const LIMIT_POLL_MS: u64 = 2_000;
 /// How often a task that waits for disk looks again.
 const DISK_POLL: Duration = Duration::from_secs(30);
 /// What a check prints when the disk is full: the check then waits instead of failing.
@@ -115,6 +128,13 @@ struct Host {
     /// resume: held until its turn or checks end.
     disk_queue: Option<slot::Ticket>,
     disk_slot: Option<slot::Slot>,
+    limit_wait: Option<LimitWait>,
+    /// Usage limits in a row, for the backoff when no reset time is known.
+    limit_attempt: u32,
+    /// The place of a limit wait in the machine's limit queue, and the limit slot it took
+    /// to resume: held until the agent answers again, so one task at a time tries.
+    limit_queue: Option<slot::Ticket>,
+    limit_slot: Option<slot::Slot>,
     /// The worker's queued or running `check-run`.
     check_run: Option<CheckRun>,
     /// The queued or running checks of a result: the commit they check, and whether a newer
@@ -164,6 +184,10 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         disk_wait: None,
         disk_queue: None,
         disk_slot: None,
+        limit_wait: None,
+        limit_attempt: 0,
+        limit_queue: None,
+        limit_slot: None,
         check_run: None,
         gate: None,
         stored_checks: None,
@@ -232,20 +256,29 @@ impl Host {
         let mut disk_checked = Instant::now();
         loop {
             // ^ On a deadline, not after a quiet spell: status calls arrive all the time.
-            let event = match self.disk_wait {
+            let disk_due = self
+                .disk_wait
+                .as_ref()
+                .map(|_| DISK_POLL.saturating_sub(disk_checked.elapsed()));
+            let limit_due = self
+                .limit_wait
+                .as_ref()
+                .map(|wait| Duration::from_millis(wait.next_ms.saturating_sub(now_unix_ms())));
+            let event = match disk_due.into_iter().chain(limit_due).min() {
                 None => receiver.recv().ok(),
-                Some(_) => {
-                    let due = DISK_POLL.saturating_sub(disk_checked.elapsed());
-                    match receiver.recv_timeout(due) {
-                        Ok(event) => Some(event),
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                Some(due) => match receiver.recv_timeout(due) {
+                    Ok(event) => Some(event),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if disk_due == Some(due) {
                             disk_checked = Instant::now();
                             self.resume_after_disk();
-                            continue;
+                        } else {
+                            self.resume_after_limit();
                         }
-                        Err(_) => None,
+                        continue;
                     }
-                }
+                    Err(_) => None,
+                },
             };
             let Some(event) = event else { break };
             match event {
@@ -338,6 +371,11 @@ impl Host {
                     reason: reason.clone(),
                 });
                 self.wait(WaitOn::Owner, reason);
+            }
+            // ^ A limit wait outlives its host: the restarted one continues at the same time.
+            TaskState::Waiting if self.record.waits_on(WaitOn::Limit) => {
+                let until_ms = self.record.waiting.as_ref().and_then(|w| w.until_ms);
+                self.wait_for_limit(LIMIT_CONTINUE.into(), until_ms.unwrap_or_default());
             }
             state => {
                 self.set_state(state);
@@ -549,6 +587,8 @@ impl Host {
         self.stop_requested = true;
         agent.stop();
         self.turn_active = false;
+        self.limit_wait = None;
+        self.limit_queue = None;
         let dropped = self.pending.len();
         self.pending.clear();
         self.log(LogEvent::Stopped {
@@ -593,6 +633,8 @@ impl Host {
         self.disk_wait = None;
         self.disk_queue = None;
         self.rotating = None;
+        self.limit_wait = None;
+        self.limit_queue = None;
         self.log(LogEvent::Hand {
             by: Actor::Owner,
             dropped,
@@ -691,6 +733,11 @@ impl Host {
             self.say("the wsx binary was replaced: the host restarts with it");
             return Ok(());
         }
+        // ^ A message during a usage limit joins the turn that continues after it.
+        if let Some(wait) = &mut self.limit_wait {
+            wait.text = format!("{}\n\n{text}", wait.text);
+            return Ok(());
+        }
         if self.wait_for_disk(DiskWait::Turn(text.to_string())) {
             return Ok(());
         }
@@ -738,6 +785,8 @@ impl Host {
                 }
             }
             Some(AgentLine::Progress(text)) => {
+                // ^ The agent answers again: the next task in the limit queue may try.
+                self.limit_slot = None;
                 self.say(&text);
                 self.log(LogEvent::Agent { text });
             }
@@ -746,6 +795,7 @@ impl Host {
                 self.agent = None;
                 // ^ A handoff turn that never ended leaves no notes: no later result is one.
                 self.rotating = None;
+                self.limit_slot = None;
                 if self.turn_active && !self.stop_requested {
                     self.turn_active = false;
                     self.log(LogEvent::Stopped {
@@ -764,12 +814,26 @@ impl Host {
             });
             return;
         }
+        self.limit_slot = None;
+        self.turn_active = false;
         // ^ An error without a model call (a session limit) says nothing of the context.
         if turn.usage.context_tokens > 0 {
             self.context_tokens = turn.usage.context_tokens;
         }
+        // ^ A usage limit is no result: no checks, no check retry. The same session
+        // continues once it resets. ref: docs/tasks.md "Claude adapter"
+        if let Some(limit) = &turn.limit {
+            self.limit_attempt += 1;
+            let now = now_unix_ms();
+            let until_ms = limit::resume_at(limit.resets_at, self.limit_attempt, now);
+            let mut text = vec![LIMIT_CONTINUE.to_string()];
+            text.extend(self.pending.drain(..));
+            self.log(LogEvent::LimitWait { until_ms });
+            self.wait_for_limit(text.join("\n\n"), until_ms);
+            return;
+        }
+        self.limit_attempt = 0;
         if let Some(waiting) = self.rotating.take() {
-            self.turn_active = false;
             self.log(LogEvent::Agent {
                 text: format!("handoff notes: {}", first_line(&turn.text)),
             });
@@ -779,7 +843,6 @@ impl Host {
         let structured = turn
             .structured
             .and_then(|value| serde_json::from_value::<WorkerResult>(value).ok());
-        self.turn_active = false;
         // ^ A model turn that left out its result is asked for it once.
         if structured.is_none()
             && !turn.is_error
@@ -1052,6 +1115,48 @@ impl Host {
         }
     }
 
+    /// Hold the turn `text` until `until_ms`, in the machine's limit queue.
+    fn wait_for_limit(&mut self, text: String, until_ms: u64) {
+        self.limit_wait = Some(LimitWait {
+            text,
+            until_ms,
+            next_ms: until_ms,
+        });
+        let reason = limit::reason(until_ms, now_unix_ms());
+        self.say(&reason);
+        self.wait(WaitOn::Limit, reason);
+    }
+
+    /// Continue after a usage limit. Tasks resume one at a time, oldest wait first: each
+    /// holds the limit slot until its agent answers, so a limit that has not lifted stops
+    /// only one. ref: docs/tasks.md "Claude adapter"
+    fn resume_after_limit(&mut self) {
+        let now = now_unix_ms();
+        let Some(wait) = self.limit_wait.as_mut().filter(|wait| wait.next_ms <= now) else {
+            return;
+        };
+        if let Some(queue) = &self.limit_queue {
+            let label = format!("{} t{}", self.record.project, self.record.id);
+            match queue.try_take(&label) {
+                Ok(taken) => self.limit_slot = Some(taken),
+                Err(reason) => {
+                    wait.next_ms = now + LIMIT_POLL_MS;
+                    let reason = format!("session limit has reset; {reason}");
+                    if self.record.waiting.as_ref().map(|w| &w.reason) != Some(&reason) {
+                        self.say(&reason);
+                        self.wait(WaitOn::Limit, reason);
+                    }
+                    return;
+                }
+            }
+        }
+        self.limit_queue = None;
+        if let Some(wait) = self.limit_wait.take() {
+            self.say("the session limit has reset: the agent continues");
+            self.start_turn(&wait.text);
+        }
+    }
+
     /// Free MiB and the GB a task needs, when less than that is free.
     fn low_disk(&self) -> Option<(u64, u64)> {
         let min_gb =
@@ -1063,12 +1168,27 @@ impl Host {
 
     /// Wait for `on`: nothing runs until it happens. ref: docs/tasks.md "Store"
     fn wait(&mut self, on: WaitOn, reason: String) {
-        if on == WaitOn::Disk && self.disk_queue.is_none() {
-            self.disk_queue = slot::Ticket::join("disk-slot", "disk", Priority::Normal)
-                .inspect_err(|error| self.say(&format!("cannot join the disk queue: {error}")))
-                .ok();
+        let queue = match on {
+            WaitOn::Disk => Some((&mut self.disk_queue, "disk")),
+            WaitOn::Limit => Some((&mut self.limit_queue, "limit")),
+            _ => None,
+        };
+        if let Some((queue @ None, what)) = queue {
+            match slot::Ticket::join(&format!("{what}-slot"), what, Priority::Normal) {
+                Ok(ticket) => *queue = Some(ticket),
+                Err(error) => self.say(&format!("cannot join the {what} queue: {error}")),
+            }
         }
-        self.record.waiting = Some(Waiting { on, reason });
+        // ^ A host that restarts during a limit wait resumes at the same time.
+        let until_ms = match on {
+            WaitOn::Limit => self.limit_wait.as_ref().map(|wait| wait.until_ms),
+            _ => None,
+        };
+        self.record.waiting = Some(Waiting {
+            on,
+            reason,
+            until_ms,
+        });
         self.set_state(TaskState::Waiting);
     }
 
@@ -1310,6 +1430,7 @@ impl Host {
         self.record.waiting = Some(Waiting {
             on: WaitOn::CheckSlot,
             reason,
+            until_ms: None,
         });
         self.save();
     }

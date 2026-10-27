@@ -22,6 +22,8 @@ Each user message is a small script of words:
   CHECKRUN_WITH <a,b>  run `wsx task check-run a b`, then a bare `wsx task check-run`, and trace both
   CHECKRUN_LATE <a>  start `wsx task check-run a` in the background and finish before its answer
   REPEAT       return the result again 1 s later, as Claude's own turn for a background notice
+  LIMIT <s>    (once per process) end the turn as Claude's usage limit does, resetting in <s> s;
+               the next message continues this one (also for the manager)
   PROBE <script> <spec> <out>  run the test's boundary probe script (python3 <script> <spec> <out>)
                and trace what it wrote to <out>
   BIG          a last model call of 400k tokens, past the worker's rotateTokens
@@ -257,6 +259,7 @@ def main():
     spending = lambda: json.load(open(spent_file)) if os.path.exists(spent_file) else {}
     model, spent = options.get('--model'), spending().get(session, 0.0) if '--resume' in options else 0.0
     no_result = 0
+    limited, limit_hit = None, False
     while True:
         line = stdin.readline()
         if not line:
@@ -270,6 +273,12 @@ def main():
         text = request['message']['content']
         trace({'message': text, 'session': session, 'manager': project is not None, 'model': model})
         transcript(session, text)
+        if limited is not None:
+            text, limited = limited + '\n\n' + text, None
+        elif 'LIMIT' in text.split() and not limit_hit:
+            limit_hit, limited = True, text
+            usage_limit(session, int(text.split()[text.split().index('LIMIT') + 1]))
+            continue
         if project is not None:
             # ^ The host's ledger summary ends the message; its titles are not this turn's words.
             text = text.split('\n\nLedger summary from wsx', 1)[0]
@@ -432,6 +441,21 @@ def main():
                                         'human_verify': verify,
                                         'left_open': ['nothing real'], 'notes': '',
                                         'memo': rest_of_line(text, 'MEMO') if 'MEMO' in words else ''}})
+
+
+def usage_limit(session, seconds):
+    """Claude's usage limit: a rejected rate_limit_event, the synthetic API error, its result."""
+    resets = int(time.time()) + seconds
+    info = {'status': 'rejected', 'resetsAt': resets, 'rateLimitType': 'five_hour', 'isUsingOverage': False}
+    words = "You've hit your session limit \u00b7 resets 12:10am (Asia/Seoul)"
+    emit({'type': 'rate_limit_event', 'rate_limit_info': info, 'session_id': session})
+    emit({'type': 'assistant', 'parent_tool_use_id': None, 'session_id': session, 'error': 'rate_limit',
+          'api_error': 'usage_limit_reached', 'api_error_status': 429, 'api_error_params': {'rate_limit_info': info},
+          'message': {'model': '<synthetic>', 'content': [{'type': 'text', 'text': words}],
+                      'usage': {'input_tokens': 0, 'output_tokens': 0}}})
+    emit({'type': 'result', 'subtype': 'success', 'is_error': True, 'result': words, 'session_id': session,
+          'api_error_status': 429, 'api_error': 'usage_limit_reached', 'permission_denials': [],
+          'usage': {'input_tokens': 0, 'output_tokens': 0}})
 
 
 def end_without_result(session, left):

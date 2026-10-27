@@ -127,8 +127,9 @@ export function withChips(project) {
 }
 
 // What a waiting task waits for, in words: "waits for disk
-// space", "stopped", "needs an answer" (docs/tasks.md "Store").
+// space", "waits for the session limit", "stopped", "needs an answer" (docs/tasks.md "Store").
 const waitWords = (item) => item.waiting?.on === "disk" ? "waits for disk space"
+  : item.waiting?.on === "limit" ? "waits for the session limit"
   : item.waiting?.reason === "stopped by request" ? "stopped" : "needs an answer";
 const KIND_TONE = { waiting: "attention", failed: "danger", approval: "attention", land: "accent" };
 // One open item in words, as the owner would read it: "#4 needs an answer", "Approve land #3".

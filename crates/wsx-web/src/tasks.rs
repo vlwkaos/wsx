@@ -1067,12 +1067,13 @@ fn notice(scope: &Scope, watch: &mut Watch) {
         let Ok(record) = record else { continue };
         let now = (record.state, record.revision);
         let before = seen.insert(record.id, now);
-        // ^ Hands at work and a plan for the manager need no push.
+        // ^ Hands at work, a plan for the manager and a usage limit need no push.
         if !first
             && before != Some(now)
             && record.state == TaskState::Waiting
             && !record.waits_on(WaitOn::Hand)
             && !record.waits_on(WaitOn::Plan)
+            && !record.waits_on(WaitOn::Limit)
         {
             watch.pending.add((scope.project, Key::Task(record.id)));
         }

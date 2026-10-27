@@ -1373,6 +1373,14 @@ def run(wsx, wsxd, work, owned):
     assert not any(t.get('launch') and t.get('manager') and t['session'] != fresh['session']
                    for t in traces()[traces().index(fresh) + 1:]), 'same launch keeps its conversation'
     assert not turn_with('STATUS again')['message'].startswith('Handover')
+    # ^ A usage limit is no reply: the message waits and is answered after the reset.
+    limited = js('task', 'say', 'LIMIT 1 STATUS limited')
+    held = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'agent'
+                              and e['text'].startswith('session limit; resumes at ')), None), 'the manager limit wait')
+    answer = reply_to(limited['id'])
+    assert answer['text'].startswith('open: ') and answer['unix_ms'] >= held['unix_ms'] + 1000, (held, answer)
+    assert not any(e['kind'] == 'reply' and 'session limit' in e['text'] for e in chat())
+    assert turn_with('The session limit has reset'), 'the manager continues after its limit'
     for n in (first, second, unseen):
         js('task', 'close', n, '--discard')
     # 21b. Memo (docs/tasks.md "Memo"): each task that leaves brings its worker's memo to the
@@ -1599,6 +1607,29 @@ def run(wsx, wsxd, work, owned):
     wait(lambda: show(dw)['state'] == 'ready', 'resumed after disk', 60)
     assert 'waiting' not in show(dw)['record'] and not any(e['kind'] == 'check_retry' for e in log(dw))
     js('task', 'close', dw, '--discard')
+    # A usage limit is no failure: the task waits on `limit` and its session continues after the
+    # reset, oldest wait first, one task at a time (docs/tasks.md "Claude adapter").
+    first = js('task', 'new', 'LIMIT 4 WORK la.txt')['id']
+    limited = lambda n: (current := show(n))['state'] == 'waiting' and current['record'].get('waiting') and current
+    waiting = wait(lambda: limited(first), 'limit wait')['record']['waiting']
+    assert waiting['on'] == 'limit' and waiting['reason'].startswith('session limit; resumes at '), waiting
+    assert waiting['until_ms'] > time.time() * 1000, waiting
+    row = next(r for r in js('task', 'ledger')['open'] if r['id'] == first)
+    assert row['waiting']['on'] == 'limit', row
+    # ^ Due first, but behind the older wait in the limit queue.
+    second = js('task', 'new', 'LIMIT 1 WORK lb.txt')['id']
+    wait(lambda: (w := limited(second)) and 'queued for limit behind' in w['record']['waiting']['reason'],
+         'the second limit wait queued behind the first', 30)
+    for n in (first, second):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', show(n)
+        assert kinds(n, 'limit_wait', 'result', 'check_retry') == ['limit_wait', 'result'], log(n)
+        assert 'session limit' not in next(e for e in log(n) if e['kind'] == 'result')['summary']
+    sessions = {show(n)['record']['agent_session']: n for n in (first, second)}
+    resumed = [sessions.get(t['session']) for t in traces()
+               if not t.get('manager') and str(t.get('message', '')).startswith('The session limit has reset')]
+    assert resumed == [first, second], resumed
+    for n in (first, second):
+        js('task', 'close', n, '--discard')
 
     # 28. A land deploys by itself with tasks.deploy.auto; deploys run one at a time and a
     mark('28')

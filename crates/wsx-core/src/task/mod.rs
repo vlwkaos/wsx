@@ -73,6 +73,9 @@ pub enum WaitOn {
     /// The machine's check slot: a `checking` task, or a worker's `check-run`, waits for the
     /// check runs ahead of it. ref: docs/tasks.md "Checks, revisions and report"
     CheckSlot,
+    /// The agent's usage limit: the host continues its session at `until_ms`, one task at a
+    /// time. ref: docs/tasks.md "Claude adapter"
+    Limit,
 }
 
 impl WaitOn {
@@ -83,6 +86,7 @@ impl WaitOn {
             Self::Plan => "plan",
             Self::Hand => "hand",
             Self::CheckSlot => "check_slot",
+            Self::Limit => "limit",
         }
     }
 }
@@ -92,6 +96,9 @@ pub struct Waiting {
     pub on: WaitOn,
     /// What it waits for, in plain words.
     pub reason: String,
+    /// When a wait on `limit` resumes, in unix ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until_ms: Option<u64>,
 }
 
 /// Who acted: the owner, or the manager's agent (`WSX_TASK_ACTOR=manager`).
@@ -253,6 +260,10 @@ pub enum LogEvent {
     /// next turn starts a fresh conversation (docs/tasks.md "Context rotation").
     Rotated {
         tokens: u64,
+    },
+    /// The agent's usage limit ended a turn: it continues at `until_ms` (unix ms).
+    LimitWait {
+        until_ms: u64,
     },
     /// The checks wait for the machine's check slot (docs/tasks.md "Checks, revisions and report").
     CheckQueued {
