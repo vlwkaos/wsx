@@ -293,6 +293,50 @@ impl State {
         self.persisted = persisted;
         Ok(())
     }
+
+    /// Adds to the bounded event ring that `poll` serves.
+    fn push_event(&mut self, event: Event) {
+        self.events.push_back(event);
+        while self.events.len() > EVENT_LIMIT {
+            self.events.pop_front();
+        }
+    }
+
+    /// Adds to the bounded queue of events that plugins subscribe to.
+    fn push_plugin_event(&mut self, name: &str, revision: u64, id: u64) {
+        if self.plugin_events.len() == PLUGIN_EVENT_LIMIT {
+            self.plugin_events.pop_front();
+        }
+        self.plugin_events.push_back((
+            name.into(),
+            serde_json::json!({"event":name,"revision":revision,"id":id}).to_string(),
+        ));
+    }
+
+    /// Records `terminal.changed` for a PTY read. Pollers act on a changed revision or any new
+    /// event and never read the entity, so a burst of reads for one pane moves the newest
+    /// event to the new revision instead of filling the ring and evicting other events.
+    /// The first event stays as it is: `poll` takes the first revision as the ring floor.
+    fn push_terminal_changed(&mut self, revision: u64, pane_id: PaneId) {
+        if self.events.len() >= 2 {
+            if let Some(Event::Changed {
+                revision: newest,
+                entity,
+                id,
+            }) = self.events.back_mut()
+            {
+                if entity == "terminal.changed" && *id == pane_id.0 {
+                    *newest = revision;
+                    return;
+                }
+            }
+        }
+        self.push_event(Event::Changed {
+            revision,
+            entity: "terminal.changed".into(),
+            id: pane_id.0,
+        });
+    }
 }
 
 struct Daemon {
@@ -6545,21 +6589,12 @@ where
 }
 fn publish(daemon: &Daemon, state: &mut State, revision: u64, entity: &str, id: u64) {
     state.revision = revision;
-    state.events.push_back(Event::Changed {
+    state.push_event(Event::Changed {
         revision,
         entity: entity.into(),
         id,
     });
-    while state.events.len() > EVENT_LIMIT {
-        state.events.pop_front();
-    }
-    if state.plugin_events.len() == PLUGIN_EVENT_LIMIT {
-        state.plugin_events.pop_front();
-    }
-    state.plugin_events.push_back((
-        entity.into(),
-        serde_json::json!({"event":entity,"revision":revision,"id":id}).to_string(),
-    ));
+    state.push_plugin_event(entity, revision, id);
     daemon.changed.notify_all();
     daemon.plugin_changed.notify_one();
 }
@@ -6627,14 +6662,7 @@ fn runtime_notify(
         } else {
             let revision = state.revision.saturating_add(1);
             state.revision = revision;
-            state.events.push_back(Event::Changed {
-                revision,
-                entity: "terminal.changed".into(),
-                id: pane_id.0,
-            });
-            while state.events.len() > EVENT_LIMIT {
-                state.events.pop_front();
-            }
+            state.push_terminal_changed(revision, pane_id);
             daemon.changed.notify_all();
         }
     })
@@ -6716,18 +6744,8 @@ fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: PaneId) {
         AgentExchangeState::TargetExited,
         revision,
     );
-    state.events.push_back(Event::Exited { revision, pane_id });
-    while state.events.len() > EVENT_LIMIT {
-        state.events.pop_front();
-    }
-    if state.plugin_events.len() == PLUGIN_EVENT_LIMIT {
-        state.plugin_events.pop_front();
-    }
-    state.plugin_events.push_back((
-        "terminal.exited".into(),
-        serde_json::json!({"event":"terminal.exited","revision":revision,"id":pane_id.0})
-            .to_string(),
-    ));
+    state.push_event(Event::Exited { revision, pane_id });
+    state.push_plugin_event("terminal.exited", revision, pane_id.0);
     state.persistence_dirty = true;
     daemon.changed.notify_all();
     daemon.plugin_changed.notify_one();
