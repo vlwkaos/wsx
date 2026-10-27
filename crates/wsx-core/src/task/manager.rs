@@ -184,6 +184,9 @@ pub struct ManagerState {
     /// The `unix_ms` of the newest deploy record already turned into events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deploys_seen_ms: Option<u64>,
+    /// The `finished_epoch` of the newest routine run already turned into events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routines_seen: Option<i64>,
     /// The digest of the instructions the conversation in `agent_session` began with.
     /// Claude keeps a conversation's first system prompt also on resume, so other
     /// instructions start a new conversation; settings, tools and model apply at every start.

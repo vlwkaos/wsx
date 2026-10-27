@@ -5,6 +5,15 @@
 ### Changed
 
 - A task worker whose context passes `tasks.agent.rotateTokens` (default 350000) continues in a fresh conversation. It first writes handoff notes in its task folder; the fresh conversation opens with the task's prompt, those notes and the current step, and loads the project knowledge again. Each model call reads the whole context, so a long task no longer pays for 450k tokens on every call. A host started again after a session limit knows the size from the log and rotates on its first turn ([docs/tasks.md](docs/tasks.md) "Context rotation").
+### Added
+
+- A project's manager can use routines: `wsx task routine` is `wsx routine` behind `wsx task`, the ledger lists the project's routines with next and last run, and each run that ends reaches the manager as an event, a failure with the end of its output. The manager adds, edits or deletes a routine only with `--owner-said` ([docs/tasks.md](docs/tasks.md) "Routines").
+- `wsx routine add`, `edit`, `delete`, `enable`, `disable` and `cancel` take `--json`.
+
+### Fixed
+
+- The TUI shows routines again when the scheduler has no project registry: it now follows the scheduler, which then runs every project's routines.
+- A task agent can no longer write the routine scheduler's folder, whose routines wsxd runs outside the agent boundary.
 
 ## [0.40.1] - 2026-10-27
 

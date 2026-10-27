@@ -65,6 +65,8 @@ impl Boundary {
         deny_write.push(real(&home.join("Library/Keychains")));
         deny_write.extend(config_dirs().iter().map(|dir| real(dir)));
         deny_write.push(real(&store::state_dir()));
+        // ^ wsxd runs the routines written there outside this boundary (docs/tasks.md "Routines").
+        deny_write.push(real(&asched_core::RegistryStore::default_root()?));
         // ^ The main repository's hooks run, and its config applies, in the owner's own git.
         deny_write.extend([real(&common.join("hooks")), real(&common.join("config"))]);
         let deny_copies = match (main.parent(), main.file_name()) {

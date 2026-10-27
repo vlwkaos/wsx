@@ -114,9 +114,23 @@ json.dump(seen, open(sys.argv[2], "w"))
 # ^ True: the boundary allows it; False: it refuses it.
 PROBE_EXPECTED = {'read_ssh': False, 'write_ssh': False, 'write_state': False, 'write_existing_copy': False,
                   'write_later_copy': False, 'write_main_ref': False, 'write_main_lock': False,
-                  'write_main_reflog': False, 'write_hooks': False, 'write_config': False,
+                  'write_main_reflog': False, 'write_hooks': False, 'write_config': False, 'write_routines': False,
                   'write_own_copy': True, 'write_task_folder': True, 'write_tmpdir': True, 'write_cargo': True,
                   'write_library': True, 'move_main': False, 'listen': True, 'pty': True}
+
+
+def stop_scheduler(home):
+    """Shut down the routine scheduler that wsxd hosts for an isolated home, when one runs."""
+    request = {'protocol': 4, 'project': '', 'action': {'action': 'shutdown'}}
+    try:
+        with socket.socket(socket.AF_UNIX) as connection:
+            connection.settimeout(5)
+            connection.connect(str(home / 'Library/Application Support/asched/daemon-v1.sock'))
+            connection.sendall((json.dumps(request) + '\n').encode())
+            connection.shutdown(socket.SHUT_WR)
+            connection.recv(4096)
+    except OSError:
+        pass
 
 
 def tui_text(wsx, env, cwd, until, seconds=15):
@@ -220,6 +234,7 @@ def main():
         if 'env' in owned:
             subprocess.run([str(wsx), 'daemon', 'stop', '--force'], env=owned['env'],
                            capture_output=True, timeout=20)
+            stop_scheduler(Path(owned['env']['HOME']))
         if not args.keep:
             shutil.rmtree(work, ignore_errors=True)
 
@@ -1229,6 +1244,25 @@ def run(wsx, wsxd, work, owned):
     wait(lambda: events_with('release of %s succeeded after 6 s' % long_tip[:12]), 'the release event')
     wait(deploy_lock_free, 'the deploy lock')
     configure(release_config, 'release as before')
+    # ^ Routines (docs/tasks.md "Routines"): the manager's `wsx task routine` writes one only
+    # with the owner's words; a run that ends is an event and the ledger's row, and the TUI
+    # shows it while the scheduler has no project registry.
+    assert js('task', 'ledger')['routines'] == []
+    add = ('wsx task routine add nightly --cron "0 3 * * *" --arg sh --arg=-c --arg "echo boom; exit 3"'
+           ' -p demo --json')
+    text = reply_to(js('task', 'say', 'RUN ' + add)['id'])['text']
+    assert '-> 1 ' in text and 'nothing was run' in text, text
+    assert js('task', 'routine', 'list')['routines'] == []
+    text = reply_to(js('task', 'say', 'add the nightly routine\nRUN %s --owner-said OWNER_SAID' % add)['id'])['text']
+    assert '-> 0 ' in text, text
+    text = reply_to(js('task', 'say', 'RUN wsx task routine run nightly -p demo --json')['id'])['text']
+    assert '-> 0 ' in text, text
+    wait(lambda: events_with('routine nightly failed (exit 3); its output ends:\n    boom'), 'the routine event')
+    row = js('task', 'ledger')['routines'][0]
+    assert (row['name'], row['trigger'], row['enabled'], row['running']) == ('nightly', '0 3 * * *', True, False), row
+    assert row['next_run_unix_ms'] > time.time() * 1000, row
+    assert (row['last']['status'], row['last']['exit']) == ('failed', 3) and row['last']['duration_ms'] >= 0, row
+    assert re.search(r'sched \[1\]', tui_text(wsx, env, project, r'sched \[1\]'))
     # ^ The close events of the tasks above may still run a turn: SLOW must start its own.
     def manager_idle():
         entries = manager_entries()
@@ -1421,6 +1455,7 @@ def run(wsx, wsxd, work, owned):
                           'write_main_lock': str(common / 'refs/heads/main.lock'),
                           'write_main_reflog': str(common / 'logs/refs/heads/main'),
                           'write_hooks': str(common / 'hooks/pre-commit'), 'write_config': str(common / 'config'),
+                          'write_routines': str(home / 'Library/Application Support/asched/projects/probe.toml'),
                           'write_own_copy': str(base / ('project-t%d' % n) / 'probe.txt'),
                           'write_task_folder': str(store_dir / str(n) / 'probe.txt'),
                           'write_tmpdir': str(tmp / 'probe.txt'), 'write_cargo': str(home / '.cargo/registry/probe.txt'),

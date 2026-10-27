@@ -9,6 +9,7 @@ use super::claude::{
 };
 use super::{broker, hosting};
 use anyhow::{Context, Result};
+use asched_core::routine::{store::RoutineStore, RunRecord, RunStatus};
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -118,6 +119,8 @@ struct Manager {
     observed_decisions: u64,
     /// The `unix_ms` of the newest deploy record seen.
     observed_deploys_ms: u64,
+    /// The `finished_epoch` of the newest routine run seen.
+    observed_routines: i64,
     /// Event lines not yet logged as a message, and when the last one came.
     pending_events: Vec<String>,
     last_event: Option<Instant>,
@@ -158,10 +161,10 @@ fn instructions(
     };
     format!(
         "You are the manager of the wsx project {project}. The owner talks to you in a chat, \
-         as to a colleague. You never edit the project's files and never run builds or \
-         tests; workers do that, each in its own task. Keep your notes in {notes}. \
-         Messages headed 'Owner' come from the owner; 'Events' are written by wsx about the \
-         tasks. Each message ends with wsx's ledger summary. The ledger is the truth, not \
+         as to a colleague. You never edit the project's files or run builds or tests; \
+         workers do that in tasks. Keep your notes in {notes}. \
+         Messages headed 'Owner' come from the owner; 'Events' come from \
+         wsx. Each message ends with wsx's ledger summary. The ledger is the truth, not \
          your memory: run `wsx task ledger -p {project}` for more (checks, overlaps, memo, \
          deploys). Every `wsx task` command takes `-p {project} --json`, also in a pipe or \
          with a heredoc; no other `wsx` command runs. Name tasks as #<n>. \
@@ -170,8 +173,8 @@ fn instructions(
          A turn of only Events is your work, not a message for the owner. Act on it, then \
          reply with one short line of what you did, or with exactly `-` when nothing \
          changed for the owner. Write more only when the owner must decide now, and then \
-         ask one plain question. Never hand the owner chores: no commands to run, files to \
-         delete, settings to edit or tasks to verify. Do such work through a task, or drop \
+         ask one plain question. Never hand the owner chores: no commands, files, settings or \
+         tasks to verify. Do such work through a task, or drop \
          it. \
          Start a request for work at once and say the plan in a few lines in the same reply \
          (goal, tasks, choices, what you leave out); ask first only when a choice the owner \
@@ -203,7 +206,10 @@ fn instructions(
          open, unless the owner's message asks for it (`--owner-said`): then the items stay \
          to check on the release. `deploy` and `release` answer that they started; the \
          result comes as an event and in the ledger's `deploys`, so do not run them again \
-         meanwhile. When the last task of a request lands and no open task \
+         meanwhile. `wsx task routine` lists and runs the project's \
+         routines (results as events and in the ledger's `routines`); add, edit and delete \
+         need `--owner-said`. When the last task of a request \
+         lands and no open task \
          changes the same files, start one housekeeping task over the files those tasks changed, with this \
          prompt and the task numbers: {batch} \
          When the owner wants to be sure of a change or to try it, start \
@@ -211,9 +217,9 @@ fn instructions(
          running one, `--off` releases it). A held task lands only when the owner says so. \
          Say in one line how to try it: Try live (`wsx task trial <n>`), or a preview \
          (`wsx task preview <n>`) when the live site cannot roll back from it, such as a \
-         daemon, a stored format or a migration. \
+         daemon or a migration. \
          When the owner's message in this turn asks for the action itself (\"land #5\", \
-         \"close #42\", \"deploy\"), pass `--owner-said <id>`, the id in its 'Owner (message \
+         \"close #42\"), pass `--owner-said <id>`, the id in its 'Owner (message \
          <id>)' heading, to `land`, `close --discard`, `deploy` or `release`; never name a \
          message that did not ask for that action. When a command says the owner was asked \
          to approve, say so and do not retry it. An event 'approval <id> (...) dropped': \
@@ -226,26 +232,25 @@ fn instructions(
          never add, steer, land or close it; only the owner runs `wsx task hand` and \
          `handback`. \
          You run inside wsx's boundary and nothing asks you for permission; it refuses the \
-         owner's secrets, wsx's config and state and the tasks' working copies. Read the \
-         project and the copies with Read, Glob, Grep, WebFetch, WebSearch and read-only git \
-         in Bash (`git log`, `show`, `diff`, `status`, also `git -C <working copy>`). The \
+         owner's secrets, wsx's state and the tasks' copies. Read the \
+         project and the copies with the file and web tools and read-only git in Bash (also \
+         `git -C <working copy>`). The \
          one git command that writes: when a land refuses because the main checkout has the \
          owner's uncommitted changes, name those files and ask; only after the owner says \
          yes, commit exactly those files in the main checkout (`git commit -m \"<message \
          that names them>\" -- <files>`) and land again. {skills}Use the skills and \
-         subagents whose descriptions fit lookup, context, memory or research; check rather \
-         than guess. \
-         When the owner decides something (a rule, a preference, a choice), append one line \
+         subagents that fit; check rather than guess. \
+         When the owner decides a rule, a preference or a choice, append one line \
          `- <YYYY-MM-DD> <decision>` to {decisions} at once. Every new conversation of yours \
          starts with that file and {context}, your lean project context. The event of a \
          task that lands or closes carries its worker's 'memo:': fold it into {context} \
-         (merge duplicates, drop what is stale, at most 60 lines). When a message opens with \
+         (merge duplicates, drop the stale, at most 60 lines). When a message opens with \
          'Handover' (a new conversation), first fold the memos of the ledger's recent tasks \
          the same way. The project page {page} is the owner's one-page picture: the goal, \
          the tasks as a mermaid graph, the plans, the decisions and the open questions. \
-         Update a section in place when it changes; never rewrite the whole file or create \
+         Update a section in place when it changes; never rewrite the file or create \
          another page; call it the project page. \
-         Other registered projects have managers too. You may read `wsx task ledger -p \
+         Other projects have managers too. You may read `wsx task ledger -p \
          <project>` and message its manager with `wsx task say -p <project> --from-manager \
          \"<text>\"`; never create or change its tasks. A message headed 'Manager <project>' \
          asks you something: answer it once with `wsx task say -p <project> --from-manager \
@@ -293,6 +298,7 @@ pub fn run(project_id: &str) -> Result<()> {
         observed: BTreeMap::new(),
         observed_decisions: 0,
         observed_deploys_ms: 0,
+        observed_routines: 0,
         pending_events: Vec::new(),
         last_event: None,
         recap_quiet: (settings.manager_recap_secs > 0)
@@ -461,15 +467,21 @@ impl Manager {
                     .state
                     .deploys_seen_ms
                     .unwrap_or_else(|| self.newest_deploy_ms());
+                self.observed_routines = self
+                    .state
+                    .routines_seen
+                    .unwrap_or_else(|| self.newest_routine_run());
             }
             None => {
                 // ^ First start: what already happened is the baseline, not news.
                 self.observed = self.current_tasks().into_iter().collect();
                 self.observed_decisions = self.approval_lines().len() as u64;
                 self.observed_deploys_ms = self.newest_deploy_ms();
+                self.observed_routines = self.newest_routine_run();
                 self.state.seen = Some(self.observed.clone());
                 self.state.decisions_seen = self.observed_decisions;
                 self.state.deploys_seen_ms = Some(self.observed_deploys_ms);
+                self.state.routines_seen = Some(self.observed_routines);
                 self.save();
             }
         }
@@ -585,27 +597,76 @@ impl Manager {
                 }
                 continue;
             }
-            let lines: Vec<String> = ledger::tail_lines(
-                record.output.as_deref().unwrap_or_default(),
-                DEPLOY_EVENT_LINES,
-            )
-            .lines()
-            .map(|line| format!("    {}", clip(line, EVENT_SUMMARY_CHARS)))
-            .collect();
             self.pending_events.push(format!(
-                "{} of {:.12} failed ({}){}{}",
+                "{} of {:.12} failed ({}){}",
                 ledger::kind_name(record.kind),
                 record.commit,
-                record
-                    .exit
-                    .map_or("no exit code".into(), |code| format!("exit {code}")),
-                if lines.is_empty() {
-                    ""
-                } else {
-                    "; its output ends:\n"
-                },
-                lines.join("\n")
+                exit_words(record.exit),
+                output_ends(record.output.as_deref().unwrap_or_default())
             ));
+            self.last_event = Some(Instant::now());
+        }
+    }
+
+    /// The project's routine runs that ended, as wsxd's scheduler recorded them.
+    fn finished_routine_runs(&self) -> Vec<RunRecord> {
+        let Ok(root) = asched_core::RegistryStore::default_root() else {
+            return Vec::new();
+        };
+        RoutineStore::new(root, &self.main)
+            .and_then(|store| store.load_runtime())
+            .map(|state| state.runs.into_values().flatten().collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|run| run.finished_epoch.is_some())
+            .collect()
+    }
+
+    fn newest_routine_run(&self) -> i64 {
+        self.finished_routine_runs()
+            .iter()
+            .filter_map(|run| run.finished_epoch)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Turn each routine run that ended into an event line, a failure with the end of its
+    /// output. ref: docs/tasks.md "Routines"
+    fn watch_routines(&mut self) {
+        // ^ A run that ends in this second may be recorded after this read: wait the second out.
+        let settled = (now_unix_ms() / 1000) as i64 - 1;
+        let mut runs: Vec<RunRecord> = self
+            .finished_routine_runs()
+            .into_iter()
+            .filter(|run| {
+                run.finished_epoch
+                    .is_some_and(|end| end > self.observed_routines && end < settled)
+            })
+            .collect();
+        runs.sort_by_key(|run| run.finished_epoch);
+        for run in runs {
+            let end = run.finished_epoch.unwrap_or_default();
+            self.observed_routines = end;
+            let line = match run.status {
+                RunStatus::Succeeded => format!(
+                    "routine {} succeeded after {} s",
+                    run.routine,
+                    end - run.started_epoch
+                ),
+                status => format!(
+                    "routine {} {} ({}){}",
+                    run.routine,
+                    match status {
+                        RunStatus::SpawnFailed => "could not start",
+                        RunStatus::Cancelled => "was cancelled",
+                        RunStatus::Interrupted => "was interrupted",
+                        _ => "failed",
+                    },
+                    exit_words(run.exit_code),
+                    output_ends(&run.final_output)
+                ),
+            };
+            self.pending_events.push(line);
             self.last_event = Some(Instant::now());
         }
     }
@@ -614,6 +675,7 @@ impl Manager {
     fn watch_tasks(&mut self) {
         self.watch_approvals();
         self.watch_deploys();
+        self.watch_routines();
         let Ok(tasks) = project_tasks(&self.dir.project_id) else {
             return;
         };
@@ -702,6 +764,7 @@ impl Manager {
                 self.state.seen = Some(self.observed.clone());
                 self.state.decisions_seen = self.observed_decisions;
                 self.state.deploys_seen_ms = Some(self.observed_deploys_ms);
+                self.state.routines_seen = Some(self.observed_routines);
                 self.save();
             }
             Err(error) => self.say(&format!("cannot log the events: {error:#}")),
@@ -1342,6 +1405,22 @@ fn newest_ms(folder: &Path) -> Option<u64> {
         })
         .map(|since| since.as_millis() as u64)
         .max()
+}
+
+fn exit_words(exit: Option<i32>) -> String {
+    exit.map_or("no exit code".into(), |code| format!("exit {code}"))
+}
+
+/// "; its output ends:" and the last lines of `output`, indented, or nothing without output.
+fn output_ends(output: &str) -> String {
+    let lines: Vec<String> = ledger::tail_lines(output, DEPLOY_EVENT_LINES)
+        .lines()
+        .map(|line| format!("    {}", clip(line, EVENT_SUMMARY_CHARS)))
+        .collect();
+    match lines.is_empty() {
+        true => String::new(),
+        false => format!("; its output ends:\n{}", lines.join("\n")),
+    }
 }
 
 /// `wsx task new -p <project> --title <IDLE_TITLE> -` as the manager; the new task's number.

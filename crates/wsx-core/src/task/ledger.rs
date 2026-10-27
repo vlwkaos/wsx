@@ -98,6 +98,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         "stray_worktrees": strays,
         "stray_worktrees_omitted": stray_omitted,
         "deploys": deploy_status(project_name, main, &settings).unwrap_or(Value::Null),
+        "routines": routines(main),
         "recent": recent.into_iter().map(|(_, row)| row).collect::<Vec<_>>(),
         "open": open.iter().map(|(_, _, row)| row.clone()).collect::<Vec<_>>(),
         "open_omitted": 0,
@@ -256,6 +257,69 @@ pub fn kind_name(kind: DeployKind) -> &'static str {
         DeployKind::Deploy => "deploy",
         DeployKind::Release => "release",
     }
+}
+
+/// A routine's trigger as `wsx routine list` and the ledger show it: the cron, or `event:<kind>`.
+pub fn trigger_text(trigger: &asched_core::routine::Trigger) -> String {
+    match trigger {
+        asched_core::routine::Trigger::Cron(cron) => cron.clone(),
+        asched_core::routine::Trigger::Event { kind } => format!("event:{kind}"),
+    }
+}
+
+/// The ledger lists at most this many routines.
+const ROUTINES: usize = 20;
+
+/// The project's routines as wsxd's scheduler lists them, without starting it: name, trigger,
+/// next run and the last run; `{error}` when the scheduler does not answer and the project
+/// has routines. ref: docs/tasks.md "Routines"
+pub fn routines(main: &Path) -> Value {
+    use asched_core::routine::ipc::{Action, Request, Response};
+    use asched_core::routine::{store::RoutineStore, RoutineClient};
+    let Ok(root) = asched_core::RegistryStore::default_root() else {
+        return json!([]);
+    };
+    let listed = RoutineClient::new(root.clone())
+        .with_request_timeout(std::time::Duration::from_secs(2))
+        .request(&Request::new(main.to_path_buf(), Action::List));
+    let views = match listed {
+        Ok(Response::Routines { routines, .. }) => routines,
+        Ok(other) => return json!({ "error": format!("unexpected answer: {other:?}") }),
+        Err(error) => {
+            // ^ No routine file: nothing to schedule, so a stopped scheduler is not news.
+            let defined =
+                RoutineStore::new(root, main).is_ok_and(|store| store.project_file().exists());
+            return match defined {
+                true => {
+                    json!({ "error": format!("the routine scheduler does not answer: {error}") })
+                }
+                false => json!([]),
+            };
+        }
+    };
+    let rows: Vec<Value> = views
+        .iter()
+        .take(ROUTINES)
+        .map(|view| {
+            let last = view.latest_run.as_ref().map(|run| {
+                json!({
+                    "status": run.status,
+                    "exit": run.exit_code,
+                    "unix_ms": run.started_epoch * 1000,
+                    "duration_ms": run.finished_epoch.map(|end| (end - run.started_epoch) * 1000),
+                })
+            });
+            json!({
+                "name": view.routine.name,
+                "enabled": view.routine.enabled,
+                "trigger": trigger_text(&view.routine.trigger),
+                "next_run_unix_ms": view.next_run_epoch.map(|epoch| epoch * 1000),
+                "running": view.capabilities.can_cancel,
+                "last": last,
+            })
+        })
+        .collect();
+    json!(rows)
 }
 
 /// The ledger's `deploys` show this many last lines of a failed attempt's output.
