@@ -6,7 +6,7 @@ use glob::glob;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-pub fn copy_env_files(src: &Path, dest: &Path, config: &ProjectConfig) -> Result<()> {
+pub(crate) fn copy_env_files(src: &Path, dest: &Path, config: &ProjectConfig) -> Result<()> {
     for pattern in &config.copy_includes {
         let full_pattern = src.join(pattern);
         let full_pattern_str = full_pattern.to_string_lossy();
@@ -40,7 +40,7 @@ pub fn copy_env_files(src: &Path, dest: &Path, config: &ProjectConfig) -> Result
     Ok(())
 }
 
-pub fn run_post_create(dir: &Path, cmd: &str) -> Result<()> {
+pub(crate) fn run_post_create(dir: &Path, cmd: &str) -> Result<()> {
     let status = Command::new("sh")
         .arg("-c")
         .arg(cmd)

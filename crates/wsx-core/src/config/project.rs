@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const MAX_MIN_FREE_GB: u64 = 100_000;
+pub(crate) const MAX_MIN_FREE_GB: u64 = 100_000;
 
 /// `tasks.preview` checked: a command, a path that answers 200 and a port range above 1023.
 fn preview_config(file: TaskPreviewFile) -> Result<crate::model::workspace::TaskPreview, String> {

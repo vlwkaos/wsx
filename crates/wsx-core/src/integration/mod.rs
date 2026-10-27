@@ -18,7 +18,6 @@ pub mod resume;
 mod root_location;
 mod status;
 
-pub use availability::is_available;
 pub use install::install;
 pub use model::{
     InstallResult, InstallStatus, IntegrationMetadata, IntegrationTarget, LifecycleCapability,

@@ -58,7 +58,7 @@ pub struct ProjectConfig {
     pub notice: Option<String>,
 }
 
-pub const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 20 * 60;
+pub(crate) const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 20 * 60;
 
 /// The `tasks:` section of `wsx.config.yml` (docs/tasks.md).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -328,7 +328,7 @@ fn sanitize_slug(raw: &str) -> String {
     raw.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
 }
 
-pub fn canonical_session_slug(project_name: &str, worktree_path: &Path) -> String {
+pub(crate) fn canonical_session_slug(project_name: &str, worktree_path: &Path) -> String {
     let dir_name = worktree_path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())

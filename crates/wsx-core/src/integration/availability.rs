@@ -76,7 +76,7 @@ pub(crate) fn command_path(target: IntegrationTarget) -> Option<std::path::PathB
     }
 }
 
-pub fn is_available(target: IntegrationTarget) -> bool {
+pub(crate) fn is_available(target: IntegrationTarget) -> bool {
     command_path(target).is_some()
 }
 

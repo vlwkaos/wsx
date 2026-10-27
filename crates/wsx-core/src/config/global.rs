@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 pub const MILLIS_PER_HOUR: u64 = 60 * 60 * 1_000;
 pub const ADAPTIVE_COLLAPSE_MIN_HOURS: u64 = 24;
-pub const ADAPTIVE_COLLAPSE_STEP_HOURS: u64 = 12;
+pub(crate) const ADAPTIVE_COLLAPSE_STEP_HOURS: u64 = 12;
 pub const ADAPTIVE_COLLAPSE_MAX_HOURS: u64 = 24 * 28;
 const CONFIG_V2_FILE: &str = "config-v2.toml";
 const LEGACY_CONFIG_FILE: &str = "config.toml";
@@ -64,7 +64,7 @@ impl<'de> Deserialize<'de> for GroupKey {
     }
 }
 
-pub fn is_reserved_group_name(name: &str) -> bool {
+pub(crate) fn is_reserved_group_name(name: &str) -> bool {
     ["ungrouped", "default"]
         .iter()
         .any(|reserved| name.eq_ignore_ascii_case(reserved))
@@ -152,7 +152,7 @@ impl AutoCollapsePolicy {
         }
     }
 
-    pub fn flat_window_ms(self) -> Option<u64> {
+    pub(crate) fn flat_window_ms(self) -> Option<u64> {
         match self {
             Self::Flat { hours } => Some(hours.saturating_mul(MILLIS_PER_HOUR)),
             Self::Disabled | Self::Adaptive { .. } => None,
@@ -217,7 +217,7 @@ pub enum AttentionPriority {
 /// un-normalized duplicate silently breaks dedup / delete / cache lookups.
 /// Single source of truth — `load`, `add_project`, and `ops::register_project`
 /// must all route through this so the stored path and the in-memory path match.
-pub fn normalize_project_path(path: &Path) -> PathBuf {
+pub(crate) fn normalize_project_path(path: &Path) -> PathBuf {
     PathBuf::from(path.to_string_lossy().trim_end_matches('/').to_string())
 }
 
@@ -527,7 +527,7 @@ impl GlobalConfig {
         }
     }
 
-    pub fn config_path() -> Option<PathBuf> {
+    pub(crate) fn config_path() -> Option<PathBuf> {
         dirs::config_dir().map(|directory| directory.join("wsx").join(CONFIG_V2_FILE))
     }
 
@@ -610,7 +610,7 @@ impl GlobalConfig {
         self.auto_collapse.flat_window_ms()
     }
 
-    pub fn is_worktree_excluded(&self, path: &Path) -> bool {
+    pub(crate) fn is_worktree_excluded(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy();
         self.exclude_worktree_paths
             .iter()
@@ -656,7 +656,7 @@ impl GlobalConfig {
         entry.groups.len() != old_len
     }
 
-    pub fn add_project(&mut self, name: String, path: PathBuf) {
+    pub(crate) fn add_project(&mut self, name: String, path: PathBuf) {
         let path = normalize_project_path(&path);
         self.projects.retain(|project| project.path != path);
         self.projects.push(ProjectEntry {
@@ -668,7 +668,7 @@ impl GlobalConfig {
         });
     }
 
-    pub fn remove_project(&mut self, path: &PathBuf) {
+    pub(crate) fn remove_project(&mut self, path: &PathBuf) {
         self.projects.retain(|project| &project.path != path);
     }
 
