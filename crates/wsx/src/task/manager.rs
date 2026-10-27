@@ -38,6 +38,8 @@ use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 /// Events within this long of each other, or during a turn, become one message.
 const EVENT_QUIET: Duration = Duration::from_secs(3);
+/// How often the host removes the captures of long-decided "To check" items.
+const CAPTURE_SWEEP: Duration = Duration::from_secs(60 * 60);
 /// What wsx asks after a quiet period. The reply is the recap the owner reads.
 const RECAP_REQUEST: &str = "The project has been quiet. Write the owner a short recap, at most 8 lines: \
 what landed and is live, what runs, and what waits for the owner and why. Read the ledger for it. Start no \
@@ -135,6 +137,8 @@ struct Manager {
     /// The file this host runs from, and whether it must exec its replacement.
     binary: Option<hosting::Binary>,
     reexec: bool,
+    /// When the host last removed old captures; `None` sweeps on the first tick.
+    captures_swept: Option<Instant>,
     owed: Owed,
 }
 
@@ -310,6 +314,7 @@ pub fn run(project_id: &str) -> Result<()> {
         last_activity: Instant::now(),
         binary: hosting::Binary::capture(),
         reexec: false,
+        captures_swept: None,
         owed: Owed::default(),
     };
     manager.restore()?;
@@ -373,6 +378,7 @@ impl Manager {
                 Event::Tick => {
                     self.watch_tasks();
                     self.ask_recap();
+                    self.sweep_captures();
                 }
                 Event::IdleStarted(began, Ok(id)) => {
                     self.say(&format!("started idle task #{id}"));
@@ -676,6 +682,25 @@ impl Manager {
     }
 
     /// Turn task state changes into event lines.
+    /// Remove the capture files of items decided more than 7 days ago, at the start and hourly.
+    /// ref: docs/tasks.md "To check"
+    fn sweep_captures(&mut self) {
+        if self
+            .captures_swept
+            .is_some_and(|at| at.elapsed() < CAPTURE_SWEEP)
+        {
+            return;
+        }
+        self.captures_swept = Some(Instant::now());
+        match checks::remove_old_captures(&self.dir.project_id) {
+            Ok(0) => {}
+            Ok(removed) => self.say(&format!(
+                "removed {removed} capture file(s) of decided items"
+            )),
+            Err(error) => self.say(&format!("cannot remove old captures: {error:#}")),
+        }
+    }
+
     fn watch_tasks(&mut self) {
         self.watch_approvals();
         self.watch_deploys();

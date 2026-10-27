@@ -456,9 +456,17 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     }
     // ^ This task's items of the project's "To check" list, and the task a fail started.
     let items = checks::read(&scope.store).unwrap_or_default();
+    // ^ A decided item's capture goes after 7 days: the row says so (docs/tasks.md "To check").
     summary["to_check"] = json!(items
         .iter()
         .filter(|item| item.task == task)
+        .map(|item| {
+            let mut row = json!(item);
+            if checks::capture_removed(&dir, item) {
+                row["capture_removed"] = json!(true);
+            }
+            row
+        })
         .collect::<Vec<_>>());
     summary["fixes"] = json!(record
         .fixes
@@ -819,14 +827,16 @@ pub fn checks(scope: &Scope) -> Outcome<Value> {
     Ok(json!({ "open": rows }))
 }
 
-/// The capture kept with an item, as its image. ref: docs/tasks.md "To check"
-pub fn check_capture(scope: &Scope, id: &str) -> Outcome<(Vec<u8>, &'static str)> {
+/// The capture kept with an item, an image or a video, or with `poster` the video's poster.
+/// ref: docs/tasks.md "To check"
+pub fn check_capture(scope: &Scope, id: &str, poster: bool) -> Outcome<(Vec<u8>, &'static str)> {
     let items = checks::read(&scope.store).map_err(internal)?;
     let item = items
         .iter()
         .find(|item| item.id == id)
         .ok_or_else(Fault::not_found)?;
-    let name = item.capture.as_deref().ok_or_else(Fault::not_found)?;
+    let name = if poster { &item.poster } else { &item.capture };
+    let name = name.as_deref().ok_or_else(Fault::not_found)?;
     let dir = open_task(scope, item.task).map_err(|_| Fault::not_found())?;
     checks::read_capture(&dir, name).map_err(|_| Fault::not_found())
 }

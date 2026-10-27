@@ -16,8 +16,12 @@ pub const CHECKS_FILE: &str = "checks.jsonl";
 const MAX_CHECKS_BYTES: u64 = 4 * 1024 * 1024;
 /// Longest note on a failed item.
 pub const MAX_NOTE_BYTES: usize = super::MAX_MESSAGE_BYTES;
-const MAX_CAPTURE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_IMAGE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_VIDEO_BYTES: u64 = 25 * 1024 * 1024;
 const CAPTURES: &str = "captures";
+/// How long a decided item keeps its capture files: the web media lifetime
+/// (docs/web-client.md "Media", `ttl_seconds = 604800`).
+const CAPTURE_KEPT_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -40,9 +44,12 @@ pub struct CheckItem {
     /// Where a person looks (see `HumanVerify`).
     #[serde(default, rename = "where", skip_serializing_if = "String::is_empty")]
     pub place: String,
-    /// The capture kept in the task folder, such as `captures/r3-1.png`.
+    /// The capture kept in the task folder, such as `captures/r3-1.png` or `captures/r3-1.mp4`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture: Option<String>,
+    /// A video capture's thumbnail kept in the task folder, such as `captures/r3-1.poster.png`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poster: Option<String>,
     pub pass_if: String,
     pub state: CheckState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -116,7 +123,7 @@ pub fn change(
 }
 
 /// Add the Human Verify items of a landed revision as open items, once per task and revision.
-/// Each `capture` is already the name kept in the task folder, or empty.
+/// Each `capture` and `poster` is already the name kept in the task folder, or empty.
 pub fn collect(
     project_id: &str,
     task: u32,
@@ -145,6 +152,7 @@ pub fn collect(
                 check: item.check.clone(),
                 place: item.place.clone(),
                 capture: Some(item.capture.clone()).filter(|name| !name.is_empty()),
+                poster: Some(item.poster.clone()).filter(|name| !name.is_empty()),
                 pass_if: item.pass_if.clone(),
                 state: CheckState::Open,
                 note: None,
@@ -217,7 +225,7 @@ pub fn state_name(state: CheckState) -> &'static str {
 }
 
 /// Keep a worker's capture in the task folder as `captures/r<revision>-<index>.<ext>`: a PNG,
-/// JPEG or WebP image of at most 2 MiB inside the working copy.
+/// JPEG or WebP image of at most 2 MiB or an MP4 video of at most 25 MiB inside the working copy.
 pub fn keep_capture(
     dir: &TaskDir,
     working_copy: &Path,
@@ -225,6 +233,33 @@ pub fn keep_capture(
     index: usize,
     path: &str,
 ) -> Result<String> {
+    keep(
+        dir,
+        working_copy,
+        &format!("r{revision}-{index}"),
+        path,
+        true,
+    )
+}
+
+/// Keep a video capture's poster as `captures/r<revision>-<index>.poster.<ext>`: an image only.
+pub fn keep_poster(
+    dir: &TaskDir,
+    working_copy: &Path,
+    revision: u32,
+    index: usize,
+    path: &str,
+) -> Result<String> {
+    keep(
+        dir,
+        working_copy,
+        &format!("r{revision}-{index}.poster"),
+        path,
+        false,
+    )
+}
+
+fn keep(dir: &TaskDir, working_copy: &Path, stem: &str, path: &str, video: bool) -> Result<String> {
     let root = working_copy.canonicalize()?;
     let source = root
         .join(path)
@@ -233,17 +268,77 @@ pub fn keep_capture(
     if !source.starts_with(&root) {
         bail!("{path} is outside the working copy");
     }
-    let bytes = read_bounded(&source, MAX_CAPTURE_BYTES)?;
-    let (ext, _) =
-        capture_type(&bytes).with_context(|| format!("{path} is not a PNG, JPEG or WebP image"))?;
+    let bytes = read_bounded(&source, MAX_VIDEO_BYTES)?;
+    let ext = match capture_type(&bytes) {
+        Some(("mp4", _)) if !video => bail!("{path} is not a PNG, JPEG or WebP image"),
+        Some((ext, _)) => ext,
+        None if video => bail!("{path} is not a PNG, JPEG or WebP image or an MP4 video"),
+        None => bail!("{path} is not a PNG, JPEG or WebP image"),
+    };
+    if bytes.len() as u64 > limit(ext) {
+        bail!("{path} is larger than {} bytes", limit(ext));
+    }
     create_private_dir(&dir.file(CAPTURES))?;
-    let name = format!("{CAPTURES}/r{revision}-{index}.{ext}");
+    let name = format!("{CAPTURES}/{stem}.{ext}");
     dir.write_file(&name, &bytes)?;
     Ok(name)
 }
 
-/// A kept capture's bytes and media type. Only names `keep_capture` writes are read.
+/// A kept capture's bytes and media type. Only names `keep_capture` and `keep_poster` write are read.
 pub fn read_capture(dir: &TaskDir, name: &str) -> Result<(Vec<u8>, &'static str)> {
+    let bytes = read_bounded(&capture_path(dir, name)?, MAX_VIDEO_BYTES)?;
+    let (_, media) = capture_type(&bytes)
+        .filter(|(ext, _)| bytes.len() as u64 <= limit(ext))
+        .context("the capture is not an image or a video")?;
+    Ok((bytes, media))
+}
+
+/// Whether the item had a capture that the sweep has removed.
+pub fn capture_removed(dir: &TaskDir, item: &CheckItem) -> bool {
+    item.capture
+        .as_deref()
+        .and_then(|name| capture_path(dir, name).ok())
+        .is_some_and(|path| !path.exists())
+}
+
+/// Remove the capture files (image, video, poster) of items passed or failed more than 7 days
+/// ago, under the list's lock; their rows stay. Returns how many files went.
+/// ref: docs/tasks.md "To check"
+pub fn remove_old_captures(project_id: &str) -> Result<usize> {
+    if !project_dir(project_id)?.join(CHECKS_FILE).exists() {
+        return Ok(0);
+    }
+    let cutoff = now_unix_ms().saturating_sub(CAPTURE_KEPT_MS);
+    let mut removed = 0;
+    change(project_id, |items| {
+        for item in items
+            .iter()
+            .filter(|item| item.state != CheckState::Open && item.unix_ms < cutoff)
+        {
+            let names = [&item.capture, &item.poster];
+            let names = names.into_iter().flatten().collect::<Vec<_>>();
+            if names.is_empty() {
+                continue;
+            }
+            let Ok(dir) = TaskDir::open(project_id, item.task) else {
+                continue;
+            };
+            for path in names
+                .iter()
+                .filter_map(|name| capture_path(&dir, name).ok())
+            {
+                if std::fs::remove_file(path).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        Ok(Vec::new())
+    })?;
+    Ok(removed)
+}
+
+/// The file of a kept capture name: only `captures/<file>` with a plain file name.
+fn capture_path(dir: &TaskDir, name: &str) -> Result<std::path::PathBuf> {
     let file = name
         .strip_prefix(CAPTURES)
         .and_then(|rest| rest.strip_prefix('/'))
@@ -255,12 +350,19 @@ pub fn read_capture(dir: &TaskDir, name: &str) -> Result<(Vec<u8>, &'static str)
                 && !file.starts_with('.')
         })
         .with_context(|| format!("{name} is not a kept capture"))?;
-    let bytes = read_bounded(&dir.file(CAPTURES).join(file), MAX_CAPTURE_BYTES)?;
-    let (_, media) = capture_type(&bytes).context("the capture is not an image")?;
-    Ok((bytes, media))
+    Ok(dir.file(CAPTURES).join(file))
 }
 
-/// The image type by its first bytes.
+/// The longest capture of the type: an image 2 MiB, a video 25 MiB.
+fn limit(ext: &str) -> u64 {
+    if ext == "mp4" {
+        MAX_VIDEO_BYTES
+    } else {
+        MAX_IMAGE_BYTES
+    }
+}
+
+/// The capture's type by its first bytes.
 fn capture_type(head: &[u8]) -> Option<(&'static str, &'static str)> {
     let at = |offset: usize, magic: &[u8]| head.get(offset..offset + magic.len()) == Some(magic);
     if at(0, b"\x89PNG\r\n\x1a\n") {
@@ -269,6 +371,9 @@ fn capture_type(head: &[u8]) -> Option<(&'static str, &'static str)> {
         Some(("jpg", "image/jpeg"))
     } else if at(0, b"RIFF") && at(8, b"WEBP") {
         Some(("webp", "image/webp"))
+    } else if at(4, b"ftyp") {
+        // ^ ISO BMFF: the first box is `ftyp` (ISO/IEC 14496-12 4.3).
+        Some(("mp4", "video/mp4"))
     } else {
         None
     }

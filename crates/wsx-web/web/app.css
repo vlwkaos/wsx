@@ -278,7 +278,7 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .diagram-scroll { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--color-raised) transparent; }
 .diagram-open { display: block; width: fit-content; margin-inline: auto; padding: 0; border: 0; background: none; cursor: zoom-in; }
 .diagram img, .viewer img { display: block; max-width: none; border-radius: 0; }
-.viewer img[data-loading] { visibility: hidden; }
+.viewer :is(img, video)[data-loading] { visibility: hidden; }
 .diagram-failed > * + * { margin-top: var(--space-1); }
 .viewer {
   width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 0; border: 0;
@@ -299,7 +299,9 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .viewer-note { margin: auto; }
 .viewer-stage { flex: 1; min-height: 0; overflow: auto; display: flex; touch-action: none; cursor: grab; }
 /* A transparent image keeps the scheme's page under it. */
-.viewer-stage img { margin: auto; flex: 0 0 auto; background: var(--color-bg); }
+.viewer-stage :is(img, video) { margin: auto; flex: 0 0 auto; background: var(--color-bg); }
+/* A video takes the touches for its own controls. */
+.viewer-stage[data-video] { touch-action: auto; cursor: auto; }
 /* An image link opens the viewer: the pointer says so. */
 a[data-view] { cursor: zoom-in; }
 /* A table takes its full height in the message; only a table wider than its block scrolls, sideways. */
@@ -819,8 +821,14 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 /* × while its note is open: it closes the note. */
 .check-act[aria-expanded="true"] { box-shadow: inset 0 0 0 var(--border-width) currentColor; }
 /* The item's capture: its link is as wide as its image. */
-.check-capture { display: block; width: fit-content; }
-.check-capture img {
+.check-capture { position: relative; display: block; width: fit-content; }
+/* A video without a poster shows a blank frame under its play mark. */
+.check-frame { display: block; width: calc(var(--size-rail) * 0.5 * 16 / 9); aspect-ratio: 16 / 9; max-width: 100%; background: var(--color-raised); }
+.check-play {
+  position: absolute; inset: 0; margin: auto; width: var(--size-control); height: var(--size-control);
+  display: grid; place-items: center; border-radius: 50%; background: var(--color-bg); color: var(--color-text); opacity: 0.85; pointer-events: none;
+}
+.check-capture :is(img, .check-frame) {
   display: block; max-width: 100%; max-height: calc(var(--size-rail) * 0.5);
   border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
 }

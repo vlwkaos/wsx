@@ -82,6 +82,9 @@ export function CheckRow({ project, item, revision, onChanged }) {
   const acting = can("task_act") && item.state === "open";
   const older = revision != null && item.revision !== revision ? ` (r${item.revision})` : "";
   const capture = `api/tasks/${project}/checks/${item.id}/capture`;
+  // ^ A video capture shows its poster (or a blank frame) with a play mark; the viewer plays it.
+  const video = item.capture?.endsWith(".mp4");
+  const poster = video && item.poster ? `api/tasks/${project}/checks/${item.id}/poster` : undefined;
   const did = item.did ?? item.title;
   return html`
     <li class="check-item" data-state=${item.state} data-gallery>
@@ -93,9 +96,12 @@ export function CheckRow({ project, item, revision, onChanged }) {
             <${Place} where=${item.where} />
             <dt>Passes if</dt><dd class="check-pass">${item.pass_if}</dd>
           </dl>
-          ${item.capture && html`
-            <a class="check-capture" href=${capture} data-view aria-label=${`Capture of: ${item.check}`}>
-              <img src=${capture} alt="" />
+          ${item.capture_removed && html`<p class="check-state">Capture removed</p>`}
+          ${item.capture && !item.capture_removed && html`
+            <a class="check-capture" href=${capture} data-view data-video=${video || undefined} data-poster=${poster}
+              aria-label=${`${video ? "Video" : "Capture"} of: ${item.check}`}>
+              ${video && !poster ? html`<span class="check-frame"></span>` : html`<img src=${poster ?? capture} alt="" />`}
+              ${video && html`<span class="check-play"><${Icon} name="play" /></span>`}
             </a>`}
           ${item.state === "failed" && html`<p class="check-state">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
           ${item.state === "passed" && html`<p class="check-state">Passed</p>`}

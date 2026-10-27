@@ -920,6 +920,27 @@ def run(wsx, wsxd, work, owned):
     assert stored.read_bytes().startswith(b'\x89PNG'), stored
     assert stored.parent.stat().st_mode & 0o777 == 0o700, oct(stored.parent.stat().st_mode)
     js('task', 'check', 'pass', kept[0]['id'])
+    # A video capture (MP4 by its `ftyp` box) and its poster are kept as r<k>-<n>.mp4 and
+    # r<k>-<n>.poster.png; a video over 25 MiB and a text file named .mp4 are dropped, their
+    # items kept without a capture (docs/tasks.md "To check").
+    video = js('task', 'new', 'WORK v.txt HV VIDEO BIGVIDEO NOTVIDEO')['id']
+    assert reviewed(video)['state'] == 'landed', show(video)
+    wait_closed(video)
+    folder = Path(show(video)['report']).parent
+    clip = (ROOT / 'scripts/fixtures/check-clip.mp4').read_bytes()
+    assert (folder / 'captures/r1-1.mp4').read_bytes() == clip, folder
+    assert (folder / 'captures/r1-1.poster.png').read_bytes().startswith(b'\x89PNG'), folder
+    assert sorted(p.name for p in (folder / 'captures').iterdir()) == ['r1-1.mp4', 'r1-1.poster.png'], folder
+    rows = [json.loads(line) for line in (folder.parent / 'checks.jsonl').read_text().splitlines()]
+    rows = [{k: row.get(k) for k in ('check', 'capture', 'poster')} for row in rows if row['task'] == video]
+    assert rows == [{'check': 'open the file', 'capture': 'captures/r1-1.mp4', 'poster': 'captures/r1-1.poster.png'},
+                    {'check': 'the long video plays', 'capture': None, 'poster': None},
+                    {'check': 'the text video plays', 'capture': None, 'poster': None}], rows
+    # ^ A third item with a capture for the capture sweep (part 20).
+    recent = js('task', 'new', 'WORK r.txt HV CAPTURE')['id']
+    assert reviewed(recent)['state'] == 'landed', show(recent)
+    wait_closed(recent)
+    js('task', 'check', 'pass', *[i['id'] for i in js('task', 'check')['open'] if i['task'] in (video, recent)])
     # No checks: nothing proves the work, so a ready task waits for a land by hand.
     configure(LAND_CONFIG.replace('  land: { auto: false }\n', '').replace(
         '  checks:\n    - "test ! -e broken.txt"\n', ''), 'no checks')
@@ -1308,6 +1329,24 @@ def run(wsx, wsxd, work, owned):
     assert owner_turn['model'] == 'fake-manager' and owner_turn['session'] == event_turn['session'], owner_turn
     switches = [t['set_model'] for t in traces() if 'set_model' in t and t['session'] == event_turn['session']]
     assert switches[-2:] == ['fake-events', 'fake-manager'], switches
+    # A decided item's capture files go 7 days after the decision, when the manager starts and
+    # hourly; its row stays. Staged: the video item decided 8 days ago, #recent's item open for 8
+    # days; the shot item was passed just now (docs/tasks.md "To check").
+    checks_file = Path(show(video)['report']).parent.parent / 'checks.jsonl'
+    current = {}
+    for line in checks_file.read_text().splitlines():
+        current[json.loads(line)['id']] = json.loads(line)
+    video_item, recent_item = (next(r for r in current.values() if r['task'] == n and r.get('capture')) for n in (video, recent))
+    eight_days_ago = int(time.time() * 1000) - 8 * 24 * 3600 * 1000
+
+    def append_rows(*rows):
+        with open(checks_file, 'a') as out:
+            fcntl.flock(out, fcntl.LOCK_EX)
+            out.write(''.join(json.dumps(row) + '\n' for row in rows))
+
+    append_rows(dict(video_item, unix_ms=eight_days_ago), dict(recent_item, state='open', unix_ms=eight_days_ago))
+    captures_of = {n: Path(show(n)['report']).parent / 'captures' for n in (video, recent, shot)}
+    assert sorted(p.name for p in captures_of[video].iterdir()) == ['r1-1.mp4', 'r1-1.poster.png']
     # Stop the manager host, finish a task while it is down, start it again.
     manager_socket = js('task', 'manager')['socket']
     assert len(manager_socket) < 104, manager_socket
@@ -1317,6 +1356,11 @@ def run(wsx, wsxd, work, owned):
     unseen = js('task', 'new', 'WORK late.txt')['id']
     wait_state(unseen, 'ready', 'failed')
     assert js('task', 'manager')['state'] == 'started'
+    wait(lambda: not any(captures_of[video].iterdir()), 'the decided video capture removed', 30)
+    assert [p.name for p in captures_of[recent].iterdir()] == ['r1-1.png'] and [p.name for p in captures_of[shot].iterdir()] == ['r1-1.png']
+    after_sweep = [json.loads(line) for line in checks_file.read_text().splitlines()]
+    assert [r for r in after_sweep if r['id'] == video_item['id']][-1]['capture'] == 'captures/r1-1.mp4', after_sweep
+    append_rows(dict(recent_item, unix_ms=int(time.time() * 1000)))
     late = wait(lambda: events_with('#%d ready r1' % unseen), 'event after restart')
     late_reply = reply_to(late[0]['id'])
     assert 'noted events' in late_reply['text']

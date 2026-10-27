@@ -407,9 +407,28 @@ def main():
         # ^ CAPTURE leaves a small PNG for the item; CMDHV names a command and BAREHV is a page
         # without a capture: wsx sends both back.
         verify = []
+        # ^ VIDEO leaves the small committed MP4 and a PNG poster; BIGVIDEO and NOTVIDEO add items with a
+        # video over 25 MiB and a text file named .mp4: wsx drops both captures.
         if 'HV' in words:
-            verify.append({'check': 'open the file', 'where': '/#/x' if 'CAPTURE' in words else 'a real device',
-                           'capture': 'shot.png' if 'CAPTURE' in words else '', 'pass_if': 'it has text'})
+            shown = 'CAPTURE' in words or 'VIDEO' in words
+            verify.append({'check': 'open the file', 'where': '/#/x' if shown else 'a real device',
+                           'capture': 'clip.mp4' if 'VIDEO' in words else 'shot.png' if 'CAPTURE' in words else '',
+                           'poster': 'poster.png' if 'VIDEO' in words else '', 'pass_if': 'it has text'})
+            if 'VIDEO' in words:
+                with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'check-clip.mp4'), 'rb') as clip:
+                    with open('clip.mp4', 'wb') as out:
+                        out.write(clip.read())
+                with open('poster.png', 'wb') as out:
+                    out.write(capture_png('CAPTURE'))
+        if 'BIGVIDEO' in words:
+            with open('huge.mp4', 'wb') as out:
+                out.write(b'\0\0\0\x20ftypisom')
+                out.truncate(26 * 1024 * 1024)
+            verify.append({'check': 'the long video plays', 'where': '/#/x', 'capture': 'huge.mp4', 'poster': '', 'pass_if': 'it plays'})
+        if 'NOTVIDEO' in words:
+            with open('notes.mp4', 'w') as out:
+                out.write('not a video\n')
+            verify.append({'check': 'the text video plays', 'where': '/#/x', 'capture': 'notes.mp4', 'poster': '', 'pass_if': 'it plays'})
             if 'CAPTURE' in words:
                 # ^ Labeled by the first worked file's stem, so two captures differ: "CAPTURE D".
                 stem = words[words.index('WORK') + 1][:1].upper() if 'WORK' in words else ''

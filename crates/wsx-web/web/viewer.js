@@ -1,5 +1,5 @@
 // Images full screen over the page (docs/web-client.md "Image viewer"): a To check capture, a
-// chat image, a drawn diagram. Pinch, the buttons, a double tap or ctrl+wheel zoom; a drag moves
+// chat image, a drawn diagram. A To check video plays here with its own controls and no zoom. Pinch, the buttons, a double tap or ctrl+wheel zoom; a drag moves
 // a zoomed image; a swipe or an arrow key goes to the other images of the same set. ×, Escape, a
 // tap beside the image (not zoomed) and Back close it: it has its own history entry, so the
 // phone's back gesture closes it and the page under it keeps its place.
@@ -12,7 +12,7 @@ const TAP_MS = 300;
 const TAP_PX = 10;
 const SWIPE_PX = 50;
 
-// Show `images` ([{ src, alt, width?, height? }]) from `index`; the focus goes back to `opener`.
+// Show `images` ([{ src, alt, width?, height?, video?, poster? }]) from `index`; the focus goes back to `opener`.
 // `dark` puts the images on the dark scheme whatever the page's is (a diagram keeps the page's:
 // it is drawn in it).
 export function openViewer(images, index, opener, { dark = true } = {}) {
@@ -34,7 +34,8 @@ export function viewImageLinks() {
     event.preventDefault();
     const group = link.closest("[data-gallery]");
     const links = group ? [...group.querySelectorAll("a[data-view]")] : [link];
-    const images = links.map((each) => ({ src: each.href, alt: each.querySelector("img")?.alt || each.getAttribute("aria-label") || "" }));
+    const images = links.map((each) => ({ src: each.href, alt: each.querySelector("img")?.alt || each.getAttribute("aria-label") || "",
+      video: each.hasAttribute("data-video"), poster: each.dataset.poster }));
     openViewer(images, links.indexOf(link), link);
   });
 }
@@ -120,6 +121,8 @@ function Viewer({ images, start, dark, onClosed }) {
     picture.current.toggleAttribute("data-swiping", Boolean(offset));
   };
   const down = (event) => {
+    // ^ The video's own controls get its pointers: no capture, swipe or tap zoom on it.
+    if (image.video && event.target === picture.current) return;
     try { stage.current.setPointerCapture(event.pointerId); } catch { /* a pointer that already ended */ }
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (pointers.current.size === 2) {
@@ -179,7 +182,7 @@ function Viewer({ images, start, dark, onClosed }) {
     }
   };
   const wheel = (event) => {
-    if (!event.ctrlKey) return;
+    if (!event.ctrlKey || image.video) return;
     event.preventDefault();
     zoomTo(zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1), event.clientX, event.clientY);
   };
@@ -199,25 +202,31 @@ function Viewer({ images, start, dark, onClosed }) {
   const scale = (fit ?? 1) * zoom;
   return html`
     <dialog class="viewer" ref=${dialog} data-scheme=${dark ? "dark" : undefined}
-      aria-label=${image.alt || "Image"} onCancel=${cancel} onClose=${() => { if (!done.current) close(); }} onKeyDown=${keys}>
+      aria-label=${image.alt || (image.video ? "Video" : "Image")} onCancel=${cancel} onClose=${() => { if (!done.current) close(); }} onKeyDown=${keys}>
       <div class="viewer-bar">
         ${many && html`
           <button class="icon-button" type="button" aria-label="Previous image" disabled=${at === 0} onClick=${() => go(-1)}><${Icon} name="back" /></button>
           <span class="time" aria-live="polite">${at + 1} of ${images.length}</span>
           <button class="icon-button" type="button" aria-label="Next image" disabled=${at === images.length - 1} onClick=${() => go(1)}><${Icon} name="chevron" /></button>`}
-        <span class="viewer-zoom">
+        <span class="viewer-zoom">${!image.video && html`
           <button class="button" type="button" aria-label="Zoom out" disabled=${zoom <= 1} onClick=${() => zoomCenter(zoom / ZOOM_STEP)}>−</button>
           <span class="time" aria-live="polite">${Math.round(zoom * 100)}%</span>
-          <button class="button" type="button" aria-label="Zoom in" disabled=${zoom >= MAX_ZOOM} onClick=${() => zoomCenter(zoom * ZOOM_STEP)}>+</button>
+          <button class="button" type="button" aria-label="Zoom in" disabled=${zoom >= MAX_ZOOM} onClick=${() => zoomCenter(zoom * ZOOM_STEP)}>+</button>`}
         </span>
         <button class="icon-button" type="button" aria-label="Close" autofocus onClick=${close}><${Icon} name="fail" /></button>
       </div>
-      <div class="viewer-stage" ref=${stage} onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up} onWheel=${wheel} onClick=${clicked}>
-        ${broken && html`<p class="note viewer-note" role="alert">The image could not be read.</p>`}
+      <div class="viewer-stage" ref=${stage} data-video=${image.video || undefined} onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up} onWheel=${wheel} onClick=${clicked}>
+        ${broken && html`<p class="note viewer-note" role="alert">The ${image.video ? "video" : "image"} could not be read.</p>`}
+        ${image.video ? html`
+        <video key=${image.src} ref=${picture} src=${image.src} poster=${image.poster} controls playsinline preload="metadata"
+          aria-label=${image.alt} data-loading=${fit === null || broken || undefined}
+          width=${natural && Math.round(natural.width * scale)} height=${natural && Math.round(natural.height * scale)}
+          onLoadedMetadata=${(event) => setMeasured({ width: event.target.videoWidth, height: event.target.videoHeight })}
+          onError=${() => setBroken(true)}></video>` : html`
         <img key=${image.src} ref=${picture} src=${image.src} alt=${image.alt} draggable=${false} data-loading=${fit === null || broken || undefined}
           width=${natural && Math.round(natural.width * scale)} height=${natural && Math.round(natural.height * scale)}
           onLoad=${(event) => setMeasured({ width: event.target.naturalWidth, height: event.target.naturalHeight })}
-          onError=${() => setBroken(true)} />
+          onError=${() => setBroken(true)} />`}
       </div>
     </dialog>`;
 }

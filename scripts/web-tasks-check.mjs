@@ -7,7 +7,7 @@
 // and whose last deploy failed; <plans-checkout> is its main checkout.
 // The project lands by hand and has: #1 and #4 waiting for a host, #2 ready with an item to
 // check, #3 ready, #5 closed after a long report the manager heard of, #6 working (its prompt
-// opens with "Owner asked:"), #7 and #8 landed with an item each to check, each with a capture (#7's summary has two
+// opens with "Owner asked:"), #7 and #8 landed with an item each to check, #7 with an image capture and #8 with a video (#7's summary has two
 // sentences), and two pending approvals: a1 lands #3, a2 discards #4 (shown as
 // "Approve land #3", "Approve discard #4"). Writing <restart-file> asks the test to restart
 // the server with another site name, so it serves another build; it writes <restart-file>.done.
@@ -1504,6 +1504,28 @@ const room = await evaluate(`(() => { const list = document.querySelector('.chec
     muted: getComputedStyle(label).color !== getComputedStyle(value).color,
     all: !!document.querySelector('dialog.task-sheet header.bar .check-all'), intro: !!document.querySelector('.check-intro') }; })()`);
 if (!room.inline || !room.full || !room.under || !room.edge || !room.muted || !room.all || room.intro) await fail(`the To check items are not laid out on a phone: ${JSON.stringify(room)}`);
+// ^ #8's capture is a video (docs/web-client-tasks.md "To check"): its poster with a play mark,
+// served with byte ranges for iPhone Safari, and the viewer plays it with controls, no autoplay.
+const videoLink = ".check-item:nth-child(2) .check-capture";
+const clip = await evaluate(`(async () => { const link = document.querySelector('${videoLink}');
+  const part = await fetch(link.href, { headers: { Range: 'bytes=0-99' } });
+  return { video: link.hasAttribute('data-video'), poster: link.querySelector('img').src.endsWith('/poster'), play: !!link.querySelector('.check-play svg'),
+    status: part.status, type: part.headers.get('content-type'), range: part.headers.get('content-range'), accept: part.headers.get('accept-ranges'),
+    length: (await part.arrayBuffer()).byteLength }; })()`);
+if (!clip.video || !clip.poster || !clip.play || clip.status !== 206 || clip.type !== "video/mp4" || !/^bytes 0-99\/\d+$/.test(clip.range || "")
+  || clip.accept !== "bytes" || clip.length !== 100) await fail(`#8's video capture reads ${JSON.stringify(clip)}`);
+await evaluate(`document.querySelector('${videoLink}').scrollIntoView({ block: 'nearest' })`);
+const playAt = await evaluate(`(() => { const box = document.querySelector('${videoLink}').getBoundingClientRect(); return [Math.round(box.left + box.width / 2), Math.round(box.top + box.height / 2)]; })()`);
+for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x: playAt[0], y: playAt[1], button: "left", clickCount: 1 });
+const playing = "document.querySelector('dialog.viewer[open] .viewer-stage video')";
+await until(`${playing}?.readyState >= 1 && !${playing}.hasAttribute('data-loading')`, "#8's video did not load its metadata in the viewer");
+const player = await evaluate(`(() => { const video = ${playing}; return { controls: video.controls, inline: video.playsInline, preload: video.getAttribute('preload'), autoplay: video.autoplay,
+  paused: video.paused, poster: video.poster.endsWith('/poster'), size: [video.videoWidth, video.videoHeight], zoom: !!document.querySelector('.viewer-zoom button') }; })()`);
+if (!player.controls || !player.inline || player.preload !== "metadata" || player.autoplay || !player.paused || !player.poster
+  || player.size.join() !== "160,90" || player.zoom) await fail(`#8's video in the viewer reads ${JSON.stringify(player)}`);
+await capture("to-check-video");
+await key("Escape", 27);
+await until("!document.querySelector('dialog.viewer') && !!document.querySelector('dialog.task-sheet[open]')", "Escape did not close the video viewer alone");
 await shot("to-check", ".composer-send");
 await viewImages("to-check", ".check-item:first-child .check-capture", 1);
 // ^ Try starts the preview of the item's task and becomes a link to it (docs/tasks.md "Preview").
