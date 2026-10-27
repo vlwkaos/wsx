@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn agent_test_persisted() -> Persisted {
