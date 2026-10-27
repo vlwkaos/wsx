@@ -260,6 +260,17 @@ impl Client {
     }
 
     fn connect(&self) -> io::Result<UnixStream> {
+        // ^ docs/daemon-discovery.md: the error names its kind and the socket it tried, so a
+        // client that looks in the wrong place says where it looked.
+        self.connect_once().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("{:?} at {}: {error}", error.kind(), self.socket.display()),
+            )
+        })
+    }
+
+    fn connect_once(&self) -> io::Result<UnixStream> {
         // ^ macOS answers EINVAL to a socket option or the peer token of a connection that a
         // closing listener dropped, as the old wsxd's does during a handoff: connect again.
         for attempt in 1.. {

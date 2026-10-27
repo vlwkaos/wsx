@@ -36,7 +36,8 @@ Refresh migrates only managed WSX command bindings, including bindings copied fr
 
 A live handoff cannot rewrite the environment of an existing shell. Updated adapters
 recover an absolute legacy reporter path that no longer exists by using the stable
-entry point derived from `WSX_SOCKET`, or the usual XDG/HOME wsx state directory.
+entry point derived from `WSX_SOCKET`, which wsxd gives each pane, or the usual
+XDG/HOME wsx state directory ([daemon-discovery.md](daemon-discovery.md)).
 If the owner-controlled entry is absent or points to a removed keg, recovery checks
 at most 32 absolute inherited PATH directories for `wsx`. It executes a canonical
 regular executable owned by the caller or root, with no group/other write permission,

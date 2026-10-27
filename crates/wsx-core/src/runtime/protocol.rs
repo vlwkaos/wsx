@@ -706,15 +706,29 @@ pub fn encode_line<T: Serialize>(value: &T) -> Result<Vec<u8>, serde_json::Error
     Ok(bytes)
 }
 
+/// wsx's state folder, `$XDG_STATE_HOME/wsx`: the task store and, unless `WSX_SOCKET` moves
+/// it, the daemon's socket. An empty or relative value is ignored, as the XDG base directory
+/// spec says, so the folder never depends on the current directory.
+pub fn state_dir() -> PathBuf {
+    let absolute = |name| {
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    absolute("XDG_STATE_HOME")
+        .or_else(|| absolute("HOME").map(|home| home.join(".local/state")))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("wsx")
+}
+
+/// The daemon's identity: wsxd keeps its state and singleton lock beside this socket, and
+/// gives it to its panes as `WSX_SOCKET` so a shell whose profile changes `XDG_STATE_HOME` or
+/// `HOME` per directory still reaches the daemon that owns it (docs/daemon-discovery.md).
 pub fn default_socket_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("WSX_SOCKET") {
-        return PathBuf::from(path);
-    }
-    let root = std::env::var_os("XDG_STATE_HOME")
+    std::env::var_os("WSX_SOCKET")
+        .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
-        .unwrap_or_else(std::env::temp_dir);
-    root.join("wsx/wsx.sock")
+        .unwrap_or_else(|| state_dir().join("wsx.sock"))
 }
 
 #[cfg(test)]
