@@ -302,7 +302,7 @@ pub(super) fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Re
     }
 }
 
-// ^ crates/wsx-daemon/src/lib.rs validates the live generation and attachment
+// ^ crates/wsx-daemon/src/agent_report.rs validates the live generation and attachment
 // before renewing. Do not resolve a session label or read a snapshot on this path.
 pub(super) fn cmd_agent_presence_renew(selector: &str, presence_id: &str) -> Result<()> {
     let pane = std::env::var(runtime::WSX_PANE_ID_ENV)
