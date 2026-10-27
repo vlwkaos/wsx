@@ -1,8 +1,8 @@
 // Chat: the agent's own saved conversation as a typed timeline, what the agent does
 // now, the messages that wait for it, and the composer (docs/web-client-chat.md).
 import { api, resolve } from "./api.js";
-import { bytes, elapsed, html, Icon, keepIn, readMap, useCallback, useEffect, useExit, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
-import { can, events, shows, stateOf, state, touch } from "./store.js";
+import { bytes, elapsed, html, Icon, keepIn, readMap, useCoalescedLoad, useEffect, useExit, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
+import { can, shows, stateOf, state, touch, useEventLoad } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { QuoteChip, Quoted, quoteOf, useReply, withQuote } from "./reply.js";
 
@@ -580,11 +580,8 @@ export function Chat({ session, onModel }) {
   // at its first unread reply, else where the reader left it.
   const { log, away, unread, since, scrolled, toEnd } = useFollowEnd(`session-${id}`, Boolean(data));
   const [jump, leaving] = useExit(away);
-  const generation = useRef(0);
-  // The timeline the page shows, one request at a time, and whether a change came during it.
+  // The timeline the page shows.
   const shown = useRef(null);
-  const loading = useRef(false);
-  const again = useRef(false);
   const draft = draftFor(id);
   const [reply, setReply] = useState(null);
   const quote = (line) => {
@@ -596,49 +593,22 @@ export function Chat({ session, onModel }) {
   // ^ While an agent writes, a change comes several times a second. Each one used to fetch
   // the whole timeline (about 200 KB on a long conversation). Now the page asks from the
   // start of its last turn; the server sends the full timeline only when that item is gone.
-  const load = useCallback(async () => {
-    if (loading.current) {
-      again.current = true;
-      return;
+  const load = useCoalescedLoad(async (current) => {
+    const known = shown.current;
+    const turn = known?.items.findLast((item) => item.kind === "user" && item.at_unix_ms != null);
+    const next = await api(`api/chat/${id}/timeline`, { query: turn ? { from: turn.id, at: turn.at_unix_ms } : undefined });
+    if (!current()) return;
+    if (next.from != null) {
+      const kept = known.items.findIndex((item) => item.id === next.from);
+      next.items = known.items.slice(0, kept).concat(next.items).slice(-TIMELINE_ITEMS);
     }
-    loading.current = true;
-    const mine = generation.current;
-    try {
-      do {
-        again.current = false;
-        const known = shown.current;
-        const turn = known?.items.findLast((item) => item.kind === "user" && item.at_unix_ms != null);
-        const next = await api(`api/chat/${id}/timeline`, { query: turn ? { from: turn.id, at: turn.at_unix_ms } : undefined });
-        if (mine !== generation.current) return;
-        if (next.from != null) {
-          const kept = known.items.findIndex((item) => item.id === next.from);
-          next.items = known.items.slice(0, kept).concat(next.items).slice(-TIMELINE_ITEMS);
-        }
-        shown.current = next;
-        setData(next);
-        setFailure("");
-      } while (again.current);
-    } catch (error) {
-      if (mine === generation.current) setFailure(error.message);
-    } finally {
-      if (mine === generation.current) loading.current = false;
-    }
-  }, [id]);
-  useEffect(() => {
-    load();
-    const changed = (event) => { if (event.detail.session_id === undefined || event.detail.session_id === id) load(); };
-    events.addEventListener("history", changed);
-    events.addEventListener("exchange", changed);
-    return () => {
-      // An answer for the session that was left is dropped, and the next one starts fresh.
-      generation.current += 1;
-      shown.current = null;
-      loading.current = false;
-      again.current = false;
-      events.removeEventListener("history", changed);
-      events.removeEventListener("exchange", changed);
-    };
-  }, [id]);
+    shown.current = next;
+    setData(next);
+    setFailure("");
+  }, (error) => setFailure(error.message), [id]);
+  useEventLoad(["history", "exchange"], load, (detail) => detail.session_id === undefined || detail.session_id === id, [id]);
+  // ^ An answer for the session that was left is dropped (the load's generation), and the next one starts fresh.
+  useEffect(() => () => { shown.current = null; }, [id]);
   // The session list says first that the agent started or stopped working.
   const status = stateOf(session);
   useEffect(() => { if (data) load(); }, [status.key]);

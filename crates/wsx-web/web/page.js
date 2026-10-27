@@ -2,8 +2,9 @@
 // file with a mermaid graph that the manager keeps up to date with the Edit tool, shown in the
 // sheet over the chat (docs/tasks.md "Project page", docs/web-client-tasks.md "Project page").
 import { api } from "./api.js";
-import { ago, html, Icon, Loading, useEffect, useNow, useRef, useState } from "./lib.js";
-import { events, useStore } from "./store.js";
+import { ago, html, Loading, useCoalescedLoad, useNow, useState } from "./lib.js";
+import { useEventLoad, useStore } from "./store.js";
+import { SheetBar } from "./ui.js";
 import { Markdown } from "./markdown.js";
 import { withChips } from "./tasks.js";
 import { ProjectFacts } from "./story.js";
@@ -12,30 +13,20 @@ export function ProjectPage({ project, onClose, grip }) {
   const overview = useStore().tasks[project];
   const [page, setPage] = useState(null);
   const [failure, setFailure] = useState("");
-  const live = useRef(true);
   const now = useNow(Boolean(page?.unix_ms));
-  useEffect(() => {
-    live.current = true;
-    const read = () => api(`api/tasks/${project}/page`).then(
-      (value) => { if (live.current) { setPage(value); setFailure(""); } },
-      (error) => { if (live.current) setFailure(error.message); });
-    read();
-    const changed = (event) => { if (event.detail.project == null || event.detail.project === project) read(); };
-    events.addEventListener("page", changed);
-    return () => {
-      live.current = false;
-      events.removeEventListener("page", changed);
-    };
-  }, [project]);
+  const read = useCoalescedLoad(async (current) => {
+    const value = await api(`api/tasks/${project}/page`);
+    if (!current()) return;
+    setPage(value);
+    setFailure("");
+  }, (error) => setFailure(error.message), [project]);
+  useEventLoad("page", read, (detail) => detail.project == null || detail.project === project, [project]);
   return html`
     <div class="page task-page">
-      <header class="bar" onPointerDown=${grip?.down} onPointerMove=${grip?.move} onPointerUp=${grip?.up} onPointerCancel=${grip?.up}>
-        <button class="icon-button" type="button" aria-label="Back to the chat" onClick=${onClose}><${Icon} name="back" /></button>
-        <div class="bar-title">
-          <span class="bar-label">Project page</span>
-          ${page?.unix_ms && html`<span class="bar-state">Updated ${ago(now - page.unix_ms)}</span>`}
-        </div>
-      </header>
+      <${SheetBar} grip=${grip} onClose=${onClose}>
+        <span class="bar-label">Project page</span>
+        ${page?.unix_ms && html`<span class="bar-state">Updated ${ago(now - page.unix_ms)}</span>`}
+      </${SheetBar}>
       <div class="scroll project-page">
         <${ProjectFacts} project=${project} overview=${overview} />
         ${failure ? html`<p class="error empty" role="alert">${failure}</p>`

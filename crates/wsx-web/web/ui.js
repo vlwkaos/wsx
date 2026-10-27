@@ -138,3 +138,12 @@ export function MoreMenu({ children }) {
       ${open && html`<div class="more-menu" role="menu" onClick=${() => setOpen(false)}>${children}</div>`}
     </div>`;
 }
+
+// The top bar of a sheet page: Back to the chat, the title block (`children`) and the tools
+// after it. The bar is also the sheet's grip: a drag on it moves the sheet (tasks.js `Sheet`).
+export const SheetBar = ({ grip, onClose, tools, children }) => html`
+  <header class="bar" onPointerDown=${grip?.down} onPointerMove=${grip?.move} onPointerUp=${grip?.up} onPointerCancel=${grip?.up}>
+    <button class="icon-button" type="button" aria-label="Back to the chat" onClick=${onClose}><${Icon} name="back" /></button>
+    <div class="bar-title">${children}</div>
+    ${tools}
+  </header>`;

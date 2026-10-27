@@ -81,6 +81,19 @@ export function useStore() {
 // `history` and `exchange` events of the stream, for the open chat.
 export const events = new EventTarget();
 
+// A screen that reads its data now and again when the stream says it changed: `load` runs on
+// each event in `names` (one name or a list) whose detail `wanted` accepts. `deps` as for
+// useEffect: the ids that `wanted` and `load` stand for.
+export function useEventLoad(names, load, wanted, deps) {
+  useEffect(() => {
+    const list = [names].flat();
+    const changed = (event) => { if (wanted(event.detail)) load(); };
+    load();
+    for (const name of list) events.addEventListener(name, changed);
+    return () => { for (const name of list) events.removeEventListener(name, changed); };
+  }, deps);
+}
+
 export const can = (capability) => state.site.capabilities.includes(capability);
 export const shows = (panel) => state.site.panels.includes(panel);
 export const touch = () => matchMedia("(pointer: coarse)").matches || innerWidth < 700;

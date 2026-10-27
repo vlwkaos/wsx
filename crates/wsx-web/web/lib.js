@@ -90,6 +90,47 @@ export function keepIn(key, id, value) {
   writeMap(key, all);
 }
 
+// One read at a time for a screen that reloads on change. The returned `load` starts a read;
+// called during one, it asks for one more after it and returns the running read's promise.
+// `step(current)` is one read that applies its answer, and checks `current()` after each
+// await: a change of `deps` (the screen shows another id) or the unmount ends the reads of
+// the old ones, and their answers are dropped. `fail(error)` is called for a failed read that
+// is still current. The generation guard is chat.js's pattern, shared.
+export function useCoalescedLoad(step, fail, deps) {
+  const run = useRef({ generation: 0, loading: false, again: false, pending: null });
+  const latest = useRef(null);
+  latest.current = { step, fail };
+  useEffect(() => () => {
+    run.current.generation += 1;
+    run.current.loading = false;
+    run.current.again = false;
+  }, deps);
+  return useCallback(() => {
+    const state = run.current;
+    if (state.loading) {
+      state.again = true;
+      return state.pending;
+    }
+    state.loading = true;
+    const mine = state.generation;
+    const current = () => mine === state.generation;
+    state.pending = (async () => {
+      try {
+        do {
+          state.again = false;
+          await latest.current.step(current);
+          if (!current()) return;
+        } while (state.again);
+      } catch (error) {
+        if (current()) latest.current.fail(error);
+      } finally {
+        if (current()) state.loading = false;
+      }
+    })();
+    return state.pending;
+  }, []);
+}
+
 // The present time, renewed every second while `active` is true.
 export function useNow(active) {
   const [now, setNow] = useState(Date.now());
