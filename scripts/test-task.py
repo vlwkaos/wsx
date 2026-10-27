@@ -1623,7 +1623,7 @@ def run(wsx, wsxd, work, owned):
     for n in (first, second):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', show(n)
         assert kinds(n, 'limit_wait', 'result', 'check_retry') == ['limit_wait', 'result'], log(n)
-        assert 'session limit' not in next(e for e in log(n) if e['kind'] == 'result')['summary']
+        assert "You've hit" not in next(e for e in log(n) if e['kind'] == 'result')['summary']
     sessions = {show(n)['record']['agent_session']: n for n in (first, second)}
     resumed = [sessions.get(t['session']) for t in traces()
                if not t.get('manager') and str(t.get('message', '')).startswith('The session limit has reset')]

@@ -723,6 +723,11 @@ impl Host {
     }
 
     fn try_start_turn(&mut self, text: &str) -> Result<()> {
+        // ^ A message during a usage limit joins the turn that continues after it.
+        if let Some(wait) = &mut self.limit_wait {
+            wait.text = format!("{}\n\n{text}", wait.text);
+            return Ok(());
+        }
         // ^ Not while a check-run waits: the exec would close its socket unanswered.
         if self.check_run.is_none() && self.binary.as_ref().is_some_and(hosting::Binary::replaced) {
             // ^ Every turn gets the replaced binary's launch: this host hands the turn over
@@ -731,11 +736,6 @@ impl Host {
             self.reexec = true;
             self.set_state(TaskState::Working);
             self.say("the wsx binary was replaced: the host restarts with it");
-            return Ok(());
-        }
-        // ^ A message during a usage limit joins the turn that continues after it.
-        if let Some(wait) = &mut self.limit_wait {
-            wait.text = format!("{}\n\n{text}", wait.text);
             return Ok(());
         }
         if self.wait_for_disk(DiskWait::Turn(text.to_string())) {
