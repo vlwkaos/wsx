@@ -112,6 +112,11 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .row-worktree { flex: 0 1 auto; }
 .row-session-name { font-weight: var(--font-weight-medium); }
 .row-context, .row-activity { font-size: var(--font-size-sm); color: var(--color-muted); }
+/* A project whose chat has a message this device has not read: an accent mark before its name
+   and the message's first line under it (docs/web-client-tasks.md "Home"). */
+.news-mark { flex: none; align-self: center; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-accent); }
+.row-news { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-sm); color: var(--color-text); }
+.row-context:empty { display: none; }
 .row-state {
   flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end;
   font-size: var(--font-size-sm); color: var(--color-muted);
