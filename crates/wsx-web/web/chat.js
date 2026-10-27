@@ -532,9 +532,12 @@ function Question({ session, question, onAnswered }) {
 // A long log renders its newest rows only: this many, and always from its first unread row,
 // with a button that shows as many more above (docs/web-client.md "Screens").
 const RECENT_ROWS = 60;
-// `name` is the log's: another log starts again from its newest rows.
-export function useRecent(name, rows, first) {
+// `name` is the log's: another log starts again from its newest rows. `keyOf` names a row.
+export function useRecent(name, rows, first, keyOf = (row) => row.key) {
   const [shown, setShown] = useState({ name, count: RECENT_ROWS });
+  // ^ The top row shown: rows that arrive later extend the end, so no row above the reader
+  // goes (docs/web-client.md "Screens").
+  const top = useRef(null);
   // ^ The rows go in above the reader: their distance from the log's end stays, so the row
   // they read stays where it is on the screen.
   const held = useRef(null);
@@ -546,7 +549,9 @@ export function useRecent(name, rows, first) {
   });
   const count = shown.name === name ? shown.count : RECENT_ROWS;
   const from = first ? Math.min(rows.indexOf(first), rows.length - count) : rows.length - count;
-  const start = Math.max(0, from);
+  const kept = top.current?.name === name ? rows.findIndex((row) => keyOf(row) === top.current.key) : -1;
+  const start = Math.max(0, kept >= 0 ? Math.min(from, kept) : from);
+  top.current = { name, key: rows[start] && keyOf(rows[start]) };
   const more = (event) => {
     const log = event.currentTarget.closest(".log");
     held.current = { log, fromEnd: log.scrollHeight - log.scrollTop };
@@ -668,7 +673,7 @@ export function Chat({ session, onModel }) {
   const blocked = status.key === "blocked";
   const lastUserBlock = list.findLast?.((block) => block.kind === "user");
   const firstNew = since == null ? null : list.find((block) => block.kind === "assistant" && block.at_unix_ms > since);
-  const [recent, earlier] = useRecent(`session-${id}`, list, firstNew);
+  const [recent, earlier] = useRecent(`session-${id}`, list, firstNew, (block) => block.id);
   const terminalLink = shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`;
   // A hold the chat cannot name: the server sends the rows above the agent's editor, closed
   // until asked for (docs/web-client-chat.md "Timeline").

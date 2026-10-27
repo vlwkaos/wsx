@@ -90,7 +90,7 @@ The default is a site at the root of its own hostname (a Tailscale Service) or p
 
 ## Screens
 
-A chat log (a session's and the manager's) renders its newest 60 rows, or from its first unread row when that is earlier; *Show 60 earlier* above them adds as many more, and the reader stays on the row they read. The page is a set of ES modules served as written: Preact 10.29.7 and htm 3.1.1 are vendored in `web/vendor/` (`scripts/vendor-preact.sh`, SHA-512 pinned, MIT) and there is no build step. Routes are in the URL fragment.
+A chat log (a session's and the manager's) renders its newest 60 rows, or from its first unread row when that is earlier; *Show 60 earlier* above them adds as many more, and the reader stays on the row they read. Rows that arrive while the log is shown add to its end: its top row stays, so no row goes from above the reader. The page is a set of ES modules served as written: Preact 10.29.7 and htm 3.1.1 are vendored in `web/vendor/` (`scripts/vendor-preact.sh`, SHA-512 pinned, MIT) and there is no build step. Routes are in the URL fragment.
 
 | Route | Screen |
 |---|---|
