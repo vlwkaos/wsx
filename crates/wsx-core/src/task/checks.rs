@@ -311,20 +311,16 @@ pub fn remove_old_captures(project_id: &str) -> Result<usize> {
     let cutoff = now_unix_ms().saturating_sub(CAPTURE_KEPT_MS);
     let mut removed = 0;
     change(project_id, |items| {
-        for item in items
-            .iter()
-            .filter(|item| item.state != CheckState::Open && item.unix_ms < cutoff)
-        {
-            let names = [&item.capture, &item.poster];
-            let names = names.into_iter().flatten().collect::<Vec<_>>();
-            if names.is_empty() {
-                continue;
-            }
+        // ^ A poster is only kept with a capture.
+        for item in items.iter().filter(|item| {
+            item.state != CheckState::Open && item.unix_ms < cutoff && item.capture.is_some()
+        }) {
             let Ok(dir) = TaskDir::open(project_id, item.task) else {
                 continue;
             };
-            for path in names
-                .iter()
+            for path in [&item.capture, &item.poster]
+                .into_iter()
+                .flatten()
                 .filter_map(|name| capture_path(&dir, name).ok())
             {
                 if std::fs::remove_file(path).is_ok() {
