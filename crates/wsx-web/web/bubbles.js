@@ -30,8 +30,8 @@ function shortLine(line) {
 
 // The conversation in time order: bubbles, status lines and quiet replies. A wsx line that a
 // resolution says too ("Approved land #3", or "#3 closed" and "#3 was closed") shows once, as the
-// wsx line, and so does a line said again within a minute. A pending approval goes into the manager's reply that ended the turn which
-// asked for it (docs/web-client-tasks.md "Project screen").
+// wsx line, and so does a line said again within a minute. A pending approval goes into the
+// manager's reply that ended the turn which asked for it (docs/web-client-tasks.md "Project screen").
 export function conversation(entries, resolutions, approvals = []) {
   const rows = [];
   // ^ wsx's recap request is not shown; the manager's answer to it is tagged Recap

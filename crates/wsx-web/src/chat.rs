@@ -24,6 +24,7 @@ use wsx_core::{
         AgentSessionRefKind, AgentState, Client, Pane, PaneId, Project, Request, Response,
         SessionId, Snapshot, WorktreeId,
     },
+    task::now_unix_ms,
 };
 
 const TIMELINE_ITEMS: usize = 400;
@@ -401,7 +402,7 @@ impl Chat {
             .agent
             .as_ref()
             .is_some_and(|agent| agent.attached && agent.state == AgentState::Blocked);
-        let now = wsx_core::task::now_unix_ms();
+        let now = now_unix_ms();
         let held = app.queue.list(session).iter().any(|queued| {
             queued.failed.is_none()
                 && queued.delivered_unix_ms.is_none()
@@ -745,7 +746,7 @@ impl Chat {
                 "the terminal runs another program; open the terminal",
             ));
         }
-        let now = wsx_core::task::now_unix_ms();
+        let now = now_unix_ms();
         {
             let mut resuming = crate::locked(&self.resuming);
             if resuming
@@ -841,9 +842,9 @@ impl Chat {
         if !ready {
             // ^ An agent started again for this message that never reported fails it, with why.
             let mut resuming = crate::locked(&self.resuming);
-            let stale = resuming.get(&session).is_some_and(|since| {
-                wsx_core::task::now_unix_ms().saturating_sub(*since) >= RESUME_WAIT_MS
-            });
+            let stale = resuming
+                .get(&session)
+                .is_some_and(|since| now_unix_ms().saturating_sub(*since) >= RESUME_WAIT_MS);
             if stale {
                 resuming.remove(&session);
                 app.queue.fail(
@@ -885,7 +886,7 @@ impl Chat {
             // after the turn ends: try again soon, and fail with the reason after a while.
             Err(fault) if busy(&fault) => {
                 let since = app.queue.not_yet(session, queued.id);
-                if wsx_core::task::now_unix_ms().saturating_sub(since) < NOT_YET_MS {
+                if now_unix_ms().saturating_sub(since) < NOT_YET_MS {
                     return settled;
                 }
                 app.queue.fail(session, queued.id, &fault.2);
