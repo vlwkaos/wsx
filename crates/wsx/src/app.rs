@@ -3192,6 +3192,14 @@ impl App {
         mut snapshot: runtime::Snapshot,
         worktrees: Option<Vec<(PathBuf, Vec<git_worktree::WorktreeEntry>)>>,
     ) {
+        // ^ docs/ui-state-ownership.md: the cursor stays on the row the owner looks at. Task
+        // sessions and worktrees come and go above it, so a row number would move the view.
+        self.ensure_flat();
+        let cursor = wsx_core::cache::resolve_cursor_identity(
+            &self.workspace,
+            self.flat(),
+            self.tree_selected,
+        );
         self.review_available = snapshot.capabilities.worktree_review_available;
         if self.plugin_sidecars != snapshot.plugin_sidecars {
             self.plugin_sidecars = snapshot.plugin_sidecars.clone();
@@ -3305,6 +3313,11 @@ impl App {
                 .is_some_and(|pane| pane.outcome_acknowledged);
         }
         self.rebuild_flat();
+        if let Some(index) = cursor.and_then(|identity| {
+            wsx_core::cache::find_cursor_index(&self.workspace, self.flat(), &identity)
+        }) {
+            self.tree_selected = index;
+        }
         self.clamp_selected();
         self.cancel_pending_terminal_entry_if_stale();
         self.runtime_health = RuntimeHealth::Healthy {

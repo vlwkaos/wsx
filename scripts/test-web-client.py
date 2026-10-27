@@ -2557,6 +2557,15 @@ capabilities = ["terminal_view"]
                     stopped = time.monotonic() - started
                     # Open streams get a two-second grace period, then the server ends.
                     assert stopped < 4, 'wsx web serve took %.1f s to stop' % stopped
+                    # A reply the open chat misses while the server is away: the page reads it again.
+                    session_id = int((signals / 'request').read_text().split()[1])
+                    history = work / (next(role for role, id in shown.items() if id == session_id) + '.jsonl')
+                    last = json.loads(history.read_text().splitlines()[-1])
+                    with history.open('a') as out:
+                        out.write(json.dumps({'type': 'assistant', 'uuid': 'missed-reply', 'parentUuid': last['uuid'],
+                            'sessionId': last['sessionId'], 'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime()),
+                            'message': {'role': 'assistant', 'model': 'claude-opus-5-5',
+                                        'content': [{'type': 'text', 'text': 'written while the server was away'}]}}) + '\n')
                     # Another build of the same site: a new name changes the page files.
                     files['m2'].write_text(files['m2'].read_text().replace('name = "wsx"', 'name = "wsx next"', 1))
                     serve('m2')

@@ -57,6 +57,10 @@ The canonical cache is `workspace-v3.toml` in the platform wsx cache directory. 
 
 The old core snapshot-write API is replaced by explicit changes. `WorkspaceCacheChanges::save` returns `ProjectCacheState` per submitted project. `AppliedCache` additionally returns saved worktree expansion for deferred discovery. Wire protocol, daemon revision, terminal leases, and configuration schema do not change.
 
+## Selected row
+
+A runtime refresh keeps the cursor on the same row by its identity (`resolve_cursor_identity` before, `find_cursor_index` after, in `App::apply_projected_snapshot`), not by its row number. Task hosts open and close sessions and worktrees all the time, so a row number above the viewed session moved the view to another session by itself; in Terminal mode the title then named that session while keys still went to the open pane. Only when the selected row is gone does the cursor stay at the row number, clamped to the list. `scripts/runtime-smoke.py` drives a TUI in a PTY: a session above the viewed one closes, a new one opens below it, wsxd hands off, and the cursor in the cache stays on the viewed session.
+
 ## Folded status
 
 Folded project and worktree rows summarize every descendant pane using normalized lifecycle, acknowledged outcomes, and reported foreground-job metadata. The existing context priority remains blocked/error, done, active, then idle/unknown/muted, with workspace order breaking ties. Active counts count sessions, not panes, and remain visible beside a higher-priority outcome. Folded badges use only the dominant indicator and active count, such as `◐ 1`, without the word `active`; the count keeps its Working color. Exited panes do not count as active. `stale` remains separate stored inactivity provenance, but its visible projection excludes projects with raw active sessions. Those projects also reject automatic inactivity collapse even when their last activity timestamp has expired. Neither guard expands manually folded projects, rewrites stored provenance, or grants activity credits from foreground-job metadata. Inactive projects retain their existing provenance behavior.

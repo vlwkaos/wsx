@@ -9,6 +9,11 @@ class ApiError extends Error {
   }
 }
 
+// How soon a lost stream or terminal opens again. A lost connection is said only after
+// QUIET_MS: a deploy restarts the server in about 3 s, and an open page shows nothing for it.
+export const RETRY_MS = [250, 500, 1000, 2000, 5000];
+export const QUIET_MS = 5000;
+
 export const resolve = (path) => new URL(path, document.baseURI).href;
 
 export async function api(path, { method = "GET", json, body, query } = {}) {
@@ -43,19 +48,23 @@ export const pageId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().to
 // again, and an open one may have missed events while the page slept, so `up` runs again
 // (docs/web-client.md "Event stream").
 export function openEvents(handlers) {
-  let stream, retry;
+  let stream, retry, retries = 0;
   const open = () => {
     clearTimeout(retry);
     stream = new EventSource(resolve(`api/events?page=${encodeURIComponent(pageId)}`));
     for (const name of ["workspace", "history", "exchange", "daemon", "resync", "revoked", "tasks", "task", "manager", "page"]) {
       stream.addEventListener(name, (event) => handlers[name]?.(JSON.parse(event.data)));
     }
-    stream.onopen = () => handlers.up?.();
+    stream.onopen = () => {
+      retries = 0;
+      handlers.up?.();
+    };
     stream.onerror = () => {
       handlers.down?.();
-      // EventSource reconnects by itself after a dropped connection. After an HTTP
-      // error it gives up (readyState 2), so open a new stream a little later.
-      if (stream.readyState === 2) retry = setTimeout(open, 5000);
+      // ^ The page opens the stream again itself, soon: a deploy restarts the server in about
+      // 3 s, and EventSource waits its own delay or, after an HTTP error, gives up.
+      stream.close();
+      retry = setTimeout(open, RETRY_MS[Math.min(retries++, RETRY_MS.length - 1)]);
     };
   };
   open();

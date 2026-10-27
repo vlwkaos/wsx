@@ -2,7 +2,7 @@
 // Phone: top-level screens share a bottom tab bar; a session owns the full height.
 // Wide (900 px and more): a left rail with the home list (the inbox or the projects without
 // task_view), the rest beside it.
-import { api, openEvents, pageId } from "./api.js";
+import { api, openEvents, pageId, QUIET_MS } from "./api.js";
 import { html, render, useEffect, useRef, useState } from "./lib.js";
 import { can, events, noteBuild, parseRoute, shows, stackUnder, state, trackHistory, update, useRoute, useStore } from "./store.js";
 import { Home } from "./home.js";
@@ -179,6 +179,7 @@ function reread() {
 }
 
 function start(session) {
+  let offline = null;
   update({ site: session.site, device: session.device, build: session.build });
   noteBuild(session.build?.id);
   noteUpgrade(session.upgrade_failed);
@@ -198,10 +199,14 @@ function start(session) {
       update({ tasks: { ...state.tasks, [data.project]: data } });
     },
     revoked: () => location.reload(),
-    down: () => update({ online: false }),
+    // ^ docs/web-client.md "Notices": a deploy restarts the server in about 3 s; the page says
+    // "Connection lost" only when the stream stays away longer.
+    down: () => { offline ??= setTimeout(() => update({ online: false }), QUIET_MS); },
     // Everything is read again once the stream is open, so no change falls between the read
     // and the stream; a reconnected or resumed stream may have missed changes.
     up: () => {
+      clearTimeout(offline);
+      offline = null;
       update({ online: true });
       reread();
       tellPresence(true);

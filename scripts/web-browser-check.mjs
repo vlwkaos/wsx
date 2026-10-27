@@ -146,11 +146,16 @@ if (mode === "restart") {
   await until("!!document.querySelector('.composer-field:not([disabled])')", "the finished session's composer did not open");
   await typeInto("typed before the new build");
   const buildA = await evaluate("new URL(document.querySelector('script[type=module]').src).pathname.split('/').at(-2)");
-  fs.writeFileSync(path.join(signals, "request"), "restart\n");
+  // ^ docs/web-client.md "Notices": a restart like a deploy's shows no "Connection lost".
+  await evaluate("window.offlineSeen = false; new MutationObserver(() => { window.offlineSeen ||= !!document.querySelector('.notice[data-offline]'); }).observe(document.body, { subtree: true, childList: true, attributes: true }); true");
+  // The caller adds a reply to this chat while the server is away.
+  fs.writeFileSync(path.join(signals, "request"), `restart ${chatLink.match(/\d+/)[0]}\n`);
   for (let attempt = 0; !fs.existsSync(path.join(signals, "done")); attempt++) {
     if (attempt > 600) await fail("the server was not restarted");
     await pause(100);
   }
+  await until("document.querySelector('.log')?.textContent.includes('written while the server was away')", "the chat did not read the reply it missed while the server was away", 100);
+  if (await evaluate("window.offlineSeen")) await fail("a server restart showed Connection lost");
   // The page says so once and does not reload by itself: the draft stays in the field.
   await until("!!document.querySelector('.build-pill')", "the page did not offer the new build", 300);
   if ((await evaluate("document.querySelector('.composer-field').value")) !== "typed before the new build") await fail("the offer of a new build took the draft");
