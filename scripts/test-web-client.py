@@ -2910,6 +2910,29 @@ def task_journey(args):
         wait_state(1, 'waiting')
         wait_state(2, 'ready')
         wait_state(3, 'ready')
+        # plans' chat begins with an older log (`log.1.jsonl`, read before `log.jsonl`): six events,
+        # each with the manager's quiet reply, an owner message, one more event and reply, and
+        # another owner message. The page folds the first run (docs/web-client-tasks.md
+        # "Project screen"). Delivered turns, so its manager never takes them as new; ids far past
+        # the ones it counts from.
+        manager_dir = state / 'wsx/tasks' / ('plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]) / 'manager'
+        manager_dir.mkdir(mode=0o700, parents=True)
+        old_log, start = [], int(time.time() * 1000) - 3_600_000
+
+        def logged(author, text, reply, quiet=True):
+            said, at = 9001 + len(old_log), start + len(old_log) * 20_000
+            old_log.extend([{'kind': 'message', 'id': said, 'from': author, 'text': text, 'unix_ms': at},
+                            {'kind': 'delivered', 'ids': [said], 'unix_ms': at + 1},
+                            dict({'kind': 'reply', 'id': said + 1, 'to': [said], 'text': reply, 'unix_ms': at + 2000}, **({'quiet': True} if quiet else {}))])
+        for line, reply in (('#89 ready r1: Fold the events', 'Landing #89.'), ('#89 landed r1: Fold the events', '#89 is on main.'),
+                            ('#91 ready r1: Chat chips', "I'm landing #91. It touches the chat, so I read its captures first."),
+                            ('#88 ready r1: Since line', 'Landing #88.'), ('#91 landed r1: Chat chips', '#91 is on main.'),
+                            ('#88 landed r1: Since line', '#88 is on main.')):
+            logged('events', line, reply)
+        logged('owner', 'Keep going.', 'On it.', quiet=False)
+        logged('events', '#92 ready r1: Short run', 'Landing #92.')
+        logged('owner', 'Thanks.', 'Noted.', quiet=False)
+        (manager_dir / 'log.1.jsonl').write_text(''.join(json.dumps(entry) + '\n' for entry in old_log))
         # `plans`: #1 waits for the owner (its worker was refused a tool and asks), #2 is ready.
         assert js('task', 'new', 'Let me jump between projects from the keyboard NEEDS WebSearch NOOP', '-p', 'plans')['id'] == 1
         # ^ A long file name: the sheet's "Land stops" line must wrap it on a phone.

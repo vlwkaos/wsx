@@ -161,8 +161,10 @@ async function pair() {
 // The top of the task sheet as words: what changed, what to know next, and whether a step path is left.
 const story = () => evaluate(`({ summary: document.querySelector('.story-summary')?.textContent.trim() ?? '',
   next: document.querySelector('.story-next')?.textContent.trim() ?? '', steps: document.querySelectorAll('.story-steps').length })`);
+// The muted lines, folded runs opened first (a closed one is opened, an open one stays).
+const statusLines = "(document.querySelectorAll('.log .fold-toggle[aria-expanded=\"false\"]').forEach((node) => node.click()), [...document.querySelectorAll('.status-line')])";
 // A muted line that names task n as `word` ("#7 done").
-const statusSays = (n, word) => `[...document.querySelectorAll('.status-line')].some((node) => node.textContent.includes('#${n} ${word}'))`;
+const statusSays = (n, word) => `${statusLines}.some((node) => node.textContent.includes('#${n} ${word}'))`;
 // The sheet's action buttons, under its top.
 const nextButtons = () => text(".task-sheet .task-next button");
 const clickNext = (label) => evaluate(`[...document.querySelectorAll('.task-sheet .task-next button')].find((node) => node.textContent === ${JSON.stringify(label)}).click()`);
@@ -639,7 +641,7 @@ await until(`${statusSays(7, "done")} && ${statusSays(8, "done")}`, "the landed 
 // ^ One line per task change: #5's close is the events line "#5 closed", never also its
 // resolution "#5 was closed and discarded".
 await until(statusSays(5, "closed"), "#5's close left no muted line");
-const closeLines = await evaluate("[...document.querySelectorAll('.status-line')].map((node) => node.textContent.trim()).filter((words) => /^#5 (closed|was closed)/.test(words))");
+const closeLines = await evaluate(`${statusLines}.map((node) => node.textContent.trim()).filter((words) => /^#5 (closed|was closed)/.test(words))`);
 if (closeLines.length !== 1) await fail(`#5's close shows as ${JSON.stringify(closeLines)}`);
 // ^ The manager's reply to a turn of only events (the fake says "noted events") is a muted line
 // under the manager's name, never a bubble and never joined to an event.
@@ -804,12 +806,12 @@ await typeInto(`.reservoir .need[data-key=${JSON.stringify(answerKey)}] .need-fo
 await evaluate(`document.querySelector('.reservoir .need[data-key=${JSON.stringify(answerKey)}] .need-form').requestSubmit()`);
 await until(`!document.querySelector('.reservoir .need[data-key=${JSON.stringify(answerKey)}]')`, "the answer did not clear the row of #1", 300);
 // ^ The chat says the answer as a status line.
-await until("[...document.querySelectorAll('.status-line')].some((node) => /#1 got an answer/.test(node.textContent))", "the answer in the reservoir left no status line", 60);
+await until(`${statusLines}.some((node) => /#1 got an answer/.test(node.textContent))`, "the answer in the reservoir left no status line", 60);
 let moved = await clearRow("Approve land #3", "Approve");
 if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))")) await fail("a notice repeats the status line of Approve");
 await until(`!${rowOf("Approve land #3")} && !${rowOf("#3")}`, "the reservoir kept the approved landing", 300);
 // ^ The approval and the landing are muted lines.
-await until("[...document.querySelectorAll('.status-line')].some((node) => /Approved land #3/.test(node.textContent))", "the approval left no muted line", 300);
+await until(`${statusLines}.some((node) => /Approved land #3/.test(node.textContent))`, "the approval left no muted line", 300);
 await until(statusSays(3, "done"), "the landing of #3 left no muted line", 300);
 await until(`(${rowOf("#1")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#1 is not ready to land after its answer", 300);
 moved = await clearRow("#1", "Land");
@@ -1508,7 +1510,7 @@ await evaluate("document.querySelector('.check-all').click()");
 await until("(document.querySelector('dialog.task-sheet .empty')?.textContent ?? '') === 'Nothing to check.'", "All passed did not empty the list", 60);
 await shot("to-check-done");
 await closeSheet("the To check list", chat);
-await until("[...document.querySelectorAll('.status-line')].some((node) => /#7 failed a check; #\\d+ fixes it/.test(node.textContent))", "the chat does not say which task fixes the failed check", 60);
+await until(`${statusLines}.some((node) => /#7 failed a check; #\\d+ fixes it/.test(node.textContent))`, "the chat does not say which task fixes the failed check", 60);
 await until("!/to check/.test(document.querySelector('.reservoir-words')?.textContent ?? '')", "the reservoir still counts items to check", 60);
 // ^ With #4 and the fix task landed (a pending approval denied) only Running is left: its label
 // is the first row, whole at the reservoir's top, with the chevron at its right end.
@@ -1552,6 +1554,31 @@ await until("!!document.querySelector('.reservoir-head')", "plans has no reservo
 await until("document.querySelectorAll('.log .bubble').length >= 2", "plans' chat shows no managers' bubbles", 30);
 const plansAuthors = await bubbles();
 if (!plansAuthors.some(({ author, tag }) => author === "plans" && tag === "To Atlas") || !plansAuthors.some(({ author }) => author === "Atlas")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
+// ^ plans' older log (test-web-client.py): six events with quiet replies fold into one row, the
+// tasks once each with their newest words and the count of rows it hides; the last event and its
+// reply stay under it. The owner's message ends the run: the one event after it does not fold.
+const foldRow = "[...document.querySelectorAll('.log > .fold')].find((node) => /#89/.test(node.textContent))";
+await until(`!!${foldRow}`, "plans' run of events did not fold", 30);
+const foldSeen = async () => evaluate(`(() => { const fold = ${foldRow}; const toggle = fold.querySelector('.fold-toggle');
+  const after = (node) => node.nextElementSibling?.textContent.trim();
+  return { chips: [...toggle.querySelectorAll('.fold-chip')].map((node) => node.textContent),
+    count: toggle.querySelector('.fold-count').textContent, open: toggle.getAttribute('aria-expanded'), inside: [...fold.querySelectorAll('.status-line, .reply-text')].map((node) => node.textContent),
+    next: [after(fold), after(fold.nextElementSibling)], hidden: [...document.querySelectorAll('.log > .reply-line, .log > .status-line')].some((node) => /Landing #89|^#89 ready/.test(node.textContent)),
+    short: [...document.querySelectorAll('.log > .status-line')].some((node) => node.textContent === '#92 ready') && [...document.querySelectorAll('.log > .reply-line')].some((node) => /Landing #92/.test(node.textContent)) }; })()`);
+let folding = await foldSeen();
+if (JSON.stringify(folding.chips) !== JSON.stringify(["#89 done", "#91 done", "#88 done"]) || folding.count !== "10 updates" || folding.open !== "false"
+  || folding.inside.length || folding.hidden || folding.next[0] !== "#88 done" || !/#88 is on main/.test(folding.next[1] ?? "") || !folding.short) await fail(`plans' folded run reads ${JSON.stringify(folding)}`);
+await evaluate(`${foldRow}.scrollIntoView({ block: 'center' })`);
+await shot("fold-closed");
+await evaluate(`${foldRow}.querySelector('.fold-toggle').click()`);
+await until(`${foldRow}.querySelector('.fold-toggle').getAttribute('aria-expanded') === 'true'`, "a tap did not open the folded run");
+folding = await foldSeen();
+if (folding.inside.length !== 10 || folding.inside[0] !== "#89 ready" || folding.inside[5] !== "I'm landing #91. More" || folding.count !== "Hide 10 updates") await fail(`plans' open run reads ${JSON.stringify(folding)}`);
+await evaluate(`${foldRow}.scrollIntoView({ block: 'start' })`);
+await shot("fold-open");
+await evaluate(`${foldRow}.querySelector('.fold-toggle').click()`);
+await until(`${foldRow}.querySelector('.fold-toggle').getAttribute('aria-expanded') === 'false' && !${foldRow}.querySelector('.status-line')`, "a second tap did not fold the run");
+await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
 await openReservoir();
 await until(`!!${rowOf("#1")}`, "the waiting task has no reservoir row");
 const waitRow = (await rows()).find((row) => row[0] === "#1");
@@ -1809,6 +1836,6 @@ await pause(300);
 const shifted = (await rowAt(reading.key)) - reading.down;
 if (Math.abs(shifted) > 2) await fail(`Show earlier moved the row in view by ${shifted} px`);
 await toLatest("390 px");
-console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach, the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass, All passed, the fix task's line), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

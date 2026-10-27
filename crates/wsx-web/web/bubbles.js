@@ -95,7 +95,52 @@ export function conversation(entries, resolutions, approvals = []) {
     row.first = !same(before, row.at - (before?.at ?? 0));
     row.last = !same(after, (after?.at ?? 0) - row.at);
   });
-  return shown;
+  return folded(shown);
+}
+
+// ^ Event lines and quiet replies in a row, three or more, fold into one row: each task of the
+// run once with its newest words, and how many rows a tap shows. The run's last event line and
+// the replies after it stay below the fold (docs/web-client-tasks.md "Project screen").
+function folded(rows) {
+  const out = [];
+  for (let start = 0; start < rows.length;) {
+    let end = start;
+    while (end < rows.length && (rows[end].kind === "line" || rows[end].kind === "quiet")) end++;
+    if (end === start) {
+      out.push(rows[start++]);
+      continue;
+    }
+    const run = rows.slice(start, end);
+    start = end;
+    const lastLine = run.findLastIndex((row) => row.kind === "line");
+    const tail = lastLine < 0 ? run.length - 1 : lastLine;
+    if (run.length < 3 || tail < 2) {
+      out.push(...run);
+      continue;
+    }
+    const chips = new Map();
+    for (const row of run) {
+      const [, task, rest] = row.kind === "line" ? /^#(\d+)\b(.*)$/s.exec(row.text) ?? [] : [];
+      if (task) chips.set(task, rest);
+    }
+    if (run[tail].kind === "quiet") run[tail].first = true;
+    // ^ Keyed by the run's first row: a run that grows keeps its row and whether it is open.
+    out.push({ kind: "fold", key: `fold-${run[0].key}`, at: run[tail - 1].at, rows: run.slice(0, tail), chips: [...chips] }, ...run.slice(tail));
+  }
+  return out;
+}
+
+// A folded run: one tap shows its rows under it, rendered by `render`, another folds them.
+export function Fold({ row, render }) {
+  const [open, setOpen] = useState(false);
+  return html`
+    <div class="fold" data-key=${row.key} data-at=${row.at}>
+      <button class="fold-toggle" type="button" aria-expanded=${open} onClick=${() => setOpen(!open)}>
+        ${row.chips.map(([task, rest]) => html`<span class="fold-chip" key=${task}><span class="fold-task">#${task}</span>${rest}</span>`)}
+        <span class="fold-count">${open ? "Hide " : ""}${row.rows.length} updates</span>
+      </button>
+      ${open && row.rows.map(render)}
+    </div>`;
 }
 
 // `names`: the manager's and its peers' names as the server resolves them (docs/tasks.md "Config").
