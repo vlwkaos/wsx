@@ -398,14 +398,9 @@ fn apply(source: &Source, manifest: Manifest, resolved: &mut Resolved) -> Result
 }
 
 pub fn check_png(bytes: &[u8], size: u32) -> Result<()> {
-    // PNG signature, then IHDR width and height as big-endian u32.
     ensure!(
         bytes.len() as u64 <= MAX_ICON_BYTES
-            && bytes.len() > 24
-            && bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-            && &bytes[12..16] == b"IHDR"
-            && bytes[16..20] == size.to_be_bytes()
-            && bytes[20..24] == size.to_be_bytes(),
+            && wsx_core::task::checks::png_size(bytes) == Some((size, size)),
         "icon must be a {size}x{size} PNG of at most 1 MiB"
     );
     Ok(())

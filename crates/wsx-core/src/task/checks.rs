@@ -349,6 +349,16 @@ fn capture_path(dir: &TaskDir, name: &str) -> Result<std::path::PathBuf> {
     Ok(dir.file(CAPTURES).join(file))
 }
 
+/// The width and height a PNG says in its IHDR; `None` for anything else.
+/// ^ The web sizes a capture's box before the image arrives (docs/web-client-tasks.md "To check").
+pub fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let number = |at: usize| Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || bytes.get(12..16) != Some(b"IHDR") {
+        return None;
+    }
+    Some((number(16)?, number(20)?))
+}
+
 /// The longest capture of the type: an image 2 MiB, a video 25 MiB.
 fn limit(ext: &str) -> u64 {
     if ext == "mp4" {
