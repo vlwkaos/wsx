@@ -135,15 +135,24 @@ def call(method, params=None):
     return wsxd_client.call(SOCKET, method, params)
 
 
-def wsx(*args, extra_env=None, pane_id=None):
+def wsx(*args, extra_env=None, pane_id=None, timeout=None):
     # ^ The caller's own WSX_PANE_ID must never leak into an isolated CLI call.
     cli_env = {key: value for key, value in env.items() if key != "WSX_PANE_ID"}
     if pane_id is not None:
         cli_env["WSX_PANE_ID"] = str(pane_id)
     return subprocess.run(
         [str(WSX), *args], cwd=PROJECT, env=cli_env | (extra_env or {}),
-        check=False, capture_output=True, text=True,
+        check=False, capture_output=True, text=True, timeout=timeout,
     )
+
+
+def wait_for(test, label, seconds=10):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if test():
+            return
+        time.sleep(0.1)
+    raise AssertionError(label)
 
 
 def send_shell_command(pane_id, command, client_id):
@@ -1307,24 +1316,19 @@ send_shell_command(
     f'runtime status --json > {profile_status}.tmp 2>&1; mv {profile_status}.tmp {profile_status}',
     41,
 )
-deadline = time.monotonic() + 10
-while time.monotonic() < deadline and not profile_status.exists():
-    time.sleep(0.05)
-profile_text = profile_status.read_text() if profile_status.exists() else "no answer"
+wait_for(profile_status.exists, "the pane's wsx did not answer runtime status")
+profile_text = profile_status.read_text()
 assert not (PROFILE / "state" / "wsx" / "wsx.sock").exists(), ("second wsxd", profile_text)
 assert json.loads(profile_text)["socket"] == str(SOCKET), profile_text
 
 
 def second_root(extra):
     # ^ A second root is its own daemon with its own state, beside the first, never against it.
-    root_env = env | {"WSX_DAEMON_BIN": str(DAEMON)} | extra
-    started = subprocess.run([str(WSX), "status", "--json"], cwd=PROJECT, env=root_env,
-                             check=False, capture_output=True, text=True, timeout=30)
+    run = lambda *args: wsx(*args, extra_env={"WSX_DAEMON_BIN": str(DAEMON)} | extra, timeout=30)
+    started = run("status", "--json")
     assert started.returncode == 0, ("second root start", extra, started.stdout, started.stderr)
-    status = subprocess.run([str(WSX), "runtime", "status", "--json"], cwd=PROJECT, env=root_env,
-                            check=False, capture_output=True, text=True, timeout=30)
-    stop = subprocess.run([str(WSX), "daemon", "stop", "--force"], cwd=PROJECT, env=root_env,
-                          check=False, capture_output=True, text=True, timeout=30)
+    status = run("runtime", "status", "--json")
+    stop = run("daemon", "stop", "--force")
     assert status.returncode == 0, ("second root", extra, status.stdout, status.stderr)
     assert stop.returncode == 0, ("second root stop", extra, stop.stdout, stop.stderr)
     return Path(json.loads(status.stdout)["socket"])
@@ -1625,16 +1629,6 @@ def cursor_session(label):
     return next(pane["terminal_id"] for pane in call("snapshot")["data"]["panes"]
                 if pane["session_id"] == created["data"]["id"]), created["data"]["id"]
 
-
-def wait_for(test, label, seconds=10):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        if test():
-            return
-        time.sleep(0.1)
-    raise AssertionError(label)
-
-
 for leftover in call("snapshot")["data"]["sessions"]:
     assert call("session_close", {"session_id": leftover["id"],
                                   "expected_revision": leftover["revision"]})["type"] == "ack"
@@ -1728,9 +1722,7 @@ finally:
     tui.terminate()
     tui.wait(timeout=5)
     os.close(tui_master)
-assert call("shutdown")["type"] == "ack"
-wait_socket_stopped()
-cursor_daemon.wait(timeout=5)
+shutdown(cursor_daemon)
 
 latency_passes = 0
 latency_failures = 0

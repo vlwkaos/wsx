@@ -1465,11 +1465,21 @@ fn deploy(
     let (project_name, main) = project_entry(project)?;
     let settings =
         load_task_config(&main).map_err(|error| anyhow::anyhow!("{error}; nothing was run"))?;
-    let command = match kind {
-        DeployKind::Deploy => settings.deploy_command.clone(),
-        DeployKind::Release => settings.release_command.clone(),
-    }
-    .with_context(|| {
+    let (command, public, approve, action) = match kind {
+        DeployKind::Deploy => (
+            settings.deploy_command.clone(),
+            settings.deploy_public,
+            settings.deploy_approve,
+            ApprovalAction::Deploy,
+        ),
+        DeployKind::Release => (
+            settings.release_command.clone(),
+            true,
+            settings.release_approve,
+            ApprovalAction::Release,
+        ),
+    };
+    let command = command.with_context(|| {
         format!("tasks.{name}.command is not set in wsx.config.yml; nothing was run")
     })?;
     let project_id = store::project_id(&project_name, &main);
@@ -1478,10 +1488,6 @@ fn deploy(
     // ref: docs/tasks.md "Deploy and release"
     let open = checks::open_items(&project_id)?;
     let to_check = open.len();
-    let public = match kind {
-        DeployKind::Deploy => settings.deploy_public,
-        DeployKind::Release => true,
-    };
     if public && to_check > 0 {
         match (kind, owner_said) {
             (DeployKind::Release, Some(said)) => owner::check_owner_said(&project_id, said)?,
@@ -1490,14 +1496,6 @@ fn deploy(
             ),
         }
     }
-    let approve = match kind {
-        DeployKind::Deploy => settings.deploy_approve,
-        DeployKind::Release => settings.release_approve,
-    };
-    let action = match kind {
-        DeployKind::Deploy => ApprovalAction::Deploy,
-        DeployKind::Release => ApprovalAction::Release,
-    };
     if approve
         && acting_as_manager()
         && ask_owner(&project_id, action, None, commit, owner_said, json)?

@@ -1929,15 +1929,7 @@ impl App {
                     if let Some(pane_id) = self.terminal_stream.take().map(|active| active.pane_id)
                     {
                         self.terminal_surfaces.forget(pane_id);
-                        for pane in self
-                            .workspace
-                            .projects
-                            .iter_mut()
-                            .flat_map(|project| &mut project.worktrees)
-                            .flat_map(|worktree| &mut worktree.sessions)
-                            .flat_map(|session| &mut session.panes)
-                            .filter(|pane| pane.pane_id == pane_id)
-                        {
+                        if let Some(pane) = self.pane_mut(pane_id) {
                             pane.exited = true;
                         }
                     }
@@ -5144,15 +5136,7 @@ impl App {
         // ^ docs/terminal-exit-ordering.md: an exited pane keeps its last screen, often empty
         // after an agent quits. Opening it starts its saved command again (an agent resumes
         // its conversation), so the session is usable at once.
-        let exited = self
-            .workspace
-            .projects
-            .iter()
-            .flat_map(|project| &project.worktrees)
-            .flat_map(|worktree| &worktree.sessions)
-            .flat_map(|session| &session.panes)
-            .any(|pane| pane.pane_id == pane_id && pane.exited);
-        if exited {
+        if self.pane_mut(pane_id).is_some_and(|pane| pane.exited) {
             if let Err(error) = self.restart_exited_pane(pane_id) {
                 self.set_error(format!("Cannot start {target} again: {error:#}"));
                 return Ok(());
@@ -5193,34 +5177,25 @@ impl App {
 
     /// `SessionRestart` with the pane's revision as wsxd has it now: the exit itself moved it.
     fn restart_exited_pane(&mut self, pane_id: runtime::PaneId) -> Result<()> {
-        let runtime::Response::Snapshot(snapshot) =
-            self.runtime_client.call(&runtime::Request::Snapshot)?
-        else {
-            anyhow::bail!("unexpected snapshot response");
-        };
-        let expected_revision = snapshot
-            .panes
-            .iter()
-            .find(|pane| pane.id == pane_id)
-            .map(|pane| pane.revision)
-            .context("the pane is gone")?;
-        match self
-            .runtime_client
-            .call(&runtime::Request::SessionRestart {
-                pane_id,
-                expected_revision,
-            })? {
-            runtime::Response::Ack { revision } => {
-                // ^ A refresh read before the restart still says exited and would end the
-                // new stream.
-                if let Some((_, applied)) = self.applied_revision.as_mut() {
-                    *applied = (*applied).max(revision);
-                }
-                Ok(())
-            }
-            runtime::Response::Error(error) => anyhow::bail!("{}", error.message),
-            _ => anyhow::bail!("unexpected session restart response"),
+        let revision = ops::restart_session(pane_id)?;
+        // ^ A refresh read before the restart still says exited and would end the new stream.
+        if let Some((_, applied)) = self.applied_revision.as_mut() {
+            *applied = (*applied).max(revision);
         }
+        Ok(())
+    }
+
+    fn pane_mut(
+        &mut self,
+        pane_id: runtime::PaneId,
+    ) -> Option<&mut wsx_core::model::workspace::PaneInfo> {
+        self.workspace
+            .projects
+            .iter_mut()
+            .flat_map(|project| &mut project.worktrees)
+            .flat_map(|worktree| &mut worktree.sessions)
+            .flat_map(|session| &mut session.panes)
+            .find(|pane| pane.pane_id == pane_id)
     }
 
     fn leave_terminal_mode(&mut self, pane_id: runtime::PaneId) {
