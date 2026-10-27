@@ -5,6 +5,8 @@ name: CI
     branches: ['**']
     tags-ignore: ['**']
   pull_request:
+  # ^ release.yml runs these tests on the v* tag before it builds or publishes.
+  workflow_call:
 
 permissions:
   contents: read

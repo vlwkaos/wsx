@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate release recovery ordering without requiring Homebrew."""
+"""Validate the release test gate and recovery ordering without requiring Homebrew."""
 
 from pathlib import Path
 from typing import Optional
@@ -21,11 +21,17 @@ def require_before(text: str, first: str, second: str) -> None:
     assert text.index(first) < text.index(second), f"{first!r} must precede {second!r}"
 
 
+gate = section("  ci:", "  recovery-assets:")
 recovery = section("  recovery-assets:", "  build-macos:")
 bottles = section("  build-bottles:", "  homebrew:")
 prepare = section("      - name: Prepare formula", "      - name: Build and test bottle")
 final = section("  homebrew:")
 
+# ^ The tag run tests first: nothing builds or publishes before ci.yml passes.
+assert "uses: ./.github/workflows/ci.yml" in gate
+require_before(gate, "  preflight:", "needs: [ci]")
+assert "needs.ci.result == 'success'" in gate
+assert "needs.preflight.result == 'success'" in recovery
 assert '"${ARCHIVE}.sha256"' in recovery
 assert "sha256sum --check SHA256SUMS" not in recovery
 assert "needs: [publish-core, recovery-assets]" in bottles
@@ -57,4 +63,4 @@ assert "cat release-assets/SHA256SUMS" not in final
 assert "(cd release-assets && shasum -a 256 wsx-*-darwin-universal.tar.gz)" in final
 assert "(cd bottle-assets && shasum -a 256 *.bottle.tar.gz)" in final
 
-print("release recovery and native bottle-pour workflow: PASS")
+print("release test gate, recovery and native bottle-pour workflow: PASS")

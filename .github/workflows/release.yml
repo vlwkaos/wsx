@@ -26,12 +26,25 @@ env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
+  # ^ The release gate: a test failure stops the tag run before anything is built or published.
+  ci:
+    name: Tests
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   preflight:
     name: Verify release credentials and source
+    needs: [ci]
+    # ^ A Homebrew resume (workflow_dispatch) skips the tests; its source already passed them.
+    if: >-
+      ${{ !cancelled() &&
+          (needs.ci.result == 'success' ||
+           (github.event_name == 'workflow_dispatch' && needs.ci.result == 'skipped')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      actions: read
       contents: read
       id-token: write
     steps:
@@ -54,19 +67,6 @@ jobs:
           MANIFEST_VERSION=$(awk -F '"' '/^version =/ { print $2; exit }' Cargo.toml)
           test "$VERSION" = "$MANIFEST_VERSION"
 
-      - name: Verify exact tagged commit passed branch CI
-        if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          SOURCE_SHA=$(git rev-parse HEAD)
-          WORKFLOW_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml" --jq '.id')
-          RUNS=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?head_sha=${SOURCE_SHA}&event=push&status=completed&per_page=20")
-          jq -e --arg branch "$DEFAULT_BRANCH" \
-            '.workflow_runs | any(.conclusion == "success" and .head_branch == $branch)' \
-            <<<"$RUNS"
-
       - name: Verify Homebrew tap access
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
@@ -80,8 +80,9 @@ jobs:
 
   recovery-assets:
     name: Recover existing release assets
-    if: github.event_name == 'workflow_dispatch'
     needs: [preflight]
+    # ^ The skipped ci job would skip this job too without an explicit condition.
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && needs.preflight.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
