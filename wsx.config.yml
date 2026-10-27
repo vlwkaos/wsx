@@ -42,8 +42,8 @@ tasks:
     # with this prompt.
     idle: >-
       Run owner:dream to consolidate the session notes of knowledge/sessions/wsx in the main
-      checkout into the vault folder /Users/vlwkaos/ws/dgv3/notes/knowledges/wsx (coding,
-      domain, plan, history), pruning duplicates and stale entries. Write only that vault
+      checkout into the vault folder that ir registers as the wsx collection
+      (`ir collection list`; coding, domain, plan, history), pruning duplicates and stale entries. Write only that vault
       folder and the ir index in ~/.config/ir. First read the vault's history to see which
       sessions are already folded, and fold only the others; you may remove the vault's session
       files that are already folded. Never commit knowledge/ in this repository: it is untracked.
