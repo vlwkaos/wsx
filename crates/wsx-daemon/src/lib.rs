@@ -2086,11 +2086,16 @@ fn stream_terminal_updates(
             write_stream_message(stream, &TerminalServerMessage::Error(error))?;
             break;
         }
+        // ^ docs/terminal-raw-stream.md: messages are sampled under the pane operation
+        // lock and written after it, so a slow reader cannot delay input, resize or a takeover.
+        let mut messages = Vec::new();
+        let mut ended = false;
         let operation_lock = terminal_operation_lock(daemon, lease.pane_id);
         let operation = lock(&operation_lock);
         let runtime = match leased_stream_runtime(&lock(&daemon.state), lease) {
             Ok(runtime) => runtime,
             Err(error) => {
+                drop(operation);
                 write_stream_message(stream, &TerminalServerMessage::Error(error))?;
                 break;
             }
@@ -2101,33 +2106,48 @@ fn stream_terminal_updates(
         }
         let frame_due = baseline.is_none() || last_frame_sent.elapsed() >= PRESENTATION_CADENCE;
         let sample = runtime.presentation_sample(baseline, frame_due);
-        for write in sample.clipboard_writes {
-            write_stream_message(stream, &TerminalServerMessage::ClipboardWrite(write))?;
-        }
+        let sample_revision = sample.revision;
+        let synchronized_output = sample.synchronized_output;
+        messages.extend(
+            sample
+                .clipboard_writes
+                .into_iter()
+                .map(TerminalServerMessage::ClipboardWrite),
+        );
+        let mut frame_sent = false;
         if let Some(error) = lock(input_error).take() {
-            write_stream_message(stream, &TerminalServerMessage::Error(error))?;
-            break;
-        }
-        if exited {
-            write_stream_message(stream, &TerminalServerMessage::Exited)?;
-            break;
-        }
-        match sample.update {
-            Ok(Some(update)) => {
-                baseline = Some(update.revision());
-                write_stream_message(stream, &TerminalServerMessage::Update(update))?;
-                last_frame_sent = Instant::now();
-            }
-            Ok(None) => {}
-            Err(error) => {
-                write_stream_message(
-                    stream,
-                    &TerminalServerMessage::Error(ApiError::new("frame_failed", error.to_string())),
-                )?;
-                break;
+            messages.push(TerminalServerMessage::Error(error));
+            ended = true;
+        } else if exited {
+            messages.push(TerminalServerMessage::Exited);
+            ended = true;
+        } else {
+            match sample.update {
+                Ok(Some(update)) => {
+                    baseline = Some(update.revision());
+                    messages.push(TerminalServerMessage::Update(update));
+                    frame_sent = true;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    messages.push(TerminalServerMessage::Error(ApiError::new(
+                        "frame_failed",
+                        error.to_string(),
+                    )));
+                    ended = true;
+                }
             }
         }
         drop(operation);
+        for message in &messages {
+            write_stream_message(stream, message)?;
+        }
+        if frame_sent {
+            last_frame_sent = Instant::now();
+        }
+        if ended {
+            break;
+        }
         let state = lock(&daemon.state);
         // ^ [[wsx Architecture]] Recheck every wake predicate while holding the
         // notifier mutex. Frames wait only for the bounded presentation cadence;
@@ -2136,10 +2156,10 @@ fn stream_terminal_updates(
             continue;
         }
         let current_revision = runtime.revision();
-        if sample.synchronized_output && sample.revision != current_revision {
+        if synchronized_output && sample_revision != current_revision {
             continue;
         }
-        let wait = if !sample.synchronized_output && baseline != Some(current_revision) {
+        let wait = if !synchronized_output && baseline != Some(current_revision) {
             PRESENTATION_CADENCE.saturating_sub(last_frame_sent.elapsed())
         } else {
             Duration::from_millis(250)
