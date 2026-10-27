@@ -210,7 +210,8 @@ function start(session) {
   });
   // ^ iOS suspends a PWA in the background, and a stream that was down drops its events.
   const back = () => { if (document.visibilityState === "visible") resume(); };
-  addEventListener("pageshow", back);
+  // ^ The first load's pageshow is not a return: the stream's first `up` reads everything.
+  addEventListener("pageshow", (event) => { if (event.persisted) back(); });
   addEventListener("online", back);
   document.addEventListener("visibilitychange", back);
   const opened = parseRoute(location.hash);
