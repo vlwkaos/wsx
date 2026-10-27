@@ -81,9 +81,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .chain(notice.body.into_iter().flat_map(str::lines))
         .map(|line| Line::from(line).width().max(1).div_ceil(inner_width))
         .sum::<usize>();
+    // ^ An error keeps its next step readable: a wsxd handoff that did not finish says what to
+    // run in its fifth line (docs/daemon-live-upgrade.md "A stuck handoff").
+    let max_height = if notice.level == NoticeLevel::Error {
+        8
+    } else {
+        5
+    };
     let height = (wrapped_lines as u16)
         .saturating_add(2)
-        .clamp(2, 5.min(area.height.saturating_sub(1)));
+        .clamp(2, max_height.min(area.height.saturating_sub(1)));
     let x = if mobile {
         area.x
     } else {

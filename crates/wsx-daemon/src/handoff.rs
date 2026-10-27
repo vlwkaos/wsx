@@ -20,7 +20,7 @@ const LEGACY_HANDOFF_PROTOCOL: u32 = 15;
 #[cfg(unix)]
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(unix)]
-const OWNED_TIMEOUT: Duration = Duration::from_millis(500);
+const OWNED_POLL: Duration = Duration::from_millis(100);
 #[cfg(unix)]
 pub(super) const MAX_HANDOFF_PANES: usize = 64;
 #[cfg(unix)]
@@ -298,11 +298,47 @@ pub(super) fn report_owned(stream: &mut UnixStream) -> io::Result<()> {
     stream.flush()
 }
 
+// ^ docs/daemon-live-upgrade.md "A successor that dies": a successful commit write is the
+// ownership boundary, and a missing `owned` alone is ambiguous: rolling back while the
+// successor lives would make two PTY readers. A successor that exited is certainly not
+// reading, so only then is the source told to take its sessions back (an error here).
 #[cfg(unix)]
-pub(super) fn wait_owned_best_effort(stream: &mut UnixStream) {
-    // ^ A successful commit write is the ownership boundary. A missing ACK is
-    // ambiguous, so rollback here could create two live PTY readers.
-    let _ = expect_line(stream, "owned", OWNED_TIMEOUT);
+pub(super) fn wait_owned(stream: &mut UnixStream, child: &mut Child) -> io::Result<()> {
+    let exited = |child: &mut Child| child.try_wait().ok().flatten();
+    let died = |status: std::process::ExitStatus| {
+        io::Error::other(format!(
+            "the new wsxd exited before it took the sessions ({status})"
+        ))
+    };
+    let deadline = Instant::now() + HANDOFF_TIMEOUT;
+    stream.set_read_timeout(Some(OWNED_POLL))?;
+    loop {
+        match read_line(stream) {
+            Ok(_) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            // The stream closed: give a successor that died the time to be reaped.
+            Err(_) => {
+                let grace = Instant::now() + Duration::from_secs(1);
+                while Instant::now() < grace {
+                    if let Some(status) = exited(child) {
+                        return Err(died(status));
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                return Ok(());
+            }
+        }
+        if let Some(status) = exited(child) {
+            return Err(died(status));
+        }
+        if Instant::now() >= deadline {
+            return Ok(());
+        }
+    }
 }
 
 #[cfg(unix)]

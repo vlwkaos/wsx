@@ -528,7 +528,8 @@ pub struct DaemonLifecycle {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandoffError {
     pub unix_ms: u64,
-    /// `validate`, `pause`, `export`, `spawn`, `send`, `publish`, `ready`, `ownership` or `commit`.
+    /// `validate`, `pause`, `export`, `spawn`, `send`, `publish`, `ready`, `ownership`, `commit`
+    /// or `owned`.
     pub step: String,
     pub error: String,
 }

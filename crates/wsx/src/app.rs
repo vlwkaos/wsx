@@ -2563,8 +2563,12 @@ impl App {
                 self.needs_redraw = true;
             }
             runtime::EventSignal::Disconnected(error) => {
-                let first_disconnect =
-                    !matches!(self.runtime_health, RuntimeHealth::Reconnecting { .. });
+                // ^ A new reason replaces the notice: a handoff that did not finish follows
+                // a plain disconnect (docs/daemon-live-upgrade.md "A stuck handoff").
+                let new_reason = !matches!(
+                    &self.runtime_health,
+                    RuntimeHealth::Reconnecting { error: shown, .. } if *shown == error
+                );
                 let last_success = match self.runtime_health {
                     RuntimeHealth::Healthy { last_success } => Some(last_success),
                     RuntimeHealth::Reconnecting { last_success, .. } => last_success,
@@ -2574,7 +2578,7 @@ impl App {
                     last_success,
                     error: error.clone(),
                 };
-                if first_disconnect {
+                if new_reason {
                     self.set_notice(
                         NoticeLevel::Error,
                         format!("Runtime disconnected; retrying\n{error}"),

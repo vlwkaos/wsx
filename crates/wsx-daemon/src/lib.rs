@@ -1054,6 +1054,12 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
         write_lifecycle_marker(&daemon.lifecycle_path, "ready")?;
         handoff::report_ready(&mut stream)?;
         handoff::wait_commit(&mut stream)?;
+        // ^ docs/daemon-live-upgrade.md "A successor that dies": scripts/runtime-smoke.py
+        // ends a successor here, after the commit and before `owned`, which no outside
+        // signal can time. Read only by a successor, never by a daemon that starts cold.
+        if std::env::var_os("WSX_HANDOFF_FAULT").is_some_and(|fault| fault == "after_commit") {
+            std::process::exit(70);
+        }
         // Commit is irreversible. A publication failure must not kill imported PTYs.
         if let Err(error) = reporter::publish_pending(&mut reporter) {
             eprintln!("wsxd reporter publication after handoff commit: {error}; retrying under successor ownership");
@@ -1105,7 +1111,11 @@ fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
             }
         }
         let Some(active_listener) = listener.as_ref() else {
-            thread::sleep(Duration::from_millis(20));
+            // ^ Only a rollback that could not bind the socket again leaves it unbound.
+            if let Err(error) = rebind_listener(&socket, &mut listener) {
+                eprintln!("wsxd socket: {error}");
+                thread::sleep(Duration::from_secs(1));
+            }
             continue;
         };
         match active_listener.accept() {
@@ -1215,7 +1225,7 @@ fn perform_live_handoff(
     target: HandoffTarget,
 ) -> io::Result<()> {
     if let Err(error) = validate_handoff_executable(&target.executable, &target.binary_id) {
-        rollback_handoff(daemon, socket, listener, &[], "validate", &error)?;
+        rollback_handoff(daemon, socket, listener, &[], "validate", &error);
         return Err(error);
     }
     let runtimes = {
@@ -1254,7 +1264,7 @@ fn perform_live_handoff(
                 continue;
             }
             let error = io::Error::other(format!("pane {}: {error}", pane_id.0));
-            rollback_handoff(daemon, socket, listener, &paused, "pause", &error)?;
+            rollback_handoff(daemon, socket, listener, &paused, "pause", &error);
             return Err(error);
         }
         paused.push(Arc::clone(runtime));
@@ -1353,6 +1363,8 @@ fn perform_live_handoff(
             handoff::cleanup_child(&mut child);
             return Err(error);
         }
+        step = "owned";
+        handoff::wait_owned(&mut stream, &mut child)?;
         {
             let mut state = lock(&daemon.state);
             state.stopping = true;
@@ -1360,7 +1372,6 @@ fn perform_live_handoff(
             daemon.changed.notify_all();
             daemon.plugin_changed.notify_all();
         }
-        handoff::wait_owned_best_effort(&mut stream);
         Ok(())
     })();
 
@@ -1370,13 +1381,7 @@ fn perform_live_handoff(
             for (runtime, process_group) in source_ownership {
                 runtime.rollback_source_handoff(process_group);
             }
-            if let Err(rollback_error) =
-                rollback_handoff(daemon, socket, listener, &paused, step, &error)
-            {
-                return Err(io::Error::other(format!(
-                    "{error}; rollback failed: {rollback_error}"
-                )));
-            }
+            rollback_handoff(daemon, socket, listener, &paused, step, &error);
             Err(error)
         }
     }
@@ -1385,6 +1390,10 @@ fn perform_live_handoff(
 /// Back to serving after a failed handoff. The step and the error stay in the lifecycle
 /// status as `last_handoff_error`, because the daemon's stderr goes nowhere
 /// (docs/daemon-live-upgrade.md "A failed handoff").
+// ^ docs/daemon-live-upgrade.md "A stuck handoff": nothing here may leave the handoff open.
+// A daemon that kept `handoff_in_progress` after a failed rebind or marker write answered
+// every request with `daemon_replacing` for ever while its sessions ran unseen. A socket it
+// could not bind again is bound by the main loop (`rebind_listener`).
 fn rollback_handoff(
     daemon: &Daemon,
     socket: &Path,
@@ -1392,23 +1401,23 @@ fn rollback_handoff(
     paused: &[Arc<TerminalRuntime>],
     step: &str,
     error: &io::Error,
-) -> io::Result<()> {
-    lock(&daemon.state).last_handoff_error = Some(HandoffError {
-        unix_ms: unix_time_millis(),
-        step: step.to_string(),
-        error: error.to_string(),
-    });
-    if listener.is_none() {
-        prepare_socket(socket)?;
-        let restored = bind_owner_only(socket)?;
-        restored.set_nonblocking(true)?;
-        *listener = Some(restored);
+) {
+    let mut failures = vec![error.to_string()];
+    if let Err(rebind_error) = rebind_listener(socket, listener) {
+        failures.push(format!("bind the socket again: {rebind_error}"));
     }
     for runtime in paused {
         runtime.resume_handoff_reader();
     }
-    write_lifecycle_marker(&daemon.lifecycle_path, "ready")?;
+    if let Err(marker_error) = write_lifecycle_marker(&daemon.lifecycle_path, "ready") {
+        failures.push(format!("write the lifecycle marker: {marker_error}"));
+    }
     let mut state = lock(&daemon.state);
+    state.last_handoff_error = Some(HandoffError {
+        unix_ms: unix_time_millis(),
+        step: step.to_string(),
+        error: failures.join("; rollback could not "),
+    });
     if let Some(started) = state.handoff_started.take() {
         let paused_for = started.elapsed();
         for lease in state.leases.values_mut() {
@@ -1421,6 +1430,16 @@ fn rollback_handoff(
     state.replacement_protocol = None;
     state.replacement_executable = None;
     daemon.changed.notify_all();
+}
+
+/// Bind the canonical socket again when a handoff gave it up.
+fn rebind_listener(socket: &Path, listener: &mut Option<UnixListener>) -> io::Result<()> {
+    if listener.is_none() {
+        prepare_socket(socket)?;
+        let restored = bind_owner_only(socket)?;
+        restored.set_nonblocking(true)?;
+        *listener = Some(restored);
+    }
     Ok(())
 }
 
@@ -8147,8 +8166,7 @@ mod tests {
             &[],
             "validate",
             &io::Error::other("test"),
-        )
-        .unwrap();
+        );
         let state = lock(&daemon.state);
         assert!(!state.handoff_in_progress);
         assert!(state.leases[&PaneId(4)].expires_at >= before + Duration::from_secs(2));

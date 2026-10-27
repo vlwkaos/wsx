@@ -55,7 +55,11 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // cannot be cleared (docs/agent-orchestration.md "Resumed agents").
 // Revision 34 also survives a burst of connections: it raises its open-file limit at start
 // and drops only the connection whose accept failed (wsx-daemon `accept_error_is_transient`).
-pub const DAEMON_REVISION: u32 = 34;
+// Revision 35 always ends a failed handoff: its rollback serves again even when it cannot
+// rewrite the marker or bind the socket at once, and a successor that dies after the commit
+// gives the sessions back to the source (docs/daemon-live-upgrade.md "A stuck handoff",
+// "A successor that dies").
+pub const DAEMON_REVISION: u32 = 35;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
