@@ -1411,7 +1411,7 @@ impl Drop for SignalMaskGuard {
 fn spawn_detached(command: &mut Command) -> io::Result<Child> {
     let mut signal_mask = SignalMaskGuard::block(libc::SIGHUP)?;
     let child_signal_mask = signal_mask.previous;
-    // ^ crates/wsx-daemon/src/lib.rs owns steady-state signal policy. Block
+    // ^ crates/wsx-daemon/src/server.rs owns steady-state signal policy. Block
     // SIGHUP across spawn, then detach and ignore it before the child unblocks.
     unsafe {
         command.pre_exec(move || {

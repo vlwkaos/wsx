@@ -15,7 +15,7 @@ A real protocol change makes every open TUI of the old number leave or re-execut
 
 ## Who defers a handoff
 
-Each TUI poll carries `TuiClientPresence.max_protocol`, the newest protocol that TUI can reconnect to, and `follows`, which says that the TUI re-executes into the installed wsx (see below). `handoff_blockers` in `crates/wsx-daemon/src/lib.rs` defers a handoff only for:
+Each TUI poll carries `TuiClientPresence.max_protocol`, the newest protocol that TUI can reconnect to, and `follows`, which says that the TUI re-executes into the installed wsx (see below). `handoff_blockers` in `crates/wsx-daemon/src/live_handoff.rs` defers a handoff only for:
 
 - a TUI that sent no presence or `max_protocol` 0 (a release before this contract), and
 - a TUI whose `max_protocol` is lower than the target protocol and that does not follow.

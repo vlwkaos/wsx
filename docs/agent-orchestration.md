@@ -246,7 +246,7 @@ Draft stashing needs an editor that is visibly idle. A fresh Claude shows a sugg
 
 ## Resumed agents
 
-After an unplanned daemon loss, wsxd resumes a saved agent under `wsxd __wsx_resume_supervisor <agent argv>` (`run_resume_supervisor` in `crates/wsx-daemon/src/lib.rs`). When the agent quits, the supervisor opens `$SHELL` in the same pane, so the pane stays a terminal:
+After an unplanned daemon loss, wsxd resumes a saved agent under `wsxd __wsx_resume_supervisor <agent argv>` (`run_resume_supervisor` in `crates/wsx-daemon/src/recovery.rs`). When the agent quits, the supervisor opens `$SHELL` in the same pane, so the pane stays a terminal:
 
 1. It writes a reset of the modes an agent can leave on: the alternate screen, kitty keyboard flags (`CSI = 0 ; 1 u`), modifyOtherKeys, mouse and focus reports, bracketed paste, application cursor keys and keypad, a hidden cursor. Without it, the pane's emulator kept encoding typed keys as `CSI u` codes, which the shell printed as text, and the shell drew on a screen the agent had cleared.
 2. It clears the agent's record (`AgentClear` with its runtime generation). When that fails (a stale generation, a full disk), it says so in the pane and still opens the shell; before revision 34 it exited, and the pane ended as an empty, dead screen.
