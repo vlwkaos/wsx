@@ -88,8 +88,8 @@ pub enum ManagerEvent {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TurnUsage>,
-        /// The reply to a turn of only events: the manager's own work, which the chat shows
-        /// as a muted line, not a message (docs/tasks.md "Manager").
+        /// A short reply to a turn of only events: the manager's own work, which the chat
+        /// shows as a muted line, not a message (`quiet_reply`, docs/tasks.md "Manager").
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         quiet: bool,
     },
@@ -124,7 +124,27 @@ pub struct ManagerEntry {
     pub event: ManagerEvent,
 }
 
+/// The longest quiet reply, as long as the web's first sentence (`firstSentence` in lib.js).
+const QUIET_REPLY_CHARS: usize = 200;
+
+/// Whether a reply to a turn of only events is quiet: one line of at most 200 characters. A
+/// longer reply (a table, a list, paragraphs) is a message even after events.
+pub fn quiet_reply(text: &str) -> bool {
+    let text = text.trim();
+    !text.contains('\n') && text.chars().count() <= QUIET_REPLY_CHARS
+}
+
 impl ManagerEntry {
+    /// An entry as read from the log: a reply stored as quiet before the length rule keeps its
+    /// flag only when it is short.
+    pub(super) fn read(line: &[u8]) -> Option<Self> {
+        let mut entry: Self = serde_json::from_slice(line).ok()?;
+        if let ManagerEvent::Reply { text, quiet, .. } = &mut entry.event {
+            *quiet = *quiet && quiet_reply(text);
+        }
+        Some(entry)
+    }
+
     /// The id of a message or reply, which `chat --after` counts from.
     pub fn id(&self) -> Option<u64> {
         match &self.event {

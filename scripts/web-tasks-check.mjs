@@ -1568,6 +1568,9 @@ const foldSeen = async () => evaluate(`(() => { const fold = ${foldRow}; const t
 let folding = await foldSeen();
 if (JSON.stringify(folding.chips) !== JSON.stringify(["#89 done", "#91 done", "#88 done"]) || folding.count !== "10 updates" || folding.open !== "false"
   || folding.inside.length || folding.hidden || folding.next[0] !== "#88 done" || !/#88 is on main/.test(folding.next[1] ?? "") || !folding.short) await fail(`plans' folded run reads ${JSON.stringify(folding)}`);
+// ^ A long reply stored as quiet (a table and a list after an event) is a whole bubble.
+const longQuiet = await evaluate("({ bubble: [...document.querySelectorAll('.log .bubble')].some((node) => /Release notes are ready/.test(node.textContent) && !!node.querySelector('table')), line: [...document.querySelectorAll('.reply-line')].some((node) => /Release notes are ready/.test(node.textContent)) })");
+if (!longQuiet.bubble || longQuiet.line) await fail(`a long reply to events reads ${JSON.stringify(longQuiet)}`);
 await evaluate(`${foldRow}.scrollIntoView({ block: 'center' })`);
 await shot("fold-closed");
 await evaluate(`${foldRow}.querySelector('.fold-toggle').click()`);

@@ -648,7 +648,7 @@ impl ManagerDir {
             entries.extend(
                 bytes
                     .split(|byte| *byte == b'\n')
-                    .filter_map(|line| serde_json::from_slice(line).ok()),
+                    .filter_map(super::manager::ManagerEntry::read),
             );
         }
         Ok(entries)
@@ -672,7 +672,7 @@ impl ManagerDir {
         let lines = tail.split(|byte| *byte == b'\n');
         Ok(lines
             .skip(usize::from(start > 0))
-            .filter_map(|line| serde_json::from_slice(line).ok())
+            .filter_map(super::manager::ManagerEntry::read)
             .collect())
     }
 

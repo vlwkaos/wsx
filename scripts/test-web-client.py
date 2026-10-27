@@ -2920,8 +2920,8 @@ def task_journey(args):
         wait_state(2, 'ready')
         wait_state(3, 'ready')
         # plans' chat begins with an older log (`log.1.jsonl`, read before `log.jsonl`): six events,
-        # each with the manager's quiet reply, an owner message, one more event and reply, and
-        # another owner message. The page folds the first run (docs/web-client-tasks.md
+        # each with the manager's quiet reply, an owner message, one more event and reply,
+        # another owner message and an event with a long reply. The page folds the first run (docs/web-client-tasks.md
         # "Project screen"). Delivered turns, so its manager never takes them as new; ids far past
         # the ones it counts from.
         manager_dir = state / 'wsx/tasks' / ('plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]) / 'manager'
@@ -2941,6 +2941,8 @@ def task_journey(args):
         logged('owner', 'Keep going.', 'On it.', quiet=False)
         logged('events', '#92 ready r1: Short run', 'Landing #92.')
         logged('owner', 'Thanks.', 'Noted.', quiet=False)
+        # ^ Stored quiet before the length rule: a long reply to events reads as a message.
+        logged('events', '#93 landed r1: Release notes', 'Release notes are ready:\n\n| Part | State |\n|---|---|\n| wsx | built |\n\n- the notes are written')
         (manager_dir / 'log.1.jsonl').write_text(''.join(json.dumps(entry) + '\n' for entry in old_log))
         # `plans`: #1 waits for the owner (its worker was refused a tool and asks), #2 is ready.
         assert js('task', 'new', 'Let me jump between projects from the keyboard NEEDS WebSearch NOOP', '-p', 'plans')['id'] == 1

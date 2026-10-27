@@ -18,7 +18,7 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::TaskWorkflow;
 use wsx_core::runtime;
 use wsx_core::task::manager::{
-    decided_request, instructions_digest, pending_approvals, ApprovalLine,
+    decided_request, instructions_digest, pending_approvals, quiet_reply, ApprovalLine,
 };
 use wsx_core::task::manager::{
     Author, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState, Seen,
@@ -1202,12 +1202,13 @@ impl Manager {
             "reply {id}: {}",
             result.text.lines().next().unwrap_or_default()
         ));
+        let quiet = self.turn_events && quiet_reply(&result.text);
         self.log(ManagerEvent::Reply {
             id,
             to,
             text: result.text,
             usage: Some(result.usage),
-            quiet: self.turn_events,
+            quiet,
         });
         if context > self.rotate_tokens {
             self.rotate(context, None);
