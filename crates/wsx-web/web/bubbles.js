@@ -75,7 +75,7 @@ export function conversation(entries, resolutions, approvals = []) {
     const reply = rows.find((row) => row.entry?.kind === "reply" && row.at >= approval.unix_ms);
     if (reply) reply.approvals = [...(reply.approvals ?? []), approval];
   }
-  // ^ A reply to a turn of only events is the manager's own work: a muted line under its name,
+  // ^ A quiet reply (short, to a turn of only events) is the manager's own work: a muted line under its name,
   // unless it asks for an approval; `-` says nothing changed for the owner (docs/tasks.md "Manager").
   const shown = [];
   for (const row of rows) {
