@@ -54,7 +54,7 @@ fi
 step "push main"
 act git push origin "$commit:refs/heads/main"
 
-# ^ Wait for the workflow run of `event` on this exact commit and watch it to its end.
+# ^ The push run of workflow $1 on this exact commit; watch_run follows it to its end.
 run_of() {
   [ -n "$dry" ] && { echo "dry run: wait for $1 on $commit" >&2; echo dry; return; }
   i=0
@@ -66,7 +66,7 @@ run_of() {
     sleep 5
   done
 }
-watch() {
+watch_run() {
   [ -n "$dry" ] && return 0
   echo "watching $(gh run view "$1" --json url --jq .url)"
   gh run watch "$1" --exit-status --interval 30 >/dev/null 2>&1
@@ -74,7 +74,7 @@ watch() {
 
 step "ci.yml"
 ci=$(run_of ci.yml)
-watch "$ci" || { gh run view "$ci" --log-failed | tail -40; fail "ci.yml failed on $commit"; }
+watch_run "$ci" || { gh run view "$ci" --log-failed | tail -40; fail "ci.yml failed on $commit"; }
 
 step "push tag"
 git rev-parse -q --verify "refs/tags/$tag" >/dev/null || act git tag -a "$tag" -m "wsx $version" "$commit"
@@ -82,7 +82,7 @@ act git push origin "refs/tags/$tag"
 
 step "release.yml"
 run=$(run_of release.yml)
-if ! watch "$run"; then
+if ! watch_run "$run"; then
   failed=$(gh run view "$run" --json jobs --jq '.jobs[].steps[] | select(.conclusion == "failure") | .name')
   echo "release.yml failed at: $failed"
   # ^ Credentials are checked in release.yml's preflight job, before anything is published.

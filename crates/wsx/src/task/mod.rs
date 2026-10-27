@@ -1623,18 +1623,11 @@ fn deploy(
         exit.map_or("none".into(), |code| code.to_string())
     );
     if status.success() && to_check > 0 {
-        match kind {
-            DeployKind::Deploy => {
-                message.push_str(&format!("; {to_check} to check on the deployed site"))
-            }
-            DeployKind::Release => message.push_str(&format!(
-                "; still to check on the release: {}",
-                open.iter()
-                    .map(|item| item.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-        }
+        let ids: Vec<&str> = open.iter().map(|item| item.id.as_str()).collect();
+        message.push_str(&match kind {
+            DeployKind::Deploy => format!("; {to_check} to check on the deployed site"),
+            DeployKind::Release => format!("; still to check on the release: {}", ids.join(", ")),
+        });
     }
     if json {
         let mut value = serde_json::to_value(&record)?;
