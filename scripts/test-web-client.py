@@ -182,8 +182,11 @@ def turn(text):
  # The person's prompt as Claude Code 2.1.300 marks it; other turns keep the older record without the field.
  # Claude Code 2.1.300 can save a pasted prompt inside a pasted_content wrapper (real transcript, 2026-10-20).
  saved = '\n\n<pasted_content id="4666">\n'+text+'\n</pasted_content id="4666">\n' if provider == 'claude' and 'follow up' in text else text
- record('user', saved, **({'promptSource':'typed'} if 'task notice' in text else {}))
+ # ^ Claude runs its prompt hook, which reports the turn and the prompt it took, before it saves
+ # the prompt (Claude Code 2.1.310); a slow hook or a slow write leaves a gap between the two.
  report('working')
+ if 'slow save' in text: gate('saved')
+ record('user', saved, **({'promptSource':'typed'} if 'task notice' in text else {}))
  body = text.split('\n',1)[1] if text.startswith('[wsx exchange ') else text
  if 'make chart' in body:
   (project/'out').mkdir(exist_ok=True)
@@ -1845,6 +1848,18 @@ capabilities = ["terminal_view"]
         # ^ The conversation says it happened, just before the message the second time.
         kinds = [(item['kind'], item['text']) for item in timeline()['items']][-3:]
         assert kinds[0] == ('notice', 'Sent again: Claude did not take it the first time.') and kinds[1] == ('user', 'drop me once'), kinds
+        settle('owner')
+        # Taken before it is saved: the prompt hook reports the turn before Claude writes the
+        # prompt. The sent message stays until the conversation shows it, so it never vanishes.
+        assert send('slow save')[0] == 200
+        wait(lambda: timeline()['exchange']['state'] == 'working_observed', 'the round taken')
+        time.sleep(2)  # ^ more than two rounds of the server's observer
+        held = timeline()
+        assert [item['text'] for item in held['queue']] == ['slow save'] and held['queue'][0]['delivered_unix_ms'], held['queue']
+        assert not any(item['kind'] == 'user' and item['text'] == 'slow save' for item in held['items'])
+        open_gate('saved')
+        wait(lambda: timeline()['queue'] == [] and [item['text'] for item in timeline()['items'] if item['kind'] == 'user'][-1] == 'slow save',
+             'the saved message replaces the sent one')
         settle('owner')
         # A message the agent never takes, while a person types in the terminal: the typed turn is
         # not the message's turn, so its round fails at once; it goes once more, then stays failed.
