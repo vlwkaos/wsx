@@ -232,9 +232,9 @@ fn instructions(
          `deploys` shows its commit. \
          A task waits when the ledger shows `waiting`. On `owner`, the worker asked or \
          stopped: answer with `wsx task add` when you can, else ask the owner in plain \
-         words. On `disk`, it resumes by itself. On `hand`, the owner works in its copy: \
-         never add, steer, land or close it; only the owner runs `wsx task hand` and \
-         `handback`. \
+         words. On `disk` or `limit` (the agent's usage limit), it resumes by itself. On \
+         `hand`, the owner works in its copy: never add, steer, land or close it; only the \
+         owner runs `wsx task hand` and `handback`. \
          You run inside wsx's boundary and nothing asks you for permission; it refuses the \
          owner's secrets, wsx's state and the tasks' copies. Read the \
          project and the copies with the file and web tools and read-only git in Bash (also \
