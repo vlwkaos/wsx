@@ -18,6 +18,18 @@ pub(crate) fn command(target: IntegrationTarget, action: &str) -> String {
     )
 }
 
+/// An older hand-written binding beside the managed one, which ran every report twice:
+/// `if [ -x "X/wsx-agent-status.sh" ]; then "X/wsx-agent-status.sh" ACTION; fi`.
+fn is_guarded_command(text: &str, action: &str) -> bool {
+    text.strip_prefix("if [ -x \"")
+        .and_then(|text| text.split_once("\" ]; then \""))
+        .is_some_and(|(guarded, rest)| {
+            guarded.ends_with("/wsx-agent-status.sh")
+                && !guarded.contains('"')
+                && rest == format!("{guarded}\" {action}; fi")
+        })
+}
+
 // ^ Migrate only the managed hook command, preserving matchers, unrelated hooks and extra fields.
 fn migrate_commands(value: &mut Value, target: IntegrationTarget, path: &Path) {
     const ACTIONS: &[&str] = &[
@@ -48,6 +60,7 @@ fn migrate_commands(value: &mut Value, target: IntegrationTarget, path: &Path) {
                                             && suffix == **action
                                             && name.split("'\\''").all(|part| !part.contains('\''))
                                     })
+                                || is_guarded_command(text, action)
                         });
                         if let Some(action) = action {
                             *value = Value::String(command(target, action));

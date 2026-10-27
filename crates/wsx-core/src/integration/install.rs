@@ -138,6 +138,12 @@ fn validate_distinct_omp_directory(omp_asset: &Path, pi_asset: &Path) -> io::Res
     Ok(())
 }
 
+const RETIRED_INSPECTION: [&str; 3] = [
+    "wsx-agent-inspect.py",
+    "wsx-inspect-enabled",
+    "wsx-inspect.jsonl",
+];
+
 pub fn install(target: IntegrationTarget) -> io::Result<InstallResult> {
     let available = availability::is_available(target);
     let (compatible, compatibility_note) = status::compatibility(target, available);
@@ -206,16 +212,6 @@ fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResul
         reporter_content.into(),
         false,
     ));
-    if matches!(target, IntegrationTarget::Claude | IntegrationTarget::Codex) {
-        prepared.push((
-            asset
-                .parent()
-                .expect("inspected asset has a parent")
-                .join("wsx-agent-inspect.py"),
-            assets::AGENT_INSPECT.into(),
-            false,
-        ));
-    }
     if target == IntegrationTarget::Claude {
         prepared.push((
             root.join("output-styles")
@@ -283,6 +279,17 @@ fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResul
     for (path, content, executable) in prepared {
         atomic_write(&path, &content, executable)?;
         written.push(path);
+    }
+    // ^ The 0.30.1 hook inspection is retired; remove its files beside the hook.
+    if let (IntegrationTarget::Claude | IntegrationTarget::Codex, Some(directory)) =
+        (target, written.last().and_then(|asset| asset.parent()))
+    {
+        for name in RETIRED_INSPECTION {
+            let path = directory.join(name);
+            if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
+                fs::remove_file(&path)?;
+            }
+        }
     }
     Ok(InstallResult {
         target,

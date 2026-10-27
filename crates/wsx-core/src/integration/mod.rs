@@ -285,30 +285,35 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let hook = root.join("wsx-agent-status.sh");
         let reporter = root.join("wsx");
-        fs::write(
-            &reporter,
-            "#!/bin/sh\nprintf 'stale_runtime: sensitive reporter output\\n' >&2\nexit 1\n",
-        )
-        .unwrap();
-        fs::set_permissions(&reporter, fs::Permissions::from_mode(0o700)).unwrap();
         for target in [IntegrationTarget::Claude, IntegrationTarget::Codex] {
             fs::write(&hook, assets::primary(target)).unwrap();
-            let result = Command::new("/bin/sh")
-                .arg(&hook)
-                .arg("session")
-                .env("WSX_PANE_ID", "42")
-                .env("WSX_AGENT_REPORT_BIN", &reporter)
-                .stdin(Stdio::null())
-                .output()
+            for (reason, failed) in [("stale_runtime", false), ("io_error", true)] {
+                fs::write(
+                    &reporter,
+                    format!(
+                        "#!/bin/sh\nprintf '{reason}: sensitive reporter output\\n' >&2\nexit 1\n"
+                    ),
+                )
                 .unwrap();
-            assert!(
-                !result.status.success(),
-                "{target} must not hide a rejected report"
-            );
-            let stderr = String::from_utf8(result.stderr).unwrap();
-            assert!(stderr.contains("report failed (stale_runtime)"));
-            assert!(!stderr.contains("sensitive"));
-            assert!(stderr.len() < 160);
+                fs::set_permissions(&reporter, fs::Permissions::from_mode(0o700)).unwrap();
+                let result = Command::new("/bin/sh")
+                    .arg(&hook)
+                    .arg("session")
+                    .env("WSX_PANE_ID", "42")
+                    .env("WSX_AGENT_REPORT_BIN", &reporter)
+                    .stdin(Stdio::null())
+                    .output()
+                    .unwrap();
+                let stderr = String::from_utf8(result.stderr).unwrap();
+                // ^ docs/agent-reporting.md "Hook exit": an expected refusal stays quiet.
+                assert_eq!(
+                    result.status.success(),
+                    !failed,
+                    "{target} {reason}: {stderr}"
+                );
+                assert_eq!(stderr.contains("report failed (report_failed)"), failed);
+                assert!(!stderr.contains("sensitive") && stderr.len() < 160);
+            }
         }
         fs::remove_dir_all(root).unwrap();
     }

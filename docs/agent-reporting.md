@@ -51,9 +51,11 @@ Already-loaded adapter/helper code cannot be repaired by changing its file alone
 Do not restart the shell or daemon to refresh an adapter. Current-CLI recovery does
 not require daemon handoff to finish; missing or unsafe candidates still fail explicitly.
 
-## Claude and Codex opt-in inspection
+## Hook exit
 
-Claude integration 22 and Codex integration 15 save bounded, opt-in metadata for successful and failed reports in a private journal without changing report authority. See [hook inspection](claude-inspection.md), including the private-marker activation path for existing sessions and the limits of launch-version inference. Install the selected provider with `wsx agent install claude` or `wsx agent install codex`; installation does not rewrite a running agent environment or prove its loaded hook configuration changed. These diagnostics do not establish that a reported hook failure is fixed.
+The shell hook (`wsx-agent-status.sh`, Claude integration 25, Codex integration 16) exits 0 without output when the daemon cannot take a report for an expected reason: the pane has no `WSX_PANE_ID`, wsxd answers `stale_runtime` (a stale or missing runtime generation) or `not_found` (the pane is gone), or the socket is unreachable. These follow a daemon restart, an upgrade or a closed pane, and a hook error on every tool call would only add noise. Any other rejection exits 1 with one bounded line, `wsx <provider> <action> report failed (report_failed)`, and no vendor input. No report is replayed.
+
+`wsx agent install claude` or `codex`, and the TUI's update prompt for an outdated integration, rewrite the hook files to the current build. They also rewrite an older guarded binding, `if [ -x "X/wsx-agent-status.sh" ]; then "X/wsx-agent-status.sh" ACTION; fi`, to the managed command, so each event keeps one wsx binding and other hooks stay as they are. The 0.30.1 opt-in inspection (`wsx-agent-inspect.py`, `WSX_INSPECT`, the `wsx-inspect-enabled` marker) is retired: install deletes its files beside the hook.
 
 ## Output style
 
@@ -76,7 +78,7 @@ Claude Code fires `SessionStart` with `source: "compact"` after every compaction
 - `/compact` has no `UserPromptSubmit` and no `Stop` (seen with Claude Code 2.1.300). Its `PostCompact` ends it, so its exchange ends `done_observed`, and a message sent while Claude compacts waits in the web queue until then.
 - The script decides, not the hook matchers, so an older copy of the managed hook command that still calls the same script is also fixed. `PostCompact` must exist: a Claude without it stays `working` after `/compact` until the next turn ends.
 - Other providers are unchanged.
-- An installed integration 21 shows as outdated. Run `wsx agent install claude`, then restart Claude when it is idle so that it loads the new hook configuration.
+- An installed integration below 25 shows as outdated. Run `wsx agent install claude`, then restart Claude when it is idle so that it loads the new hook configuration.
 
 ## Pi native exchange observer
 
