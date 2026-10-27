@@ -1252,13 +1252,6 @@ def run(wsx, wsxd, work, owned):
     assert owner_turn['model'] == 'fake-manager' and owner_turn['session'] == event_turn['session'], owner_turn
     switches = [t['set_model'] for t in traces() if 'set_model' in t and t['session'] == event_turn['session']]
     assert switches[-2:] == ['fake-events', 'fake-manager'], switches
-    # ^ Only a short reply to events is quiet: one with a table is a message (docs/tasks.md "Manager").
-    tabled = js('task', 'new', 'NOOP TABLE')['id']
-    wait_state(tabled, 'ready')
-    table_reply = reply_to(wait(lambda: events_with('#%d ready r1' % tabled), 'the event of a task that asks for a table')[0]['id'])
-    raw_reply = next(e for e in manager_entries() if e['kind'] == 'reply' and e['id'] == table_reply['id'])
-    assert 'Where things stand' in raw_reply['text'] and 'quiet' not in raw_reply and 'quiet' not in table_reply, raw_reply
-    js('task', 'close', tabled)
     # Stop the manager host, finish a task while it is down, start it again.
     manager_socket = js('task', 'manager')['socket']
     assert len(manager_socket) < 104, manager_socket
@@ -1308,6 +1301,13 @@ def run(wsx, wsxd, work, owned):
     assert opened.startswith("The owner's decisions") and '\n\nHandover (this is a new conversation' in opened and 'You: noted events' in opened, opened
     assert "fold the ledger's memos into your context first" in opened, opened
     assert 'keep the store in sqlite' in opened and 'SECRET-OUTSIDE' not in opened, opened
+    # ^ Only a short reply to events is quiet: one with a table is a message (docs/tasks.md "Manager").
+    tabled = js('task', 'new', 'NOOP TABLE')['id']
+    wait_state(tabled, 'ready')
+    table_reply = reply_to(wait(lambda: events_with('#%d ready r1' % tabled), 'the event of a task that asks for a table')[0]['id'])
+    raw_reply = next(e for e in manager_entries() if e['kind'] == 'reply' and e['id'] == table_reply['id'])
+    assert 'Where things stand' in raw_reply['text'] and 'quiet' not in raw_reply and 'quiet' not in table_reply, raw_reply
+    js('task', 'close', tabled)
     (notes / 'context.md').unlink()
     # ^ The config named no manager model since the restart: the manager defaults to opus.
     assert fresh['model'] == 'opus', fresh
