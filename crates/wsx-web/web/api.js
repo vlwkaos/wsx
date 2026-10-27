@@ -1,7 +1,7 @@
 // The one fetch wrapper and the one event stream. Every URL is relative to
 // <base href>, so the same files work at a sub-path and at an alt-port root.
 
-export class ApiError extends Error {
+class ApiError extends Error {
   constructor(status, code, message) {
     super(message);
     this.status = status;

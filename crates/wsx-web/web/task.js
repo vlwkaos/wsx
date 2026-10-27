@@ -2,7 +2,7 @@
 // the owner, then the report folded (Changes, Evidence, To check, Left open), the messages to
 // the worker and its history (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
-import { clock, html, Icon, Loading, readMap, useEffect, useLayoutEffect, useRef, useState, writeMap } from "./lib.js";
+import { clock, html, Icon, keepIn, Loading, readMap, short, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, events, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { grow, isolate, release } from "./chat.js";
@@ -17,7 +17,6 @@ const TRIAL_WORDS = {
   live: "On the live site now: try it, then Pass, or send the worker what is wrong",
 };
 
-const short = (commit) => (commit ?? "").slice(0, 8);
 const MESSAGE_WORDS = { prompt: "Asked", steer: "Steered", add: "Added" };
 
 // One log entry in words: [what, detail, tone].
@@ -117,25 +116,18 @@ function Talk({ project, talk, words }) {
 
 // Unsent messages to a task, kept on this device by `<project>/<task>`.
 const DRAFTS_KEY = "wsx-task-drafts";
-const readDrafts = () => readMap(DRAFTS_KEY);
-function keepDraft(key, text) {
-  const all = readDrafts();
-  if (text) all[key] = text;
-  else delete all[key];
-  writeMap(DRAFTS_KEY, all);
-}
 
 // The task's message field: an add (an answer after the turn), or a steer into a running turn.
 function Message({ detail, act }) {
   const field = useRef();
   const key = `${detail.project}/${detail.id}`;
-  const [text, setText] = useState(() => readDrafts()[key] ?? "");
+  const [text, setText] = useState(() => readMap(DRAFTS_KEY)[key] ?? "");
   useEffect(() => release, []);
   useLayoutEffect(() => { field.current.value = text; grow(field.current); }, []);
   const steering = detail.actions.includes("steer");
   const changed = () => {
     setText(field.current.value);
-    keepDraft(key, field.current.value);
+    keepIn(DRAFTS_KEY, key, field.current.value);
     grow(field.current);
   };
   const send = (action) => {

@@ -71,6 +71,9 @@ export function firstSentence(text, max = 200) {
   return sentence.length > max ? `${sentence.slice(0, max - 1).trimEnd()}…` : sentence;
 }
 
+// A commit hash shortened for reading.
+export const short = (commit) => (commit ?? "").slice(0, 8);
+
 // A map kept per device. A private window, cleared site data or a broken value reads as
 // empty, and a write that fails keeps the page working without it.
 export function readMap(key) {
@@ -78,6 +81,13 @@ export function readMap(key) {
 }
 export function writeMap(key, map) {
   try { localStorage.setItem(key, JSON.stringify(map)); } catch { /* kept in memory only */ }
+}
+// Sets `id` in the map at `key`, or deletes it when `value` is empty.
+export function keepIn(key, id, value) {
+  const all = readMap(key);
+  if (value) all[id] = value;
+  else delete all[id];
+  writeMap(key, all);
 }
 
 // The present time, renewed every second while `active` is true.
