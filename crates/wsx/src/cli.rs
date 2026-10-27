@@ -3,6 +3,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::runtime_util::{
+    api_error, expect_ack, expect_snapshot, print_json, unexpected_response,
+};
 use crate::session_state;
 use wsx_core::{
     config::global::{project_matches_group, GlobalConfig, GroupKey},
@@ -1219,7 +1222,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
                 bail!("routine daemon returned an unexpected fire response")
             };
             if json {
-                println!("{}", serde_json::to_string_pretty(&outcome)?);
+                print_json(&outcome)?;
             } else {
                 print_fire_outcome(&outcome);
             }
@@ -1355,7 +1358,7 @@ fn print_fire_outcome(outcome: &asched_core::routine::FireOutcome) {
 fn print_routine_response(response: asched_core::routine::ipc::Response, json: bool) -> Result<()> {
     use asched_core::routine::ipc::Response;
     if json {
-        println!("{}", serde_json::to_string_pretty(&response)?);
+        print_json(&response)?;
         return Ok(());
     }
     match response {
@@ -2291,10 +2294,7 @@ fn cmd_status(json: bool, format: Format, group: Option<&GroupKey>) -> Result<()
     let projects = resolve_projects(&config, &workspace, None, group)?;
     if json {
         // ^ Status JSON is a top-level project array; runtime status uses an object.
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&manager_status(&projects)?)?
-        );
+        print_json(&manager_status(&projects)?)?;
         return Ok(());
     }
     if let Format::Compact = format {
@@ -2435,16 +2435,13 @@ fn cmd_worktree_create(
     if json {
         // ^ A lookup failure must not hide the worktree that already exists.
         let pane_id = session_id.and_then(|session_id| created_session_pane(session_id).0);
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "worktree": created.path,
-                "branch": branch,
-                "project": project.name,
-                "session_id": session_id,
-                "pane_id": pane_id,
-            }))?
-        );
+        print_json(&serde_json::json!({
+            "worktree": created.path,
+            "branch": branch,
+            "project": project.name,
+            "session_id": session_id,
+            "pane_id": pane_id,
+        }))?;
     } else {
         println!("worktree: {}", created.path.display());
         if let Some(session_id) = session_id {
@@ -2531,7 +2528,7 @@ fn cmd_worktree_list(
     let projects = resolve_projects(&config, &workspace, project_name, group)?;
     if json {
         let worktrees: Vec<_> = projects.iter().flat_map(|p| p.worktrees.iter()).collect();
-        println!("{}", serde_json::to_string_pretty(&worktrees)?);
+        print_json(&worktrees)?;
         return Ok(());
     }
     if let Format::Compact = format {
@@ -2582,11 +2579,10 @@ struct ContextOptions {
 // ^ Observation only: read the existing daemon and never start or replace wsxd.
 pub(crate) fn existing_daemon_snapshot() -> Result<runtime::Snapshot> {
     let client = runtime::Client::new(runtime::default_socket_path());
-    match client.call(&runtime::Request::Snapshot)? {
-        runtime::Response::Snapshot(snapshot) => Ok(snapshot),
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("unexpected daemon snapshot"),
-    }
+    expect_snapshot(
+        client.call(&runtime::Request::Snapshot)?,
+        "unexpected daemon snapshot",
+    )
 }
 
 fn cmd_agent_context(
@@ -2692,7 +2688,7 @@ fn cmd_agent_context(
     if options.json {
         println!("{}", serde_json::to_string(&packet)?);
     } else {
-        println!("{}", serde_json::to_string_pretty(&packet)?);
+        print_json(&packet)?;
     }
     Ok(())
 }
@@ -2715,11 +2711,10 @@ fn cmd_agent_detach() -> Result<()> {
         .context("agent detach requires the current managed runtime generation")?;
     let pane_id = runtime::PaneId(pane_id);
     let client = runtime::Client::local();
-    let snapshot = match client.call(&runtime::Request::Snapshot)? {
-        runtime::Response::Snapshot(snapshot) => snapshot,
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsxd returned an unexpected snapshot response"),
-    };
+    let snapshot = expect_snapshot(
+        client.call(&runtime::Request::Snapshot)?,
+        "wsxd returned an unexpected snapshot response",
+    )?;
     let pane = snapshot
         .panes
         .iter()
@@ -2756,8 +2751,7 @@ fn cmd_agent_detach() -> Result<()> {
             println!("detached agent at revision {revision}");
             Ok(())
         }
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsxd returned an unexpected agent response"),
+        other => unexpected_response(other, "wsxd returned an unexpected agent response"),
     }
 }
 
@@ -2864,8 +2858,7 @@ fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Result<()> {
             println!("agent report accepted at revision {revision}");
             Ok(())
         }
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsxd returned an unexpected agent response"),
+        other => unexpected_response(other, "wsxd returned an unexpected agent response"),
     }
 }
 
@@ -2880,15 +2873,13 @@ fn cmd_agent_presence_renew(selector: &str, presence_id: &str) -> Result<()> {
     let pane_id = runtime::PaneId(pane.parse().context("invalid managed pane ID")?);
     let runtime_generation = std::env::var(runtime::WSX_RUNTIME_GENERATION_ENV)
         .context("presence renewal requires a managed runtime generation")?;
-    match runtime::Client::local().call(&runtime::Request::AgentPresenceRenew {
+    let response = runtime::Client::local().call(&runtime::Request::AgentPresenceRenew {
         pane_id,
         runtime_generation,
         presence_id: presence_id.into(),
-    })? {
-        runtime::Response::Ack { .. } => Ok(()),
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsxd returned an unexpected presence response"),
-    }
+    })?;
+    expect_ack(response, "wsxd returned an unexpected presence response")?;
+    Ok(())
 }
 
 // ^ docs/agent-reporting.md "Wake heartbeat": Claude starts the heartbeat from a detached
@@ -3019,7 +3010,7 @@ fn print_agent_exchange_with(
             output["ready"] = serde_json::json!(watched.ready);
             output["pending"] = serde_json::json!(watched.pending);
         }
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        print_json(&output)?;
     } else {
         println!(
             "exchange {} round {}: {:?}",
@@ -3122,8 +3113,7 @@ fn agent_exchange_response(
             print_agent_exchange(&exchange, frame.as_ref(), json)?;
             Ok(exchange)
         }
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsxd returned an unexpected agent exchange response"),
+        other => unexpected_response(other, "wsxd returned an unexpected agent exchange response"),
     }
 }
 
@@ -3409,10 +3399,7 @@ fn cmd_agent_start(args: AgentStartArgs) -> Result<()> {
                 start.exchange = Some(exchange);
                 Ok(())
             }
-            runtime::Response::Error(error) => Err((
-                "request",
-                anyhow::anyhow!("{}: {}", error.code, error.message),
-            )),
+            runtime::Response::Error(error) => Err(("request", api_error(error))),
             _ => Err((
                 "request",
                 anyhow::anyhow!("wsxd returned an unexpected agent exchange response"),
@@ -3441,7 +3428,7 @@ fn cmd_agent_start(args: AgentStartArgs) -> Result<()> {
         });
     }
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&start)?);
+        print_json(&start)?;
     } else {
         println!("worktree: {}", start.worktree.display());
         if let Some(session_id) = start.session_id {
@@ -3665,8 +3652,7 @@ fn pane_frame(pane_id: runtime::PaneId) -> Result<runtime::TerminalFrame> {
         runtime::Response::View { mut frames, .. } => {
             frames.pop().context("terminal frame is unavailable")
         }
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsxd returned an unexpected view response"),
+        other => unexpected_response(other, "wsxd returned an unexpected view response"),
     }
 }
 
@@ -3747,8 +3733,7 @@ fn fetch_agent_exchange(
         include_frame,
     })? {
         runtime::Response::AgentExchange { exchange, frame } => Ok((exchange, frame)),
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsxd returned an unexpected agent exchange response"),
+        other => unexpected_response(other, "wsxd returned an unexpected agent exchange response"),
     }
 }
 
@@ -3805,8 +3790,9 @@ fn wait_agent_exchange(exchange_id: runtime::AgentExchangeId, deadline: Instant)
             },
         )? {
             runtime::Response::AgentExchange { exchange, .. } => exchange,
-            runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-            _ => bail!("wsxd returned an unexpected agent exchange response"),
+            other => {
+                unexpected_response(other, "wsxd returned an unexpected agent exchange response")?
+            }
         };
     }
     Ok(())
@@ -3981,15 +3967,17 @@ fn list_agent_exchanges(
             });
             Ok(exchanges)
         }
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsxd returned an unexpected agent exchange list response"),
+        other => unexpected_response(
+            other,
+            "wsxd returned an unexpected agent exchange list response",
+        ),
     }
 }
 
 fn cmd_agent_exchange_list(selector: Option<&str>, json: bool, scope: &SessionScope) -> Result<()> {
     let exchanges = scoped_agent_exchanges(selector, scope)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&exchanges)?);
+        print_json(&exchanges)?;
         return Ok(());
     }
     for exchange in exchanges {
@@ -4004,7 +3992,7 @@ fn cmd_agent_exchange_list(selector: Option<&str>, json: bool, scope: &SessionSc
 fn cmd_plugin_list(json: bool) -> Result<()> {
     match runtime::Client::local().call(&runtime::Request::PluginList)? {
         runtime::Response::Plugins(plugins) if json => {
-            println!("{}", serde_json::to_string_pretty(&plugins)?);
+            print_json(&plugins)?;
             Ok(())
         }
         runtime::Response::Plugins(plugins) => {
@@ -4022,8 +4010,7 @@ fn cmd_plugin_list(json: bool) -> Result<()> {
             }
             Ok(())
         }
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsxd returned an unexpected plugin response"),
+        other => unexpected_response(other, "wsxd returned an unexpected plugin response"),
     }
 }
 
@@ -4033,8 +4020,7 @@ fn cmd_plugin_reload() -> Result<()> {
             println!("reloaded {} plugins", plugins.len());
             Ok(())
         }
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsxd returned an unexpected plugin reload response"),
+        other => unexpected_response(other, "wsxd returned an unexpected plugin reload response"),
     }
 }
 
@@ -4043,8 +4029,12 @@ fn cmd_plugin_reload() -> Result<()> {
 fn sessions_a_stop_would_end(client: &runtime::Client) -> Result<Option<usize>> {
     Ok(match client.status()? {
         runtime::DaemonStatus::Missing => Some(0),
-        runtime::DaemonStatus::Compatible => match client.call(&runtime::Request::Snapshot)? {
-            runtime::Response::Snapshot(snapshot) => Some(
+        runtime::DaemonStatus::Compatible => {
+            let snapshot = expect_snapshot(
+                client.call(&runtime::Request::Snapshot)?,
+                "wsxd returned an unexpected snapshot response",
+            )?;
+            Some(
                 snapshot
                     .sessions
                     .iter()
@@ -4055,10 +4045,8 @@ fn sessions_a_stop_would_end(client: &runtime::Client) -> Result<Option<usize>> 
                             .any(|pane| pane.session_id == session.id && !pane.exited)
                     })
                     .count(),
-            ),
-            runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-            _ => bail!("wsxd returned an unexpected snapshot response"),
-        },
+            )
+        }
         runtime::DaemonStatus::Incompatible { lifecycle, .. } => {
             lifecycle.map(|status| status.live_runtimes)
         }
@@ -4266,15 +4254,12 @@ fn cmd_runtime_status(json: bool) -> Result<()> {
             lifecycle_error,
         }) => {
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&incompatible_runtime_status_json(
-                        client.socket(),
-                        daemon_protocol,
-                        lifecycle.as_deref(),
-                        lifecycle_error.as_deref(),
-                    ))?
-                );
+                print_json(&incompatible_runtime_status_json(
+                    client.socket(),
+                    daemon_protocol,
+                    lifecycle.as_deref(),
+                    lifecycle_error.as_deref(),
+                ))?;
             } else {
                 println!("Runtime: running (incompatible)");
                 println!("Socket: {}", client.socket().display());
@@ -4321,7 +4306,7 @@ fn cmd_runtime_status(json: bool) -> Result<()> {
 
     let snapshot = match client.call(&runtime::Request::Snapshot) {
         Ok(runtime::Response::Snapshot(snapshot)) => snapshot,
-        Ok(runtime::Response::Error(error)) => bail!("{}: {}", error.code, error.message),
+        Ok(runtime::Response::Error(error)) => return Err(api_error(error)),
         Ok(_) => bail!("wsxd returned an unexpected status response"),
         Err(error) => bail!("wsxd became unavailable while reading status: {error}"),
     };
@@ -4335,29 +4320,26 @@ fn cmd_runtime_status(json: bool) -> Result<()> {
     };
     let state = runtime_status_state(lifecycle.as_ref());
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "running": true,
-                "compatible": true,
-                "state": state,
-                "socket": client.socket(),
-                "protocol": snapshot.protocol,
-                "epoch": snapshot.epoch,
-                "revision": snapshot.revision,
-                "projects": snapshot.projects.len(),
-                "worktrees": snapshot.worktrees.len(),
-                "sessions": snapshot.sessions.len(),
-                "panes": snapshot.panes.len(),
-                "capabilities": snapshot.capabilities,
-                "lifecycle": lifecycle,
-                "client": {
-                    "version": runtime::WSX_VERSION,
-                    "protocol": runtime::PROTOCOL_VERSION,
-                    "daemon_revision": runtime::DAEMON_REVISION,
-                },
-            }))?
-        );
+        print_json(&serde_json::json!({
+            "running": true,
+            "compatible": true,
+            "state": state,
+            "socket": client.socket(),
+            "protocol": snapshot.protocol,
+            "epoch": snapshot.epoch,
+            "revision": snapshot.revision,
+            "projects": snapshot.projects.len(),
+            "worktrees": snapshot.worktrees.len(),
+            "sessions": snapshot.sessions.len(),
+            "panes": snapshot.panes.len(),
+            "capabilities": snapshot.capabilities,
+            "lifecycle": lifecycle,
+            "client": {
+                "version": runtime::WSX_VERSION,
+                "protocol": runtime::PROTOCOL_VERSION,
+                "daemon_revision": runtime::DAEMON_REVISION,
+            },
+        }))?;
     } else {
         println!(
             "Runtime: running ({state}), protocol {}, epoch {}, revision {}",
@@ -4837,28 +4819,23 @@ mod session_resolution_tests {
 fn send_pane_bytes(pane_id: runtime::PaneId, bytes: Vec<u8>) -> Result<()> {
     let client = runtime::Client::local();
     let client_id = runtime::new_client_id();
-    match client.call(&runtime::Request::TerminalAcquire {
-        pane_id,
-        client_id,
-        takeover: false,
-    })? {
-        runtime::Response::Ack { .. } => {}
-        runtime::Response::Error(error) => bail!("{}: {}", error.code, error.message),
-        _ => bail!("wsxd returned an unexpected lease response"),
-    }
-    let result = match client.call(&runtime::Request::TerminalInput {
-        pane_id,
-        client_id,
-        bytes,
-    })? {
-        runtime::Response::Ack { .. } => Ok(()),
-        runtime::Response::Error(error) => {
-            Err(anyhow::anyhow!("{}: {}", error.code, error.message))
-        }
-        _ => Err(anyhow::anyhow!(
-            "wsxd returned an unexpected input response"
-        )),
-    };
+    expect_ack(
+        client.call(&runtime::Request::TerminalAcquire {
+            pane_id,
+            client_id,
+            takeover: false,
+        })?,
+        "wsxd returned an unexpected lease response",
+    )?;
+    let result = expect_ack(
+        client.call(&runtime::Request::TerminalInput {
+            pane_id,
+            client_id,
+            bytes,
+        })?,
+        "wsxd returned an unexpected input response",
+    )
+    .map(|_| ());
     let _ = client.call(&runtime::Request::TerminalRelease { pane_id, client_id });
     result
 }
@@ -4882,18 +4859,15 @@ fn cmd_session_create(
     )?;
     if json {
         let (pane_id, agent) = created_session_pane(session_id);
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "session_id": session_id,
-                "pane_id": pane_id,
-                "agent": agent,
-                "label": label,
-                "project": project.name,
-                "worktree": worktree.path,
-                "branch": worktree.branch,
-            }))?
-        );
+        print_json(&serde_json::json!({
+            "session_id": session_id,
+            "pane_id": pane_id,
+            "agent": agent,
+            "label": label,
+            "project": project.name,
+            "worktree": worktree.path,
+            "branch": worktree.branch,
+        }))?;
     } else {
         println!("{}", created_session_line(session_id));
         println!("label:    {label}");
@@ -4932,19 +4906,16 @@ fn cmd_session_current(json: bool) -> Result<()> {
         .context("pane project missing")?;
     let agent = pane.agent.as_ref().filter(|agent| agent.attached);
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "pane_id": pane.id,
-                "session_id": session.id,
-                "label": session.label,
-                "project": project.name,
-                "worktree": worktree.path,
-                "branch": worktree.branch,
-                "agent": agent.map(|agent| &agent.provider),
-                "agent_status": agent.map(|agent| agent.state),
-            }))?
-        );
+        print_json(&serde_json::json!({
+            "pane_id": pane.id,
+            "session_id": session.id,
+            "label": session.label,
+            "project": project.name,
+            "worktree": worktree.path,
+            "branch": worktree.branch,
+            "agent": agent.map(|agent| &agent.provider),
+            "agent_status": agent.map(|agent| agent.state),
+        }))?;
     } else {
         println!("pane:     {}", pane.id);
         println!("{}", created_session_line(session.id));
@@ -4967,14 +4938,11 @@ fn cmd_session_delete(selector: &str, scope: &SessionScope, json: bool) -> Resul
     let session = resolve_session(selector, scope)?;
     ops::kill_session(session.session_id)?;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "deleted": true,
-                "session_id": session.session_id,
-                "label": session.label,
-            }))?
-        );
+        print_json(&serde_json::json!({
+            "deleted": true,
+            "session_id": session.session_id,
+            "label": session.label,
+        }))?;
     } else {
         println!(
             "deleted session: {} ({})",
@@ -4988,16 +4956,13 @@ fn cmd_session_restart(selector: &str, json: bool, scope: &SessionScope) -> Resu
     let session = resolve_session(selector, scope)?;
     let revision = ops::restart_session(session.pane_id)?;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "restarted": true,
-                "session_id": session.session_id,
-                "pane_id": session.pane_id,
-                "label": session.label,
-                "revision": revision,
-            }))?
-        );
+        print_json(&serde_json::json!({
+            "restarted": true,
+            "session_id": session.session_id,
+            "pane_id": session.pane_id,
+            "label": session.label,
+            "revision": revision,
+        }))?;
     } else {
         println!(
             "restarted session: {} ({})",
@@ -5179,7 +5144,7 @@ fn cmd_session_list(
                 }
             }
         }
-        println!("{}", serde_json::to_string_pretty(&sessions)?);
+        print_json(&sessions)?;
         return Ok(());
     }
     if let Format::Compact = format {

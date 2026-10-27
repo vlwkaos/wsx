@@ -8,6 +8,7 @@ mod event;
 mod follow;
 mod repo_scan;
 mod review;
+mod runtime_util;
 mod search;
 mod session_state;
 mod task;
