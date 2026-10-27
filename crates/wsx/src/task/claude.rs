@@ -582,13 +582,7 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
             )))
         }
         "result" => Some(AgentLine::Result(TurnResult {
-            limit: {
-                let resets_at = turns.resets_at.take();
-                (value["api_error"] == "usage_limit_reached").then(|| UsageLimit {
-                    resets_at: resets_at
-                        .or_else(|| text_reset(&str_field(value, "result"), now_unix_ms() / 1000)),
-                })
-            },
+            limit: usage_limit(value, turns.resets_at.take()),
             is_error: value
                 .get("is_error")
                 .and_then(Value::as_bool)
@@ -639,6 +633,14 @@ fn turn_usage(value: &Value, turns: &mut Turns) -> TurnUsage {
             .unwrap_or_else(|| value.get("usage").map_or(0, context_of)),
         model: std::mem::take(&mut turns.model),
     }
+}
+
+/// A result that Claude's usage limit ended, with its reset from the stream or its words.
+fn usage_limit(result: &Value, resets_at: Option<u64>) -> Option<UsageLimit> {
+    (result["api_error"] == "usage_limit_reached").then(|| UsageLimit {
+        resets_at: resets_at
+            .or_else(|| text_reset(&str_field(result, "result"), now_unix_ms() / 1000)),
+    })
 }
 
 /// The reset in Claude's own words, "You've hit your session limit · resets 12:10am
