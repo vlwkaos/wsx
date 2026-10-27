@@ -83,6 +83,16 @@ try:
         invoke(actor, {'PATH': selected_path})
         assert len(calls()) == before + 3, actor + ' executed a writable installed reporter'
         binary.chmod(0o755)
+    # docs/daemon-discovery.md: an empty WSX_SOCKET and a relative XDG_STATE_HOME are ignored,
+    # as runtime::state_dir ignores them, so recovery finds the HOME state folder's entry.
+    home_state = work / 'home' / '.local' / 'state' / 'wsx'
+    home_state.mkdir(parents=True)
+    home_state.chmod(0o700)
+    (home_state / 'wsx.reporter').symlink_to(binary)
+    for actor in ('shell', 'hermes'):
+        before = len(calls())
+        invoke(actor, {'WSX_SOCKET': '', 'XDG_STATE_HOME': 'relative-state', 'HOME': str(work / 'home')})
+        assert len(calls()) == before + 1, actor + ' did not ignore a relative XDG_STATE_HOME'
     # The Claude hook names the prompt a turn took: a wsx round by its exchange line, also
     # inside Claude's paste wrapper, else another prompt (docs/agent-orchestration.md "Taken, not typed").
     def prompt_report(prompt, event='UserPromptSubmit', **fields):

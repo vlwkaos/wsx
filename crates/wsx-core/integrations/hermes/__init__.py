@@ -1,5 +1,5 @@
 """wsx identity integration for Hermes Agent."""
-# WSX_INTEGRATION_VERSION=9
+# WSX_INTEGRATION_VERSION=10
 import os, runpy, subprocess
 
 # The installer places the shared resolver beside this plugin.

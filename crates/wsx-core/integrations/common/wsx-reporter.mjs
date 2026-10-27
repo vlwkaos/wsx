@@ -1,6 +1,7 @@
 // Shared reporter boundary. See docs/agent-reporting.md.
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 function executable(candidate, uid) {
@@ -15,11 +16,16 @@ function executable(candidate, uid) {
   return resolved;
 }
 
+// ^ runtime::state_dir (docs/daemon-discovery.md): an empty or relative value is ignored.
+function stateDir(env) {
+  if (path.isAbsolute(env.XDG_STATE_HOME || "")) return path.join(env.XDG_STATE_HOME, "wsx");
+  if (path.isAbsolute(env.HOME || "")) return path.join(env.HOME, ".local/state/wsx");
+  return path.join(os.tmpdir(), "wsx");
+}
+
 function recovery(binary, env) {
-  const root = env.XDG_STATE_HOME ||
-    (env.HOME ? path.join(env.HOME, ".local/state") : undefined);
-  const socket = env.WSX_SOCKET || (root ? path.join(root, "wsx/wsx.sock") : undefined);
-  if (!socket || !path.isAbsolute(socket)) return undefined;
+  const socket = env.WSX_SOCKET || path.join(stateDir(env), "wsx.sock");
+  if (!path.isAbsolute(socket)) return undefined;
   const parsed = path.parse(socket);
   const stable = path.join(parsed.dir, `${parsed.name}.reporter`);
   const uid = process.getuid();

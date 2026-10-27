@@ -83,7 +83,7 @@ Claude Code fires `SessionStart` with `source: "compact"` after every compaction
 
 ## Pi native exchange observer
 
-Pi integration 20 keeps lifecycle-only behavior without Pygmalion's Goal Run owner or daemon bound-receipt support. With both present, the loaded observer advertises prompt/receipt support, binds exact delivered native input before a run, and holds completion through Task continuations. See [native request-bound receipts](agent-orchestration.md#native-request-bound-receipts). Update assets and load the new extension through the provider's normal lifecycle; never rewrite or restart an unrelated live pane. Updating files alone does not alter loaded code.
+Pi integration 20 and later keeps lifecycle-only behavior without Pygmalion's Goal Run owner or daemon bound-receipt support. With both present, the loaded observer advertises prompt/receipt support, binds exact delivered native input before a run, and holds completion through Task continuations. See [native request-bound receipts](agent-orchestration.md#native-request-bound-receipts). Update assets and load the new extension through the provider's normal lifecycle; never rewrite or restart an unrelated live pane. Updating files alone does not alter loaded code.
 
 ## Wake heartbeat
 

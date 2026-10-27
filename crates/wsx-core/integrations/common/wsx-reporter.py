@@ -2,6 +2,7 @@
 import os
 import stat
 import sys
+import tempfile
 
 
 def _executable(candidate, uid):
@@ -17,11 +18,20 @@ def _executable(candidate, uid):
     return resolved
 
 
+def _state_dir():
+    # ^ runtime::state_dir (docs/daemon-discovery.md): an empty or relative value is ignored.
+    state, home = os.environ.get("XDG_STATE_HOME", ""), os.environ.get("HOME", "")
+    if os.path.isabs(state):
+        return os.path.join(state, "wsx")
+    if os.path.isabs(home):
+        return os.path.join(home, ".local/state/wsx")
+    return os.path.join(tempfile.gettempdir(), "wsx")
+
+
 def resolve_reporter(original):
     if not os.path.isabs(original):
         return None
-    root = os.environ.get("XDG_STATE_HOME") or os.path.join(os.environ.get("HOME", ""), ".local/state")
-    socket = os.environ.get("WSX_SOCKET") or os.path.join(root, "wsx/wsx.sock")
+    socket = os.environ.get("WSX_SOCKET") or os.path.join(_state_dir(), "wsx.sock")
     if not os.path.isabs(socket):
         return None
     try:
