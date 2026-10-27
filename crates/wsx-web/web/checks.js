@@ -100,7 +100,7 @@ export function CheckRow({ project, item, revision, onChanged }) {
           ${item.capture && !item.capture_removed && html`
             <a class="check-capture" href=${capture} data-view data-video=${video || undefined} data-poster=${poster}
               aria-label=${`${video ? "Video" : "Capture"} of: ${item.check}`}>
-              ${video && !poster ? html`<span class="check-frame"></span>` : html`<img src=${poster ?? capture} alt="" />`}
+              ${video && !poster ? html`<span class="check-frame"></span>` : html`<img src=${poster ?? capture} alt="" style=${item.capture_size && { "--w": item.capture_size[0], "--h": item.capture_size[1], "--width": `${item.capture_size[0]}px` }} />`}
               ${video && html`<span class="check-play"><${Icon} name="play" /></span>`}
             </a>`}
           ${item.state === "failed" && html`<p class="check-state">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
@@ -141,14 +141,10 @@ export function ChecksPage({ project, onClose, grip }) {
   // ^ The overview counts the open items; a change anywhere reads the list again.
   const count = store.tasks[project]?.to_check;
   useEffect(() => { read(); }, [project, count]);
-  // ^ The sheet opens once the first read and its captures are in (tasks.js `Sheet`).
-  const page = useRef();
+  // ^ The sheet opens once the first read is in (tasks.js `Sheet`); each capture's box has its
+  // size by then, so nothing that comes later moves the sheet.
   const loaded = items !== null || Boolean(failure);
-  useEffect(() => {
-    if (!loaded) return;
-    const images = [...page.current.querySelectorAll(".check-capture img")];
-    Promise.all(images.map((image) => image.decode().catch(() => {}))).then(() => grip.ready());
-  }, [loaded]);
+  useEffect(() => { if (loaded) grip.ready(); }, [loaded]);
   const passAll = async () => {
     setBusy(true);
     setFailure("");
@@ -162,7 +158,7 @@ export function ChecksPage({ project, onClose, grip }) {
     setBusy(false);
   };
   return html`
-    <div class="page task-page" ref=${page}>
+    <div class="page task-page">
       <${SheetBar} grip=${grip} onClose=${onClose} tools=${items?.length > 0 && can("task_act") && html`
         <div class="bar-tools">
           <button class="button check-all" type="button" disabled=${busy} onClick=${passAll}>${busy ? "Passing…" : "All passed"}</button>

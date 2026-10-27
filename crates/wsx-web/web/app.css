@@ -365,7 +365,7 @@ div.steps .steps-summary { cursor: default; }
 .pulse { flex: 0 0 auto; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-working); }
 @media (prefers-reduced-motion: no-preference) {
   .pulse, .mark[data-running] { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
-  .typing-dot { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
+  .typing-dot { animation: typing calc(var(--motion-duration) * 8) ease-in-out infinite; }
   .typing-dot:nth-child(3) { animation-delay: calc(var(--motion-duration) * 2); }
   .typing-dot:nth-child(4) { animation-delay: calc(var(--motion-duration) * 4); }
   .reservoir-head .icon { transition: transform var(--motion-duration) var(--motion-easing); }
@@ -419,6 +419,8 @@ div.steps .steps-summary { cursor: default; }
 @keyframes sheet-in { from { translate: 0 100%; } }
 @keyframes sheet-in-side { from { translate: 100% 0; } }
 @keyframes pulse { 50% { opacity: var(--opacity-disabled); } }
+/* ^ A typing dot rises as it brightens, one after another. */
+@keyframes typing { 0%, 60%, 100% { transform: none; opacity: var(--opacity-disabled); } 30% { transform: translateY(-35%); opacity: 1; } }
 @keyframes arrive { from { opacity: 0; } }
 @keyframes pop { from { opacity: 0; transform: scale(0.5); } 60% { transform: scale(1.15); } }
 @keyframes slide-up { from { opacity: 0; transform: translateY(var(--space-2)); } }
@@ -662,8 +664,9 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .bubble .markdown > :is(.code-block, .table-wrap, .diagram-failed) { align-self: stretch; width: auto; min-width: 0; max-width: 100%; }
 .bubble .markdown > .diagram { width: 100%; min-width: 0; }
 /* The manager writes: three dots. They pulse only where motion is welcome. */
-.typing { display: inline-flex; align-items: center; gap: var(--space-1); min-height: calc(var(--font-size-md) * var(--line-height-prose)); }
-.typing-dot { width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-working); }
+/* ^ Its box fits the dots, with the bubble's padding even on both sides, not the author's width. */
+.typing { display: inline-flex; align-self: flex-start; align-items: center; gap: var(--space-1); min-height: calc(var(--font-size-md) * var(--line-height-prose)); }
+.typing-dot { flex: none; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-working); }
 /* A task change and the manager's reply to events: one muted line each, left-aligned (docs/web-client-tasks.md "Project screen"). */
 .status-line, .reply-text { max-width: var(--size-prose); padding-inline: var(--space-1); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
 .reply-line { display: flex; flex-direction: column; align-items: flex-start; }
@@ -831,6 +834,11 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .check-capture :is(img, .check-frame) {
   display: block; max-width: 100%; max-height: calc(var(--size-rail) * 0.5);
   border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
+}
+/* ^ A capture whose size the server read (`--w`, `--h`) has its box before the image arrives. */
+.check-capture img[style] {
+  aspect-ratio: var(--w) / var(--h); height: auto;
+  width: min(calc(var(--w) * 1px), calc(var(--size-rail) * 0.5 * var(--w) / var(--h)));
 }
 .check-form { padding: 0 var(--column-inset, var(--space-4)) var(--space-3); }
 .check-item:not([data-state="open"]) :is(.check-task, .check-facts dd) { color: var(--color-muted); }

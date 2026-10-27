@@ -541,7 +541,8 @@ function ManagerComposer({ project, busy: thinking, reply, onReply, onSent, fiel
     try {
       const attachments = files.attachments.map((item) => item.hash);
       const text = withQuote(reply, body);
-      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text, attachments } });
+      // ^ A say may start the manager first: up to about 40 s (docs/tasks.md "Manager").
+      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text, attachments }, timeout: 60_000 });
       field.current.value = "";
       files.attachments = [];
       changed();
@@ -674,18 +675,15 @@ function More({ project }) {
 // A task or the project page over the chat, about 85% of the height (a `fit` sheet only as
 // high as its content): Back, Escape, a tap
 // beside it or a swipe down on its top closes it, and the chat under it keeps its scroll and
-// its draft. A fit sheet's top follows its height, so it opens once its content calls `ready`
-// (or after a second): rows that came after the slide would lift it again.
+// its draft. A fit sheet's top follows its height, so it opens once its content calls `ready`:
+// rows that came after the slide would lift it again. Its first read gives up after a while
+// (api.js), so `ready` always comes.
 function Sheet({ label, fit = false, onClose, children }) {
   const dialog = useRef();
   const drag = useRef(null);
   const [ready, setReady] = useState(!fit);
   useEffect(() => {
-    if (!ready) {
-      const timer = setTimeout(() => setReady(true), 1000);
-      return () => clearTimeout(timer);
-    }
-    if (!dialog.current.open) dialog.current.showModal();
+    if (ready && !dialog.current.open) dialog.current.showModal();
   }, [ready]);
   useEffect(() => {
     const node = dialog.current;

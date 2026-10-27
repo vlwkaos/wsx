@@ -166,6 +166,17 @@ function noteUpgrade(reason) {
   toast(`wsxd upgrade failed: ${reason}; sessions keep running`, { failure: true });
 }
 
+// ^ WebKit can leave a page's looping CSS animations standing still after an iOS swipe back or a
+// return from the background or the back-forward cache. The working pulses and the typing dots
+// start again after every route change and every return (docs/web-client.md "Motion").
+function restartLoops() {
+  for (const animation of document.getAnimations()) {
+    if (animation.effect?.getTiming().iterations !== Infinity) continue;
+    animation.cancel();
+    animation.play();
+  }
+}
+
 // A stream event to the page's own listeners.
 const relay = (name, detail = {}) => events.dispatchEvent(new CustomEvent(name, { detail }));
 
@@ -213,9 +224,15 @@ function start(session) {
     },
   });
   // ^ iOS suspends a PWA in the background, and a stream that was down drops its events.
-  const back = () => { if (document.visibilityState === "visible") resume(); };
+  const back = () => {
+    if (document.visibilityState !== "visible") return;
+    resume();
+    restartLoops();
+  };
   // ^ The first load's pageshow is not a return: the stream's first `up` reads everything.
   addEventListener("pageshow", (event) => { if (event.persisted) back(); });
+  // ^ A swipe back and the top bar's Back both go through history: one popstate, one hashchange.
+  addEventListener("hashchange", () => requestAnimationFrame(restartLoops));
   addEventListener("online", back);
   document.addEventListener("visibilitychange", back);
   const opened = parseRoute(location.hash);
