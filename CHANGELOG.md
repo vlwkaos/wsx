@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.40.1] - 2026-10-27
+
+### Fixed
+
+- Web: an approval the owner gives in the manager chat no longer shows a false "<Action> #n did not run" failure notice. The manager runs that action itself and replies with its result in the chat ([docs/web-client.md](docs/web-client.md) "Notices").
+
 ## [0.40.0] - 2026-10-27
 
 The task workers and the manager are the headline of this release. A worker builds one change in its own working copy inside a boundary that wsx owns, runs the project's checks and returns a result; the manager plans requests in a chat, lands and deploys passing work, and asks the owner only where something goes public or is lost ([docs/tasks.md](docs/tasks.md)). The hosted web client has the manager's home: its chat, the task reservoir and the To check list of what only the owner can judge, with an image viewer for their captures ([docs/web-client.md](docs/web-client.md)). Lands and deploys are steadier: a land rebases and checks again when the default branch moved, and the live site gets each land within minutes. wsxd is at daemon revision 34 with protocol 16: the first start of 0.40.0 hands a running 0.31 daemon's terminals off to the new one. A 0.31 daemon cannot hand off a pane whose program exited, so restart or close such panes before the upgrade ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "Exited panes").
