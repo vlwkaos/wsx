@@ -912,6 +912,7 @@ const network = (offline) => send("Network.emulateNetworkConditions", { offline,
 const visibility = (state) => evaluate(`Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => '${state}' });
   document.dispatchEvent(new Event('visibilitychange'))`);
 const replies = "document.querySelectorAll('.log .bubble[data-side=in]').length";
+const offlineFrom = problems.length;
 for (const away of ["offline", "hidden"]) {
   const before = await evaluate(replies);
   await typeInto(".composer-field", `SLOW STATUS while ${away}`);
@@ -929,6 +930,8 @@ for (const away of ["offline", "hidden"]) {
 await evaluate("delete document.visibilityState");
 // ^ The stream opens again (its "Connection lost" notice goes) and reads once more.
 await until("!document.querySelector('.notice[data-offline]')", "the stream did not open again after the page was offline", 150);
+// ^ The reads the page tried while offline failed, as they should.
+problems.splice(offlineFrom, problems.length - offlineFrom, ...problems.slice(offlineFrom).filter((problem) => !/ERR_INTERNET_DISCONNECTED/.test(problem)));
 
 // --- The task sheet: a chip or a reservoir row opens it over the chat, and the chat does not
 // scroll; Escape, Back and a swipe down close it, the composer keeps its draft and gets the
