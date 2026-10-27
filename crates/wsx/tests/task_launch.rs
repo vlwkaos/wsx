@@ -4,6 +4,10 @@
 //! (`scripts/fake-claude-stream.py`). Seatbelt does not start inside another sandbox: run it
 //! as a check (`wsx task check-run`), outside a worker's boundary.
 
+// ^ The boundary is Seatbelt only: off macOS an agent start fails by design (docs/tasks.md
+// "Permissions").
+#![cfg(target_os = "macos")]
+
 use serde_json::Value;
 use std::{
     fs,
