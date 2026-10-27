@@ -27,6 +27,7 @@ use wsx_core::task::owner;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
+use wsx_core::task::DeployKind;
 use wsx_core::task::{
     checks, ledger, now_unix_ms, LogEvent, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
 };
@@ -558,7 +559,8 @@ impl Manager {
             .unwrap_or(0)
     }
 
-    /// Turn each new failed deploy or release into an event line with the end of its output.
+    /// Turn each new failed deploy or release into an event line with the end of its output, and
+    /// each new successful release into one line.
     /// ref: docs/tasks.md "Manager"
     fn watch_deploys(&mut self) {
         let Ok(records) = store::read_deploys(&self.dir.project_id) else {
@@ -569,7 +571,16 @@ impl Manager {
                 continue;
             }
             self.observed_deploys_ms = record.unix_ms;
+            // ^ A release runs detached for many minutes: its success is news, a deploy's is not.
             if record.exit == Some(0) {
+                if record.kind == DeployKind::Release {
+                    self.pending_events.push(format!(
+                        "release of {:.12} succeeded after {} s",
+                        record.commit,
+                        record.duration_ms / 1000
+                    ));
+                    self.last_event = Some(Instant::now());
+                }
                 continue;
             }
             let lines: Vec<String> = ledger::tail_lines(

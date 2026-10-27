@@ -914,6 +914,29 @@ def run(wsx, wsxd, work, owned):
 
     # 17. Deploy and release records. Each runs in a temporary copy of a default-branch commit.
     mark('17')
+    project_store = state / 'wsx/tasks' / Path(created['task_dir']).parent.name
+
+    def deploy_records():
+        path = project_store / 'deploys.jsonl'
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def deploy_lock_free():
+        with open(project_store / 'deploy.lock', 'a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except BlockingIOError:
+                return False
+
+    def ran(*argv, seconds=20):
+        # ^ A deploy or release by hand answers once it started; its detached run records it.
+        before = len(deploy_records())
+        started = js('task', *argv)
+        assert started['started'] and ' started; ' in started['message'], started
+        wait(lambda: len(deploy_records()) > before and deploy_lock_free(), 'the detached ' + argv[0], seconds)
+        assert started['commit'] == deploy_records()[-1]['commit'], started
+        return dict(deploy_records()[-1], message=started['message'])
+
     unset = cli('task', 'deploy', ok=False)
     assert 'tasks.deploy.command is not set' in unset.stderr and 'nothing was run' in unset.stderr
     (project / 'wsx.config.yml').write_text(LAND_CONFIG + '''  deploy:
@@ -931,11 +954,11 @@ def run(wsx, wsxd, work, owned):
     assert 'to check are open' in cli('task', 'deploy', ok=False).stderr
     git('checkout', '--', 'wsx.config.yml')
     assert not (base / 'deploy.log').exists()
-    deployed = js('task', 'deploy')
+    deployed = ran('deploy')
     assert deployed['message'].endswith('; 1 to check on the deployed site'), deployed
     (base / 'deploy.log').unlink()
     assert js('task', 'check', 'pass', '--all')['open'] == 0
-    deployed = js('task', 'deploy')
+    deployed = ran('deploy')
     tip = git('rev-parse', 'main')
     assert deployed['commit'] == tip and deployed['exit'] == 0, deployed
     commit_line, where = (base / 'deploy.log').read_text().split()
@@ -948,9 +971,9 @@ def run(wsx, wsxd, work, owned):
     wait_closed(later)
     status = js('task', 'deployed')
     assert status['deploy']['commit'] == tip and status['deploy']['behind'] == 1, status
-    failed_release = cli('task', 'release', '--json', ok=False)
-    assert json.loads(failed_release.stdout)['exit'] == 3 and 'recorded' in failed_release.stderr
-    assert 'release broke here' in failed_release.stderr, failed_release.stderr
+    assert ran('release')['exit'] == 3
+    release_log = (project_store / 'follow-up.log').read_text()
+    assert 'release broke here' in release_log and 'the failure is recorded' in release_log, release_log[-2000:]
     # ^ A failed attempt keeps the end of its output: the ledger's deploys show its last 40 lines.
     release_status = js('task', 'deployed')['release']
     failed = release_status.pop('failed')
@@ -959,7 +982,7 @@ def run(wsx, wsxd, work, owned):
     assert failed['output'].splitlines() == [str(n) for n in range(22, 61)] + ['release broke here'], failed
     assert js('task', 'ledger')['deploys']['release']['failed'] == failed
     older = git('rev-parse', 'main~3')
-    assert js('task', 'deploy', '--commit', older)['commit'] == older
+    assert ran('deploy', '--commit', older)['commit'] == older
     assert js('task', 'deployed')['deploy']['behind'] == 3
 
     # 18. The ledger: open tasks by attention order, recent ones, deploys, the main checkout.
@@ -1153,9 +1176,37 @@ def run(wsx, wsxd, work, owned):
 
     # ^ A failed deploy or release is an event with the end of its output.
     js('task', 'check', 'pass', '--all')
-    cli('task', 'release', '--json', ok=False)
+    ran('release')
     wait(lambda: events_with('release of %s failed (exit 3); its output ends:\n    52\n' % git('rev-parse', 'main')[:12],
                              '\n    60\n    release broke here'), 'the failed release event')
+    # ^ A release longer than a call through the manager's broker: the call answers that it
+    # started while the command runs, a second one is refused, and the result is recorded and
+    # becomes an event.
+    release_config = (project / 'wsx.config.yml').read_text()
+    (project / 'wsx.config.yml').write_text(
+        LAND_CONFIG + "  release:\n    command: 'sleep 6; echo released >> ../long-release.log'\n    approve: false\n")
+    git('commit', '-q', '-am', 'long release')
+    long_tip = git('rev-parse', 'main')
+    records_before = len(deploy_records())
+    started = js('task', 'say', 'RUN wsx task release -p demo --json')
+    text = reply_to(started['id'])['text']
+    assert 'ran: wsx task release -p demo --json -> 0' in text and '"started": true' in text, text
+    assert not (base / 'long-release.log').exists() and len(deploy_records()) == records_before
+    busy = cli('task', 'release', ok=False).stderr
+    assert 'a deploy or release of demo runs' in busy and 'Nothing was run' in busy, busy
+    # ^ The detached run's flag skips the checks only with the held lock's descriptor.
+    forged = cli('task', 'release', '--run-locked', '0', ok=False).stderr
+    assert 'descriptor 0 is not' in forged, forged
+    wait(lambda: (base / 'long-release.log').exists(), 'the long release', 30)
+    wait(lambda: len(deploy_records()) == records_before + 1, 'the long release record')
+    long_release = deploy_records()[-1]
+    assert long_release['kind'] == 'release' and long_release['exit'] == 0 and long_release['commit'] == long_tip, long_release
+    assert long_release['duration_ms'] >= 6000 and (base / 'long-release.log').read_text() == 'released\n'
+    assert js('task', 'ledger')['deploys']['release']['commit'] == long_tip
+    wait(lambda: events_with('release of %s succeeded after 6 s' % long_tip[:12]), 'the release event')
+    wait(deploy_lock_free, 'the deploy lock')
+    (project / 'wsx.config.yml').write_text(release_config)
+    git('commit', '-q', '-am', 'release as before')
     # ^ The close events of the tasks above may still run a turn: SLOW must start its own.
     def manager_idle():
         entries = manager_entries()
@@ -2017,7 +2068,8 @@ def run(wsx, wsxd, work, owned):
     assert 'item(s) to check are open' in refused and 'Nothing was run' in refused, refused
     asked = js('task', 'say', 'release\nRUN wsx task release --owner-said OWNER_SAID -p demo')
     text = reply_to(asked['id'])['text']
-    assert ': exit 0; still to check on the release: %s' % ', '.join(open_ids) in text, text
+    assert ' started; ' in text and 'still to check on the release: %s' % ', '.join(open_ids) in text, text
+    wait(lambda: (base / 'said-release.log').exists() and deploy_lock_free(), 'the release the owner asked for')
     assert (base / 'said-release.log').read_text() == 'released\n'
     assert [i['id'] for i in js('task', 'check')['open']] == open_ids
     (project / 'wsx.config.yml').write_text(LAND_CONFIG)

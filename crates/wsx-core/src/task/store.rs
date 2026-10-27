@@ -403,7 +403,7 @@ const MAX_FOLLOW_UP_LOG_BYTES: u64 = 4 * 1024 * 1024;
 /// The output of what a land starts by itself (a deploy, the close of the task), appended;
 /// emptied first once it passes 4 MiB. ref: docs/tasks.md "Deploy and release"
 pub fn follow_up_log(project_id: &str) -> Result<File> {
-    let path = ensure_project_dir(project_id)?.join(FOLLOW_UP_LOG_FILE);
+    let path = follow_up_log_path(project_id)?;
     let file = open_nofollow(&path, OpenOptions::new().append(true).create(true))?;
     if file.metadata()?.len() > MAX_FOLLOW_UP_LOG_BYTES {
         file.set_len(0)?;
@@ -411,10 +411,56 @@ pub fn follow_up_log(project_id: &str) -> Result<File> {
     Ok(file)
 }
 
+pub fn follow_up_log_path(project_id: &str) -> Result<PathBuf> {
+    Ok(ensure_project_dir(project_id)?.join(FOLLOW_UP_LOG_FILE))
+}
+
 /// Held while a deploy or release of the project runs, so they run one at a time.
 pub fn lock_deploys(project_id: &str) -> Result<File> {
     let path = ensure_project_dir(project_id)?.join(DEPLOY_LOCK_FILE);
     open_locked(&path, OpenOptions::new().write(true).create(true))
+}
+
+/// `lock_deploys` without waiting: `None` while another deploy or release runs.
+pub fn try_lock_deploys(project_id: &str) -> Result<Option<File>> {
+    let path = ensure_project_dir(project_id)?.join(DEPLOY_LOCK_FILE);
+    let file = open_nofollow(&path, OpenOptions::new().write(true).create(true))?;
+    // SAFETY: flock on an open descriptor; released when `file` closes.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(Some(file));
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        return Ok(None);
+    }
+    Err(error).with_context(|| format!("cannot lock {}", path.display()))
+}
+
+/// The deploy lock a detached run was started with, as descriptor `fd`: refused unless `fd`
+/// is the project's `deploy.lock` and holds its lock. ref: docs/tasks.md "Deploy and release"
+pub fn adopt_deploy_lock(project_id: &str, fd: i32) -> Result<File> {
+    let path = project_dir(project_id)?.join(DEPLOY_LOCK_FILE);
+    let expected =
+        fs::symlink_metadata(&path).with_context(|| format!("cannot read {}", path.display()))?;
+    // SAFETY: fstat only writes the zeroed struct it is given.
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    if fd < 0
+        || unsafe { libc::fstat(fd, &mut stat) } != 0
+        || stat.st_dev as u64 != expected.dev()
+        || stat.st_ino as u64 != expected.ino()
+    {
+        bail!("descriptor {fd} is not {}", path.display());
+    }
+    // ^ The descriptor that holds the lock locks again at once; another one would wait.
+    // SAFETY: flock on a descriptor checked above.
+    if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        bail!(
+            "descriptor {fd} does not hold the lock of {}",
+            path.display()
+        );
+    }
+    // SAFETY: `fd` is open (fstat passed) and this process owns it from here on.
+    Ok(unsafe { <File as std::os::unix::io::FromRawFd>::from_raw_fd(fd) })
 }
 
 /// Append one deploy or release record to `tasks/<project-id>/deploys.jsonl`.

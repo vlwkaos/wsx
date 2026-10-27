@@ -485,6 +485,7 @@ impl Host {
                     "--json",
                 ],
                 log,
+                None,
             )
         });
         if let Err(error) = started {
@@ -1613,7 +1614,7 @@ impl Host {
         }
         for args in follow_ups {
             let started = store::follow_up_log(&self.record.project_id)
-                .and_then(|log| hosting::spawn_wsx(&args, log));
+                .and_then(|log| hosting::spawn_wsx(&args, log, None));
             if let Err(error) = started {
                 self.say(&format!("cannot start wsx {}: {error:#}", args.join(" ")));
             }
