@@ -242,7 +242,7 @@ async function viewImages(name, links, many = 2) {
     if (after !== before) await fail(`${what}: after ${how} the page is not where it was: ${after}, was ${before}`);
   };
   const state = () => evaluate(`(() => { const stage = document.querySelector('.viewer-stage').getBoundingClientRect(); const box = ${shown}?.getBoundingClientRect();
-    return box && { src: ${shown}.src, place: ${place}, count: document.querySelector('.viewer-bar .time')?.textContent ?? '', next: !!document.querySelector('.viewer-bar [aria-label="Next image"]'),
+    return box && { src: ${shown}.src, place: ${place}, count: [...document.querySelectorAll('.viewer-bar .time')].find((node) => / of /.test(node.textContent))?.textContent ?? '', next: !!document.querySelector('.viewer-bar [aria-label="Next image"]'),
       inside: box.left >= stage.left - 1 && box.top >= stage.top - 1 && box.right <= stage.right + 1 && box.bottom <= stage.bottom + 1,
       gaps: [box.left - stage.left, stage.right - box.right, box.top - stage.top, stage.bottom - box.bottom].map(Math.round),
       fills: Math.max(box.width / stage.width, box.height / stage.height) > 0.99,
