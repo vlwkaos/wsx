@@ -18,7 +18,6 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-#[cfg(unix)]
 use std::{
     os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd},
     os::unix::net::UnixStream,
@@ -44,7 +43,6 @@ const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(15);
 const AGENT_OBSERVATION_ROWS: usize = 12;
 const AGENT_OBSERVATION_TEXT_BYTES: usize = 32 * 1024;
 const AGENT_OBSERVATION_TITLE_BYTES: usize = 1024;
-#[cfg(unix)]
 const HANDOFF_PAUSE_TIMEOUT: Duration = Duration::from_secs(2);
 const SYNCHRONIZED_OUTPUT_TIMEOUT: Duration = Duration::from_secs(1);
 pub const MAX_HANDOFF_ANSI_BYTES: usize = 512 * 1024;
@@ -66,7 +64,6 @@ const RAW_REPLAY_MODES: &[(u16, bool)] = &[
     (ghostty::MODE_MOUSE_SGR_PIXELS, false),
     (ghostty::MODE_BRACKETED_PASTE, false),
 ];
-#[cfg(unix)]
 const HANDOFF_MODES: &[u16] = &[
     ghostty::MODE_APPLICATION_CURSOR_KEYS,
     ghostty::MODE_FOCUS_EVENT,
@@ -224,18 +221,15 @@ impl Emulator {
 struct Process {
     master: Mutex<Box<dyn MasterPty + Send>>,
     killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
-    #[cfg(unix)]
     process_group: Arc<std::sync::atomic::AtomicI32>,
 }
 
-#[cfg(unix)]
 #[derive(Default)]
 struct ReaderState {
     pause_requested: bool,
     paused: bool,
 }
 
-#[cfg(unix)]
 #[derive(Default)]
 struct ReaderControl {
     state: Mutex<ReaderState>,
@@ -251,11 +245,9 @@ struct Shared {
     exited: AtomicBool,
     terminating: AtomicBool,
     notify: Arc<dyn Fn() + Send + Sync>,
-    #[cfg(unix)]
     reader: Arc<ReaderControl>,
 }
 
-#[cfg(unix)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalHandoffState {
     pub pane_id: PaneId,
@@ -339,17 +331,11 @@ impl TerminalRuntime {
                 pixel_height: 0,
             })
             .map_err(|error| TerminalError::Pty(error.to_string()))?;
-        #[cfg(unix)]
         let reader_fd = duplicate_fd(
             pair.master
                 .as_raw_fd()
                 .ok_or_else(|| TerminalError::Runtime("PTY has no file descriptor".into()))?,
         )?;
-        #[cfg(not(unix))]
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| TerminalError::Pty(e.to_string()))?;
         let writer = pair
             .master
             .take_writer()
@@ -374,23 +360,16 @@ impl TerminalRuntime {
             .spawn_command(builder)
             .map_err(|e| TerminalError::Pty(e.to_string()))?;
         let mut killer = child.clone_killer();
-        #[cfg(unix)]
         let process_group = pair.master.process_group_leader();
-        #[cfg(unix)]
         let process_group_owner = Arc::new(std::sync::atomic::AtomicI32::new(
             process_group.unwrap_or_default(),
         ));
         if let Some(bytes) = initial_input.filter(|bytes| !bytes.is_empty()) {
             if let Err(error) = write_startup_input(pair.master.as_ref(), bytes) {
-                abort_spawn(
-                    &mut killer,
-                    #[cfg(unix)]
-                    process_group,
-                );
+                abort_spawn(&mut killer, process_group);
                 return Err(TerminalError::Io(error));
             }
         }
-        #[cfg(unix)]
         let (reader, reader_wake) = reader_control()?;
         let shared = Arc::new(Shared {
             emulator: Mutex::new(emulator),
@@ -400,32 +379,17 @@ impl TerminalRuntime {
             exited: AtomicBool::new(false),
             terminating: AtomicBool::new(false),
             notify,
-            #[cfg(unix)]
             reader,
         });
-        #[cfg(unix)]
         let reader_result = spawn_reader_fd(reader_fd, reader_wake, Arc::clone(&shared));
-        #[cfg(not(unix))]
-        let reader_result = spawn_reader(reader, Arc::clone(&shared));
         if let Err(error) = reader_result {
-            abort_spawn(
-                &mut killer,
-                #[cfg(unix)]
-                process_group,
-            );
+            abort_spawn(&mut killer, process_group);
             return Err(error);
         }
-        if let Err(error) = spawn_waiter(
-            child,
-            Arc::clone(&shared),
-            #[cfg(unix)]
-            Arc::clone(&process_group_owner),
-        ) {
-            abort_spawn(
-                &mut killer,
-                #[cfg(unix)]
-                process_group,
-            );
+        if let Err(error) =
+            spawn_waiter(child, Arc::clone(&shared), Arc::clone(&process_group_owner))
+        {
+            abort_spawn(&mut killer, process_group);
             return Err(error);
         }
         Ok(Self {
@@ -435,7 +399,6 @@ impl TerminalRuntime {
             process: Some(Process {
                 master: Mutex::new(pair.master),
                 killer: Mutex::new(Some(killer)),
-                #[cfg(unix)]
                 process_group: process_group_owner,
             }),
             selection_clock: Instant::now(),
@@ -443,7 +406,6 @@ impl TerminalRuntime {
         })
     }
 
-    #[cfg(unix)]
     pub fn process_group_id(&self) -> Option<libc::pid_t> {
         self.process.as_ref().and_then(|process| {
             let group = process.process_group.load(Ordering::Acquire);
@@ -451,7 +413,6 @@ impl TerminalRuntime {
         })
     }
 
-    #[cfg(unix)]
     pub fn has_foreground_job(&self) -> bool {
         let Some(process) = self.process.as_ref() else {
             return false;
@@ -464,23 +425,15 @@ impl TerminalRuntime {
         foreground_group.is_some_and(|group| group > 1 && group != root_group)
     }
 
-    #[cfg(not(unix))]
-    pub fn has_foreground_job(&self) -> bool {
-        false
-    }
-
-    #[cfg(unix)]
     pub fn pause_handoff_reader(&self) -> Result<(), TerminalError> {
         set_reader_paused(&self.shared.reader, true, HANDOFF_PAUSE_TIMEOUT)
             .map_err(TerminalError::Io)
     }
 
-    #[cfg(unix)]
     pub fn resume_handoff_reader(&self) {
         let _ = set_reader_paused(&self.shared.reader, false, HANDOFF_PAUSE_TIMEOUT);
     }
 
-    #[cfg(unix)]
     pub fn duplicate_handoff_fd(&self) -> Result<RawFd, TerminalError> {
         let process = self
             .process
@@ -499,7 +452,6 @@ impl TerminalRuntime {
     /// The terminal's screen, history and modes for a live handoff. An exited terminal has
     /// no process group to hand over: its state carries 0 and goes without a PTY
     /// (docs/daemon-live-upgrade.md "Exited panes").
-    #[cfg(unix)]
     pub fn handoff_state(&self) -> Result<TerminalHandoffState, TerminalError> {
         let process_group = match self.process_group_id() {
             Some(group) => group,
@@ -552,7 +504,6 @@ impl TerminalRuntime {
     ///
     /// `fd` must be a valid, uniquely owned PTY master descriptor for the
     /// process group recorded in `state`. This function assumes ownership.
-    #[cfg(unix)]
     pub unsafe fn from_handoff_fd(
         fd: RawFd,
         state: TerminalHandoffState,
@@ -612,7 +563,6 @@ impl TerminalRuntime {
     /// An exited terminal from a live handoff: its last screen and history, no PTY and no
     /// process. Input goes nowhere; it reads as exited (docs/daemon-live-upgrade.md
     /// "Exited panes").
-    #[cfg(unix)]
     pub fn exited_from_handoff(
         state: TerminalHandoffState,
         notify: Arc<dyn Fn() + Send + Sync>,
@@ -641,7 +591,6 @@ impl TerminalRuntime {
         })
     }
 
-    #[cfg(unix)]
     pub fn activate_handoff(&self) {
         self.resume_handoff_reader();
         if let Some(process_group) = self.process_group_id() {
@@ -653,12 +602,10 @@ impl TerminalRuntime {
         (self.shared.notify)();
     }
 
-    #[cfg(unix)]
     pub fn protect_handoff_import(&self) {
         self.preserve_process_on_drop.store(true, Ordering::Release);
     }
 
-    #[cfg(unix)]
     pub fn prepare_source_handoff(&self) -> Result<libc::pid_t, TerminalError> {
         let process = self
             .process
@@ -674,7 +621,6 @@ impl TerminalRuntime {
         Ok(process_group)
     }
 
-    #[cfg(unix)]
     pub fn rollback_source_handoff(&self, process_group: libc::pid_t) {
         if let Some(process) = &self.process {
             let _ = process.process_group.compare_exchange(
@@ -688,7 +634,6 @@ impl TerminalRuntime {
             .store(false, Ordering::Release);
     }
 
-    #[cfg(unix)]
     pub fn assume_handoff_ownership(&self) {
         self.preserve_process_on_drop
             .store(false, Ordering::Release);
@@ -718,7 +663,6 @@ impl TerminalRuntime {
     /// `write` that gives up at `deadline` when the program stops reading its input.
     /// Bytes written before the deadline stay in the program's input.
     pub fn write_within(&self, bytes: &[u8], deadline: Instant) -> Result<(), TerminalError> {
-        #[cfg(unix)]
         if let Some(process) = self.process.as_ref().filter(|_| !bytes.is_empty()) {
             if self.exited() {
                 return Err(TerminalError::Runtime("terminal process exited".into()));
@@ -1342,7 +1286,6 @@ impl TerminalRuntime {
             let mut writer = lock(&self.shared.writer);
             // ^ portable-pty's writer writes an end-of-file byte when it is dropped. A program
             // that stopped reading its input would hold that write, and wsxd with it, for ever.
-            #[cfg(unix)]
             if let Some(fd) = self
                 .process
                 .as_ref()
@@ -1358,7 +1301,6 @@ impl TerminalRuntime {
             writer.take();
         }
         if let Some(process) = &self.process {
-            #[cfg(unix)]
             terminate_group(take_process_group(&process.process_group));
             if let Some(killer) = lock(&process.killer).as_mut() {
                 let _ = killer.kill();
@@ -1385,7 +1327,6 @@ impl TerminalRuntime {
                 exited: AtomicBool::new(false),
                 terminating: AtomicBool::new(false),
                 notify: Arc::new(|| {}),
-                #[cfg(unix)]
                 reader: Arc::new(ReaderControl::default()),
             }),
             process: None,
@@ -1395,7 +1336,6 @@ impl TerminalRuntime {
 }
 impl Drop for TerminalRuntime {
     fn drop(&mut self) {
-        #[cfg(unix)]
         if self.preserve_process_on_drop.load(Ordering::Acquire) {
             if let Some(writer) = lock(&self.shared.writer).take() {
                 std::mem::forget(writer);
@@ -1458,7 +1398,6 @@ fn make_emulator(
     })
 }
 
-#[cfg(unix)]
 fn duplicate_fd(fd: RawFd) -> io::Result<OwnedFd> {
     let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
     if duplicate < 0 {
@@ -1468,7 +1407,6 @@ fn duplicate_fd(fd: RawFd) -> io::Result<OwnedFd> {
     }
 }
 
-#[cfg(unix)]
 fn reader_control() -> io::Result<(Arc<ReaderControl>, UnixStream)> {
     let (wake_reader, wake_writer) = UnixStream::pair()?;
     let control = Arc::new(ReaderControl {
@@ -1479,7 +1417,6 @@ fn reader_control() -> io::Result<(Arc<ReaderControl>, UnixStream)> {
     Ok((control, wake_reader))
 }
 
-#[cfg(unix)]
 fn set_reader_paused(control: &ReaderControl, paused: bool, timeout: Duration) -> io::Result<()> {
     let deadline = Instant::now() + timeout;
     let mut state = lock(&control.state);
@@ -1517,7 +1454,6 @@ fn set_reader_paused(control: &ReaderControl, paused: bool, timeout: Duration) -
 
 /// An emulator with a handed-off screen: the keyboard state, the bounded history, the modes
 /// and the cursor.
-#[cfg(unix)]
 fn restored_emulator(
     state: &TerminalHandoffState,
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
@@ -1543,7 +1479,6 @@ fn restored_emulator(
     Ok(emulator)
 }
 
-#[cfg(unix)]
 fn spawn_reader_fd(
     reader: OwnedFd,
     wake: UnixStream,
@@ -1663,48 +1598,10 @@ fn bounded_handoff_ansi(
     Ok((ansi, true))
 }
 
-#[cfg(not(unix))]
-fn spawn_reader(
-    mut reader: Box<dyn io::Read + Send>,
-    shared: Arc<Shared>,
-) -> Result<(), TerminalError> {
-    thread::Builder::new()
-        .name("wsx-pty-reader".into())
-        .spawn(move || {
-            let mut buffer = [0_u8; 16 * 1024];
-            loop {
-                match reader.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(count) => {
-                        let mut emulator = lock(&shared.emulator);
-                        emulator.ingest(&buffer[..count]);
-                        shared.revision.fetch_add(1, Ordering::AcqRel);
-                        drop(emulator);
-                        (shared.notify)();
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error)
-                        if error.kind() == io::ErrorKind::UnexpectedEof
-                            || error.raw_os_error() == Some(libc::EIO) =>
-                    {
-                        break
-                    }
-                    Err(error) => {
-                        set_error(&shared.error, format!("PTY reader failed: {error}"));
-                        break;
-                    }
-                }
-            }
-            mark_exited(&shared);
-        })
-        .map(|_| ())
-        .map_err(TerminalError::Io)
-}
-
 fn spawn_waiter(
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
     shared: Arc<Shared>,
-    #[cfg(unix)] process_group: Arc<std::sync::atomic::AtomicI32>,
+    process_group: Arc<std::sync::atomic::AtomicI32>,
 ) -> Result<thread::JoinHandle<()>, TerminalError> {
     thread::Builder::new()
         .name("wsx-child-waiter".into())
@@ -1713,32 +1610,26 @@ fn spawn_waiter(
                 set_error(&shared.error, format!("child wait failed: {error}"));
                 (shared.notify)();
             }
-            #[cfg(unix)]
             terminate_group(take_process_group(&process_group));
-            // ^ docs/terminal-exit-ordering.md: Unix reader EOF owns natural exit so
-            // final PTY output and clipboard effects precede stream Exited.
-            #[cfg(not(unix))]
-            mark_exited(&shared);
+            // ^ docs/terminal-exit-ordering.md: reader EOF owns natural exit so final PTY
+            // output and clipboard effects precede stream Exited.
         })
         .map_err(TerminalError::Io)
 }
 
 fn abort_spawn(
     killer: &mut Box<dyn ChildKiller + Send + Sync>,
-    #[cfg(unix)] process_group: Option<libc::pid_t>,
+    process_group: Option<libc::pid_t>,
 ) {
-    #[cfg(unix)]
     terminate_group(process_group);
     let _ = killer.kill();
 }
 
-#[cfg(unix)]
 fn take_process_group(group: &std::sync::atomic::AtomicI32) -> Option<libc::pid_t> {
     let group = group.swap(0, Ordering::AcqRel);
     (group > 1).then_some(group)
 }
 
-#[cfg(unix)]
 fn terminate_group(group: Option<libc::pid_t>) {
     if let Some(group) = group.filter(|group| *group > 1) {
         if group != unsafe { libc::getpgrp() } {
@@ -1750,7 +1641,6 @@ fn terminate_group(group: Option<libc::pid_t>) {
     }
 }
 
-#[cfg(unix)]
 fn write_startup_input(master: &dyn MasterPty, bytes: &[u8]) -> io::Result<()> {
     write_master_until(master, bytes, Instant::now() + STARTUP_WRITE_TIMEOUT)
 }
@@ -1758,7 +1648,6 @@ fn write_startup_input(master: &dyn MasterPty, bytes: &[u8]) -> io::Result<()> {
 /// Write to the PTY master and give up at `deadline` when the program stops reading.
 /// ^ O_NONBLOCK belongs to the open file, which the reader's duplicate shares: callers
 /// hold the writer lock, and the reader takes EAGAIN as "poll again".
-#[cfg(unix)]
 fn write_master_until(master: &dyn MasterPty, bytes: &[u8], deadline: Instant) -> io::Result<()> {
     let fd = master
         .as_raw_fd()
@@ -1816,14 +1705,6 @@ fn write_master_until(master: &dyn MasterPty, bytes: &[u8], deadline: Instant) -
         }
     }
     Ok(())
-}
-
-#[cfg(not(unix))]
-fn write_startup_input(_master: &dyn MasterPty, _bytes: &[u8]) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "terminal startup input is unsupported on this platform",
-    ))
 }
 
 fn write_pty(writer: &Mutex<Option<Box<dyn Write + Send>>>, bytes: &[u8]) -> io::Result<()> {
@@ -2194,7 +2075,6 @@ mod tests {
         drop(runtime);
     }
 
-    #[cfg(unix)]
     #[test]
     fn natural_exit_waits_for_final_pty_effects_to_drain() {
         // Join the production waiter to establish reaping without relying on
@@ -2506,7 +2386,6 @@ mod tests {
         assert_eq!(frame.cells[1].width, wsx_core::runtime::CellWidth::Narrow);
     }
 
-    #[cfg(unix)]
     #[test]
     fn spawned_process_receives_bounded_runtime_environment() {
         let command = vec![
@@ -2550,7 +2429,6 @@ mod tests {
 
     // ^ A query reply must not block the reader: a child that reads no input and floods its
     // output would otherwise wait for the reader while the reader waits for its input.
-    #[cfg(unix)]
     #[test]
     fn query_reply_to_a_child_that_reads_no_input_does_not_stall_its_output() {
         let flag = std::env::temp_dir().join(format!("wsx-reply-stall-{}", std::process::id()));
@@ -2591,7 +2469,10 @@ mod tests {
         });
         // Fill the input queue so that any write to the PTY blocks.
         assert!(runtime
-            .write_within(&vec![b'a'; 1 << 20], Instant::now() + Duration::from_millis(500))
+            .write_within(
+                &vec![b'a'; 1 << 20],
+                Instant::now() + Duration::from_millis(500)
+            )
             .is_err());
         std::fs::write(&flag, b"").unwrap();
         wait_until("child output drained", &|| runtime.exited());
@@ -2599,7 +2480,6 @@ mod tests {
         runtime.terminate();
     }
 
-    #[cfg(unix)]
     #[test]
     fn interactive_shell_reports_a_distinct_foreground_job_group() {
         let runtime = TerminalRuntime::spawn(
@@ -2627,7 +2507,6 @@ mod tests {
         assert!(observed);
     }
 
-    #[cfg(unix)]
     #[test]
     fn process_group_ownership_is_consumed_once() {
         let group = std::sync::atomic::AtomicI32::new(42);
@@ -3105,7 +2984,6 @@ mod tests {
         .is_empty());
     }
 
-    #[cfg(unix)]
     #[test]
     fn resize_clears_selection_before_the_new_geometry_is_presented() {
         let runtime = TerminalRuntime::spawn(
@@ -3533,7 +3411,6 @@ mod tests {
         assert_traits::<TerminalRuntime>();
     }
 
-    #[cfg(unix)]
     fn frame_text(runtime: &TerminalRuntime) -> String {
         runtime
             .frame()
@@ -3544,7 +3421,6 @@ mod tests {
             .collect()
     }
 
-    #[cfg(unix)]
     fn wait_for_text(runtime: &TerminalRuntime, expected: &str) {
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
@@ -3559,7 +3435,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn handoff_history_never_exceeds_its_byte_limit() {
         let runtime = TerminalRuntime::new_for_test(1, 1_000).unwrap();
@@ -3574,7 +3449,6 @@ mod tests {
         assert!(ansi.len() <= 16);
     }
 
-    #[cfg(unix)]
     #[test]
     fn live_handoff_preserves_process_and_pty_io() {
         let command = vec![
