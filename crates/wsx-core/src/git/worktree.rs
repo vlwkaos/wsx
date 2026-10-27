@@ -16,7 +16,7 @@ pub struct WorktreeEntry {
 }
 
 /// List worktrees via `git worktree list --porcelain`.
-pub fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeEntry>> {
+pub(crate) fn list_worktrees(repo_path: &Path) -> Result<Vec<WorktreeEntry>> {
     let output = super::output_with_timeout(
         git_cmd(repo_path).args(["worktree", "list", "--porcelain"]),
         std::time::Duration::from_secs(5),
@@ -86,7 +86,7 @@ fn derive_name(path: &Path, branch: &str, is_main: bool) -> String {
 }
 
 /// Convert WorktreeEntry list to WorktreeInfo list (no sessions yet — populated by refresh_all).
-pub fn to_worktree_infos(
+pub(crate) fn to_worktree_infos(
     entries: Vec<WorktreeEntry>,
     aliases: &std::collections::HashMap<String, String>,
 ) -> Vec<WorktreeInfo> {
@@ -224,7 +224,7 @@ pub fn create_worktree(repo_path: &Path, branch: &str, base_branch: &str) -> Res
 
 /// Uncommitted work in a worktree: tracked paths with changes, then untracked paths.
 /// Ignored files (build output) are not work.
-pub fn uncommitted_paths(worktree_path: &Path) -> Result<(Vec<String>, Vec<String>)> {
+pub(crate) fn uncommitted_paths(worktree_path: &Path) -> Result<(Vec<String>, Vec<String>)> {
     let output = git_cmd(worktree_path)
         .args(["status", "--porcelain=v1", "-z", "--untracked-files=normal"])
         .output()
@@ -251,7 +251,7 @@ pub fn uncommitted_paths(worktree_path: &Path) -> Result<(Vec<String>, Vec<Strin
 }
 
 /// Refuse a worktree with uncommitted work, naming the paths (at most 10 per kind).
-pub fn require_clean(worktree_path: &Path) -> Result<()> {
+pub(crate) fn require_clean(worktree_path: &Path) -> Result<()> {
     let (tracked, untracked) = uncommitted_paths(worktree_path)?;
     let named = |paths: &[String]| match paths.len() {
         n if n > 10 => format!("{} and {} more", paths[..10].join(", "), n - 10),
@@ -277,7 +277,11 @@ pub fn require_clean(worktree_path: &Path) -> Result<()> {
 /// `git worktree remove {path}` (never `--force`: git refuses uncommitted work too), then
 /// `git branch -d {branch}`, which keeps a branch with unmerged commits. Returns whether
 /// the branch was deleted.
-pub fn remove_worktree(repo_path: &Path, worktree_path: &Path, branch: &str) -> Result<bool> {
+pub(crate) fn remove_worktree(
+    repo_path: &Path,
+    worktree_path: &Path,
+    branch: &str,
+) -> Result<bool> {
     let output = git_cmd(repo_path)
         .args(["worktree", "remove", &worktree_path.to_string_lossy()])
         .stdout(Stdio::null())

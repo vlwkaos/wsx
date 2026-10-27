@@ -38,7 +38,7 @@ impl Default for ReviewLimits {
 }
 
 impl ReviewLimits {
-    pub fn is_valid(&self) -> bool {
+    pub(crate) fn is_valid(&self) -> bool {
         (1..=1_000).contains(&self.files)
             && (1..=256).contains(&self.hunks)
             && (1..=10_000).contains(&self.lines)

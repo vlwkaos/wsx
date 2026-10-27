@@ -351,7 +351,7 @@ fn classify_fetch_error(stderr: &str) -> FetchFailReason {
     }
 }
 
-pub fn current_branch(path: &Path) -> Option<String> {
+pub(crate) fn current_branch(path: &Path) -> Option<String> {
     let out = super::output_with_timeout(
         git_read(path).args(["branch", "--show-current"]),
         std::time::Duration::from_secs(5),

@@ -425,7 +425,7 @@ pub fn expand_path(value: &str) -> PathBuf {
         .and_then(|tail| dirs::home_dir().map(|home| home.join(tail)))
         .unwrap_or_else(|| PathBuf::from(value))
 }
-pub fn detect_default_branch(path: &Path) -> String {
+pub(crate) fn detect_default_branch(path: &Path) -> String {
     git_info::current_branch(path).unwrap_or_else(|| "main".into())
 }
 

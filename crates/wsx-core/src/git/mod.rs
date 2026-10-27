@@ -24,7 +24,7 @@ pub fn git_cmd(repo: &Path) -> Command {
 /// Spawn `cmd` in its own process group with piped stdout/stderr.
 /// Kills the entire group on timeout so ssh + credential helpers are also reaped.
 /// After the process ends, waits at most `STREAM_GRACE` for its output streams to close.
-pub fn output_with_timeout(
+pub(crate) fn output_with_timeout(
     cmd: &mut Command,
     timeout: std::time::Duration,
 ) -> std::io::Result<std::process::Output> {
