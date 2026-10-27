@@ -227,8 +227,13 @@ impl Client {
                 _ => false,
             },
         };
-        if undelivered && wait_for_handoff(&self.socket, CALL_HANDOFF_WAIT) {
-            return self.call_once(request);
+        let mut result = if undelivered && wait_for_handoff(&self.socket, CALL_HANDOFF_WAIT) {
+            self.call_once(request)
+        } else {
+            result
+        };
+        if let Ok(Response::Error(error)) = &mut result {
+            explain_stuck_handoff(self, error);
         }
         result
     }
@@ -1829,6 +1834,37 @@ fn background_recovery_allowed(socket: &Path) -> bool {
     }
 }
 
+// ^ docs/daemon-live-upgrade.md "A stuck handoff": a daemon that still refuses with
+// `daemon_replacing` when no fresh handoff marker is left did not finish its handoff. A
+// release before daemon revision 35 never ends that state by itself, so say what happened
+// and the next step instead of "in progress". The code stays, so a retrying client still
+// reconnects when the daemon serves again.
+fn explain_stuck_handoff(client: &Client, error: &mut super::protocol::ApiError) {
+    let marker = lifecycle_marker_reason(client.socket());
+    if error.code == "daemon_replacing" && !marker.as_deref().is_some_and(handoff_marker_fresh) {
+        let since = marker
+            .as_deref()
+            .and_then(|reason| reason.strip_prefix(super::protocol::HANDOFF_MARKER_PREFIX))
+            .and_then(|value| value.parse::<u128>().ok())
+            .map(|started| format!(" {} s ago", unix_millis().saturating_sub(started) / 1000))
+            .unwrap_or_default();
+        let daemon = lifecycle_status(client).map_or_else(
+            |_| "wsxd".to_string(),
+            |status| format!("wsxd {}", lifecycle_version(&status)),
+        );
+        error.message = format!(
+            "{daemon} started a live handoff{since} that did not finish. Its sessions still run \
+             in it, out of reach. `wsx daemon stop --force` ends them and starts over"
+        );
+    }
+}
+
+fn unix_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis())
+}
+
 fn handoff_marker_fresh(reason: &str) -> bool {
     let Some(started) = reason
         .strip_prefix(super::protocol::HANDOFF_MARKER_PREFIX)
@@ -1836,10 +1872,7 @@ fn handoff_marker_fresh(reason: &str) -> bool {
     else {
         return false;
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis());
-    now.saturating_sub(started) < HANDOFF_WAIT.as_millis()
+    unix_millis().saturating_sub(started) < HANDOFF_WAIT.as_millis()
 }
 
 // ^ docs/daemon-live-upgrade.md: the source daemon marks the socket gap, so an
@@ -1965,10 +1998,13 @@ fn probe_existing_daemon(client: &Client) -> io::Result<ExistingDaemon> {
                     daemon_revision_coordination,
                     live_handoff,
                 }),
-                Response::Error(error) => Err(io::Error::other(format!(
-                    "{}: {}",
-                    error.code, error.message
-                ))),
+                Response::Error(mut error) => {
+                    explain_stuck_handoff(client, &mut error);
+                    Err(io::Error::other(format!(
+                        "{}: {}",
+                        error.code, error.message
+                    )))
+                }
                 _ => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "unexpected wsxd response",
@@ -2225,17 +2261,25 @@ impl EventMonitor {
                                 let _ = sender.send(EventSignal::Dirty);
                             }
                         }
-                        Ok(Response::Error(error)) => {
+                        Ok(Response::Error(mut error)) => {
                             connected = false;
                             revision = 0;
                             if wait_for_handoff(client.socket(), HANDOFF_WAIT) {
                                 continue;
                             }
-                            let _ = sender.send(EventSignal::Disconnected(format!(
-                                "{}: {}",
-                                error.code, error.message
-                            )));
-                            thread::sleep(Duration::from_millis(250));
+                            // ^ docs/daemon-live-upgrade.md "A stuck handoff": say that the
+                            // handoff did not finish, and look again each second for a daemon
+                            // that serves.
+                            let stuck = error.code == "daemon_replacing";
+                            if stuck {
+                                explain_stuck_handoff(&client, &mut error);
+                            }
+                            let _ = sender.send(EventSignal::Disconnected(if stuck {
+                                error.message
+                            } else {
+                                format!("{}: {}", error.code, error.message)
+                            }));
+                            thread::sleep(Duration::from_millis(if stuck { 1_000 } else { 250 }));
                         }
                         Ok(_) => {
                             connected = false;

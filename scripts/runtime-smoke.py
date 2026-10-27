@@ -1747,6 +1747,188 @@ finally:
     os.close(tui_master)
 shutdown(cursor_daemon)
 
+# docs/daemon-live-upgrade.md: an install replaces wsx and wsxd under a running daemon with
+# live sessions. The source is a released build when WSX_SMOKE_RELEASED_DIR names a folder
+# with its wsx and wsxd (for example v0.31.0), else a copy of this build.
+RELEASED = Path(os.environ["WSX_SMOKE_RELEASED_DIR"]) if os.environ.get("WSX_SMOKE_RELEASED_DIR") else None
+INSTALL = WORK / "install"
+# ^ The installed wsx finds the wsxd beside it, as on a real machine.
+install_env = {key: value for key, value in env.items()
+               if key not in ("WSX_PANE_ID", "WSX_DAEMON_BIN", "WSX_SOCKET")}
+LIFECYCLE = SOCKET.with_suffix(".lifecycle")
+
+
+def install(version, wsx_binary, wsxd_binary=None, wsxd_script=None):
+    """Install as a package manager does: a new keg, both names relinked, the old keg gone."""
+    keg = INSTALL / "Cellar" / "wsx" / version / "bin"
+    keg.mkdir(parents=True)
+    shutil.copy2(wsx_binary, keg / "wsx")
+    if wsxd_script:
+        # A wsxd that wraps this build's: `{real}` names the copy beside it.
+        shutil.copy2(DAEMON, keg / "wsxd.real")
+        (keg / "wsxd").write_text(wsxd_script.format(real=keg / "wsxd.real"))
+        (keg / "wsxd").chmod(0o755)
+    else:
+        shutil.copy2(wsxd_binary, keg / "wsxd")
+    (INSTALL / "bin").mkdir(exist_ok=True)
+    for name in ("wsx", "wsxd"):
+        staged = INSTALL / "bin" / (name + ".new")
+        staged.symlink_to(Path("..") / "Cellar" / "wsx" / version / "bin" / name)
+        os.replace(staged, INSTALL / "bin" / name)
+    for kept in (INSTALL / "Cellar" / "wsx").iterdir():
+        if kept.name != version:
+            shutil.rmtree(kept)
+
+
+def installed(*args, timeout=120):
+    return subprocess.run([str(INSTALL / "bin" / "wsx"), *args], cwd=PROJECT, env=install_env,
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def lifecycle():
+    return call("lifecycle_status")["data"]
+
+
+def upgrade_session(label):
+    """A shell that records its PID and writes each line it reads, so input proves it works."""
+    pid_file, line_file = WORK / f"{label}.pid", WORK / f"{label}.line"
+    command = (f"echo $$ > {pid_file}; "
+               f"while IFS= read -r line; do printf '%s\\n' \"$line\" > {line_file}; done")
+    created = call("session_create", {"worktree_id": call("snapshot")["data"]["worktrees"][0]["id"],
+                                      "label": label, "command": ["/bin/sh", "-c", command],
+                                      "rows": 24, "cols": 80})
+    assert created["type"] == "created", created
+    wait_for(lambda: pid_file.exists() and pid_file.read_text().strip(), f"{label} did not start")
+    pane = next(pane["id"] for pane in call("snapshot")["data"]["panes"]
+                if pane["session_id"] == created["data"]["id"])
+    return int(pid_file.read_text()), pane, line_file
+
+
+def sessions_answer(sessions, word):
+    for pid, pane, line_file in sessions:
+        assert alive(pid), f"session {pid} ended"
+        send_shell_command(pane, word, 9300 + pane)
+        wait_for(lambda: line_file.exists() and line_file.read_text().strip() == word,
+                 f"session {pid} did not take {word}")
+
+
+install("1-source", RELEASED / "wsx" if RELEASED else WSX, RELEASED / "wsxd" if RELEASED else DAEMON)
+wait_singleton_released()
+assert installed("session", "list").returncode == 0, "the installed wsx did not start its wsxd"
+assert call("synchronize_projects", {"projects": [{
+    "path": str(PROJECT), "name": "smoke", "worktrees": [{"path": str(PROJECT), "branch": "main"}],
+}]})["type"] == "ack"
+upgrade_sessions = [upgrade_session(label) for label in ("upgrade-a", "upgrade-b")]
+source = lifecycle()
+
+# 1. The install replaces the binaries and removes the running daemon's keg. A release of an
+# older revision upgrades by the first command; a copy of this build by a restart.
+install("2-upgrade", WSX, DAEMON)
+upgraded = installed("session", "list") if RELEASED else installed("daemon", "restart")
+assert upgraded.returncode == 0, upgraded
+if RELEASED:
+    assert "Runtime upgraded" in upgraded.stderr, upgraded.stderr
+successor = lifecycle()
+assert successor["epoch"] != source["epoch"] and successor["phase"] == "ready", (source, successor)
+assert successor["daemon_revision"] >= source["daemon_revision"], (source, successor)
+sessions_answer(upgrade_sessions, "after-upgrade")
+
+# 2. A successor that ends after the commit, before it reports `owned`: the source sees it
+# exit, takes its sessions back and keeps serving (docs/daemon-live-upgrade.md
+# "A successor that dies").
+install("3-dies", WSX, wsxd_script='#!/bin/sh\nWSX_HANDOFF_FAULT=after_commit exec "{real}" "$@"\n')
+died = installed("daemon", "restart")
+assert died.returncode != 0, died
+assert "kept running" in died.stderr and "no session was stopped" in died.stderr, died.stderr
+assert "exited before it took the sessions" in died.stderr, died.stderr
+kept = lifecycle()
+assert kept["epoch"] == successor["epoch"] and kept["phase"] == "ready", kept
+assert kept["last_handoff_error"]["step"] == "owned", kept
+sessions_answer(upgrade_sessions, "after-dead-successor")
+assert installed("session", "list").returncode == 0
+
+# 3. A successor that cannot bind the socket, and a rollback that cannot bind it either: the
+# rollback still ends the handoff, and the daemon binds the socket again when it can
+# (docs/daemon-live-upgrade.md "A stuck handoff").
+install("4-blocked", WSX, DAEMON)
+blocker = SOCKET.with_name(SOCKET.name + "~")
+blocker.mkdir()
+(blocker / "keep").write_text("")
+blocked = subprocess.Popen([str(INSTALL / "bin" / "wsx"), "daemon", "restart"], cwd=PROJECT,
+                           env=install_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+wait_for(lambda: not SOCKET.exists(), "the source did not give its socket up", seconds=20)
+time.sleep(2)
+assert not SOCKET.exists(), "a socket was bound through the blocked path"
+shutil.rmtree(blocker)
+wait_for(lambda: SOCKET.exists(), "the source did not bind its socket again", seconds=10)
+_, blocked_err = blocked.communicate(timeout=60)
+assert blocked.returncode != 0 and "no session was stopped" in blocked_err, blocked_err
+rebound = lifecycle()
+assert rebound["epoch"] == successor["epoch"] and rebound["phase"] == "ready", rebound
+assert "bind the socket again" in rebound["last_handoff_error"]["error"], rebound
+sessions_answer(upgrade_sessions, "after-rebind")
+stopped = installed("daemon", "stop", "--force")
+assert stopped.returncode == 0, stopped
+wait_socket_stopped()
+
+# 4. A released daemon whose rollback fails stays in its handoff for ever: it cannot be
+# repaired, so a client of this build must say so and name the next step instead of
+# waiting (docs/daemon-live-upgrade.md "A stuck handoff").
+if RELEASED:
+    wait_singleton_released()
+    stuck_daemon = subprocess.Popen([str(RELEASED / "wsxd")], env=install_env)
+    try:
+        wait_ready(stuck_daemon)
+        install("5-unfit", WSX, wsxd_script="#!/bin/sh\nexit 3\n")
+        attempt = subprocess.Popen([str(INSTALL / "bin" / "wsx"), "session", "list"], cwd=PROJECT,
+                                   env=install_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        wait_for(lambda: LIFECYCLE.read_text().startswith("handoff:"), "the handoff did not start")
+        os.chmod(SOCKET.parent, 0o500)
+        try:
+            attempt.communicate(timeout=90)
+        finally:
+            os.chmod(SOCKET.parent, 0o700)
+        assert call("snapshot")["data"]["code"] == "daemon_replacing", "the released daemon recovered"
+        started = time.monotonic()
+        refused = installed("session", "list")
+        assert refused.returncode != 0 and time.monotonic() - started < 15, refused
+        assert "did not finish" in refused.stderr and "wsx daemon stop --force" in refused.stderr, refused.stderr
+        stuck_master, stuck_slave = os.openpty()
+        fcntl.ioctl(stuck_slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+        stuck_tui = subprocess.Popen([str(INSTALL / "bin" / "wsx")], cwd=PROJECT, env=install_env,
+                                     stdin=stuck_slave, stdout=stuck_slave, stderr=stuck_slave, close_fds=True)
+        os.close(stuck_slave)
+        stuck_screen = bytearray()
+
+        def read_stuck_tui():
+            try:
+                while chunk := os.read(stuck_master, 65536):
+                    stuck_screen.extend(chunk)
+            except OSError:
+                pass
+        threading.Thread(target=read_stuck_tui, daemon=True).start()
+        try:
+            wait_for(lambda: all(word in re.sub(rb"\x1b\[[0-9;?]*[ -/]*[@-~]", b"", stuck_screen)
+                                 for word in (b"finish", b"--force")),
+                     "the TUI did not say the handoff did not finish", seconds=60)
+        finally:
+            stuck_tui.terminate()
+            stuck_tui.wait(timeout=5)
+            os.close(stuck_master)
+    finally:
+        stuck_daemon.kill()
+        stuck_daemon.wait(timeout=5)
+        for leftover in (SOCKET, LIFECYCLE):
+            leftover.unlink(missing_ok=True)
+
 latency_passes = 0
 latency_failures = 0
 for attempt in range(1, 4):

@@ -14,6 +14,10 @@
 
 - The TUI shows routines again when the scheduler has no project registry: it now follows the scheduler, which then runs every project's routines.
 - A task agent can no longer write the routine scheduler's folder, whose routines wsxd runs outside the agent boundary.
+### Fixed
+
+- A live handoff of wsxd always ends. A rollback that cannot rewrite its marker or bind its socket again at once now serves again and binds the socket when it can. Before, such a daemon answered every request with "wsxd live handoff is in progress" for ever, while its sessions ran where no window could see them. A successor that exits after the commit, before it reports that it owns the sessions, gives them back to the source daemon, which keeps serving; before, the source left and every session ended. Daemon revision 35 ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "A stuck handoff", "A successor that dies").
+- A wsx window or command no longer waits on a handoff that cannot finish. When the running wsxd still refuses requests after its handoff marker went stale, wsx says that the handoff did not finish, that the sessions still run inside that wsxd, and that `wsx daemon stop --force` ends them and starts over. The window checks again each second and opens on whichever wsxd serves. A daemon of 0.31 to 0.40 whose rollback failed stays in that state until it is stopped.
 
 ## [0.40.1] - 2026-10-27
 

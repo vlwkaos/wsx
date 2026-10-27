@@ -45,9 +45,25 @@ CLI commands show no screen. They keep the one-line notice.
 
 ## A failed handoff
 
-A rolled-back handoff records `last_handoff_error` in the lifecycle status (revision 32 and later): `unix_ms`, the `step` that failed (`validate`, `pause`, `export`, `spawn`, `send`, `publish`, `ready`, `ownership` or `commit`) and the `error`. It also goes to the daemon's stderr, which is a log only where something keeps it; a daemon that `wsx` starts sends its stderr nowhere. `wsx runtime status` prints it as "Last handoff failed …", and `wsx daemon restart` names it in its error. An older daemon keeps no reason, so the client says "the running wsxd rolled back the handoff and did not say why".
+A rolled-back handoff records `last_handoff_error` in the lifecycle status (revision 32 and later): `unix_ms`, the `step` that failed (`validate`, `pause`, `export`, `spawn`, `send`, `publish`, `ready`, `ownership`, `commit` or `owned`) and the `error`. It also goes to the daemon's stderr, which is a log only where something keeps it; a daemon that `wsx` starts sends its stderr nowhere. `wsx runtime status` prints it as "Last handoff failed …", and `wsx daemon restart` names it in its error. An older daemon keeps no reason, so the client says "the running wsxd rolled back the handoff and did not say why".
 
 A successor that exits before it takes the handoff ends the wait at once ("the new wsxd exited before it took the handoff (exit status: 3)") instead of after the 30-second timeout.
+
+## A successor that dies
+
+The commit moves the PTYs to the successor. Before revision 35 the source then waited half a second for the successor's `owned` and left. A successor that exited in that interval took every session with it: no process held the PTYs, and each shell got a hangup.
+
+From revision 35 the source waits for `owned` as long as the successor runs (up to 30 seconds). When the successor exits first, no other process reads the PTYs, so the source takes them back: it restores its process groups, readers and socket and keeps serving, with `last_handoff_error` step `owned`. A successor that runs but stays silent still counts as the owner, because two PTY readers would be worse. Only a successor (`__wsx_handoff_import`) reads `WSX_HANDOFF_FAULT=after_commit`: it exits right after the commit, so `scripts/runtime-smoke.py` can end it at that point.
+
+A source before revision 35 still leaves after half a second.
+
+## A stuck handoff
+
+A rollback ends the handoff in every case (revision 35 and later). It resumes the readers, clears the target and serves again. A marker it cannot rewrite or a socket it cannot bind goes into `last_handoff_error` ("rollback could not …"), and the daemon binds the socket again each second until it can.
+
+A source before revision 35 cleared its handoff state only after it had rewritten the marker. When that write or the new bind failed, the daemon kept answering `daemon_replacing` for ever, and nothing ends that state but a stop. Its sessions keep running inside it, but no client can read them.
+
+A client of this build does not wait on it. When the daemon refuses with `daemon_replacing` and the handoff marker is missing or older than 35 seconds, `explain_stuck_handoff` in `crates/wsx-core/src/runtime/client.rs` replaces the message. The message names the daemon's version, when the handoff started, that its sessions still run inside it, and that `wsx daemon stop --force` ends them and starts a new wsxd. The code stays `daemon_replacing`, so a client that retries reconnects when a daemon serves again. The CLI prints it once. An open TUI shows it without the code as its disconnect notice, which grows to six lines for an error so the next step stays visible, and checks again each second.
 
 ## A failed automatic upgrade
 
@@ -131,6 +147,12 @@ python3 scripts/test-terminal-context.py --released-wsx <path>/wsx --released-da
 ```
 
 - With `--next-wsx`, the same script starts a TUI of the higher revision while an older window blocks the handoff. The upgrade screen must appear at 80x24 and 40x12 without the workspace, `q` must quit, `Enter` must open the old daemon, and the TUI must open on the new daemon by itself when the blocking window quits. With `--released-wsx` it also starts a TUI whose handoff target refuses the transfer (`--next-daemon`, or a script that exits at once): the released daemon rolls back, the TUI opens on it with "wsxd upgrade failed", and a CLI command of this build then answers with the same notice, at once, without a new handoff and with the same daemon epoch.
+- `scripts/runtime-smoke.py` installs as a package manager does (a new keg, `bin/wsx` and `bin/wsxd` relinked, the old keg removed) under a daemon with two live sessions. Each session must take input after each step:
+  1. the upgrade hands the sessions over;
+  2. a successor that exits after the commit (`WSX_HANDOFF_FAULT`) gives them back;
+  3. a successor and a rollback that cannot bind the socket (a folder at `wsx.sock~`) end the handoff, and the daemon binds again once it can.
+
+  With `WSX_SMOKE_RELEASED_DIR=<folder with wsx and wsxd of a release>` the source is that release, and a fourth step makes that release's rollback fail (its state folder read-only). The CLI and the TUI of this build must then say that the handoff did not finish and name `wsx daemon stop --force`.
 - `scripts/runtime-smoke.py` sends a request of a later release on a matching and on a mismatched connection, and stops a daemon with live sessions only with `--force`.
 
 ## Not covered yet
