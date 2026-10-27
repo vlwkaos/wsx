@@ -27,6 +27,7 @@ use crate::{
         input::InputState,
         integration_manager::IntegrationManager,
         routine_editor::{RoutineForm, RoutinePreset},
+        text_form::{dispatch_text_edit, RoutineTextEdit},
     },
 };
 use wsx_core::{
@@ -4629,6 +4630,11 @@ impl App {
     }
 
     fn dispatch_input(&mut self, action: Action, terminal: &mut Tui) -> Result<()> {
+        if let Mode::Input { state, .. } = &mut self.mode {
+            if dispatch_text_edit(state, &action) {
+                return Ok(());
+            }
+        }
         match action {
             Action::InputEscape | Action::Quit => {
                 let group_selection = match &self.mode {
@@ -4651,46 +4657,6 @@ impl App {
             }
             Action::Select => {
                 self.confirm_input(terminal)?;
-            }
-            Action::InputChar(c) => {
-                if let Mode::Input { state, .. } = &mut self.mode {
-                    state.insert_char(c);
-                }
-            }
-            Action::InputBackspace => {
-                if let Mode::Input { state, .. } = &mut self.mode {
-                    state.backspace();
-                }
-            }
-            Action::NavigateLeft => {
-                if let Mode::Input { state, .. } = &mut self.mode {
-                    state.cursor_left();
-                }
-            }
-            Action::NavigateRight => {
-                if let Mode::Input { state, .. } = &mut self.mode {
-                    state.cursor_right();
-                }
-            }
-            Action::InputTab => {
-                if let Mode::Input { state, .. } = &mut self.mode {
-                    state.select_next();
-                }
-            }
-            Action::InputBackTab => {
-                if let Mode::Input { state, .. } = &mut self.mode {
-                    state.select_prev();
-                }
-            }
-            Action::NavigateDown => {
-                if let Mode::Input { state, .. } = &mut self.mode {
-                    state.select_next();
-                }
-            }
-            Action::NavigateUp => {
-                if let Mode::Input { state, .. } = &mut self.mode {
-                    state.select_prev();
-                }
             }
             _ => {}
         }
@@ -4803,48 +4769,20 @@ impl App {
     }
 
     fn dispatch_routine_editor(&mut self, action: Action) -> Result<()> {
+        if let Mode::RoutineEditor {
+            form, can_rename, ..
+        } = &mut self.mode
+        {
+            let mut edit = RoutineTextEdit {
+                form,
+                can_rename: *can_rename,
+            };
+            if dispatch_text_edit(&mut edit, &action) {
+                return Ok(());
+            }
+        }
         match action {
             Action::InputEscape | Action::Quit => self.mode = Mode::Workspace,
-            Action::InputChar(c) => {
-                if let Mode::RoutineEditor {
-                    form, can_rename, ..
-                } = &mut self.mode
-                {
-                    if *can_rename || form.field != 0 {
-                        form.insert(c);
-                    }
-                }
-            }
-            Action::InputBackspace => {
-                if let Mode::RoutineEditor {
-                    form, can_rename, ..
-                } = &mut self.mode
-                {
-                    if *can_rename || form.field != 0 {
-                        form.backspace();
-                    }
-                }
-            }
-            Action::NavigateLeft => {
-                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
-                    form.left();
-                }
-            }
-            Action::NavigateRight => {
-                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
-                    form.right();
-                }
-            }
-            Action::InputTab | Action::NavigateDown => {
-                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
-                    form.next(false);
-                }
-            }
-            Action::InputBackTab | Action::NavigateUp => {
-                if let Mode::RoutineEditor { form, .. } = &mut self.mode {
-                    form.next(true);
-                }
-            }
             Action::Select => self.save_routine_form()?,
             _ => {}
         }
@@ -5591,10 +5529,11 @@ impl App {
     }
 
     fn dispatch_global_settings(&mut self, action: Action, terminal: &mut Tui) -> Result<()> {
-        let accepts_text = matches!(
-            &self.mode,
-            Mode::GlobalSettings { form } if form.accepts_text()
-        );
+        if let Mode::GlobalSettings { form } = &mut self.mode {
+            if dispatch_text_edit(form, &action) {
+                return Ok(());
+            }
+        }
         match action {
             Action::InputEscape | Action::Quit => {
                 let cancelled_editor = match &mut self.mode {
@@ -5626,36 +5565,6 @@ impl App {
                     if let Err(error) = result {
                         self.set_error(error);
                     }
-                }
-            }
-            Action::NavigateUp | Action::InputBackTab => {
-                if let Mode::GlobalSettings { form } = &mut self.mode {
-                    form.next_field(true);
-                }
-            }
-            Action::NavigateDown | Action::InputTab => {
-                if let Mode::GlobalSettings { form } = &mut self.mode {
-                    form.next_field(false);
-                }
-            }
-            Action::NavigateLeft => {
-                if let Mode::GlobalSettings { form } = &mut self.mode {
-                    form.left();
-                }
-            }
-            Action::NavigateRight => {
-                if let Mode::GlobalSettings { form } = &mut self.mode {
-                    form.right();
-                }
-            }
-            Action::InputBackspace => {
-                if let Mode::GlobalSettings { form } = &mut self.mode {
-                    form.backspace();
-                }
-            }
-            Action::InputChar(character) if accepts_text => {
-                if let Mode::GlobalSettings { form } = &mut self.mode {
-                    form.insert(character);
                 }
             }
             Action::InputChar('j') => {
