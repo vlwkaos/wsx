@@ -901,6 +901,32 @@ await until("[...document.querySelectorAll('.log .bubble[data-side=out]')].some(
 await pause(1500);
 if (await evaluate(newConversations) !== shownBefore + 1) await fail(`the new conversation shows ${(await evaluate(newConversations)) - shownBefore} times`);
 
+// --- A turn that ends while the page is offline, or hidden and frozen as iOS keeps a PWA in
+// the background: the stream misses the reply and the end of the turn. Back online or
+// visible, the page reads the chat again, so the typing dots go and the reply shows without
+// a reload (docs/web-client.md "Event stream").
+const network = (offline) => send("Network.emulateNetworkConditions", { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+const visibility = (state) => evaluate(`Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => '${state}' });
+  document.dispatchEvent(new Event('visibilitychange'))`);
+const replies = "document.querySelectorAll('.log .bubble[data-side=in]').length";
+for (const away of ["offline", "hidden"]) {
+  const before = await evaluate(replies);
+  await typeInto(".composer-field", `SLOW STATUS while ${away}`);
+  await click(".composer-send");
+  await until("!!document.querySelector('.log .typing') && !!document.querySelector('.manager .bar-state .typing-dot')", `no typing dots before the page went ${away}`, 30);
+  if (away === "hidden") await visibility("hidden");
+  await network(true);
+  if (away === "hidden") await send("Page.setWebLifecycleState", { state: "frozen" });
+  // ^ The fake manager's SLOW turn takes about 3 s.
+  await pause(7000);
+  if (away === "hidden") await send("Page.setWebLifecycleState", { state: "active" });
+  await network(false);
+  if (away === "hidden") await visibility("visible");
+  await until(`!document.querySelector('.log .typing') && !document.querySelector('.manager .bar-state') && ${replies} > ${before}`,
+    `the typing dots stayed or the reply did not show after the page was ${away}`, 50);
+}
+await evaluate("delete document.visibilityState");
+
 // --- The task sheet: a chip or a reservoir row opens it over the chat, and the chat does not
 // scroll; Escape, Back and a swipe down close it, the composer keeps its draft and gets the
 // focus back.

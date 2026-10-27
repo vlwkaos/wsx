@@ -166,11 +166,20 @@ function noteUpgrade(reason) {
   toast(`wsxd upgrade failed: ${reason}; sessions keep running`, { failure: true });
 }
 
+// The open chats and the task overviews read again, after events may have been missed.
+// A `manager` event without a project is for every project.
+function reread() {
+  events.dispatchEvent(new CustomEvent("history", { detail: {} }));
+  if (!can("task_view")) return;
+  loadTasks();
+  events.dispatchEvent(new CustomEvent("manager", { detail: {} }));
+}
+
 function start(session) {
   update({ site: session.site, device: session.device, build: session.build });
   noteBuild(session.build?.id);
   noteUpgrade(session.upgrade_failed);
-  openEvents({
+  const resume = openEvents({
     workspace: (data) => {
       update({ projects: data.projects, sessions: data.sessions, loaded: true, daemon: true });
       noteBuild(data.build);
@@ -181,10 +190,7 @@ function start(session) {
       update(data.available ? { daemon: true } : { daemon: false, sessions: [], projects: [], loaded: true });
       noteUpgrade(data.upgrade_failed);
     },
-    resync: () => {
-      events.dispatchEvent(new CustomEvent("history", { detail: {} }));
-      if (can("task_view")) loadTasks();
-    },
+    resync: reread,
     tasks: (data) => {
       noteDecisions(data);
       update({ tasks: { ...state.tasks, [data.project]: data } });
@@ -194,14 +200,19 @@ function start(session) {
     page: (data) => events.dispatchEvent(new CustomEvent("page", { detail: data })),
     revoked: () => location.reload(),
     down: () => update({ online: false }),
-    // Tasks are read once the stream is open, so no change falls between the read and the
-    // stream; a reconnected stream may have missed changes.
+    // Everything is read again once the stream is open, so no change falls between the read
+    // and the stream; a reconnected or resumed stream may have missed changes.
     up: () => {
       update({ online: true });
-      if (can("task_view")) loadTasks();
+      reread();
       tellPresence(true);
     },
   });
+  // ^ iOS suspends a PWA in the background, and a stream that was down drops its events.
+  const back = () => { if (document.visibilityState === "visible") resume(); };
+  addEventListener("pageshow", back);
+  addEventListener("online", back);
+  document.addEventListener("visibilitychange", back);
   const opened = parseRoute(location.hash);
   if (opened.screen === "task" && can("task_view")) stackUnder(`#/p/${opened.id}`);
   addEventListener("hashchange", () => tellPresence(false));

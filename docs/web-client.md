@@ -161,6 +161,10 @@ Motion shows that something arrived, changed or left; nothing moves for its own 
 
 A page opens one `EventSource` (`api/events`) and has no polling timer. Events: `workspace` (projects and session list), `history` (a session's saved conversation changed), `exchange`, `daemon`, `resync`, `revoked`, and with `task_view` `tasks`, `task` and `manager` ([web-client-tasks.md](web-client-tasks.md)). The server follows `wsxd` with its long-poll and states the protocol it reconnects at, so a running web server does not defer a daemon upgrade (`docs/daemon-live-upgrade.md`). While a page is connected it also compares each transcript file's size and modification time about every two seconds.
 
+### Event stream
+
+Events that fire while the stream is down, or while iOS keeps the page in the background, are lost. So each time the stream opens, and each time the page comes back (`pageshow`, `visibilitychange` to visible, `online`), the page reads again what the events would have changed: the task overviews, the open session chat and the open manager chat, with its typing state (`busy`). A stream that gave up opens again then. A visible page with a live stream reads nothing more; no timer polls.
+
 While an agent writes, `history` arrives about once a second. A chat page reads its timeline once per change, from its last turn ([web-client-chat.md](web-client-chat.md) "Timeline"), and runs one read at a time: changes during a read cause one more read after it. Measured by the browser check on a 200 KB conversation at 390 px with the processor slowed four times, during a 21 s turn: 26 `history` and 2 `exchange` events, 29 reads of 16 KB each (215 KB before), 43 ms in the server per read, 28 ms of main-thread work per read.
 
 ## Media
