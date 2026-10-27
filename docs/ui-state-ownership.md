@@ -59,7 +59,7 @@ The old core snapshot-write API is replaced by explicit changes. `WorkspaceCache
 
 ## Selected row
 
-A runtime refresh keeps the cursor on the same row by its identity (`resolve_cursor_identity` before, `find_cursor_index` after, in `App::apply_projected_snapshot`), not by its row number. Task hosts open and close sessions and worktrees all the time, so a row number above the viewed session moved the view to another session by itself; in Terminal mode the title then named that session while keys still went to the open pane. Only when the selected row is gone does the cursor stay at the row number, clamped to the list. `scripts/runtime-smoke.py` drives a TUI in a PTY: a session above the viewed one closes, a new one opens below it, wsxd hands off, and the cursor in the cache stays on the viewed session.
+A runtime refresh and the timed collapse of stale projects keep the cursor on the same row by its identity (`App::cursor_identity` before, `App::restore_cursor` after, in `apply_projected_snapshot` and the slow timer), not by its row number. A snapshot older than one the window already applied, or than a restart it sent, is not applied. Task hosts open and close sessions and worktrees all the time, so a row number above the viewed session moved the view to another session by itself; in Terminal mode the title then named that session while keys still went to the open pane. Only when the selected row is gone does the cursor stay at the row number, clamped to the list. `scripts/runtime-smoke.py` drives a TUI in a PTY: a session above the viewed one closes, a new one opens below it, wsxd hands off, and the cursor in the cache stays on the viewed session.
 
 ## Folded status
 
