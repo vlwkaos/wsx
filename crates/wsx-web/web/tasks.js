@@ -7,7 +7,7 @@ import { html, Icon, readMap, useEffect, useFollowEnd, useLayoutEffect, useRef, 
 import { can, events, leaveFor, shows, state, touch, update, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
-import { Bubble, conversation, Dots, StatusLine, Typing } from "./bubbles.js";
+import { Bubble, conversation, Dots, QuietReply, StatusLine, Typing } from "./bubbles.js";
 import { QuoteChip, useReply, withQuote } from "./reply.js";
 import { TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
@@ -846,7 +846,8 @@ export function Manager({ project: id, task, page, checks }) {
             ${chat && !rows.length ? html`<p class="empty">No messages yet. Ask the manager for a task or a status; it answers from the ledger.</p>` : null}
             ${earlier}
             ${withNewLine(recent, firstNew, (row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${fresh.current.has(row.key)} />`
-              : row.kind === "line" ? html`<${StatusLine} key=${row.key} parts=${row.parts} words=${words} fresh=${fresh.current.has(row.key)} />`
+              : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} text=${row.text} fresh=${fresh.current.has(row.key)} />`
+              : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} name=${names.manager} fresh=${fresh.current.has(row.key)} />`
               : html`<${Note} key=${row.key} entry=${row.entry} />`)}
             ${typingShown && html`<${Typing} name=${names.manager} leaving=${!typing} />`}
           </div>

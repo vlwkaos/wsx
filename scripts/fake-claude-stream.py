@@ -50,6 +50,7 @@ are read. Its cost grows by 0.001 USD a turn (`total_cost_usd` is the session's,
 """
 import json
 import os
+import re
 import select
 import signal
 import struct
@@ -200,7 +201,11 @@ def manager_turn(text, project, page):
         rows = ['#%d %s' % (row['id'], row['state']) for row in ledger['open']]
         replies.append('open: ' + (', '.join(rows) if rows else 'none'))
     if text.startswith('Events'):
-        replies.append('noted events')
+        # ^ A land gets a reply of two sentences, with a task number inside one: the web shows its
+        # first sentence and More (docs/web-client-tasks.md "Project screen").
+        landed = re.search(r'#(\d+) landed\b', text)
+        replies.append('noted events. #%s landed, so its change is on main and nothing else waits for you.' % landed[1]
+                       if landed else 'noted events')
     return '\n'.join(replies) or 'ok'
 
 

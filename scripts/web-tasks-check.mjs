@@ -634,9 +634,31 @@ await click(".jump");
 await until(`!document.querySelector('.jump') && ${atEnd}`, "Jump to latest did not go to the end of the manager chat");
 // A landed task is the muted line "#7 done".
 await until(`${statusSays(7, "done")} && ${statusSays(8, "done")}`, "the landed tasks have no muted line");
-// ^ The manager's reply to a turn of only events (the fake says "noted events") is a muted line too.
-await until("[...document.querySelectorAll('.status-line')].some((node) => node.textContent.includes('noted events'))", "a reply to events is not a muted line", 60);
-if (await evaluate("[...document.querySelectorAll('.bubble')].some((node) => node.textContent.includes('noted events'))")) await fail("a reply to events is a bubble");
+// ^ The manager's reply to a turn of only events (the fake says "noted events") is a muted line
+// under the manager's name, never a bubble and never joined to an event.
+await until("[...document.querySelectorAll('.reply-line .reply-text')].some((node) => node.textContent.includes('noted events'))", "a reply to events is not a muted line", 60);
+if (await evaluate("[...document.querySelectorAll('.bubble, .status-line')].some((node) => node.textContent.includes('noted events'))")) await fail("a reply to events is a bubble or joined to an event");
+if (await evaluate("document.querySelector('.reply-line')?.firstElementChild?.textContent !== 'Atlas'")) await fail("the first reply to events is not under the manager's name");
+// ^ Each event its own left-aligned line: at most one chip, only at its start; a task number
+// inside a sentence, also in a reply to events, is plain text.
+const eventLines = await evaluate(`[...document.querySelectorAll('.status-line')].filter((node) => / · /.test(node.textContent) || getComputedStyle(node).textAlign === 'center'
+  || node.querySelectorAll('.task-chip').length > (node.firstChild?.matches?.('.task-chip') ? 1 : 0)).map((node) => node.textContent)
+  .concat([...document.querySelectorAll('.reply-text .task-chip')].map((node) => 'reply chip ' + node.textContent))`);
+if (eventLines.length) await fail(`the event lines read ${JSON.stringify(eventLines)}`);
+// ^ A long reply shows its first sentence whole and More; More shows the rest.
+const longReply = "[...document.querySelectorAll('.reply-text')].find((node) => node.querySelector('button'))";
+await until(`${longReply}?.firstChild?.textContent === 'noted events.'`, "a long reply to events does not show its first sentence and More", 60);
+for (const scheme of ["dark", "light"]) {
+  await evaluate(scheme === "light" ? "document.documentElement.dataset.scheme = 'light'" : "delete document.documentElement.dataset.scheme");
+  await pause(1000);
+  await evaluate(`${longReply}.scrollIntoView({ block: 'center' })`);
+  await shot(`events-${scheme}`);
+}
+await evaluate("delete document.documentElement.dataset.scheme");
+await evaluate(`${longReply}.querySelector('button').click()`);
+await until("[...document.querySelectorAll('.reply-text')].some((node) => /^noted events\\. #\\d+ landed, so its change is on main and nothing else waits for you\\.$/.test(node.textContent))", "More did not show the whole reply");
+await evaluate("[...document.querySelectorAll('.log .bubble, .log .status-line, .log .reply-line')].at(-1).scrollIntoView({ block: 'end' })");
+await until(atEnd, "the chat did not go back to its end");
 
 // --- The reservoir: one line over the composer that names the running task (its pulsing chip
 // and its title without "Owner asked:") and the items to check; a tap opens the decision list,
