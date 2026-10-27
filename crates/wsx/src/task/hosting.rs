@@ -147,8 +147,10 @@ pub fn free_mb(path: &Path) -> Option<u64> {
 
 /// Start `wsx <args>` in a session of its own, its output appended to `log`, so it outlives
 /// this host and its pane (a landed task closes itself). The file the host was started as
-/// runs, so a replaced binary is the one that starts.
-pub fn spawn_wsx(args: &[&str], log: std::fs::File) -> Result<()> {
+/// runs, so a replaced binary is the one that starts. `keep` stays open in it under the same
+/// descriptor number, so a lock held on it passes to the new process.
+pub fn spawn_wsx(args: &[&str], log: std::fs::File, keep: Option<&std::fs::File>) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
     use std::os::unix::process::CommandExt;
     let path = std::env::args_os()
         .next()
@@ -163,11 +165,17 @@ pub fn spawn_wsx(args: &[&str], log: std::fs::File) -> Result<()> {
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
-    // SAFETY: setsid is async-signal-safe and touches no memory of this process.
+    let keep = keep.map(|file| file.as_raw_fd());
+    // SAFETY: setsid and fcntl are async-signal-safe and touch no memory of this process.
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             if libc::setsid() < 0 {
                 return Err(std::io::Error::last_os_error());
+            }
+            if let Some(fd) = keep {
+                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
             }
             Ok(())
         });

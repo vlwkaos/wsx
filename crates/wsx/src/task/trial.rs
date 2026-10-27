@@ -74,6 +74,7 @@ pub fn end(
         hosting::spawn_wsx(
             &["task", "deploy", "-p", project, "--if-new", "--json"],
             log,
+            None,
         )?;
     }
     Ok(Some(trial))

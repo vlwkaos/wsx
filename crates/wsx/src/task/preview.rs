@@ -79,6 +79,7 @@ pub fn start(dir: &TaskDir) -> Result<Running> {
             &record.id.to_string(),
         ],
         log,
+        None,
     )?;
     let deadline = Instant::now() + START_WAIT;
     while Instant::now() < deadline {

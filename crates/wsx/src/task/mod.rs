@@ -18,6 +18,7 @@ use crate::cli::{
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use serde_json::json;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
@@ -41,7 +42,7 @@ use wsx_core::{ops, runtime};
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
 /// ^ A deploy or release longer than this is killed with its process group and recorded as
-/// failed, so a hung command frees `deploy.lock`. wsx's own takes about 18 minutes.
+/// failed, so a hung command frees `deploy.lock`. wsx's own release takes about 30 minutes.
 const DEPLOY_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
 
 /// `--owner-said <id>` on an action that needs the owner's approval (docs/tasks.md "Approvals").
@@ -51,6 +52,14 @@ pub struct OwnerSaid {
     /// approves it without a new request
     #[arg(long, value_name = "MESSAGE")]
     owner_said: Option<u64>,
+}
+
+/// The detached run that a `deploy` or `release` by hand starts: it holds `deploy.lock` as
+/// this descriptor, and its checks ran before it started (docs/tasks.md "Deploy and release").
+#[derive(clap::Args)]
+pub struct RunLocked {
+    #[arg(long, hide = true, value_name = "FD")]
+    run_locked: Option<i32>,
 }
 
 #[derive(Subcommand)]
@@ -220,6 +229,8 @@ pub enum TaskCmd {
         #[arg(long, hide = true, value_name = "TASK", conflicts_with_all = ["commit", "if_new"])]
         trial: Option<u32>,
         #[command(flatten)]
+        run: RunLocked,
+        #[command(flatten)]
         said: OwnerSaid,
         #[arg(short, long)]
         project: Option<String>,
@@ -231,6 +242,8 @@ pub enum TaskCmd {
         /// Commit, tag or branch to release; default: the default branch tip
         #[arg(long, value_name = "REF")]
         commit: Option<String>,
+        #[command(flatten)]
+        run: RunLocked,
         #[command(flatten)]
         said: OwnerSaid,
         #[arg(short, long)]
@@ -553,6 +566,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             commit,
             if_new,
             trial,
+            run,
             said,
             project,
             json,
@@ -562,11 +576,13 @@ pub fn run(command: TaskCmd) -> Result<()> {
             commit.as_deref(),
             if_new,
             trial,
+            run.run_locked,
             said.owner_said,
             json,
         ),
         TaskCmd::Release {
             commit,
+            run,
             said,
             project,
             json,
@@ -576,6 +592,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             commit.as_deref(),
             false,
             None,
+            run.run_locked,
             said.owner_said,
             json,
         ),
@@ -1452,15 +1469,21 @@ fn delete_revision_refs(main: &Path, id: u32) {
 /// ^ Never from a task's working copy: what runs is always a default-branch commit.
 /// `if_new`: skip a commit that is already deployed, so the deploys that follow quick lands
 /// run once for the newest one (docs/tasks.md "Deploy and release").
+/// One by hand checks, takes the lock and answers at once: a detached `wsx task` holding the
+/// lock (`run_locked`) runs and records it, so no caller's time limit (the manager's broker)
+/// cuts a long release.
+#[allow(clippy::too_many_arguments)]
 fn deploy(
     kind: DeployKind,
     project: Option<&str>,
     commit: Option<&str>,
     if_new: bool,
     trial: Option<u32>,
+    run_locked: Option<i32>,
     owner_said: Option<u64>,
     json: bool,
 ) -> Result<()> {
+    let by_hand = !if_new && trial.is_none() && run_locked.is_none();
     let name = kind_name(kind);
     let (project_name, main) = project_entry(project)?;
     let settings =
@@ -1488,7 +1511,7 @@ fn deploy(
     // ref: docs/tasks.md "Deploy and release"
     let open = checks::open_items(&project_id)?;
     let to_check = open.len();
-    if public && to_check > 0 {
+    if public && to_check > 0 && run_locked.is_none() {
         match (kind, owner_said) {
             (DeployKind::Release, Some(said)) => owner::check_owner_said(&project_id, said)?,
             _ => bail!(
@@ -1497,13 +1520,21 @@ fn deploy(
         }
     }
     if approve
+        && run_locked.is_none()
         && acting_as_manager()
         && ask_owner(&project_id, action, None, commit, owner_said, json)?
     {
         return Ok(());
     }
-    // ^ One deploy or release at a time per project; a later one waits here.
-    let _running = store::lock_deploys(&project_id)?;
+    // ^ One deploy or release at a time per project: one by hand refuses while another runs,
+    // and one that a land or a trial started waits here.
+    let running = match run_locked {
+        Some(fd) => store::adopt_deploy_lock(&project_id, fd)?,
+        None if by_hand => store::try_lock_deploys(&project_id)?.with_context(|| {
+            format!("a deploy or release of {project_name} runs; its result arrives in `wsx task deployed`. Nothing was run")
+        })?,
+        None => store::lock_deploys(&project_id)?,
+    };
     // ^ While a trial holds the live site, only its own deploy runs; the default branch
     // deploys when it ends. ref: docs/tasks.md "Hold and trial"
     let live_trial = store::read_trial(&project_id)?;
@@ -1551,6 +1582,46 @@ fn deploy(
             println!("{message}");
             return Ok(());
         }
+    }
+    let check_suffix = match kind {
+        _ if to_check == 0 => String::new(),
+        DeployKind::Deploy => format!("; {to_check} to check on the deployed site"),
+        DeployKind::Release => format!(
+            "; still to check on the release: {}",
+            open.iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    if by_hand {
+        let commit = copy::resolve_commit(&main, &revision)?;
+        let log = store::follow_up_log(&project_id)?;
+        let fd = running.as_raw_fd().to_string();
+        let args = [
+            "task",
+            name,
+            "-p",
+            &project_name,
+            "--commit",
+            &commit,
+            "--run-locked",
+            &fd,
+            "--json",
+        ];
+        hosting::spawn_wsx(&args, log, Some(&running))?;
+        let message = format!(
+            "{name} of {commit:.12} started; its output goes to {}, its result to `wsx task deployed`{}",
+            store::follow_up_log_path(&project_id)?.display(),
+            check_suffix
+        );
+        if json {
+            return print_json(
+                &json!({ "kind": kind, "commit": commit, "started": true, "message": message }),
+            );
+        }
+        println!("{message}");
+        return Ok(());
     }
     let path = copy::working_copy_path_named(&main, &format!("{name}-{}", std::process::id()))?;
     let commit = copy::create_detached(&main, &revision, &path)
@@ -1620,12 +1691,8 @@ fn deploy(
         "{name} of {commit:.12}: exit {}",
         exit.map_or("none".into(), |code| code.to_string())
     );
-    if status.success() && to_check > 0 {
-        let ids: Vec<&str> = open.iter().map(|item| item.id.as_str()).collect();
-        message.push_str(&match kind {
-            DeployKind::Deploy => format!("; {to_check} to check on the deployed site"),
-            DeployKind::Release => format!("; still to check on the release: {}", ids.join(", ")),
-        });
+    if status.success() {
+        message.push_str(&check_suffix);
     }
     if json {
         let mut value = serde_json::to_value(&record)?;

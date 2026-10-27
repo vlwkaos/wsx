@@ -21,7 +21,8 @@ pub const FROM_ENV: &str = "WSX_TASK_FROM";
 const MAX_STREAM_BYTES: usize = 1024 * 1024;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_STREAM_BYTES as u64;
 const MAX_RESPONSE_BYTES: u64 = 3 * MAX_STREAM_BYTES as u64;
-/// A landing waits for its host up to 300 s; a deploy the owner allowed may run longer.
+/// A landing waits for its host up to 300 s. A deploy or release answers once it started:
+/// its command runs detached, past this limit (docs/tasks.md "Deploy and release").
 const RUN_LIMIT: Duration = Duration::from_secs(15 * 60);
 /// `task` subcommands that start hosts; never run for the agent.
 const HIDDEN: [&str; 2] = ["host", "manager-host"];
