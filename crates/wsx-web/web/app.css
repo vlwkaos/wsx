@@ -840,10 +840,10 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
   display: block; max-width: 100%; max-height: calc(var(--size-rail) * 0.5);
   border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control);
 }
-/* ^ A capture whose size the server read (`--w`, `--h`) has its box before the image arrives. */
+/* ^ A capture whose size the server read (`--w`, `--h`, `--width`) has its box before the image arrives. */
 .check-capture img[style] {
   aspect-ratio: var(--w) / var(--h); height: auto;
-  width: min(calc(var(--w) * 1px), calc(var(--size-rail) * 0.5 * var(--w) / var(--h)));
+  width: min(var(--width), calc(var(--size-rail) * 0.5 * var(--w) / var(--h)));
 }
 .check-form { padding: 0 var(--column-inset, var(--space-4)) var(--space-3); }
 .check-item:not([data-state="open"]) :is(.check-task, .check-facts dd) { color: var(--color-muted); }
