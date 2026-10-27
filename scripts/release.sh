@@ -89,7 +89,7 @@ if ! watch_run "$run"; then
   if [ -n "$failed" ] && ! echo "$failed" | grep -Evx 'Verify Homebrew tap access|Verify crates.io Trusted Publisher|Authenticate to crates.io' >/dev/null; then
     echo "NOT PUBLISHED: $tag is pushed, but release.yml stopped at a credential step: $failed"
     echo "Fix the TAP_TOKEN secret or the crates.io Trusted Publisher, then rerun: gh run rerun $run --failed"
-    exit 0
+    exit 1
   fi
   gh run view "$run" --log-failed | tail -40
   fail "release.yml failed for $tag"
