@@ -1,6 +1,6 @@
 // Home with task_view: one row per granted project, what needs the owner first
 // (docs/web-client-tasks.md "Home"). A row opens the project's manager chat.
-import { ago, html, Loading, useFlip, useNow, useRef } from "./lib.js";
+import { ago, html, Loading, READ_EVENT, readUpTo, useEffect, useFlip, useNow, useRef, useState } from "./lib.js";
 import { isAgent, listedSessions, stateOf, useStore } from "./store.js";
 import { needTone, needWords } from "./tasks.js";
 
@@ -62,8 +62,25 @@ function statusLine({ overview, first, agents }, now) {
   return { text: overview.tasks.length ? "Nothing needs you" : "No tasks yet" };
 }
 
+// ^ The project's newest message its chat counts as new (a reply that is not quiet, a To check
+// item), while this device has not read the chat that far: the same mark as the chat's own
+// "↓ N new" (lib.js `useFollowEnd`). A chat never opened on this device has nothing new.
+function newsOf(project, overview) {
+  const news = overview?.news;
+  const read = readUpTo(`project-${project}`);
+  return news && read != null && news.unix_ms > read ? news.text.split("\n")[0] : null;
+}
+
 export function Home({ rail }) {
   const store = useStore();
+  // ^ The chat keeps what it read as it goes, and as it closes, which is after this list drew.
+  const [, renew] = useState(0);
+  useEffect(() => {
+    const changed = () => renew((count) => count + 1);
+    addEventListener(READ_EVENT, changed);
+    changed();
+    return () => removeEventListener(READ_EVENT, changed);
+  }, []);
   const now = useNow(true);
   const [, , open] = location.hash.split("/");
   const list = useRef();
@@ -80,17 +97,19 @@ export function Home({ rail }) {
           const count = row.needs.length;
           const working = row.overview?.working ?? 0;
           const last = row.last;
+          const news = newsOf(row.project.id, row.overview);
           return html`
-            <li class="row" key=${row.project.id} data-key=${row.project.id}>
+            <li class="row" key=${row.project.id} data-key=${row.project.id} data-news=${news ? "" : null}>
               <a class="row-link home-row" href=${`#/p/${row.project.id}`} aria-current=${rail && Number(open) === row.project.id ? "page" : null}>
                 <span class="row-main">
                   <span class="row-work">
-                    <span class="row-label">${row.project.name}</span>
+                    ${news ? html`<span class="news-mark" role="img" aria-label="New message"></span>` : null}<span class="row-label">${row.project.name}</span>
                     ${count ? html`<span class="count" key=${count} data-tone="attention" aria-label=${`${count} ${count === 1 ? "needs" : "need"} you`}>${count}</span>` : null}
                   </span>
                   <span class="row-context" key=${status.text} data-tone=${status.tone ?? null} data-loading=${status.loading ? "" : null}>
-                    ${row.overview?.busy ? html`<span class="row-typing" role="img" aria-label=${`${row.overview.manager} is typing`}><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></span>` : null}${status.text}
+                    ${row.overview?.busy ? html`<span class="row-typing" role="img" aria-label=${`${row.overview.manager} is typing`}><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></span>` : null}${news && status.text === row.overview?.last_reply ? null : status.text}
                   </span>
+                  ${news ? html`<span class="row-news">${news}</span>` : null}
                 </span>
                 <span class="row-state">
                   ${working || status.key === "working" ? html`<span class="pulse" aria-hidden="true"></span>` : null}

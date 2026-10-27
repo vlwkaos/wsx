@@ -65,6 +65,7 @@
 ### Added
 
 - Each To check item shows once in the web manager chat, as a bubble from the manager at the time it was added: what to check, its capture (a tap opens the image viewer) and Try, Fail and Pass, so the owner checks it right in the chat. A decided item's bubble shows its result. The To check list over the composer stays.
+- A project's row on the web Home marks a manager message this device has not read (a reply that is not quiet, or a To check item): an accent mark before the name and the message's first line under it. Opening the project's chat clears it.
 
 ### Fixed
 

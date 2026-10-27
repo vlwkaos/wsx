@@ -158,7 +158,12 @@ function keepRead(name, entry) {
   delete all[name];
   all[name] = entry;
   writeMap(READ_KEY, Object.fromEntries(Object.entries(all).slice(-READ_KEPT)));
+  dispatchEvent(new Event(READ_EVENT));
 }
+// ^ The time of the newest message of a chat this device read, or null before it first opened
+// there; READ_EVENT fires when it changes (home.js marks a project's new message with it).
+export const readUpTo = (name) => readMap(READ_KEY)[name]?.read ?? null;
+export const READ_EVENT = "wsx-read";
 
 // A conversation log that keeps its reader at the end only while the reader is at the end,
 // and otherwise keeps the row the reader reads where it is on the screen
@@ -206,7 +211,10 @@ export function useFollowEnd(name, ready) {
     const bottom = element.scrollTop + element.clientHeight + 1;
     const rows = incoming();
     if (document.visibilityState === "visible") {
+      const before = read.current;
       for (const row of rows) if (row.offsetTop + row.offsetHeight <= bottom) read.current = Math.max(read.current ?? 0, Number(row.dataset.at));
+      // ^ Kept at once, so a list beside the chat (the rail's home) sees it read.
+      if (read.current !== before) keepRead(name, { ...readMap(READ_KEY)[name], read: read.current });
     }
     setUnread(rows.filter((row) => Number(row.dataset.at) > read.current).length);
   };

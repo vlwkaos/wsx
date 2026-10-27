@@ -218,9 +218,20 @@ pub fn overview(scope: &Scope) -> Value {
     let last_reply = tail.iter().rev().find_map(|entry| match &entry.event {
         ManagerEvent::Reply {
             text, quiet: false, ..
-        } => Some(view::clip(text.trim(), LAST_REPLY_CHARS)),
+        } => Some((entry.unix_ms, view::clip(text.trim(), LAST_REPLY_CHARS))),
         _ => None,
     });
+    let check_items = checks::read(&scope.store).unwrap_or_default();
+    // ^ The newest message the chat counts as new: a reply that is not quiet or a To check
+    // item. The home row marks it until this device read the chat that far
+    // (docs/web-client-tasks.md "Home").
+    let news = check_items
+        .last()
+        .map(|item| (item.unix_ms, format!("To check: {}", item.check)))
+        .into_iter()
+        .chain(last_reply.clone())
+        .max_by_key(|(unix_ms, _)| *unix_ms)
+        .map(|(unix_ms, text)| json!({ "unix_ms": unix_ms, "text": text }));
     let last_unix_ms = tasks
         .iter()
         .filter_map(|(_, record)| record.as_ref().ok())
@@ -248,11 +259,12 @@ pub fn overview(scope: &Scope) -> Value {
         "needs": needs.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
         "working": working,
         // ^ What the owner checks of landed tasks (docs/tasks.md "To check").
-        "to_check": checks::open_items(&scope.store).map_or(0, |items| items.len()),
+        "to_check": check_items.iter().filter(|item| item.state == checks::CheckState::Open).count(),
         "tasks": listed.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
         "decisions": decisions(&lines),
         "resolutions": resolutions(&scope.store, &tasks, &lines, now),
-        "last_reply": last_reply,
+        "last_reply": last_reply.map(|(_, text)| text),
+        "news": news,
         "last_unix_ms": last_unix_ms,
         // ^ Tasks can be tried on a preview link (docs/tasks.md "Preview").
         "preview": settings.as_ref().is_some_and(|settings| settings.preview.is_some()),
