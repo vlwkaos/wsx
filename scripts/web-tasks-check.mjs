@@ -239,8 +239,8 @@ async function viewImages(name, links, many = 2) {
   // ^ A real click, as a person opens it: Chrome closes a dialog opened without a user action
   // together with the dialog under it on one Escape (the sheet over the To check list).
   const open = async () => {
-    await press((await evaluate(`(() => { const box = document.querySelector(${JSON.stringify(links)}).getBoundingClientRect(); const at = [box.left + box.width / 2, box.top + box.height / 2];
-      if (!document.querySelector(${JSON.stringify(links)}).contains(document.elementFromPoint(...at))) throw new Error('the first image is covered');
+    await press((await evaluate(`(() => { const link = document.querySelector(${JSON.stringify(links)}); const box = link.getBoundingClientRect(); const at = [box.left + box.width / 2, box.top + box.height / 2];
+      if (!link.contains(document.elementFromPoint(...at))) throw new Error('the first image is covered');
       return at; })()`)).map(Math.round));
     await until(`!!${shown} && history.state?.viewer === true`, `${what}: the image did not open full screen`);
   };
@@ -1323,7 +1323,7 @@ await until("document.querySelectorAll('.composer .chips li').length === 3 && !d
 // ^ An image shows as its thumbnail and another file as its name; each has its remove (×).
 await until("[...document.querySelectorAll('.composer .chips img')].filter((image) => image.naturalWidth).length === 2", "the composer's image chips show no thumbnail");
 const chips = await evaluate(`[...document.querySelectorAll('.composer .chips li')].map((node) => ({ image: node.querySelector('img')?.naturalWidth ?? 0,
-  name: node.querySelector('span')?.textContent ?? '', remove: node.querySelector('button.icon-button .icon') ? node.querySelector('button').getAttribute('aria-label') : '',
+  name: node.querySelector('span')?.textContent ?? '', remove: node.querySelector('button.icon-button:has(.icon)')?.getAttribute('aria-label') ?? '',
   link: !!node.querySelector('.link-action') }))`);
 if (chips.length !== 3 || !chips[0].name.startsWith("notes.txt") || chips[0].image || chips[0].remove !== "Remove notes.txt"
   || chips.slice(1).some((chip) => !chip.image || chip.name || !/^Remove pasted-\d{14}/.test(chip.remove)) || chips.some((chip) => chip.link)) await fail(`the composer's file chips read ${JSON.stringify(chips)}`);
