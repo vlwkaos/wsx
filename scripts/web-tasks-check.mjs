@@ -903,10 +903,11 @@ await until("[...document.querySelectorAll('.log .bubble[data-side=out]')].some(
 await pause(1500);
 if (await evaluate(newConversations) !== shownBefore + 1) await fail(`the new conversation shows ${(await evaluate(newConversations)) - shownBefore} times`);
 
-// --- A turn that ends while the page is offline, or hidden and frozen as iOS keeps a PWA in
-// the background: the stream misses the reply and the end of the turn. Back online or
+// --- A turn that ends while the page is offline, or hidden and offline as iOS keeps a PWA in
+// the background: the stream misses the reply and the end of the turn. Back online and
 // visible, the page reads the chat again, so the typing dots go and the reply shows without
-// a reload (docs/web-client.md "Event stream").
+// a reload (docs/web-client.md "Event stream"). ^ Not Page.setWebLifecycleState: a page
+// frozen and made active again in headless Chrome no longer renders, so no scroll event fires.
 const network = (offline) => send("Network.emulateNetworkConditions", { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
 const visibility = (state) => evaluate(`Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => '${state}' });
   document.dispatchEvent(new Event('visibilitychange'))`);
@@ -918,20 +919,16 @@ for (const away of ["offline", "hidden"]) {
   await until("!!document.querySelector('.log .typing') && !!document.querySelector('.manager .bar-state .typing-dot')", `no typing dots before the page went ${away}`, 30);
   if (away === "hidden") await visibility("hidden");
   await network(true);
-  if (away === "hidden") await send("Page.setWebLifecycleState", { state: "frozen" });
   // ^ The fake manager's SLOW turn takes about 3 s.
   await pause(7000);
-  if (away === "hidden") await send("Page.setWebLifecycleState", { state: "active" });
   await network(false);
   if (away === "hidden") await visibility("visible");
   await until(`!document.querySelector('.log .typing') && !document.querySelector('.manager .bar-state') && ${replies} > ${before}`,
     `the typing dots stayed or the reply did not show after the page was ${away}`, 50);
 }
 await evaluate("delete document.visibilityState");
-// ^ The stream opens again (its "Connection lost" notice goes) and reads once more; the next
-// part scrolls the chat only once that settled.
+// ^ The stream opens again (its "Connection lost" notice goes) and reads once more.
 await until("!document.querySelector('.notice[data-offline]')", "the stream did not open again after the page was offline", 150);
-await pause(1500);
 
 // --- The task sheet: a chip or a reservoir row opens it over the chat, and the chat does not
 // scroll; Escape, Back and a swipe down close it, the composer keeps its draft and gets the
