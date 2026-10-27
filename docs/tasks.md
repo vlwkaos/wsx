@@ -169,7 +169,7 @@ The owner can take a build over and work on it directly, with the worker's conte
 3. when the branch contains the default branch tip, keep the ready revision's check results and go to 4; otherwise rebase it there in the working copy:
    - a conflict aborts the rebase, logs `conflict{onto, paths}`, and starts a worker turn that rebases and resolves (the task is `working`); the normal checks then make it `ready`, and it lands again by itself under auto land, without a second review;
    - a clean rebase whose tree is the tree of the current revision (the default branch's changes were already in the branch), with the project's checks still the ones that passed on it, keeps that revision's check results and fast-forwards at once;
-   - any other clean rebase reruns the checks as a new revision and lands when they pass. A failure logs `land_stopped`;
+   - any other clean rebase reruns the checks as a new revision. When they pass, the land goes back to the start of 3: a default branch that moved while they ran (another task landed) is rebased onto again and checked again, without a second `land`. A failure logs `land_stopped`;
 4. fast-forward the default branch: `git merge --ff-only` in the checkout that has it checked out, refused only when that checkout has changed files (tracked or new) that the land changes too, naming those files and the checkout; its other uncommitted files stay as they are (`git merge --ff-only` keeps them). wsx never stashes or commits the owner's files; `git update-ref` with the old tip as guard when no checkout has it;
 5. add the To check items, log `landed{commit}` and set `landed`. After a rebase the task goes from `checking` straight to `landed`, or to `ready` with `land_stopped`.
 
