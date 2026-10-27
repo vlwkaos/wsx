@@ -401,7 +401,7 @@ impl Chat {
             .agent
             .as_ref()
             .is_some_and(|agent| agent.attached && agent.state == AgentState::Blocked);
-        let now = crate::devices::now_unix_ms();
+        let now = wsx_core::task::now_unix_ms();
         let held = app.queue.list(session).iter().any(|queued| {
             queued.failed.is_none()
                 && queued.delivered_unix_ms.is_none()
@@ -745,7 +745,7 @@ impl Chat {
                 "the terminal runs another program; open the terminal",
             ));
         }
-        let now = crate::devices::now_unix_ms();
+        let now = wsx_core::task::now_unix_ms();
         {
             let mut resuming = crate::locked(&self.resuming);
             if resuming
@@ -842,7 +842,7 @@ impl Chat {
             // ^ An agent started again for this message that never reported fails it, with why.
             let mut resuming = crate::locked(&self.resuming);
             let stale = resuming.get(&session).is_some_and(|since| {
-                crate::devices::now_unix_ms().saturating_sub(*since) >= RESUME_WAIT_MS
+                wsx_core::task::now_unix_ms().saturating_sub(*since) >= RESUME_WAIT_MS
             });
             if stale {
                 resuming.remove(&session);
@@ -885,7 +885,7 @@ impl Chat {
             // after the turn ends: try again soon, and fail with the reason after a while.
             Err(fault) if busy(&fault) => {
                 let since = app.queue.not_yet(session, queued.id);
-                if crate::devices::now_unix_ms().saturating_sub(since) < NOT_YET_MS {
+                if wsx_core::task::now_unix_ms().saturating_sub(since) < NOT_YET_MS {
                     return settled;
                 }
                 app.queue.fail(session, queued.id, &fault.2);

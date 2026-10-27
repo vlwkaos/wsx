@@ -12,7 +12,7 @@ use wsx_core::config::global::{
     TerminalTitlePosition, ADAPTIVE_COLLAPSE_MAX_HOURS, ADAPTIVE_COLLAPSE_MIN_HOURS,
 };
 
-use super::{popup_block, popup_center, theme};
+use super::{popup_block, popup_center, theme, workspace_tree::truncate_to_width};
 
 #[cfg(target_os = "macos")]
 const RUNTIME_FIELDS: &[SettingField] = &[
@@ -1055,18 +1055,19 @@ fn settings_view(form: &GlobalSettingsForm, width: u16) -> SettingsViewModel {
         let available = usize::from(width).saturating_sub(5);
         if let Some(value) = row.value.as_mut() {
             if stacked {
-                row.label = truncate_cells(&row.label, available);
-                *value = truncate_cells(value, usize::from(width).saturating_sub(3));
+                row.label = truncate_to_width(&row.label, available);
+                *value = truncate_to_width(value, usize::from(width).saturating_sub(3));
             } else {
-                *value = truncate_cells(value, available.saturating_div(2).max(1));
+                *value = truncate_to_width(value, available.saturating_div(2).max(1));
                 let value_width = Line::from(value.as_str()).width();
-                row.label = truncate_cells(&row.label, available.saturating_sub(value_width + 1));
+                row.label =
+                    truncate_to_width(&row.label, available.saturating_sub(value_width + 1));
                 row.gap = available
                     .saturating_sub(Line::from(row.label.as_str()).width() + value_width)
                     .max(1);
             }
         } else {
-            row.label = truncate_cells(&row.label, available);
+            row.label = truncate_to_width(&row.label, available);
         }
     }
     let tabs = SettingsCategory::ALL
@@ -1289,24 +1290,6 @@ fn render_hints(frame: &mut Frame, area: Rect, hints: &[HintView]) {
     );
 }
 
-fn truncate_cells(value: &str, max_width: usize) -> String {
-    if Line::from(value).width() <= max_width {
-        return value.to_string();
-    }
-    if max_width == 0 {
-        return String::new();
-    }
-    let mut truncated = value.to_string();
-    while !truncated.is_empty() && Line::from(format!("{truncated}…")).width() > max_width {
-        truncated.pop();
-    }
-    if truncated.is_empty() {
-        "…".into()
-    } else {
-        format!("{truncated}…")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1482,7 +1465,7 @@ mod tests {
             "agent👩‍💻value",
             "e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}e\u{301}",
         ] {
-            let truncated = truncate_cells(value, 6);
+            let truncated = truncate_to_width(value, 6);
             assert!(Line::from(truncated.as_str()).width() <= 6, "{truncated:?}");
             assert!(truncated.ends_with('…'), "{truncated:?}");
         }

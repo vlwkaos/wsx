@@ -4,7 +4,7 @@ use ratatui::{
 };
 use wsx_core::runtime::{PluginSidecarDescriptor, PluginSidecarView, PluginTone, PluginViewRow};
 
-use super::theme;
+use super::{theme, workspace_tree::truncate_to_width};
 
 fn tone_color(tone: PluginTone) -> Color {
     match tone {
@@ -17,41 +17,20 @@ fn tone_color(tone: PluginTone) -> Color {
     }
 }
 
-fn truncate_cells(value: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    if Line::from(value).width() <= width {
-        return value.to_string();
-    }
-    let marker = "…";
-    let content_width = width.saturating_sub(Line::from(marker).width());
-    let mut output = String::new();
-    for character in value.chars() {
-        let candidate = format!("{output}{character}");
-        if Line::from(candidate.as_str()).width() > content_width {
-            break;
-        }
-        output.push(character);
-    }
-    output.push_str(marker);
-    output
-}
-
 fn project_row(row: &PluginViewRow, width: usize) -> Line<'static> {
-    let badge = truncate_cells(&row.badge, 2);
+    let badge = truncate_to_width(&row.badge, 2);
     let badge_width = Line::from(badge.as_str()).width();
-    let value = truncate_cells(&row.value, width.saturating_sub(badge_width + 2));
+    let value = truncate_to_width(&row.value, width.saturating_sub(badge_width + 2));
     let value_width = Line::from(value.as_str()).width();
     let content_width = width.saturating_sub(badge_width + value_width + 2);
-    let primary = truncate_cells(&row.primary, content_width);
+    let primary = truncate_to_width(&row.primary, content_width);
     let primary_width = Line::from(primary.as_str()).width();
     let secondary_width = content_width.saturating_sub(primary_width + 1);
     let secondary = row
         .secondary
         .as_deref()
         .filter(|_| secondary_width >= 3)
-        .map(|value| truncate_cells(value, secondary_width));
+        .map(|value| truncate_to_width(value, secondary_width));
     let used = primary_width
         + secondary
             .as_deref()

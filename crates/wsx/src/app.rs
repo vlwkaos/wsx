@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -297,14 +297,6 @@ const WORKSPACE_SCROLL_LINES: isize = 3;
 const NOTICE_MIN_DWELL: Duration = Duration::from_secs(2);
 const STREAM_REATTACH_WINDOW: Duration = Duration::from_secs(5);
 const NOTICE_QUEUE_CAPACITY: usize = 8;
-
-fn unix_time_millis() -> u64 {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    u64::try_from(millis).unwrap_or(u64::MAX)
-}
 
 fn project_latest_activity_unix_ms(
     project: &Project,
@@ -1544,7 +1536,7 @@ impl App {
             }
             self.mark_dirty();
         }
-        let now_unix_ms = unix_time_millis();
+        let now_unix_ms = wsx_core::task::now_unix_ms();
         let mut changed = false;
         for project in &mut self.workspace.projects {
             let previous_adaptive = self.adaptive_collapse.get(&project.path).copied();
@@ -3725,7 +3717,7 @@ impl App {
             return;
         };
         self.stale_collapsed_projects.remove(&path);
-        let now_unix_ms = unix_time_millis();
+        let now_unix_ms = wsx_core::task::now_unix_ms();
         self.project_touched_unix_ms
             .insert(path.clone(), now_unix_ms);
         if let AutoCollapsePolicy::Adaptive { base_hours } = self.config.auto_collapse {
@@ -6962,6 +6954,7 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn sibling_session_indices_wrap_and_reject_missing_siblings() {
@@ -11625,7 +11618,7 @@ mod tests {
             None,
         );
         let path = app.workspace.projects[0].path.clone();
-        let now = unix_time_millis();
+        let now = wsx_core::task::now_unix_ms();
         let day_ms = 24 * MILLIS_PER_HOUR;
         app.adaptive_collapse
             .insert(path.clone(), AdaptiveCollapseState::new(24, now));

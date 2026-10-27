@@ -52,12 +52,6 @@ pub fn now_unix() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
-pub fn now_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
-}
-
 pub fn random_bytes<const N: usize>() -> Result<[u8; N]> {
     let mut bytes = [0u8; N];
     File::open("/dev/urandom")
