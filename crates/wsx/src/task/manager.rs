@@ -7,7 +7,7 @@ use super::boundary::Boundary;
 use super::claude::{
     new_session_id, skills_plugin, AgentLine, ClaudeAgent, Launch, TurnResult, SKILLS_PLUGIN_NAME,
 };
-use super::{broker, hosting};
+use super::{broker, hosting, limit};
 use anyhow::{Context, Result};
 use asched_core::routine::{store::RoutineStore, RunRecord, RunStatus};
 use std::collections::BTreeMap;
@@ -22,7 +22,8 @@ use wsx_core::task::manager::{
     decided_request, instructions_digest, pending_approvals, quiet_reply, ApprovalLine,
 };
 use wsx_core::task::manager::{
-    Author, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState, Seen,
+    Author, LimitHold, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState,
+    Seen,
 };
 use wsx_core::task::owner;
 use wsx_core::task::store;
@@ -42,6 +43,9 @@ const RECAP_REQUEST: &str = "The project has been quiet. Write the owner a short
 what landed and is live, what runs, and what waits for the owner and why. Read the ledger for it. Start no \
 task and change nothing. Name a task by its number and what it does.";
 const EVENT_TITLE_CHARS: usize = 80;
+/// The turn after a usage limit: the messages of the turn it ended got no answer yet.
+const LIMIT_CONTINUE: &str = "The session limit has reset. Answer the messages before this one \
+that got no reply yet, then any below.";
 /// The title of the task `tasks.workflow.idle` starts.
 const IDLE_TITLE: &str = "Consolidate project knowledge";
 /// A message in a handover: one line, clipped, so a quote never reads as a new message.
@@ -958,9 +962,15 @@ impl Manager {
 
     /// Start a turn with every waiting owner message, or else with the waiting events.
     fn next_turn(&mut self) {
-        let Some((_, first, _)) = self.queue.front() else {
+        // ^ During a usage limit the messages wait; after it they go with the held ones.
+        let held = self.state.limit.clone();
+        if held
+            .as_ref()
+            .is_some_and(|hold| now_unix_ms() < hold.until_ms)
+            || (held.is_none() && self.queue.is_empty())
+        {
             return;
-        };
+        }
         // ^ A replaced binary: exec it before this turn. The messages stay logged and not
         // delivered, so the new host queues them again (`restore`).
         if self.binary.as_ref().is_some_and(hosting::Binary::replaced) {
@@ -968,7 +978,10 @@ impl Manager {
             self.reexec = true;
             return;
         }
-        let first = first.clone();
+        let first = self
+            .queue
+            .front()
+            .map_or(Author::Owner, |(_, author, _)| author.clone());
         let mut ids = Vec::new();
         let mut text = String::new();
         while self
@@ -1001,16 +1014,24 @@ impl Manager {
             text.push_str(&format!("{heading} (message {id}):\n{body}\n\n"));
             ids.push(id);
         }
-        if let Err(error) = self.send_turn(text.trim_end(), first == Author::Events) {
+        let events_only = first == Author::Events && held.is_none();
+        if held.is_some() {
+            text = format!("{LIMIT_CONTINUE}\n\n{text}");
+        }
+        if let Err(error) = self.send_turn(text.trim_end(), events_only) {
             self.say(&format!("cannot start the manager agent: {error:#}"));
             self.log(ManagerEvent::Stopped {
                 reason: format!("cannot start the manager agent: {error:#}"),
             });
             return;
         }
-        self.log(ManagerEvent::Delivered { ids: ids.clone() });
-        self.turn = Some(ids);
-        self.turn_events = first == Author::Events;
+        if !ids.is_empty() {
+            self.log(ManagerEvent::Delivered { ids: ids.clone() });
+        }
+        let mut turn = held.map(|hold| hold.ids).unwrap_or_default();
+        turn.extend(ids);
+        self.turn = Some(turn);
+        self.turn_events = events_only;
         self.report(runtime::AgentState::Working);
     }
 
@@ -1256,6 +1277,25 @@ impl Manager {
             return;
         }
         let to = self.turn.take().unwrap_or_default();
+        // ^ A usage limit is no reply: its messages are answered once it resets.
+        // ref: docs/tasks.md "Manager"
+        if let Some(reached) = &result.limit {
+            let attempt = self.state.limit.as_ref().map_or(0, |hold| hold.attempt) + 1;
+            let now = now_unix_ms();
+            let until_ms = limit::resume_at(reached.resets_at, attempt, now);
+            let text = limit::reason(until_ms, now);
+            self.say(&text);
+            self.log(ManagerEvent::Agent { text });
+            self.state.limit = Some(LimitHold {
+                until_ms,
+                attempt,
+                ids: to,
+            });
+            self.save();
+            self.report(runtime::AgentState::Idle);
+            return;
+        }
+        self.state.limit = None;
         let id = self.next_id();
         // ^ The last model call's context: the summed usage counts it once per call.
         let context = result.usage.context_tokens;

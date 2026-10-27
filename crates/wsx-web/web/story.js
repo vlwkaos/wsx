@@ -81,6 +81,7 @@ function nextWords(detail) {
   switch (detail.state) {
     case "waiting": switch (detail.waiting?.on) {
       case "disk": return `${detail.waiting.reason}. It goes on by itself once there is space.`;
+      case "limit": return `${detail.waiting.reason[0].toUpperCase()}${detail.waiting.reason.slice(1)}. It goes on by itself.`;
       case "hand": return "You work on it by hand in its session. Commit, then hand it back: its checks run and it lands as usual.";
       default: return detail.waiting?.reason === "stopped by request"
         ? "The worker stopped. Add a message to resume it." : "The worker waits for your answer.";

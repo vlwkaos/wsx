@@ -7,6 +7,7 @@ mod claude;
 pub mod host;
 mod hosting;
 mod ledger;
+mod limit;
 pub mod manager;
 mod preview;
 mod slot;

@@ -232,6 +232,18 @@ pub struct ManagerState {
     /// the token cost since. ref: docs/tasks.md "Recap"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recap_ms: Option<u64>,
+    /// The agent's usage limit: the messages of the turn it ended, answered once it resumes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<LimitHold>,
+}
+
+/// A manager turn the usage limit ended. ref: docs/tasks.md "Manager"
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LimitHold {
+    pub until_ms: u64,
+    /// Limits in a row, for the backoff when no reset time is known.
+    pub attempt: u32,
+    pub ids: Vec<u64>,
 }
 
 /// A stable digest of an agent's instructions, to tell whether a conversation began with them.

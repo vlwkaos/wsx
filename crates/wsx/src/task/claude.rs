@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::TaskWorkflow;
 use wsx_core::task::view::clip;
-use wsx_core::task::{worker_result_schema, TaskRecord, TurnUsage};
+use wsx_core::task::{now_unix_ms, worker_result_schema, TaskRecord, TurnUsage};
 
 /// Longest stdout line the host reads; a longer one (a huge tool result) is skipped.
 const MAX_LINE_BYTES: u64 = 4 * 1024 * 1024;
@@ -57,6 +57,15 @@ pub struct TurnResult {
     pub structured: Option<Value>,
     pub denials: Vec<String>,
     pub usage: TurnUsage,
+    /// The agent's usage limit ended the turn, before any model call.
+    pub limit: Option<UsageLimit>,
+}
+
+/// Claude's usage limit: a result with `api_error: "usage_limit_reached"`.
+/// ref: docs/tasks.md "Claude adapter"
+pub struct UsageLimit {
+    /// When the limit resets, in unix seconds, when Claude said.
+    pub resets_at: Option<u64>,
 }
 
 impl TurnResult {
@@ -493,6 +502,8 @@ struct Turns {
     /// The context and model of the turn's last model call so far.
     context: Option<u64>,
     model: String,
+    /// `resetsAt` of the last rejected `rate_limit_info` before the result.
+    resets_at: Option<u64>,
 }
 
 impl Turns {
@@ -510,6 +521,17 @@ impl Turns {
         }
         if let Some(model) = value.pointer("/message/model").and_then(Value::as_str) {
             self.model = model.to_string();
+        }
+    }
+
+    /// A rejected `rate_limit_info`, on a `rate_limit_event` or an API error's `assistant`
+    /// line, names when the limit resets.
+    fn note_limit(&mut self, info: Option<&Value>) {
+        let Some(info) = info.filter(|info| info["status"] == "rejected") else {
+            return;
+        };
+        if let Some(at) = info.get("resetsAt").and_then(Value::as_u64) {
+            self.resets_at = Some(at);
         }
     }
 }
@@ -531,8 +553,17 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
         "system" if value.get("subtype")?.as_str()? == "init" => Some(AgentLine::Init(
             value.get("session_id")?.as_str()?.to_string(),
         )),
+        "rate_limit_event" => {
+            turns.note_limit(value.get("rate_limit_info"));
+            None
+        }
         "assistant" => {
             turns.note_call(value);
+            turns.note_limit(value.pointer("/api_error_params/rate_limit_info"));
+            // ^ The limit's own words are no progress: the host says when it resumes.
+            if value["api_error"] == "usage_limit_reached" {
+                return None;
+            }
             value
                 .pointer("/message/content")?
                 .as_array()?
@@ -551,6 +582,13 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
             )))
         }
         "result" => Some(AgentLine::Result(TurnResult {
+            limit: {
+                let resets_at = turns.resets_at.take();
+                (value["api_error"] == "usage_limit_reached").then(|| UsageLimit {
+                    resets_at: resets_at
+                        .or_else(|| text_reset(&str_field(value, "result"), now_unix_ms() / 1000)),
+                })
+            },
             is_error: value
                 .get("is_error")
                 .and_then(Value::as_bool)
@@ -601,6 +639,51 @@ fn turn_usage(value: &Value, turns: &mut Turns) -> TurnUsage {
             .unwrap_or_else(|| value.get("usage").map_or(0, context_of)),
         model: std::mem::take(&mut turns.model),
     }
+}
+
+/// The reset in Claude's own words, "You've hit your session limit · resets 12:10am
+/// (Asia/Seoul)", as the next such time after `now` (unix s). Only a time of day in this
+/// machine's zone is read: anything else gives none, and the host backs off.
+fn text_reset(text: &str, now: u64) -> Option<u64> {
+    let (_, rest) = text.rsplit_once("resets ")?;
+    let (clock, zone) = rest.trim_end().strip_suffix(')')?.split_once(" (")?;
+    if Some(zone) != local_zone().as_deref() {
+        return None;
+    }
+    let (clock, pm) = match clock.strip_suffix("pm") {
+        Some(clock) => (clock, true),
+        None => (clock.strip_suffix("am")?, false),
+    };
+    let (hour, minute) = clock.split_once(':').unwrap_or((clock, "0"));
+    let (hour, minute) = (hour.parse::<i32>().ok()?, minute.parse::<i32>().ok()?);
+    if !(1..=12).contains(&hour) || !(0..60).contains(&minute) {
+        return None;
+    }
+    let mut tm = super::limit::local_time(now)?;
+    tm.tm_hour = hour % 12 + if pm { 12 } else { 0 };
+    tm.tm_min = minute;
+    tm.tm_sec = 0;
+    tm.tm_isdst = -1;
+    // SAFETY: `tm` is a valid, initialized value for the call.
+    let at = u64::try_from(unsafe { libc::mktime(&mut tm) }).ok()?;
+    Some(if at <= now { at + 86_400 } else { at })
+}
+
+/// This machine's IANA zone name: `TZ`, else the target of `/etc/localtime`.
+fn local_zone() -> Option<String> {
+    let zone = match std::env::var("TZ") {
+        Ok(zone) => zone,
+        Err(_) => std::fs::read_link("/etc/localtime")
+            .ok()?
+            .to_string_lossy()
+            .into_owned(),
+    };
+    let zone = zone.trim_start_matches(':');
+    Some(
+        zone.split_once("zoneinfo/")
+            .map_or(zone, |(_, name)| name)
+            .to_string(),
+    )
 }
 
 fn str_field(value: &Value, name: &str) -> String {
