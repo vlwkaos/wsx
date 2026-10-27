@@ -96,7 +96,7 @@ Claude's `UserPromptSubmit` hook starts `wsx.reporter agent wake-heartbeat <pane
 
 ## Verification
 
-- `node scripts/test-agent-reporter.mjs` checks removed-path recovery and no rejection replay.
+- The reporter scenario: `python3 -B scripts/test-agent-reporter.py` runs the shell and Hermes reporters' removed-path recovery and refusal and the Claude hook's prompt receipts, and `node scripts/test-agent-reporter.mjs` checks the JS adapters' removed-path recovery and no rejection replay.
 - `node scripts/test-pi-agent-status.mjs` exercises Pi lifecycle events with a removed legacy path.
 - The daemon reporter test checks publication, aborted handoff, old-target removal and unsafe targets.
 - Isolated runtime scenarios verify actual reporting and live handoff without replacing pane processes.
