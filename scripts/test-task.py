@@ -793,6 +793,24 @@ def run(wsx, wsxd, work, owned):
     assert git('show', 'main:x.txt') == 'resolved'
     for n in (x1, y1, x2):
         wait_closed(n)
+    # Two lands rebase onto one tip; the check slot runs p's checks first, so q's checks end
+    # after p landed and main moved: q rebases and checks again by itself and lands.
+    (project / 'wsx.config.yml').write_text(LAND_CONFIG.replace('  checks:\n', '  checks:\n    - "sleep 1"\n'))
+    git('commit', '-q', '-am', 'slow checks')
+    p, q = (js('task', 'new', 'WORK %s.txt' % name)['id'] for name in ('p', 'q'))
+    for n in (p, q):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', show(n)
+    (project / 'moved.txt').write_text('moved\n')
+    git('add', 'moved.txt')
+    git('commit', '-q', '-m', 'main moves')
+    for n in (p, q):
+        assert 'checks run on the new revision' in land(n)['message'], show(n)
+    for n in (p, q):
+        assert wait_state(n, 'landed', 'ready', 'failed')['state'] == 'landed', log(n)
+    assert not [e for e in log(q) if e['kind'] == 'land_stopped'], log(q)
+    assert [e['kind'] for e in log(q)].count('checks') == 3 and main_has('p.txt') and main_has('q.txt'), log(q)
+    for n in (p, q):
+        wait_closed(n)
 
     # 16. Auto land (the default; docs/tasks.md "Landing"): a ready task the owner created waits
     mark('16')

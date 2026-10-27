@@ -1306,7 +1306,7 @@ impl Host {
                     None => self.set_state(state),
                     Some(AfterRebase::Land { tried }) => {
                         let finished = if state == TaskState::Ready {
-                            self.fast_forward(tried)
+                            self.land_on_tip(tried)
                         } else {
                             Err(anyhow::anyhow!("checks failed on the rebased revision"))
                         };
@@ -1407,6 +1407,13 @@ impl Host {
                 self.record.id
             );
         }
+        self.land_on_tip(tried)
+    }
+
+    /// Fast-forward when the branch has the default branch tip, else rebase onto it. The
+    /// checks of a rebased revision come back here, so a tip that moved while they ran
+    /// rebases and checks again (#84 stopped on it, 2026-10-27).
+    fn land_on_tip(&mut self, tried: bool) -> Result<String> {
         let working_copy = self.record.working_copy.clone();
         let tip = self.default_tip()?;
         let head = copy::resolve_commit(&working_copy, "HEAD")?;
