@@ -168,14 +168,23 @@ pub(super) fn open_nofollow(path: &Path, options: &mut OpenOptions) -> Result<Fi
         .with_context(|| format!("cannot open {}", path.display()))
 }
 
+/// `flock(fd, operation)` on `path`'s descriptor: `false` when `LOCK_NB` finds it held.
+fn flock(fd: i32, operation: i32, path: &Path) -> Result<bool> {
+    // SAFETY: flock on a descriptor the caller keeps open; released when it closes.
+    if unsafe { libc::flock(fd, operation) } == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        return Ok(false);
+    }
+    Err(error).with_context(|| format!("cannot lock {}", path.display()))
+}
+
 /// `open_nofollow`, then an exclusive lock that holds until the file closes.
 pub(super) fn open_locked(path: &Path, options: &mut OpenOptions) -> Result<File> {
     let file = open_nofollow(path, options)?;
-    // SAFETY: flock on an open descriptor; released when `file` closes.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("cannot lock {}", path.display()));
-    }
+    flock(file.as_raw_fd(), libc::LOCK_EX, path)?;
     Ok(file)
 }
 pub(super) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
@@ -425,15 +434,7 @@ pub fn lock_deploys(project_id: &str) -> Result<File> {
 pub fn try_lock_deploys(project_id: &str) -> Result<Option<File>> {
     let path = ensure_project_dir(project_id)?.join(DEPLOY_LOCK_FILE);
     let file = open_nofollow(&path, OpenOptions::new().write(true).create(true))?;
-    // SAFETY: flock on an open descriptor; released when `file` closes.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-        return Ok(Some(file));
-    }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
-        return Ok(None);
-    }
-    Err(error).with_context(|| format!("cannot lock {}", path.display()))
+    Ok(flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB, &path)?.then_some(file))
 }
 
 /// The deploy lock a detached run was started with, as descriptor `fd`: refused unless `fd`
@@ -451,8 +452,7 @@ pub fn adopt_deploy_lock(project_id: &str, fd: i32) -> Result<File> {
         bail!("descriptor {fd} is not {}", path.display());
     }
     // ^ The descriptor that holds the lock locks again at once; another one would wait.
-    // SAFETY: flock on a descriptor checked above.
-    if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+    if !flock(fd, libc::LOCK_EX | libc::LOCK_NB, &path)? {
         bail!(
             "descriptor {fd} does not hold the lock of {}",
             path.display()

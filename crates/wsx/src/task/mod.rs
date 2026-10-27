@@ -1538,13 +1538,16 @@ fn deploy(
     // ^ While a trial holds the live site, only its own deploy runs; the default branch
     // deploys when it ends. ref: docs/tasks.md "Hold and trial"
     let live_trial = store::read_trial(&project_id)?;
-    let skip = |message: String| -> Result<()> {
+    // ^ Each answer is JSON with `--json`, else its message.
+    let answer = |value: serde_json::Value| -> Result<()> {
         if json {
-            return print_json(&json!({ "kind": kind, "skipped": true, "message": message }));
+            return print_json(&value);
         }
-        println!("{message}");
+        println!("{}", value["message"].as_str().unwrap_or_default());
         Ok(())
     };
+    let skip =
+        |message: String| answer(json!({ "kind": kind, "skipped": true, "message": message }));
     let revision = match (trial, &live_trial) {
         (Some(task), Some(live)) if live.task == task && live.commit.is_some() => {
             live.commit.clone().unwrap_or_default()
@@ -1574,13 +1577,9 @@ fn deploy(
             .is_some_and(|record| record.commit == tip);
         if deployed {
             let message = format!("{name} of {tip:.12}: already deployed");
-            if json {
-                return print_json(
-                    &json!({ "kind": kind, "commit": tip, "skipped": true, "message": message }),
-                );
-            }
-            println!("{message}");
-            return Ok(());
+            return answer(
+                json!({ "kind": kind, "commit": tip, "skipped": true, "message": message }),
+            );
         }
     }
     let check_suffix = match kind {
@@ -1615,13 +1614,9 @@ fn deploy(
             store::follow_up_log_path(&project_id)?.display(),
             check_suffix
         );
-        if json {
-            return print_json(
-                &json!({ "kind": kind, "commit": commit, "started": true, "message": message }),
-            );
-        }
-        println!("{message}");
-        return Ok(());
+        return answer(
+            json!({ "kind": kind, "commit": commit, "started": true, "message": message }),
+        );
     }
     let path = copy::working_copy_path_named(&main, &format!("{name}-{}", std::process::id()))?;
     let commit = copy::create_detached(&main, &revision, &path)
@@ -1694,13 +1689,9 @@ fn deploy(
     if status.success() {
         message.push_str(&check_suffix);
     }
-    if json {
-        let mut value = serde_json::to_value(&record)?;
-        value["message"] = json!(message);
-        print_json(&value)?;
-    } else {
-        println!("{message}");
-    }
+    let mut value = serde_json::to_value(&record)?;
+    value["message"] = json!(message);
+    answer(value)?;
     if !status.success() {
         bail!("tasks.{name}.command failed ({status}); the failure is recorded and nothing else changed");
     }
