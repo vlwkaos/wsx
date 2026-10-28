@@ -2555,7 +2555,7 @@ def run(wsx, wsxd, work, owned):
             (r'WORKSPACE', b't'),
             (r'(?ms)^ Roles$.*^ billing +open +Drive the billing', b'j' * below),
             (r'\(enter\)chat', b'\r'),
-            (r'(?s)billing demo.*ROLE', b'\x1b'),
+            (r'(?ms)^ billing +\d\d:\d\d$.*ROLE', b'\x1b'),
             (r'\(m\)anager', b'\x1b'),
             (r'WORKSPACE', b'')], cols=cols)
         chat = shots[3]
