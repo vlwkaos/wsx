@@ -1700,7 +1700,9 @@ if (inChat.tag !== "To check" || inChat.author !== "Atlas" || inChat.image !== 4
 await evaluate(`${bubbleOf(8)}.scrollIntoView({ block: 'center' })`);
 await pause(300);
 await shot("to-check-bubble", ".composer-send");
-await viewImages("to-check-bubble", `.log .check-bubble .check-capture`, 1);
+// ^ #7's bubble has a capture too: each bubble is its own set.
+const bubbleKey = await evaluate(`${bubbleOf(8)}.dataset.key`);
+await viewImages("to-check-bubble", `.log .check-bubble[data-key=${JSON.stringify(bubbleKey)}] .check-capture`, 1);
 await resize([1280, 800, 1]);
 await showEarlier();
 await until(`!!${bubbleOf(8)}`, "the wide chat has no To check bubble");
