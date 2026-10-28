@@ -468,14 +468,14 @@ struct StreamSlot {
 }
 impl StreamSlot {
     /// A terminal past the device's limit is refused.
-    fn take(app: &Shared, key: String, what: &str) -> Outcome<Self> {
+    fn take(app: &Shared, key: String) -> Outcome<Self> {
         let mut streams = crate::locked(&app.streams);
         let open = streams.entry(key.clone()).or_default();
         if open.len() >= MAX_STREAMS_PER_DEVICE {
             return Err(Fault::new(
                 429,
                 "too_many_streams",
-                format!("too many open {what} on this device"),
+                "too many open terminals on this device",
             ));
         }
         Ok(Self::open(app, open, key, None))
@@ -1530,7 +1530,7 @@ async fn terminal_socket(
         let pane_id = chat::target(&snapshot, &app.site.access, session)?.pane.id;
         Ok((pane_id, snapshot.capabilities.raw_terminal_stream))
     })?;
-    let slot = StreamSlot::take(&app, format!("terminal:{}", device.id), "terminals")?;
+    let slot = StreamSlot::take(&app, format!("terminal:{}", device.id))?;
     if query.client.len() > 32 || !query.client.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(Fault::new(400, "invalid_client", "client must be digits"));
     }
