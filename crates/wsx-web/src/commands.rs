@@ -104,8 +104,8 @@ fn builtins(provider: &str) -> &'static [(&'static str, &'static str)] {
     }
 }
 
-/// The commands of `provider` in a session whose worktree is `worktree`.
-pub fn list(provider: &str, worktree: &Path) -> Listing {
+/// The commands of `provider` in a session whose worktree is `worktree`, in `project`.
+pub fn list(provider: &str, worktree: &Path, project: &Path) -> Listing {
     let mut found: Vec<_> = builtins(provider)
         .iter()
         .map(|&(name, description)| (name.into(), description.into(), Source::Builtin))
@@ -113,9 +113,9 @@ pub fn list(provider: &str, worktree: &Path) -> Listing {
     let mut skipped = 0;
     if provider == "claude" {
         // Project first, so a project's command wins over a user's of the same name.
-        let project = worktree.join(".claude");
-        scan(&project, "", Source::Project, &mut found, &mut skipped);
-        if let Some(home) = claude_home() {
+        let local = worktree.join(".claude");
+        scan(&local, "", Source::Project, &mut found, &mut skipped);
+        if let Some(home) = claude_home(project) {
             scan(&home, "", Source::User, &mut found, &mut skipped);
             for (plugin, path) in plugins(&home, worktree) {
                 let prefix = format!("{plugin}:");
@@ -126,13 +126,13 @@ pub fn list(provider: &str, worktree: &Path) -> Listing {
     listing(provider == "claude", found, skipped)
 }
 
-/// The owner's skills a manager gets as `owner:<name>` (`$CLAUDE_CONFIG_DIR/skills`, else
-/// `~/.claude/skills`), for the manager composer's `/` list. Skills only, same bounds as `list`.
+/// The owner's skills a manager of `project` gets as `owner:<name>` (`<config root>/skills`),
+/// for the manager composer's `/` list. Skills only, same bounds as `list`.
 /// ref: docs/tasks.md "Manager"
-pub fn owner_skills() -> Listing {
+pub fn owner_skills(project: &Path) -> Listing {
     let mut found = Vec::new();
     let mut skipped = 0;
-    if let Some(home) = claude_home() {
+    if let Some(home) = claude_home(project) {
         scan_skills(&home, "", Source::User, &mut found, &mut skipped);
     }
     listing(true, found, skipped)
@@ -164,8 +164,15 @@ fn listing(listed: bool, found: Vec<(String, String, Source)>, skipped: usize) -
     listing
 }
 
-/// `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
-fn claude_home() -> Option<PathBuf> {
+/// The config root of `project`'s profile, else `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
+/// None when the profile's folder is missing or the config does not parse: another
+/// account's skills are never listed. ref: README "Profiles"
+fn claude_home(project: &Path) -> Option<PathBuf> {
+    match crate::site::global_config()?.claude_config_dir(project) {
+        Ok(Some(root)) => return Some(root),
+        Ok(None) => {}
+        Err(_) => return None,
+    }
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)

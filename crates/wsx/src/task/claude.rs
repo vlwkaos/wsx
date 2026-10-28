@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
+use wsx_core::config::global::GlobalConfig;
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::TaskWorkflow;
 use wsx_core::task::view::clip;
@@ -109,14 +110,30 @@ pub struct Launch {
 const SKILLS_PLUGIN_DIR: &str = "skills-plugin";
 pub(super) const SKILLS_PLUGIN_NAME: &str = "owner";
 
+/// The agent account of the project at `project`: its profile's `CLAUDE_CONFIG_DIR`, None
+/// for the host's own. A config wsx cannot read stops the start: a guess could pick the
+/// wrong account. ref: README "Profiles"
+pub(super) fn config_root(project: &Path) -> Result<Option<PathBuf>> {
+    let (config, warning) = GlobalConfig::load()?;
+    if let Some(warning) = warning {
+        anyhow::bail!("wsx config: {warning}");
+    }
+    config.claude_config_dir(project)
+}
+
 /// An agent runs with project and local settings only, which load no user skill: a plugin
-/// in its folder links the owner's skills folder, `$CLAUDE_CONFIG_DIR/skills` or
-/// `~/.claude/skills`. None when the owner has none. ref: docs/tasks.md "Manager", "Workflow"
-pub(super) fn skills_plugin(folder: &Path) -> Result<Option<PathBuf>> {
+/// in its folder links the owner's skills folder, `<config root>/skills`,
+/// `$CLAUDE_CONFIG_DIR/skills` or `~/.claude/skills`. None when the owner has none.
+/// ref: docs/tasks.md "Manager", "Workflow"
+pub(super) fn skills_plugin(folder: &Path, root: Option<&Path>) -> Result<Option<PathBuf>> {
     use std::os::unix::fs::{symlink, DirBuilderExt};
-    let Some(skills) = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    let Some(skills) = root
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            std::env::var_os("CLAUDE_CONFIG_DIR")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
         .or_else(|| dirs::home_dir().map(|home| home.join(".claude")))
         .map(|root| root.join("skills"))
         .filter(|skills| skills.is_dir())
@@ -172,8 +189,9 @@ impl Launch {
     /// `folder`: the task's folder, where the owner's skills plugin goes (`tasks.skills`).
     pub fn worker(record: &TaskRecord, broker: &Path, folder: &Path) -> Result<Self> {
         let settings = load_task_config(&record.project_path).map_err(anyhow::Error::msg)?;
+        let root = config_root(&record.project_path)?;
         let skills = match settings.owner_skills {
-            true => skills_plugin(folder)?,
+            true => skills_plugin(folder, root.as_deref())?,
             false => None,
         };
         let boundary = Boundary::worker(record, folder)?;
@@ -189,12 +207,18 @@ impl Launch {
                 super::broker::BROKER_ENV.into(),
                 broker.as_os_str().to_owned(),
             )])
+            .chain(account_env(root))
             .collect();
         launch.path_prefix = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf));
         Ok(launch)
     }
+}
+
+/// `CLAUDE_CONFIG_DIR` over the host's own, when the project's profile sets one.
+pub(super) fn account_env(root: Option<PathBuf>) -> Option<(String, std::ffi::OsString)> {
+    root.map(|root| ("CLAUDE_CONFIG_DIR".into(), root.into_os_string()))
 }
 
 /// Claude records the system prompt of a conversation's first request and reuses it on

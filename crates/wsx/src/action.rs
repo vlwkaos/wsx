@@ -33,6 +33,7 @@ pub enum Action {
     PrevSession,
     SendCtrlC,
     AssignGroup,
+    ProfileNext,
     EnterMove,
     JumpProjectDown,
     JumpProjectUp,

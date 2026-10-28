@@ -918,6 +918,7 @@ mod session_resolution_tests {
             groups: Vec::new(),
             aliases: [("feature".into(), "review".into())].into(),
             worktree_order: Vec::new(),
+            profile: None,
         });
         let requested = SessionScope {
             project: Some("api".into()),

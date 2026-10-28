@@ -644,6 +644,19 @@ pub fn create_session_launch(
         .filter(|session| session.worktree_id == worktree_id)
         .map(|session| session.label.as_str())
         .collect::<std::collections::HashSet<_>>();
+    let project = snapshot
+        .worktrees
+        .iter()
+        .find(|worktree| worktree.id == worktree_id)
+        .and_then(|worktree| {
+            snapshot
+                .projects
+                .iter()
+                .find(|project| project.id == worktree.project_id)
+        })
+        .map(|project| project.path.clone())
+        .unwrap_or_else(|| worktree_path.to_path_buf());
+    let argv = with_account(config, &project, argv)?;
     let mut label = base.clone();
     let mut suffix = 2;
     while used.contains(label.as_str()) {
@@ -664,6 +677,32 @@ pub fn create_session_launch(
         _ => bail!("wsx daemon returned an unexpected create response"),
     };
     Ok((session_id, label))
+}
+
+/// `argv` (empty: the login shell) under the agent account of `project`'s profile:
+/// `env CLAUDE_CONFIG_DIR=<root> <argv>`, so every agent started in the pane uses it and
+/// its reporter records it for a restore. Unchanged when the profile sets no folder.
+/// ref: README "Profiles", docs/agent-orchestration.md "Resumed agents"
+pub fn with_account(
+    config: &GlobalConfig,
+    project: &Path,
+    argv: Vec<String>,
+) -> Result<Vec<String>> {
+    let Some(root) = config.claude_config_dir(project)? else {
+        return Ok(argv);
+    };
+    let root = root
+        .to_str()
+        .ok_or_else(|| anyhow!("profile folder {} is not UTF-8", root.display()))?;
+    let argv = match argv.is_empty() {
+        // ^ As wsxd starts an empty argv (validate.rs).
+        true => vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())],
+        false => argv,
+    };
+    Ok(["/usr/bin/env".into(), format!("CLAUDE_CONFIG_DIR={root}")]
+        .into_iter()
+        .chain(argv)
+        .collect())
 }
 
 pub fn reorder_session(
@@ -896,6 +935,7 @@ mod tests {
                 groups: Vec::new(),
                 aliases: HashMap::new(),
                 worktree_order: Vec::new(),
+                profile: None,
             }],
             ..GlobalConfig::default()
         };
@@ -990,6 +1030,7 @@ mod tests {
                 groups: Vec::new(),
                 aliases: HashMap::new(),
                 worktree_order: vec![two.clone(), root.clone()],
+                profile: None,
             }],
             ..GlobalConfig::default()
         };
@@ -1046,6 +1087,7 @@ mod tests {
                     groups: Vec::new(),
                     aliases: HashMap::new(),
                     worktree_order: Vec::new(),
+                    profile: None,
                 })
                 .collect(),
             ..GlobalConfig::default()

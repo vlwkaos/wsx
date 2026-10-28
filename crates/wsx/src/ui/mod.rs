@@ -36,7 +36,7 @@ use crate::ui::{
     },
     search_feedback::{search_status, SearchFeedback},
     terminal_title::TerminalTitleView,
-    workspace_nav::{fit_group_strip, SidebarLayout, WORKSPACE_HEADER_TITLE},
+    workspace_nav::{fit_group_strip, header_title, SidebarLayout},
     workspace_tree::{compute_scroll, render_compact_tree, render_tree, CompactTreeView, TreeView},
 };
 use ratatui::{
@@ -103,15 +103,17 @@ fn render_workspace_header(frame: &mut Frame, area: Rect, app: &App) {
     if area.width == 0 || area.height == 0 {
         return;
     }
+    let title = header_title(app.active_profile.as_deref());
     frame.render_widget(
         Paragraph::new(Span::styled(
-            WORKSPACE_HEADER_TITLE,
+            title.as_str(),
             Style::default().fg(theme::TEXT).bold(),
         )),
         area,
     );
     let groups = app.config.ordered_group_keys();
     let strip = fit_group_strip(
+        &title,
         &groups,
         &app.active_group,
         usize::from(area.width),
@@ -1002,6 +1004,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  { / }         Switch to previous/next group",
         "  g             Assign selected project to a group",
         "  a/r/d, J/K    Add, rename, delete, reorder in Groups",
+        "  P             Next profile (with [[profiles]] in the config)",
         "",
         " Global",
         "  [ / ]         Jump to prev / next project",

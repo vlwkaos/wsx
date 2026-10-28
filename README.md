@@ -75,7 +75,7 @@ A foreground command appears as a running job without an agent name until an int
 | Worktree | `s` add session, `r` alias, `m` reorder, `d` delete |
 | Session or pane | `Enter` Terminal, `x` acknowledge or mute, `C` interrupt |
 | Pane | `|` split right, `-` split down, `d` close |
-| Groups | `T` manage, `{`/`}` switch, `g` assign |
+| Groups | `T` manage, `{`/`}` switch, `g` assign, `P` next profile ([Profiles](#profiles)) |
 | Global | `/` search, `,` settings, `R` refresh, `?` help, `q` quit TUI, `Q` stop wsxd and quit |
 
 Terminal mode uses the configured prefix, `Ctrl+A` by default. Follow it with `h/l` for the previous/next session in the current project in Workspace order. Left/Right, `k/j` and Up/Down remain aliases. Other prefixed commands are `{`/`}` for the previous or next group, `i/I` for idle, `a/A` for active, `n/N` for attention, `B` to toggle the desktop sidebar, `W` for Workspace, or `Q` to quit only the TUI. While wsx waits for the next key after the prefix, it can temporarily show the expanded sidebar without leaving Terminal mode. Attention navigation defaults to Blocked sessions before other attention states and can restore Workspace order in Global Settings. Group navigation keeps Workspace order, selecting the first session needing attention and then the first idle agent session; if neither exists, the current terminal stays active. `Ctrl+A Ctrl+A` sends a literal prefix. The title previews the same order with the current session highlighted, worktree attribution and hidden-session counts. Bare keys remain terminal input. An explicitly configured `h` or `l` escape suffix takes priority over navigation.
@@ -101,6 +101,27 @@ terminal_title_position = "bottom"
 port_visibility = "non_agentic"
 attention_priority = "blocked_first"
 ```
+
+### Profiles
+
+A profile owns projects and, through them, their manager, roles and tasks. It chooses the agents' Claude account and is a web site's grant ([web client](docs/web-client.md) "Site file"). Groups stay filters inside the active profile.
+
+```toml
+[[profiles]]
+name = "work"
+claude_config_dir = "~/.claude-work"   # optional; absolute or ~/; absent keeps wsxd's environment
+
+[[projects]]
+name = "api"
+path = "/abs/api"
+profile = "work"                       # absent: the default profile
+```
+
+With no `[[profiles]]` there is one implicit `default` profile that holds every project and uses wsxd's environment; wsx rewrites no file. A project names exactly one profile. An unknown profile, a name declared twice or a relative `claude_config_dir` makes the file invalid, and wsx names the error. A `claude_config_dir` that is missing stops each agent start in that profile with that reason; no agent falls back to another account.
+
+The account is the agent's `CLAUDE_CONFIG_DIR`. Task workers, the manager and roles get it in the environment their host builds ([tasks](docs/tasks.md) "Permissions"), and their `owner` skills come from `<root>/skills`. A session or split pane started from the TUI, `wsx session create`, `wsx task hand` or a web site runs its shell or agent as `env CLAUDE_CONFIG_DIR=<root> ...`, so an agent typed in it uses the account and a restore resumes it there. A project that moves to another profile keeps its open tasks; their next turns use the new root.
+
+The Workspace header shows the active profile (`work ▾`) when the config has `[[profiles]]`. `P` or a click on it switches to the next profile. The choice is kept beside the active group in the cache file `group-selection-v1.toml`.
 
 With `wake_mode` enabled on macOS, generation-authorized Working reports keep a bounded idle-sleep assertion active. Claude starts an asynchronous heartbeat for each prompt so a long streamed response remains protected beyond the base 30-minute lease. The heartbeat is bound to the exact prompt and runtime generation and renews every 5 seconds; completion, blocking, errors, detachment, runtime replacement, a later prompt, a closed pane or a stopped wsxd ends it within seconds.
 

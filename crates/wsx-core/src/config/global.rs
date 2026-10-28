@@ -224,6 +224,9 @@ pub(crate) fn normalize_project_path(path: &Path) -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GlobalConfig {
     pub groups: Vec<String>,
+    /// Empty: one implicit `default` profile holds every project. ref: README "Profiles"
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<ProfileEntry>,
     #[serde(default)]
     pub projects: Vec<ProjectEntry>,
     #[serde(default = "default_exclude_worktree_paths")]
@@ -256,6 +259,7 @@ impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             groups: vec![],
+            profiles: vec![],
             projects: vec![],
             exclude_worktree_paths: default_exclude_worktree_paths(),
             terminal_escape_chord: default_terminal_escape_chord(),
@@ -282,6 +286,22 @@ pub struct ProjectEntry {
     pub aliases: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub worktree_order: Vec<PathBuf>,
+    /// None: the `default` profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+/// The profile a project without `profile` belongs to.
+pub const DEFAULT_PROFILE: &str = "default";
+
+/// A named owner of projects: their agent account and a web site's grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileEntry {
+    pub name: String,
+    /// The agents' `CLAUDE_CONFIG_DIR`; None keeps wsxd's environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_config_dir: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -308,6 +328,8 @@ struct GlobalConfigWire {
     group: Option<String>,
     #[serde(default)]
     tabs: Option<StringList>,
+    #[serde(default)]
+    profiles: Vec<ProfileEntry>,
     #[serde(default)]
     projects: Vec<ProjectEntryWire>,
     #[serde(default = "default_exclude_worktree_paths")]
@@ -352,6 +374,56 @@ struct ProjectEntryWire {
     aliases: HashMap<String, String>,
     #[serde(default)]
     worktree_order: Vec<PathBuf>,
+    #[serde(default)]
+    profile: Option<String>,
+}
+
+/// `~/` expands to the home folder; any other relative path is refused.
+fn profile_dir(name: &str, dir: &Path) -> std::result::Result<PathBuf, String> {
+    let dir = match dir.strip_prefix("~") {
+        Ok(rest) => dirs::home_dir()
+            .ok_or_else(|| format!("profile {name}: no home folder for {}", dir.display()))?
+            .join(rest),
+        Err(_) => dir.to_path_buf(),
+    };
+    if !dir.is_absolute() {
+        return Err(format!(
+            "profile {name}: claude_config_dir must be absolute or start with ~/, not {}",
+            dir.display()
+        ));
+    }
+    Ok(dir)
+}
+
+fn validate_profiles(
+    profiles: Vec<ProfileEntry>,
+    projects: &[ProjectEntry],
+) -> std::result::Result<Vec<ProfileEntry>, String> {
+    let mut valid: Vec<ProfileEntry> = Vec::with_capacity(profiles.len());
+    for profile in profiles {
+        if profile.name.trim().is_empty() || profile.name.trim() != profile.name {
+            return Err(format!("profile name {:?} must be a word", profile.name));
+        }
+        if valid.iter().any(|seen| seen.name == profile.name) {
+            return Err(format!("profile {} is declared twice", profile.name));
+        }
+        if let Some(dir) = &profile.claude_config_dir {
+            profile_dir(&profile.name, dir)?;
+        }
+        valid.push(profile);
+    }
+    for project in projects {
+        let Some(name) = &project.profile else {
+            continue;
+        };
+        if !(valid.iter().any(|profile| &profile.name == name) || name == DEFAULT_PROFILE) {
+            return Err(format!(
+                "project {} names profile {name}, which no [[profiles]] declares",
+                project.name
+            ));
+        }
+    }
+    Ok(valid)
 }
 
 fn append_unique(target: &mut Vec<String>, values: impl IntoIterator<Item = String>) {
@@ -397,8 +469,10 @@ impl<'de> Deserialize<'de> for GlobalConfig {
                 groups: project_groups,
                 aliases: project.aliases,
                 worktree_order: project.worktree_order,
+                profile: project.profile,
             });
         }
+        let profiles = validate_profiles(wire.profiles, &projects).map_err(D::Error::custom)?;
 
         if wire.notification_timeout_seconds == 0 {
             return Err(D::Error::custom(
@@ -421,6 +495,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
         .map_err(D::Error::custom)?;
         let mut config = Self {
             groups,
+            profiles,
             projects,
             exclude_worktree_paths: wire.exclude_worktree_paths,
             terminal_escape_chord: wire.terminal_escape_chord,
@@ -661,7 +736,59 @@ impl GlobalConfig {
             groups: Vec::new(),
             aliases: Default::default(),
             worktree_order: Vec::new(),
+            profile: None,
         });
+    }
+
+    /// The profile names, declared order; `default` comes first when a project uses it.
+    pub fn profile_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        let declared = |name: &str| self.profiles.iter().any(|profile| profile.name == name);
+        if !declared(DEFAULT_PROFILE)
+            && self.projects.iter().any(|project| {
+                project.profile.as_deref().unwrap_or(DEFAULT_PROFILE) == DEFAULT_PROFILE
+            })
+        {
+            names.push(DEFAULT_PROFILE.to_owned());
+        }
+        names.extend(self.profiles.iter().map(|profile| profile.name.clone()));
+        names
+    }
+
+    pub fn profile_exists(&self, name: &str) -> bool {
+        name == DEFAULT_PROFILE || self.profiles.iter().any(|profile| profile.name == name)
+    }
+
+    /// The profile of the project at `path`; an unregistered path is in `default`.
+    pub fn project_profile(&self, path: &Path) -> &str {
+        let path = normalize_project_path(path);
+        self.projects
+            .iter()
+            .find(|entry| entry.path == path)
+            .and_then(|entry| entry.profile.as_deref())
+            .unwrap_or(DEFAULT_PROFILE)
+    }
+
+    /// The `CLAUDE_CONFIG_DIR` of the project's profile; None keeps the caller's environment.
+    /// A configured folder that is missing is an error, never a fallback to another account.
+    /// ref: README "Profiles"
+    pub fn claude_config_dir(&self, project: &Path) -> Result<Option<PathBuf>> {
+        let name = self.project_profile(project);
+        let Some(dir) = self
+            .profiles
+            .iter()
+            .find(|profile| profile.name == name)
+            .and_then(|profile| profile.claude_config_dir.as_deref())
+        else {
+            return Ok(None);
+        };
+        let dir = profile_dir(name, dir).map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            dir.is_dir(),
+            "profile {name}: claude_config_dir {} is missing",
+            dir.display()
+        );
+        Ok(Some(dir))
     }
 
     pub(crate) fn remove_project(&mut self, path: &PathBuf) {

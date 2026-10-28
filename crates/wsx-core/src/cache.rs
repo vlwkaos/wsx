@@ -298,38 +298,40 @@ fn legacy_cache_path() -> anyhow::Result<PathBuf> {
     cache_file("workspace-v2.toml")
 }
 
-#[derive(Serialize, Deserialize)]
-struct GroupSelection {
-    selected: GroupKey,
+/// The TUI's active group and, beside it, its active profile (README "Profiles").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupSelection {
+    pub selected: GroupKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 fn group_selection_path() -> anyhow::Result<PathBuf> {
     cache_file("group-selection-v1.toml")
 }
 
-pub fn load_group_selection() -> anyhow::Result<Option<GroupKey>> {
+pub fn load_group_selection() -> anyhow::Result<Option<GroupSelection>> {
     load_group_selection_from(&group_selection_path()?)
 }
 
-fn load_group_selection_from(path: &std::path::Path) -> anyhow::Result<Option<GroupKey>> {
+fn load_group_selection_from(path: &std::path::Path) -> anyhow::Result<Option<GroupSelection>> {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    Ok(toml::from_str::<GroupSelection>(&content)
-        .ok()
-        .map(|selection| selection.selected))
+    Ok(toml::from_str::<GroupSelection>(&content).ok())
 }
 
-pub fn save_group_selection(selected: &GroupKey) -> anyhow::Result<()> {
-    save_group_selection_to(&group_selection_path()?, selected)
+pub fn save_group_selection(selection: &GroupSelection) -> anyhow::Result<()> {
+    save_group_selection_to(&group_selection_path()?, selection)
 }
 
-fn save_group_selection_to(path: &std::path::Path, selected: &GroupKey) -> anyhow::Result<()> {
-    let text = toml::to_string(&GroupSelection {
-        selected: selected.clone(),
-    })?;
+fn save_group_selection_to(
+    path: &std::path::Path,
+    selection: &GroupSelection,
+) -> anyhow::Result<()> {
+    let text = toml::to_string(selection)?;
     atomic_write_private(path, text.as_bytes(), true)?;
     Ok(())
 }
@@ -1131,11 +1133,12 @@ pane_id = "pane-1"
         let path = directory.join("group-selection-v1.toml");
 
         assert_eq!(load_group_selection_from(&path).unwrap(), None);
-        save_group_selection_to(&path, &GroupKey::Named("work".into())).unwrap();
-        assert_eq!(
-            load_group_selection_from(&path).unwrap(),
-            Some(GroupKey::Named("work".into()))
-        );
+        let selection = GroupSelection {
+            selected: GroupKey::Named("work".into()),
+            profile: None,
+        };
+        save_group_selection_to(&path, &selection).unwrap();
+        assert_eq!(load_group_selection_from(&path).unwrap(), Some(selection));
         std::fs::write(&path, "selected = [\n").unwrap();
         assert_eq!(load_group_selection_from(&path).unwrap(), None);
         std::fs::remove_dir_all(directory).unwrap();

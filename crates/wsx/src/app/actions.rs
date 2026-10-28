@@ -452,7 +452,9 @@ impl App {
                 return Ok(());
             }
         };
-        let session = &self.workspace.projects[pi].worktrees[wi].sessions[si];
+        let project = &self.workspace.projects[pi];
+        let command = wsx_core::ops::with_account(&self.config, &project.path, Vec::new())?;
+        let session = &project.worktrees[wi].sessions[si];
         let rows = self.terminal_area.height.max(1);
         let cols = self.terminal_area.width.max(1);
         match self.runtime_client.call(&runtime::Request::PaneSplit {
@@ -460,7 +462,7 @@ impl App {
             target,
             axis,
             label: format!("terminal-{}", session.panes.len() + 1),
-            command: Vec::new(),
+            command,
             initial_input: None,
             rows,
             cols,

@@ -237,7 +237,7 @@ fn make_test_app(
     let active_group = active_group
         .map(GroupKey::Named)
         .unwrap_or(GroupKey::Ungrouped);
-    let visible_projects = compute_visible_projects(&config, &workspace, Some(&active_group));
+    let visible_projects = compute_visible_projects(&config, &workspace, Some(&active_group), None);
     let group_header_scroll = config
         .ordered_group_keys()
         .iter()
@@ -270,6 +270,7 @@ fn make_test_app(
         mode: Mode::Workspace,
         config,
         active_group,
+        active_profile: None,
         group_header_scroll,
         group_header_area: Rect::default(),
         visible_projects,
@@ -463,6 +464,7 @@ fn make_project_entry(name: &str, group: Option<&str>) -> wsx_core::config::glob
         groups: group.into_iter().map(str::to_string).collect(),
         aliases: Default::default(),
         worktree_order: Vec::new(),
+        profile: None,
     }
 }
 
@@ -562,7 +564,7 @@ fn default_ungrouped_filter_keeps_only_projects_without_memberships() {
     let active = GroupKey::Ungrouped;
 
     assert_eq!(
-        compute_visible_projects(&config, &workspace, Some(&active)),
+        compute_visible_projects(&config, &workspace, Some(&active), None),
         HashSet::from([1])
     );
 }
@@ -2634,6 +2636,7 @@ fn global_header_spans_both_modes_without_workspace_spacer() {
             groups: vec!["work".into()],
             aliases: HashMap::new(),
             worktree_order: Vec::new(),
+            profile: None,
         }],
         ..GlobalConfig::default()
     };
@@ -2669,6 +2672,7 @@ fn global_header_spans_both_modes_without_workspace_spacer() {
         "{groups:?}"
     );
     let strip = crate::ui::workspace_nav::fit_group_strip(
+        crate::ui::workspace_nav::WORKSPACE_HEADER_TITLE,
         &app.config.ordered_group_keys(),
         &app.active_group,
         100,
@@ -3360,6 +3364,7 @@ fn workspace_header_scrolls_to_keep_the_active_group_visible() {
             groups: vec!["group-9".into()],
             aliases: HashMap::new(),
             worktree_order: Vec::new(),
+            profile: None,
         }],
         ..GlobalConfig::default()
     };
@@ -5009,6 +5014,7 @@ fn worktree_move_reorders_siblings_and_records_stable_paths() {
             groups: Vec::new(),
             aliases: HashMap::new(),
             worktree_order: Vec::new(),
+            profile: None,
         }],
         ..GlobalConfig::default()
     };

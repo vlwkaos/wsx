@@ -458,6 +458,7 @@ impl App {
             Action::PrevIdle => self.action_move_idle(-1),
             Action::SendCtrlC => self.action_send_ctrl_c()?,
             Action::AssignGroup => self.action_assign_group(),
+            Action::ProfileNext => self.action_profile_next(),
             Action::EnterMove => self.action_enter_move(),
             Action::JumpProjectDown => self.jump_project(1),
             Action::JumpProjectUp => self.jump_project(-1),
@@ -498,12 +499,18 @@ impl App {
         let pos = Position { x: col, y: row };
         if matches!(self.mode, Mode::Workspace) && self.group_header_area.contains(pos) {
             let strip = crate::ui::workspace_nav::fit_group_strip(
+                &crate::ui::workspace_nav::header_title(self.active_profile.as_deref()),
                 &self.config.ordered_group_keys(),
                 &self.active_group,
                 usize::from(self.group_header_area.width),
                 self.group_header_scroll,
             );
             match strip.target_at(usize::from(col - self.group_header_area.x)) {
+                Some(crate::ui::workspace_nav::GroupStripTarget::Title) => {
+                    if self.active_profile.is_some() {
+                        self.action_profile_next()
+                    }
+                }
                 Some(crate::ui::workspace_nav::GroupStripTarget::Group(key)) => {
                     self.toggle_active_group(key)
                 }
