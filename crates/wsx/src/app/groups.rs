@@ -7,7 +7,11 @@ impl App {
         if !self.persist_group_selection {
             return;
         }
-        if let Err(error) = wsx_core::cache::save_group_selection(&self.active_group) {
+        let selection = wsx_core::cache::GroupSelection {
+            selected: self.active_group.clone(),
+            profile: self.active_profile.clone(),
+        };
+        if let Err(error) = wsx_core::cache::save_group_selection(&selection) {
             self.set_warning(format!("Could not save group selection: {error}"));
         }
     }
@@ -22,6 +26,25 @@ impl App {
             return;
         }
         self.active_group = key;
+        self.persist_active_group();
+        self.recompute_visible();
+        self.update_scroll();
+        self.mark_dirty();
+    }
+
+    /// `P`: the next profile in config order. ref: README "Profiles"
+    pub(super) fn action_profile_next(&mut self) {
+        let names = self.config.profile_names();
+        let Some(current) = &self.active_profile else {
+            self.set_status("No profiles: add [[profiles]] to the config");
+            return;
+        };
+        let index = names.iter().position(|name| name == current).unwrap_or(0);
+        let next = names[(index + 1) % names.len()].clone();
+        if &next == current {
+            return;
+        }
+        self.active_profile = Some(next);
         self.persist_active_group();
         self.recompute_visible();
         self.update_scroll();

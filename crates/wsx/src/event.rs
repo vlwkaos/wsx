@@ -521,6 +521,9 @@ fn translate_key(key: KeyEvent) -> Action {
             Action::SendCtrlC
         }
         (KeyModifiers::NONE, KeyCode::Char('g')) => Action::AssignGroup,
+        (KeyModifiers::SHIFT, KeyCode::Char('P')) | (KeyModifiers::NONE, KeyCode::Char('P')) => {
+            Action::ProfileNext
+        }
         (KeyModifiers::NONE, KeyCode::Char('/')) => Action::SearchStart,
         (KeyModifiers::NONE, KeyCode::Char('t')) => Action::Tasks,
         (KeyModifiers::SHIFT, KeyCode::Char('{')) | (KeyModifiers::NONE, KeyCode::Char('{')) => {

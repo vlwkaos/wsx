@@ -227,7 +227,8 @@ def transcript(session, text):
 def interactive(options):
     resumed = options.get('--resume')
     session = 'fork-%d' % os.getpid() if '--fork-session' in options else resumed
-    trace({'interactive': True, 'argv': sys.argv[1:], 'resume': resumed, 'session': session, 'cwd': os.getcwd()})
+    trace({'interactive': True, 'argv': sys.argv[1:], 'resume': resumed, 'session': session, 'cwd': os.getcwd(),
+           'claude_config_dir': os.environ.get('CLAUDE_CONFIG_DIR')})
     if session:
         transcript(session, 'the owner opened the conversation')
     signal.signal(signal.SIGHUP, lambda *_: sys.exit(0))
@@ -253,6 +254,7 @@ def main():
            'task_probe': os.environ.get('TASK_PROBE'),
            'manager': project is not None, 'actor': os.environ.get('WSX_TASK_ACTOR'),
            'plugin_dir': options.get('--plugin-dir'),
+           'claude_config_dir': os.environ.get('CLAUDE_CONFIG_DIR'),
            'cwd': os.getcwd()})
     signal.signal(signal.SIGINT, lambda *_: (trace({'interrupted': True}), sys.exit(130)))
     emit({'type': 'system', 'subtype': 'init', 'session_id': session})

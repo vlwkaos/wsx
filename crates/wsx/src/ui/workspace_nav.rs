@@ -8,6 +8,15 @@ use super::theme;
 
 pub const WORKSPACE_HEADER_TITLE: &str = " workspace ";
 
+/// The header's title: the active profile when the config has `[[profiles]]`, which a click
+/// or `P` switches. ref: README "Profiles"
+pub fn header_title(profile: Option<&str>) -> String {
+    match profile {
+        Some(profile) => format!(" {profile} ▾ "),
+        None => WORKSPACE_HEADER_TITLE.into(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SidebarLayout {
     pub header: Rect,
@@ -84,6 +93,7 @@ pub struct GroupChip {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupStrip {
+    pub title_width: usize,
     pub chips: Vec<GroupChip>,
     pub scroll_start: usize,
     pub left_cells: Option<std::ops::Range<usize>>,
@@ -92,6 +102,7 @@ pub struct GroupStrip {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GroupStripTarget {
+    Title,
     Group(GroupKey),
     ScrollLeft,
     ScrollRight,
@@ -126,17 +137,17 @@ fn truncate_label(label: &str, max_chip_width: usize) -> String {
 /// Project one horizontally scrollable, whole-chip Workspace header.
 // ^ [[wsx UI Patterns]] Render and mouse hit testing consume this exact cell projection.
 pub fn fit_group_strip(
+    title: &str,
     groups: &[GroupKey],
     active_group: &GroupKey,
     available_width: usize,
     requested_start: usize,
 ) -> GroupStrip {
-    let title_width = Line::from(WORKSPACE_HEADER_TITLE)
-        .width()
-        .min(available_width);
+    let title_width = Line::from(title).width().min(available_width);
     let mut cursor = title_width;
     if groups.is_empty() || cursor >= available_width {
         return GroupStrip {
+            title_width,
             chips: Vec::new(),
             scroll_start: 0,
             left_cells: None,
@@ -207,6 +218,7 @@ pub fn fit_group_strip(
         arrow..arrow + 1
     });
     GroupStrip {
+        title_width,
         chips,
         scroll_start: start,
         left_cells,
@@ -216,6 +228,9 @@ pub fn fit_group_strip(
 
 impl GroupStrip {
     pub fn target_at(&self, cell: usize) -> Option<GroupStripTarget> {
+        if cell < self.title_width {
+            return Some(GroupStripTarget::Title);
+        }
         self.chips
             .iter()
             .find(|chip| chip.cells.contains(&cell))
@@ -319,7 +334,13 @@ mod tests {
 
     #[test]
     fn wide_projection_shows_ungrouped_and_named_groups() {
-        let strip = fit_group_strip(&groups(), &GroupKey::Ungrouped, 100, 0);
+        let strip = fit_group_strip(
+            WORKSPACE_HEADER_TITLE,
+            &groups(),
+            &GroupKey::Ungrouped,
+            100,
+            0,
+        );
         assert_eq!(strip.chips.len(), 3);
         assert!(strip.chips[0].active);
         assert!(strip.left_cells.is_none());
@@ -328,7 +349,13 @@ mod tests {
 
     #[test]
     fn narrow_projection_scrolls_by_chip_with_exact_boundaries() {
-        let strip = fit_group_strip(&groups(), &GroupKey::Ungrouped, 28, 0);
+        let strip = fit_group_strip(
+            WORKSPACE_HEADER_TITLE,
+            &groups(),
+            &GroupKey::Ungrouped,
+            28,
+            0,
+        );
         let right = strip.right_cells.clone().unwrap();
         assert_eq!(
             strip.target_at(right.start),
@@ -343,7 +370,13 @@ mod tests {
             strip.target_at(first.cells.end),
             Some(GroupStripTarget::Group(first.key.clone()))
         );
-        let shifted = fit_group_strip(&groups(), &GroupKey::Named("work".into()), 28, 2);
+        let shifted = fit_group_strip(
+            WORKSPACE_HEADER_TITLE,
+            &groups(),
+            &GroupKey::Named("work".into()),
+            28,
+            2,
+        );
         let left = shifted.left_cells.clone().unwrap();
         assert_eq!(
             shifted.target_at(left.start),
@@ -355,12 +388,14 @@ mod tests {
     #[test]
     fn unicode_labels_use_display_cells_and_tiny_widths_do_not_panic() {
         let unicode = vec![GroupKey::Named("개인-project".into())];
-        let strip = fit_group_strip(&unicode, &unicode[0], 18, 0);
+        let strip = fit_group_strip(WORKSPACE_HEADER_TITLE, &unicode, &unicode[0], 18, 0);
         assert_eq!(strip.chips.len(), 1);
         assert!(strip.chips[0].cells.end <= 18);
-        assert!(fit_group_strip(&unicode, &GroupKey::Ungrouped, 0, 0)
-            .chips
-            .is_empty());
+        assert!(
+            fit_group_strip(WORKSPACE_HEADER_TITLE, &unicode, &GroupKey::Ungrouped, 0, 0)
+                .chips
+                .is_empty()
+        );
     }
 
     #[test]

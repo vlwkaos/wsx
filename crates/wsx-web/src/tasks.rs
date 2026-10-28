@@ -802,7 +802,7 @@ pub fn since(scope: &Scope, after: u64) -> Value {
 /// What the manager composer lists: the owner's skills (`/`) and the other projects (`@`)
 /// with their manager's name when one is set. ref: docs/web-client-tasks.md "Project screen"
 pub fn mentions(app: &App, scope: &Scope) -> Outcome<Value> {
-    let skills = crate::commands::owner_skills();
+    let skills = crate::commands::owner_skills(&scope.path);
     let projects: Vec<Value> = scopes(&chat::snapshot(&app.client)?, &app.site.access)
         .into_iter()
         .filter(|other| other.project != scope.project)

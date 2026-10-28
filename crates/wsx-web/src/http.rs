@@ -769,6 +769,12 @@ async fn session_start(
                 "too many new sessions; wait a moment",
             ));
         }
+        // ^ The agent runs under the account of the project's profile (README "Profiles").
+        let config = crate::site::global_config()
+            .ok_or_else(|| Fault::new(409, "config_invalid", "the wsx config does not parse"))?;
+        let command =
+            wsx_core::ops::with_account(&config, &project.path, app.site.agent_command.clone())
+                .map_err(|error| Fault::new(409, "profile_unavailable", format!("{error:#}")))?;
         let label: String = input
             .label
             .chars()
@@ -784,7 +790,7 @@ async fn session_start(
                 } else {
                     label.trim().into()
                 },
-                command: app.site.agent_command.clone(),
+                command,
                 initial_input: None,
                 rows: 40,
                 cols: 120,

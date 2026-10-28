@@ -9,6 +9,7 @@ use std::{
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
+use wsx_core::config::global::GlobalConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -143,6 +144,13 @@ struct AccessFile {
 enum ProjectsFile {
     All(String),
     Paths(Vec<PathBuf>),
+    Profile(ProfileFile),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileFile {
+    profile: String,
 }
 
 /// The projects a site may reach. Listed paths are canonical directories.
@@ -151,15 +159,54 @@ pub enum Access {
     /// Every project wsxd manages, now and later.
     All,
     Projects(Vec<PathBuf>),
+    /// The projects of one profile in config-v2.toml, now and later.
+    Profile(String),
+}
+
+/// What a site reaches at one moment: a profile grant reads config-v2.toml for each call,
+/// so a project that joins the profile is reachable at once. ref: docs/web-client.md "Site file"
+pub enum Grant<'a> {
+    All,
+    Projects(&'a [PathBuf]),
+    /// None: wsx cannot read its config, so the profile reaches nothing.
+    Profile(&'a str, Option<GlobalConfig>),
 }
 
 impl Access {
+    pub fn grant(&self) -> Grant<'_> {
+        match self {
+            Self::All => Grant::All,
+            Self::Projects(paths) => Grant::Projects(paths),
+            Self::Profile(name) => Grant::Profile(name, global_config()),
+        }
+    }
+}
+
+impl Grant<'_> {
     pub fn grants(&self, project: &Path) -> bool {
         match self {
             Self::All => true,
             Self::Projects(paths) => {
                 fs::canonicalize(project).is_ok_and(|path| paths.contains(&path))
             }
+            Self::Profile(name, config) => config
+                .as_ref()
+                .is_some_and(|config| config.project_profile(project) == *name),
+        }
+    }
+}
+
+/// config-v2.toml as wsx reads it, or None with the reason on stderr when it does not parse.
+pub fn global_config() -> Option<GlobalConfig> {
+    match GlobalConfig::load() {
+        Ok((config, None)) => Some(config),
+        Ok((_, Some(warning))) => {
+            eprintln!("wsx web: {warning}");
+            None
+        }
+        Err(error) => {
+            eprintln!("wsx web: cannot read the wsx config: {error:#}");
+            None
         }
     }
 }
@@ -371,7 +418,7 @@ impl Site {
             ProjectsFile::All(word) => {
                 ensure!(
                     word == "all",
-                    "access.projects must be \"all\" or a list of paths"
+                    "access.projects must be \"all\", a list of paths or {{ profile = \"<name>\" }}"
                 );
                 Access::All
             }
@@ -398,6 +445,16 @@ impl Site {
                 }
                 ensure!(unique(&projects), "access.projects contains a duplicate");
                 Access::Projects(projects)
+            }
+            ProjectsFile::Profile(ProfileFile { profile }) => {
+                let config = global_config().context(
+                    "access.projects names a profile, but the wsx config does not parse",
+                )?;
+                ensure!(
+                    config.profile_exists(&profile),
+                    "access.projects: profile {profile} is not in the wsx config"
+                );
+                Access::Profile(profile)
             }
         };
         let media = file.media;

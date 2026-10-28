@@ -105,10 +105,11 @@ pub struct Target<'a> {
 /// The projects of wsxd that the site may reach. This and `targets` are the only
 /// place that maps daemon state to the grant; nothing else may widen it.
 pub fn projects<'a>(snapshot: &'a Snapshot, access: &Access) -> Vec<&'a Project> {
+    let grant = access.grant();
     snapshot
         .projects
         .iter()
-        .filter(|project| access.grants(&project.path))
+        .filter(|project| grant.grants(&project.path))
         .collect()
 }
 
@@ -921,7 +922,8 @@ impl Chat {
         let command = shell
             || attachments.is_empty()
                 && prompt.starts_with('/')
-                && crate::commands::list(&agent.provider, target.worktree).has_command(&prompt);
+                && crate::commands::list(&agent.provider, target.worktree, &target.project.path)
+                    .has_command(&prompt);
         if command && !snapshot.capabilities.exchange_command
             || shell && !snapshot.capabilities.exchange_shell
         {
@@ -1018,7 +1020,7 @@ impl Chat {
             .agent
             .as_ref()
             .map_or("", |agent| agent.provider.as_str());
-        let listing = crate::commands::list(provider, target.worktree);
+        let listing = crate::commands::list(provider, target.worktree, &target.project.path);
         Ok(json!({
             "provider": provider,
             "listed": listing.listed,

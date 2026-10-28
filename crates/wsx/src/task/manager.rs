@@ -7,7 +7,8 @@
 
 use super::boundary::Boundary;
 use super::claude::{
-    new_session_id, skills_plugin, AgentLine, ClaudeAgent, Launch, TurnResult, SKILLS_PLUGIN_NAME,
+    account_env, config_root, new_session_id, skills_plugin, AgentLine, ClaudeAgent, Launch,
+    TurnResult, SKILLS_PLUGIN_NAME,
 };
 use super::{broker, hosting, limit};
 use anyhow::{Context, Result};
@@ -1451,7 +1452,8 @@ impl Manager {
         let broker_socket = self.dir.broker_path();
         let page = store::ensure_page(&self.dir.project_id, &self.project)?;
         let boundary = Boundary::manager(&self.main, &self.dir.path, &page)?;
-        let skills = skills_plugin(&self.dir.path)?;
+        let root = config_root(&self.main)?;
+        let skills = skills_plugin(&self.dir.path, root.as_deref())?;
         let workflow = load_task_config(&self.main)
             .map(|settings| settings.workflow)
             .unwrap_or_default();
@@ -1469,6 +1471,7 @@ impl Manager {
             // ^ Its git reads must not take the index lock of the owner's checkout.
             ("GIT_OPTIONAL_LOCKS".into(), "0".into()),
         ];
+        launch.env.extend(account_env(root));
         launch.path_prefix = exe.parent().map(Path::to_path_buf);
         Ok(launch)
     }

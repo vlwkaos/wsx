@@ -929,7 +929,15 @@ def web_journey(args):
         bin_dir = work / 'bin'
         config = (work / 'home/Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'config/wsx')
         config.mkdir(parents=True)
-        (config / 'config-v2.toml').write_text('resume_agents_on_restore = false\n')
+        # ^ README "Profiles": project2 is in profile work, with its own agent config root.
+        (work / 'claude-work').mkdir(mode=0o700)
+        profile_root = (work / 'claude-work').resolve()
+        (profile_root / 'skills/profile-skill').mkdir(parents=True)
+        (profile_root / 'skills/profile-skill/SKILL.md').write_text('---\nname: profile-skill\ndescription: The work skill\n---\nBODY\n')
+        registry = config / 'config-v2.toml'
+        registry.write_text('resume_agents_on_restore = false\n[[profiles]]\nname = "work"\nclaude_config_dir = %s\n'
+                            '[[projects]]\nname = "project2"\npath = %s\nprofile = "work"\n'
+                            % (json.dumps(str(profile_root)), json.dumps(str((work / 'project2').resolve()))))
         path = work / 'state/wsx/wsx.sock'
         env = {'HOME': str(work / 'home'), 'XDG_CONFIG_HOME': str(work / 'config'), 'XDG_STATE_HOME': str(work / 'state'),
                'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(path), 'WSX_DAEMON_BIN': str(wsxd),
@@ -1054,7 +1062,7 @@ def web_journey(args):
 
         vapid = cli('web', 'vapid').stdout
         private_key = next(line.split('"')[1] for line in vapid.splitlines() if line.startswith('private_key'))
-        ports = {name: free_port() for name in ('owner', 'family', 'root', 'viewer', 'm2', 'bare')}
+        ports = {name: free_port() for name in ('owner', 'family', 'root', 'viewer', 'm2', 'bare', 'work')}
         service_origin = 'https://wsx-fixture.example-tailnet.ts.net'
 
         def site_file(name, text, mode=0o600):
@@ -1169,6 +1177,17 @@ projects = ["{(work / 'bare').resolve()}"]
 capabilities = ["chat_send", "session_start"]
 agent_command = ["/bin/sh"]
 '''),
+            # A profile site: the projects of profile work, now and later.
+            'work': site_file('work', f'''id = "work"
+name = "Work"
+port = {ports['work']}
+public_origin = "http://127.0.0.1:{ports['work']}"
+panels = ["chat"]
+[access]
+projects = {{ profile = "work" }}
+capabilities = ["chat_send", "session_start", "task_view"]
+agent_command = ["/bin/sh", "-c", {json.dumps('printf %s "$CLAUDE_CONFIG_DIR" > ' + str(work / 'profile-agent.txt') + '; exec sleep 600')}]
+'''),
             # Watch-only terminal: terminal_view without terminal_input.
             'viewer': site_file('viewer', f'''id = "viewer"
 name = "Viewer"
@@ -1194,7 +1213,8 @@ capabilities = ["terminal_view"]
         for label, value, expected in (('old key', None, 'unknown field'), ('a word that is not all', 'projects = "some"', 'must be "all"'),
                                        ('empty list', 'projects = []', '1-32 paths'), ('relative path', 'projects = ["project"]', 'must be absolute'),
                                        ('missing path', 'projects = ["/no/such/project"]', 'is missing'),
-                                       ('duplicate', 'projects = ["%s", "%s"]' % (project, project), 'duplicate')):
+                                       ('duplicate', 'projects = ["%s", "%s"]' % (project, project), 'duplicate'),
+                                       ('unknown profile', 'projects = { profile = "ghost" }', 'profile ghost is not in the wsx config')):
             text = owner_text.replace('[access]\n' + granted, '[project]\npath = "%s"' % project) if value is None else owner_text.replace(granted, value)
             refused = cli('web', 'serve', '--site', site_file('grant', text), expect=1)
             assert expected in refused.stderr, (label, refused.stderr)
@@ -2407,6 +2427,32 @@ capabilities = ["terminal_view"]
         assert owner.request('GET', '/assets/SymbolsNerdFontMono-3.4.0.ttf', raw=True)[2][:4] == b'\x00\x01\x00\x00'
         assert b'woff2' not in owner.request('GET', '/sw.js')[1] and b'terminal-fonts.css' in owner.request('GET', '/sw.js')[1]
         ok('watch-only terminal: host size, no resize, no input, no clipboard; projects = "all" reaches every project; terminal fonts served')
+
+        # --- A profile site (README "Profiles"): exactly profile work's projects, also one that
+        # joins it later without a restart; its agents start under the profile's config root, and
+        # the skills it lists come from that root.
+        work_site = sites['work']
+        work_site.cookie = pair(work_site, 'work')[1].split(';')[0]
+
+        def work_projects():
+            listed = Events(work_site)
+            try:
+                return sorted(p['name'] for p in listed.expect('workspace')['projects'])
+            finally:
+                listed.connection.close()
+        assert work_projects() == ['project2'], work_projects()
+        status, mentions = work_site.request('GET', '/api/tasks/%d/mentions' % projects['project2'])
+        assert status == 200 and [s['name'] for s in mentions['skills']] == ['profile-skill'], mentions
+        assert work_site.request('GET', '/api/tasks/%d/mentions' % projects['project'])[0] == 404
+        status, started = work_site.request('POST', '/api/sessions', {'project': projects['project2']})
+        assert status == 200, started
+        assert wait(lambda: (work / 'profile-agent.txt').exists() and (work / 'profile-agent.txt').read_text()) == str(profile_root)
+        session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == started['session_id'])
+        assert call('session_close', {'session_id': session['id'], 'expected_revision': session['revision']})['type'] == 'ack'
+        with registry.open('a') as file:
+            file.write('[[projects]]\nname = "project3"\npath = %s\nprofile = "work"\n' % json.dumps(str((work / 'project3').resolve())))
+        assert work_projects() == ['project2', 'project3'], work_projects()
+        ok('profile site: exactly its profile\'s projects, a project that joins later, agents and skills under its config root')
         session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == term)
         assert call('session_close', {'session_id': term, 'expected_revision': session['revision']})['type'] == 'ack'
 

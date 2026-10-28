@@ -137,6 +137,7 @@ mod tests {
                 groups: vec!["work".into()],
                 aliases: Default::default(),
                 worktree_order: Vec::new(),
+                profile: None,
             }],
             ..Default::default()
         }

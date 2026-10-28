@@ -1,6 +1,6 @@
 # Profiles and parent tasks (design)
 
-Status: parent tasks (B) and roles (C) are built ([../tasks.md](../tasks.md) "Parent tasks", "Roles"); profiles (A) are not. Roles differ here in two points: the TUI keeps `m` for the manager chat (#117), and a role lands a child into its parent. The answer:
+Status: parent tasks (B) and roles (C) are built ([../tasks.md](../tasks.md) "Parent tasks", "Roles"), and so are profiles (A) ([README](../../README.md#profiles)) without the web Home's rows headed by profile and without `CODEX_HOME`. A project that moves to another profile is not refused. Roles differ here in two points: the TUI keeps `m` for the manager chat (#117), and a role lands a child into its parent. The answer:
 
 - **Profile**: a named table in `config-v2.toml`. A project names one profile. The profile chooses the agent account and is a site's grant. The store, the managers and wsxd stay as they are.
 - **Parent task**: an ordinary held task that other tasks name as their land target (`task new --into <p>`). It owns the files and the one land into main.
@@ -15,8 +15,6 @@ Status: parent tasks (B) and roles (C) are built ([../tasks.md](../tasks.md) "Pa
 | Agent account | `SessionCreate` has no environment, so task hosts, managers and workers get wsxd's `CLAUDE_CONFIG_DIR`. A resumed agent keeps its own (`AgentSessionRef.launch`) | `crates/wsx-core/src/runtime/protocol.rs:255`, `crates/wsx/src/task/claude.rs:31`, `crates/wsx-core/src/runtime/domain.rs:183` |
 | Manager | One per project, `tasks/<project-id>/`; its host builds its agent's `launch.env` | `docs/tasks.md` "Manager", `crates/wsx/src/task/manager.rs:1271` |
 | Land target | Every task records `default_branch`. Land, rebase, revision base, close and the worker boundary read it. The fast-forward runs in the checkout that has that branch | `crates/wsx/src/task/mod.rs:894`, `host.rs:1678`, `host.rs:1930`, `mod.rs:1426`, `boundary.rs:37`, `crates/wsx-core/src/task/copy.rs:414` |
-
-`docs/web-deploy.md` "Site file" shows a `[project]` table that `site.rs` refuses. That doc is stale; fix it when `site.rs` gains the profile form.
 
 ## A. Profiles
 

@@ -30,8 +30,8 @@ public_origin = "https://family.<tailnet>.ts.net"
 panels = ["chat"]
 theme = "default"
 
-[project]
-path = "/Users/<you>/ws/<family-project>"
+[access]
+projects = { profile = "family" }        # or a list of paths ("Site file" in web-client.md)
 capabilities = ["chat_send", "agent_write", "media_upload", "media_download"]
 ```
 

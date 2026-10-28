@@ -254,9 +254,13 @@ def run(wsx, wsxd, work, owned):
     config_dir = (home / 'Library/Application Support/wsx' if sys.platform == 'darwin'
                   else work / 'c/wsx')
     config_dir.mkdir(parents=True)
-    (config_dir / 'config-v2.toml').write_text(
-        'resume_agents_on_restore = false\n[[projects]]\nname = "demo"\npath = '
-        + json.dumps(str(project)) + '\n')
+    # ^ README "Profiles": demo is in profile work, whose agents use its own config root.
+    profile_root = home / 'claude-work'
+    profile_root.mkdir()
+    registry_text = ('resume_agents_on_restore = false\n[[profiles]]\nname = "work"\n'
+                     'claude_config_dir = "~/claude-work"\n[[projects]]\nname = "demo"\npath = '
+                     + json.dumps(str(project)) + '\nprofile = "work"\n')
+    (config_dir / 'config-v2.toml').write_text(registry_text)
     fake = bin_dir / 'claude'
     # ^ A copy per run: the leftover checks then see this run's fake workers, not another run's.
     fake_script = bin_dir / 'fake-claude-stream.py'
@@ -369,6 +373,16 @@ def run(wsx, wsxd, work, owned):
         refused = cli('task', 'new', 'WORK a.txt', ok=False).stderr
         assert word in refused, refused
     (project / 'wsx.config.yml').write_text(CONFIG)
+    # ^ README "Profiles": a profile error is named, and no task starts under another account.
+    for old, bad, word in (('profile = "work"', 'profile = "ghost"', 'names profile ghost, which no [[profiles]] declares'),
+                           ('[[projects]]', '[[profiles]]\nname = "work"\n[[projects]]', 'profile work is declared twice'),
+                           ('"~/claude-work"', '"claude-work"', 'claude_config_dir must be absolute or start with ~/'),
+                           ('"~/claude-work"', '"~/claude-gone"', 'claude_config_dir %s is missing' % (home / 'claude-gone'))):
+        (config_dir / 'config-v2.toml').write_text(registry_text.replace(old, bad, 1))
+        refused = cli('task', 'new', 'WORK a.txt', ok=False).stderr
+        assert word in refused, (word, refused)
+    assert not (state / 'wsx/tasks').exists() or not list((state / 'wsx/tasks').glob('*/*/task.json'))
+    (config_dir / 'config-v2.toml').write_text(registry_text)
     assert 'invalid task number' in cli('task', 'show', '../1', ok=False).stderr
     assert 'a prompt is required' in cli('task', 'new', ok=False).stderr
     assert 'empty' in cli('task', 'new', '-', stdin='\n', ok=False).stderr
@@ -1102,8 +1116,9 @@ def run(wsx, wsxd, work, owned):
                 'rotateTokens: 100000 }\n'
               + '  skills: owner\n  workflow:\n    build: "Run the fixture rule."\n'
                 '    review: "Check the fixture rule."\n    batch: "Fold the fixture tasks."\n', 'manager config')
-    # ^ The owner's skills folder: the manager gets it as the `owner` plugin.
-    owner_skills = home / '.claude/skills'
+    # ^ The owner's skills folder: the manager gets it as the `owner` plugin. It is the one of
+    # demo's profile (README "Profiles"), not ~/.claude.
+    owner_skills = profile_root / 'skills'
     (owner_skills / 'scribe').mkdir(parents=True)
     (owner_skills / 'scribe/SKILL.md').write_text('---\nname: scribe\ndescription: fixture\n'
                                                   'allowed-tools: Write, Edit\n---\nWrite a file.\n')
@@ -1143,6 +1158,10 @@ def run(wsx, wsxd, work, owned):
     assert launch['model'] == 'fake-manager' and Path(page).read_text().startswith('# demo\n\n## Goal')
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     assert launch['git_optional_locks'] == '0', launch
+    # ^ README "Profiles": the manager and every worker so far run under demo's profile root.
+    demo_launches = [t for t in traces() if t.get('launch')]
+    assert demo_launches and all(t['claude_config_dir'] == str(profile_root) for t in demo_launches), \
+        {t['claude_config_dir'] for t in demo_launches}
     # Its rules: chat, not reports; quiet replies to events and no chores for the owner; start
     # at once; an open task before a new one; a complete prompt; a lean review without rebase
     # send-backs; one housekeeping task after a request lands; the owner's word; memory.
@@ -1863,6 +1882,8 @@ def run(wsx, wsxd, work, owned):
                 'the hand pane resumes the worker conversation')
     assert pane['argv'] == ['--resume', worker_session, '--fork-session', '--system-prompt-snapshot', 'off'], pane
     assert Path(pane['cwd']).resolve() == hand_copy.resolve(), pane
+    # ^ The owner's pane resumes the worker's conversation under the same account.
+    assert pane['claude_config_dir'] == str(profile_root), pane
 
     def hand_sessions():
         return [x for x in daemon_call('snapshot')['data']['sessions'] if x['label'] == 'task-%d-hand' % handed]
@@ -2301,7 +2322,8 @@ def run(wsx, wsxd, work, owned):
     else:
         # ^ `tasks.env` reaches the worker's launch: the wrapper runs the real claude, signed in
         # through the real home, for this task alone.
-        (bin_dir / 'claude').write_text('#!/bin/sh\nif [ -n "$REAL_CLAUDE" ]; then HOME=%s exec %s "$@"; fi\n%s'
+        # ^ The real claude signs in through the real home, not demo's fixture profile root.
+        (bin_dir / 'claude').write_text('#!/bin/sh\nif [ -n "$REAL_CLAUDE" ]; then HOME=%s exec env -u CLAUDE_CONFIG_DIR %s "$@"; fi\n%s'
                                         % (json.dumps(str(Path.home())), json.dumps(os.path.realpath(real)),
                                            fake.read_text().split('\n', 1)[1]))
         configure(LAND_CONFIG + '  env: { REAL_CLAUDE: "1" }\n', 'real claude')
@@ -2608,6 +2630,16 @@ def run(wsx, wsxd, work, owned):
     answered = wait(lambda: next((e for e in other_entries() if e['kind'] == 'reply' and received['id'] in e['to']), None),
                     'the other manager answers', 60)
     assert "--reply 'first answer' -> 0" in answered['text'] and 'waits for an answer' in answered['text'], answered
+    # ^ README "Profiles": other is in the default profile, so its manager keeps the host's account.
+    other_launch = next(t for t in traces() if t.get('launch') and Path(t['cwd']).resolve() == other.resolve())
+    assert other_launch['claude_config_dir'] is None, other_launch
+    # The TUI heads the Workspace with the active profile; P switches it, and the choice is kept
+    # beside the active group (group-selection-v1.toml) for the next start.
+    selection = (home / 'Library/Caches' if sys.platform == 'darwin' else work / 'k') / 'wsx/group-selection-v1.toml'
+    tui_screens(wsx, env, project, [(r'(?s) work ▾ (?!.*\bother\b).*\bdemo\b', b'P'), (r'(?s) default ▾ (?!.*\bdemo\b).*\bother\b', b'')])
+    assert 'profile = "default"' in selection.read_text(), selection.read_text()
+    tui_screens(wsx, env, project, [(r'(?s) default ▾ (?!.*\bdemo\b).*\bother\b', b'P'), (r'(?s) work ▾ (?!.*\bother\b).*\bdemo\b', b'')])
+    assert 'profile = "work"' in selection.read_text(), selection.read_text()
     replies = wait(lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'manager-reply:other'],
                    'reply at demo', 60)
     assert len(replies) == 1 and replies[0]['text'] == 'first answer', replies

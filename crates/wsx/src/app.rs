@@ -1004,6 +1004,8 @@ pub struct App {
     pub mode: Mode,
     pub config: GlobalConfig,
     pub active_group: GroupKey,
+    /// None without `[[profiles]]`: every project shows. ref: README "Profiles"
+    pub active_profile: Option<String>,
     pub group_header_scroll: usize,
     pub group_header_area: Rect,
     visible_projects: HashSet<usize>,
@@ -1149,8 +1151,8 @@ impl App {
             dismissed_integration_prompts,
             cached_worktree_expansion,
         ) = wsx_core::cache::apply_cache(&mut workspace)?;
-        let stored_group = match wsx_core::cache::load_group_selection() {
-            Ok(group) => group,
+        let stored = match wsx_core::cache::load_group_selection() {
+            Ok(selection) => selection,
             Err(error) => {
                 initial_notice.get_or_insert_with(|| {
                     format!("Could not read the saved group selection: {error}")
@@ -1158,15 +1160,32 @@ impl App {
                 None
             }
         };
-        let selected_group = initial_active_group(&config, stored_group.clone());
-        if stored_group.as_ref() != Some(&selected_group) {
-            if let Err(error) = wsx_core::cache::save_group_selection(&selected_group) {
+        let selection = wsx_core::cache::GroupSelection {
+            selected: initial_active_group(
+                &config,
+                stored.as_ref().map(|stored| stored.selected.clone()),
+            ),
+            profile: initial_active_profile(
+                &config,
+                stored.as_ref().and_then(|stored| stored.profile.clone()),
+            ),
+        };
+        if stored.as_ref() != Some(&selection) {
+            if let Err(error) = wsx_core::cache::save_group_selection(&selection) {
                 initial_notice
                     .get_or_insert_with(|| format!("Could not save the group selection: {error}"));
             }
         }
-        let active_group = selected_group;
-        let visible_projects = compute_visible_projects(&config, &workspace, Some(&active_group));
+        let wsx_core::cache::GroupSelection {
+            selected: active_group,
+            profile: active_profile,
+        } = selection;
+        let visible_projects = compute_visible_projects(
+            &config,
+            &workspace,
+            Some(&active_group),
+            active_profile.as_deref(),
+        );
         let group_header_scroll = config
             .ordered_group_keys()
             .iter()
@@ -1221,6 +1240,7 @@ impl App {
             mode: Mode::Workspace,
             config,
             active_group,
+            active_profile,
             group_header_scroll,
             group_header_area: Rect::default(),
             visible_projects,
@@ -1608,8 +1628,14 @@ impl App {
     }
 
     fn refresh_visible_projects(&mut self) {
-        self.visible_projects =
-            compute_visible_projects(&self.config, &self.workspace, Some(&self.active_group));
+        // ^ A config reload may remove the active profile or add the first one.
+        self.active_profile = initial_active_profile(&self.config, self.active_profile.take());
+        self.visible_projects = compute_visible_projects(
+            &self.config,
+            &self.workspace,
+            Some(&self.active_group),
+            self.active_profile.as_deref(),
+        );
     }
 
     /// Recompute visible project set from active groups, then rebuild flat and clamp cursor.
@@ -1819,18 +1845,33 @@ fn initial_active_group(config: &GlobalConfig, stored: Option<GroupKey>) -> Grou
         .unwrap_or(GroupKey::Ungrouped)
 }
 
+/// The stored profile while the config declares it, else the first; None without
+/// `[[profiles]]`. ref: README "Profiles"
+fn initial_active_profile(config: &GlobalConfig, stored: Option<String>) -> Option<String> {
+    if config.profiles.is_empty() {
+        return None;
+    }
+    let names = config.profile_names();
+    stored
+        .filter(|name| names.contains(name))
+        .or_else(|| names.first().cloned())
+}
+
+/// Groups filter inside the active profile.
 fn compute_visible_projects(
     config: &GlobalConfig,
     workspace: &WorkspaceState,
     active_group: Option<&GroupKey>,
+    active_profile: Option<&str>,
 ) -> HashSet<usize> {
     workspace
         .projects
         .iter()
         .enumerate()
         .filter_map(|(index, project)| {
-            project_matches_group(config.project_groups(&project.path), active_group)
-                .then_some(index)
+            (active_profile.is_none_or(|profile| config.project_profile(&project.path) == profile)
+                && project_matches_group(config.project_groups(&project.path), active_group))
+            .then_some(index)
         })
         .collect()
 }
