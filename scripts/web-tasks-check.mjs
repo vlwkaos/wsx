@@ -820,6 +820,8 @@ if (await count(".reservoir .facts-line")) await fail("the reservoir still shows
 await shot("reservoir-open", ".composer-send");
 await resize([390, 420, 2]);
 await shot("reservoir-short", ".composer-send");
+await resize([320, 568, 2]);
+await shot("reservoir-narrow", ".composer-send");
 for (const [width, height, scale] of [[390, 560, 2], [1280, 520, 1]]) {
   await resize([width, height, scale]);
   await openReservoir();
@@ -832,9 +834,9 @@ for (const [width, height, scale] of [[390, 560, 2], [1280, 520, 1]]) {
   await shot(`reservoir-running-fixed-${width}`, ".composer-send");
   await evaluate("document.querySelector('.reservoir-scroll').scrollTop = 0");
 }
-await resize([320, 568, 2]);
-await shot("reservoir-narrow", ".composer-send");
+// ^ 1280 px is the wide layout: its page tree is another, so the list comes back closed.
 await resize([390, 844, 2]);
+await openReservoir();
 // Clear in place, one row after another: Answer #1 sends its answer and resumes it;
 // Approve land #3 lands it; #1, ready, lands. The chat stays at its end, and the settled
 // items become muted lines that join when close together.
