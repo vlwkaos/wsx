@@ -713,7 +713,13 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .reservoir-checks { flex: 0 0 auto; font-weight: var(--font-weight-medium); white-space: nowrap; }
 .reservoir[data-open] .reservoir-head .icon { transform: rotate(90deg); }
 .reservoir-head:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
-.reservoir-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: var(--space-2); }
+/* Running stays at the top of the open list; what waits for the owner and To check scroll under it. */
+.reservoir-body { min-height: 0; display: flex; flex-direction: column; padding-bottom: var(--space-2); }
+.reservoir-fixed { flex: 0 0 auto; }
+.reservoir-scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.reservoir-fixed + .reservoir-scroll:not(:empty) { border-top: var(--border-width) solid var(--color-hairline); }
+/* Every row of the open list, its labels and its answer field are the closed line's small size. */
+.reservoir .row-link, .reservoir .need-form .input, .reservoir .need-form .button { font-size: var(--font-size-sm); }
 .reservoir-list { list-style: none; margin: 0; padding: 0; }
 .reservoir .row-link { padding-inline: var(--column-inset, var(--space-4)); }
 .reservoir .need + .need { border-top: var(--border-width) solid var(--color-hairline); }
@@ -724,9 +730,9 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 /* Open, the chevron has no row of its own: it sits at the right end of the list's first row
    (the first label, or the first item row), which keeps room for it. */
 .reservoir[data-open] .reservoir-head { position: absolute; top: 0; right: 0; z-index: 1; width: var(--reservoir-chevron); }
-.reservoir[data-open]:has(.reservoir-body > .reservoir-list:first-child) .reservoir-head { min-height: var(--size-row); }
-.reservoir[data-open] .reservoir-body > .reservoir-label:first-child { min-height: var(--size-control); display: flex; align-items: center; padding-block: 0; padding-right: var(--reservoir-chevron); }
-.reservoir[data-open] .reservoir-body > .reservoir-list:first-child > .need:first-child .row-link { padding-right: var(--reservoir-chevron); }
+.reservoir[data-open]:has(.reservoir-body > .reservoir-scroll:first-child > .reservoir-list:first-child) .reservoir-head { min-height: var(--size-row); }
+.reservoir[data-open] .reservoir-body > .reservoir-fixed:first-child > .reservoir-label:first-child { min-height: var(--size-control); display: flex; align-items: center; padding-block: 0; padding-right: var(--reservoir-chevron); }
+.reservoir[data-open] .reservoir-body > .reservoir-scroll:first-child > .reservoir-list:first-child > .need:first-child .row-link { padding-right: var(--reservoir-chevron); }
 /* With the keyboard up the reservoir steps aside while the `#` or `/` list is open. */
 body[data-keyboard] .chat:has(.slash) .reservoir { display: none; }
 .more { position: relative; }
@@ -815,7 +821,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
    its task chip and what the task did; the check, where to look and when it passes are labeled
    lines under it. Try, Fail and Pass sit in one place on every item: their own row at the bottom
    right on a phone, so the words keep the full width, and a column right of the words when wide. */
-.check-list { list-style: none; margin: 0; padding: 0; }
+.check-list { list-style: none; margin: 0; padding: 0; font-size: var(--font-size-sm); }
 .check-item + .check-item { border-top: var(--border-width) solid var(--color-hairline); }
 .check-line { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); overflow-wrap: anywhere; }
 .app[data-wide] .check-line { flex-direction: row; align-items: flex-start; gap: var(--space-4); }
