@@ -367,6 +367,12 @@ impl TaskRecord {
             .is_some_and(|waiting| waiting.on == on)
     }
 
+    /// Neither a turn nor checks run and nothing waits: a child task lands on such a parent
+    /// only. ref: docs/tasks.md "Parent tasks"
+    pub fn at_rest(&self) -> bool {
+        matches!(self.state, TaskState::Ready | TaskState::Failed)
+    }
+
     /// A ready task waits for the manager's review when the manager created it, or when the
     /// project lands by itself (`tasks.land.auto`) and checks prove it: an owner task never
     /// lands by itself. A held one waits for the owner, as does any other ready task. A plan
