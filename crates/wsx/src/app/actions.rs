@@ -1140,18 +1140,53 @@ impl App {
         // dimension-first baseline gate before Terminal input resumes.
         self.mode = Mode::Workspace;
         self.attach_session(project_idx, worktree_idx, session_idx, terminal)?;
-        self.show_pending_terminal();
-        Ok(())
-    }
-
-    /// Terminal mode once a stream was opened; a failed one stays in Workspace.
-    fn show_pending_terminal(&mut self) {
         if let Some(pending) = self.pending_terminal_entry {
             self.mode = Mode::Terminal {
                 pane_id: pending.pane_id,
             };
             self.force_terminal_redraw = true;
             self.needs_redraw = true;
+        }
+        Ok(())
+    }
+
+    /// Enter the shell `S` created once a refresh lists it; give up after 10 s.
+    pub(super) fn open_pending_shell(&mut self, terminal: &mut Tui) -> Result<()> {
+        let Some((session_id, asked)) = self.pending_shell else {
+            return Ok(());
+        };
+        let listed = self
+            .workspace
+            .projects
+            .iter()
+            .enumerate()
+            .find_map(|(pi, project)| {
+                project
+                    .worktrees
+                    .iter()
+                    .enumerate()
+                    .find_map(|(wi, worktree)| {
+                        worktree
+                            .sessions
+                            .iter()
+                            .position(|session| session.session_id == session_id)
+                            .map(|si| (pi, wi, si))
+                    })
+            });
+        let Some((pi, wi, si)) = listed else {
+            if asked.elapsed() >= Duration::from_secs(10) {
+                self.pending_shell = None;
+                self.set_error("The new shell session did not appear");
+            }
+            return Ok(());
+        };
+        self.pending_shell = None;
+        match self.reveal_session(pi, wi, si) {
+            Some(target) => self.switch_to_flat_session(target, terminal),
+            None => {
+                self.set_status("No shell: its session is hidden by the group");
+                Ok(())
+            }
         }
     }
 
@@ -1194,44 +1229,23 @@ impl App {
         let shell = self.workspace.projects[pi].worktrees[wi]
             .sessions
             .iter()
-            .position(|session| {
+            .find(|session| {
                 !session.is_agentic()
                     && !session.has_foreground_job()
                     && session
                         .panes
                         .iter()
                         .all(|pane| Some(pane.pane_id.0) != worker)
-            });
-        if let Some(si) = shell {
-            return match self.reveal_session(pi, wi, si) {
-                Some(target) => self.switch_to_flat_session(target, terminal),
-                None => {
-                    self.set_status("No shell: its session is hidden by the group");
-                    Ok(())
-                }
-            };
-        }
-        let Some((session_id, label)) = self.do_create_session(pi, wi, String::new(), None)? else {
-            return Ok(());
-        };
-        let snapshot = ops::runtime_snapshot()?;
-        let Some(pane) = snapshot
-            .sessions
-            .iter()
-            .find(|session| session.id == session_id)
-            .and_then(|session| {
-                snapshot
-                    .panes
-                    .iter()
-                    .find(|pane| pane.id == session.primary_pane)
             })
-        else {
-            self.set_error(format!("Session '{label}' was created but is not listed"));
-            return Ok(());
-        };
-        self.mode = Mode::Workspace;
-        self.enter_terminal(pane.id, pane.terminal_id, label, terminal)?;
-        self.show_pending_terminal();
+            .map(|session| session.session_id);
+        if let Some(session_id) = shell {
+            self.pending_shell = Some((session_id, Instant::now()));
+            return self.open_pending_shell(terminal);
+        }
+        if let Some((session_id, _)) = self.do_create_session(pi, wi, String::new(), None)? {
+            // ^ Entering needs the cursor on the session's row, which the next refresh adds.
+            self.pending_shell = Some((session_id, Instant::now()));
+        }
         Ok(())
     }
 

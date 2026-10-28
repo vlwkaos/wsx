@@ -901,9 +901,16 @@ def run(wsx, wsxd, work, owned):
         (captures / ('tasks-%d.ans' % cols)).write_bytes(frames[1])
         (captures / ('manager-%d.ans' % cols)).write_bytes(frames[2])
         assert '(S)hell' in hinted[1] and '(S)hell' in hinted[2], hinted
+    # ^ Open tasks of earlier steps sort above a working one (task_list.rs `rows`): move to
+    # its row, and its detail shows it is the one.
+    rank = {'waiting': 0, 'failed': 1, 'ready': 2, 'checking': 3}
+    ordered = sorted(js('task', 'ledger')['open'], key=lambda task: rank.get(task['state'], 4))
+    to_row = b'j' * [task['id'] for task in ordered].index(sh) + b'\r'
+    shown_task = r'WAIT .*#%d\b' % sh
     tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
-        (r'#%d +working' % sh, b'S'),
+        (r'#%d +working' % sh, to_row),
+        (shown_task, b'S'),
         (prompt, where),
         (r'at:%s' % re.escape(copy_name), b'\x01w'),
         (r'WORKSPACE', b'tm'),
@@ -916,12 +923,13 @@ def run(wsx, wsxd, work, owned):
     assert len(task_shells) == 1 and len(main_shells) == 1, (task_shells, main_shells)
     again = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
-        (r'#%d +working' % sh, b'S'),
+        (r'#%d +working' % sh, to_row),
+        (shown_task, b'S'),
         (r'at:%s' % re.escape(copy_name), b'\x01w'),
         (r'WORKSPACE', b'tm'),
         (r'MANAGER', b'S'),
         (r'at:%s' % re.escape(project.name), b'')])
-    assert 'TASKS' not in again[2] and 'MANAGER' not in again[-1], again
+    assert 'TASK ' not in again[3] and 'MANAGER' not in again[-1], again
     assert [label for label in sessions_at(copy_path) if label != 'task-%d' % sh] == task_shells
     assert [label for label in sessions_at(project) if not label.startswith('task-')] == main_shells
     assert show(sh)['state'] == 'working' and not kinds(sh, 'hand', 'stopped'), log(sh)

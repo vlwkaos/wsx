@@ -16,6 +16,7 @@ impl App {
             }
             // Drain async results every iteration so they're never blocked by UI events.
             self.drain_async_results();
+            self.open_pending_shell(terminal)?;
             self.reconnect_terminal_after_resume(terminal);
             self.follow_installed_wsx(terminal)?;
             if let Err(error) = self.resume_followed_terminal(terminal) {

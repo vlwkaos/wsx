@@ -1089,6 +1089,8 @@ pub struct App {
     terminal_stream_generation: u64,
     pending_terminal_entry: Option<PendingTerminalEntry>,
     pending_terminal_resume: Option<PendingTerminalResume>,
+    /// A shell the Tasks view created, entered once a refresh lists it, and when it asked.
+    pending_shell: Option<(runtime::SessionId, Instant)>,
     last_stream_reattach: Option<Instant>,
     // ^ docs/daemon-live-upgrade.md: this TUI re-executes into a replaced install.
     installed: Option<crate::follow::Installed>,
@@ -1320,6 +1322,7 @@ impl App {
             terminal_stream_generation: 0,
             pending_terminal_entry: None,
             pending_terminal_resume: None,
+            pending_shell: None,
             last_stream_reattach: None,
             installed: crate::follow::Installed::capture(),
             follow_check_pending: false,
