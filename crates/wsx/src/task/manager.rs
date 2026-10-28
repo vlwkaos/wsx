@@ -59,9 +59,6 @@ fn one_line(text: &str) -> String {
 
 /// The handover of a fresh conversation: this many last messages and replies, each clipped.
 const HANDOVER_ENTRIES: usize = 4;
-/// The handover also lists the routine runs that ended in this window, at most this many.
-const HANDOVER_ROUTINES: usize = 8;
-const HANDOVER_ROUTINE_MS: u64 = 24 * 60 * 60 * 1000;
 const HANDOVER_CHARS: usize = 600;
 const EVENT_SUMMARY_CHARS: usize = 160;
 /// A failed deploy's event carries this many last lines of its output.
@@ -664,28 +661,8 @@ impl Manager {
             .collect();
         runs.sort_by_key(|run| run.finished_epoch);
         for run in runs {
-            let end = run.finished_epoch.unwrap_or_default();
-            self.observed_routines = end;
-            let line = match run.status {
-                RunStatus::Succeeded => format!(
-                    "routine {} succeeded after {} s",
-                    run.routine,
-                    end - run.started_epoch
-                ),
-                status => format!(
-                    "routine {} {} ({}){}",
-                    run.routine,
-                    match status {
-                        RunStatus::SpawnFailed => "could not start",
-                        RunStatus::Cancelled => "was cancelled",
-                        RunStatus::Interrupted => "was interrupted",
-                        _ => "failed",
-                    },
-                    exit_words(run.exit_code),
-                    output_ends(&run.final_output)
-                ),
-            };
-            self.pending_events.push(line);
+            self.observed_routines = run.finished_epoch.unwrap_or_default();
+            self.pending_events.push(routine_line(&run));
             self.last_event = Some(Instant::now());
         }
     }
@@ -1433,25 +1410,20 @@ impl Manager {
             .collect();
         lines.reverse();
         // ^ A routine's result may not have been acted on before the rotation.
-        let since = now_unix_ms().saturating_sub(HANDOVER_ROUTINE_MS);
-        let mut routines: Vec<&str> = log
+        let replied = log
             .iter()
-            .filter(|entry| entry.unix_ms >= since)
-            .filter_map(|entry| match &entry.event {
-                ManagerEvent::Message {
-                    from: Author::Events,
-                    text,
-                    ..
-                } => Some(text.lines().filter(|line| line.starts_with("routine "))),
-                _ => None,
-            })
-            .flatten()
+            .rev()
+            .find(|entry| matches!(entry.event, ManagerEvent::Reply { .. }))
+            .map_or(0, |entry| (entry.unix_ms / 1000) as i64);
+        let routines: Vec<String> = handover_runs(self.finished_routine_runs(), replied)
+            .iter()
+            .filter_map(|run| routine_line(run).lines().next().map(str::to_owned))
             .collect();
-        routines.drain(..routines.len().saturating_sub(HANDOVER_ROUTINES));
         let routines = match routines.is_empty() {
             true => String::new(),
             false => format!(
-                "\nRoutine results of the last 24 hours:\n{}\n",
+                "\nRoutine results (each routine's newest, its failures since its last success, \
+                 and any since your last reply):\n{}\n",
                 routines.join("\n")
             ),
         };
@@ -1502,6 +1474,58 @@ fn newest_ms(folder: &Path) -> Option<u64> {
         })
         .map(|since| since.as_millis() as u64)
         .max()
+}
+
+/// A routine run that ended as an event line, a failure with the end of its output.
+fn routine_line(run: &RunRecord) -> String {
+    let end = run.finished_epoch.unwrap_or_default();
+    match &run.status {
+        RunStatus::Succeeded => format!(
+            "routine {} succeeded after {} s",
+            run.routine,
+            end - run.started_epoch
+        ),
+        status => format!(
+            "routine {} {} ({}){}",
+            run.routine,
+            match status {
+                RunStatus::SpawnFailed => "could not start",
+                RunStatus::Cancelled => "was cancelled",
+                RunStatus::Interrupted => "was interrupted",
+                _ => "failed",
+            },
+            exit_words(run.exit_code),
+            output_ends(&run.final_output)
+        ),
+    }
+}
+
+/// The runs a fresh conversation needs, oldest first: each routine's newest, every run that
+/// did not succeed since its routine's last success, and every run that ended after the
+/// previous conversation's last reply (`replied`, epoch seconds). ref: docs/tasks.md "Manager"
+fn handover_runs(mut runs: Vec<RunRecord>, replied: i64) -> Vec<RunRecord> {
+    runs.sort_by_key(|run| run.finished_epoch);
+    let newest = |run: &RunRecord, succeeded: bool| {
+        runs.iter()
+            .filter(|other| other.routine == run.routine)
+            .filter(|other| !succeeded || other.status == RunStatus::Succeeded)
+            .filter_map(|other| other.finished_epoch)
+            .max()
+    };
+    let wanted: Vec<bool> = runs
+        .iter()
+        .map(|run| {
+            let end = run.finished_epoch;
+            end == newest(run, false)
+                || (run.status != RunStatus::Succeeded
+                    && newest(run, true).is_none_or(|last| end > Some(last)))
+                || end.is_some_and(|end| end > replied)
+        })
+        .collect();
+    runs.into_iter()
+        .zip(wanted)
+        .filter_map(|(run, wanted)| wanted.then_some(run))
+        .collect()
 }
 
 fn exit_words(exit: Option<i32>) -> String {

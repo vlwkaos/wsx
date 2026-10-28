@@ -1142,17 +1142,19 @@ fn notice(scope: &Scope, watch: &mut Watch) {
 }
 
 /// Note a reply the manager started on its own for "Manager needs me": one that is a message
-/// (not quiet) to a turn of only events. A reply to the owner, a recap or another manager is
-/// no news (docs/tasks.md "Manager").
+/// (not quiet) to a turn of only wsx's events or a recap request, as after a routine's result.
+/// A reply to the owner or another manager is no news (docs/web-client.md "Notifications").
 fn wrote(scope: &Scope, watch: &mut Watch) {
     let log = ManagerDir::existing(&scope.store)
         .ok()
         .flatten()
         .and_then(|dir| dir.read_tail(MANAGER_TAIL_BYTES).ok())
         .unwrap_or_default();
-    let events = |id: &u64| {
+    let own = |id: &u64| {
         log.iter().any(|entry| match &entry.event {
-            ManagerEvent::Message { id: of, from, .. } => of == id && *from == Author::Events,
+            ManagerEvent::Message { id: of, from, .. } => {
+                of == id && matches!(from, Author::Events | Author::Recap)
+            }
             _ => false,
         })
     };
@@ -1164,7 +1166,7 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
             continue;
         };
         if last.is_some_and(|last| *id > last) && !quiet && !to.is_empty() {
-            news |= to.iter().all(events);
+            news |= to.iter().all(own);
         }
         watch.replies.insert(scope.project, *id);
     }
