@@ -1552,7 +1552,7 @@ await viewImages("chat-images", chatImages);
 
 // The first item's Fail: × opens a note sent with Send, with no Cancel; × again or Escape closes it
 // and leaves the sheet open; an empty note is not sent. Ends with a note typed in the open form.
-const firstItem = "document.querySelector('.check-item')";
+const firstItem = "document.querySelector('.check-list .check-item')";
 async function failForm() {
   const failButton = `${firstItem}.querySelector('.check-acts .check-act[data-tone="danger"]')`;
   const press = async (open, message) => { await evaluate(`${failButton}.click()`); await until(`${open ? "!!" : "!"}${firstItem}.querySelector('.need-form input')`, message); };
@@ -1561,14 +1561,14 @@ async function failForm() {
   if (JSON.stringify(form) !== JSON.stringify(["Send", "true"])) await fail(`the fail form reads ${JSON.stringify(form)}`);
   await evaluate(`${firstItem}.querySelector('.need-form').requestSubmit()`);
   await pause(300);
-  if (await count(".check-item") !== 3) await fail("a fail without a note was sent");
+  if (await count(".check-list .check-item") !== 3) await fail("a fail without a note was sent");
   await key("Escape", 27);
   await until(`!${firstItem}.querySelector('.need-form') && document.activeElement === ${failButton}`, "Escape did not close the note and give the focus back to ×");
   if (!await evaluate("!!document.querySelector('dialog.task-sheet[open]')")) await fail("Escape in the note closed the To check sheet");
   await press(true, "× did not open the note again");
   await press(false, "× did not close the note");
   await press(true, "× did not open the note a third time");
-  await typeInto(".check-item .need-form input", "the text is cut off");
+  await typeInto(".check-list .check-item .need-form input", "the text is cut off");
   await shot("to-check-fail", ".composer-send");
 }
 
@@ -1586,7 +1586,7 @@ await oneMotion("To check on a phone", async () => {
   await until(`location.hash === '#/p/${project}/checks' && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open");
 });
 // ^ The opened To check list uses the reservoir's small size.
-const checkSize = await evaluate("getComputedStyle(document.querySelector('.check-item .check-task')).fontSize");
+const checkSize = await evaluate("getComputedStyle(document.querySelector('dialog.task-sheet[open] .check-item .check-task')).fontSize");
 if (checkSize !== closedSize) await fail(`the To check list's words are ${checkSize}, not ${closedSize}`);
 await closeSheet("the To check list", chat);
 // ^ On a slow network the list and then its captures come late: the sheet still rises once,
@@ -1594,7 +1594,7 @@ await closeSheet("the To check list", chat);
 await send("Network.setCacheDisabled", { cacheDisabled: true });
 await send("Network.emulateNetworkConditions", { offline: false, latency: 1500, downloadThroughput: -1, uploadThroughput: -1 });
 await oneMotion("To check on a slow network", () => go(`#/p/${project}/checks`));
-await until("[...document.querySelectorAll('.check-capture img')].every((image) => image.complete && image.naturalWidth)", "the captures did not load on a slow network", 100);
+await until("[...document.querySelectorAll('.check-list .check-capture img')].every((image) => image.complete && image.naturalWidth)", "the captures did not load on a slow network", 100);
 await pause(500);
 const slowRest = await evaluate("document.querySelector('dialog.task-sheet').getBoundingClientRect().top");
 if (Math.abs(slowRest - (await evaluate("window.sheetFrames.at(-1)[0]"))) > 0.5) await fail(`the To check sheet moved when its captures came: ${Math.round((await evaluate("window.sheetFrames.at(-1)[0]")))} to ${Math.round(slowRest)}`);
@@ -1604,41 +1604,41 @@ await closeSheet("the To check list on a slow network", chat);
 await resize([1280, 800, 1]);
 await oneMotion("To check on a wide screen", () => go(`#/p/${project}/checks`));
 // ^ Wide, Try, Fail and Pass are a column right of each item's words, level with its title line.
-const wideRoom = await evaluate(`[...document.querySelectorAll('.check-item')].map((node) => { const box = (part) => node.querySelector(part).getBoundingClientRect();
+const wideRoom = await evaluate(`[...document.querySelectorAll('.check-list .check-item')].map((node) => { const box = (part) => node.querySelector(part).getBoundingClientRect();
   return [Math.round(box('.check-acts').left - box('.check-words').right), Math.round(box('.check-acts').top - box('.check-task').top), Math.round(box('.check-acts').right)]; })`);
 if (!wideRoom.every(([gap, top, right]) => gap >= 8 && Math.abs(top) <= 12 && Math.abs(right - wideRoom[0][2]) <= 1)) await fail(`the wide To check buttons are not in one column: ${JSON.stringify(wideRoom)}`);
 await shot("to-check", ".composer-send");
-await viewImages("to-check", ".check-item:first-child .check-capture", 1);
+await viewImages("to-check", ".check-list .check-item:first-child .check-capture", 1);
 await failForm();
 await key("Escape", 27);
-await until("!document.querySelector('.check-item .need-form')", "Escape did not close the wide note");
+await until("!document.querySelector('.check-list .check-item .need-form')", "Escape did not close the wide note");
 await closeSheet("the wide To check list", chat);
 await resize([390, 844, 2]);
 await oneMotion("To check opened again on a phone", () => go(`#/p/${project}/checks`));
-const listed = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [node.querySelector('.task-chip').textContent.trim(), node.querySelector('.check-what').textContent, node.querySelector('.check-pass').textContent])");
+const listed = await evaluate("[...document.querySelectorAll('.check-list .check-item')].map((node) => [node.querySelector('.task-chip').textContent.trim(), node.querySelector('.check-what').textContent, node.querySelector('.check-pass').textContent])");
 if (JSON.stringify(listed) !== JSON.stringify([["#7", "open the file", "it has text"], ["#8", "open the file", "it has text"], ["#2", "open the file", "it has text"]])) await fail(`the To check list reads ${JSON.stringify(listed)}`);
 if (await sheetState() !== "3 open") await fail(`the list's top row reads ${await sheetState()}`);
 // ^ Each item says what its task did and where to look; #7's and #8's show their captures. The
 // sheet is on the bottom and as high as its rows with no empty band under them, at most 85%: with
 // the two captures the rows are higher, so it stops at 85% and its list scrolls.
-const context = await evaluate("[...document.querySelectorAll('.check-item')].map((node) => [(node.querySelector('.check-task')?.textContent ?? '').replace(node.querySelector('.task-chip').textContent, '').trim(), [...node.querySelectorAll('.check-facts > *')].map((line) => line.textContent).join('|')])");
+const context = await evaluate("[...document.querySelectorAll('.check-list .check-item')].map((node) => [(node.querySelector('.check-task')?.textContent ?? '').replace(node.querySelector('.task-chip').textContent, '').trim(), [...node.querySelectorAll('.check-facts > *')].map((line) => line.textContent).join('|')])");
 if (!context.every(([did]) => did.startsWith("did: WORK")) || context.slice(0, 2).some(([, facts]) => facts !== "Check|open the file|Look at|/#/x|Passes if|it has text") || context[2][1] !== "Check|open the file|Look at|a real device|Passes if|it has text") await fail(`the items' context reads ${JSON.stringify(context)}`);
-await until("[...document.querySelectorAll('.check-capture img')].map((image) => image.naturalWidth).join() === '480,480'", "#7's and #8's captures did not load");
-if (await count(".check-capture") !== 2) await fail("an item without a capture shows one");
+await until("[...document.querySelectorAll('.check-list .check-capture img')].map((image) => image.naturalWidth).join() === '480,480'", "#7's and #8's captures did not load");
+if (await count(".check-list .check-capture") !== 2) await fail("an item without a capture shows one");
 // ^ A capture's link, and so its focus ring, is as wide as its image, not the item's width.
-const captureBoxes = await evaluate("[...document.querySelectorAll('.check-capture')].map((link) => [link.getBoundingClientRect().width, link.querySelector('img').getBoundingClientRect().width].map(Math.round))");
+const captureBoxes = await evaluate("[...document.querySelectorAll('.check-list .check-capture')].map((link) => [link.getBoundingClientRect().width, link.querySelector('img').getBoundingClientRect().width].map(Math.round))");
 if (captureBoxes.some(([link, image]) => Math.abs(link - image) > 1)) await fail(`a capture's link is not as wide as its image: ${JSON.stringify(captureBoxes)}`);
 await until("document.querySelector('dialog.task-sheet')?.getAnimations().length === 0", "the sheet kept moving");
-const fitted = await evaluate(`(() => { const sheet = document.querySelector('dialog.task-sheet').getBoundingClientRect(); const last = [...document.querySelectorAll('.check-item')].pop().getBoundingClientRect(); const list = document.querySelector('dialog.task-sheet .scroll');
+const fitted = await evaluate(`(() => { const sheet = document.querySelector('dialog.task-sheet').getBoundingClientRect(); const last = [...document.querySelectorAll('.check-list .check-item')].pop().getBoundingClientRect(); const list = document.querySelector('dialog.task-sheet .scroll');
   return [Math.round(innerHeight - sheet.bottom), Math.round(sheet.bottom - last.bottom), Math.round(sheet.height / innerHeight * 100), list.scrollHeight > list.clientHeight + 1]; })()`);
 const [low, band, high, scrolls] = fitted;
 if (Math.abs(low) > 1 || (high < 84 ? scrolls || band < 0 || band > 48 : high > 85 || !scrolls)) await fail(`the To check sheet does not fit its rows: ${JSON.stringify(fitted)}`);
 // ^ On a phone the item's words use the list's width: the chip starts the title line, the labels
 // are muted, and Try, Fail and Pass are a row under the words at the same right edge on every
 // item, also under #2's long pass line. All passed is in the top bar.
-await evaluate(`document.querySelectorAll('.check-item')[2].querySelector('.check-pass').append(' and the words of the page'.repeat(4))`);
+await evaluate(`document.querySelectorAll('.check-list .check-item')[2].querySelector('.check-pass').append(' and the words of the page'.repeat(4))`);
 const room = await evaluate(`(() => { const list = document.querySelector('.check-list').getBoundingClientRect(); const box = (node) => node.getBoundingClientRect();
-  const items = [...document.querySelectorAll('.check-item')]; const chip = items[0].querySelector('.task-chip');
+  const items = [...document.querySelectorAll('.check-list .check-item')]; const chip = items[0].querySelector('.task-chip');
   const acts = items.map((node) => box(node.querySelector('.check-acts')));
   const label = items[0].querySelector('.check-facts dt'), value = items[0].querySelector('.check-facts dd');
   return { inline: chip.closest('p') === items[0].querySelector('.check-task'),
@@ -1650,7 +1650,7 @@ const room = await evaluate(`(() => { const list = document.querySelector('.chec
 if (!room.inline || !room.full || !room.under || !room.edge || !room.muted || !room.all || room.intro) await fail(`the To check items are not laid out on a phone: ${JSON.stringify(room)}`);
 // ^ #8's capture is a video (docs/web-client-tasks.md "To check"): its poster with a play mark,
 // served with byte ranges for iPhone Safari, and the viewer plays it with controls, no autoplay.
-const videoLink = ".check-item:nth-child(2) .check-capture";
+const videoLink = ".check-list .check-item:nth-child(2) .check-capture";
 const clip = await evaluate(`(async () => { const link = document.querySelector('${videoLink}');
   const part = await fetch(link.href, { headers: { Range: 'bytes=0-99' } });
   return { video: link.hasAttribute('data-video'), poster: link.querySelector('img').src.endsWith('/poster'), play: !!link.querySelector('.check-play svg'),
@@ -1671,14 +1671,14 @@ await capture("to-check-video");
 await key("Escape", 27);
 await until("!document.querySelector('dialog.viewer') && !!document.querySelector('dialog.task-sheet[open]')", "Escape did not close the video viewer alone");
 await shot("to-check", ".composer-send");
-await viewImages("to-check", ".check-item:first-child .check-capture", 1);
+await viewImages("to-check", ".check-list .check-item:first-child .check-capture", 1);
 // ^ Try starts the preview of the item's task and becomes a link to it (docs/tasks.md "Preview").
 await evaluate(`${firstItem}.querySelector('.check-act[title="Try it on a preview"]').click()`);
 await until(`!!${firstItem}.querySelector('a.check-act[href^="https://host.example.ts.net:"]')`, "Try did not become a preview link", 300);
 await shot("to-check-try", ".composer-send");
 await failForm();
 await evaluate(`${firstItem}.querySelector('.need-form').requestSubmit()`);
-await until("document.querySelectorAll('.check-item').length === 2", "the failed item stayed in the list", 60);
+await until("document.querySelectorAll('.check-list .check-item').length === 2", "the failed item stayed in the list", 60);
 await closeSheet("the To check list after a fail", chat);
 // ^ Each To check item is also a bubble in the chat at the time it was added: its words, its
 // capture (the image viewer opens it) and Try, Fail and Pass; a decided one shows its result
