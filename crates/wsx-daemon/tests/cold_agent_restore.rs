@@ -282,32 +282,46 @@ fn cold_recovery_resumes_a_profile_session_under_the_profile_config_root() {
         root,
     };
     daemon.wait_for_socket().expect("wsxd starts");
-
-    let created = Command::new(PathBuf::from(env!("CARGO_BIN_EXE_wsxd")).with_file_name("wsx"))
-        .current_dir(&worktree)
-        .env_clear()
-        .env("HOME", daemon.root.join("home"))
-        .env("XDG_STATE_HOME", daemon.root.join("state"))
-        .env("XDG_CONFIG_HOME", daemon.root.join("config"))
-        .env("XDG_CACHE_HOME", daemon.root.join("cache"))
-        .env("WSX_SOCKET", &daemon.socket)
-        .env("PATH", "/usr/bin:/bin")
-        .env("SHELL", "/bin/sh")
-        .args([
-            "session",
-            "create",
-            "--name",
-            "chat",
-            "--command",
-            "claude --session-id profile-one",
-        ])
-        .output()
-        .expect("run the wsx beside wsxd; build both binaries first");
-    assert!(
-        created.status.success(),
-        "wsx session create failed: {}",
-        String::from_utf8_lossy(&created.stderr)
-    );
+    let wsx = |args: &[&str]| {
+        let output = Command::new(PathBuf::from(env!("CARGO_BIN_EXE_wsxd")).with_file_name("wsx"))
+            .current_dir(&worktree)
+            .env_clear()
+            .env("HOME", daemon.root.join("home"))
+            .env("XDG_STATE_HOME", daemon.root.join("state"))
+            .env("XDG_CONFIG_HOME", daemon.root.join("config"))
+            .env("XDG_CACHE_HOME", daemon.root.join("cache"))
+            .env("WSX_SOCKET", &daemon.socket)
+            .env("PATH", "/usr/bin:/bin")
+            .env("SHELL", "/bin/sh")
+            .args(args)
+            .output()
+            .expect("run the wsx beside wsxd; build both binaries first");
+        assert!(
+            output.status.success(),
+            "wsx {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    // ^ The agent's hooks load from its own root: the install covers each profile's root.
+    private_dir(&daemon.root.join("home/.claude"));
+    wsx(&["agent", "install", "claude"]);
+    for root in [daemon.root.join("home/.claude"), PathBuf::from(profile)] {
+        assert!(
+            root.join("hooks/wsx-agent-status.sh").is_file(),
+            "{}",
+            root.display()
+        );
+        let settings = fs::read_to_string(root.join("settings.json")).unwrap();
+        assert!(settings.contains("wsx-agent-status.sh"), "{settings}");
+    }
+    wsx(&[
+        "session",
+        "create",
+        "--name",
+        "chat",
+        "--command",
+        "claude --session-id profile-one",
+    ]);
     wait_for_claude_invocations(&log, &mut daemon, 1);
     let started = read_claude_invocations(&log);
     assert_eq!(started[0].args, ["--session-id", "profile-one"]);
