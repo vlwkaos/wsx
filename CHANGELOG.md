@@ -21,6 +21,7 @@
 
 ### Fixed
 
+- Tasks: a worker turn that ends while its background jobs still run (a background subagent such as a review skill's, or a background Bash command) no longer counts as a turn without a result. The host waits for Claude's own turn after the jobs end, which returns the result, at most `tasks.checkTimeoutSeconds` (default 1200 s). Before, the host asked for the result at once and the task failed or waited on the owner with nothing done ([docs/tasks.md](docs/tasks.md) "Claude adapter").
 - Web: passing, skipping or failing a To check item in the manager chat no longer moves its bubble to the end as a new message from the manager. The bubble stays at the time the item was added; the decision changes it in place.
 
 ## [0.40.4] - 2026-10-28

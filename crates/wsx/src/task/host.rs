@@ -76,6 +76,14 @@ struct LimitWait {
     next_ms: u64,
 }
 
+/// A turn without a result that ended while background jobs ran: Claude starts its own turn
+/// when each ends. The wait ends at `deadline`, counted from the first such turn.
+struct BackgroundWait {
+    deadline: Instant,
+    /// The turn that waits, taken when the deadline passes.
+    turn: Option<TurnResult>,
+}
+
 /// The turn that continues after a usage limit.
 const LIMIT_CONTINUE: &str = "The session limit has reset. Continue the task where it stopped.";
 /// How often a resumable task behind another in the limit queue looks again.
@@ -137,6 +145,7 @@ struct Host {
     /// to resume: held until the agent answers again, so one task at a time tries.
     limit_queue: Option<slot::Ticket>,
     limit_slot: Option<slot::Slot>,
+    background_wait: Option<BackgroundWait>,
     /// The worker's queued or running `check-run`.
     check_run: Option<CheckRun>,
     /// The queued or running checks of a result: the commit they check, and whether a newer
@@ -190,6 +199,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         limit_attempt: 0,
         limit_queue: None,
         limit_slot: None,
+        background_wait: None,
         check_run: None,
         gate: None,
         stored_checks: None,
@@ -266,7 +276,17 @@ impl Host {
                 .limit_wait
                 .as_ref()
                 .map(|wait| Duration::from_millis(wait.next_ms.saturating_sub(now_unix_ms())));
-            let event = match disk_due.into_iter().chain(limit_due).min() {
+            let background_due = self
+                .background_wait
+                .as_ref()
+                .filter(|wait| wait.turn.is_some())
+                .map(|wait| wait.deadline.saturating_duration_since(Instant::now()));
+            let event = match disk_due
+                .into_iter()
+                .chain(limit_due)
+                .chain(background_due)
+                .min()
+            {
                 None => receiver.recv().ok(),
                 Some(due) => match receiver.recv_timeout(due) {
                     Ok(event) => Some(event),
@@ -274,6 +294,8 @@ impl Host {
                         if disk_due == Some(due) {
                             disk_checked = Instant::now();
                             self.resume_after_disk();
+                        } else if background_due == Some(due) {
+                            self.background_timed_out();
                         } else {
                             self.resume_after_limit();
                         }
@@ -592,6 +614,7 @@ impl Host {
         self.turn_active = false;
         self.limit_wait = None;
         self.limit_queue = None;
+        self.background_wait = None;
         let dropped = self.pending.len();
         self.pending.clear();
         self.log(LogEvent::Stopped {
@@ -638,6 +661,7 @@ impl Host {
         self.rotating = None;
         self.limit_wait = None;
         self.limit_queue = None;
+        self.background_wait = None;
         self.log(LogEvent::Hand {
             by: Actor::Owner,
             dropped,
@@ -842,6 +866,9 @@ impl Host {
             return;
         }
         self.limit_slot = None;
+        let Some(turn) = self.wait_for_background(turn) else {
+            return;
+        };
         self.turn_active = false;
         // ^ An error without a model call (a session limit) says nothing of the context.
         if turn.usage.context_tokens > 0 {
@@ -880,6 +907,7 @@ impl Host {
             return;
         }
         self.result_asked = false;
+        self.background_wait = None;
         let mut result = structured.unwrap_or_else(|| WorkerResult {
             status: "failed".into(),
             summary: if turn.text.is_empty() {
@@ -983,6 +1011,58 @@ impl Host {
             return;
         }
         self.start_checks();
+    }
+
+    /// A turn without a result that ends while its background jobs run is no missing result:
+    /// it waits for Claude's own turn after they end, at most `tasks.checkTimeoutSeconds`
+    /// from the first such turn. ref: docs/tasks.md "Claude adapter"
+    fn wait_for_background(&mut self, turn: TurnResult) -> Option<TurnResult> {
+        if turn.background == 0
+            || turn.is_error
+            || turn.structured.is_some()
+            || self.rotating.is_some()
+        {
+            return Some(turn);
+        }
+        let now = Instant::now();
+        let bound = Duration::from_secs(self.record.check_timeout_secs);
+        let wait = self.background_wait.get_or_insert(BackgroundWait {
+            deadline: now + bound,
+            turn: None,
+        });
+        if wait.deadline <= now {
+            return Some(turn);
+        }
+        let text = format!(
+            "the turn ended while {} background job(s) run: waiting for their notice",
+            turn.background
+        );
+        wait.turn = Some(turn);
+        self.say(&text);
+        self.log(LogEvent::Agent { text });
+        None
+    }
+
+    /// No notice came in time: the waiting turn ended without its result.
+    fn background_timed_out(&mut self) {
+        let Some(mut turn) = self
+            .background_wait
+            .as_mut()
+            .and_then(|wait| wait.turn.take())
+        else {
+            return;
+        };
+        if !self.turn_active {
+            return;
+        }
+        let text = format!(
+            "no notice from {} background job(s) in {} s: the turn ended without a result",
+            turn.background, self.record.check_timeout_secs
+        );
+        self.say(&text);
+        self.log(LogEvent::Agent { text });
+        turn.background = 0;
+        self.on_result(turn);
     }
 
     /// Whether the turn `text` goes to a fresh conversation, after the handoff notes: the
