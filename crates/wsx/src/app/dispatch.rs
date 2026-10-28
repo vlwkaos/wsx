@@ -123,7 +123,15 @@ impl App {
             return self.dispatch_routine_editor(action);
         }
         if let Mode::Tasks { list } = &mut self.mode {
+            if let Some(chat) = &mut list.chat {
+                if !chat.key(&action) {
+                    list.chat = None;
+                }
+                self.needs_redraw = true;
+                return Ok(());
+            }
             match (action, list.detail.is_some()) {
+                (Action::EnterMove, false) => list.open_chat(),
                 (Action::NavigateDown, false) => list.select(1),
                 (Action::NavigateUp, false) => list.select(-1),
                 (Action::Select, false) => list.open_detail(),

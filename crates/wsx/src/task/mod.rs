@@ -7,7 +7,7 @@ mod claude;
 pub mod host;
 mod hosting;
 mod ledger;
-mod limit;
+pub(crate) mod limit;
 pub mod manager;
 mod preview;
 mod slot;
@@ -1027,7 +1027,12 @@ fn close_checks(
 }
 
 /// A failed item starts a task that fixes it and links both.
-fn fail_check(project: &str, project_id: &str, id: &str, note: &str) -> Result<CheckItem> {
+pub(crate) fn fail_check(
+    project: &str,
+    project_id: &str,
+    id: &str,
+    note: &str,
+) -> Result<CheckItem> {
     let note = note.trim();
     if note.is_empty() {
         bail!("a fail needs --note saying what is wrong; the new task gets it");
@@ -1875,7 +1880,7 @@ fn deployed(project: Option<&str>, json: bool) -> Result<()> {
 /// Reuse the project's manager host, or start one in a hidden session in the main checkout.
 /// Returns whether it was started.
 /// Create the manager's hidden session, starting wsxd when it does not run.
-fn launch_manager(main: &Path) -> impl FnOnce(Vec<String>) -> Result<()> + '_ {
+pub(crate) fn launch_manager(main: &Path) -> impl FnOnce(Vec<String>) -> Result<()> + '_ {
     move |argv| {
         ops::create_session_launch(&load_config()?, main, "task-manager".into(), argv, None)
             .map(drop)

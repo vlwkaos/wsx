@@ -13,6 +13,7 @@ pub mod preview;
 pub mod review;
 pub mod routine_editor;
 pub mod search_feedback;
+pub mod task_chat;
 pub mod tasks;
 pub mod terminal_title;
 pub(crate) mod text_form;
@@ -535,7 +536,10 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
                 }
             }
         }
-        Mode::Tasks { list } => tasks::render(frame, area, list),
+        Mode::Tasks { list } => match &list.chat {
+            Some(chat) => task_chat::render(frame, area, chat),
+            None => tasks::render(frame, area, list),
+        },
         Mode::Workspace
         | Mode::Terminal { .. }
         | Mode::Move { .. }
@@ -702,6 +706,14 @@ fn status_bar_view(app: &App) -> StatusBarView {
             theme::ModeBadge::Info,
             vec!["(j/k)scroll".into(), "Esc: close".into()],
         ),
+        Mode::Tasks { list } if list.chat.is_some() => (
+            "MANAGER",
+            theme::ModeBadge::Info,
+            list.chat
+                .as_deref()
+                .map(task_chat::hints)
+                .unwrap_or_default(),
+        ),
         Mode::Tasks { list } if list.detail.is_some() => (
             "TASK",
             theme::ModeBadge::Info,
@@ -713,6 +725,7 @@ fn status_bar_view(app: &App) -> StatusBarView {
             vec![
                 "(j/k)move".into(),
                 "(enter)detail".into(),
+                "(m)anager".into(),
                 "Esc: close".into(),
             ],
         ),

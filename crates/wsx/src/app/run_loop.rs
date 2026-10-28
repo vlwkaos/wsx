@@ -74,6 +74,8 @@ impl App {
                 | Mode::IntegrationManager { .. }
                 | Mode::RoutinePresetPicker { .. }
                 | Mode::RoutineEditor { .. } => EventMode::Input,
+                // ^ The manager chat takes every character itself (task_chat.rs `key`).
+                Mode::Tasks { list } if list.chat.is_some() => EventMode::Input,
                 _ => EventMode::Normal,
             };
             let terminal_prefix_was_pending =

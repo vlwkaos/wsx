@@ -218,12 +218,16 @@ When it would pass 16 KiB, the memos are left out first, then the least urgent o
 
 ## TUI
 
-`t` in the TUI's Workspace opens the selected project's Tasks view, read-only, from the same ledger (`crates/wsx/src/task_list.rs`, `crates/wsx/src/ui/tasks.rs`):
+`t` in the TUI's Workspace opens the selected project's Tasks view from the same ledger (`crates/wsx/src/task_list.rs`, `crates/wsx/src/ui/tasks.rs`):
 
 - The heading names the project with the To check count and the waiting approvals.
 - `Open` lists the open tasks waiting, failed, ready, checking, then working; `Recent` the ledger's landed and closed ones. Each row is the title, the number in muted text, the state word and what it waits for (`<on>: <reason>`, or `try first: <hold>`). Below 40 columns a row drops the number, below 64 what it waits for; the title and state stay.
 - `j`/`k` move, `Enter` shows the task: state, what it waits for, each check as passed or failed, its To check items, then the summary (or a closed task's memo). `j`/`k` scroll it, `Esc` goes back; `Esc` or `t` closes the list.
 - While it is open the view compares the size and time of the store's files (`store::watched_files`, as the web client's watch) every second off the UI thread, and reads the ledger again only when one changed. A failed read keeps the last list and says why above it.
+- `m` in the list opens the project's manager chat (`crates/wsx/src/task_chat.rs`, `crates/wsx/src/ui/task_chat.rs`). The heading names the project with the counts; the line under it says what the last action answered, what runs ("Sending…"), what the manager does while it works (its last step, as the web's typing line) or that it is not running. The conversation is `chat_window` of `manager/log.jsonl`, newest at the bottom: owner messages ("You"), the manager's replies and other managers' messages each as the author, the time and the wrapped words; each event line written by wsx as its first clause (`#3 ready r2: <title>`), and quiet replies, new conversations and stops as one muted line; wsx's recap request is left out. `j`/`k` scroll and `G` goes back to the newest.
+- Under the chat are the open To check items (id, task, check, then `pass if`, and `where` from 100 columns) and the pending approvals ("Approve land #7"), at most a third of the height. `Tab` selects one; `p` passes and `s` skips the selected item, `f` asks for a note and fails it (which starts the fix task, as `check fail`), and `y` or `n` asks "Approve land #7? y/n" or "Deny land #7? y/n" and then runs `approve` or `deny`. The footer names only the keys the selected item takes.
+- `i` or `Enter` writes on the last line; `Enter` sends it as `wsx task say` does (the manager starts when it is not running), `Esc` leaves the line with its draft. A message that was not sent comes back to the line, and a failure stays above the chat until the next action. `Esc` goes back to the list.
+- The chat reads the log, the items and the approvals again when a store file changed, and asks the manager host for its status every second, off the UI thread like the list; messages and decisions run off it too, one at a time.
 
 ## Manager
 
