@@ -262,7 +262,7 @@ pub fn overview(scope: &Scope) -> Value {
         "to_check": check_items.iter().filter(|item| item.state == checks::CheckState::Open).count(),
         "tasks": listed.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
         "decisions": decisions(&lines),
-        "resolutions": resolutions(&scope.store, &tasks, &lines, now),
+        "resolutions": resolutions(&check_items, &tasks, &lines, now),
         "last_reply": last_reply.map(|(_, text)| text),
         "news": news,
         "last_unix_ms": last_unix_ms,
@@ -279,7 +279,7 @@ pub fn overview(scope: &Scope) -> Value {
 /// What the owner or the manager settled, newest first, one line each ("#4 may reach
 /// crates.io (owner)", "Approved land #3"): the chat shows a resolved card as this line.
 fn resolutions(
-    store_id: &str,
+    check_items: &[checks::CheckItem],
     tasks: &[(TaskDir, anyhow::Result<TaskRecord>)],
     lines: &[ApprovalLine],
     now: u64,
@@ -340,7 +340,7 @@ fn resolutions(
         ));
     }
     // ^ A failed check says which task fixes it; passes are the owner's own taps.
-    for item in checks::read(store_id).unwrap_or_default() {
+    for item in check_items {
         if let (checks::CheckState::Failed, Some(fix)) = (item.state, item.fix_task) {
             rows.push((
                 item.unix_ms,
@@ -824,15 +824,11 @@ pub fn checks(scope: &Scope) -> Outcome<Value> {
     // ^ The chat shows each item once, as a bubble at the time it was added, decided or not:
     // every open item and the newest decided ones.
     let recent = items.len().saturating_sub(CHAT_CHECKS);
-    let items: Vec<_> = items
-        .into_iter()
-        .enumerate()
-        .filter(|(index, item)| *index >= recent || item.state == checks::CheckState::Open)
-        .map(|(_, item)| item)
-        .collect();
     let rows: Vec<Value> = items
         .iter()
-        .map(|item| {
+        .enumerate()
+        .filter(|(index, item)| *index >= recent || item.state == checks::CheckState::Open)
+        .map(|(_, item)| {
             let mut row = json!(item);
             let dir = open_task(scope, item.task).ok();
             let title = dir

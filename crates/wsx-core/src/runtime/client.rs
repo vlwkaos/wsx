@@ -210,9 +210,8 @@ impl Client {
     /// `wsx daemon stop --force`: a graceful stop, and for a daemon whose live handoff never
     /// finished, the end of its process.
     pub fn force_shutdown(&self) -> io::Result<()> {
-        let error = match self.shutdown() {
-            Ok(()) => return Ok(()),
-            Err(error) => error,
+        let Err(error) = self.shutdown() else {
+            return Ok(());
         };
         match stuck_daemon_process(self) {
             Ok(Some(daemon)) => end_stuck_daemon(self, daemon),
@@ -1958,8 +1957,7 @@ fn handoff_stuck(socket: &Path, code: &str) -> bool {
             .is_some_and(handoff_marker_fresh)
 }
 
-/// The process of a daemon that refuses with `daemon_replacing` and has no fresh handoff
-/// marker, or `None` for any other daemon.
+/// The process of a daemon that refuses with `daemon_replacing` and has no fresh handoff marker.
 struct StuckDaemon {
     pid: libc::pid_t,
     started_unix_ms: u128,
