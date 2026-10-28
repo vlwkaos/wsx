@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Tasks: the owner can skip a To check item, `wsx task check skip <id>...` or `--all`, or Skip on the web row. A skipped item is neither passed nor failed: it leaves the open list, no longer holds a release, starts no fix task and stays recorded as skipped. Its capture goes 7 days later, like a decided item's ([docs/tasks.md](docs/tasks.md) "To check").
+
 ## [0.40.4] - 2026-10-28
 
 ### Added

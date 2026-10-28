@@ -1414,7 +1414,7 @@ if (told.next !== "On main; the last deploy does not have it yet.") await fail(`
 await until("[...document.querySelectorAll('.task-fold > .fold-head')].some((node) => node.textContent === 'To check · 1 open')", "#2's item is not open under To check", 60);
 await evaluate("[...document.querySelectorAll('.task-fold > .fold-head')].find((node) => node.textContent.startsWith('To check')).click()");
 const offers = await evaluate("[...document.querySelectorAll('.task-fold[open] .check-item .check-act')].map((node) => node.title).join()");
-if (offers !== "Try it on a preview,Fail,Pass") await fail(`#2's item offers ${offers}`);
+if (offers !== "Try it on a preview,Fail,Skip,Pass") await fail(`#2's item offers ${offers}`);
 await evaluate("document.querySelector('.timeline > .fold-head').click()");
 const history = await text(".timeline-what");
 if ((await text(".timeline > .fold-head")).join() !== "History" || !history.includes("Landed") || history.some((line) => /Verified|without verification/.test(line))) await fail(`the history reads ${history}`);
@@ -1573,7 +1573,7 @@ async function failForm() {
 }
 
 // --- To check: the reservoir's row opens the list; Fail needs a note and starts a task that
-// fixes it; Pass; All passed empties the list.
+// fixes it; Skip closes one without a verdict; All passed empties the list.
 // ^ The actions above spent this device's burst (10, then one per 3 s); this part sends four.
 await pause(12000);
 await go(chat);
@@ -1603,7 +1603,7 @@ await send("Network.setCacheDisabled", { cacheDisabled: false });
 await closeSheet("the To check list on a slow network", chat);
 await resize([1280, 800, 1]);
 await oneMotion("To check on a wide screen", () => go(`#/p/${project}/checks`));
-// ^ Wide, Try, Fail and Pass are a column right of each item's words, level with its title line.
+// ^ Wide, Try, Fail, Skip and Pass are a column right of each item's words, level with its title line.
 const wideRoom = await evaluate(`[...document.querySelectorAll('.check-list .check-item')].map((node) => { const box = (part) => node.querySelector(part).getBoundingClientRect();
   return [Math.round(box('.check-acts').left - box('.check-words').right), Math.round(box('.check-acts').top - box('.check-task').top), Math.round(box('.check-acts').right)]; })`);
 if (!wideRoom.every(([gap, top, right]) => gap >= 8 && Math.abs(top) <= 12 && Math.abs(right - wideRoom[0][2]) <= 1)) await fail(`the wide To check buttons are not in one column: ${JSON.stringify(wideRoom)}`);
@@ -1634,7 +1634,7 @@ const fitted = await evaluate(`(() => { const sheet = document.querySelector('di
 const [low, band, high, scrolls] = fitted;
 if (Math.abs(low) > 1 || (high < 84 ? scrolls || band < 0 || band > 48 : high > 85 || !scrolls)) await fail(`the To check sheet does not fit its rows: ${JSON.stringify(fitted)}`);
 // ^ On a phone the item's words use the list's width: the chip starts the title line, the labels
-// are muted, and Try, Fail and Pass are a row under the words at the same right edge on every
+// are muted, and Try, Fail, Skip and Pass are a row under the words at the same right edge on every
 // item, also under #2's long pass line. All passed is in the top bar.
 await evaluate(`document.querySelectorAll('.check-list .check-item')[2].querySelector('.check-pass').append(' and the words of the page'.repeat(4))`);
 const room = await evaluate(`(() => { const list = document.querySelector('.check-list').getBoundingClientRect(); const box = (node) => node.getBoundingClientRect();
@@ -1681,7 +1681,7 @@ await evaluate(`${firstItem}.querySelector('.need-form').requestSubmit()`);
 await until("document.querySelectorAll('.check-list .check-item').length === 2", "the failed item stayed in the list", 60);
 await closeSheet("the To check list after a fail", chat);
 // ^ Each To check item is also a bubble in the chat at the time it was added: its words, its
-// capture (the image viewer opens it) and Try, Fail and Pass; a decided one shows its result
+// capture (the image viewer opens it) and Try, Fail, Skip and Pass; a decided one shows its result
 // (docs/web-client-tasks.md "Project screen").
 const checkBubbles = "[...document.querySelectorAll('.log .check-bubble')]";
 // ^ The chat renders its newest rows; these items are older, so show the earlier ones. The wide
@@ -1695,7 +1695,7 @@ const inChat = await evaluate(`(() => { const open = ${bubbleOf(8)}, failed = ${
   return { tag: open?.querySelector('.bubble-tag')?.textContent, author: open?.querySelector('.bubble-author')?.textContent, image: open?.querySelector('.check-capture img')?.naturalWidth ?? 0,
     acts: [...(open?.querySelectorAll('.check-acts .check-act') ?? [])].map((node) => node.title), failed: failed?.querySelector('.check-state')?.textContent ?? '',
     failedActs: failed?.querySelectorAll('.check-acts').length ?? -1, unread: open?.hasAttribute('data-in') }; })()`);
-if (inChat.tag !== "To check" || inChat.author !== "Atlas" || inChat.image !== 480 || !inChat.acts.includes("Fail") || !inChat.acts.includes("Pass")
+if (inChat.tag !== "To check" || inChat.author !== "Atlas" || inChat.image !== 480 || !["Fail", "Skip", "Pass"].every((act) => inChat.acts.includes(act))
   || !/^Failed: .* fixes it$/.test(inChat.failed) || inChat.failedActs !== 0 || !inChat.unread) await fail(`the To check bubbles read ${JSON.stringify(inChat)}`);
 await evaluate(`${bubbleOf(8)}.scrollIntoView({ block: 'center' })`);
 await pause(300);
@@ -1712,10 +1712,12 @@ await shot("to-check-bubble-wide", ".composer-send");
 await resize([390, 844, 2]);
 await showEarlier();
 await until(`!!${bubbleOf(8)}`, "the chat has no To check bubble after the wide layout");
-await evaluate(`${bubbleOf(8)}.querySelector('.check-act[title="Pass"]').click()`);
-await until(`(${bubbleOf(8)}?.querySelector('.check-state')?.textContent ?? '') === 'Passed' && !${bubbleOf(8)}.querySelector('.check-acts')`, "Pass in the bubble did not settle it", 60);
+// ^ Skip closes an item without a verdict and no task; it goes through the same route arm as
+// Pass by id (docs/tasks.md "To check").
+await evaluate(`${bubbleOf(8)}.querySelector('.check-act[title="Skip"]').click()`);
+await until(`(${bubbleOf(8)}?.querySelector('.check-state')?.textContent ?? '') === 'Skipped' && !${bubbleOf(8)}.querySelector('.check-acts')`, "Skip in the bubble did not settle it", 60);
 await go(`#/p/${project}/checks`);
-await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 1", "the item passed in the chat stayed in the list", 60);
+await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 1", "the item skipped in the chat stayed in the list", 60);
 await evaluate("document.querySelector('.check-all').click()");
 await until("(document.querySelector('dialog.task-sheet .empty')?.textContent ?? '') === 'Nothing to check.'", "All passed did not empty the list", 60);
 await shot("to-check-done");

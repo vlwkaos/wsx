@@ -42,7 +42,7 @@ function Place({ where }) {
 }
 
 // One item: the task chip with what the task did as its title, then the check, where to look,
-// its capture and when it passes as labeled lines. Try, Fail and Pass are icons in one place on
+// its capture and when it passes as labeled lines. Try, Fail, Skip and Pass are icons in one place on
 // every item: the bottom right on a phone, a column right of the words on a wide screen.
 // Fail opens a required note sent with Send; × again or Escape closes it. The note goes to the
 // task that fixes it. `revision` is the task's current one: an item of an older revision names its own.
@@ -106,6 +106,7 @@ export function CheckRow({ project, item, revision, onChanged, tag = "li" }) {
             </a>`}
           ${item.state === "failed" && html`<p class="check-state">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
           ${item.state === "passed" && html`<p class="check-state">Passed</p>`}
+          ${item.state === "skipped" && html`<p class="check-state">Skipped</p>`}
         </div>
         ${acting && html`
           <span class="check-acts">
@@ -113,6 +114,8 @@ export function CheckRow({ project, item, revision, onChanged, tag = "li" }) {
             <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy} ref=${toggle}
               title=${failing ? "Close the note" : "Fail"} aria-expanded=${failing}
               aria-label=${`${failing ? "Do not fail" : "Fail"}: ${item.check}`} onClick=${() => setFailing(!failing)}><${Icon} name="fail" /></button>
+            <button class="icon-button check-act" type="button" disabled=${busy} title="Skip"
+              aria-label=${`Skip: ${item.check}`} onClick=${() => decide("skip")}><${Icon} name="skip" /></button>
             <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Pass"
               aria-label=${`Pass: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
           </span>`}

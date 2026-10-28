@@ -878,8 +878,8 @@ pub fn check_capture(scope: &Scope, id: &str, poster: bool) -> Outcome<(Vec<u8>,
     checks::read_capture(&dir, name).map_err(|_| Fault::not_found())
 }
 
-/// Pass or fail an item as the owner, through `wsx task check` so a fail starts its task
-/// the way the CLI does. `all` with `pass` passes every open item.
+/// Pass, skip or fail an item as the owner, through `wsx task check` so a fail starts its
+/// task the way the CLI does. `all` with `pass` or `skip` closes every open item.
 pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> Outcome<Value> {
     let valid_id = id == "all"
         || id
@@ -890,8 +890,8 @@ pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> O
     }
     let mut argv: Vec<String> = vec!["task".into(), "check".into()];
     match (decision, id) {
-        ("pass", "all") => argv.extend(["pass".into(), "--all".into()]),
-        ("pass", id) => argv.extend(["pass".into(), id.into()]),
+        ("pass" | "skip", "all") => argv.extend([decision.into(), "--all".into()]),
+        ("pass" | "skip", id) => argv.extend([decision.into(), id.into()]),
         ("fail", "all") => return Err(Fault::not_found()),
         ("fail", id) => {
             let note = message(note.as_deref().unwrap_or_default(), "the note").map_err(|_| {
