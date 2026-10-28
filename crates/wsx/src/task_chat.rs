@@ -189,6 +189,9 @@ impl ManagerChat {
                 }
                 // ^ Read again at once: the action wrote the store.
                 self.stamp = None;
+                self.last_check = Instant::now()
+                    .checked_sub(CHECK_INTERVAL)
+                    .unwrap_or(self.last_check);
                 changed = true;
             }
         }
@@ -201,7 +204,7 @@ impl ManagerChat {
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => self.pending = None,
             }
-        } else if self.last_check.elapsed() >= CHECK_INTERVAL || self.stamp.is_none() {
+        } else if self.last_check.elapsed() >= CHECK_INTERVAL {
             self.check();
         }
         changed
