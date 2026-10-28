@@ -162,16 +162,39 @@ def slowest(count=8):
     return sorted(spans, key=lambda span: -span[1])[:count]
 
 
-def screen(output, cols, rows=40):
+def screen(output, cols, rows=40, styled=False):
     """The screen `output` leaves: the cursor moves, clears and prints the TUI writes, without
-    styles. ratatui writes only the cells that changed, so the raw text alone can split words."""
+    styles. ratatui writes only the cells that changed, so the raw text alone can split words.
+    With `styled`, a list of rows of `(char, bold, background)` cells instead."""
     grid = [[' '] * cols for _ in range(rows)]
+    styles = [[(False, False)] * cols for _ in range(rows)]
+    bold = background = False
     row = col = 0
     tokens = re.finditer(r'\x1b\[([0-9;?<>=]*)([ -/]*[@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b.|(.)',
                          output.decode('utf-8', 'replace'), re.S)
     for token in tokens:
         params, final, char = token.group(1), token.group(2), token.group(3)
-        if final == 'H':
+        if final == 'm':
+            # ^ SGR: 1/22 bold, 4x/10x/48 a background, 49 none, 0 resets; 38/48 carry a colour.
+            codes = [int(n) if n.isdigit() else 0 for n in params.split(';')] if params else [0]
+            index = 0
+            while index < len(codes):
+                code = codes[index]
+                if code == 0:
+                    bold = background = False
+                elif code == 1:
+                    bold = True
+                elif code == 22:
+                    bold = False
+                elif 40 <= code <= 47 or 100 <= code <= 107:
+                    background = True
+                elif code == 49:
+                    background = False
+                if code in (38, 48):
+                    background = background or code == 48
+                    index += 2 if index + 1 < len(codes) and codes[index + 1] == 5 else 4
+                index += 1
+        elif final == 'H':
             numbers = [int(n) if n else 1 for n in params.split(';')] if params else [1, 1]
             row, col = numbers[0] - 1, (numbers[1] if len(numbers) > 1 else 1) - 1
         elif final == 'J' and params == '2':
@@ -184,14 +207,17 @@ def screen(output, cols, rows=40):
             row = min(row + 1, rows - 1)
         elif char is not None and char.isprintable() and 0 <= row < rows and col < cols:
             grid[row][col] = char
+            styles[row][col] = (bold, background)
             col += 2 if unicodedata.east_asian_width(char) in 'WF' else 1
+    if styled:
+        return [[(c, *s) for c, s in zip(line, style)] for line, style in zip(grid, styles)]
     return '\n'.join(''.join(line).rstrip() for line in grid)
 
 
-def tui_screens(wsx, env, cwd, steps, cols=120):
+def tui_screens(wsx, env, cwd, steps, cols=120, raw=None):
     """For each `(regex, keys)` step: wait until the drawn screen matches, keep it, send the
     keys. Returns the kept screens. A screen counts once output pauses: a frame can arrive in
-    several reads."""
+    several reads. `raw`, a list, gets the output so far at each kept screen."""
     screens, shown = [], ''
 
     def done(output, write, idle):
@@ -201,6 +227,8 @@ def tui_screens(wsx, env, cwd, steps, cols=120):
         shown = screen(output, cols)
         if re.search(steps[len(screens)][0], shown):
             screens.append(shown)
+            if raw is not None:
+                raw.append(bytes(output))
             if len(screens) == len(steps):
                 return True
             keys = steps[len(screens) - 1][1]
@@ -2636,9 +2664,21 @@ def run(wsx, wsxd, work, owned):
     # The TUI heads the Workspace with the active profile; P switches it, and the choice is kept
     # beside the active group (group-selection-v1.toml) for the next start.
     selection = (home / 'Library/Caches' if sys.platform == 'darwin' else work / 'k') / 'wsx/group-selection-v1.toml'
-    tui_screens(wsx, env, project, [(r'(?s) work ▾ (?!.*\bother\b).*\bdemo\b', b'P'), (r'(?s) default ▾ (?!.*\bdemo\b).*\bother\b', b'')])
+    header = []
+    tui_screens(wsx, env, project, [(r'(?s) work ▾ (?!.*\bother\b).*\bdemo\b', b'P'), (r'(?s) default ▾ (?!.*\bdemo\b).*\bother\b', b'')],
+                raw=header)
     assert 'profile = "default"' in selection.read_text(), selection.read_text()
-    tui_screens(wsx, env, project, [(r'(?s) default ▾ (?!.*\bdemo\b).*\bother\b', b'P'), (r'(?s) work ▾ (?!.*\bother\b).*\bdemo\b', b'')])
+    # ^ The title leads row 1: bold, on the terminal's own background, then a gap, then the
+    # group chips on their chip background.
+    cells = screen(header[0], 120, styled=True)[0]
+    text = ''.join(c for c, _, _ in cells)
+    assert text.startswith(' work ▾  ungrouped'), text
+    assert all(bold and not background for _, bold, background in cells[1:7]), cells[:10]
+    assert not cells[7][2], cells[6:10]
+    assert all(background for _, _, background in cells[8:19]), cells[7:20]
+    # A click on the title switches the profile, as P does (the \u25be says it opens a choice).
+    tui_screens(wsx, env, project, [(r'(?s) default ▾ (?!.*\bdemo\b).*\bother\b', b'\x1b[<0;3;1M\x1b[<0;3;1m'),
+                                    (r'(?s) work ▾ (?!.*\bother\b).*\bdemo\b', b'')])
     assert 'profile = "work"' in selection.read_text(), selection.read_text()
     replies = wait(lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'manager-reply:other'],
                    'reply at demo', 60)
