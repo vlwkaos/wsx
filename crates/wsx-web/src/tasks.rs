@@ -852,6 +852,10 @@ pub fn checks(scope: &Scope) -> Outcome<Value> {
                 .or(item.capture.as_deref())
                 .zip(dir.as_ref())
                 .and_then(|(name, dir)| checks::capture_size(dir, name)));
+            // ^ A decided item's capture goes after 7 days; its chat bubble says so.
+            if dir.is_some_and(|dir| checks::capture_removed(&dir, item)) {
+                row["capture_removed"] = json!(true);
+            }
             row
         })
         .collect();

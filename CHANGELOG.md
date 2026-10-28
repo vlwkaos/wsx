@@ -7,13 +7,25 @@
 ### Added
 
 - `wsx task new --skip <step>` leaves a `tasks.workflow.steps` step out of one task. The manager now picks the worker by the work: a change it has read and can state exactly runs on Sonnet without the context and plan steps, with a prompt that carries the files, the change and its proof; deep exploration, an unknown cause or a module redesign stays on the default model with every step; a broad bug hunt becomes one read-only audit per area, then one task per fix ([docs/tasks.md](docs/tasks.md) "Workflow").
+### Added
 
 - Tasks: a To check item can carry a short MP4 video (at most 25 MiB) with a `poster` image; the web plays it in the image viewer, served with byte ranges for iPhone Safari. Captures of items passed or failed more than 7 days ago are removed; their rows stay.
+- Each To check item shows once in the web manager chat, as a bubble from the manager at the time it was added: what to check, its capture (a tap opens the image viewer) and Try, Fail and Pass, so the owner checks it right in the chat. A decided item's bubble shows its result. The To check list over the composer stays.
+- A project's row on the web Home marks a manager message this device has not read (a reply that is not quiet, or a To check item): an accent mark before the name and the message's first line under it. Opening the project's chat clears it.
+
 ### Fixed
 
 - `wsx daemon stop --force` ends a wsxd whose live handoff never finished. A daemon before revision 35 whose rollback failed answers every request with `daemon_replacing` for ever, so the stop was refused, although the notice named it as the way out. The client now takes the daemon's pid from the socket's peer, checks that it runs as the same user and started when the daemon says it did, and sends SIGTERM, then SIGKILL; the next command starts a new wsxd ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "A stuck handoff").
 - A successful deploy reaches the manager as an event (`deploy of <commit> succeeded after <s> s`), as a release did. Before, a manager that waited for a deploy before it started work never heard that it could go on.
 - Web: a `Range` request for an empty To check capture or media file no longer panics the handler; it answers with the whole, empty file.
+- The web manager chat shows replies and the end of a turn after a phone sleeps or changes networks, without a reload. Its event stream could stay open and silent, so the typing dots stayed and replies showed only after a reload. The server now sends a ping every 10 s; a stream that says nothing for 25 s opens again, and a page that comes back opens its stream at once.
+- A request on a dead connection no longer freezes the manager chat or its composer. A chat read gives up after 20 s and a message after 60 s, and the chat reads again when a change came while a read hung; before, one hung read held every later read until a reload, and Send stayed disabled.
+- A device no longer stays on "Connection lost" when streams it left behind fill its four event streams. A page's new stream ends its older one, and a fifth stream ends the device's oldest instead of being refused.
+- The home row's typing dots and last reply follow the manager's turns. A change to only the manager's log was read as a worker's progress, so the overview was not sent and the dots could stay after the turn ended.
+- Older status lines in the manager chat no longer slide in again, and an open fold no longer closes, when a new decision or answer arrives. Those lines were keyed by their place in the list, so each new one re-made the rows below it and could move the chat.
+- The manager's typing bubble fits its three dots with even padding, and every dot shows whole. Its box took the width of the manager's name, which left an empty space right of the dots. The dots now rise and brighten in turn.
+- The working pulses and typing dots move again after a swipe back on iPhone, a return from the background or a page from the back-forward cache. WebKit could leave them standing still; the page now starts every looping animation again after each route change and return.
+- The To check sheet rises once and stays when its captures come late. It opened after a second and then grew as the images arrived; a PNG capture's box now has its size before the image comes, and the sheet opens when its list is read.
 - A resumed agent gets back the profile it ran with. After a crash or restart, wsxd resumed Claude with wsxd's own environment and PATH in the worktree root, so a session that ran with a work profile (`CLAUDE_CONFIG_DIR`) came back with the personal one. The agent's report now records its cwd and its config-root variables (`CLAUDE_CONFIG_DIR`, `CODEX_HOME` and the others wsx installs into), and the resume sets them on the agent; a variable the agent did not have is removed. Daemon revision 36, [docs/agent-orchestration.md](docs/agent-orchestration.md) "Resumed agents".
 - Web chat: a message to a Claude session no longer fails or lands in a busy editor while Claude compacts its conversation. Claude Code 2.1.310 compacts an idle conversation by itself about 54 minutes after a turn, a turn of its own of up to a minute. wsx reported only `/compact`, so wsxd showed the session done, and the message failed after 30 s ("not visibly idle") or was typed into Claude while it worked. Every compaction is now reported: an automatic one inside a turn keeps the turn, and one outside a turn shows "Compacting the conversation" and returns to the earlier state (daemon revision 37, Claude integration 27; run `wsx agent install claude` and restart Claude when it is idle) ([docs/agent-reporting.md](docs/agent-reporting.md) "Claude compaction").
 - Web chat: a sent message no longer vanishes for a moment when Claude takes it. It stays until the conversation shows it ([docs/web-client-chat.md](docs/web-client-chat.md) "Queue and Stop").
@@ -62,21 +74,6 @@
 - A task that is removed while the task list is read no longer blanks the whole list in `wsx task` and on the web; the list skips it. `deploys.jsonl` rolls over at 4 MiB instead of growing without end. The web server reads only the end of a task log to find a task's last land reason, conflict state, context size and cost.
 - Web: the manager, task, project and To check pages no longer show an answer for the page you left when you switch while a read is in flight.
 - Every atomic file write in wsx uses one helper with a unique temporary name, so two threads that write the same file no longer share one temporary file.
-### Added
-
-- Each To check item shows once in the web manager chat, as a bubble from the manager at the time it was added: what to check, its capture (a tap opens the image viewer) and Try, Fail and Pass, so the owner checks it right in the chat. A decided item's bubble shows its result. The To check list over the composer stays.
-- A project's row on the web Home marks a manager message this device has not read (a reply that is not quiet, or a To check item): an accent mark before the name and the message's first line under it. Opening the project's chat clears it.
-
-### Fixed
-
-- The web manager chat shows replies and the end of a turn after a phone sleeps or changes networks, without a reload. Its event stream could stay open and silent, so the typing dots stayed and replies showed only after a reload. The server now sends a ping every 10 s; a stream that says nothing for 25 s opens again, and a page that comes back opens its stream at once.
-- A request on a dead connection no longer freezes the manager chat or its composer. A chat read gives up after 20 s and a message after 60 s, and the chat reads again when a change came while a read hung; before, one hung read held every later read until a reload, and Send stayed disabled.
-- A device no longer stays on "Connection lost" when streams it left behind fill its four event streams. A page's new stream ends its older one, and a fifth stream ends the device's oldest instead of being refused.
-- The home row's typing dots and last reply follow the manager's turns. A change to only the manager's log was read as a worker's progress, so the overview was not sent and the dots could stay after the turn ended.
-- Older status lines in the manager chat no longer slide in again, and an open fold no longer closes, when a new decision or answer arrives. Those lines were keyed by their place in the list, so each new one re-made the rows below it and could move the chat.
-- The manager's typing bubble fits its three dots with even padding, and every dot shows whole. Its box took the width of the manager's name, which left an empty space right of the dots. The dots now rise and brighten in turn.
-- The working pulses and typing dots move again after a swipe back on iPhone, a return from the background or a page from the back-forward cache. WebKit could leave them standing still; the page now starts every looping animation again after each route change and return.
-- The To check sheet rises once and stays when its captures come late. It opened after a second and then grew as the images arrived; a PNG capture's box now has its size before the image comes, and the sheet opens when its list is read.
 
 ## [0.40.0] - 2026-10-27
 
