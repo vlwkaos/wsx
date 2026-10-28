@@ -243,8 +243,8 @@ export function TaskPage({ project, task, onClose, grip }) {
         <${TaskStory} detail=${detail} words=${words}>${held}${buttons.length ? html`
           <div class="task-next" role="group" aria-label="Actions">
             <div class="actions">${buttons}</div>
-            ${blocked}${handHint}
-          </div>` : null}</${TaskStory}>
+            ${blocked}
+          </div>` : null}${handHint}</${TaskStory}>
 
         ${FOLDS.filter((title) => report[title] != null).map((title) => {
           const note = foldNote(title, report[title], detail);
