@@ -1684,6 +1684,10 @@ await closeSheet("the To check list after a fail", chat);
 // capture (the image viewer opens it) and Try, Fail and Pass; a decided one shows its result
 // (docs/web-client-tasks.md "Project screen").
 const checkBubbles = "[...document.querySelectorAll('.log .check-bubble')]";
+// ^ The chat renders its newest rows; these items are older, so show the earlier ones. The wide
+// layout is another page tree, so after a resize past 900 px they are shown again.
+const showEarlier = async () => { for (let n = 0; n < 10 && (await count(".log-earlier")); n++) await click(".log-earlier"); };
+await showEarlier();
 await until(`${checkBubbles}.length >= 3`, "the chat has no To check bubbles", 60);
 const bubbleOf = (task) => `${checkBubbles}.find((node) => node.querySelector('.check-task .task-chip')?.textContent.trim() === '#${task}')`;
 await until(`(${bubbleOf(8)}?.querySelector('.check-capture img')?.naturalWidth ?? 0) > 0 && /fixes it$/.test(${bubbleOf(7)}?.querySelector('.check-state')?.textContent ?? '')`, "the To check bubbles did not load their capture and result", 100);
@@ -1698,10 +1702,14 @@ await pause(300);
 await shot("to-check-bubble", ".composer-send");
 await viewImages("to-check-bubble", `.log .check-bubble .check-capture`, 1);
 await resize([1280, 800, 1]);
+await showEarlier();
+await until(`!!${bubbleOf(8)}`, "the wide chat has no To check bubble");
 await evaluate(`${bubbleOf(8)}.scrollIntoView({ block: 'center' })`);
 await pause(300);
 await shot("to-check-bubble-wide", ".composer-send");
 await resize([390, 844, 2]);
+await showEarlier();
+await until(`!!${bubbleOf(8)}`, "the chat has no To check bubble after the wide layout");
 await evaluate(`${bubbleOf(8)}.querySelector('.check-act[title="Pass"]').click()`);
 await until(`(${bubbleOf(8)}?.querySelector('.check-state')?.textContent ?? '') === 'Passed' && !${bubbleOf(8)}.querySelector('.check-acts')`, "Pass in the bubble did not settle it", 60);
 await go(`#/p/${project}/checks`);
