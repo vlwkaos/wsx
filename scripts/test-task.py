@@ -1513,8 +1513,8 @@ def run(wsx, wsxd, work, owned):
     assert answer['text'].startswith('open: ') and answer['unix_ms'] >= held['unix_ms'] + 1000, (held, answer)
     assert not any(e['kind'] == 'reply' and 'session limit' in e['text'] for e in chat())
     # ^ wsx says the pause and the resume in the chat, in that order, before the answer.
-    kinds = [(e['kind'], bool(e.get('until'))) for e in chat() if e['kind'] in ('limit', 'reply') and e['unix_ms'] >= held['unix_ms']]
-    assert kinds[:3] == [('limit', True), ('limit', False), ('reply', False)], kinds
+    shown = [(e['kind'], bool(e.get('until'))) for e in chat() if e['kind'] in ('limit', 'reply') and e['unix_ms'] >= held['unix_ms']]
+    assert shown[:3] == [('limit', True), ('limit', False), ('reply', False)], shown
     assert turn_with('The session limit has reset'), 'the manager continues after its limit'
     # ^ A turn of only events that a limit held stays quiet after the reset: "-" shows nothing.
     # One with an owner message is a message (docs/web-client-tasks.md).
