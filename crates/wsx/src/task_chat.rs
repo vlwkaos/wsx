@@ -409,7 +409,14 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
                 Author::Manager { project, .. } => {
                     rows.push(said(Who::Peer(project.clone()), text))
                 }
-                Author::Role { name, .. } => rows.push(said(Who::Peer(name.clone()), text)),
+                // ^ In a role's chat the manager is a peer too, by its own word.
+                Author::Role { name, .. } => rows.push(said(
+                    Who::Peer(match name.as_str() {
+                        "manager" => "Manager".into(),
+                        name => name.into(),
+                    }),
+                    text,
+                )),
                 Author::Events => rows.extend(
                     text.lines()
                         .filter(|line| !line.trim().is_empty())
