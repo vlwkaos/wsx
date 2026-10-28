@@ -15,7 +15,7 @@ Status: proposal, nothing built. The answer in two lines:
 | Manager | One per project, `tasks/<project-id>/`; its host builds its agent's `launch.env` | `docs/tasks.md` "Manager", `crates/wsx/src/task/manager.rs:1271` |
 | Land target | Every task records `default_branch`. Land, rebase, revision base, close and the worker boundary read it. The fast-forward runs in the checkout that has that branch | `crates/wsx/src/task/mod.rs:894`, `host.rs:1678`, `host.rs:1930`, `mod.rs:1426`, `boundary.rs:37`, `crates/wsx-core/src/task/copy.rs:414` |
 
-`docs/web-deploy.md` "Site file" shows a `[project]` table that `site.rs` refuses. That doc is stale; fix it with this work.
+`docs/web-deploy.md` "Site file" shows a `[project]` table that `site.rs` refuses. That doc is stale; fix it when `site.rs` gains the profile form.
 
 ## A. Profiles
 
@@ -38,7 +38,7 @@ projects = { profile = "work" }          # new third form, beside paths and "all
 | A profile owns | How it is attached |
 |---|---|
 | Projects | `ProjectEntry.profile`; exactly one profile per project |
-| Agent account | Task hosts set `CLAUDE_CONFIG_DIR` in the agent env they already build (`manager.rs:1271`, the worker's `KEPT_ENV`). Nothing changes in the protocol |
+| Agent account | Task hosts set `CLAUDE_CONFIG_DIR` in the agent env they already build (`manager.rs:1271`; a worker today only passes wsxd's through `KEPT_ENV`, `claude.rs:21`). A session the owner starts (TUI, web `session_start`) gets the argv `env CLAUDE_CONFIG_DIR=<root> <agent>`. Nothing changes in the protocol |
 | Manager | Unchanged. It is per project, so it belongs to the project's profile |
 | Web sites | A site grants `{ profile = "<name>" }`. A project that joins the profile later is reachable at once, as with `"all"` |
 | Skills | The skills of its config root (`crates/wsx-web/src/commands.rs:169` already reads `$CLAUDE_CONFIG_DIR/skills`); the host reads them from the profile's config root |
@@ -63,18 +63,18 @@ flowchart LR
 
 | Concern | Rule | Reuses |
 |---|---|---|
-| Create | `task new --hold "<why>"` is the parent. Any open task can be one | `hold` (docs/tasks.md "Hold and trial") |
-| Child | `task new --into <p>`: base is p's tip, `default_branch = wsx/t<p>`, `parent: p` in `task.json` | `--from`, `record.default_branch` |
+| Create | Any open task becomes a parent when a child names it. `--into` holds p when it is not held ("parent of #n"), so p never lands by itself or by review | `hold` (docs/tasks.md "Hold and trial") |
+| Child | `task new --into <p>`: base is p's tip, `default_branch = wsx/t<p>`, `parent: p` in `task.json`. Its boundary denies p's branch ref | `--from`, `record.default_branch`, `boundary.rs:37` |
 | Child checks | Run in the child's copy, as today | host checks |
-| Child land | Refused while p is `working`, `checking` or by hand: "parent #p is busy", and the land retries when p is free. Otherwise rebase onto p's tip and fast-forward in p's working copy | `land_on_tip`, `copy::fast_forward` |
+| Child land | Refused while p is `working`, `checking` or by hand ("parent #p is busy"); the child stays `ready` and the manager lands it again on p's next event. Otherwise rebase onto p's tip and fast-forward in p's working copy | `land_on_tip`, `copy::fast_forward`, manager events |
 | Parent after a child land | p's host makes a new revision of those commits and runs checks, as `handback` does. Without this, `host.rs:1682` would fast-forward main with an unchecked HEAD | `handback` path (`host.rs:651`) |
 | Child follow-ups | `close` as today (it compares with `wsx/t<p>`). No `deploy --if-new`, because main did not move | `after_landing` (`host.rs:1881`) |
 | To check | A child's items join the project list at p's land into main, read from its landed children's `result.json`. A release waits for them only after that | `collect_verify` |
 | Conflicts with main | Only at p's land: rebase onto main, a conflict starts p's worker turn, checks, then the land. A child's conflict is with p, resolved by the child's worker | `resolve_conflict` |
 | Long life | p's copy and host live until close (pane process, kept across daemon restarts). `trial` and `preview` work on p as on any task | "Host", "Preview" |
-| Close or land of p | Both refuse while p has open children; `--discard` names them | `close` rules |
+| Close or land of p | Both refuse while p has open children and name them, also with `--discard` | `close` rules |
 | Thread | p's task sheet is its chat: `add`, `steer`, timeline. The project manager still coordinates every task | task sheet |
-| Ledger | Each open task gets `parent`; a parent row counts its open children | `ledger` |
+| Ledger | Each open task gets `parent`; a parent row counts its open children. `overlaps` leaves out a task's own parent and children, which always share paths | `ledger`, `list --json` overlaps |
 
 ## C. UX
 
