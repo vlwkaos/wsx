@@ -443,6 +443,15 @@ def main():
             verify.append({'check': 'run `wsx task list`', 'where': '', 'capture': '', 'pass_if': 'it lists the task'})
         if 'BAREHV' in words:
             verify.append({'check': 'the page reads well', 'where': '/#/x', 'capture': '', 'pass_if': 'it reads well'})
+        if 'BACKGROUND' in words:
+            # ^ BACKGROUND <s>: the turn ends while a job runs, which ends after s seconds and
+            # gets Claude's own turn with the result. BACKGROUND never: it never ends.
+            after = words[words.index('BACKGROUND') + 1]
+            background_turn(session, model)
+            if after == 'never':
+                continue
+            time.sleep(int(after))
+            background_notice(session)
         if 'NORESULT' in words:
             no_result = end_without_result(session, int(words[words.index('NORESULT') + 1]))
             continue
@@ -480,6 +489,29 @@ def usage_limit(session, seconds):
     emit({'type': 'result', 'subtype': 'success', 'is_error': True, 'result': words, 'session_id': session,
           'api_error_status': 429, 'api_error': 'usage_limit_reached', 'permission_denials': [],
           'usage': {'input_tokens': 0, 'output_tokens': 0}})
+
+
+def background_turn(session, model):
+    """A turn that starts a background subagent and ends without a result, as Claude 2.1.310 streams it."""
+    job = {'task_id': 'a57e6485d4d828dfd', 'task_type': 'local_agent', 'description': 'review the diff'}
+    emit({'type': 'assistant', 'parent_tool_use_id': None, 'session_id': session, 'message': {
+        'model': model, 'content': [{'type': 'tool_use', 'id': 'toolu_bg', 'name': 'Agent', 'input': {'prompt': 'review'}}],
+        'usage': {'input_tokens': 10, 'output_tokens': 5}}})
+    emit({'type': 'system', 'subtype': 'background_tasks_changed', 'session_id': session,
+          'tasks': [job, {'task_id': 'own', 'task_type': 'local_bash', 'description': 'watcher', 'ambient': True}]})
+    emit({'type': 'system', 'subtype': 'task_started', 'session_id': session, 'task_id': job['task_id'],
+          'tool_use_id': 'toolu_bg', 'task_type': 'local_agent', 'is_backgrounded': True, 'description': job['description']})
+    emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'The review runs in the background.',
+          'session_id': session, 'permission_denials': [], 'usage': {'input_tokens': 10, 'output_tokens': 5}})
+
+
+def background_notice(session):
+    """The job ends: its notice, the live set with only Claude's own watcher, the init of Claude's own turn."""
+    emit({'type': 'system', 'subtype': 'task_notification', 'session_id': session, 'task_id': 'a57e6485d4d828dfd',
+          'tool_use_id': 'toolu_bg', 'status': 'completed', 'output_file': '', 'summary': 'review done'})
+    emit({'type': 'system', 'subtype': 'background_tasks_changed', 'session_id': session,
+          'tasks': [{'task_id': 'own', 'task_type': 'local_bash', 'description': 'watcher', 'ambient': True}]})
+    emit({'type': 'system', 'subtype': 'init', 'session_id': session})
 
 
 def end_without_result(session, left):

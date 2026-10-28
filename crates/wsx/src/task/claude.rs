@@ -60,6 +60,9 @@ pub struct TurnResult {
     pub usage: TurnUsage,
     /// The agent's usage limit ended the turn, before any model call.
     pub limit: Option<UsageLimit>,
+    /// Background jobs (subagents, Bash) still running when the turn ended: Claude starts
+    /// its own turn when each ends. ref: docs/tasks.md "Claude adapter"
+    pub background: usize,
 }
 
 /// Claude's usage limit: a result with `api_error: "usage_limit_reached"`.
@@ -529,6 +532,9 @@ struct Turns {
     model: String,
     /// `resetsAt` of the last rejected `rate_limit_info` before the result.
     resets_at: Option<u64>,
+    /// The live background jobs of the last `background_tasks_changed`, its `ambient` ones
+    /// (Claude's own) left out. None are announced at startup, so a process starts at 0.
+    background: usize,
 }
 
 impl Turns {
@@ -578,6 +584,15 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
         "system" if value.get("subtype")?.as_str()? == "init" => Some(AgentLine::Init(
             value.get("session_id")?.as_str()?.to_string(),
         )),
+        "system" if value.get("subtype")?.as_str()? == "background_tasks_changed" => {
+            turns.background = value
+                .get("tasks")?
+                .as_array()?
+                .iter()
+                .filter(|task| task["ambient"] != true)
+                .count();
+            None
+        }
         "rate_limit_event" => {
             turns.note_limit(value.get("rate_limit_info"));
             None
@@ -608,6 +623,7 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
         }
         "result" => Some(AgentLine::Result(TurnResult {
             limit: usage_limit(value, turns.resets_at.take()),
+            background: turns.background,
             is_error: value
                 .get("is_error")
                 .and_then(Value::as_bool)

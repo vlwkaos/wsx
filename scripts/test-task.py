@@ -2627,6 +2627,27 @@ def run(wsx, wsxd, work, owned):
     for n in (manager_task, role_task):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'no roles')
+    # 32v. A turn that ends while a background job runs is no missing result (docs/tasks.md
+    # "Claude adapter"): the host waits for Claude's own turn after the job's notice.
+    mark('32v')
+    waiting = 'the turn ended while 1 background job(s) run: waiting for their notice'
+    bg = js('task', 'new', 'BACKGROUND 2 WORK background.txt')['id']
+    assert wait_state(bg, 'ready', 'failed')['state'] == 'ready', show(bg)['result']
+    assert asked(bg) == []
+    assert [e['status'] for e in log(bg) if e['kind'] == 'result'] == ['done']
+    assert [e.get('text') for e in log(bg)].count(waiting) == 1
+    # ^ A job that never reports waits at most tasks.checkTimeoutSeconds, then the result is
+    # asked for once.
+    configure(LAND_CONFIG + '  checkTimeoutSeconds: 2\n', 'short background wait')
+    stuck = js('task', 'new', 'BACKGROUND never WORK stuck.txt')['id']
+    assert wait_state(stuck, 'ready', 'failed')['state'] == 'ready', show(stuck)['result']
+    assert len(asked(stuck)) == 1
+    texts = [e.get('text') for e in log(stuck)]
+    assert waiting in texts and 'no notice from 1 background job(s) in 2 s: the turn ended without a result' in texts, texts
+    assert texts.index(waiting) < texts.index('no notice from 1 background job(s) in 2 s: the turn ended without a result')
+    configure(LAND_CONFIG, 'background wait back to default')
+    js('task', 'close', bg, '--discard')
+    js('task', 'close', stuck, '--discard')
 
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     mark('33')
