@@ -102,11 +102,12 @@ async function shot(name, primary) {
     await evaluate(`globalThis.SLOP_AUDIT_PRIMARY = ${JSON.stringify(primary ?? null)}`);
     // ^ Behind an open modal dialog (the task sheet beside the chat at 1280 px) the page is
     // inert, so the audit, which does not know modal dialogs, sees only the dialog.
-    const audit = await evaluate(`(() => { const modal = document.querySelector('dialog[open]:modal'), style = document.createElement('style');
-      if (modal) { style.textContent = 'body { visibility: hidden; } dialog:modal { visibility: visible; }'; document.head.append(style); }
+    // The page's CSP refuses a style element; CSSOM properties are allowed.
+    const audit = await evaluate(`(() => { const modal = document.querySelector('dialog[open]:modal');
+      if (modal) { document.body.style.visibility = 'hidden'; modal.style.visibility = 'visible'; }
       try { return (
 ${auditSource}
-); } finally { style.remove(); } })()`);
+); } finally { if (modal) { document.body.style.visibility = ''; modal.style.visibility = ''; } } })()`);
     fs.writeFileSync(path.join(captures, `tasks-${file}.slop.json`), JSON.stringify(audit, null, 1));
     if (audit.horizontalOverflow) await fail(`${label} overflows sideways`);
     if (audit.primaryAction.filledInViewport > 1) await fail(`${label} shows ${audit.primaryAction.filledInViewport} filled accent controls: ${JSON.stringify(audit.primaryAction.filled)}`);
