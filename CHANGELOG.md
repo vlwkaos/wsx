@@ -4,6 +4,7 @@
 
 ### Added
 
+- TUI: the manager chat. In the Tasks view (`t`), `m` opens the project's manager chat: your messages and the manager's replies with their times, task events and quiet replies as one muted line each, and what the manager does while it works, newest at the bottom (`j`/`k` scroll). `i` writes to the manager the way `wsx task say` does and starts it when it is not running. The open To check items and waiting approvals are listed under the chat: `Tab` selects one, `p`, `s` and `f` pass, skip or fail an item with a note, and `y` or `n` approves or denies a request after a y/n question ([docs/tasks.md](docs/tasks.md) "TUI").
 - Tasks: the owner can skip a To check item, `wsx task check skip <id>...` or `--all`, or Skip on the web row. A skipped item is neither passed nor failed: it leaves the open list, no longer holds a release, starts no fix task and stays recorded as skipped. Its capture goes 7 days later, like a decided item's ([docs/tasks.md](docs/tasks.md) "To check").
 
 ### Fixed

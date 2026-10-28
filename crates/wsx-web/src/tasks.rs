@@ -19,7 +19,7 @@ use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
     self, call_host_waiting, call_socket, checks, copy, ledger,
     manager::{
-        chat_window, decided_request, pending_approvals, ApprovalLine, ManagerEvent,
+        activity, chat_window, decided_request, pending_approvals, ApprovalLine, ManagerEvent,
         ManagerRequest, ManagerResponse,
     },
     owner,
@@ -606,15 +606,7 @@ pub fn chat(
         );
     };
     let log = dir.read_log().map_err(internal)?;
-    // ^ What the manager does now: its last step after its last reply.
-    let activity = log
-        .iter()
-        .rev()
-        .take_while(|entry| !matches!(entry.event, ManagerEvent::Reply { .. }))
-        .find_map(|entry| match &entry.event {
-            ManagerEvent::Agent { text } => Some(text.clone()),
-            _ => None,
-        });
+    let activity = activity(&log).map(str::to_string);
     let (entries, skipped) = chat_window(&log, after);
     let entries: Vec<Value> = entries
         .into_iter()

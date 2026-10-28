@@ -178,6 +178,17 @@ pub fn chat_window(log: &[ManagerEntry], after: Option<u64>) -> (Vec<&ManagerEnt
     (entries, skipped)
 }
 
+/// What the manager does now: its last step after its last reply. Shown while it is busy.
+pub fn activity(log: &[ManagerEntry]) -> Option<&str> {
+    log.iter()
+        .rev()
+        .take_while(|entry| !matches!(entry.event, ManagerEvent::Reply { .. }))
+        .find_map(|entry| match &entry.event {
+            ManagerEvent::Agent { text } => Some(text.as_str()),
+            _ => None,
+        })
+}
+
 /// A task as the manager last reported it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Seen {

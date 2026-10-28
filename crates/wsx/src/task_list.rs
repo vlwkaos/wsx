@@ -1,4 +1,4 @@
-//! The TUI's read-only task list: the project's ledger, read off the UI thread and read
+//! The TUI's task list: the project's ledger, read off the UI thread and read
 //! again when a file of its task store changes. ref: docs/tasks.md "TUI"
 use serde_json::Value;
 use std::{
@@ -39,6 +39,8 @@ pub struct TaskList {
     /// The task whose detail shows, by number, and its scroll.
     pub detail: Option<u64>,
     pub scroll: u16,
+    /// The project's manager chat, opened over the list with `m`.
+    pub chat: Option<Box<crate::task_chat::ManagerChat>>,
     stamp: Option<Stamp>,
     pending: Option<mpsc::Receiver<Read>>,
     last_check: Instant,
@@ -57,6 +59,7 @@ impl TaskList {
             selected: 0,
             detail: None,
             scroll: 0,
+            chat: None,
             stamp: None,
             pending: None,
             last_check: Instant::now(),
@@ -86,8 +89,19 @@ impl TaskList {
         });
     }
 
+    pub fn open_chat(&mut self) {
+        self.chat = Some(Box::new(crate::task_chat::ManagerChat::new(
+            self.project.clone(),
+            self.main.clone(),
+        )));
+    }
+
     /// Take a finished read and start the next check when due. True when the view changed.
+    /// An open chat reads instead of the list.
     pub fn poll(&mut self) -> bool {
+        if let Some(chat) = &mut self.chat {
+            return chat.poll();
+        }
         if let Some(rx) = &self.pending {
             return match rx.try_recv() {
                 Ok(read) => {

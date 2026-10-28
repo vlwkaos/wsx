@@ -1,4 +1,4 @@
-//! The read-only Tasks view: the list in attention order and one task's detail.
+//! The Tasks view: the list in attention order and one task's detail, both read-only.
 //! ref: docs/tasks.md "TUI"
 use super::{theme, workspace_tree::truncate_to_width};
 use crate::task_list::{waits, TaskList, TaskRow};

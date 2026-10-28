@@ -1515,6 +1515,58 @@ def run(wsx, wsxd, work, owned):
     wait_closed(ap)
     js('task', 'close', keep, '--discard')
 
+    # 22b. The TUI's manager chat (`t`, then `m`; docs/tasks.md "TUI"): the conversation, the
+    # open To check item and the waiting approval; a message goes to the manager's log, `p`
+    # passes the item and `n` then `y` denies the request; 80 columns still show the message.
+    mark('22b')
+    seen_item = js('task', 'new', 'WORK tui.txt HV')['id']
+    assert wait_state(seen_item, 'ready', 'failed')['state'] == 'ready'
+    assert js('task', 'land', seen_item)['state'] == 'landed'
+    item = next(i for i in js('task', 'check')['open'] if i['task'] == seen_item)
+    asks = js('task', 'new', 'WORK asks.txt')['id']
+    assert wait_state(asks, 'ready', 'failed')['state'] == 'ready'
+    asked = js('task', 'say', 'RUN wsx task land %d -p demo --json' % asks)
+    request = re.search(r'the owner was asked \((a\d+)\)', reply_to(asked['id'])['text']).group(1)
+    # ^ Nothing else waits: the chat's selection starts at this item and Tab reaches the request.
+    assert [i['id'] for i in js('task', 'check')['open']] == [item['id']]
+    assert [p['id'] for p in js('task', 'ledger')['approvals']] == [request]
+    checks_file = Path(show(seen_item)['report']).parent.parent / 'checks.jsonl'
+
+    def owner_said(text):
+        lines = [json.loads(line) for line in manager_log.read_text().splitlines() if line.strip()]
+        return any(e.get('kind') == 'message' and e.get('from') == 'owner' and e.get('text') == text
+                   for e in lines)
+
+    shots = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'),
+        (r'\(m\)anager', b'm'),
+        (r'(?s)Manager demo +1 to check  1 approval\n.*▸ %s' % item['id'], b'i'),
+        (r'Enter: send', b'hello from the tui'),
+        (r'> hello from the tui', b'\r'),
+        (r'(?m)^ Sent$', b'\x1b'),
+        (r'\(p\)ass', b'p'),
+        (r'%s passed' % item['id'], b'\t'),
+        (r'\(n\)deny', b'n'),
+        (r'Deny land #%d\? y/n' % asks, b'y'),
+        (r'%s denied' % request, b'\x1b'),
+        (r'\(m\)anager', b'\x1b'),
+        (r'WORKSPACE', b'')])
+    opened, sent = shots[2], shots[5]
+    assert re.search(r'(?m)^ +▸ %s +#%d +open the file' % (item['id'], seen_item), opened), opened
+    assert re.search(r'pass if: it has text', opened) and re.search(r'%s +Approve land #%d' % (request, asks), opened), opened
+    assert re.search(r'(?m)^ You +\d\d:\d\d$', sent) and 'hello from the tui' in sent, sent
+    assert re.search(r'(?m)^ Manager +\d\d:\d\d$', opened) and 'MANAGER' in opened, opened
+    assert owner_said('hello from the tui'), manager_log.read_text()[-2000:]
+    assert item['id'] not in [i['id'] for i in js('task', 'check')['open']]
+    rows = [json.loads(line) for line in checks_file.read_text().splitlines() if line.strip()]
+    assert [r['state'] for r in rows if r['id'] == item['id']][-1] == 'passed', rows
+    assert js('task', 'ledger')['approvals'] == [] and show(asks)['state'] == 'ready'
+    narrow = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'Manager demo', b'\x1b'),
+        (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], cols=80)[2]
+    assert re.search(r'(?m)^ You +\d\d:\d\d$', narrow) and 'hello from the tui' in narrow, narrow
+    js('task', 'close', asks, '--discard')
+
     # 23. wsx's boundary (docs/tasks.md "Permissions"): one Seatbelt profile per role over the
     mark('23')
     # whole agent process tree, so this fake worker, which is not Claude, is inside it too.

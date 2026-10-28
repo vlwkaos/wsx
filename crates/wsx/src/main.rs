@@ -12,6 +12,7 @@ mod runtime_util;
 mod search;
 mod session_state;
 mod task;
+mod task_chat;
 mod task_list;
 mod terminal_surface;
 #[cfg(test)]
