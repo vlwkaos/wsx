@@ -2558,9 +2558,9 @@ def run(wsx, wsxd, work, owned):
             (r'(?ms)^ billing +\d\d:\d\d$.*ROLE', b'\x1b'),
             (r'\(m\)anager', b'\x1b'),
             (r'WORKSPACE', b'')], cols=cols)
-        chat = shots[3]
-        assert 'to check' not in chat and re.search(r'(?m)^ billing +\d\d:\d\d$', chat), chat
-        assert 'role answer' in chat or 'STATUS' in chat, chat
+        talk = shots[3]
+        assert 'to check' not in talk and re.search(r'(?m)^ billing +\d\d:\d\d$', talk), talk
+        assert 'role answer' in talk or 'STATUS' in talk, talk
     # role close keeps the notes; the role's tasks go back to the manager. A role with no turn for
     # tasks.roles.closeDays is closed by wsx, and the manager hears it.
     (roles_dir / 'billing/notes/context.md').write_text('billing notes\n')
