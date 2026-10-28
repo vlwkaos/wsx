@@ -822,6 +822,8 @@ await resize([390, 420, 2]);
 await shot("reservoir-short", ".composer-send");
 for (const [width, height, scale] of [[390, 560, 2], [1280, 520, 1]]) {
   await resize([width, height, scale]);
+  await openReservoir();
+  await until("!!document.querySelector('.reservoir-fixed .reservoir-label')", `the open list has no Running label at ${width} px`);
   await pause(300);
   const fixed = await evaluate(`(async () => { const label = document.querySelector('.reservoir-fixed .reservoir-label'), list = document.querySelector('.reservoir-scroll');
     const before = label.getBoundingClientRect().top; list.scrollTop = list.scrollHeight; await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
