@@ -3102,6 +3102,10 @@ def task_journey(args):
         logged('owner', 'Keep going.', 'On it.', quiet=False)
         logged('events', '#92 ready r1: Short run', 'Landing #92.')
         logged('owner', 'Thanks.', 'Noted.', quiet=False)
+        # ^ The usage limit held that turn: wsx wrote a pause and a resume between the message and the reply.
+        held_at = old_log[-3]['unix_ms']
+        old_log[-1:-1] = [{'kind': 'limit', 'until': '07:45', 'unix_ms': held_at + 100},
+                          {'kind': 'limit', 'unix_ms': held_at + 1500}]
         # ^ Stored quiet before the length rule: a long reply to events reads as a message.
         logged('events', '#93 landed r1: Release notes', 'Release notes are ready:\n\n| Part | State |\n|---|---|\n| wsx | built |\n\n- the notes are written')
         (manager_dir / 'log.1.jsonl').write_text(''.join(json.dumps(entry) + '\n' for entry in old_log))
