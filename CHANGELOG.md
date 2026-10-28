@@ -2,9 +2,9 @@
 
 ## [Unreleased]
 
-## [0.40.2] - 2026-10-28
+## [0.40.3] - 2026-10-28
 
-0.40.1 was tagged but never published: its release tests failed on a lint, so this release carries everything listed here.
+0.40.1 and 0.40.2 were tagged but never published: their release tests failed (a lint, then a test that hangs on Linux), so this release carries everything listed here.
 
 ### Added
 
@@ -35,7 +35,7 @@
 
 ## [0.40.0] - 2026-10-27
 
-**Not stable, use 0.40.2.** A wsxd live handoff in 0.40.0 can fail to end, after which wsxd refuses every request and its sessions run where no window can see them; a pane can also stall on a program that stops reading its input. 0.40.1 was tagged but never published.
+**Not stable, use 0.40.3.** A wsxd live handoff in 0.40.0 can fail to end, after which wsxd refuses every request and its sessions run where no window can see them; a pane can also stall on a program that stops reading its input. 0.40.1 and 0.40.2 were tagged but never published.
 
 The task workers and the manager are the headline of this release. A worker builds one change in its own working copy inside a boundary that wsx owns, runs the project's checks and returns a result; the manager plans requests in a chat, lands and deploys passing work, and asks the owner only where something goes public or is lost ([docs/tasks.md](docs/tasks.md)). The hosted web client has the manager's home: its chat, the task reservoir and the To check list of what only the owner can judge, with an image viewer for their captures ([docs/web-client.md](docs/web-client.md)). Lands and deploys are steadier: a land rebases and checks again when the default branch moved, and the live site gets each land within minutes. wsxd is at daemon revision 34 with protocol 16: the first start of 0.40.0 hands a running 0.31 daemon's terminals off to the new one. A 0.31 daemon cannot hand off a pane whose program exited, so restart or close such panes before the upgrade ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "Exited panes").
 
