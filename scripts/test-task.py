@@ -1157,7 +1157,7 @@ def run(wsx, wsxd, work, owned):
                  'A release refuses while items are open, unless the owner', '`wsx task trial <n>`',
                  '`--owner-said <id>`', 'never name a message that did not ask',
                  'call a change live only when', 'On `hand`, the owner works in its copy',
-                 'nothing asks you for permission', 'read-only git in Bash',
+                 'Nothing asks you for permission', 'read-only git in Bash', '`wsx task new --into <n>`',
                  'only after the owner says yes, commit', 'also in a pipe or with a heredoc',
                  'the Skill tool as `owner:<name>`', 'check rather than guess',
                  '/manager/notes/decisions.md', '/manager/notes/context.md', "worker's 'memo:'",
@@ -2385,6 +2385,66 @@ def run(wsx, wsxd, work, owned):
     assert show(twice)['result']['result']['summary'] == 'the agent ended with success and no result'
     js('task', 'close', once, '--discard')
     js('task', 'close', twice, '--discard')
+
+    # 32q. Parent tasks (docs/tasks.md "Parent tasks"): children land into a held parent, which
+    mark('32q')
+    # checks each child's commits and lands on main once, with the children's To check items.
+    gate = base / 'parent-gate'
+    gate.touch()
+    configure(LAND_CONFIG.replace('"test ! -e broken.txt"', '"while [ ! -e %s ]; do sleep 0.2; done"' % gate),
+              'a parent gate')
+    parent = js('task', 'new', 'HV WORK parent.txt')['id']
+    assert wait_state(parent, 'ready', 'failed')['state'] == 'ready', show(parent)
+    assert 'cannot be used with' in cli('task', 'new', '--into', parent, '--from', 'main', 'WORK x.txt', ok=False).stderr
+    first = js('task', 'new', '--into', parent, '--files', '*.txt', 'HV CAPTURE WORK child1.txt')
+    assert first['base'] == git('rev-parse', 'wsx/t%d' % parent), first
+    first = first['id']
+    second = js('task', 'new', '--into', parent, '--files', '*.txt', 'HV WORK child2.txt')['id']
+    assert show(parent)['record']['hold'] == 'parent of #%d' % first, show(parent)['record']
+    record = show(first)['record']
+    assert record['parent'] == parent and record['default_branch'] == 'wsx/t%d' % parent, record
+    for n in (first, second):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', show(n)
+    assert 'a child takes no children' in cli('task', 'new', '--into', first, 'WORK x.txt', ok=False).stderr
+    # ^ The children's '*.txt' meets the parent's parent.txt: only the sibling is an overlap.
+    rows = {r['id']: r for r in js('task', 'ledger')['open']}
+    assert rows[parent]['children'] == 2 and rows[first]['parent'] == parent, rows
+    assert [o['id'] for o in rows[first]['overlaps']] == [second] and rows[parent]['overlaps'] == [], rows
+    # The first child is on the parent's tip: its land fast-forwards the parent's branch, not
+    # main, and the parent checks the new commit while its gate is closed.
+    gate.unlink()
+    assert land(first)['state'] == 'landed'
+    git('cat-file', '-e', 'wsx/t%d:child1.txt' % parent)
+    assert not main_has('child1.txt')
+    wait(lambda: show(parent)['state'] == 'checking', 'the parent checks the landed child', 30)
+    assert [(e['child'], e['commits']) for e in log(parent) if e['kind'] == 'child_landed'] == [(first, 1)], log(parent)
+    busy = land(second, ok=False)
+    assert 'parent #%d is busy (checking)' % parent in busy['message'] and show(second)['state'] == 'ready', busy
+    for flags in ((), ('--discard',)):
+        refused = cli('task', 'close', parent, *flags, ok=False).stderr
+        assert 'task t%d has open child tasks #%d' % (parent, second) in refused, refused
+    gate.touch()
+    assert wait_state(parent, 'ready', 'failed')['state'] == 'ready' and show(parent)['record']['revision'] == 2
+    assert 'has open child tasks #%d' % second in land(parent, ok=False)['message']
+    # The second child rebases onto the moved parent, is checked, lands, and the parent checks again.
+    assert 'checks run on the new revision' in land(second)['message']
+    assert wait_state(second, 'landed', 'ready', 'failed')['state'] == 'landed', log(second)
+    wait(lambda: (r := show(parent))['state'] == 'ready' and r['record']['revision'] == 3, 'the parent r3', 30)
+    for n in (first, second):
+        wait_closed(n)
+    ours = lambda: [i for i in js('task', 'check')['open'] if i['task'] in (parent, first, second)]
+    assert ours() == [], ours()
+    assert land(parent)['state'] == 'landed'
+    assert all(main_has(name) for name in ('parent.txt', 'child1.txt', 'child2.txt'))
+    items = ours()
+    assert sorted(i['task'] for i in items) == sorted([parent, first, second]), items
+    shot = next(i for i in items if i['task'] == first)
+    # ^ Kept at the child's land: its working copy is gone by now.
+    assert shot['capture'] == 'captures/r1-1.png', shot
+    assert (Path(show(first)['log']).parent / 'captures/r1-1.png').read_bytes().startswith(b'\x89PNG')
+    wait_closed(parent)
+    js('task', 'check', 'skip', *[i['id'] for i in items])
+    configure(LAND_CONFIG, 'no parent gate')
 
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     mark('33')

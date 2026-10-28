@@ -21,12 +21,14 @@ use wsx_core::model::workspace::TaskConfig;
 use wsx_core::runtime;
 use wsx_core::task::view::checked_files;
 use wsx_core::task::{
-    checks,
+    call_host, checks,
     copy::{self, Rebase},
-    now_unix_ms, report,
+    now_unix_ms,
+    owner::HOST_TIMEOUT,
+    report,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
-    view, Actor, CheckResult, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
-    TaskState, WaitOn, Waiting, WorkerResult, MAX_MESSAGE_BYTES,
+    view, Actor, CheckResult, HostRequest, HostResponse, HumanVerify, LogEvent, MessageKind,
+    TaskRecord, TaskState, WaitOn, Waiting, WorkerResult, MAX_MESSAGE_BYTES,
 };
 
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -144,7 +146,7 @@ struct Host {
     stored_checks: Option<StoredChecks>,
     /// The Human Verify items of the revision whose landing conflicted: the turn that
     /// resolves it rarely repeats them, and they still need a person.
-    carried_verify: Vec<wsx_core::task::HumanVerify>,
+    carried_verify: Vec<HumanVerify>,
     /// The context of the worker's last model call, from the log when the host starts.
     context_tokens: u64,
     /// The turn that waits while the worker writes its handoff notes: it starts the fresh
@@ -405,6 +407,7 @@ impl Host {
             HostRequest::Trial => self.trial(),
             HostRequest::Hand => self.hand(),
             HostRequest::Handback => self.handback(),
+            HostRequest::ChildLanded { child, commits } => self.child_landed(child, commits),
             HostRequest::Close { discard } => {
                 if let Some(agent) = self.agent.take() {
                     agent.stop();
@@ -674,14 +677,41 @@ impl Host {
             by: Actor::Owner,
             commits,
         });
+        self.revise(format!(
+            "The owner worked on the task by hand: {commits} commit(s) after r{}.",
+            self.record.revision
+        ));
+        Ok(format!(
+            "handed back with {commits} commit(s); the checks run on the next revision"
+        ))
+    }
+
+    /// A child task landed on this task's branch: its commits become the next revision, as
+    /// a handback's do. A parent that is not at rest refused the land, so only a race gets
+    /// here otherwise: its next checks, or its own land, check the commits.
+    /// ref: docs/tasks.md "Parent tasks"
+    fn child_landed(&mut self, child: u32, commits: u32) -> Result<String> {
+        self.log(LogEvent::ChildLanded { child, commits });
+        if !matches!(self.record.state, TaskState::Ready | TaskState::Failed) {
+            return Ok(format!("#{child} landed; the next checks include it"));
+        }
+        self.revise(format!(
+            "#{child} landed {commits} commit(s) on this task after r{}.",
+            self.record.revision
+        ));
+        Ok(format!(
+            "#{child} landed; the checks run on the next revision"
+        ))
+    }
+
+    /// Commits made outside the worker's turns become a `done` result whose checks run as
+    /// the next revision.
+    fn revise(&mut self, summary: String) {
         // ^ The worker's Human Verify items and memo still describe the work.
         let previous = self.current_result();
         let result = WorkerResult {
             status: "done".into(),
-            summary: format!(
-                "The owner worked on the task by hand: {commits} commit(s) after r{}.",
-                self.record.revision
-            ),
+            summary,
             human_verify: previous.human_verify,
             memo: previous.memo,
             ..WorkerResult::default()
@@ -689,13 +719,10 @@ impl Host {
         self.last_denials.clear();
         self.write_result(&result, &[]);
         self.last_result = Some(result);
-        // ^ A failed check of the owner's work goes back to the owner, not to the worker.
+        // ^ A failed check goes back to whoever made the commits, not to the worker.
         self.check_retries = MAX_CHECK_RETRIES;
         self.set_state(TaskState::Working);
         self.start_checks();
-        Ok(format!(
-            "handed back with {commits} commit(s); the checks run on the next revision"
-        ))
     }
 
     fn start_turn(&mut self, text: &str) {
@@ -1662,6 +1689,7 @@ impl Host {
     /// `tried`: the owner passed this task's trial.
     fn land(&mut self, auto: bool, tried: bool) -> Result<String> {
         self.require_ready(auto)?;
+        view::refuse_open_children(&self.record.project_id, self.record.id, "land")?;
         self.require_committed()?;
         if tried && !self.on_trial()? {
             bail!(
@@ -1676,11 +1704,18 @@ impl Host {
     /// checks of a rebased revision come back here, so a tip that moved while they ran
     /// rebases and checks again (#84 stopped on it, 2026-10-27).
     fn land_on_tip(&mut self, tried: bool) -> Result<String> {
+        self.require_parent_at_rest()?;
         let working_copy = self.record.working_copy.clone();
         let tip = self.default_tip()?;
         let head = copy::resolve_commit(&working_copy, "HEAD")?;
+        // ^ Only a checked tree fast-forwards: a child that landed on this task moved HEAD
+        // past the ready revision.
+        let revision = format!("refs/wsx/task/{}/r{}", self.record.id, self.record.revision);
         if copy::is_ancestor(&working_copy, &tip, &head)? {
-            return self.fast_forward(tried);
+            if copy::tree(&working_copy, &revision)? == copy::tree(&working_copy, "HEAD")? {
+                return self.fast_forward(tried);
+            }
+            return Ok(self.check_then_land(tried, "HEAD moved after the ready revision"));
         }
         match copy::rebase(&working_copy, &tip)? {
             Rebase::Conflict(paths) => {
@@ -1689,15 +1724,42 @@ impl Host {
             }
             // ^ The rebase kept the tree whose checks passed: their results stand.
             Rebase::Done if self.rebase_kept_tree()? => self.fast_forward(tried),
-            Rebase::Done => {
-                self.after_rebase = Some(AfterRebase::Land { tried });
-                self.start_checks();
-                Ok(format!(
-                    "rebased onto {} at {tip:.12}; checks run on the new revision and it lands when they pass",
-                    self.record.default_branch
-                ))
-            }
+            Rebase::Done => Ok(self.check_then_land(
+                tried,
+                &format!("rebased onto {} at {tip:.12}", self.record.default_branch),
+            )),
         }
+    }
+
+    /// Run the checks on HEAD as a new revision; it lands when they pass.
+    fn check_then_land(&mut self, tried: bool, why: &str) -> String {
+        self.after_rebase = Some(AfterRebase::Land { tried });
+        self.start_checks();
+        format!("{why}; checks run on the new revision and it lands when they pass")
+    }
+
+    /// A child lands only on a parent at rest, ready or failed: its commits would join a
+    /// running turn or checks, and its new revision would drop a wait for the owner or a
+    /// plan. The child stays ready and the manager lands it again on the parent's next
+    /// event. ref: docs/tasks.md "Parent tasks"
+    fn require_parent_at_rest(&self) -> Result<()> {
+        let Some(parent) = self.record.parent else {
+            return Ok(());
+        };
+        let record = TaskDir::open(&self.record.project_id, parent)?.read_record()?;
+        if !matches!(record.state, TaskState::Ready | TaskState::Failed) {
+            let state = match (&record.waiting, record.state) {
+                (Some(waiting), TaskState::Waiting) => {
+                    format!("waiting on {}", waiting.on.as_str())
+                }
+                _ => record.state.as_str().to_string(),
+            };
+            bail!(
+                "parent #{parent} is busy ({state}); #{} stays ready and lands when #{parent} is ready",
+                self.record.id
+            );
+        }
+        Ok(())
     }
 
     /// Log a rebase conflict and start the worker turn that resolves it.
@@ -1794,18 +1856,43 @@ impl Host {
             &head,
         )?;
         self.landed(&head, tried);
+        if let Some(parent) = self.record.parent {
+            self.tell_parent(parent, &tip, &head);
+        }
         Ok(format!(
             "landed r{} on {} at {head:.12}",
             self.record.revision, self.record.default_branch
         ))
     }
 
+    /// Ask the parent's host to check the commits this land put on its branch.
+    fn tell_parent(&self, parent: u32, old_tip: &str, head: &str) {
+        let told =
+            copy::unlanded_commits(&self.record.working_copy, head, old_tip).and_then(|commits| {
+                let dir = TaskDir::open(&self.record.project_id, parent)?;
+                let request = HostRequest::ChildLanded {
+                    child: self.record.id,
+                    commits,
+                };
+                let response = call_host(&dir.socket_path(), &request, HOST_TIMEOUT)?;
+                Ok(response.message)
+            });
+        match told {
+            Ok(message) => self.say(&format!("parent #{parent}: {message}")),
+            // ^ Its land checks a HEAD that moved past its ready revision first.
+            Err(error) => self.say(&format!("parent #{parent} did not answer: {error:#}")),
+        }
+    }
+
     /// The revision is on the default branch: its Human Verify items join the project's
     /// "To check" list before readers see `landed` (docs/tasks.md "To check"), unless the
-    /// owner tried them on the live site. A trial of this task ends.
+    /// owner tried them on the live site. A child's items wait in its `result.json`, its
+    /// captures kept, until its parent lands. A trial of this task ends.
     fn landed(&mut self, commit: &str, tried: bool) {
         if tried {
             self.carried_verify.clear();
+        } else if self.record.parent.is_some() {
+            self.keep_verify_for_parent();
         } else {
             self.collect_verify(commit);
         }
@@ -1822,8 +1909,48 @@ impl Host {
         self.after_landing();
     }
 
-    /// Add the revision's Human Verify items, with their captures, to "To check".
+    /// Add the revision's Human Verify items, with their captures, to "To check", then those
+    /// of the children that landed on this task. ref: docs/tasks.md "Parent tasks"
     fn collect_verify(&mut self, commit: &str) {
+        let verify = self.kept_verify();
+        let mut items = vec![(self.record.id, self.record.revision, verify)];
+        for (dir, child) in
+            view::children(&self.record.project_id, self.record.id).unwrap_or_default()
+        {
+            if child.state != TaskState::Landed {
+                continue;
+            }
+            let verify = view::read_result(&dir)
+                .and_then(|result| {
+                    serde_json::from_value::<WorkerResult>(result["result"].clone()).ok()
+                })
+                .unwrap_or_default()
+                .human_verify;
+            items.push((child.id, child.revision, verify));
+        }
+        for (task, revision, verify) in items {
+            if let Err(error) =
+                checks::collect(&self.record.project_id, task, revision, commit, &verify)
+            {
+                self.say(&format!("cannot add the items to check: {error:#}"));
+            }
+        }
+    }
+
+    /// A child's items with their captures kept in its task folder, written back to its
+    /// `result.json`: its working copy goes before the parent lands.
+    fn keep_verify_for_parent(&mut self) {
+        let mut result = self.current_result();
+        result.human_verify = self.kept_verify();
+        let checks: Vec<CheckResult> = view::read_result(&self.dir)
+            .and_then(|stored| serde_json::from_value(stored["checks"].clone()).ok())
+            .unwrap_or_default();
+        self.write_result(&result, &checks);
+        self.last_result = Some(result);
+    }
+
+    /// The revision's Human Verify items with their captures copied into the task folder.
+    fn kept_verify(&mut self) -> Vec<HumanVerify> {
         let mut verify = self.current_result().human_verify;
         for item in std::mem::take(&mut self.carried_verify) {
             if !verify.iter().any(|known| known.check == item.check) {
@@ -1863,15 +1990,7 @@ impl Host {
             }
             item.poster = kept.unwrap_or_default();
         }
-        if let Err(error) = checks::collect(
-            &self.record.project_id,
-            self.record.id,
-            self.record.revision,
-            commit,
-            &verify,
-        ) {
-            self.say(&format!("cannot add the items to check: {error:#}"));
-        }
+        verify
     }
 
     /// Deploy the default branch when the project deploys by itself, then close this task:
@@ -1881,8 +2000,10 @@ impl Host {
     fn after_landing(&self) {
         let project = self.record.project.as_str();
         let id = self.record.id.to_string();
-        let deploys = load_task_config(&self.record.project_path)
-            .is_ok_and(|settings| settings.deploy_auto && settings.deploy_command.is_some());
+        // ^ A child's land moves its parent's branch, not the default branch.
+        let deploys = self.record.parent.is_none()
+            && load_task_config(&self.record.project_path)
+                .is_ok_and(|settings| settings.deploy_auto && settings.deploy_command.is_some());
         let mut follow_ups = vec![vec!["task", "close", id.as_str(), "-p", project, "--json"]];
         if deploys {
             follow_ups.insert(
