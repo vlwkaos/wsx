@@ -7,8 +7,6 @@
 ### Added
 
 - `wsx task new --skip <step>` leaves a `tasks.workflow.steps` step out of one task. The manager now picks the worker by the work: a change it has read and can state exactly runs on Sonnet without the context and plan steps, with a prompt that carries the files, the change and its proof; deep exploration, an unknown cause or a module redesign stays on the default model with every step; a broad bug hunt becomes one read-only audit per area, then one task per fix ([docs/tasks.md](docs/tasks.md) "Workflow").
-### Added
-
 - Tasks: a To check item can carry a short MP4 video (at most 25 MiB) with a `poster` image; the web plays it in the image viewer, served with byte ranges for iPhone Safari. Captures of items passed or failed more than 7 days ago are removed; their rows stay.
 - Each To check item shows once in the web manager chat, as a bubble from the manager at the time it was added: what to check, its capture (a tap opens the image viewer) and Try, Fail and Pass, so the owner checks it right in the chat. A decided item's bubble shows its result. The To check list over the composer stays.
 - A project's row on the web Home marks a manager message this device has not read (a reply that is not quiet, or a To check item): an accent mark before the name and the message's first line under it. Opening the project's chat clears it.
