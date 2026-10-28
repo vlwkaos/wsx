@@ -2627,6 +2627,7 @@ def run(wsx, wsxd, work, owned):
     for n in (manager_task, role_task):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'no roles')
+
     # 32v. A turn that ends while a background job runs is no missing result (docs/tasks.md
     # "Claude adapter"): the host waits for Claude's own turn after the job's notice.
     mark('32v')
