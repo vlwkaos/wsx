@@ -714,7 +714,7 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .reservoir[data-open] .reservoir-head .icon { transform: rotate(90deg); }
 .reservoir-head:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 /* Running stays at the top of the open list; what waits for the owner and To check scroll under it. */
-.reservoir-body { min-height: 0; display: flex; flex-direction: column; padding-bottom: var(--space-2); }
+.reservoir-body { min-height: 0; min-width: 0; display: flex; flex-direction: column; padding-bottom: var(--space-2); }
 .reservoir-fixed { flex: 0 0 auto; }
 .reservoir-scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .reservoir-fixed + .reservoir-scroll:not(:empty) { border-top: var(--border-width) solid var(--color-hairline); }

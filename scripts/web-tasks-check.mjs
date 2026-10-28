@@ -741,6 +741,7 @@ async function chevronInFirstRow(where) {
     const first = document.querySelector('.reservoir-body > .reservoir-fixed:first-child > .reservoir-label') ?? body.querySelector('.need');
     const row = first.getBoundingClientRect(), icon = document.querySelector('.reservoir-head .icon').getBoundingClientRect(), middle = icon.top + icon.height / 2;
     return { first: first.textContent.trim().slice(0, 20), down: Math.round(row.top - box.top), inside: row.top >= box.top && row.bottom <= box.bottom && row.left >= box.left && row.right <= box.right + 0.5 && body.scrollTop === 0,
+      box: [box.top, box.bottom, box.left, box.right].map(Math.round), row: [row.top, row.bottom, row.left, row.right].map(Math.round), scrolled: body.scrollTop,
       sameRow: middle > row.top && middle < row.bottom, right: Math.round(innerWidth - icon.right) }; })()`);
   if (seen.down > lineHeight || !seen.inside || !seen.sameRow) await fail(`${where}: the open reservoir's first row or its chevron is off: ${JSON.stringify(seen)}`);
   return seen;
