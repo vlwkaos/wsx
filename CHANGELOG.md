@@ -6,6 +6,10 @@
 ### Fixed
 
 - A resumed agent gets back the profile it ran with. After a crash or restart, wsxd resumed Claude with wsxd's own environment and PATH in the worktree root, so a session that ran with a work profile (`CLAUDE_CONFIG_DIR`) came back with the personal one. The agent's report now records its cwd and its config-root variables (`CLAUDE_CONFIG_DIR`, `CODEX_HOME` and the others wsx installs into), and the resume sets them on the agent; a variable the agent did not have is removed. Daemon revision 36, [docs/agent-orchestration.md](docs/agent-orchestration.md) "Resumed agents".
+- Web chat: a message to a Claude session no longer fails or lands in a busy editor while Claude compacts its conversation. Claude Code 2.1.310 compacts an idle conversation by itself about 54 minutes after a turn, a turn of its own of up to a minute. wsx reported only `/compact`, so wsxd showed the session done, and the message failed after 30 s ("not visibly idle") or was typed into Claude while it worked. Every compaction is now reported: an automatic one inside a turn keeps the turn, and one outside a turn shows "Compacting the conversation" and returns to the earlier state (daemon revision 36, Claude integration 27; run `wsx agent install claude` and restart Claude when it is idle) ([docs/agent-reporting.md](docs/agent-reporting.md) "Claude compaction").
+- Web chat: a sent message no longer vanishes for a moment when Claude takes it. It stays until the conversation shows it ([docs/web-client-chat.md](docs/web-client-chat.md) "Queue and Stop").
+- Web chat: the summary of a compacted conversation no longer disappears during the first long turn after the compaction ([docs/web-client-chat.md](docs/web-client-chat.md) "Timeline").
+- Web chat: a chat read that fails is read again after 2 s, so an answer no longer needs a reload to show, and a sent message shows at once from the send's answer.
 
 ## [0.40.3] - 2026-10-28
 
@@ -45,12 +49,6 @@
 - A task that is removed while the task list is read no longer blanks the whole list in `wsx task` and on the web; the list skips it. `deploys.jsonl` rolls over at 4 MiB instead of growing without end. The web server reads only the end of a task log to find a task's last land reason, conflict state, context size and cost.
 - Web: the manager, task, project and To check pages no longer show an answer for the page you left when you switch while a read is in flight.
 - Every atomic file write in wsx uses one helper with a unique temporary name, so two threads that write the same file no longer share one temporary file.
-### Fixed
-
-- Web chat: a message to a Claude session no longer fails or lands in a busy editor while Claude compacts its conversation. Claude Code 2.1.310 compacts an idle conversation by itself about 54 minutes after a turn, a turn of its own of up to a minute. wsx reported only `/compact`, so wsxd showed the session done, and the message failed after 30 s ("not visibly idle") or was typed into Claude while it worked. Every compaction is now reported: an automatic one inside a turn keeps the turn, and one outside a turn shows "Compacting the conversation" and returns to the earlier state (daemon revision 35, Claude integration 27; run `wsx agent install claude` and restart Claude when it is idle) ([docs/agent-reporting.md](docs/agent-reporting.md) "Claude compaction").
-- Web chat: a sent message no longer vanishes for a moment when Claude takes it. It stays until the conversation shows it ([docs/web-client-chat.md](docs/web-client-chat.md) "Queue and Stop").
-- Web chat: the summary of a compacted conversation no longer disappears during the first long turn after the compaction ([docs/web-client-chat.md](docs/web-client-chat.md) "Timeline").
-- Web chat: a chat read that fails is read again after 2 s, so an answer no longer needs a reload to show, and a sent message shows at once from the send's answer.
 
 ## [0.40.0] - 2026-10-27
 
