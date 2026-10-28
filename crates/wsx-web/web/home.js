@@ -9,8 +9,10 @@ import { Dots } from "./bubbles.js";
 const URGENCY = { waiting: 0, failed: 1, approval: 2, land: 3 };
 
 // Projects with needs first, by their most urgent kind and then their oldest need of that
-// kind; then the rest by their last activity (tasks, manager or agent sessions), newest first.
-function homeOrder(projects, tasks, sessions) {
+// kind; then those with a message this device has not read, newest message first; then the
+// rest by their last owner-facing activity, newest first (docs/web-client-tasks.md "Home").
+// `viewing` is the project whose chat this device shows: read at once.
+function homeOrder(projects, tasks, sessions, viewing) {
   const rows = projects.map((project) => {
     const overview = tasks[project.id];
     const needs = overview?.needs ?? [];
@@ -19,11 +21,14 @@ function homeOrder(projects, tasks, sessions) {
       .reduce((oldest, item) => (oldest && oldest.unix_ms <= item.unix_ms ? oldest : item), null);
     const agents = sessions.filter((session) => session.project.id === project.id);
     const last = Math.max(overview?.last_unix_ms ?? 0, ...agents.map((session) => session.state_since_unix_ms ?? 0)) || null;
-    return { project, overview, needs, rank, first, agents, last };
+    const news = project.id === viewing ? null : newsOf(project.id, overview);
+    return { project, overview, needs, rank, first, agents, last, news };
   });
   return rows.sort((left, right) => {
     if ((left.rank === null) !== (right.rank === null)) return left.rank === null ? 1 : -1;
     if (left.rank !== null) return left.rank - right.rank || left.first.unix_ms - right.first.unix_ms;
+    if ((left.news === null) !== (right.news === null)) return left.news === null ? 1 : -1;
+    if (left.news) return right.overview.news.unix_ms - left.overview.news.unix_ms;
     return (right.last ?? 0) - (left.last ?? 0);
   });
 }
@@ -83,7 +88,7 @@ export function Home({ rail }) {
     return () => removeEventListener(READ_EVENT, changed);
   }, []);
   const now = useNow(true);
-  const [, , open] = location.hash.split("/");
+  const [, kind, open] = location.hash.split("/");
   const list = useRef();
   useFlip(list);
   let body;
@@ -93,12 +98,12 @@ export function Home({ rail }) {
   else {
     body = html`
       <ul class="rows home-rows" aria-label="Projects" ref=${list}>
-        ${homeOrder(store.projects, store.tasks, listedSessions(store.sessions).filter(isAgent)).map((row) => {
+        ${homeOrder(store.projects, store.tasks, listedSessions(store.sessions).filter(isAgent), rail && kind === "p" && document.visibilityState === "visible" ? Number(open) : null).map((row) => {
           const status = statusLine(row, now);
           const count = row.needs.length;
           const working = row.overview?.working ?? 0;
           const last = row.last;
-          const news = newsOf(row.project.id, row.overview);
+          const news = row.news;
           return html`
             <li class="row" key=${row.project.id} data-key=${row.project.id} data-news=${news ? "" : null}>
               <a class="row-link home-row" href=${`#/p/${row.project.id}`} aria-current=${rail && Number(open) === row.project.id ? "page" : null}>

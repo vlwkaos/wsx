@@ -1974,6 +1974,9 @@ impl Host {
 
     fn set_state(&mut self, state: TaskState) {
         let changed = self.record.state != state;
+        if changed {
+            self.record.state_unix_ms = now_unix_ms();
+        }
         self.record.state = state;
         if !matches!(state, TaskState::Working | TaskState::Checking) {
             self.disk_slot = None;

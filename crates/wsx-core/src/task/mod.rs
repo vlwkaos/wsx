@@ -171,6 +171,10 @@ pub struct TaskRecord {
     pub waiting: Option<Waiting>,
     pub created_unix_ms: u64,
     pub updated_unix_ms: u64,
+    /// When the task entered its current state; 0 in a record from before this field (read as
+    /// `created_unix_ms`). Unlike `updated_unix_ms`, a record save does not renew it.
+    #[serde(default)]
+    pub state_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

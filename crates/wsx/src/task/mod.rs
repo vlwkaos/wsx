@@ -917,6 +917,7 @@ fn create(
         waiting: None,
         created_unix_ms: now,
         updated_unix_ms: now,
+        state_unix_ms: now,
     };
     let started = (|| -> Result<()> {
         dir.write_record(&record)?;
@@ -1475,6 +1476,7 @@ fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
         // ^ A landed task keeps `landed`: its work is on the default branch.
         if record.state != TaskState::Landed || discard {
             record.state = TaskState::Closed;
+            record.state_unix_ms = now_unix_ms();
         }
         record.updated_unix_ms = now_unix_ms();
         dir.write_record(&record)?;
