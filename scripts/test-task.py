@@ -1543,7 +1543,8 @@ def run(wsx, wsxd, work, owned):
         (r'(?s)Manager demo +1 to check  1 approval\n.*▸ %s' % item['id'], b'i'),
         (r'Enter: send', b'hello from the tui'),
         (r'> hello from the tui', b'\r'),
-        (r'(?m)^ Sent$', b'\x1b'),
+        # ^ "Sent" comes before the next read draws the message: wait for both.
+        (r'(?ms)^ Sent$.*^   hello from the tui$', b'\x1b'),
         (r'\(p\)ass', b'p'),
         (r'%s passed' % item['id'], b'\t'),
         (r'\(n\)deny', b'n'),
