@@ -2066,6 +2066,7 @@ if RELEASED:
     stuck_daemon = subprocess.Popen([str(RELEASED / "wsxd")], env=install_env)
     try:
         wait_ready(stuck_daemon)
+        released_epoch = lifecycle()["epoch"]
         install("5-unfit", WSX, wsxd_script="#!/bin/sh\nexit 3\n")
         attempt = subprocess.Popen([str(INSTALL / "bin" / "wsx"), "session", "list"], cwd=PROJECT,
                                    env=install_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -2102,6 +2103,15 @@ if RELEASED:
             stuck_tui.terminate()
             stuck_tui.wait(timeout=5)
             os.close(stuck_master)
+        # The next step the notice names ends the released daemon, and a new one starts.
+        install("6-fresh", WSX, DAEMON)
+        forced = installed("daemon", "stop", "--force")
+        assert forced.returncode == 0, forced
+        stuck_daemon.wait(timeout=10)
+        assert installed("session", "list").returncode == 0, "no fresh wsxd started"
+        assert lifecycle()["epoch"] != released_epoch, lifecycle()
+        assert installed("daemon", "stop", "--force").returncode == 0
+        wait_socket_stopped()
     finally:
         stuck_daemon.kill()
         stuck_daemon.wait(timeout=5)

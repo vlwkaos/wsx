@@ -155,7 +155,7 @@ python3 scripts/test-terminal-context.py --released-wsx <path>/wsx --released-da
   3. a successor and a rollback that cannot bind the socket (a folder at `wsx.sock~`) end the handoff, and the daemon binds again once it can.
   4. a stand-in for a pre-35 daemon stuck in its handoff (it answers only Hello and LifecycleStatus and ignores SIGTERM) stays after a plain stop and after `--force` with a fresh marker, and `--force` with a 14 h old marker ends it; the next command starts a new wsxd.
 
-  With `WSX_SMOKE_RELEASED_DIR=<folder with wsx and wsxd of a release>` the source is that release, and a fifth step makes that release's rollback fail (its state folder read-only). The CLI and the TUI of this build must then say that the handoff did not finish and name `wsx daemon stop --force`.
+  With `WSX_SMOKE_RELEASED_DIR=<folder with wsx and wsxd of a release>` the source is that release, and a fifth step makes that release's rollback fail (its state folder read-only). The CLI and the TUI of this build must then say that the handoff did not finish and name `wsx daemon stop --force`, and that stop must end the released daemon so that the next command starts a new wsxd.
 - `scripts/runtime-smoke.py` sends a request of a later release on a matching and on a mismatched connection, and stops a daemon with live sessions only with `--force`.
 
 ## Not covered yet
