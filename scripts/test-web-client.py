@@ -3347,6 +3347,24 @@ merge_seconds = 3
         assert all(e['kind'] not in ('delivered', 'agent') for e in chat['entries'])
         later = steady(owner, 'GET', '/api/tasks/%d/chat?after=%d' % (demo, reply['id']))[1]
         assert all(e.get('id', reply['id'] + 1) > reply['id'] for e in later['entries']), later
+        # --- A role (docs/tasks.md "Roles"): its chat by ?role=, a say to it starts it, and the
+        # manager's chat lists it as a contact.
+        notes_brief = work / 'notes-brief.md'
+        notes_brief.write_text('Keep the notes.\n')
+        js('task', 'role', 'new', 'notes', '--brief', notes_brief, '-p', 'demo')
+        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS', 'role': 'notes'})
+        assert status == 200 and body['ok'], body
+        events.expect('manager', lambda data: data == {'project': demo, 'role': 'notes'}, timeout=20)
+        role_chat = wait(lambda: (lambda data: data if any(e['kind'] == 'reply' for e in data['entries']) else None)(
+            steady(owner, 'GET', '/api/tasks/%d/chat?role=notes' % demo)[1]), 'role reply')
+        assert role_chat['manager'] == {'name': 'notes'} and role_chat['roles'] is None and role_chat['running'], role_chat
+        contacts = steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['roles']
+        assert [(c['name'], c['brief']) for c in contacts] == [('notes', 'Keep the notes.')], contacts
+        assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['last_unix_ms'] > 0, contacts
+        assert steady(owner, 'GET', '/api/tasks/%d/chat?role=nobody' % demo)[0] == 404
+        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'hi', 'role': 'nobody'})
+        assert status >= 400 and 'no open role nobody' in json.dumps(body), (status, body)
+        ok('roles: a role chat by ?role=, a say to a role starts it, the manager chat lists it as a contact, an unknown role refused')
         # A manager turn alone changes the overview: its `busy` (the home row's typing dots) goes
         # true while the turn runs and false after it (docs/web-client-tasks.md "Home").
         watcher = Events(owner)
@@ -3553,6 +3571,13 @@ merge_seconds = 3
             assert sorted(home_order[:2]) == ['plans', 'ui'] and home_order[2:] == ['demo', 'calm'], home_order
             # ^ Projects with sessions and no task follow by their newest session (created in this order).
             home_order[-1:-1] = ['busy', 'quiet', 'gone']
+            # A role in ui with a reply, for the page's Roles contact and chat.
+            role_brief = work / 'role-brief.md'
+            role_brief.write_text('Write the release notes.\n')
+            js('task', 'role', 'new', 'billing', '--brief', role_brief, '-p', 'ui')
+            assert steady(owner, 'POST', '/api/tasks/%d/say' % ids['ui'], {'text': 'STATUS', 'role': 'billing'})[0] == 200
+            wait(lambda: any(e['kind'] == 'reply' for e in steady(owner, 'GET', '/api/tasks/%d/chat?role=billing' % ids['ui'])[1]['entries']),
+                 'the ui role reply', 60)
             # The page asks for a server with another build by writing this file: the owner's
             # server restarts under another site name, which is part of the page files' digest.
             restart = work / 'restart-owner'
@@ -3732,6 +3757,11 @@ merge_seconds = 3
         assert len(own) == 1 and own[0] == manager_push(wrote='demo'), (own, manager_push(wrote='demo'))
         # ^ manager_push()'s badge counts the overviews' needs only.
         assert says(own[0], 'demo wrote to you'), own
+        # ^ A role's reply it started on its own pushes the same way, named by the role and
+        # opening its chat (docs/web-client-tasks.md "Roles").
+        js('task', 'say', '--role', 'notes', 'RUN wsx task new "NOOP TABLE" -p demo --json', '-p', 'demo')
+        roled = new_pushes('manager', 'the push of a reply a role started', timeout=60)
+        assert len(roled) == 1 and says(roled[0], 'notes wrote to you'), roled
         ok('manager push: waiting merged in one, a new To check item, an approval, a reply the manager started (not one to the owner); each names every open item and replaces the one before; ready and failed do not push; the shown project skipped for that device; presence ends with the stream; manager needs task_view')
 
         # The daily digest, moved to the next minute: the window since the switch was turned on

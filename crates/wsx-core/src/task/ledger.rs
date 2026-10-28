@@ -113,6 +113,11 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         "approvals": super::store::read_approvals(&project_id)
             .map(|lines| json!(super::manager::pending_approvals(&lines)))
             .unwrap_or(Value::Null),
+        // ^ Open and asked roles; a closed one is history (docs/tasks.md "Roles").
+        "roles": super::roles::rows(&project_id, &super::store::read_approvals(&project_id).unwrap_or_default())
+            .into_iter()
+            .filter(|row| row["state"] != "closed")
+            .collect::<Vec<_>>(),
     });
     // ^ Memos go first, then the least urgent open tasks, when the ledger is over its size.
     if serde_json::to_vec(&ledger)?.len() > MAX_LEDGER_BYTES {

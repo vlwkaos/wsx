@@ -487,9 +487,11 @@ const foldedNote = (tasks, query) => {
   return folded ? `${folded} done more than a day ago: type a number or a word to find ${folded === 1 ? "it" : "them"}.` : null;
 };
 
-function ManagerComposer({ project, busy: thinking, reply, onReply, onSent, field }) {
+function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent, field }) {
   const store = useStore();
-  const [text, setText] = useState(() => readMap(DRAFTS_KEY)[project] ?? "");
+  // ^ A role's draft is its own.
+  const draft = role ? `${project}/${role}` : project;
+  const [text, setText] = useState(() => readMap(DRAFTS_KEY)[draft] ?? "");
   const [caret, setCaret] = useState(0);
   const [active, setActive] = useState(0);
   const [closed, setClosed] = useState(null);
@@ -530,7 +532,7 @@ function ManagerComposer({ project, busy: thinking, reply, onReply, onSent, fiel
     setText(node.value);
     setCaret(node.selectionStart);
     setActive(0);
-    keepIn(DRAFTS_KEY, project, node.value);
+    keepIn(DRAFTS_KEY, draft, node.value);
     grow(node);
   };
   const pick = ({ insert }) => {
@@ -550,7 +552,7 @@ function ManagerComposer({ project, busy: thinking, reply, onReply, onSent, fiel
       const attachments = files.attachments.map((item) => item.hash);
       const text = withQuote(reply, body);
       // ^ A say may start the manager first: up to about 40 s (docs/tasks.md "Manager").
-      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text, attachments }, timeout: 60_000 });
+      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text, attachments, ...(role && { role }) }, timeout: 60_000 });
       field.current.value = "";
       files.attachments = [];
       changed();
@@ -603,7 +605,7 @@ function ManagerComposer({ project, busy: thinking, reply, onReply, onSent, fiel
       <div class="composer-row" onPointerDown=${focusField}>
         <${AttachButton} onFiles=${upload} />
         <div class="composer-input">
-          <textarea class="composer-field" ref=${field} rows="1" aria-label="Message to the manager"
+          <textarea class="composer-field" ref=${field} rows="1" aria-label=${`Message to ${role ?? "the manager"}`}
             placeholder="Message · # task @ project / skill" role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
             aria-controls=${listOpen ? "slash-list" : null} aria-activedescendant=${listOpen && options.length ? `slash-${active}` : null}
             onInput=${changed} onKeyDown=${keydown} onPaste=${pasteFiles(upload)} onKeyUp=${() => setCaret(field.current.selectionStart)}
@@ -670,13 +672,28 @@ function SinceLine({ project, reply, sent }) {
 }
 
 // The top row's ⋯: the project page, sessions and files.
-function More({ project }) {
+// When this device last read each role's chat, by `<project>/<role>`: a contact with something
+// newer is unread.
+const ROLES_SEEN_KEY = "wsx-roles-seen";
+
+function More({ project, roles }) {
   const files = shows("files") && can("files_read");
+  const seen = readMap(ROLES_SEEN_KEY);
   return html`
     <${MoreMenu}>
       <a role="menuitem" href=${`#/p/${project.id}/page`}>Page</a>
       <a role="menuitem" href=${`#/p/${project.id}/sessions`}>Sessions</a>
       ${files && html`<a role="menuitem" href=${`#/p/${project.id}/files`}>Files</a>`}
+      ${roles?.length > 0 && html`
+        <p class="more-heading" aria-hidden="true">Roles</p>
+        ${roles.map((role) => {
+          const unread = role.last_unix_ms > (seen[`${project.id}/${role.name}`] ?? 0);
+          return html`<a role="menuitem" class="role-contact" key=${role.name} href=${`#/p/${project.id}/r/${encodeURIComponent(role.name)}`}
+            aria-label=${`Role ${role.name}${unread ? ", unread" : ""}`}>
+            <span class="role-name">${role.name}${unread && html`<span class="news-mark" aria-hidden="true"></span>`}</span>
+            <span class="role-line">${role.last_reply ?? role.brief}</span>
+          </a>`;
+        })}`}
     </${MoreMenu}>`;
 }
 
@@ -725,17 +742,20 @@ function Sheet({ label, fit = false, onClose, children }) {
 }
 
 // The project screen with task_view: the manager chat as messages, what is open in the
-// reservoir, and with a task or the page in the route its sheet over the chat.
-export function Manager({ project: id, task, page, checks }) {
+// reservoir, and with a task or the page in the route its sheet over the chat. With `role`, a
+// role's chat (#/p/<project>/r/<role>): the same bubbles without the manager's reservoir,
+// approvals and To check items (docs/web-client-tasks.md "Roles").
+export function Manager({ project: id, task, page, checks, role = null }) {
   const store = useStore();
   const project = store.projects.find((candidate) => candidate.id === id);
   const overview = store.tasks[id];
   const [chat, setChat] = useState(null);
   // ^ The To check items, each a bubble at the time it was added; read again when the open
   // count changes (a new item, a pass or a fail).
-  const [checkItems, setCheckItems] = useState(null);
+  const [checkItems, setCheckItems] = useState(role ? [] : null);
   const toCheck = overview?.to_check;
   useEffect(() => {
+    if (role) return undefined;
     let live = true;
     api(`api/tasks/${id}/checks`).then((value) => { if (live) setCheckItems(value.items); }, () => { if (live) setCheckItems((now) => now ?? []); });
     return () => { live = false; };
@@ -743,7 +763,8 @@ export function Manager({ project: id, task, page, checks }) {
   const ready = Boolean(chat) && checkItems !== null;
   const [failure, setFailure] = useState("");
   const [sent, setSent] = useState(null);
-  const { log, away, unread, since, scrolled, toEnd } = useFollowEnd(`project-${id}`, ready);
+  const place = role ? `project-${id}-r-${role}` : `project-${id}`;
+  const { log, away, unread, since, scrolled, toEnd } = useFollowEnd(place, ready);
   const field = useRef();
   const [reply, setReply] = useState(null);
   const [gestures, menu] = useReply((line) => { setReply(line); field.current?.focus(); });
@@ -753,8 +774,9 @@ export function Manager({ project: id, task, page, checks }) {
   // Reads after the last entry it has; one read at a time, one more after a change during it.
   const load = useCoalescedLoad(async (current) => {
     const last = shown.current.findLast((entry) => entry.id != null)?.id;
-    const next = await api(`api/tasks/${id}/chat`, { query: last != null ? { after: last } : undefined });
+    const next = await api(`api/tasks/${id}/chat`, { query: { ...(last != null && { after: last }), ...(role && { role }) } });
     if (!current()) return;
+    if (role) keepIn(ROLES_SEEN_KEY, `${id}/${role}`, Date.now());
     // ^ A rotation or a stop has no id, so every read after the last id returns it again
     // until the next message: it joins once.
     const known = (entry) => entry.id == null
@@ -766,7 +788,8 @@ export function Manager({ project: id, task, page, checks }) {
     setFailure("");
   }, (error) => setFailure(error.message), [id]);
   useEffect(() => { if (!overview) loadTasks(id, { missing: true }); }, [id]);
-  useEventLoad("manager", load, (detail) => detail.project == null || detail.project === id, [id]);
+  useEventLoad("manager", load, (detail) => detail.project == null
+    || (detail.project === id && (!role || detail.role === role)), [id]);
   // Closing the sheet gives the focus back to the composer, in the same commit: after a paint
   // it took the focus from a button tapped in the meantime (a reservoir row's Land).
   const sheet = task ?? (page || checks || null);
@@ -784,7 +807,7 @@ export function Manager({ project: id, task, page, checks }) {
       </div>`;
   }
   const entries = chat?.entries ?? [];
-  const items = overview?.needs ?? [];
+  const items = role ? [] : overview?.needs ?? [];
   const words = withChips(id);
   const rows = ready ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems) : [];
   // The sent message shows until the log has it.
@@ -795,7 +818,7 @@ export function Manager({ project: id, task, page, checks }) {
     rows.push({ kind: "bubble", key: "sending", author: "owner", at: Date.now(), first: !grouped, last: true, pending: true, entry: { text: sent.text } });
   }
   const firstNew = since == null ? null : rows.find((row) => row.kind === "bubble" && row.author !== "owner" && !row.pending && row.at > since);
-  const [recent, earlier] = useRecent(`project-${id}`, rows, firstNew);
+  const [recent, earlier] = useRecent(place, rows, firstNew);
   const typing = Boolean(chat?.busy);
   // ^ The typing bubble fades out as the reply replaces it.
   const typingShown = useAfter(typing, LEAVE_MS) || typing;
@@ -824,21 +847,23 @@ export function Manager({ project: id, task, page, checks }) {
   return html`
     <div class="page manager">
       <header class="bar">
-        <${Back} fallback="#/" />
+        <${Back} fallback=${role ? `#/p/${id}` : "#/"} />
         <div class="bar-title">
-          <span class="bar-label">${project.name}</span>
+          <span class="bar-label">${role ?? project.name}</span>
           ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing
             ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`
             : managerWord}</span>`}
         </div>
-        <div class="bar-tools"><${More} project=${project} /></div>
+        ${!role && html`<div class="bar-tools"><${More} project=${project} roles=${chat?.roles} /></div>`}
       </header>
       <div class="chat">
-        <${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "bubble" && row.author !== "owner")?.at} sent=${sent} />
+        ${!role && html`<${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "bubble" && row.author !== "owner")?.at} sent=${sent} />`}
         <div class="log-wrap">
-          <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation with the manager" tabindex="0" ...${gestures}>
+          <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label=${`Conversation with ${role ?? "the manager"}`} tabindex="0" ...${gestures}>
             ${cut.current ? html`<p class="note">Older messages are not shown.</p>` : null}
-            ${ready && !rows.length ? html`<p class="empty">No messages yet. Ask the manager for a task or a status; it answers from the ledger.</p>` : null}
+            ${ready && !rows.length ? html`<p class="empty">${role
+              ? `No messages yet. Ask ${role} about its work; it answers from the ledger.`
+              : "No messages yet. Ask the manager for a task or a status; it answers from the ledger."}</p>` : null}
             ${earlier}
             ${withNewLine(recent, firstNew, show)}
             ${typingShown && html`<${Typing} name=${names.manager} leaving=${!typing} />`}
@@ -847,8 +872,8 @@ export function Manager({ project: id, task, page, checks }) {
         </div>
         ${menu}
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
-        <${Reservoir} project=${id} items=${items} tasks=${overview?.tasks ?? []} checking=${overview?.to_check ?? 0} />
-        ${can("task_act") && html`<${ManagerComposer} project=${id} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
+        ${!role && html`<${Reservoir} project=${id} items=${items} tasks=${overview?.tasks ?? []} checking=${overview?.to_check ?? 0} />`}
+        ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
           onSent=${(message) => { toEnd(); setSent(message); load(); }} />`}
       </div>
       ${task != null && html`

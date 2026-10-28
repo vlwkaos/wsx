@@ -235,6 +235,7 @@ When it would pass 16 KiB, the memos are left out first, then the least urgent o
 - `Open` lists the open tasks waiting, failed, ready, checking, then working; `Recent` the ledger's landed and closed ones. Each row is the title, the number in muted text, the state word and what it waits for (`<on>: <reason>`, or `try first: <hold>`). Below 40 columns a row drops the number, below 64 what it waits for; the title and state stay.
 - `j`/`k` move, `Enter` shows the task: state, what it waits for, each check as passed or failed, its To check items, then the summary (or a closed task's memo). `j`/`k` scroll it, `Esc` goes back; `Esc` or `t` closes the list.
 - While it is open the view compares the size and time of the store's files (`store::watched_files`, as the web client's watch) every second off the UI thread, and reads the ledger again only when one changed. A failed read keeps the last list and says why above it.
+- An open or asked role is a row under *Roles*, after *Open*: its name, its state (`open` or `asked`) and the first line of its brief. `Enter` on an open role opens its chat as `m` opens the manager's, titled with the role's name, without To check items and approvals (see Roles).
 - `m` in the list opens the project's manager chat (`crates/wsx/src/task_chat.rs`, `crates/wsx/src/ui/task_chat.rs`). The heading names the project with the counts; the line under it says what the last action answered, what runs ("Sending…"), what the manager does while it works (its last step, as the web's typing line) or that it is not running. The conversation is `chat_window` of `manager/log.jsonl`, newest at the bottom: owner messages ("You"), the manager's replies and other managers' messages each as the author, the time and the wrapped words; each event line written by wsx as its first clause (`#3 ready r2: <title>`), and quiet replies, new conversations and stops as one muted line; wsx's recap request is left out. `j`/`k` scroll and `G` goes back to the newest.
 - Under the chat are the open To check items (id, task, check, then `pass if`, and `where` from 100 columns) and the pending approvals ("Approve land #7"), at most a third of the height. `Tab` selects one; `p` passes and `s` skips the selected item, `f` asks for a note and fails it (which starts the fix task, as `check fail`), and `y` or `n` asks "Approve land #7? y/n" or "Deny land #7? y/n" and then runs `approve` or `deny`. The footer names only the keys the selected item takes.
 - `i` or `Enter` writes on the last line; `Enter` sends it as `wsx task say` does (the manager starts when it is not running), `Esc` leaves the line with its draft. A message that was not sent comes back to the line, and a failure stays above the chat until the next action. `Esc` goes back to the list.
@@ -272,6 +273,33 @@ A manager may reach the manager of another registered project, and nothing else 
 - `wsx task say -p <other> --from-manager "<text>"` sends it a message. The manager host's broker sets `WSX_TASK_FROM` to its own project, and the message is logged in the other manager's log as `message{from: "manager:<project>"}`. The sender's log gets `sent{to, text}`. The web shows both as bubbles, each manager by its name ("Config"): "<project>" in the receiving chat, "To <other>" in the sending one; a project with `tasks.manager.name` shows that name instead ("Atlas", "To Atlas"), read only from projects the site grants.
 - `--reply` answers such a message (`from: "manager-reply:<project>"`). Each delivered message from a manager allows one reply to it, and a reply allows none, so no two managers answer each other in a loop.
 - Every other command with `-p <other>`, and `--from-manager` to its own project, is refused by the broker. A manager creates and changes tasks only in its own project.
+
+## Roles
+
+A role is the manager host with a name: a persistent chat with its own brief and notes for one area, such as a long branch effort driven through a parent task, `qa` or `release`. The manager is the role that always exists. Design: [design/profiles-and-parent-tasks.md](design/profiles-and-parent-tasks.md) "C".
+
+```sh
+wsx task role new <name> --brief <file> [--owner-said <id>] -p <project> --json   # or --brief - (stdin)
+wsx task role list -p <project> --json          # open, asked and closed roles, each with `running`
+wsx task role close <name> -p <project> --json  # its notes and log stay
+wsx task say --role <name> "<text>" -p <project> --json
+wsx task chat --role <name> -p <project> --json
+```
+
+- Store: `tasks/<project-id>/roles/<name>/` holds what `manager/` holds (`log.jsonl`, `state.json`, `notes/`, `skills-plugin/`) and `brief.md`; `closed` marks a closed role. A name is a lowercase letter, then lowercase letters, digits or `-`, at most 24; `manager` is refused.
+- Host: `wsx task manager-host <project-id> --role <name>` in the session `task-<name>`. `say` starts it; it leaves 20 s after its last message or turn with an empty queue, so an idle role has no agent and no pane. Its instructions are the manager's after a preamble with the brief; a new brief changes the digest, so the next turn starts a fresh conversation. Rotation, handover and notes work as for the manager. Its agent runs as `WSX_TASK_ACTOR=role:<name>`.
+- Events: only the manager host watches the store. An event of a task that an open role created (`created_by: "role:<name>"`) goes to that role through `say` (from `events`), which starts its host; every other event, and one whose role is closed or whose host did not take it, goes to the manager. The recap, the idle task, approvals, deploys, routines and the project page stay with the manager.
+- What a role may do: create tasks, and add, steer, stop, hold, close (not `--discard`) and land only the tasks it created, a land only of a child into its parent. `role new`, `role close`, `approve`, `deny`, `trial`, `deploy`, `release`, `close --discard` and routine add, edit, delete, enable and disable are refused to it. The manager and the owner act on every task.
+- Talk: `wsx task say [--role <name>] --from-role "<text>"` from the manager or a role reaches another role, or the manager without `--role`; the message is `from: "role:<sender>"` (the manager is `manager`) and the sender's log gets `sent{to: "role:<name>"}`. `--reply` answers once, as between managers (see Managers talk).
+
+The guard is wsx's, not the prompt's:
+
+1. `tasks.roles.max` (default 2, at most 8) open roles besides the manager; pending requests count. `role new` past it refuses and names them.
+2. The manager's `role new` is an approval request `{action: "role", role, brief}` (see Approvals): a Yes/No card in the chat, or `--owner-said <id>` when the owner's message of the running turn asked for it. The owner's `role new` opens the role at once.
+3. After the owner denies a role, `role new` of that name refuses for 7 days, also for the owner.
+4. A role with no log entry for `tasks.roles.closeDays` (default 14, a fraction allowed) is closed by the manager host, checked every 10 s, and by `role new` and `role list`; the manager hears `role <name> closed by wsx: ...`. 14 days, because a role exists for work over weeks and its parent task may wait on the owner for more than a week.
+
+The ledger lists `roles`, the open and asked ones. The TUI's Tasks view lists them under *Roles*; `Enter` opens a role's chat, the manager's chat view without its To check items and approvals.
 
 ## Recap
 
@@ -349,6 +377,7 @@ tasks:
   release: { command: "sh release.sh", approve: true }
   preview: { command: "npm run serve -- --port $PORT", ready: /health, ports: 9100-9199 }
   manager: { name: Atlas, adapter: claude, model: opus, eventModel: off, rotateTokens: 150000, recapMinutes: 0 }   # eventModel: a model or off
+  roles: { max: 2, closeDays: 14 }                               # see Roles
 ```
 
 `tasks.manager.name` is the name the owner reads for the manager: the web chat's author and typing bubble ("Atlas is typing"), another project's chat, the TUI row (`task-manager (Atlas)`) and `wsx task manager --json` (`name`). It is trimmed, one line without control characters, at most 64 bytes; empty is no name, and without one the manager reads as its project's name (`task-manager (wsx)`, "wsx is typing"). Inside, the manager stays `manager`: the session label `task-manager`, the provider, `WSX_TASK_ACTOR` and `from: manager:<project>`; the name is not in its instructions. The name is the manager's address for a later talk between managers by name.

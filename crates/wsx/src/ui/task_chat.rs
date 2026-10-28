@@ -31,7 +31,7 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
     let room = inner.height.saturating_sub(top.len() as u16 + 1);
     let items_height = (items.len() as u16).min(room / 3);
     let chat_height = room - items_height;
-    let lines = chat_lines(&chat.rows, width);
+    let lines = chat_lines(&chat.rows, chat.who(), width);
     let max_scroll = (lines.len() as u16).saturating_sub(chat_height);
     chat.max_scroll.set(max_scroll);
     let scroll = chat.scroll.min(max_scroll);
@@ -40,7 +40,7 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
         vec![muted(if !chat.loaded {
             "Loading the chat"
         } else {
-            "No messages yet. Press i to write to the manager"
+            "No messages yet. Press i to write a message"
         })]
     } else {
         lines
@@ -99,7 +99,8 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
     }
 }
 
-/// `Manager <project>` on the left, the To check and approval counts on the right.
+/// `Manager <project>` (or the role's name) on the left, the To check and approval counts on
+/// the right; a role's chat has none.
 fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
     let checks = chat
         .items
@@ -107,17 +108,22 @@ fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
         .filter(|item| matches!(item, Item::Check(_)))
         .count();
     let approvals = chat.items.len() - checks;
-    let counts = format!(
-        "{checks} to check  {approvals} approval{}",
-        if approvals == 1 { "" } else { "s" }
-    );
+    let counts = match chat.role {
+        Some(_) => String::new(),
+        None => format!(
+            "{checks} to check  {approvals} approval{}",
+            if approvals == 1 { "" } else { "s" }
+        ),
+    };
+    let who = truncate_to_width(chat.who(), width / 2);
     let project = truncate_to_width(
         &format!(" {}", chat.project),
-        width.saturating_sub("Manager".len() + counts.len() + 2),
+        width.saturating_sub(Line::from(who.as_str()).width() + counts.len() + 2),
     );
-    let used = "Manager".len() + Line::from(project.as_str()).width() + counts.len();
+    let used =
+        Line::from(who.as_str()).width() + Line::from(project.as_str()).width() + counts.len();
     Line::from(vec![
-        Span::styled("Manager", Style::default().fg(theme::ACCENT).bold()),
+        Span::styled(who, Style::default().fg(theme::ACCENT).bold()),
         Span::styled(project, Style::default().fg(theme::TEXT)),
         Span::raw(" ".repeat(width.saturating_sub(used).max(2))),
         Span::styled(counts, Style::default().fg(theme::TEXT_MUTED)),
@@ -140,10 +146,13 @@ fn status(chat: &ManagerChat, width: usize) -> Line<'static> {
         (words.clone(), color)
     } else if chat.busy {
         let doing = chat.activity.as_deref().unwrap_or("thinking");
-        (format!("Manager is working: {doing}"), theme::WORKING)
+        (
+            format!("{} is working: {doing}", chat.who()),
+            theme::WORKING,
+        )
     } else if chat.loaded && !chat.running {
         (
-            "The manager is not running; a message starts it".into(),
+            format!("{} is not running; a message starts it", chat.who()),
             theme::TEXT_MUTED,
         )
     } else {
@@ -161,7 +170,7 @@ fn clock(unix_ms: u64) -> String {
 
 /// Each message as its author and time, then its words wrapped under them; each event or
 /// quiet reply as one muted line.
-pub fn chat_lines(rows: &[Row], width: usize) -> Vec<Line<'static>> {
+pub fn chat_lines(rows: &[Row], other: &str, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for (index, row) in rows.iter().enumerate() {
         match row {
@@ -171,7 +180,7 @@ pub fn chat_lines(rows: &[Row], width: usize) -> Vec<Line<'static>> {
                 }
                 let (name, color) = match who {
                     Who::Owner => ("You".to_string(), theme::ACCENT),
-                    Who::Manager => ("Manager".to_string(), theme::DONE),
+                    Who::Manager => (other.to_string(), theme::DONE),
                     Who::Peer(project) => (project.clone(), theme::IDLE),
                 };
                 lines.push(Line::from(vec![
@@ -340,7 +349,7 @@ fn composer(chat: &ManagerChat, width: usize) -> (Line<'static>, Option<u16>) {
             )
         }
         Focus::Chat if chat.composer.value().is_empty() => {
-            (muted("> press i to write to the manager"), None)
+            (muted("> press i to write a message"), None)
         }
         Focus::Chat => (
             muted(&truncate_to_width(

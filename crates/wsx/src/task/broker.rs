@@ -104,15 +104,17 @@ fn forward(socket: &Path, argv: Vec<String>) -> Result<i32> {
     Ok(response.code)
 }
 
-/// The manager host's side: every `task` command runs as the manager actor. Another project
-/// is reached only by `ledger` and `say --from-manager`; a `--reply` spends an answer the
-/// manager owes (`owed`), and `sent` hears each message that went out.
-/// ref: docs/tasks.md "Managers talk"
+/// The manager host's side: every `task` command runs as its `actor` (`manager` or
+/// `role:<name>`). Another project is reached only by `ledger` and `say --from-manager`, a
+/// role or the manager of this one by `say --from-role`; a `--reply` spends an answer the
+/// host owes (`owed`), and `sent` hears each message that went out.
+/// ref: docs/tasks.md "Managers talk", "Roles"
 pub fn serve_manager(
     listener: UnixListener,
     exe: PathBuf,
     fallback_cwd: PathBuf,
     own: String,
+    actor: String,
     owed: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u32>>>,
     sent: impl Fn(String, String, bool) + Send + Sync + 'static,
 ) {
@@ -131,11 +133,15 @@ pub fn serve_manager(
         if let (Some(to), true) = (&target, reply) {
             if !owes(to) {
                 return refused(format!(
-                    "no message from the manager of {to} waits for an answer, and a reply is not answered"
+                    "no message from {} waits for an answer, and a reply is not answered",
+                    match to.strip_prefix("role:") {
+                        Some(role) => role.to_string(),
+                        None => format!("the manager of {to}"),
+                    }
                 ));
             }
         }
-        let response = run(&exe, request, &fallback_cwd, &own)
+        let response = run(&exe, request, &fallback_cwd, &own, &actor)
             .unwrap_or_else(|error| refused(format!("{error:#}")));
         if let (Some(to), 0) = (target, response.code) {
             // ^ Spent only by a reply that went out.
@@ -154,8 +160,9 @@ pub fn serve_manager(
     });
 }
 
-/// The other project a command reaches, which only `ledger` and `say --from-manager` may;
-/// `None` for the manager's own. A `--from-manager` message must go to another project.
+/// The other project a command reaches, which only `ledger` and `say --from-manager` may, or
+/// `role:<name>` for `say --from-role` to a role of its own (`manager` without `--role`);
+/// `None` for anything else of its own. A `--from-manager` message must go to another project.
 fn reach(argv: &[String], own: &str) -> Result<Option<String>> {
     let project = argv
         .iter()
@@ -169,8 +176,22 @@ fn reach(argv: &[String], own: &str) -> Result<Option<String>> {
         });
     let sub = argv.get(1).map(String::as_str).unwrap_or_default();
     let from_manager = argv.iter().any(|arg| arg == "--from-manager");
+    let from_role = argv.iter().any(|arg| arg == "--from-role");
+    let role = argv
+        .iter()
+        .position(|arg| arg == "--role")
+        .and_then(|at| argv.get(at + 1))
+        .cloned()
+        .or_else(|| {
+            argv.iter()
+                .find_map(|arg| arg.strip_prefix("--role=").map(str::to_string))
+        });
     match project.filter(|project| project != own) {
         None if from_manager => bail!("--from-manager messages another project's manager; name it with -p"),
+        None if sub == "say" && from_role => Ok(Some(format!(
+            "role:{}",
+            role.as_deref().unwrap_or("manager")
+        ))),
         None => Ok(None),
         // ^ Reading another ledger is not a message; only a sent message is logged.
         Some(_) if sub == "ledger" => Ok(None),
@@ -234,8 +255,8 @@ pub fn refused(message: String) -> Response {
     }
 }
 
-/// Run the command as the manager actor of `own`, in the agent's folder when it is one.
-fn run(exe: &Path, request: Request, fallback: &Path, own: &str) -> Result<Response> {
+/// Run the command as `actor` of `own`, in the agent's folder when it is one.
+fn run(exe: &Path, request: Request, fallback: &Path, own: &str, actor: &str) -> Result<Response> {
     let cwd = if request.cwd.is_dir() {
         request.cwd
     } else {
@@ -245,7 +266,7 @@ fn run(exe: &Path, request: Request, fallback: &Path, own: &str) -> Result<Respo
     command
         .args(&request.argv)
         .current_dir(cwd)
-        .env(ACTOR_ENV, "manager")
+        .env(ACTOR_ENV, actor)
         .env(FROM_ENV, own)
         .env_remove(BROKER_ENV)
         .stdin(Stdio::null());

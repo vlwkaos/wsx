@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Who wrote a message the manager receives: `owner`, `events`, `manager:<project>` or, for
-/// an answer to a message this manager sent, `manager-reply:<project>`.
+/// an answer to a message this manager sent, `manager-reply:<project>`; inside a project,
+/// `role:<name>` and `role-reply:<name>` (the manager is the role `manager`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub enum Author {
@@ -22,6 +23,11 @@ pub enum Author {
     },
     /// wsx asks for a recap after a quiet period (docs/tasks.md "Recap").
     Recap,
+    /// A role of the same project, or its manager as `manager` (docs/tasks.md "Roles").
+    Role {
+        name: String,
+        reply: bool,
+    },
 }
 
 impl From<Author> for String {
@@ -38,6 +44,8 @@ impl From<Author> for String {
                 project,
                 reply: true,
             } => format!("manager-reply:{project}"),
+            Author::Role { name, reply: false } => format!("role:{name}"),
+            Author::Role { name, reply: true } => format!("role-reply:{name}"),
         }
     }
 }
@@ -60,9 +68,15 @@ impl TryFrom<String> for Author {
             _ => match (
                 text.strip_prefix("manager:"),
                 text.strip_prefix("manager-reply:"),
+                text.strip_prefix("role:"),
+                text.strip_prefix("role-reply:"),
             ) {
-                (Some(project), _) => manager(project, false),
-                (_, Some(project)) => manager(project, true),
+                (Some(project), ..) => manager(project, false),
+                (_, Some(project), ..) => manager(project, true),
+                (.., Some(name), _) | (.., Some(name)) if !name.is_empty() => Ok(Author::Role {
+                    name: name.to_string(),
+                    reply: text.starts_with("role-reply:"),
+                }),
                 _ => Err(format!("unknown author {text}")),
             },
         }
@@ -275,6 +289,8 @@ pub enum ApprovalAction {
     Release,
     /// `close --discard`
     Discard,
+    /// `role new`: the manager asks once for a role (docs/tasks.md "Roles").
+    Role,
 }
 
 /// One line of `approvals.jsonl`.
@@ -290,6 +306,11 @@ pub enum ApprovalLine {
         revision: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<String>,
+        /// A role request: the role's name and the brief it opens with.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        brief: Option<String>,
         unix_ms: u64,
     },
     Decision {

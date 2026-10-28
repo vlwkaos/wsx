@@ -20,30 +20,40 @@ const MANAGER_START_WAIT: Duration = Duration::from_secs(10);
 /// Most characters of an action's answer kept in its decision.
 const MAX_OUTCOME_CHARS: usize = 1000;
 
-/// Start the project's manager host unless one answers. True when it was started.
-/// `launch` creates the hidden session `task-manager` in the main checkout with the given
-/// argv; the CLI may start wsxd for it, the web client never does.
+/// Start the project's manager host, or the open role's (`role`), unless one answers. True
+/// when it was started. `launch` creates the hidden session (its label, `task-manager` or
+/// `task-<role>`) in the main checkout with the given argv; the CLI may start wsxd for it,
+/// the web client never does.
 pub fn ensure_manager(
     name: &str,
     main: &Path,
     wsx: &Path,
-    launch: impl FnOnce(Vec<String>) -> Result<()>,
+    role: Option<&str>,
+    launch: impl FnOnce(String, Vec<String>) -> Result<()>,
 ) -> Result<(bool, ManagerDir)> {
     let project_id = store::project_id(name, main);
-    let dir = ManagerDir::open(&project_id)?;
+    let dir = match role {
+        None => ManagerDir::open(&project_id)?,
+        Some(role) => super::roles::open_role(&project_id, role)?,
+    };
     let status = || {
         call_socket::<_, ManagerResponse>(&dir.socket_path(), &ManagerRequest::Status, HOST_TIMEOUT)
     };
     if status().is_ok() {
         return Ok((false, dir));
     }
-    let argv = vec![
+    let mut argv = vec![
         wsx.to_string_lossy().into_owned(),
         "task".into(),
         "manager-host".into(),
         project_id,
     ];
-    launch(argv).context("the manager did not start; no session was left running")?;
+    if let Some(role) = role {
+        argv.extend(["--role".into(), role.into()]);
+    }
+    let label = format!("task-{}", dir.name());
+    launch(label.clone(), argv)
+        .context("the manager did not start; no session was left running")?;
     let deadline = Instant::now() + MANAGER_START_WAIT;
     while Instant::now() < deadline {
         if status().is_ok() {
@@ -52,22 +62,23 @@ pub fn ensure_manager(
         std::thread::sleep(Duration::from_millis(100));
     }
     bail!(
-        "the manager session started but its host does not answer; look at session task-manager in {}",
+        "the session started but its host does not answer; look at session {label} in {}",
         main.display()
     )
 }
 
-/// Give the manager a message, starting it first when needed. `from` is another project's
-/// manager; none is the owner.
+/// Give the manager, or the open role `role`, a message, starting it first when needed.
+/// `from` is another manager or role; none is the owner.
 pub fn say(
     name: &str,
     main: &Path,
     wsx: &Path,
-    launch: impl FnOnce(Vec<String>) -> Result<()>,
+    role: Option<&str>,
+    launch: impl FnOnce(String, Vec<String>) -> Result<()>,
     text: String,
     from: Option<super::manager::Author>,
 ) -> Result<ManagerResponse> {
-    let (_, dir) = ensure_manager(name, main, wsx, launch)?;
+    let (_, dir) = ensure_manager(name, main, wsx, role, launch)?;
     call_socket(
         &dir.socket_path(),
         &ManagerRequest::Say { text, from },
@@ -81,6 +92,7 @@ pub fn action_name(action: ApprovalAction) -> &'static str {
         ApprovalAction::Deploy => "deploy",
         ApprovalAction::Release => "release",
         ApprovalAction::Discard => "close --discard",
+        ApprovalAction::Role => "role new",
     }
 }
 
@@ -88,16 +100,21 @@ pub fn action_name(action: ApprovalAction) -> &'static str {
 /// "Approve discard #4", "Approve deploy".
 /// ref: docs/web-client-tasks.md
 pub fn approval_label(request: &ApprovalLine) -> String {
-    let ApprovalLine::Request { action, task, .. } = request else {
+    let ApprovalLine::Request {
+        action, task, role, ..
+    } = request
+    else {
         return String::new();
     };
     let verb = match action {
         ApprovalAction::Discard => "discard",
+        ApprovalAction::Role => "role",
         other => action_name(*other),
     };
-    match task {
-        Some(task) => format!("Approve {verb} #{task}"),
-        None => format!("Approve {verb}"),
+    match (task, role) {
+        (Some(task), _) => format!("Approve {verb} #{task}"),
+        (None, Some(role)) => format!("Approve {verb} {role}"),
+        (None, None) => format!("Approve {verb}"),
     }
 }
 
@@ -157,11 +174,28 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
         task,
         revision,
         commit,
+        role,
+        brief,
         ..
     } = find_request(&lines, id)?.clone()
     else {
         unreachable!("find_request returns requests");
     };
+    // ^ A role is store files only: no command to run.
+    if action == ApprovalAction::Role {
+        let role = role.unwrap_or_default();
+        let (ok, outcome) =
+            match super::roles::create(&project_id, &role, brief.as_deref().unwrap_or_default()) {
+                Ok(_) => (true, format!("done: role {role} is open")),
+                Err(error) => (false, format!("failed: {error:#}")),
+            };
+        decide(&project_id, id, true, None, &outcome)?;
+        return Ok(Approved {
+            ok,
+            outcome,
+            result: serde_json::json!({ "role": role }),
+        });
+    }
     // ^ The owner approves one revision: a task that moved on needs a new request.
     if let (Some(task), Some(revision)) = (task, revision) {
         let now = TaskDir::open(&project_id, task)?.read_record()?.revision;
@@ -181,6 +215,7 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
             task.unwrap_or_default().to_string(),
             "--discard".into(),
         ]),
+        ApprovalAction::Role => unreachable!("a role is created above"),
         ApprovalAction::Deploy | ApprovalAction::Release => {
             argv.push(action_name(action).into());
             if let Some(commit) = commit {

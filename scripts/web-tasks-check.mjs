@@ -2085,6 +2085,37 @@ await until("document.querySelector('.composer-field').value === 'a draft across
 if (await count(".build-pill")) await fail("the pill stayed after the reload");
 problems.splice(quietFrom);
 
+// Roles (docs/web-client-tasks.md "Roles"): the ⋯ menu lists the role as a contact, unread
+// until read; it opens the role's chat at #/p/<project>/r/<role>, the same bubbles without the
+// manager's reservoir, and its composer talks to the role.
+for (const wide of [false, true]) {
+  await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
+  await go(chat);
+  await until("!!document.querySelector('.composer-field')", "the chat did not open for Roles");
+  await click(".more-button");
+  await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lists no role");
+  if (!wide && !(await count(".role-contact .news-mark"))) await fail("an unread role shows no dot");
+  if (!(await text(".role-contact .role-line"))[0].startsWith("open: ")) await fail(`the contact's line is not its last reply: ${await text(".role-contact")}`);
+  await shot(`roles-menu${wide ? "-wide" : ""}`);
+  await click(".more-menu .role-contact");
+  await until(`location.hash === '#/p/${project}/r/billing' && !!document.querySelector('.log .bubble[data-side=in]')`, "the role chat did not open with its reply");
+  if (await count(".reservoir")) await fail("a role's chat shows the manager's reservoir");
+  if ((await text(".bar-label"))[0] !== "billing") await fail(`the role chat's title is ${await text(".bar-label")}`);
+  if (!wide) {
+    const answered = await count(".log .bubble[data-side=in]");
+    await typeInto(".composer-field", "STATUS");
+    await click(".composer-send");
+    await until(`document.querySelectorAll('.log .bubble[data-side=in]').length > ${answered}`, "the role did not answer the page", 60);
+  }
+  await shot(`role-chat${wide ? "-wide" : ""}`, ".composer-send");
+  await evaluate("document.querySelector('.bar a.icon-button').click()");
+  await until(`location.hash === ${JSON.stringify(chat)}`, "Back from a role did not return to the manager");
+}
+await click(".more-button");
+await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lost the role");
+if (await count(".role-contact .news-mark")) await fail("a role read on this device still shows unread");
+await key("Escape", 27);
+
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
@@ -2121,6 +2152,6 @@ await pause(300);
 const shifted = (await rowAt(reading.key)) - reading.down;
 if (Math.abs(shifted) > 2) await fail(`Show earlier moved the row in view by ${shifted} px`);
 await toLatest("390 px");
-console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass in a bubble that stays in place, Skip, the fix task's line), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass in a bubble that stays in place, Skip, the fix task's line), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Roles (the ⋯ contact with its unread dot, its chat at #/p/<project>/r/<role> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

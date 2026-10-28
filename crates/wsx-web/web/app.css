@@ -744,6 +744,12 @@ body[data-keyboard] .chat:has(.slash) .reservoir { display: none; }
 .more-menu a, .more-menu button { min-height: var(--size-control); display: flex; align-items: center; padding: 0 var(--space-4); text-decoration: none; }
 .more-menu button { border: 0; background: none; color: inherit; font: inherit; text-align: start; white-space: nowrap; }
 .more-menu a:focus-visible, .more-menu button:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
+/* Roles in the project's ⋯ menu: a contact list, the name over its last line, a dot when
+   unread (docs/web-client-tasks.md "Roles"). */
+.more-heading { margin: var(--space-2) var(--space-4) var(--space-1); padding-top: var(--space-2); border-top: var(--border-width) solid var(--color-hairline); font-size: var(--font-size-sm); color: var(--color-muted); }
+.more-menu .role-contact { flex-direction: column; align-items: stretch; justify-content: center; gap: var(--space-1); padding-block: var(--space-1); width: min(80vw, 22rem); }
+.role-name { display: flex; align-items: center; gap: var(--space-2); font-weight: var(--font-weight-medium); }
+.role-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-sm); color: var(--color-muted); }
 .manager .log-wrap { overflow: hidden; }
 /* The task sheet: over the chat from the bottom, about 85% of the visible height; on a wide
    screen a panel at the right. A swipe down on its top moves it with the finger (an inline

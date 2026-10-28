@@ -51,10 +51,12 @@ export function conversation(entries, resolutions, approvals = [], checks = []) 
       return;
     } else if (entry.kind === "reply") {
       rows.push({ kind: "bubble", at, key, author: "manager", entry, quiet: entry.quiet, tag: entry.to?.some((id) => recaps.has(id)) ? "Recap" : null });
-    } else if (entry.kind === "message" && /^manager(-reply)?:/.test(entry.from ?? "")) {
-      // ^ Another project's manager wrote (docs/tasks.md "Managers talk").
-      const [from, peer] = entry.from.split(/:(.*)/s);
-      rows.push({ kind: "bubble", at, key, author: `peer:${peer}`, entry, tag: from === "manager-reply" ? "Reply" : null });
+    } else if (entry.kind === "message" && /^(manager|role)(-reply)?:/.test(entry.from ?? "")) {
+      // ^ Another project's manager wrote (docs/tasks.md "Managers talk"), or a role or the
+      // manager of this one (`role:<name>`, docs/tasks.md "Roles").
+      const [from, name] = entry.from.split(/:(.*)/s);
+      const peer = from.startsWith("role") ? `role:${name}` : name;
+      rows.push({ kind: "bubble", at, key, author: `peer:${peer}`, entry, tag: from.endsWith("-reply") ? "Reply" : null });
     } else if (entry.kind === "sent") {
       rows.push({ kind: "bubble", at, key, author: "manager", entry, to: entry.to });
     } else if (entry.kind === "message") {

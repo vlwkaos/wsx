@@ -1,7 +1,9 @@
 //! `wsx task manager-host`: one manager agent per project in a hidden session in the
 //! main checkout. It edits no project file but a commit of the owner's own changes on the
 //! owner's yes; it answers from the ledger, acts through
-//! `wsx task` commands and keeps notes in its own folder. ref: docs/tasks.md "Manager"
+//! `wsx task` commands and keeps notes in its own folder. With `--role <name>` the same host
+//! runs a role: its brief, its own folder and only its tasks' events, and it leaves once idle.
+//! ref: docs/tasks.md "Manager", "Roles"
 
 use super::boundary::Boundary;
 use super::claude::{
@@ -25,13 +27,13 @@ use wsx_core::task::manager::{
     Author, LimitHold, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState,
     Seen,
 };
-use wsx_core::task::owner;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
 use wsx_core::task::{
     checks, ledger, now_unix_ms, LogEvent, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
 };
+use wsx_core::task::{owner, roles};
 
 use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -49,6 +51,10 @@ const LIMIT_CONTINUE: &str = "The session limit has reset. Answer the messages b
 that got no reply yet, then any below.";
 /// The title of the task `tasks.workflow.idle` starts.
 const IDLE_TITLE: &str = "Consolidate project knowledge";
+/// A role's host leaves after this long with no message and no turn; `say` starts it again.
+const ROLE_LINGER: Duration = Duration::from_secs(20);
+/// How often the manager host closes roles idle past `tasks.roles.closeDays`.
+const ROLE_SWEEP: Duration = Duration::from_secs(10);
 /// A message in a handover: one line, clipped, so a quote never reads as a new message.
 fn one_line(text: &str) -> String {
     clip(
@@ -83,11 +89,17 @@ pub(super) enum Event {
     /// `wsx task new` with `tasks.workflow.idle` ended: when it began, and the task number or
     /// the error.
     IdleStarted(u64, Result<u32, String>),
-    /// The agent's `say --from-manager` reached another project's manager.
+    /// The agent's `say --from-manager` reached another project's manager, or its
+    /// `say --from-role` a role of this project (`to` is `role:<name>`).
     Sent {
         to: String,
         text: String,
         reply: bool,
+    },
+    /// The events of a role's tasks that its host did not take: the manager hears them.
+    Undelivered {
+        role: String,
+        text: String,
     },
 }
 
@@ -139,6 +151,11 @@ struct Manager {
     /// When the host last removed old captures; `None` sweeps on the first tick.
     captures_swept: Option<Instant>,
     owed: Owed,
+    /// Event lines of tasks a role created, by role, not yet sent to it.
+    role_events: BTreeMap<String, Vec<String>>,
+    roles_swept: Option<Instant>,
+    /// A role host that is closed or idle: it leaves.
+    leaving: bool,
 }
 
 /// The plugin that lends the manager the owner's skills, `manager/<this>/`.
@@ -171,8 +188,7 @@ fn instructions(
          workers do that in tasks. Keep your notes in {notes}. \
          Messages headed 'Owner' come from the owner; 'Events' come from \
          wsx. Each message ends with wsx's ledger summary. The ledger is the truth, not \
-         your memory: run `wsx task ledger -p {project}` for more (checks, overlaps, memo, \
-         deploys). Every `wsx task` command takes `-p {project} --json`, also in a pipe or \
+         your memory: run `wsx task ledger -p {project}` for more. Every `wsx task` command takes `-p {project} --json`, also in a pipe or \
          with a heredoc; no other `wsx` command runs. Name tasks as #<n>. \
          Talk like a person in a chat, not a report: answer what the owner asked in a few \
          short lines. {presentation} \
@@ -193,14 +209,13 @@ fn instructions(
          most 60 characters, never starting with 'Owner'; pass one `--files` per path or \
          glob it will change, in every task new (`wsx task add <n> --files <glob> \
          \"<why>\"` adds more). The prompt stands alone, since a worker cannot ask: the goal, \
-         the owner's decisions, the scope, the files and how it proves the result. Pick \
-         the worker by the work. When you have read the code and can state the goal exactly, \
+         the owner's decisions, the scope, the files and how it proves the result. When you have read the code and can state the goal exactly, \
          and the prompt carries the files, what they do now, the change and its proof, run \
          it with `--model sonnet` and `--skip` for each step of `tasks.workflow.steps` your \
          prompt already did (context, plan). Work that needs deep exploration, an unknown \
          cause or a change to a module's design keeps the default model and every step. A \
-         broad hunt (find all bugs, audit everything) is first one read-only audit task per \
-         area that writes its findings to a file, then one task per fix. With \
+         broad hunt (find all bugs) is first one read-only audit task per area, then one \
+         task per fix. With \
          `--plan` the worker writes a short plan and the task waits on `plan`; read it with \
          `wsx task show <n> --json` and continue with `wsx task add <n> \"go\"` or what to \
          change. Never ask the owner to wait. `wsx task add` or \
@@ -218,7 +233,7 @@ fn instructions(
          `to_check`); never pass, fail or skip items yourself. A release refuses while items are \
          open, unless the owner's message asks for it (`--owner-said`): then the items stay \
          to check on the release. `deploy` and `release` answer at once; the \
-         result comes as an event, so do not run them again meanwhile. `wsx task routine` lists and runs the project's \
+         result comes as an event. `wsx task routine` lists and runs the project's \
          routines (results as events and in the ledger's `routines`); add, edit and delete \
          need `--owner-said`. When the last task of a request \
          lands and no open task \
@@ -226,29 +241,30 @@ fn instructions(
          prompt and the task numbers: {batch} \
          When the owner wants to be sure of a change or to try it, start \
          it with `wsx task new --hold \"<why>\"` (`wsx task hold <n> \"<why>\"` holds a \
-         running one, `--off` releases it). A held task lands only when the owner says so. \
+         running one, `--off` releases it). \
          Long multi-step work goes into one task: each step is `wsx task new --into <n>`, \
          which holds #<n>; land a step when an event names it ready, and #<n> once the owner \
-         says so. \
+         says so. Work across many tasks of one area, such as a parent with 3 or more \
+         children, may get a role, a second manager with its own chat: ask the owner once, \
+         then `wsx task role new <name> --brief <file>`. \
          Say in one line how to try it: Try live (`wsx task trial <n>`), or a preview \
          (`wsx task preview <n>`) when the live site cannot roll back from it, such as a \
          daemon or a migration. \
          When the owner's message in this turn asks for the action itself (\"land #5\", \
          \"close #42\"), pass `--owner-said <id>`, the id in its 'Owner (message \
          <id>)' heading, to `land`, `close --discard`, `deploy` or `release`; never name a \
-         message that did not ask for that action. When a command says the owner was asked \
-         to approve, say so and do not retry it. An event 'approval <id> (...) dropped': \
+         message that did not ask for that action. When a command says the owner was asked, \
+         say so. An event 'approval <id> (...) dropped': \
          tell the owner why in one line. A land needs no approval, and the project deploys \
          by itself when the ledger's `deploys` say so; call a change live only when \
          `deploys` shows its commit. \
          A task waits when the ledger shows `waiting`. On `owner`, the worker asked or \
          stopped: answer with `wsx task add` when you can, else ask the owner in plain \
-         words. On `disk` or `limit` (the agent's usage limit), it resumes by itself. On \
+         words. On `disk` or `limit` it resumes by itself. On \
          `hand`, the owner works in its copy: never add, steer, land or close it; only the \
          owner runs `wsx task hand` and `handback`. \
          Nothing asks you for permission inside wsx's boundary. Read the \
-         project and the copies with the file and web tools and read-only git in Bash (also \
-         `git -C <working copy>`). The \
+         project and the copies with the file and web tools and read-only git in Bash. The \
          one git command that writes: when a land refuses because the main checkout has the \
          owner's uncommitted changes, name those files and ask; only after the owner says \
          yes, commit exactly those files in the main checkout (`git commit -m \"<message \
@@ -263,14 +279,15 @@ fn instructions(
          the same way. The project page {page} is the owner's one-page picture: the goal, \
          the tasks as a mermaid graph, the plans, the decisions and the open questions. \
          Update a section in place when it changes; never rewrite the file or create \
-         another page; call it the project page. \
-         Other projects have managers too. You may read `wsx task ledger -p \
+         another page. \
+         You may read another project's `wsx task ledger -p \
          <project>` and message its manager with `wsx task say -p <project> --from-manager \
          \"<text>\"`; never create or change its tasks. A message headed 'Manager <project>' \
          asks you something: answer it once with `wsx task say -p <project> --from-manager \
          --reply \"<answer>\"`. 'Manager <project> replies' answers yours: use it and do not \
          answer it. '@<project>' in an owner message asks you to consult that manager the \
-         same way and use its reply.",
+         same way and use its reply. Roles talk the same way inside the project with \
+         `--role <name> --from-role`; answer a message headed 'Role <name>' once with `--reply`.",
         review = match workflow.review.is_empty() {
             true => String::new(),
             false => format!("{} ", workflow.review),
@@ -284,10 +301,30 @@ fn instructions(
     )
 }
 
-pub fn run(project_id: &str) -> Result<()> {
+/// A role's instructions open with this, its brief, then the manager's.
+/// ref: docs/tasks.md "Roles"
+fn role_preamble(role: &str, project: &str, brief: &str) -> String {
+    format!(
+        "You are {role}, a role in the project {project}: a second manager for one area, \
+         with the owner's brief below. The manager's instructions after it are yours, with these \
+         differences. You hear the events only of the tasks you create, and act only on them; \
+         you land only a child into its parent task. The manager keeps every other task, the \
+         recap, approvals, deploys, releases, routines and the project page. You never create a \
+         role or change the project's config. Message the manager with `wsx task say \
+         --from-role \"<text>\"`; a message headed 'Manager' or 'Role <name>' asks you \
+         something: answer it once with `wsx task say --role <name> --from-role --reply \
+         \"<answer>\"` (`--role manager` for the manager).\n\nThe owner's brief:\n{brief}\n\n\
+         The manager's instructions:\n"
+    )
+}
+
+pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
     let (project, main) = super::project_by_id(project_id)?;
     let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
-    let dir = ManagerDir::open(project_id)?;
+    let dir = match role {
+        None => ManagerDir::open(project_id)?,
+        Some(role) => roles::open_role(project_id, role)?,
+    };
     let listener = hosting::bind(&dir.socket_path())?;
     let brokered = hosting::bind(&dir.broker_path())?;
     let state = dir.read_state()?;
@@ -322,6 +359,9 @@ pub fn run(project_id: &str) -> Result<()> {
         reexec: false,
         captures_swept: None,
         owed: Owed::default(),
+        role_events: BTreeMap::new(),
+        roles_swept: None,
+        leaving: false,
     };
     manager.restore()?;
     let requests = events.clone();
@@ -336,15 +376,24 @@ pub fn run(project_id: &str) -> Result<()> {
     });
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
     let folder = manager.main.clone();
-    let (own, owed, sent) = (
+    let (own, owed, sent, actor) = (
         manager.project.clone(),
         manager.owed.clone(),
         events.clone(),
+        manager.actor(),
     );
     std::thread::spawn(move || {
-        broker::serve_manager(brokered, exe, folder, own, owed, move |to, text, reply| {
-            let _ = sent.send(Event::Sent { to, text, reply });
-        })
+        broker::serve_manager(
+            brokered,
+            exe,
+            folder,
+            own,
+            actor,
+            owed,
+            move |to, text, reply| {
+                let _ = sent.send(Event::Sent { to, text, reply });
+            },
+        )
     });
     std::thread::spawn(move || {
         while events.send(Event::Tick).is_ok() {
@@ -352,12 +401,21 @@ pub fn run(project_id: &str) -> Result<()> {
         }
     });
     manager.say(&format!(
-        "manager of {} in {}",
+        "{} of {} in {}",
+        manager.dir.name(),
         manager.project,
         manager.main.display()
     ));
     manager.report(runtime::AgentState::Idle);
     manager.run(receiver)?;
+    if manager.leaving {
+        if let Some(agent) = manager.agent.take() {
+            agent.stop();
+        }
+        let _ = std::fs::remove_file(manager.dir.socket_path());
+        let _ = std::fs::remove_file(manager.dir.broker_path());
+        return Ok(());
+    }
     if let (true, Some(binary)) = (manager.reexec, &manager.binary) {
         if let Some(agent) = manager.agent.take() {
             agent.stop();
@@ -381,10 +439,13 @@ impl Manager {
                     self.on_agent(line)
                 }
                 Event::Agent(..) => {}
+                // ^ A role hears only what the manager host sends it.
+                Event::Tick if self.dir.role.is_some() => self.leave_when_done(),
                 Event::Tick => {
                     self.watch_tasks();
                     self.ask_recap();
                     self.sweep_captures();
+                    self.close_idle_roles();
                 }
                 Event::IdleStarted(began, Ok(id)) => {
                     self.say(&format!("started idle task #{id}"));
@@ -397,6 +458,12 @@ impl Manager {
                     self.say(&format!("cannot start the idle task: {error}"))
                 }
                 Event::Sent { to, text, reply } => self.log(ManagerEvent::Sent { to, text, reply }),
+                Event::Undelivered { role, text } => {
+                    self.pending_events.push(format!(
+                        "role {role} did not take the events of its tasks, so they are yours:\n{text}"
+                    ));
+                    self.last_event = Some(Instant::now());
+                }
             }
             if self.turn.is_none() {
                 self.flush_events();
@@ -406,6 +473,9 @@ impl Manager {
             }
             if self.reexec {
                 std::thread::sleep(Duration::from_millis(200));
+                return Ok(());
+            }
+            if self.leaving {
                 return Ok(());
             }
         }
@@ -561,11 +631,17 @@ impl Manager {
                 continue;
             };
             let asked = match decided_request(&lines, *at) {
-                Some(ApprovalLine::Request { action, task, .. }) => format!(
-                    "{action:?}{}",
-                    task.map_or(String::new(), |task| format!(" #{task}"))
-                )
-                .to_ascii_lowercase(),
+                Some(ApprovalLine::Request {
+                    action, task, role, ..
+                }) => format!(
+                    "{}{}",
+                    format!("{action:?}").to_ascii_lowercase(),
+                    match (task, role) {
+                        (Some(task), _) => format!(" #{task}"),
+                        (None, Some(role)) => format!(" {role}"),
+                        (None, None) => String::new(),
+                    }
+                ),
                 _ => String::new(),
             };
             let verdict = match (approved, outcome.starts_with(owner::DROPPED)) {
@@ -694,6 +770,10 @@ impl Manager {
         let Ok(tasks) = project_tasks(&self.dir.project_id) else {
             return;
         };
+        let open_roles: Vec<String> = roles::open_roles(&self.dir.project_id)
+            .iter()
+            .map(|dir| dir.name().to_string())
+            .collect();
         // ^ A child's land waits for its parent at rest: the parent's event names them.
         // ref: docs/tasks.md "Parent tasks"
         let ready_children: Vec<(u32, u32)> = tasks
@@ -771,15 +851,95 @@ impl Manager {
                 }
                 summary
             };
-            self.pending_events.push(format!(
+            let line = format!(
                 "#{} {} r{}: {}; {}",
                 record.id,
                 record.state.as_str(),
                 record.revision,
                 clip(&title, EVENT_TITLE_CHARS),
                 summary,
+            );
+            // ^ Only a task's creator hears of it: an open role, else the manager.
+            // ref: docs/tasks.md "Roles"
+            match record
+                .created_by
+                .role()
+                .filter(|role| open_roles.iter().any(|open| open == role))
+            {
+                Some(role) => self
+                    .role_events
+                    .entry(role.to_string())
+                    .or_default()
+                    .push(line),
+                None => self.pending_events.push(line),
+            }
+            self.last_event = Some(Instant::now());
+        }
+    }
+
+    /// Close the roles with no turn for `tasks.roles.closeDays`, and tell the manager.
+    /// ref: docs/tasks.md "Roles"
+    fn close_idle_roles(&mut self) {
+        if self.roles_swept.is_some_and(|at| at.elapsed() < ROLE_SWEEP) {
+            return;
+        }
+        self.roles_swept = Some(Instant::now());
+        let Ok(settings) = load_task_config(&self.main) else {
+            return;
+        };
+        for role in roles::close_idle(&self.dir.project_id, settings.roles_close_secs) {
+            self.pending_events.push(format!(
+                "role {role} closed by wsx: no turn for tasks.roles.closeDays; its notes are kept"
             ));
             self.last_event = Some(Instant::now());
+        }
+    }
+
+    /// A role's host leaves when its role is closed, or after `ROLE_LINGER` with no message
+    /// and no turn: an idle role costs no agent and no pane.
+    fn leave_when_done(&mut self) {
+        let closed = !roles::is_open(&self.dir);
+        let idle = self.turn.is_none()
+            && self.queue.is_empty()
+            && self.state.limit.is_none()
+            && self.last_activity.elapsed() >= ROLE_LINGER;
+        if closed || idle {
+            self.say(match closed {
+                true => "the role is closed: its host leaves",
+                false => "idle: the role's host leaves until the next message",
+            });
+            self.leaving = true;
+        }
+    }
+
+    /// Send the role's own events through `say`, which starts its host when it is not
+    /// running; the events of a role whose host does not take them go to the manager.
+    fn send_role_events(&mut self) {
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        for (role, lines) in std::mem::take(&mut self.role_events) {
+            let (project, main, exe, events) = (
+                self.project.clone(),
+                self.main.clone(),
+                exe.clone(),
+                self.events.clone(),
+            );
+            std::thread::spawn(move || {
+                let text = lines.join("\n");
+                let sent = owner::say(
+                    &project,
+                    &main,
+                    &exe,
+                    Some(&role),
+                    super::launch_manager(&main),
+                    text.clone(),
+                    Some(Author::Events),
+                );
+                if !sent.is_ok_and(|response| response.ok) {
+                    let _ = events.send(Event::Undelivered { role, text });
+                }
+            });
         }
     }
 
@@ -788,20 +948,37 @@ impl Manager {
         let quiet = self
             .last_event
             .is_some_and(|last| last.elapsed() >= EVENT_QUIET);
-        if self.pending_events.is_empty() || !quiet {
+        if (self.pending_events.is_empty() && self.role_events.is_empty()) || !quiet {
+            return;
+        }
+        self.send_role_events();
+        if self.pending_events.is_empty() {
+            self.save_seen();
             return;
         }
         let text = self.pending_events.join("\n");
         match self.accept(Author::Events, text) {
             Ok(_) => {
                 self.pending_events.clear();
-                self.state.seen = Some(self.observed.clone());
-                self.state.decisions_seen = self.observed_decisions;
-                self.state.deploys_seen_ms = Some(self.observed_deploys_ms);
-                self.state.routines_seen = Some(self.observed_routines);
-                self.save();
+                self.save_seen();
             }
             Err(error) => self.say(&format!("cannot log the events: {error:#}")),
+        }
+    }
+
+    fn save_seen(&mut self) {
+        self.state.seen = Some(self.observed.clone());
+        self.state.decisions_seen = self.observed_decisions;
+        self.state.deploys_seen_ms = Some(self.observed_deploys_ms);
+        self.state.routines_seen = Some(self.observed_routines);
+        self.save();
+    }
+
+    /// `WSX_TASK_ACTOR` of the agent's commands: `manager` or `role:<name>`.
+    fn actor(&self) -> String {
+        match &self.dir.role {
+            Some(role) => wsx_core::task::Actor::Role(role.clone()).into(),
+            None => "manager".into(),
         }
     }
 
@@ -972,7 +1149,7 @@ impl Manager {
     fn enqueue(&mut self, id: u64, from: Author, text: String) {
         let rank = |author: &Author| match author {
             Author::Owner => 0,
-            Author::Manager { .. } => 1,
+            Author::Manager { .. } | Author::Role { .. } => 1,
             Author::Events => 2,
             Author::Recap => 3,
         };
@@ -1040,6 +1217,26 @@ impl Manager {
                     project,
                     reply: true,
                 } => format!("Manager {project} replies"),
+                // ^ A role's or this project's manager's message is answered once, as a
+                // manager's (docs/tasks.md "Roles").
+                Author::Role { name, reply } => {
+                    if !reply {
+                        *self
+                            .owed
+                            .lock()
+                            .expect("owed lock")
+                            .entry(format!("role:{name}"))
+                            .or_default() += 1;
+                    }
+                    let who = match name.as_str() {
+                        "manager" => "Manager".to_string(),
+                        name => format!("Role {name}"),
+                    };
+                    match reply {
+                        true => format!("{who} replies"),
+                        false => who,
+                    }
+                }
             };
             text.push_str(&format!("{heading} (message {id}):\n{body}\n\n"));
             ids.push(id);
@@ -1258,18 +1455,17 @@ impl Manager {
         let workflow = load_task_config(&self.main)
             .map(|settings| settings.workflow)
             .unwrap_or_default();
-        let mut launch = Launch::new(
-            &self.main,
-            boundary,
-            &self.model,
-            instructions(&self.project, &notes, &page, skills.is_some(), &workflow),
-        );
+        let mut text = instructions(&self.project, &notes, &page, skills.is_some(), &workflow);
+        if let Some(role) = &self.dir.role {
+            text = role_preamble(role, &self.project, &roles::brief(&self.dir)) + &text;
+        }
+        let mut launch = Launch::new(&self.main, boundary, &self.model, text);
         launch.plugin_dirs = skills.into_iter().collect();
         // ^ The agent's `wsx task` commands go to this host (broker.rs), which runs them as
         // the manager actor; the actor mark stays for the approval rules.
         launch.env = vec![
             (broker::BROKER_ENV.into(), broker_socket.into_os_string()),
-            (ACTOR_ENV.into(), "manager".into()),
+            (ACTOR_ENV.into(), self.actor().into()),
             // ^ Its git reads must not take the index lock of the owner's checkout.
             ("GIT_OPTIONAL_LOCKS".into(), "0".into()),
         ];

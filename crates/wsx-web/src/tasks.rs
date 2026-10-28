@@ -600,19 +600,32 @@ fn timeline(log: &[task::LogEntry]) -> Value {
     json!({ "entries": rows.split_off(skipped), "skipped": skipped })
 }
 
-/// The manager conversation after message `after`, and whether it runs or thinks.
+/// The manager conversation, or the role `role`'s, after message `after`, and whether it
+/// runs or thinks; the manager's also lists the project's roles as contacts.
 /// `scopes`: the granted projects, whose managers' names a peer bubble may show.
 pub fn chat(
     scope: &Scope,
     scopes: &[Scope],
+    role: Option<&str>,
     after: Option<u64>,
     media: &crate::media::Media,
 ) -> Outcome<Value> {
     // ^ The name the owner reads (docs/tasks.md "Config"); the role stays `manager` inside.
-    let manager = json!({ "name": manager_name(scope) });
-    let Some(dir) = ManagerDir::existing(&scope.store).map_err(internal)? else {
+    let manager = json!({ "name": role.map_or_else(|| manager_name(scope), str::to_string) });
+    let roles = match role {
+        Some(_) => Value::Null,
+        None => json!(role_contacts(scope)),
+    };
+    let dir = match role {
+        None => ManagerDir::existing(&scope.store).map_err(internal)?,
+        Some(role) => Some(
+            task::roles::open_role(&scope.store, role)
+                .map_err(|error| Fault::new(404, "not_found", format!("{error:#}")))?,
+        ),
+    };
+    let Some(dir) = dir else {
         return Ok(
-            json!({ "entries": [], "skipped": 0, "running": false, "busy": false, "manager": manager, "peers": {} }),
+            json!({ "entries": [], "skipped": 0, "running": false, "busy": false, "manager": manager, "peers": {}, "roles": roles }),
         );
     };
     let log = dir.read_log().map_err(internal)?;
@@ -654,8 +667,28 @@ pub fn chat(
                 ..
             } => project,
             ManagerEvent::Sent { to, .. } => to,
+            // ^ A role or this project's manager, by its name (docs/tasks.md "Roles").
+            ManagerEvent::Message {
+                from: task::manager::Author::Role { name, .. },
+                ..
+            } => {
+                let shown = match name.as_str() {
+                    "manager" => manager_name(scope),
+                    name => name.to_string(),
+                };
+                peers.insert(format!("role:{name}"), json!(shown));
+                continue;
+            }
             _ => continue,
         };
+        if let Some(name) = peer.strip_prefix("role:") {
+            let shown = match name {
+                "manager" => manager_name(scope),
+                name => name.to_string(),
+            };
+            peers.insert(peer.clone(), json!(shown));
+            continue;
+        }
         if !peers.contains_key(peer) {
             let name = scopes
                 .iter()
@@ -667,12 +700,40 @@ pub fn chat(
     Ok(json!({
         "manager": manager,
         "peers": peers,
+        "roles": roles,
         "entries": entries,
         "skipped": skipped,
         "running": status.is_some(),
         "busy": busy,
         "activity": if busy { activity } else { None },
     }))
+}
+
+/// The open roles as contacts: name, the first line of the last reply and when the role
+/// last had anything in its chat (docs/web-client-tasks.md "Roles").
+fn role_contacts(scope: &Scope) -> Vec<Value> {
+    task::roles::open_roles(&scope.store)
+        .iter()
+        .map(|dir| {
+            let last = dir
+                .read_tail(MANAGER_TAIL_BYTES)
+                .unwrap_or_default()
+                .into_iter()
+                .rev()
+                .find_map(|entry| match entry.event {
+                    ManagerEvent::Reply { text, .. } => {
+                        Some(view::clip(text.lines().next().unwrap_or_default(), LAST_REPLY_CHARS))
+                    }
+                    _ => None,
+                });
+            json!({
+                "name": dir.name(),
+                "brief": task::roles::brief(dir).lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
+                "last_reply": last,
+                "last_unix_ms": task::roles::last_active_ms(dir),
+            })
+        })
+        .collect()
 }
 
 /// A project's manager name as the owner reads it (`TaskConfig::manager_shown_name`).
@@ -939,12 +1000,13 @@ fn run_wsx(scope: &Scope, mut argv: Vec<String>) -> Outcome<Value> {
         .map_err(|_| internal(anyhow::anyhow!("wsx {} did not print JSON", argv[1])))
 }
 
-/// Give the manager an owner message, starting it when it does not run.
-pub fn say(app: &App, scope: &Scope, text: &str) -> Outcome<Value> {
+/// Give the manager, or the open role `role`, an owner message, starting it when it does not
+/// run.
+pub fn say(app: &App, scope: &Scope, role: Option<&str>, text: &str) -> Outcome<Value> {
     let text = message(text, "the message")?;
     let wsx = std::env::current_exe().map_err(|error| internal(error.into()))?;
     // ^ The session is created with this server's client, which never starts wsxd.
-    let launch = |argv: Vec<String>| -> anyhow::Result<()> {
+    let launch = |label: String, argv: Vec<String>| -> anyhow::Result<()> {
         let snapshot = chat::snapshot(&app.client).map_err(|fault| anyhow::anyhow!(fault.2))?;
         let worktree = snapshot
             .worktrees
@@ -955,7 +1017,7 @@ pub fn say(app: &App, scope: &Scope, text: &str) -> Outcome<Value> {
             &app.client,
             &wsx_core::runtime::Request::SessionCreate {
                 worktree_id: worktree.id,
-                label: "task-manager".into(),
+                label,
                 command: argv,
                 initial_input: None,
                 rows: 24,
@@ -968,7 +1030,7 @@ pub fn say(app: &App, scope: &Scope, text: &str) -> Outcome<Value> {
             _ => anyhow::bail!("unexpected create response"),
         }
     };
-    let response = owner::say(&scope.name, &scope.path, &wsx, launch, text, None)
+    let response = owner::say(&scope.name, &scope.path, &wsx, role, launch, text, None)
         .map_err(|error| Fault::new(502, "manager_unavailable", format!("{error:#}")))?;
     if !response.ok {
         return Err(Fault::new(409, "refused", response.message));
@@ -1027,8 +1089,8 @@ pub struct Watch {
     seen: HashMap<u64, HashMap<u32, (TaskState, u32)>>,
     /// Approval requests already seen, by project.
     requests: HashMap<u64, HashSet<String>>,
-    /// The last manager reply id seen, by project.
-    replies: HashMap<u64, u64>,
+    /// The last reply id seen, by project and role (`manager` for the manager).
+    replies: HashMap<(u64, String), u64>,
     /// New items for "Manager needs me" that wait for the merge window.
     pending: crate::events::Pending<(u64, Key)>,
     /// What waits on the owner now, by project, with the project's name.
@@ -1050,8 +1112,9 @@ enum Key {
     Task(u32),
     Approval(String),
     Checks,
-    /// A reply the manager started on its own; its line `<manager> wrote to you`.
-    Wrote(String),
+    /// A reply the manager or a role started on its own: its line `<name> wrote to you`
+    /// and the chat it opens.
+    Wrote(String, String),
 }
 
 /// An item that waits on the owner: a task that waits on them, an approval request, or the
@@ -1142,39 +1205,49 @@ fn notice(scope: &Scope, watch: &mut Watch) {
     }
 }
 
-/// Note a reply the manager started on its own for "Manager needs me": one that is a message
-/// (not quiet) to a turn of only wsx's events or a recap request, as after a routine's result.
-/// A reply to the owner or another manager is no news (docs/web-client.md "Notifications").
+/// Note a reply the manager or a role started on its own for "Manager needs me": one that is
+/// a message (not quiet) to a turn of only wsx's events or a recap request, as after a
+/// routine's result. A reply to the owner or another manager is no news (docs/web-client.md
+/// "Notifications"). A role's names the role and opens its chat.
 fn wrote(scope: &Scope, watch: &mut Watch) {
-    let log = ManagerDir::existing(&scope.store)
-        .ok()
-        .flatten()
-        .and_then(|dir| dir.read_tail(MANAGER_TAIL_BYTES).ok())
-        .unwrap_or_default();
-    let own = |id: &u64| {
-        log.iter().any(|entry| match &entry.event {
-            ManagerEvent::Message { id: of, from, .. } => {
-                of == id && matches!(from, Author::Events | Author::Recap)
-            }
-            _ => false,
-        })
-    };
-    // ^ A project seen for the first time, as at a server start, notifies nothing.
-    let last = watch.replies.get(&scope.project).copied();
-    let mut news = false;
-    for entry in &log {
-        let ManagerEvent::Reply { id, to, quiet, .. } = &entry.event else {
-            continue;
+    let roles = task::roles::open_roles(&scope.store);
+    let chats = std::iter::once(ManagerDir::existing(&scope.store).ok().flatten())
+        .chain(roles.into_iter().map(Some))
+        .flatten();
+    for dir in chats {
+        let log = dir.read_tail(MANAGER_TAIL_BYTES).unwrap_or_default();
+        let own = |id: &u64| {
+            log.iter().any(|entry| match &entry.event {
+                ManagerEvent::Message { id: of, from, .. } => {
+                    of == id && matches!(from, Author::Events | Author::Recap)
+                }
+                _ => false,
+            })
         };
-        if last.is_some_and(|last| *id > last) && !quiet && !to.is_empty() {
-            news |= to.iter().all(own);
+        let key = (scope.project, dir.name().to_string());
+        // ^ A chat seen for the first time, as at a server start, notifies nothing.
+        let last = watch.replies.get(&key).copied();
+        let mut news = false;
+        for entry in &log {
+            let ManagerEvent::Reply { id, to, quiet, .. } = &entry.event else {
+                continue;
+            };
+            if last.is_some_and(|last| *id > last) && !quiet && !to.is_empty() {
+                news |= to.iter().all(own);
+            }
+            watch.replies.insert(key.clone(), *id);
         }
-        watch.replies.insert(scope.project, *id);
-    }
-    watch.replies.entry(scope.project).or_default();
-    if news {
-        let line = format!("{} wrote to you", manager_name(scope));
-        watch.pending.add((scope.project, Key::Wrote(line)));
+        watch.replies.entry(key).or_default();
+        if news {
+            let (name, url) = match &dir.role {
+                Some(role) => (role.clone(), format!("#/p/{}/r/{role}", scope.project)),
+                None => (manager_name(scope), format!("#/p/{}", scope.project)),
+            };
+            watch.pending.add((
+                scope.project,
+                Key::Wrote(format!("{name} wrote to you"), url),
+            ));
+        }
     }
 }
 
@@ -1190,7 +1263,7 @@ pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
     let new: Vec<(u64, Key)> = new
         .into_iter()
         .filter(|(project, key)| {
-            matches!(key, Key::Wrote(_))
+            matches!(key, Key::Wrote(..))
                 || watch
                     .open
                     .get(project)
@@ -1209,12 +1282,12 @@ pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
     let wrote: Vec<(u64, Open)> = new
         .iter()
         .filter_map(|(project, key)| match key {
-            Key::Wrote(line) => Some((
+            Key::Wrote(line, url) => Some((
                 *project,
                 Open {
                     key: key.clone(),
                     line: line.clone(),
-                    url: format!("#/p/{project}"),
+                    url: url.clone(),
                     count: 1,
                 },
             )),
@@ -1350,10 +1423,15 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
             .map(|(path, _)| path)
             .collect();
         notice(scope, watch);
+        // ^ The manager's folder, or a role's under `roles/`.
         let manager = |path: &&PathBuf| {
-            path.parent()
-                .and_then(|parent| parent.file_name())
-                .is_some_and(|name| name == "manager")
+            path.parent().is_some_and(|parent| {
+                parent.file_name().is_some_and(|name| name == "manager")
+                    || parent
+                        .parent()
+                        .and_then(|roles| roles.file_name())
+                        .is_some_and(|name| name == "roles")
+            })
         };
         if before.is_none() || changed.iter().any(manager) {
             wrote(scope, watch);
@@ -1418,6 +1496,18 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
                 crate::events::publish_json(app, "page", json!({ "project": scope.project }));
             } else if parent.file_name().is_some_and(|name| name == "manager") {
                 crate::events::publish_json(app, "manager", json!({ "project": scope.project }));
+            } else if parent
+                .parent()
+                .and_then(|roles| roles.file_name())
+                .is_some_and(|name| name == "roles")
+            {
+                // ^ A role's chat: the role's page reads it, the manager's its contacts.
+                let role = parent.file_name().and_then(|name| name.to_str());
+                crate::events::publish_json(
+                    app,
+                    "manager",
+                    json!({ "project": scope.project, "role": role }),
+                );
             } else if let Some(id) = parent
                 .file_name()
                 .and_then(|name| name.to_str()?.parse::<u32>().ok())
