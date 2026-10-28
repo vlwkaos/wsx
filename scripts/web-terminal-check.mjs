@@ -2,14 +2,14 @@
 // Real-browser check of the live terminal (docs/web-client-terminal.md).
 // Called by `test-web-client.py --browser` with a shell session whose directory
 // holds the fixture programs colors, query, long, alt and keys.
-// Usage: node web-terminal-check.mjs <site-url> <pairing-code> <session-id> <capture-dir> <wsxd-socket> <pane-id> <keys-trace>
+// Usage: node web-terminal-check.mjs <site-url> <pairing-code> <session-id> <capture-dir> <wsxd-socket> <pane-id> <keys-trace> <server-pid>
 import fs from "node:fs";
 import net from "node:net";
 import { launch, pause } from "./web-cdp.mjs";
 
-const [siteUrl, code, sessionId, captures, daemonSocket, paneId, keysTrace] = process.argv.slice(2);
+const [siteUrl, code, sessionId, captures, daemonSocket, paneId, keysTrace, serverPid] = process.argv.slice(2);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({
-  captures, prefix: "terminal-", timeoutSeconds: 170,
+  captures, prefix: "terminal-", timeoutSeconds: 210,
 });
 // wsxd's protocol version, read from its source (crates/wsx-core/src/runtime/protocol.rs).
 const PROTOCOL = Number(/PROTOCOL_VERSION: u32 = (\d+);/.exec(fs.readFileSync(new URL("../crates/wsx-core/src/runtime/protocol.rs", import.meta.url), "utf8"))[1]);
@@ -439,6 +439,19 @@ await live("the terminal did not go live again");
 await sameAsDaemon("after the replay");
 if (!(await evaluate(`${rowsText}[4]?.startsWith('  replay-marker')`))) await fail(`the replay did not restore row 5: ${JSON.stringify(await evaluate(rowsText))}`);
 await run("echo after-reconnect", "after-reconnect");
+
+// A connection that goes silent and stays open, as a phone's after it slept or changed
+// networks: the page finds it dead by its missing `alive` frames and opens a new one
+// (docs/web-client-terminal.md "Liveness"). The stopped server is that silence.
+process.kill(Number(serverPid), "SIGSTOP");
+try {
+  await until(`!(${state("live")})`, "the page kept a silent connection as live", 250);
+} finally {
+  process.kill(Number(serverPid), "SIGCONT");
+}
+await live("the terminal did not go live again after a silent connection");
+await run("echo after-silence", "after-silence");
+await sameAsDaemon("after a silent connection");
 
 // A wsx window takes the terminal: the page shows it and takes control back only on request.
 const window_ = net.connect(daemonSocket);

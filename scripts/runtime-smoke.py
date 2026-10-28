@@ -1053,6 +1053,109 @@ assert call("session_close", {
     "expected_revision": stuck_session["revision"],
 })["type"] == "ack"
 
+# A stall stays in its own pane. Owner reports: a pane froze until wsxd restarted, and TUIs
+# reconnected for no visible reason. A program that stops reading its input held wsxd's
+# input write, and with it the pane's frames, its lease and a session close; a client that
+# stops reading held the pane operation lock in a frame write, so a takeover waited 5 s.
+
+
+def stall_session(label, command):
+    created = call("session_create", {
+        "worktree_id": worktree_id, "label": label, "command": ["/bin/sh", "-c", command],
+        "rows": 6, "cols": 60,
+    })
+    assert created["type"] == "created", created
+    return next(item for item in call("snapshot")["data"]["sessions"]
+                if item["id"] == created["data"]["id"])
+
+
+def frame_subscribe(pane_id, client_id, takeover=False):
+    stream = wsxd_client.connect(SOCKET, 10)
+    wsxd_client.send(stream, "terminal_subscribe", {
+        "pane_id": pane_id, "client_id": client_id, "takeover": takeover, "rows": 6, "cols": 60,
+    })
+    acked = recv_line(stream)
+    assert acked["type"] == "ack", acked
+    return stream
+
+
+def close_stall(session):
+    """Close the session at its current revision; the seconds the close took."""
+    current = next(item for item in call("snapshot")["data"]["sessions"] if item["id"] == session["id"])
+    started = time.monotonic()
+    closed = call("session_close", {"session_id": session["id"], "expected_revision": current["revision"]})
+    assert closed["type"] == "ack", closed
+    return time.monotonic() - started
+
+
+def slowest_call(seconds):
+    """The longest of unrelated snapshot calls made one after another for `seconds`."""
+    slowest, deadline = 0.0, time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        started = time.monotonic()
+        call("snapshot")
+        slowest = max(slowest, time.monotonic() - started)
+        time.sleep(0.05)
+    return slowest
+
+
+stall_streams = []
+stall_done = threading.Event()
+threading.Thread(target=heartbeat_streams, args=(stall_streams, stall_done), daemon=True).start()
+# The program prints a line every 0.2 s and never reads its input.
+deaf = stall_session("deaf", "while :; do echo tick-$(date +%s%N); sleep 0.2; done")
+deaf_stream = frame_subscribe(deaf["focused_pane"], 40)
+stall_streams.append(deaf_stream)
+assert recv_line(deaf_stream)["type"] == "update"
+for _ in range(16):
+    send_stream(deaf_stream, {"type": "input", "data": [ord("x")] * 4096})
+deaf_frames, deaf_errors, deadline = 0, [], time.monotonic() + 6
+deaf_stream.settimeout(2)
+while time.monotonic() < deadline:
+    try:
+        message = recv_line(deaf_stream)
+    except socket.timeout:
+        raise AssertionError("a pane whose program stops reading its input stopped sending frames")
+    if message["type"] == "update":
+        deaf_frames += 1
+    else:
+        deaf_errors.append(message)
+        break
+assert not deaf_errors and deaf_frames >= 10, (deaf_frames, deaf_errors)
+closing = close_stall(deaf)
+assert closing < 3, ("closing a pane that does not read its input", closing)
+with stream_send_lock:
+    stall_streams.remove(deaf_stream)
+    deaf_stream.close()
+
+# A wsx window that stops reading while its pane floods, beside a window on another pane.
+flood = stall_session("flood", "while :; do seq 1 2000; done")
+calm = stall_session("calm", "read hold")
+calm_stream = frame_subscribe(calm["focused_pane"], 43)
+stall_streams.append(calm_stream)
+stalled = frame_subscribe(flood["focused_pane"], 41)
+stall_streams.append(stalled)
+time.sleep(1)
+started = time.monotonic()
+taker = frame_subscribe(flood["focused_pane"], 42, takeover=True)
+took = time.monotonic() - started
+assert took < 1.5, ("a takeover waited for a window that stopped reading", took)
+slowest = slowest_call(6)
+assert slowest < 1, ("wsxd stalled behind a window that stopped reading", slowest)
+calm_stream.settimeout(0)
+calm_seen = b""
+try:
+    while chunk := calm_stream.recv(65536):
+        calm_seen += chunk
+except BlockingIOError:
+    pass
+assert b'"error"' not in calm_seen, ("the window on another pane lost its stream", calm_seen[-300:])
+stall_done.set()
+for stream in (taker, stalled, calm_stream):
+    stream.close()
+for session in (flood, calm):
+    close_stall(session)
+
 # ^ docs/terminal-raw-stream.md: PTY bytes for a client that runs its own emulator.
 RAW_FIXTURE = WORK / "raw-fixture.py"
 RAW_FIXTURE.write_text(
@@ -1722,6 +1825,13 @@ try:
     os.write(tui_master, b"\r")
     wait_for(in_terminal_mode, "the TUI did not open keep-c")
     viewed_shell_answers("opened", 1)
+    # wsxd stops for longer than a lease lasts (3 s), as when it is busy: the lease runs out and
+    # the TUI reattaches once by itself instead of leaving Terminal mode.
+    os.kill(cursor_daemon.pid, signal.SIGSTOP)
+    time.sleep(4)
+    os.kill(cursor_daemon.pid, signal.SIGCONT)
+    viewed_shell_answers("stalled", 4)
+    assert in_terminal_mode(), "a lease that ran out ended Terminal mode"
     # A live handoff into the same build reconnects the TUI; the view stays.
     epoch = call("lifecycle_status")["data"]["epoch"]
     restarted = wsx("daemon", "restart")

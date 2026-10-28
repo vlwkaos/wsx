@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     sync::{mpsc::RecvTimeoutError, Arc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use wsx_core::runtime::{
     self, PaneId, RawTerminalStream, TerminalClientMessage, TerminalRawServerMessage,
@@ -21,6 +21,11 @@ use wsx_core::runtime::{
 
 /// The daemon refuses more per input message; a paste is split by the browser.
 pub const MAX_INPUT_BYTES: usize = 64 * 1024;
+/// docs/web-client-terminal.md "Liveness": each interval the server sends a ping and an
+/// `alive` frame. A page that answers nothing, or a send that does not finish, for
+/// `DEAD_AFTER` ends the socket, so a phone that slept does not keep the lease or a slot.
+const ALIVE_EVERY: Duration = Duration::from_secs(5);
+const DEAD_AFTER: Duration = Duration::from_secs(15);
 
 pub struct Attach {
     pub pane_id: PaneId,
@@ -149,6 +154,14 @@ fn pump(
     }
 }
 
+/// One send that a page which stopped reading cannot hold up past `DEAD_AFTER`.
+async fn deliver(socket: &mut WebSocket, message: Message) -> bool {
+    matches!(
+        tokio::time::timeout(DEAD_AFTER, socket.send(message)).await,
+        Ok(Ok(()))
+    )
+}
+
 pub async fn bridge(app: Arc<App>, mut socket: WebSocket, attach: Attach, headers: HeaderMap) {
     let (updates_tx, mut updates) = tokio::sync::mpsc::channel::<Frame>(32);
     let (input_tx, input_rx) = tokio::sync::oneshot::channel();
@@ -160,6 +173,9 @@ pub async fn bridge(app: Arc<App>, mut socket: WebSocket, attach: Attach, header
     let mut input_rx = Some(input_rx);
     let mut revocation = tokio::time::interval(Duration::from_secs(20));
     revocation.tick().await;
+    let mut alive = tokio::time::interval(ALIVE_EVERY);
+    alive.tick().await;
+    let mut heard = Instant::now();
     loop {
         tokio::select! {
             sender = async { input_rx.as_mut().expect("guarded").await }, if input_rx.is_some() => {
@@ -167,20 +183,20 @@ pub async fn bridge(app: Arc<App>, mut socket: WebSocket, attach: Attach, header
                 input = sender.ok();
             }
             frame = updates.recv() => {
-                let sent = match frame {
-                    Some(Frame::Bytes(bytes)) => socket.send(Message::Binary(bytes.into())).await,
-                    Some(Frame::Control(value)) => socket.send(Message::Text(value.to_string().into())).await,
-                    Some(Frame::End(value)) => {
-                        let _ = socket.send(Message::Text(value.to_string().into())).await;
-                        break;
-                    }
+                let (message, last) = match frame {
+                    Some(Frame::Bytes(bytes)) => (Message::Binary(bytes.into()), false),
+                    Some(Frame::Control(value)) => (Message::Text(value.to_string().into()), false),
+                    Some(Frame::End(value)) => (Message::Text(value.to_string().into()), true),
                     None => break,
                 };
-                if sent.is_err() {
+                if !deliver(&mut socket, message).await || last {
                     break;
                 }
             }
             incoming = socket.recv() => {
+                if let Some(Ok(_)) = incoming {
+                    heard = Instant::now();
+                }
                 let message = match incoming {
                     Some(Ok(Message::Binary(bytes))) if allow_input && bytes.len() <= MAX_INPUT_BYTES => {
                         TerminalClientMessage::Input(bytes.to_vec())
@@ -190,7 +206,7 @@ pub async fn bridge(app: Arc<App>, mut socket: WebSocket, attach: Attach, header
                             TerminalClientMessage::Resize { rows, cols }
                         }
                         _ => {
-                            let _ = socket.send(Message::Text(
+                            let _ = deliver(&mut socket, Message::Text(
                                 error_frame("invalid_message", "this message is not allowed").to_string().into(),
                             )).await;
                             break;
@@ -200,15 +216,30 @@ pub async fn bridge(app: Arc<App>, mut socket: WebSocket, attach: Attach, header
                     // Input without the capability, an oversized frame, a close, or a transport error.
                     _ => break,
                 };
+                // ^ The pump hands over its sender before the replay, but `select!` may take this
+                // arm first: a page that types right after a replay would lose its first keys.
+                if let Some(sender) = input_rx.as_mut().and_then(|pending| pending.try_recv().ok()) {
+                    input_rx = None;
+                    input = Some(sender);
+                }
                 // Before the daemon stream exists there is nothing to send to; a full
                 // queue means the daemon is not reading, and the stream then ends itself.
                 if let Some(input) = &input {
                     let _ = input.try_send(message);
                 }
             }
+            _ = alive.tick() => {
+                // ^ The browser answers the ping itself; the page reads `alive` to find a dead socket.
+                if heard.elapsed() > DEAD_AFTER
+                    || !deliver(&mut socket, Message::Ping(Default::default())).await
+                    || !deliver(&mut socket, Message::Text(json!({ "type": "alive" }).to_string().into())).await
+                {
+                    break;
+                }
+            }
             _ = revocation.tick() => {
                 if http::blocking(|| http::authenticate(&app, &headers)).is_err() {
-                    let _ = socket.send(Message::Text(json!({ "type": "revoked" }).to_string().into())).await;
+                    let _ = deliver(&mut socket, Message::Text(json!({ "type": "revoked" }).to_string().into())).await;
                     break;
                 }
             }

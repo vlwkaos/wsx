@@ -404,11 +404,13 @@ impl App {
         }
     }
 
-    // An unannounced disconnect reattaches once; a repeat within the window is a failure.
+    // An unannounced disconnect, or a lease that ran out while wsxd was busy, reattaches once
+    // without a takeover; a repeat within the window is a failure. Only a takeover
+    // (`lease_transferred`) moves the pane (docs/web-client-terminal.md "Reconnect").
     pub(super) fn stream_loss_reattaches(&mut self, error: &runtime::ApiError) -> bool {
         match error.code.as_str() {
             "daemon_handoff" => true,
-            "stream_disconnected" => {
+            "stream_disconnected" | "lease_lost" => {
                 let now = Instant::now();
                 let repeated = self
                     .last_stream_reattach
