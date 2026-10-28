@@ -2,28 +2,34 @@
 
 ## [Unreleased]
 
-### Changed
+## [0.40.1] - 2026-10-28
 
-- A task worker whose context passes `tasks.agent.rotateTokens` (default 350000) continues in a fresh conversation. It first writes handoff notes in its task folder; the fresh conversation opens with the task's prompt, those notes and the current step, and loads the project knowledge again. Each model call reads the whole context, so a long task no longer pays for 450k tokens on every call. A host started again after a session limit knows the size from the log and rotates on its first turn ([docs/tasks.md](docs/tasks.md) "Context rotation").
 ### Added
 
 - A project's manager can use routines: `wsx task routine` is `wsx routine` behind `wsx task`, the ledger lists the project's routines with next and last run, and each run that ends reaches the manager as an event, a failure with the end of its output. The manager adds, edits or deletes a routine only with `--owner-said` ([docs/tasks.md](docs/tasks.md) "Routines").
 - `wsx routine add`, `edit`, `delete`, `enable`, `disable` and `cancel` take `--json`.
 
+### Changed
+
+- A task worker whose context passes `tasks.agent.rotateTokens` (default 350000) continues in a fresh conversation. It first writes handoff notes in its task folder; the fresh conversation opens with the task's prompt, those notes and the current step, and loads the project knowledge again. Each model call reads the whole context, so a long task no longer pays for 450k tokens on every call. A host started again after a session limit knows the size from the log and rotates on its first turn ([docs/tasks.md](docs/tasks.md) "Context rotation").
+- Internals: wsxd, the TUI and the CLI are split into modules by responsibility, with their tests in separate files, and repeated code (state saves, pane cleanup, event pushes, lease checks, daemon reply checks, text-form keys) is shared. No behavior change.
+
 ### Fixed
 
 - The TUI shows routines again when the scheduler has no project registry: it now follows the scheduler, which then runs every project's routines.
 - A task agent can no longer write the routine scheduler's folder, whose routines wsxd runs outside the agent boundary.
-### Fixed
-
 - A live handoff of wsxd always ends. A rollback that cannot rewrite its marker or bind its socket again at once now serves again and binds the socket when it can. Before, such a daemon answered every request with "wsxd live handoff is in progress" for ever, while its sessions ran where no window could see them. A successor that exits after the commit, before it reports that it owns the sessions, gives them back to the source daemon, which keeps serving; before, the source left and every session ended. Daemon revision 35 ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "A stuck handoff", "A successor that dies").
 - A wsx window or command no longer waits on a handoff that cannot finish. When the running wsxd still refuses requests after its handoff marker went stale, wsx says that the handoff did not finish, that the sessions still run inside that wsxd, and that `wsx daemon stop --force` ends them and starts over. The window checks again each second and opens on whichever wsxd serves. A daemon of 0.31 to 0.40 whose rollback failed stays in that state until it is stopped.
-
-## [0.40.1] - 2026-10-27
-
-### Fixed
-
 - Web: an approval the owner gives in the manager chat no longer shows a false "<Action> #n did not run" failure notice. The manager runs that action itself and replies with its result in the chat ([docs/web-client.md](docs/web-client.md) "Notices").
+- wsxd no longer stalls a pane on a program that stops reading its input. The terminal answered queries such as "which terminal are you" with a write that waited inside the emulator lock; a program that printed a lot while it read no input then waited on wsxd while wsxd waited on it, and every window of that pane froze. Replies now go out on their own thread.
+- A slow or stalled wsx window no longer holds up typing, resize and takeover in the same pane: the frame stream writes to its socket after it lets go of the pane lock, as the raw stream already did.
+- A burst of program output no longer floods wsxd's event list with one "terminal changed" event per read, which pushed real changes out and made windows reload everything. Daemon revision 35.
+- wsxd keeps no lock entry for a pane id that does not exist, and closing a session also drops the pane's agent presence.
+- The TUI no longer blocks on three daemon round trips when it sends one key from the workspace view (for example Ctrl-C to a pane); it no longer panics when a snapshot removes the project, worktree or session an action is about to change, and says that the item is no longer available; a finished background job clears only its own busy marker.
+- The cache no longer falls back to a shared fixed folder under /tmp when the system has no cache folder; it reports an error.
+- A task that is removed while the task list is read no longer blanks the whole list in `wsx task` and on the web; the list skips it. `deploys.jsonl` rolls over at 4 MiB instead of growing without end. The web server reads only the end of a task log to find a task's last land reason, conflict state, context size and cost.
+- Web: the manager, task, project and To check pages no longer show an answer for the page you left when you switch while a read is in flight.
+- Every atomic file write in wsx uses one helper with a unique temporary name, so two threads that write the same file no longer share one temporary file.
 
 ## [0.40.0] - 2026-10-27
 
