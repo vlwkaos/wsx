@@ -1380,7 +1380,7 @@ await readAndReply("390 px");
 // report folded (Changes, Evidence, To check, Left open) and History folded. No verdict, no
 // Asked, no revision number. Land, then its item is live under To check.
 await go(page(2));
-await until("document.querySelectorAll('.task-sheet .task-fold').length >= 4", "the task sheet did not show the folded report");
+await until("document.querySelectorAll('dialog.task-sheet[open] .task-fold').length >= 4", "the task sheet did not show the folded report");
 let told = await story();
 if (told.steps || told.summary !== "did: WORK a.txt HV" || told.next !== "Land it to put it on main.") await fail(`the top of a ready task reads ${JSON.stringify(told)}`);
 if (await sheetState() !== "needs you") await fail(`a ready task's state reads ${await sheetState()}`);
