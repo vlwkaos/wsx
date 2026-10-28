@@ -1118,9 +1118,8 @@ async fn check_capture(
     let size = bytes.len() as u64;
     let range = match byte_range(&headers, size) {
         Ok(range) => range,
-        Err(refused) => return Ok(refused),
+        Err(refused) => return Ok(refused.into_response()),
     };
-    let (start, end) = range.unwrap_or((0, size - 1));
     let mut response = Response::builder()
         .status(if range.is_some() {
             StatusCode::PARTIAL_CONTENT
@@ -1130,17 +1129,38 @@ async fn check_capture(
         .header(header::CONTENT_TYPE, media)
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CACHE_CONTROL, "no-cache");
-    if range.is_some() {
-        response = response.header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}"));
-    }
+    let body = match range {
+        Some((start, end)) => {
+            response =
+                response.header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}"));
+            bytes[start as usize..=end as usize].to_vec()
+        }
+        None => bytes,
+    };
     response
-        .body(Body::from(bytes[start as usize..=end as usize].to_vec()))
+        .body(Body::from(body))
         .map_err(|_| Fault::new(500, "task_capture", "cannot build the response"))
 }
 
-/// One `bytes=a-b` or `bytes=a-` range of a file of `size` bytes, or none for the whole file:
-/// several ranges are answered with the whole file. A range past the end is refused with 416.
-fn byte_range(headers: &HeaderMap, size: u64) -> Result<Option<(u64, u64)>, Response> {
+/// A `Range` past the end of a file of this many bytes, answered with 416.
+struct RangeRefused(u64);
+
+impl IntoResponse for RangeRefused {
+    fn into_response(self) -> Response {
+        (
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            [(header::CONTENT_RANGE, format!("bytes */{}", self.0))],
+        )
+            .into_response()
+    }
+}
+
+/// One `bytes=a-b` or `bytes=a-` range (inclusive) of a file of `size` bytes, or none for the
+/// whole file: several ranges, and any range of an empty file, are answered with the whole file.
+fn byte_range(headers: &HeaderMap, size: u64) -> Result<Option<(u64, u64)>, RangeRefused> {
+    if size == 0 {
+        return Ok(None);
+    }
     let Some((start, end)) = headers
         .get(header::RANGE)
         .and_then(|value| value.to_str().ok())
@@ -1153,11 +1173,7 @@ fn byte_range(headers: &HeaderMap, size: u64) -> Result<Option<(u64, u64)>, Resp
     };
     let end = end.unwrap_or(size - 1).min(size - 1);
     if start > end {
-        return Err((
-            StatusCode::RANGE_NOT_SATISFIABLE,
-            [(header::CONTENT_RANGE, format!("bytes */{size}"))],
-        )
-            .into_response());
+        return Err(RangeRefused(size));
     }
     Ok(Some((start, end)))
 }
@@ -1233,16 +1249,19 @@ async fn media_get(
     let (entry, remaining) = app.media.get(&file).ok_or_else(Fault::not_found)?;
     let range = match byte_range(&headers, entry.size) {
         Ok(range) => range,
-        Err(refused) => return Ok(refused),
+        Err(refused) => return Ok(refused.into_response()),
     };
-    let (start, end) = range.unwrap_or((0, entry.size - 1));
+    let (start, len) = match range {
+        Some((start, end)) => (start, end - start + 1),
+        None => (0, entry.size),
+    };
     let mut source = std::fs::File::open(app.media.path(&entry)).map_err(|_| Fault::not_found())?;
     source
         .seek(SeekFrom::Start(start))
         .map_err(|_| Fault::not_found())?;
     let (sender, receiver) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(4);
     tokio::task::spawn_blocking(move || {
-        let mut left = end - start + 1;
+        let mut left = len;
         let mut buffer = vec![0u8; 64 * 1024];
         while left > 0 {
             let want = left.min(buffer.len() as u64) as usize;
@@ -1296,14 +1315,14 @@ async fn media_get(
             StatusCode::OK
         })
         .header(header::CONTENT_TYPE, entry.mime.as_str())
-        .header(header::CONTENT_LENGTH, end - start + 1)
+        .header(header::CONTENT_LENGTH, len)
         .header(header::ACCEPT_RANGES, "bytes")
         .header(
             header::CACHE_CONTROL,
             format!("private, max-age={remaining}, immutable"),
         )
         .header(header::ETAG, format!("\"{}\"", entry.hash));
-    if range.is_some() {
+    if let Some((start, end)) = range {
         response = response.header(
             header::CONTENT_RANGE,
             format!("bytes {start}-{end}/{}", entry.size),
