@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.40.4] - 2026-10-28
+
 ### Added
 
 - `wsx task new --skip <step>` leaves a `tasks.workflow.steps` step out of one task. The manager now picks the worker by the work: a change it has read and can state exactly runs on Sonnet without the context and plan steps, with a prompt that carries the files, the change and its proof; deep exploration, an unknown cause or a module redesign stays on the default model with every step; a broad bug hunt becomes one read-only audit per area, then one task per fix ([docs/tasks.md](docs/tasks.md) "Workflow").
