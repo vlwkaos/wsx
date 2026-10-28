@@ -68,6 +68,10 @@ pub struct TaskConfig {
     /// Context size after which a worker's next turn starts a fresh conversation from its
     /// handoff notes (`tasks.agent.rotateTokens`). ref: docs/tasks.md "Context rotation"
     pub rotate_tokens: u64,
+    /// Idle seconds after which a worker's next turn also starts a fresh conversation, when
+    /// its context is at least half of `rotate_tokens`: the prompt cache is gone, so a resume
+    /// writes the whole context again (`tasks.agent.rotateIdleSeconds`, 0 = never).
+    pub rotate_idle_seconds: u64,
     /// `tasks.skills: owner` lends workers the owner's skills, as the manager has them.
     pub owner_skills: bool,
     pub workflow: TaskWorkflow,
@@ -181,7 +185,8 @@ impl Default for TaskConfig {
         Self {
             adapter: "claude".into(),
             model: "opus".into(),
-            rotate_tokens: 350_000,
+            rotate_tokens: 200_000,
+            rotate_idle_seconds: 3_600,
             owner_skills: false,
             workflow: TaskWorkflow::default(),
             checks: Vec::new(),

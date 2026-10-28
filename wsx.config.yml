@@ -20,6 +20,9 @@ tasks:
     - cargo build -p wsx -p wsx-daemon
     - cargo nextest run --workspace --locked
   checkTimeoutSeconds: 1200
+  # ^ A context past 200k costs about 3x a turn; the usage audit (docs/design/usage-audit.md)
+  # put 44% of worker spend there.
+  agent: { rotateTokens: 200000 }
   # ^ The end-to-end scripts, for a worker to run by name (`wsx task check-run web`) outside its
   # boundary in the check slot; never after a result. Each builds the binaries it runs first.
   scenarios:

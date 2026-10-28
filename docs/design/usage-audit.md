@@ -47,9 +47,9 @@ Fields used: `result.usage` and `reply.usage` (`cost_micro_usd`, `session_cost_m
 
 | Traceable now | Gap |
 |---|---|
-| cost, tokens, context and model of each worker turn and manager turn | step is not on `result`: the report replays `task.json` `steps` |
+| cost, tokens, context and model of each worker turn and manager turn | step, trigger and `calls` are on `result` since #125; older lines replay `task.json` `steps` |
 | rotations, session limits (`<synthetic>` results), idle gaps | lines before 10-24 have no `context_tokens` or `model` |
-| send-backs, failed check runs, check-queue wait, wall time to land | subagent and tool-call cost inside a turn: only the turn's sum (`~calls/turn` = cache reads / context is an estimate) |
+| send-backs, failed check runs, check-queue wait, wall time to land | subagent and tool-call cost inside a turn: only the turn's sum (`calls` counts main calls since #125; older lines estimate it as cache reads / context) |
 | repeated commands, from the first line of `agent` | `agent` keeps one line, so heredoc bodies (about 1,230 `python - <<EOF`) are not visible |
 | | quality after landing (To check results, reverts, follow-up fix tasks) is not tied to the task's cost |
 | | the owner's own Claude use outside wsx, and the plan's 5-hour quota left |
@@ -72,7 +72,7 @@ Fields used: `result.usage` and `reply.usage` (`cost_micro_usd`, `session_cost_m
 2. Lower `tasks.agent.rotateTokens` to 200000, and rotate before a turn that follows more than 1 hour idle (`rotation_due`). This targets causes 2 and 3 ($270 and $171).
 3. Manager rule: an exact change runs on sonnet with `--skip context,plan`, and review findings go into the review step. Measure with the kind table below.
 
-Stale: docs/tasks.md line 248 says "A worker conversation is never rotated". Line 133 (Context rotation) contradicts it.
+Changes 1 and 2 shipped in #125 (`rotateIdleSeconds`, default 3600, needs a context of at least half of `rotateTokens`), with the stale docs/tasks.md line removed.
 
 ## Self-improvement loop (owner msg 1441)
 

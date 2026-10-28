@@ -27,7 +27,7 @@ Each user message is a small script of words:
                CHECKRUN_LATE its check-run starts before the limit
   PROBE <script> <spec> <out>  run the test's boundary probe script (python3 <script> <spec> <out>)
                and trace what it wrote to <out>
-  BIG          a last model call of 400k tokens, past the worker's rotateTokens
+  BIG          a last model call of 400k tokens (two lines of one call), past the worker's rotateTokens
 The host's request for handoff notes ("Write <path> for that fresh conversation") makes it
 write "NOTES from the fixture" to <path>.
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
@@ -467,9 +467,11 @@ def main():
             with open(handoff.group(1), 'w') as out:
                 out.write('NOTES from the fixture\n')
         if 'BIG' in words:
-            emit({'type': 'assistant', 'parent_tool_use_id': None, 'message': {
-                'model': model, 'content': [],
-                'usage': {'input_tokens': 10, 'cache_read_input_tokens': 399990, 'output_tokens': 5}}})
+            # ^ Claude writes one line per content block of a call, each with the call's id.
+            for _ in range(2):
+                emit({'type': 'assistant', 'parent_tool_use_id': None, 'message': {
+                    'id': 'msg_big', 'model': model, 'content': [],
+                    'usage': {'input_tokens': 10, 'cache_read_input_tokens': 399990, 'output_tokens': 5}}})
         summary = 'did: ' + text + (' | steers: ' + '; '.join(steers) if steers else '')
         for repeat in range(2 if 'REPEAT' in words else 1):
             time.sleep(repeat)

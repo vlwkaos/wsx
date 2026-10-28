@@ -2480,7 +2480,7 @@ def run(wsx, wsxd, work, owned):
     once = js('task', 'new', 'NORESULT 1 WORK once.txt')['id']
     assert wait_state(once, 'ready', 'failed')['state'] == 'ready', show(once)['result']
     assert len(asked(once)) == 1
-    assert [e['status'] for e in log(once) if e['kind'] == 'result'] == ['done']
+    assert [(e['status'], e.get('trigger')) for e in log(once) if e['kind'] == 'result'] == [('done', 'result_retry')]
     assert any(e.get('text') == 'claude ended its own turn with no result: ignored' for e in log(once))
     twice = js('task', 'new', 'NORESULT 2 WORK twice.txt')['id']
     assert wait_state(twice, 'ready', 'failed')['state'] == 'failed'
@@ -2701,6 +2701,35 @@ def run(wsx, wsxd, work, owned):
     configure(LAND_CONFIG, 'background wait back to default')
     js('task', 'close', bg, '--discard')
     js('task', 'close', stuck, '--discard')
+
+    # 32r. Usage fields and idle rotation (docs/tasks.md "Usage", "Context rotation"): each result
+    mark('32r')
+    # names its step, what started its turn and its main-conversation calls; a turn after the agent
+    # was idle past tasks.agent.rotateIdleSeconds rotates a context of at least half of rotateTokens.
+    configure(LAND_CONFIG + '  agent: { rotateTokens: 600000, rotateIdleSeconds: 2 }\n'
+              '  workflow:\n    steps:\n      - name: plan\n        prompt: BIG PLAN\n'
+              '      - name: build\n        prompt: WORK idle.txt\n', 'idle rotation')
+    idler = js('task', 'new', 'NOOP')['id']
+    assert wait_state(idler, 'ready', 'failed')['state'] == 'ready', show(idler)['result']
+    results = lambda: [e for e in log(idler) if e['kind'] == 'result']
+    # ^ 400k is under 600k and the build step came at once: no rotation yet.
+    assert [(e['step'], e['trigger']) for e in results()] == [('plan', 'step'), ('build', 'step')], results()
+    assert results()[0]['usage']['calls'] == 1, results()[0]
+    assert not [e for e in log(idler) if e['kind'] == 'rotated']
+    time.sleep(3)
+    js('task', 'add', idler, 'NOOP')
+    wait(lambda: len(results()) == 3, 't%s third result' % idler)
+    assert wait_state(idler, 'ready', 'failed')['state'] == 'ready', show(idler)['result']
+    rotated = [e for e in log(idler) if e['kind'] == 'rotated']
+    assert len(rotated) == 1 and rotated[0]['tokens'] == 400000, rotated
+    assert rotated[0]['reason'].startswith('idle '), rotated
+    assert (results()[2]['step'], results()[2]['trigger']) == ('build', 'rotation'), results()[2]
+    sent = [t for t in traces() if 'message' in t and t.get('manager') is False]
+    handoff_asked = [t for t in sent if 'was idle past this task' in t['message']]
+    fresh = [t for t in sent if 'handoff notes:\nNOTES from the fixture' in t['message'] and t['message'].endswith('NOOP')]
+    assert len(handoff_asked) == 1 and fresh and handoff_asked[0]['session'] != fresh[-1]['session'], [t['message'][:80] for t in sent[-3:]]
+    js('task', 'close', idler, '--discard')
+    configure(LAND_CONFIG, 'no idle rotation')
 
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     mark('33')

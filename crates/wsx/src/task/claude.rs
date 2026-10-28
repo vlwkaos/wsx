@@ -530,6 +530,9 @@ struct Turns {
     /// The context and model of the turn's last model call so far.
     context: Option<u64>,
     model: String,
+    /// The turn's main-conversation calls so far, and the last one's message id.
+    calls: u32,
+    call_id: Option<String>,
     /// `resetsAt` of the last rejected `rate_limit_info` before the result.
     resets_at: Option<u64>,
     /// The live background jobs of the last `background_tasks_changed`, its `ambient` ones
@@ -539,7 +542,8 @@ struct Turns {
 
 impl Turns {
     /// A main-conversation `assistant` line carries the usage of its own model call; a
-    /// subagent's (`parent_tool_use_id` set) is another context.
+    /// subagent's (`parent_tool_use_id` set) is another context. Claude writes one line per
+    /// content block, each with its call's message id: a line without one is its own call.
     fn note_call(&mut self, value: &Value) {
         if value
             .get("parent_tool_use_id")
@@ -547,6 +551,14 @@ impl Turns {
         {
             return;
         }
+        let id = value
+            .pointer("/message/id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if id.is_none() || id != self.call_id {
+            self.calls += 1;
+        }
+        self.call_id = id;
         if let Some(usage) = value.pointer("/message/usage") {
             self.context = Some(context_of(usage));
         }
@@ -659,6 +671,7 @@ fn turn_usage(value: &Value, turns: &mut Turns) -> TurnUsage {
         total.checked_sub(turns.cost_base).unwrap_or(total)
     });
     turns.cost_base = total.unwrap_or(turns.cost_base);
+    turns.call_id = None;
     TurnUsage {
         duration_ms: count("/duration_ms"),
         input_tokens: count("/usage/input_tokens"),
@@ -673,6 +686,7 @@ fn turn_usage(value: &Value, turns: &mut Turns) -> TurnUsage {
             .take()
             .unwrap_or_else(|| value.get("usage").map_or(0, context_of)),
         model: std::mem::take(&mut turns.model),
+        calls: std::mem::take(&mut turns.calls),
     }
 }
 

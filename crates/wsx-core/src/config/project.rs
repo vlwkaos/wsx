@@ -61,6 +61,7 @@ const MIN_ROTATE_TOKENS: u64 = 1_000;
 /// One day: a recap after a longer quiet would come after the owner is back.
 const MAX_RECAP_MINUTES: u64 = 1_440;
 const MAX_ROTATE_TOKENS: u64 = 2_000_000;
+const MAX_ROTATE_IDLE_SECS: u64 = 24 * 60 * 60;
 const TASK_ADAPTERS: &[&str] = &["claude"];
 const PROJECT_CONFIG_TEMPLATE: &str = "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\ngit:\n  subtrees: []\nworktree:\n  branchPrefix:\n  # defaultSession:\n  #   enabled: true\n  #   command:\n";
 
@@ -204,6 +205,8 @@ struct TaskAgentFile {
     model: Option<String>,
     #[serde(rename = "rotateTokens", skip_serializing_if = "Option::is_none")]
     rotate_tokens: Option<u64>,
+    #[serde(rename = "rotateIdleSeconds", skip_serializing_if = "Option::is_none")]
+    rotate_idle_seconds: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -493,6 +496,14 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
                 ));
             }
             config.rotate_tokens = tokens;
+        }
+        if let Some(seconds) = agent.rotate_idle_seconds {
+            if seconds > MAX_ROTATE_IDLE_SECS {
+                return Err(format!(
+                    "tasks.agent.rotateIdleSeconds must be 0..={MAX_ROTATE_IDLE_SECS}"
+                ));
+            }
+            config.rotate_idle_seconds = seconds;
         }
     }
     config.owner_skills = match file.skills.as_deref() {
