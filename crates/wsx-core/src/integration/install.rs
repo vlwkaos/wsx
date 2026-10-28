@@ -143,7 +143,39 @@ pub fn install(target: IntegrationTarget) -> io::Result<InstallResult> {
             &paths::asset_path(IntegrationTarget::Pi)?,
         )?;
     }
-    install_in(target, &root)
+    let mut installed = install_in(target, &root)?;
+    if target == IntegrationTarget::Claude {
+        // ^ A profile's agents load their hooks from its own root (README "Profiles").
+        for profile_root in profile_roots()? {
+            if profile_root != root {
+                installed
+                    .paths
+                    .extend(install_in(target, &profile_root)?.paths);
+            }
+        }
+    }
+    Ok(installed)
+}
+
+/// The distinct `claude_config_dir` folders of the profiles that hold a project.
+fn profile_roots() -> io::Result<Vec<PathBuf>> {
+    let (config, warning) =
+        crate::config::global::GlobalConfig::load().map_err(io::Error::other)?;
+    if let Some(warning) = warning {
+        return Err(io::Error::other(format!("wsx config: {warning}")));
+    }
+    let mut roots = Vec::new();
+    for project in &config.projects {
+        if let Some(root) = config
+            .claude_config_dir(&project.path)
+            .map_err(io::Error::other)?
+        {
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+    }
+    Ok(roots)
 }
 
 fn install_in(target: IntegrationTarget, root: &Path) -> io::Result<InstallResult> {
