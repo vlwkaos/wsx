@@ -232,11 +232,21 @@ pub fn overview(scope: &Scope) -> Value {
         .chain(last_reply.clone())
         .max_by_key(|(unix_ms, _)| *unix_ms)
         .map(|(unix_ms, text)| json!({ "unix_ms": unix_ms, "text": text }));
+    // ^ The owner-facing activity the home row orders by: the newest message, the owner's own
+    // message, a task entering its state and, in the page, an agent session's state change.
+    // Record saves and the manager's `agent`, event and quiet entries do not count.
     let last_unix_ms = tasks
         .iter()
         .filter_map(|(_, record)| record.as_ref().ok())
-        .map(|record| record.updated_unix_ms)
-        .chain(tail.last().map(|entry| entry.unix_ms))
+        .map(|record| record.state_unix_ms.max(record.created_unix_ms))
+        .chain(tail.iter().filter_map(|entry| match &entry.event {
+            ManagerEvent::Message {
+                from: Author::Owner,
+                ..
+            } => Some(entry.unix_ms),
+            _ => None,
+        }))
+        .chain(news.as_ref().and_then(|news| news["unix_ms"].as_u64()))
         .max();
     // ^ The manager's turn runs now: the home row shows typing dots (docs/web-client-tasks.md "Home").
     let busy = ManagerDir::existing(&scope.store)

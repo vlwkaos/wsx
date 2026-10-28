@@ -3414,7 +3414,7 @@ merge_seconds = 3
         assert settled.index('Denied discard #1') < settled.index('Approved land #3') and not any('landed' in line for line in settled), settled
         stamps = [row['unix_ms'] for row in overview['resolutions']]
         assert stamps == sorted(stamps, reverse=True) and overview['resolutions'][0]['task'] == 1, overview['resolutions']
-        assert overview['last_reply'] and len(overview['last_reply']) <= 121 and overview['last_unix_ms'] >= stamps[0], overview
+        assert overview['last_reply'] and len(overview['last_reply']) <= 121 and overview['last_unix_ms'] >= overview['news']['unix_ms'], overview
         empty = steady(owner, 'GET', '/api/tasks/%d' % ids['calm'])[1]
         assert empty['needs'] == [] and empty['resolutions'] == [] and empty['last_reply'] is None and empty['last_unix_ms'] is None, empty
         ok('manager: say starts it, reply in the chat, approve runs once and records the outcome, deny with a note, since, resolutions, last reply')
@@ -3539,7 +3539,8 @@ merge_seconds = 3
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
             # Home's order by its rule: needs first (most urgent kind, then the oldest need of it),
-            # then the last activity, newest first (docs/web-client-tasks.md "Home").
+            # then the last owner-facing activity, newest first (docs/web-client-tasks.md "Home"; no
+            # fixture project has a message this device read to, so none is unread).
             urgency = {'waiting': 0, 'failed': 1, 'approval': 2, 'land': 3}
             def home_key(name):
                 view = steady(owner, 'GET', '/api/tasks/%d' % ids[name])[1]

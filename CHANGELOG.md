@@ -7,6 +7,10 @@
 - TUI: the manager chat. In the Tasks view (`t`), `m` opens the project's manager chat: your messages and the manager's replies with their times, task events and quiet replies as one muted line each, and what the manager does while it works, newest at the bottom (`j`/`k` scroll). `i` writes to the manager the way `wsx task say` does and starts it when it is not running. The open To check items and waiting approvals are listed under the chat: `Tab` selects one, `p`, `s` and `f` pass, skip or fail an item with a note, and `y` or `n` approves or denies a request after a y/n question ([docs/tasks.md](docs/tasks.md) "TUI").
 - Tasks: the owner can skip a To check item, `wsx task check skip <id>...` or `--all`, or Skip on the web row. A skipped item is neither passed nor failed: it leaves the open list, no longer holds a release, starts no fix task and stays recorded as skipped. Its capture goes 7 days later, like a decided item's ([docs/tasks.md](docs/tasks.md) "To check").
 
+### Changed
+
+- Web: Home orders projects like a messenger. After the projects with needs come those with a message this device has not read, newest first, then the rest by the last owner-facing activity: a message, the owner's message, a task entering its state or an agent session changing state. A worker saving its record or the manager's own commands and events no longer lift a row; the overview's `last_unix_ms` and the row's time follow the same rule. A message arriving in the chat that is open leaves its project read ([docs/web-client-tasks.md](docs/web-client-tasks.md) "Home").
+
 ### Fixed
 
 - Web: passing, skipping or failing a To check item in the manager chat no longer moves its bubble to the end as a new message from the manager. The bubble stays at the time the item was added; the decision changes it in place.

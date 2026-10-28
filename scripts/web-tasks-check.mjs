@@ -461,6 +461,45 @@ async function plainWorktree(where) {
   if (await count(".adopted")) await fail(`${where} still has the Adopted list`);
 }
 
+// Home's order below the needs (docs/web-client-tasks.md "Home"): a project with an unread message
+// sorts above a read one that is newer by activity, and a message arriving while its chat is open
+// leaves it read. The page's own store is driven through its modules, as `motion` does.
+async function homeUnread() {
+  const pageModule = (name) => `import(new URL(${JSON.stringify(name)}, [...document.scripts].find((script) => script.type === 'module').src))`;
+  const result = await evaluate(`(async () => {
+    const { state, update } = await ${pageModule("store.js")};
+    const frames = () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+    const by = (name) => state.projects.find((project) => project.name === name);
+    const [calm, gone, quiet] = ['calm', 'gone', 'quiet'].map(by);
+    const kept = { tasks: state.tasks, read: localStorage.getItem('wsx-read') };
+    const T = Date.now() + 2e7;
+    // ^ calm has a message nobody read here; gone and quiet are read, and gone is newer by activity.
+    localStorage.setItem('wsx-read', JSON.stringify(Object.fromEntries([calm, gone, quiet].map((project) => ['project-' + project.id, { read: T - 1000, place: null }]))));
+    const overview = (project, extra) => ({ ...state.tasks[project.id], ...extra });
+    const names = () => [...document.querySelectorAll('.home-rows > .row')].map((row) => row.querySelector('.row-label').textContent).filter((name) => ['calm', 'gone', 'quiet'].includes(name));
+    const marked = (project) => document.querySelector('.home-rows > .row[data-key="' + project.id + '"]').hasAttribute('data-news');
+    update({ tasks: { ...state.tasks,
+      [calm.id]: overview(calm, { news: { unix_ms: T, text: 'new' }, last_unix_ms: T - 9e6 }),
+      [gone.id]: overview(gone, { news: null, last_unix_ms: T + 9e6 }),
+      [quiet.id]: overview(quiet, { news: null, last_unix_ms: T - 5e6 }) } });
+    dispatchEvent(new Event('wsx-read'));
+    await frames();
+    const unread = { order: names(), calm: marked(calm) };
+    // ^ quiet's chat is open: its newer message is read at once and does not move it up.
+    location.hash = '#/p/' + quiet.id;
+    await frames();
+    update({ tasks: { ...state.tasks, [quiet.id]: overview(quiet, { news: { unix_ms: T + 1000, text: 'arrived' } }) } });
+    await frames();
+    const open = { order: names(), quiet: marked(quiet) };
+    update({ tasks: kept.tasks });
+    if (kept.read == null) localStorage.removeItem('wsx-read'); else localStorage.setItem('wsx-read', kept.read);
+    location.hash = '#/';
+    return { unread, open };
+  })()`);
+  if (result.unread.order.join() !== "calm,gone,quiet" || !result.unread.calm) await fail(`an unread project does not sort first: ${JSON.stringify(result.unread)}`);
+  if (result.open.order.join() !== "calm,gone,quiet" || result.open.quiet) await fail(`a message in an open chat marks it unread: ${JSON.stringify(result.open)}`);
+}
+
 // --- Home: one row per project, needs first, then by activity; the bottom bar is Home, Sessions and Settings.
 await go("#/");
 await until("document.querySelectorAll('.home-row').length >= 3", "home does not list the projects");
@@ -490,6 +529,7 @@ await shot("home");
 await motion();
 await resize([1280, 800, 1]);
 await motion();
+await homeUnread();
 await resize([390, 844, 2]);
 await go("#/");
 // Sessions, one tap from home: the session inbox, without task workers and the manager, with
