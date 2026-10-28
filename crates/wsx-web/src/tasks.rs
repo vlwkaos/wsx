@@ -19,8 +19,8 @@ use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
     self, call_host_waiting, call_socket, checks, copy, ledger,
     manager::{
-        activity, chat_window, decided_request, pending_approvals, ApprovalLine, ManagerEvent,
-        ManagerRequest, ManagerResponse,
+        activity, chat_window, decided_request, pending_approvals, ApprovalLine, Author,
+        ManagerEvent, ManagerRequest, ManagerResponse,
     },
     owner,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
