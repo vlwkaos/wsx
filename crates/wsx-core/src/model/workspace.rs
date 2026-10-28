@@ -110,6 +110,10 @@ pub struct TaskConfig {
     /// Quiet seconds after which the manager writes the owner a recap; 0 is off. The config
     /// says minutes (`recapMinutes`, a fraction allowed). ref: docs/tasks.md "Recap"
     pub manager_recap_secs: u64,
+    /// `tasks.roles.max`: open roles besides the manager. ref: docs/tasks.md "Roles"
+    pub roles_max: usize,
+    /// `tasks.roles.closeDays` in seconds: a role with no turn for this long is closed.
+    pub roles_close_secs: u64,
 }
 
 /// `tasks.workflow`: the project's own words for each fixed stage; wsx's defaults name no
@@ -201,6 +205,10 @@ impl Default for TaskConfig {
             manager_event_model: None,
             manager_rotate_tokens: 150_000,
             manager_recap_secs: 0,
+            roles_max: 2,
+            // ^ A role is for work over weeks, and its parent task may wait on the owner for
+            // more than a week: two weeks of no turn means the work is over.
+            roles_close_secs: 14 * 24 * 60 * 60,
         }
     }
 }

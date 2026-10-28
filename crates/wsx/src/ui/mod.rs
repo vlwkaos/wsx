@@ -707,7 +707,10 @@ fn status_bar_view(app: &App) -> StatusBarView {
             vec!["(j/k)scroll".into(), "Esc: close".into()],
         ),
         Mode::Tasks { list } if list.chat.is_some() => (
-            "MANAGER",
+            match list.chat.as_deref().and_then(|chat| chat.role.as_ref()) {
+                Some(_) => "ROLE",
+                None => "MANAGER",
+            },
             theme::ModeBadge::Info,
             list.chat
                 .as_deref()
@@ -719,12 +722,15 @@ fn status_bar_view(app: &App) -> StatusBarView {
             theme::ModeBadge::Info,
             vec!["(j/k)scroll".into(), "Esc: back".into()],
         ),
-        Mode::Tasks { .. } => (
+        Mode::Tasks { list } => (
             "TASKS",
             theme::ModeBadge::Info,
             vec![
                 "(j/k)move".into(),
-                "(enter)detail".into(),
+                match list.selected_role() {
+                    Some(_) => "(enter)chat".into(),
+                    None => "(enter)detail".into(),
+                },
                 "(m)anager".into(),
                 "Esc: close".into(),
             ],

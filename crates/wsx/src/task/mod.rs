@@ -26,8 +26,11 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::git::output_with_timeout_tail;
 use wsx_core::task::checks::{self, CheckItem, CheckState};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
-use wsx_core::task::manager::{chat_window, ApprovalAction, ApprovalLine, ManagerEvent};
+use wsx_core::task::manager::{
+    chat_window, ApprovalAction, ApprovalLine, ManagerEvent, ManagerRequest, ManagerResponse,
+};
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
+use wsx_core::task::roles;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{
     checked_files, overlaps, project_tasks, refuse_open_children, task_summary,
@@ -291,25 +294,38 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Send a message to the project's manager; returns at once with its id
+    /// The project's roles: named chats like the manager's (docs/tasks.md "Roles")
+    Role {
+        #[command(subcommand)]
+        action: RoleCmd,
+    },
+    /// Send a message to the project's manager, or a role; returns at once with its id
     Say {
         #[command(flatten)]
         text: PromptSource,
+        /// To this role instead of the manager
+        #[arg(long, value_name = "NAME")]
+        role: Option<String>,
         /// From a project's manager to the manager of the project named with -p
-        #[arg(long)]
+        #[arg(long, conflicts_with = "from_role")]
         from_manager: bool,
-        /// With --from-manager: this answers a message that manager sent
-        #[arg(long, requires = "from_manager")]
+        /// From the manager or a role to a role (--role) or the manager of its own project
+        #[arg(long)]
+        from_role: bool,
+        /// With --from-manager or --from-role: this answers a message it sent
+        #[arg(long)]
         reply: bool,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
         json: bool,
     },
-    /// Read the manager conversation, after a message id
+    /// Read the manager conversation, or a role's, after a message id
     Chat {
         #[arg(long, value_name = "ID")]
         after: Option<u64>,
+        #[arg(long, value_name = "NAME")]
+        role: Option<String>,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -352,7 +368,43 @@ pub enum TaskCmd {
     #[command(hide = true)]
     Host { project_id: String, task: String },
     #[command(hide = true)]
-    ManagerHost { project_id: String },
+    ManagerHost {
+        project_id: String,
+        #[arg(long)]
+        role: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RoleCmd {
+    /// Open a role (the manager asks the owner first; at most tasks.roles.max)
+    New {
+        name: String,
+        /// The role's brief, a file or - for standard input
+        #[arg(long, value_name = "FILE")]
+        brief: PathBuf,
+        #[command(flatten)]
+        said: OwnerSaid,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// The roles: open, asked for and closed
+    List {
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Close a role; its notes stay
+    Close {
+        name: String,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl TaskCmd {
@@ -375,6 +427,11 @@ impl TaskCmd {
             | Self::Release { json, .. }
             | Self::Deployed { json, .. }
             | Self::Preview { json, .. } => *json,
+            Self::Role { action } => match action {
+                RoleCmd::New { json, .. }
+                | RoleCmd::List { json, .. }
+                | RoleCmd::Close { json, .. } => *json,
+            },
             Self::Manager { json, .. }
             | Self::Say { json, .. }
             | Self::Chat { json, .. }
@@ -472,7 +529,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             project,
             json,
         } => {
-            let dir = open(project.as_deref(), &task)?;
+            let dir = open_owned(project.as_deref(), &task)?;
             let text = text.read(MAX_MESSAGE_BYTES)?;
             send(&dir, HostRequest::Steer { text }, json)
         }
@@ -483,7 +540,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             project,
             json,
         } => {
-            let dir = open(project.as_deref(), &task)?;
+            let dir = open_owned(project.as_deref(), &task)?;
             let text = text.read(MAX_MESSAGE_BYTES)?;
             let files = checked_files(&dir.read_record()?.files, &files)?;
             send(&dir, HostRequest::Add { text, files }, json)
@@ -492,7 +549,11 @@ pub fn run(command: TaskCmd) -> Result<()> {
             task,
             project,
             json,
-        } => send(&open(project.as_deref(), &task)?, HostRequest::Stop, json),
+        } => send(
+            &open_owned(project.as_deref(), &task)?,
+            HostRequest::Stop,
+            json,
+        ),
         TaskCmd::Check {
             action,
             project,
@@ -505,12 +566,20 @@ pub fn run(command: TaskCmd) -> Result<()> {
             project,
             json,
         } => {
-            let dir = open(project.as_deref(), &task)?;
+            let dir = open_owned(project.as_deref(), &task)?;
             // ^ Only the owner tries a trial, so only the owner passes one.
             if tried && acting_as_manager() {
                 bail!("only the owner passes a trial; ask the owner to try it");
             }
             let record = dir.read_record()?;
+            // ^ A role lands only into a parent task; the manager lands onto the default branch.
+            if actor().role().is_some() && record.parent.is_none() {
+                bail!(
+                    "a role lands only a child into its parent task; #{} lands onto {}, which is the manager's",
+                    record.id,
+                    record.default_branch
+                );
+            }
             let settings = load_task_config(&record.project_path)
                 .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
             if acting_as_manager()
@@ -519,6 +588,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     &dir.project_id,
                     ApprovalAction::Land,
                     Some(&record),
+                    None,
                     None,
                     said.owner_said,
                     json,
@@ -535,7 +605,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             project,
             json,
         } => send(
-            &open(project.as_deref(), &task)?,
+            &open_owned(project.as_deref(), &task)?,
             HostRequest::Hold {
                 reason,
                 by: actor(),
@@ -547,7 +617,10 @@ pub fn run(command: TaskCmd) -> Result<()> {
             end,
             project,
             json,
-        } => trial_command(&open(project.as_deref(), &task)?, end, json),
+        } => {
+            not_for_roles("trial")?;
+            trial_command(&open(project.as_deref(), &task)?, end, json)
+        }
         TaskCmd::Close {
             task,
             discard,
@@ -555,7 +628,10 @@ pub fn run(command: TaskCmd) -> Result<()> {
             project,
             json,
         } => {
-            let dir = open(project.as_deref(), &task)?;
+            let dir = open_owned(project.as_deref(), &task)?;
+            if discard {
+                not_for_roles("close --discard")?;
+            }
             // ^ Discarding work cannot be undone: the manager always asks first, or names
             // the owner's message that asked for it.
             if discard
@@ -564,6 +640,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     &dir.project_id,
                     ApprovalAction::Discard,
                     Some(&dir.read_record()?),
+                    None,
                     None,
                     said.owner_said,
                     json,
@@ -625,9 +702,16 @@ pub fn run(command: TaskCmd) -> Result<()> {
             json,
         ),
         TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
+        TaskCmd::Role { action } => role(action),
         TaskCmd::Ledger { project, .. } => ledger::ledger(project.as_deref()),
         TaskCmd::Routine { action, owner_said } => {
-            use crate::cli::RoutineCmd::{Add, Delete, Edit};
+            use crate::cli::RoutineCmd::{Add, Delete, Disable, Edit, Enable};
+            // ^ A role changes nothing of the project's own (docs/tasks.md "Roles").
+            if let Add { .. } | Edit { .. } | Delete { .. } | Enable { .. } | Disable { .. } =
+                &action
+            {
+                not_for_roles("routine changes")?;
+            }
             // ^ wsxd runs a routine outside the agent boundary: only the owner writes one.
             if let Add { project, .. } | Edit { project, .. } | Delete { project, .. } = &action {
                 if acting_as_manager() {
@@ -656,14 +740,24 @@ pub fn run(command: TaskCmd) -> Result<()> {
         }
         TaskCmd::Say {
             text,
+            role,
             from_manager,
+            from_role,
             reply,
             project,
             json,
         } => {
-            let from = from_manager.then_some(reply);
+            if reply && !from_manager && !from_role {
+                bail!("--reply answers with --from-manager or --from-role");
+            }
+            let from = match (from_manager, from_role) {
+                (true, _) => Some(From::Manager(reply)),
+                (_, true) => Some(From::Role(reply)),
+                _ => None,
+            };
             say(
                 project.as_deref(),
+                role.as_deref(),
                 text.read(MAX_MESSAGE_BYTES)?,
                 from,
                 json,
@@ -671,9 +765,10 @@ pub fn run(command: TaskCmd) -> Result<()> {
         }
         TaskCmd::Chat {
             after,
+            role,
             project,
             json,
-        } => chat(project.as_deref(), after, json),
+        } => chat(project.as_deref(), role.as_deref(), after, json),
         // ^ Under a task host's broker the CLI forwards it before parsing (broker.rs).
         TaskCmd::CheckRun { .. } => {
             bail!("`wsx task check-run` runs only inside a task's worker, through its host")
@@ -711,7 +806,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
         TaskCmd::PreviewHost { project_id, task } => {
             preview::host(&project_id, store::parse_task_number(&task)?)
         }
-        TaskCmd::ManagerHost { project_id } => manager::run(&project_id),
+        TaskCmd::ManagerHost { project_id, role } => manager::run(&project_id, role.as_deref()),
         TaskCmd::Host { project_id, task } => {
             host::run(&project_id, store::parse_task_number(&task)?)
         }
@@ -768,6 +863,33 @@ fn open(project: Option<&str>, task: &str) -> Result<TaskDir> {
         &store::project_id(&name, &path),
         store::parse_task_number(task)?,
     )
+}
+
+/// `open` for a command that changes the task: a role acts only on the tasks it created,
+/// whose events go to it. ref: docs/tasks.md "Roles"
+fn open_owned(project: Option<&str>, task: &str) -> Result<TaskDir> {
+    let dir = open(project, task)?;
+    let actor = actor();
+    if let Some(role) = actor.role() {
+        let record = dir.read_record()?;
+        if record.created_by != actor {
+            bail!(
+                "role {role} acts only on the tasks it created; #{} is the {}'s",
+                record.id,
+                String::from(record.created_by)
+            );
+        }
+    }
+    Ok(dir)
+}
+
+/// Refuse what only the owner or the manager does: a role has no approvals, deploys,
+/// trials, routines or roles of its own. ref: docs/tasks.md "Roles"
+fn not_for_roles(what: &str) -> Result<()> {
+    if let Some(role) = actor().role() {
+        bail!("{what} is not for a role; ask the manager (`wsx task say --from-role`); role {role} ran nothing");
+    }
+    Ok(())
 }
 
 fn print_json(value: &serde_json::Value) -> Result<()> {
@@ -973,7 +1095,7 @@ fn create(
         if hold.is_some() {
             dir.append(LogEvent::Hold {
                 reason: hold,
-                by: record.created_by,
+                by: record.created_by.clone(),
             })?;
         }
         let exe = std::env::current_exe().context("cannot find the wsx binary")?;
@@ -1620,6 +1742,7 @@ fn deploy(
 ) -> Result<()> {
     let by_hand = !if_new && trial.is_none() && run_locked.is_none();
     let name = kind_name(kind);
+    not_for_roles(name)?;
     let (project_name, main) = project_entry(project)?;
     let settings =
         load_task_config(&main).map_err(|error| anyhow::anyhow!("{error}; nothing was run"))?;
@@ -1657,7 +1780,7 @@ fn deploy(
     if approve
         && run_locked.is_none()
         && acting_as_manager()
-        && ask_owner(&project_id, action, None, commit, owner_said, json)?
+        && ask_owner(&project_id, action, None, commit, None, owner_said, json)?
     {
         return Ok(());
     }
@@ -1923,32 +2046,48 @@ fn deployed(project: Option<&str>, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Reuse the project's manager host, or start one in a hidden session in the main checkout.
-/// Returns whether it was started.
-/// Create the manager's hidden session, starting wsxd when it does not run.
-pub(crate) fn launch_manager(main: &Path) -> impl FnOnce(Vec<String>) -> Result<()> + '_ {
-    move |argv| {
-        ops::create_session_launch(&load_config()?, main, "task-manager".into(), argv, None)
-            .map(drop)
+/// Create the manager's or a role's hidden session (its label), starting wsxd when it does
+/// not run.
+pub(crate) fn launch_manager(main: &Path) -> impl FnOnce(String, Vec<String>) -> Result<()> + '_ {
+    move |label, argv| {
+        ops::create_session_launch(&load_config()?, main, label, argv, None).map(drop)
     }
 }
 
 fn ensure_manager(project: Option<&str>) -> Result<(bool, ManagerDir)> {
     let (name, main) = project_entry(project)?;
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
-    owner::ensure_manager(&name, &main, &exe, launch_manager(&main))
+    owner::ensure_manager(&name, &main, &exe, None, launch_manager(&main))
 }
 
-/// `from`: `Some(reply)` when another project's manager sends it (`--from-manager`).
-fn say(project: Option<&str>, text: String, from: Option<bool>, json: bool) -> Result<()> {
+/// Who sends a message with `say`, besides the owner; each with whether it is a reply.
+enum From {
+    /// `--from-manager`: this manager to another project's.
+    Manager(bool),
+    /// `--from-role`: the manager or a role to a role or the manager of its own project.
+    Role(bool),
+}
+
+/// Send to the manager, or to the open role `role`.
+fn say(
+    project: Option<&str>,
+    role: Option<&str>,
+    text: String,
+    from: Option<From>,
+    json: bool,
+) -> Result<()> {
     let (name, main) = project_entry(project)?;
+    // ^ Only a manager host sets the sender's project (broker.rs).
+    let own = || {
+        std::env::var(broker::FROM_ENV)
+            .ok()
+            .filter(|own| acting_as_manager() && !own.is_empty())
+    };
     let from = match from {
         None => None,
-        Some(reply) => {
-            // ^ Only a manager host sets the sender's project (broker.rs).
-            let own = std::env::var(broker::FROM_ENV)
-                .ok()
-                .filter(|own| acting_as_manager() && !own.is_empty())
+        Some(From::Manager(reply)) => {
+            let own = own()
+                .filter(|_| actor() == Actor::Manager)
                 .context("--from-manager is for a project's manager")?;
             if own == name {
                 bail!("--from-manager messages another project's manager");
@@ -1958,10 +2097,29 @@ fn say(project: Option<&str>, text: String, from: Option<bool>, json: bool) -> R
                 reply,
             })
         }
+        Some(From::Role(reply)) => {
+            let own = own().context("--from-role is for the manager or a role")?;
+            if own != name {
+                bail!("--from-role messages a role or the manager of its own project");
+            }
+            let sender = match actor() {
+                Actor::Role(sender) => sender,
+                _ => "manager".to_string(),
+            };
+            if sender == role.unwrap_or("manager") {
+                bail!("--from-role messages another role or the manager, not itself");
+            }
+            Some(wsx_core::task::manager::Author::Role {
+                name: sender,
+                reply,
+            })
+        }
     };
+    // ^ `--role manager` is the manager, as a role names it in its reply.
+    let role = role.filter(|role| *role != "manager");
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
     let sent = from.is_some().then(|| text.clone());
-    let response = owner::say(&name, &main, &exe, launch_manager(&main), text, from)?;
+    let response = owner::say(&name, &main, &exe, role, launch_manager(&main), text, from)?;
     if json {
         let mut value = serde_json::to_value(&response)?;
         if let Some(text) = sent {
@@ -1982,9 +2140,14 @@ fn say(project: Option<&str>, text: String, from: Option<bool>, json: bool) -> R
 }
 
 /// The conversation after message `after`: messages, replies, rotations and stops.
-fn chat(project: Option<&str>, after: Option<u64>, json: bool) -> Result<()> {
+fn chat(project: Option<&str>, role: Option<&str>, after: Option<u64>, json: bool) -> Result<()> {
     let (name, main) = project_entry(project)?;
-    let dir = ManagerDir::open(&store::project_id(&name, &main))?;
+    let project_id = store::project_id(&name, &main);
+    let dir = match role {
+        None => ManagerDir::open(&project_id)?,
+        Some(role) => ManagerDir::existing_as(&project_id, Some(role))?
+            .with_context(|| format!("the project has no role {role}"))?,
+    };
     let log = dir.read_log()?;
     let (entries, skipped) = chat_window(&log, after);
     if json {
@@ -2008,19 +2171,127 @@ fn chat(project: Option<&str>, after: Option<u64>, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// True when the manager's agent runs this command (`WSX_TASK_ACTOR=manager`).
-/// ^ A guard against the manager's mistakes, not a security boundary: anything that runs
+/// `wsx task role new|list|close`. ref: docs/tasks.md "Roles"
+fn role(action: RoleCmd) -> Result<()> {
+    let open_project = |project: Option<&str>| -> Result<(String, String, PathBuf)> {
+        let (name, main) = project_entry(project)?;
+        let project_id = store::project_id(&name, &main);
+        // ^ A role idle past tasks.roles.closeDays is closed before it is counted or listed.
+        if let Ok(settings) = load_task_config(&main) {
+            roles::close_idle(&project_id, settings.roles_close_secs);
+        }
+        Ok((name, project_id, main))
+    };
+    match action {
+        RoleCmd::New {
+            name,
+            brief,
+            said,
+            project,
+            json,
+        } => {
+            not_for_roles("role new")?;
+            let (_, project_id, main) = open_project(project.as_deref())?;
+            let settings = load_task_config(&main)
+                .map_err(|error| anyhow::anyhow!("{error}; no role was opened"))?;
+            roles::may_create(&project_id, &name, settings.roles_max)?;
+            let brief = read_brief(&brief)?;
+            // ^ The manager asks the owner once: a Yes/No card, or the owner's own word.
+            if actor() == Actor::Manager
+                && ask_owner(
+                    &project_id,
+                    ApprovalAction::Role,
+                    None,
+                    None,
+                    Some((&name, &brief)),
+                    said.owner_said,
+                    json,
+                )?
+            {
+                return Ok(());
+            }
+            roles::create(&project_id, &name, &brief)?;
+            let message = format!("role {name} is open; `wsx task say --role {name}` talks to it");
+            if json {
+                return print_json(&json!({ "role": name, "state": "open", "message": message }));
+            }
+            println!("{message}");
+            Ok(())
+        }
+        RoleCmd::List { project, json } => {
+            let (_, project_id, _) = open_project(project.as_deref())?;
+            let lines = store::read_approvals(&project_id)?;
+            let mut rows = roles::rows(&project_id, &lines);
+            for row in rows.iter_mut().filter(|row| row["state"] != "asked") {
+                let socket = ManagerDir::existing_as(&project_id, row["name"].as_str())?
+                    .map(|dir| dir.socket_path());
+                row["running"] = json!(socket.is_some_and(|socket| {
+                    wsx_core::task::call_socket::<_, ManagerResponse>(
+                        &socket,
+                        &ManagerRequest::Status,
+                        Duration::from_secs(2),
+                    )
+                    .is_ok()
+                }));
+            }
+            if json {
+                return print_json(&json!({ "roles": rows }));
+            }
+            for row in &rows {
+                println!(
+                    "{} {}",
+                    row["name"].as_str().unwrap_or_default(),
+                    row["state"].as_str().unwrap_or_default()
+                );
+            }
+            Ok(())
+        }
+        RoleCmd::Close {
+            name,
+            project,
+            json,
+        } => {
+            not_for_roles("role close")?;
+            let (_, project_id, _) = open_project(project.as_deref())?;
+            let dir = roles::open_role(&project_id, &name)?;
+            roles::close(&dir, &format!("closed by the {}", String::from(actor())))?;
+            let message = format!("role {name} is closed; its notes stay");
+            if json {
+                return print_json(&json!({ "role": name, "state": "closed", "message": message }));
+            }
+            println!("{message}");
+            Ok(())
+        }
+    }
+}
+
+/// A role's brief from a file, or `-` for standard input.
+fn read_brief(path: &Path) -> Result<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    let limit = roles::MAX_BRIEF_BYTES as u64 + 1;
+    match path.as_os_str() == "-" {
+        true => std::io::stdin().lock().take(limit).read_to_end(&mut bytes),
+        false => std::fs::File::open(path)
+            .with_context(|| format!("cannot read the brief {}", path.display()))?
+            .take(limit)
+            .read_to_end(&mut bytes),
+    }
+    .context("cannot read the brief")?;
+    let brief = String::from_utf8(bytes).context("the brief is not UTF-8 text")?;
+    roles::checked_brief(&brief)?;
+    Ok(brief)
+}
+
+/// True when the manager's or a role's agent runs this command (`WSX_TASK_ACTOR`).
+/// ^ A guard against the agents' mistakes, not a security boundary: anything that runs
 /// commands as the owner can unset it (docs/tasks.md "Approvals").
 fn acting_as_manager() -> bool {
-    std::env::var(owner::ACTOR_ENV).is_ok_and(|actor| actor == "manager")
+    actor() != Actor::Owner
 }
 
 fn actor() -> Actor {
-    if acting_as_manager() {
-        Actor::Manager
-    } else {
-        Actor::Owner
-    }
+    Actor::from_env()
 }
 
 /// The manager's action that needs the owner: approved by the owner's message `owner_said`
@@ -2031,6 +2302,7 @@ fn ask_owner(
     action: ApprovalAction,
     task: Option<&TaskRecord>,
     commit: Option<&str>,
+    role: Option<(&str, &str)>,
     owner_said: Option<u64>,
     json: bool,
 ) -> Result<bool> {
@@ -2041,6 +2313,8 @@ fn ask_owner(
         task: task.map(|record| record.id),
         revision,
         commit: commit.map(str::to_string),
+        role: role.map(|(name, _)| name.to_string()),
+        brief: role.map(|(_, brief)| brief.to_string()),
         unix_ms: now_unix_ms(),
     };
     if let Some(said) = owner_said {
@@ -2052,9 +2326,11 @@ fn ask_owner(
     }
     let line = store::append_approval(project_id, request)?;
     let id = line.id();
-    let target = task.map_or(String::new(), |record| {
-        format!(" #{} r{}", record.id, record.revision)
-    });
+    let target = match (task, role) {
+        (Some(record), _) => format!(" #{} r{}", record.id, record.revision),
+        (None, Some((name, _))) => format!(" {name}"),
+        (None, None) => String::new(),
+    };
     let message = format!(
         "{}{target} needs the owner's approval; the owner was asked ({id}). Do not retry it",
         action_name(action)

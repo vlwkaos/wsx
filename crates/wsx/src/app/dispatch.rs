@@ -131,10 +131,10 @@ impl App {
                 return Ok(());
             }
             match (action, list.detail.is_some()) {
-                (Action::EnterMove, false) => list.open_chat(),
+                (Action::EnterMove, false) => list.open_chat(None),
                 (Action::NavigateDown, false) => list.select(1),
                 (Action::NavigateUp, false) => list.select(-1),
-                (Action::Select, false) => list.open_detail(),
+                (Action::Select, false) => list.open_selected(),
                 (Action::NavigateDown, true) => list.scroll = list.scroll.saturating_add(1),
                 (Action::NavigateUp, true) => list.scroll = list.scroll.saturating_sub(1),
                 (Action::InputEscape | Action::Quit | Action::Select, true) => list.detail = None,

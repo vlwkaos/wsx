@@ -17,15 +17,33 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// A check's answer: none when no stamp changed, else the new stamps and the ledger read.
 type Read = Option<(Stamp, Result<Value, String>)>;
 
-/// One row: a task in attention order, then a recent landed or closed one.
+/// One row: an open task in attention order, an open or asked role, then a recent landed or
+/// closed task. A role row has no number; its title is the role's name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRow {
     pub id: u64,
     pub title: String,
     pub state: String,
-    /// What it waits for, empty when nothing.
+    /// What it waits for, or a role's brief; empty when nothing.
     pub waits: String,
-    pub open: bool,
+    pub section: Section,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Open,
+    Roles,
+    Recent,
+}
+
+impl Section {
+    pub fn heading(self) -> &'static str {
+        match self {
+            Self::Open => "Open",
+            Self::Roles => "Roles",
+            Self::Recent => "Recent",
+        }
+    }
 }
 
 pub struct TaskList {
@@ -89,11 +107,30 @@ impl TaskList {
         });
     }
 
-    pub fn open_chat(&mut self) {
+    /// Open the manager's chat, or a role's (docs/tasks.md "Roles").
+    pub fn open_chat(&mut self, role: Option<String>) {
         self.chat = Some(Box::new(crate::task_chat::ManagerChat::new(
             self.project.clone(),
             self.main.clone(),
+            role,
         )));
+    }
+
+    /// The selected row's open role, whose chat `Enter` opens.
+    pub fn selected_role(&self) -> Option<&str> {
+        self.rows
+            .get(self.selected)
+            .filter(|row| row.section == Section::Roles && row.state == "open")
+            .map(|row| row.title.as_str())
+    }
+
+    /// `Enter`: an open role's chat, else a task's detail; an asked role waits for the owner.
+    pub fn open_selected(&mut self) {
+        match (self.selected_role(), self.rows.get(self.selected)) {
+            (Some(role), _) => self.open_chat(Some(role.to_string())),
+            (None, Some(row)) if row.section != Section::Roles => self.open_detail(),
+            _ => {}
+        }
     }
 
     /// Take a finished read and start the next check when due. True when the view changed.
@@ -124,11 +161,18 @@ impl TaskList {
     fn apply(&mut self, stamp: Stamp, ledger: Result<Value, String>) -> bool {
         match ledger {
             Ok(ledger) => {
-                let selected = self.rows.get(self.selected).map(|row| row.id);
+                let selected = self
+                    .rows
+                    .get(self.selected)
+                    .map(|row| (row.id, row.title.clone()));
                 self.rows = rows(&ledger);
                 // ^ The selection and the detail follow their task, not its position.
                 self.selected = selected
-                    .and_then(|id| self.rows.iter().position(|row| row.id == id))
+                    .and_then(|(id, title)| {
+                        self.rows
+                            .iter()
+                            .position(|row| row.id == id && (id != 0 || row.title == title))
+                    })
                     .unwrap_or(self.selected)
                     .min(self.rows.len().saturating_sub(1));
                 if self
@@ -152,7 +196,7 @@ impl TaskList {
         self.selected = self.selected.saturating_add_signed(delta).min(last);
     }
 
-    pub fn open_detail(&mut self) {
+    fn open_detail(&mut self) {
         self.detail = self.rows.get(self.selected).map(|row| row.id);
         self.scroll = 0;
     }
@@ -170,7 +214,8 @@ impl TaskList {
 }
 
 /// Open tasks first, waiting on the owner, failed, ready, checking, then working; then the
-/// recent landed and closed ones, newest first as the ledger has them.
+/// open and asked roles; then the recent landed and closed tasks, newest first as the
+/// ledger has them.
 pub fn rows(ledger: &Value) -> Vec<TaskRow> {
     let rank = |state: &str| match state {
         "waiting" => 0,
@@ -182,16 +227,24 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
     let list = |key: &str| ledger[key].as_array().cloned().unwrap_or_default();
     let mut open = list("open");
     open.sort_by_key(|task| rank(task["state"].as_str().unwrap_or_default()));
-    let row = |task: &Value, open: bool| TaskRow {
+    let row = |task: &Value, section| TaskRow {
         id: task["id"].as_u64().unwrap_or_default(),
         title: task["title"].as_str().unwrap_or_default().to_string(),
         state: task["state"].as_str().unwrap_or_default().to_string(),
         waits: waits(task),
-        open,
+        section,
+    };
+    let role = |role: &Value| TaskRow {
+        id: 0,
+        title: role["name"].as_str().unwrap_or_default().to_string(),
+        state: role["state"].as_str().unwrap_or_default().to_string(),
+        waits: role["brief"].as_str().unwrap_or_default().to_string(),
+        section: Section::Roles,
     };
     open.iter()
-        .map(|task| row(task, true))
-        .chain(list("recent").iter().map(|task| row(task, false)))
+        .map(|task| row(task, Section::Open))
+        .chain(list("roles").iter().map(role))
+        .chain(list("recent").iter().map(|task| row(task, Section::Recent)))
         .collect()
 }
 

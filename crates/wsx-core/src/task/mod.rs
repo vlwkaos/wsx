@@ -11,6 +11,7 @@ pub mod ledger;
 pub mod manager;
 pub mod owner;
 pub mod report;
+pub mod roles;
 pub mod store;
 pub mod view;
 
@@ -101,13 +102,58 @@ pub struct Waiting {
     pub until_ms: Option<u64>,
 }
 
-/// Who acted: the owner, or the manager's agent (`WSX_TASK_ACTOR=manager`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// Who acted: the owner, the manager's agent (`WSX_TASK_ACTOR=manager`) or a role's
+/// (`role:<name>`). ref: docs/tasks.md "Roles"
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
 pub enum Actor {
     #[default]
     Owner,
     Manager,
+    Role(String),
+}
+
+impl From<Actor> for String {
+    fn from(actor: Actor) -> Self {
+        match actor {
+            Actor::Owner => "owner".into(),
+            Actor::Manager => "manager".into(),
+            Actor::Role(name) => format!("role:{name}"),
+        }
+    }
+}
+
+impl TryFrom<String> for Actor {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        match text.as_str() {
+            "owner" => Ok(Self::Owner),
+            "manager" => Ok(Self::Manager),
+            _ => match text.strip_prefix("role:") {
+                Some(name) if !name.is_empty() => Ok(Self::Role(name.into())),
+                _ => Err(format!("unknown actor {text}")),
+            },
+        }
+    }
+}
+
+impl Actor {
+    /// The actor a host's agent runs as, from `WSX_TASK_ACTOR`; anything else is the owner.
+    pub fn from_env() -> Self {
+        std::env::var(owner::ACTOR_ENV)
+            .ok()
+            .and_then(|text| Self::try_from(text).ok())
+            .unwrap_or_default()
+    }
+
+    /// The role's name, or none for the owner and the manager.
+    pub fn role(&self) -> Option<&str> {
+        match self {
+            Self::Role(name) => Some(name),
+            _ => None,
+        }
+    }
 }
 
 /// `task.json`: what the task is and where it runs.
@@ -373,12 +419,13 @@ impl TaskRecord {
         matches!(self.state, TaskState::Ready | TaskState::Failed)
     }
 
-    /// A ready task waits for the manager's review when the manager created it, or when the
+    /// A ready task waits for the manager's review when the manager or a role created it (the
+    /// creator reviews it), or when the
     /// project lands by itself (`tasks.land.auto`) and checks prove it: an owner task never
     /// lands by itself. A held one waits for the owner, as does any other ready task. A plan
     /// waits for the manager. ref: docs/tasks.md "Landing"
     pub fn manager_reviews(&self, land_auto: bool) -> bool {
-        let reviewed = self.created_by == Actor::Manager || (land_auto && !self.checks.is_empty());
+        let reviewed = self.created_by != Actor::Owner || (land_auto && !self.checks.is_empty());
         (self.state == TaskState::Ready && self.hold.is_none() && reviewed)
             || self.waits_on(WaitOn::Plan)
     }

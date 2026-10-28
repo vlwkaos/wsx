@@ -248,7 +248,7 @@ fn after_cut_line(bytes: &[u8], skipped: u64) -> &[u8] {
     }
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     crate::fs_util::write_atomic(
         path,
         bytes,
@@ -642,31 +642,64 @@ const MANAGER_SOCKET: &str = "manager.sock";
 const MAX_MANAGER_LOG_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_MANAGER_STATE_BYTES: u64 = 256 * 1024;
 
-/// The project manager's folder, `tasks/<project-id>/manager/`.
+/// The project manager's folder, `tasks/<project-id>/manager/`, or a role's,
+/// `tasks/<project-id>/roles/<name>/` (docs/tasks.md "Roles").
 #[derive(Debug, Clone)]
 pub struct ManagerDir {
     pub project_id: String,
     pub path: PathBuf,
+    /// The role's name; none is the manager.
+    pub role: Option<String>,
 }
+
+const ROLES_DIR: &str = "roles";
 
 impl ManagerDir {
     /// Open the folder, creating it owner-only when it is missing.
     pub fn open(project_id: &str) -> Result<Self> {
-        let path = ensure_project_dir(project_id)?.join(MANAGER_DIR);
+        Self::open_as(project_id, None)
+    }
+
+    /// Open the manager's folder or a role's, creating it owner-only when it is missing.
+    pub fn open_as(project_id: &str, role: Option<&str>) -> Result<Self> {
+        let project = ensure_project_dir(project_id)?;
+        let path = match role {
+            None => project.join(MANAGER_DIR),
+            Some(name) => {
+                create_private_dir(&project.join(ROLES_DIR))?;
+                project
+                    .join(ROLES_DIR)
+                    .join(super::roles::checked_name(name)?)
+            }
+        };
         create_private_dir(&path)?;
         Ok(Self {
             project_id: project_id.into(),
             path,
+            role: role.map(str::to_string),
         })
     }
 
     /// The folder when it exists; a reader never creates it.
     pub fn existing(project_id: &str) -> Result<Option<Self>> {
-        let path = project_dir(project_id)?.join(MANAGER_DIR);
+        Self::existing_as(project_id, None)
+    }
+
+    pub fn existing_as(project_id: &str, role: Option<&str>) -> Result<Option<Self>> {
+        let path = match role {
+            None => project_dir(project_id)?.join(MANAGER_DIR),
+            Some(name) => roles_dir(project_id)?.join(super::roles::checked_name(name)?),
+        };
         Ok(require_real_dir(&path).is_ok().then(|| Self {
             project_id: project_id.into(),
             path,
+            role: role.map(str::to_string),
         }))
+    }
+
+    /// The name the owner reads and the session label's end: the role's, or `manager`.
+    pub fn name(&self) -> &str {
+        self.role.as_deref().unwrap_or("manager")
     }
 
     pub fn socket_path(&self) -> PathBuf {
@@ -758,8 +791,13 @@ impl ManagerDir {
 
 const APPROVALS_FILE: &str = "approvals.jsonl";
 
-/// The files a reader follows to see every change to a project's tasks, its manager
-/// conversation and its approvals. Missing ones are left out.
+/// `tasks/<project-id>/roles/`, which holds one folder per role.
+pub fn roles_dir(project_id: &str) -> Result<PathBuf> {
+    Ok(project_dir(project_id)?.join(ROLES_DIR))
+}
+
+/// The files a reader follows to see every change to a project's tasks, its manager's and
+/// roles' conversations and its approvals. Missing ones are left out.
 pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
     let dir = project_dir(project_id)?;
     let mut files = vec![
@@ -769,6 +807,10 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
         dir.join(super::checks::CHECKS_FILE),
         dir.join(TRIAL_FILE),
     ];
+    for role in super::roles::names(project_id) {
+        let role = dir.join(ROLES_DIR).join(role);
+        files.extend([role.join(MANAGER_LOG), role.join(super::roles::CLOSED_FILE)]);
+    }
     for id in task_numbers(project_id)? {
         let task = dir.join(id.to_string());
         // ^ The host writes the report after the log line that caused it.

@@ -1164,7 +1164,8 @@ def run(wsx, wsxd, work, owned):
                  "'Handover'", 'Update a section in place',
                  '--from-manager --reply', 'use it and do not answer it', "'@<project>'"):
         assert rule in launch['instructions'], rule
-    assert 'brief' not in launch['instructions'].lower(), launch['instructions']
+    # ^ Only `role new` takes a brief (docs/tasks.md "Roles").
+    assert 'brief' not in launch['instructions'].lower().replace('--brief', ''), launch['instructions']
     # ^ No skill is named: the owner's skills are whatever their folder holds.
     assert re.findall(r'owner:[^<\s]', launch['instructions']) == [], launch['instructions']
     assert not any(name in launch['instructions'] for name in ('seek', 'recall', '/memo', 'scribe'))
@@ -2445,6 +2446,137 @@ def run(wsx, wsxd, work, owned):
     wait_closed(parent)
     js('task', 'check', 'skip', *[i['id'] for i in items])
     configure(LAND_CONFIG, 'no parent gate')
+
+    # 32r. Roles (docs/tasks.md "Roles"): a role is the manager host with a name. wsx, not the
+    mark('32r')
+    # prompt, guards their number: the manager asks the owner once, at most tasks.roles.max are
+    # open, a denied name waits 7 days, and an idle role closes. A role hears only its own tasks.
+    configure(LAND_CONFIG + '  roles: { max: 2 }\n', 'two roles')
+    roles_dir = Path(created['task_dir']).parent / 'roles'
+    brief = base / 'role-brief.md'
+    brief.write_text('Drive the billing rewrite.\n')
+
+    def roles():
+        return {r['name']: r for r in js('task', 'role', 'list')['roles']}
+
+    def role_entries(name):
+        path = roles_dir / name / 'log.jsonl'
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def role_reply(name, message_id):
+        return wait(lambda: next((e for e in role_entries(name) if e['kind'] == 'reply' and message_id in e['to']), None),
+                    'reply of role %s to %s' % (name, message_id), 60)
+
+    assert 'lowercase letter' in cli('task', 'role', 'new', 'Bad_Name', '--brief', brief, ok=False).stderr
+    assert 'not a role to create' in cli('task', 'role', 'new', 'manager', '--brief', brief, ok=False).stderr
+    # The owner opens a role at once.
+    opened = js('task', 'role', 'new', 'billing', '--brief', brief)
+    assert opened['state'] == 'open' and (roles_dir / 'billing/brief.md').read_text() == brief.read_text(), opened
+    assert 'already open' in cli('task', 'role', 'new', 'billing', '--brief', brief, ok=False).stderr
+    # The manager's role new is a request: one approval, which counts against the cap.
+    asked = js('task', 'say', 'RUN wsx task role new qa --brief %s -p demo --json' % brief)
+    text = reply_to(asked['id'])['text']
+    assert 'role new qa needs the owner' in text and 'the owner was asked (a' in text, text
+    pending = [a for a in js('task', 'ledger')['approvals'] if a['action'] == 'role']
+    assert [(a['role'], a['brief']) for a in pending] == [('qa', brief.read_text())], pending
+    qa_request = pending[0]['id']
+    assert roles()['qa']['state'] == 'asked' and not (roles_dir / 'qa').exists(), roles()
+    capped = cli('task', 'role', 'new', 'docs', '--brief', brief, ok=False).stderr
+    assert 'has 2 of tasks.roles.max 2 roles (billing, qa (%s, asked))' % qa_request in capped, capped
+    # The owner denies it: that name refuses for 7 days, also for the owner.
+    js('task', 'deny', qa_request, '--note', 'not now')
+    wait(lambda: events_with('approval %s (role qa) denied; not now' % qa_request), 'the role deny event')
+    denied = cli('task', 'role', 'new', 'qa', '--brief', brief, ok=False).stderr
+    assert 'the owner denied role qa; it cannot be asked for again for 168 more hour(s)' in denied, denied
+    # The owner's word in the chat opens one at once, recorded as approved by that message.
+    said = js('task', 'say', 'open a docs role\nRUN wsx task role new docs --brief %s --owner-said OWNER_SAID -p demo --json'
+              % brief)
+    text = reply_to(said['id'])['text']
+    assert 'role docs is open' in text and 'owner was asked' not in text, text
+    assert {name: r['state'] for name, r in roles().items()} == {'billing': 'open', 'docs': 'open'}, roles()
+    assert 'tasks.roles.max 2' in cli('task', 'role', 'new', 'extra', '--brief', brief, ok=False).stderr
+    # A role is the manager host with its brief, its own folder, session and actor; it starts
+    # on say. What only the owner or the manager does is refused to it.
+    manager_task = js('task', 'new', 'WORK owner-role.txt')['id']
+    talk = js('task', 'say', '--role', 'billing',
+              'RUN wsx task new "WORK role.txt" -p demo --json\n'
+              'RUN wsx task role new more --brief %s -p demo --json\n'
+              'RUN wsx task land %d -p demo --json\n'
+              'RUN wsx task deploy -p demo --json\n'
+              'RUN wsx task routine list -p other --json' % (brief, manager_task))
+    text = role_reply('billing', talk['id'])['text']
+    assert 'role new is not for a role' in text and 'acts only on the tasks it created; #%d is the owner' % manager_task in text, text
+    assert 'deploy is not for a role' in text and 'a manager acts only in its own project' in text, text
+    role_task = max(t['id'] for t in js('task', 'list')['tasks'])
+    assert show(role_task)['record']['created_by'] == 'role:billing', show(role_task)['record']
+    role_launch = next(t for t in traces() if t.get('launch') and t.get('actor') == 'role:billing')
+    assert role_launch['instructions'].startswith('You are billing, a role in the project demo'), role_launch
+    assert 'Drive the billing rewrite.' in role_launch['instructions'] and '/roles/billing/notes' in role_launch['instructions']
+    assert role_launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], role_launch
+    assert roles()['billing']['running'], roles()
+    # Only the creating role hears its task's events; the manager hears its own.
+    assert wait_state(role_task, 'ready', 'failed')['state'] == 'ready'
+    assert wait_state(manager_task, 'ready', 'failed')['state'] == 'ready'
+    wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and '#%d ready' % role_task in e['text']
+                     for e in role_entries('billing')), 'the role hears its task', 60)
+    wait(lambda: events_with('#%d ready' % manager_task), 'the manager hears its task')
+    time.sleep(4)
+    assert not events_with('#%d ' % role_task), [e['text'] for e in manager_entries() if e['kind'] == 'message']
+    assert not any('#%d ' % manager_task in e.get('text', '') for e in role_entries('billing') if e['kind'] == 'message')
+    # A role lands only a child into a parent; its own task with no parent is the manager's to land.
+    landed = role_reply('billing', js('task', 'say', '--role', 'billing',
+                                      'RUN wsx task land %d -p demo --json' % role_task)['id'])['text']
+    assert 'a role lands only a child into its parent task' in landed, landed
+    # Roles talk inside the project as managers do: one answer to each message.
+    asked = js('task', 'say', '--role', 'billing', "SCRIPT\nwsx task say -p demo --from-role --json - <<'EOF'\n"
+               "RUN wsx task say -p demo --role billing --from-role --reply 'role answer'\n"
+               "RUN wsx task say -p demo --role billing --from-role --reply 'second answer'\nEOF")
+    assert role_reply('billing', asked['id'])['text'].startswith('script -> 0')
+    received = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'role:billing'), None),
+                    'the role message at the manager', 60)
+    answered = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'reply' and received['id'] in e['to']), None),
+                    'the manager answers the role', 60)
+    assert "--reply 'role answer' -> 0" in answered['text'] and 'no message from billing waits' in answered['text'], answered
+    wait(lambda: [e for e in role_entries('billing') if e['kind'] == 'message' and e['from'] == 'role-reply:manager'
+                  and e['text'] == 'role answer'], 'the answer at the role', 60)
+    assert 'not itself' in role_reply('billing', js('task', 'say', '--role', 'billing',
+                                                    'RUN wsx task say -p demo --role billing --from-role hi')['id'])['text']
+    assert 'is for the manager or a role' in cli('task', 'say', '--from-role', 'hello', ok=False).stderr
+    # An idle role's host leaves (no agent, no pane); the next say starts it again.
+    wait(lambda: not roles()['billing']['running'], 'the idle role host leaves', 60)
+    back = js('task', 'say', '--role', 'billing', 'STATUS')
+    assert role_reply('billing', back['id']) and roles()['billing']['running']
+    assert [e['id'] for e in js('task', 'chat', '--role', 'billing')['entries'] if e['kind'] == 'message'][-1] == back['id']
+    # The TUI's Tasks view lists the open roles under Open; Enter opens a role's chat as `m`
+    # opens the manager's (docs/tasks.md "TUI"), without the manager's items.
+    below = len(js('task', 'list')['tasks'])
+    for cols in (120, 80):
+        shots = tui_screens(wsx, env, project, [
+            (r'WORKSPACE', b't'),
+            (r'(?ms)^ Roles$.*^ billing +open +Drive the billing', b'j' * below),
+            (r'\(enter\)chat', b'\r'),
+            (r'(?s)billing demo.*ROLE', b'\x1b'),
+            (r'\(m\)anager', b'\x1b'),
+            (r'WORKSPACE', b'')], cols=cols)
+        chat = shots[3]
+        assert 'to check' not in chat and re.search(r'(?m)^ billing +\d\d:\d\d$', chat), chat
+        assert 'role answer' in chat or 'STATUS' in chat, chat
+    # role close keeps the notes; the role's tasks go back to the manager. A role with no turn for
+    # tasks.roles.closeDays is closed by wsx, and the manager hears it.
+    (roles_dir / 'billing/notes/context.md').write_text('billing notes\n')
+    assert js('task', 'role', 'close', 'billing')['state'] == 'closed'
+    assert (roles_dir / 'billing/notes/context.md').read_text() == 'billing notes\n'
+    wait(lambda: not roles()['billing']['running'], 'the closed role host leaves', 30)
+    assert 'no open role billing' in cli('task', 'say', '--role', 'billing', 'hi', ok=False).stderr
+    js('task', 'add', role_task, 'WORK role2.txt')
+    wait(lambda: events_with('#%d ready r2' % role_task), 'a closed role\'s task reaches the manager', 60)
+    configure(LAND_CONFIG + '  roles: { max: 2, closeDays: 0.0001 }\n', 'idle roles close')
+    wait(lambda: events_with('role docs closed by wsx: no turn for tasks.roles.closeDays; its notes are kept'),
+         'the idle role closes', 60)
+    assert roles()['docs']['state'] == 'closed', roles()
+    for n in (manager_task, role_task):
+        js('task', 'close', n, '--discard')
+    configure(LAND_CONFIG, 'no roles')
 
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     mark('33')

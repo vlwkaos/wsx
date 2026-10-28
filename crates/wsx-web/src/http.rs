@@ -963,6 +963,8 @@ async fn tasks_overview(
 #[serde(deny_unknown_fields)]
 struct AfterQuery {
     after: Option<u64>,
+    /// A role's chat instead of the manager's (docs/tasks.md "Roles").
+    role: Option<String>,
 }
 
 async fn tasks_chat(
@@ -978,7 +980,14 @@ async fn tasks_chat(
             .iter()
             .find(|scope| scope.project == project)
             .ok_or_else(Fault::not_found)?;
-        crate::tasks::chat(scope, &scopes, query.after, &app.media).map(Json)
+        crate::tasks::chat(
+            scope,
+            &scopes,
+            query.role.as_deref(),
+            query.after,
+            &app.media,
+        )
+        .map(Json)
     })
 }
 
@@ -1042,6 +1051,9 @@ struct SayInput {
     /// Media hashes from `PUT /api/media`.
     #[serde(default)]
     attachments: Vec<String>,
+    /// To this open role instead of the manager.
+    #[serde(default)]
+    role: Option<String>,
 }
 
 async fn tasks_say(
@@ -1055,7 +1067,13 @@ async fn tasks_say(
     blocking(|| {
         let text =
             crate::chat::with_attachments(&app.site, &app.media, &input.text, &input.attachments)?;
-        crate::tasks::say(&app, &crate::tasks::scope(&app, project)?, &text).map(Json)
+        crate::tasks::say(
+            &app,
+            &crate::tasks::scope(&app, project)?,
+            input.role.as_deref(),
+            &text,
+        )
+        .map(Json)
     })
 }
 

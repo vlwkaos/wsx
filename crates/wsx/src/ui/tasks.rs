@@ -1,7 +1,7 @@
 //! The Tasks view: the list in attention order and one task's detail, both read-only.
 //! ref: docs/tasks.md "TUI"
 use super::{theme, workspace_tree::truncate_to_width};
-use crate::task_list::{waits, TaskList, TaskRow};
+use crate::task_list::{waits, Section, TaskList, TaskRow};
 use ratatui::{
     layout::Rect,
     prelude::Stylize,
@@ -117,7 +117,7 @@ fn heading(list: &TaskList, width: usize) -> Line<'static> {
 fn state_color(state: &str) -> Color {
     match state {
         "waiting" | "failed" => theme::BLOCKED,
-        "ready" => theme::DONE,
+        "ready" | "open" => theme::DONE,
         "checking" | "working" => theme::WORKING,
         _ => theme::TEXT_MUTED,
     }
@@ -155,12 +155,12 @@ fn task_lines(
     let mut lines = Vec::new();
     let mut selected_line = None;
     for (index, row) in rows.iter().enumerate() {
-        if index == 0 || rows[index - 1].open != row.open {
+        if index == 0 || rows[index - 1].section != row.section {
             if index > 0 {
                 lines.push(Line::raw(""));
             }
             lines.push(Line::styled(
-                if row.open { "Open" } else { "Recent" },
+                row.section.heading(),
                 Style::default().fg(theme::TEXT_SUBTLE).bold(),
             ));
         }
@@ -169,8 +169,13 @@ fn task_lines(
             Style::default().fg(theme::TEXT),
         )];
         if number_width > 0 {
+            // ^ A role has no number: its column stays empty.
+            let number = match row.section {
+                Section::Roles => String::new(),
+                _ => format!("#{}", row.id),
+            };
             spans.push(Span::styled(
-                cell(&format!("#{}", row.id), number_width),
+                cell(&number, number_width),
                 Style::default().fg(theme::TEXT_MUTED),
             ));
         }

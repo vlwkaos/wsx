@@ -1,5 +1,5 @@
-//! The TUI's manager chat of one project: the conversation, the open To check items and the
-//! waiting approvals, read off the UI thread when a file of the task store changes, and the
+//! The TUI's manager chat of one project, or a role's (docs/tasks.md "Roles"): the
+//! conversation, the open To check items and the waiting approvals, read off the UI thread when a file of the task store changes, and the
 //! owner's message and decisions, also run off it. ref: docs/tasks.md "TUI"
 use crate::{
     action::Action,
@@ -89,6 +89,8 @@ struct Read {
 
 pub struct ManagerChat {
     pub project: String,
+    /// The role this chat talks to; none is the manager.
+    pub role: Option<String>,
     main: PathBuf,
     store: String,
     pub rows: Vec<Row>,
@@ -120,10 +122,11 @@ pub struct ManagerChat {
 type Answer = (String, bool, Option<String>);
 
 impl ManagerChat {
-    pub fn new(project: String, main: PathBuf) -> Self {
+    pub fn new(project: String, main: PathBuf, role: Option<String>) -> Self {
         let store = store::project_id(&project, &main);
         let mut chat = Self {
             project,
+            role,
             main,
             store,
             rows: Vec::new(),
@@ -152,11 +155,13 @@ impl ManagerChat {
 
     fn check(&mut self) {
         let (tx, rx) = mpsc::sync_channel(1);
-        let (store, last) = (self.store.clone(), self.stamp.clone());
+        let (store, last, role) = (self.store.clone(), self.stamp.clone(), self.role.clone());
         self.pending = Some(rx);
         self.last_check = Instant::now();
         std::thread::spawn(move || {
-            let dir = ManagerDir::existing(&store).ok().flatten();
+            let dir = ManagerDir::existing_as(&store, role.as_deref())
+                .ok()
+                .flatten();
             let status = dir.as_ref().and_then(|dir| {
                 call_socket::<_, ManagerResponse>(
                     &dir.socket_path(),
@@ -245,6 +250,11 @@ impl ManagerChat {
         changed
     }
 
+    /// The name the chat shows for the other side: the role's, or `Manager`.
+    pub fn who(&self) -> &str {
+        self.role.as_deref().unwrap_or("Manager")
+    }
+
     pub fn selected_item(&self) -> Option<&Item> {
         self.items.get(self.selected)
     }
@@ -288,6 +298,7 @@ impl ManagerChat {
         }
         self.composer = InputState::new("> ");
         self.scroll = 0;
+        let role = self.role.clone();
         self.run("Sending".into(), move |project, main, _| {
             let said = std::env::current_exe()
                 .map_err(anyhow::Error::from)
@@ -296,6 +307,7 @@ impl ManagerChat {
                         &project,
                         &main,
                         &exe,
+                        role.as_deref(),
                         crate::task::launch_manager(&main),
                         text.clone(),
                         None,
@@ -397,6 +409,7 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
                 Author::Manager { project, .. } => {
                     rows.push(said(Who::Peer(project.clone()), text))
                 }
+                Author::Role { name, .. } => rows.push(said(Who::Peer(name.clone()), text)),
                 Author::Events => rows.extend(
                     text.lines()
                         .filter(|line| !line.trim().is_empty())
@@ -408,6 +421,7 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
             } => rows.push(Row::Line(text.trim().to_string())),
             ManagerEvent::Reply { text, .. } => rows.push(said(Who::Manager, text)),
             ManagerEvent::Sent { to, text, .. } => {
+                let to = to.strip_prefix("role:").unwrap_or(to);
                 rows.push(said(Who::Manager, &format!("To {to}: {text}")))
             }
             ManagerEvent::Rotated { .. } => rows.push(Row::Line("New conversation".into())),
@@ -416,6 +430,14 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
             }
             ManagerEvent::Delivered { .. } | ManagerEvent::Agent { .. } => {}
         }
+    }
+    // ^ To check items and approvals are the manager's (docs/tasks.md "Roles").
+    if dir.is_some_and(|dir| dir.role.is_some()) {
+        return Ok(View {
+            rows,
+            items: Vec::new(),
+            activity: activity(&log).map(str::to_string),
+        });
     }
     let mut items: Vec<Item> = checks::open_items(store)?
         .into_iter()

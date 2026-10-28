@@ -89,6 +89,7 @@ function Screen({ route }) {
   if (route.screen === "project" || route.screen === "task") {
     return can("task_view") ? html`<${Manager} key=${route.id} project=${route.id} task=${route.task ?? null} page=${Boolean(route.page)} checks=${Boolean(route.checks)} />` : html`<${Project} key=${route.id} id=${route.id} />`;
   }
+  if (route.screen === "role" && can("task_view")) return html`<${Manager} key=${`${route.id}/${route.role}`} project=${route.id} role=${route.role} />`;
   if (route.screen === "sessions") return html`<${ProjectSessions} key=${route.id} id=${route.id} />`;
   if (route.screen === "settings") return html`<${Settings} />`;
   if (route.screen === "projects") return html`<${Projects} />`;
@@ -106,7 +107,7 @@ function App() {
     const titles = { home: can("task_view") ? "Home" : "Inbox", inbox: can("task_view") ? "Sessions" : "Inbox",
       projects: "Projects", settings: "Settings", files: "Files" };
     const session = route.screen === "session" && state.sessions.find((candidate) => candidate.id === route.id);
-    const project = ["project", "sessions", "task"].includes(route.screen) && state.projects.find((candidate) => candidate.id === route.id);
+    const project = ["project", "sessions", "task", "role"].includes(route.screen) && state.projects.find((candidate) => candidate.id === route.id);
     document.title = `${session ? session.label : project ? project.name : titles[route.screen] ?? "Session"} - ${state.site.name}`;
   });
   if (!wide) {
@@ -120,8 +121,8 @@ function App() {
   // The rail keeps the list the main area was reached from. With task_view a session or the
   // files keep the list they were opened from, and a project's chat has home.
   let list;
-  if (!can("task_view")) list = ["projects", "project", "files", "sessions", "task"].includes(route.screen) ? "projects" : "inbox";
-  else if (["home", "project", "task", "projects", "sessions"].includes(route.screen)) list = "home";
+  if (!can("task_view")) list = ["projects", "project", "files", "sessions", "task", "role"].includes(route.screen) ? "projects" : "inbox";
+  else if (["home", "project", "task", "role", "projects", "sessions"].includes(route.screen)) list = "home";
   else if (route.screen === "inbox") list = "inbox";
   else list = lastList.current;
   lastList.current = list;
