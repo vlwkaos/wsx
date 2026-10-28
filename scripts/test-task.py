@@ -1153,7 +1153,7 @@ def run(wsx, wsxd, work, owned):
                  'Before `wsx task new`, compare the request', 'Never ask the owner to wait',
                  'for lean code', 'never send a task back to rebase', 'trust them over the worker',
                  'Check the fixture rule.', 'start one housekeeping task', 'Fold the fixture tasks.',
-                 'tell that worker to prove it', 'never pass or fail items yourself',
+                 'tell that worker to prove it', 'never pass, fail or skip items yourself',
                  'A release refuses while items are open, unless the owner', '`wsx task trial <n>`',
                  '`--owner-said <id>`', 'never name a message that did not ask',
                  'call a change live only when', 'On `hand`, the owner works in its copy',
