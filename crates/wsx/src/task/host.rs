@@ -267,6 +267,18 @@ impl Host {
         }
         let mut disk_checked = Instant::now();
         loop {
+            // ^ Here, not after an event: a turn a timer starts (after a full disk, a limit or
+            // a background wait's deadline) hands over to a replaced binary too, and no event
+            // may come for hours.
+            if self.reexec {
+                std::thread::sleep(Duration::from_millis(200));
+                return Ok(());
+            }
+            // ^ The limit slot is held only while the agent runs a turn.
+            // ref: docs/tasks.md "Claude adapter"
+            if !self.turn_active {
+                self.limit_slot = None;
+            }
             // ^ On a deadline, not after a quiet spell: status calls arrive all the time.
             let disk_due = self
                 .disk_wait
@@ -350,10 +362,6 @@ impl Host {
                 }
                 Event::CheckQueued(reason) => self.check_queued(reason),
                 Event::CheckSlot(error) => self.check_slot(error),
-            }
-            if self.reexec {
-                std::thread::sleep(Duration::from_millis(200));
-                return Ok(());
             }
         }
         Ok(())
@@ -779,8 +787,13 @@ impl Host {
             wait.text = format!("{}\n\n{text}", wait.text);
             return Ok(());
         }
-        // ^ Not while a check-run waits: the exec would close its socket unanswered.
-        if self.check_run.is_none() && self.binary.as_ref().is_some_and(hosting::Binary::replaced) {
+        // ^ Not while a check-run waits: the exec would close its socket unanswered. Not for
+        // the turn after a limit either: the exec would drop the limit slot before the agent
+        // answers, so the next task in the limit queue would go first; the next turn follows.
+        if self.check_run.is_none()
+            && self.limit_slot.is_none()
+            && self.binary.as_ref().is_some_and(hosting::Binary::replaced)
+        {
             // ^ Every turn gets the replaced binary's launch: this host hands the turn over
             // and execs it once the caller has its answer; the new host resumes the agent.
             self.dir.write_file(HANDOFF_FILE, text.as_bytes())?;
@@ -846,7 +859,6 @@ impl Host {
                 self.agent = None;
                 // ^ A handoff turn that never ended leaves no notes: no later result is one.
                 self.rotating = None;
-                self.limit_slot = None;
                 if self.turn_active && !self.stop_requested {
                     self.turn_active = false;
                     self.log(LogEvent::Stopped {
@@ -865,6 +877,7 @@ impl Host {
             });
             return;
         }
+        // ^ A result is the agent answering again, also one that waits for background jobs.
         self.limit_slot = None;
         let Some(turn) = self.wait_for_background(turn) else {
             return;

@@ -542,8 +542,9 @@ pub fn call_host(
 }
 
 /// `call_host` for an action: a host that execs its replaced wsx binary has no socket for
-/// a moment, so a connect that finds none is tried again for up to 3 s. Status probes use
-/// `call_host` and stay instant. ref: docs/tasks.md "Host"
+/// a moment, so a connect that finds none, or a request the host closed unanswered as it
+/// exec'd, is tried again for up to 3 s. Status probes use `call_host` and stay instant.
+/// ref: docs/tasks.md "Host"
 pub fn call_host_waiting(
     socket: &std::path::Path,
     request: &HostRequest,
@@ -562,6 +563,7 @@ pub fn call_host_waiting(
                                 io.kind(),
                                 std::io::ErrorKind::NotFound
                                     | std::io::ErrorKind::ConnectionRefused
+                                    | std::io::ErrorKind::UnexpectedEof
                             )
                         }) =>
             {
@@ -593,6 +595,14 @@ pub fn call_socket<Request: Serialize, Response: serde::de::DeserializeOwned>(
         .take(MAX_HOST_RESPONSE_BYTES + 1)
         .read_to_end(&mut bytes)
         .context("the task host did not answer in time")?;
+    // ^ A host answers every request it takes; none at all means it ended before this one.
+    if bytes.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "the task host closed without an answer",
+        )
+        .into());
+    }
     if bytes.len() as u64 > MAX_HOST_RESPONSE_BYTES {
         anyhow::bail!("the task host answer is larger than {MAX_HOST_RESPONSE_BYTES} bytes");
     }
