@@ -1989,7 +1989,76 @@ stopped = installed("daemon", "stop", "--force")
 assert stopped.returncode == 0, stopped
 wait_socket_stopped()
 
-# 4. A released daemon whose rollback fails stays in its handoff for ever: it cannot be
+# 4. A daemon before revision 35 that never left its handoff answers only Hello and
+# LifecycleStatus. `wsx daemon stop --force` ends its process, and the next command starts a
+# new wsxd; a plain stop, and a stop during a fresh handoff, leave it running
+# (docs/daemon-live-upgrade.md "A stuck handoff"). The stand-in also ignores SIGTERM.
+STUCK_WSXD = r'''
+import json, os, signal, socket, sys, threading, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+started = int(time.time() * 1000)
+path = sys.argv[1]
+listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+listener.bind(path)
+os.chmod(path, 0o600)
+listener.listen(16)
+lifecycle = {"protocol": 16, "epoch": 31, "binary_id": "0.31.0:1:2:3:4", "version": "0.31.0",
+             "daemon_revision": 26, "started_unix_ms": started, "phase": "ready", "live_runtimes": 2,
+             "active_clients": 1, "recovered_from_backup": False}
+def serve(connection):
+    with connection, connection.makefile("rwb") as stream:
+        for line in stream:
+            method = json.loads(line).get("method")
+            if method == "hello":
+                answer = {"type": "hello", "data": {"protocol": 16, "epoch": 31}}
+            elif method == "lifecycle_status":
+                answer = {"type": "lifecycle", "data": lifecycle}
+            else:
+                answer = {"type": "error", "data": {"code": "daemon_replacing",
+                                                    "message": "wsxd live handoff is in progress"}}
+            stream.write(json.dumps(answer).encode() + b"\n")
+            stream.flush()
+while True:
+    threading.Thread(target=serve, args=(listener.accept()[0],), daemon=True).start()
+'''
+
+
+def write_marker(reason):
+    LIFECYCLE.unlink(missing_ok=True)
+    with os.fdopen(os.open(LIFECYCLE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as marker:
+        marker.write(reason + "\n")
+
+
+stuck_script = WORK / "stuck-wsxd.py"
+stuck_script.write_text(STUCK_WSXD)
+SOCKET.unlink(missing_ok=True)
+write_marker(f"handoff:{int(time.time() * 1000) - 14 * 3600 * 1000}")
+stand_in = subprocess.Popen([sys.executable, "-I", str(stuck_script), str(SOCKET)])
+try:
+    wait_for(lambda: SOCKET.exists(), "the stuck stand-in did not bind its socket")
+    plain = installed("daemon", "stop")
+    assert plain.returncode != 0 and stand_in.poll() is None, plain
+    write_marker(f"handoff:{int(time.time() * 1000)}")
+    fresh = installed("daemon", "stop", "--force")
+    assert fresh.returncode != 0 and stand_in.poll() is None, fresh
+    write_marker(f"handoff:{int(time.time() * 1000) - 14 * 3600 * 1000}")
+    forced = installed("daemon", "stop", "--force")
+    assert forced.returncode == 0, forced
+    stand_in.wait(timeout=10)
+    assert stand_in.returncode == -signal.SIGKILL, stand_in.returncode
+    assert not SOCKET.exists(), "the stop left the stuck daemon's socket"
+    assert LIFECYCLE.read_text().strip() == "intentional", LIFECYCLE.read_text()
+finally:
+    if stand_in.poll() is None:
+        stand_in.kill()
+    stand_in.wait(timeout=5)
+assert installed("session", "list").returncode == 0, "no fresh wsxd started"
+assert lifecycle()["version"] != "0.31.0", lifecycle()
+stopped = installed("daemon", "stop", "--force")
+assert stopped.returncode == 0, stopped
+wait_socket_stopped()
+
+# 5. A released daemon whose rollback fails stays in its handoff for ever: it cannot be
 # repaired, so a client of this build must say so and name the next step instead of
 # waiting (docs/daemon-live-upgrade.md "A stuck handoff").
 if RELEASED:

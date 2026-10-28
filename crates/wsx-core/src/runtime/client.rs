@@ -28,6 +28,8 @@ const HANDOFF_WAIT: Duration = Duration::from_secs(35);
 // A single request waits less than a monitor, so a caller's thread is not held for long.
 const CALL_HANDOFF_WAIT: Duration = Duration::from_secs(5);
 const START_WINDOW: Duration = Duration::from_secs(60);
+// How long a wsxd may take between its process start and the start it reports.
+const DAEMON_START_SLACK: Duration = Duration::from_secs(60);
 const MAX_START_ATTEMPTS: usize = 3;
 static ACTIVE_TUI_MONITORS: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_PROTOCOLS: OnceLock<Mutex<HashMap<PathBuf, u32>>> = OnceLock::new();
@@ -202,6 +204,23 @@ impl Client {
                 shutdown_incompatible_daemon(self, stream, advertised_protocol)?;
                 wait_until_stopped(self)
             }
+        }
+    }
+
+    /// `wsx daemon stop --force`: a graceful stop, and for a daemon whose live handoff never
+    /// finished, the end of its process.
+    pub fn force_shutdown(&self) -> io::Result<()> {
+        let error = match self.shutdown() {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        match stuck_daemon_process(self) {
+            Ok(Some(daemon)) => end_stuck_daemon(self, daemon),
+            Ok(None) => Err(error),
+            Err(reason) => Err(io::Error::new(
+                error.kind(),
+                format!("{error}; wsxd was not ended: {reason}"),
+            )),
         }
     }
 
@@ -749,6 +768,116 @@ fn validate_peer_owner(stream: &UnixStream) -> io::Result<()> {
 #[cfg(not(target_os = "macos"))]
 fn validate_peer_owner(_stream: &UnixStream) -> io::Result<()> {
     Ok(())
+}
+
+// ^ docs/daemon-live-upgrade.md "A stuck handoff": the kernel names the process that serves a
+// connection. Its UID and start time come from the kernel too.
+#[cfg(target_os = "macos")]
+fn peer_pid(stream: &UnixStream) -> io::Result<libc::pid_t> {
+    let mut pid: libc::pid_t = 0;
+    let mut length = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // ^ The kernel writes at most `length` bytes into this pid_t.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            &mut pid as *mut libc::pid_t as *mut libc::c_void,
+            &mut length,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(pid)
+}
+
+/// The effective UID of `pid` and its start time in Unix milliseconds.
+#[cfg(target_os = "macos")]
+fn process_identity(pid: libc::pid_t) -> io::Result<(libc::uid_t, u128)> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // ^ proc_pidinfo writes at most `size` bytes into this proc_bsdinfo.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut libc::proc_bsdinfo as *mut libc::c_void,
+            size,
+        )
+    };
+    if written != size {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("process {pid} is gone"),
+        ));
+    }
+    Ok((
+        info.pbi_uid,
+        u128::from(info.pbi_start_tvsec) * 1000 + u128::from(info.pbi_start_tvusec) / 1000,
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn peer_pid(stream: &UnixStream) -> io::Result<libc::pid_t> {
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // ^ The kernel writes at most `length` bytes into this ucred.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut credentials as *mut libc::ucred as *mut libc::c_void,
+            &mut length,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(credentials.pid)
+}
+
+/// The effective UID of `pid` and its start time in Unix milliseconds: proc(5) `stat` field 22
+/// counts clock ticks since `btime`.
+#[cfg(target_os = "linux")]
+fn process_identity(pid: libc::pid_t) -> io::Result<(libc::uid_t, u128)> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "unreadable /proc entry");
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let uid = fs::metadata(format!("/proc/{pid}"))?.uid();
+    // ^ The command name may hold spaces and parentheses; the fields follow its last `)`.
+    let ticks = stat
+        .rsplit_once(')')
+        .and_then(|(_, fields)| fields.split_whitespace().nth(19))
+        .and_then(|value| value.parse::<u128>().ok())
+        .ok_or_else(invalid)?;
+    let boot = fs::read_to_string("/proc/stat")?
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))
+        .and_then(|value| value.trim().parse::<u128>().ok())
+        .ok_or_else(invalid)?;
+    let per_second = u128::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(invalid)?;
+    Ok((uid, boot * 1000 + ticks * 1000 / per_second))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn peer_pid(_stream: &UnixStream) -> io::Result<libc::pid_t> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "this system does not name a socket's peer process",
+    ))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_identity(_pid: libc::pid_t) -> io::Result<(libc::uid_t, u128)> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "this system does not report a process start time",
+    ))
 }
 
 pub fn ensure_available() -> io::Result<Availability> {
@@ -1803,14 +1932,10 @@ fn background_recovery_allowed(socket: &Path) -> bool {
 // and the next step instead of "in progress". The code stays, so a retrying client still
 // reconnects when the daemon serves again.
 fn explain_stuck_handoff(client: &Client, error: &mut super::protocol::ApiError) {
-    if error.code != "daemon_replacing" {
+    if !handoff_stuck(client.socket(), &error.code) {
         return;
     }
-    let marker = lifecycle_marker_reason(client.socket());
-    if marker.as_deref().is_some_and(handoff_marker_fresh) {
-        return;
-    }
-    let since = marker
+    let since = lifecycle_marker_reason(client.socket())
         .as_deref()
         .and_then(|reason| reason.strip_prefix(super::protocol::HANDOFF_MARKER_PREFIX))
         .and_then(|value| value.parse::<u128>().ok())
@@ -1824,6 +1949,130 @@ fn explain_stuck_handoff(client: &Client, error: &mut super::protocol::ApiError)
         "{daemon} started a live handoff{since} that did not finish. Its sessions still run \
          in it, out of reach. `wsx daemon stop --force` ends them and starts over"
     );
+}
+
+fn handoff_stuck(socket: &Path, code: &str) -> bool {
+    code == "daemon_replacing"
+        && !lifecycle_marker_reason(socket)
+            .as_deref()
+            .is_some_and(handoff_marker_fresh)
+}
+
+/// The process of a daemon that refuses with `daemon_replacing` and has no fresh handoff
+/// marker, or `None` for any other daemon.
+struct StuckDaemon {
+    pid: libc::pid_t,
+    started_unix_ms: u128,
+}
+
+// ^ docs/daemon-live-upgrade.md "A stuck handoff": only the kernel's peer of this socket is
+// ended, and only when it runs as this user and started when the daemon says it started, so
+// a reused pid or another process is never signalled.
+fn stuck_daemon_process(client: &Client) -> io::Result<Option<StuckDaemon>> {
+    let (pid, refused) = ask_daemon(client, &Request::Snapshot)?;
+    match refused {
+        Response::Error(error) if handoff_stuck(client.socket(), &error.code) => {}
+        _ => return Ok(None),
+    }
+    let (lifecycle_pid, Response::Lifecycle(status)) =
+        ask_daemon(client, &Request::LifecycleStatus)?
+    else {
+        return Err(io::Error::other("it did not report when it started"));
+    };
+    if lifecycle_pid != pid {
+        return Err(io::Error::other("two processes answered on its socket"));
+    }
+    let daemon = StuckDaemon {
+        pid,
+        started_unix_ms: u128::from(status.started_unix_ms),
+    };
+    verify_daemon_process(&daemon)?;
+    Ok(Some(daemon))
+}
+
+/// One request on a connection that speaks the daemon's protocol, and the pid that answered.
+fn ask_daemon(client: &Client, request: &Request) -> io::Result<(libc::pid_t, Response)> {
+    let mut stream = client.connect()?;
+    let mut stream = match round_trip(
+        &mut stream,
+        &Request::Hello {
+            protocol: PROTOCOL_VERSION,
+        },
+    )? {
+        Response::Hello { .. } => stream,
+        Response::Error(error) if error.code == "protocol_mismatch" => {
+            connect_unadvertised_legacy_daemon(client)?
+        }
+        _ => return Err(io::Error::other("wsxd protocol handshake failed")),
+    };
+    let pid = peer_pid(&stream)?;
+    Ok((pid, round_trip(&mut stream, request)?))
+}
+
+fn verify_daemon_process(daemon: &StuckDaemon) -> io::Result<()> {
+    let (uid, started) = process_identity(daemon.pid)?;
+    if uid != unsafe { libc::geteuid() } {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("process {} belongs to another user", daemon.pid),
+        ));
+    }
+    // ^ A daemon reports its start after it took its state, so the process started first.
+    if started + DAEMON_START_SLACK.as_millis() < daemon.started_unix_ms
+        || started > daemon.started_unix_ms + 2000
+    {
+        return Err(io::Error::other(format!(
+            "process {} did not start with the daemon",
+            daemon.pid
+        )));
+    }
+    Ok(())
+}
+
+fn end_stuck_daemon(client: &Client, daemon: StuckDaemon) -> io::Result<()> {
+    for (signal, wait) in [
+        (libc::SIGTERM, Duration::from_secs(3)),
+        (libc::SIGKILL, IO_TIMEOUT),
+    ] {
+        verify_daemon_process(&daemon)?;
+        if unsafe { libc::kill(daemon.pid, signal) } != 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error);
+            }
+        }
+        if socket_released(client.socket(), wait) {
+            // ^ What a normal stop leaves: no socket, and a marker of an intentional stop.
+            match fs::remove_file(client.socket()) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                _ => {}
+            }
+            return write_lifecycle_marker(&lifecycle_marker_path(client.socket()), "intentional");
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("wsxd process {} did not end", daemon.pid),
+    ))
+}
+
+/// Whether no process accepts connections on `socket` within `limit`.
+fn socket_released(socket: &Path, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    loop {
+        match UnixStream::connect(socket) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                return true
+            }
+            _ if Instant::now() >= deadline => return false,
+            _ => thread::sleep(Duration::from_millis(50)),
+        }
+    }
 }
 
 fn unix_millis() -> u128 {
