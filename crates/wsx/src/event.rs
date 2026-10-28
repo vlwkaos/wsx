@@ -526,6 +526,9 @@ fn translate_key(key: KeyEvent) -> Action {
         }
         (KeyModifiers::NONE, KeyCode::Char('/')) => Action::SearchStart,
         (KeyModifiers::NONE, KeyCode::Char('t')) => Action::Tasks,
+        (KeyModifiers::SHIFT, KeyCode::Char('S')) | (KeyModifiers::NONE, KeyCode::Char('S')) => {
+            Action::Shell
+        }
         (KeyModifiers::SHIFT, KeyCode::Char('{')) | (KeyModifiers::NONE, KeyCode::Char('{')) => {
             Action::GroupPrev
         }
@@ -1044,7 +1047,8 @@ mod tests {
         let send = KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT);
         let interrupt = KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT);
         let assign = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
-        assert_eq!(translate_key(send), Action::None);
+        // ^ `S` is the Tasks view's shell now; Workspace dispatch ignores it.
+        assert_eq!(translate_key(send), Action::Shell);
         assert_eq!(translate_key(interrupt), Action::SendCtrlC);
         assert_eq!(translate_key(assign), Action::AssignGroup);
     }

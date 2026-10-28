@@ -11,7 +11,8 @@ use std::process::Command;
 
 pub(crate) const MAX_MIN_FREE_GB: u64 = 100_000;
 
-/// `tasks.preview` checked: a command, a path that answers 200 and a port range above 1023.
+/// `tasks.preview` checked: a command, a path that answers 200, a port range above 1023 and
+/// whether it stays local.
 fn preview_config(file: TaskPreviewFile) -> Result<crate::model::workspace::TaskPreview, String> {
     let command = file.command.trim().to_string();
     if command.is_empty() || command.len() > MAX_DEFAULT_COMMAND_BYTES {
@@ -43,6 +44,7 @@ fn preview_config(file: TaskPreviewFile) -> Result<crate::model::workspace::Task
         command,
         ready,
         ports: range,
+        local: file.local.unwrap_or(false),
     })
 }
 const PROJECT_CONFIG_FILE: &str = "wsx.config.yml";
@@ -141,6 +143,8 @@ struct TaskPreviewFile {
     /// `<first>-<last>`, such as `9100-9199`.
     #[serde(skip_serializing_if = "Option::is_none")]
     ports: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

@@ -201,6 +201,29 @@ impl TaskList {
         self.scroll = 0;
     }
 
+    /// Where `S` opens a shell: the shown or selected task's working copy with its worker's
+    /// pane, else the main checkout when the chat is open or no task is listed.
+    pub fn shell_target(&self) -> Result<(PathBuf, Option<u64>), String> {
+        let task = match &self.chat {
+            Some(_) => None,
+            None => self
+                .detail
+                .or_else(|| self.rows.get(self.selected).map(|row| row.id)),
+        };
+        let Some(id) = task else {
+            return Ok((self.main.clone(), None));
+        };
+        let record = u32::try_from(id)
+            .map_err(anyhow::Error::from)
+            .and_then(|id| store::TaskDir::open(&self.store, id))
+            .and_then(|dir| dir.read_record())
+            .map_err(|error| format!("t{id}: {error:#}"))?;
+        if !record.working_copy.is_dir() {
+            return Err(format!("t{id} has no working copy"));
+        }
+        Ok((record.working_copy, record.pane_id))
+    }
+
     /// The ledger entry of the task whose detail shows.
     pub fn detail_task(&self) -> Option<&Value> {
         let id = self.detail?;

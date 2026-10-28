@@ -93,7 +93,7 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
             if chat.items.len() > 1 {
                 hints.push("(tab)next".into());
             }
-            hints.extend(["Esc: back".into(), "(j/k)scroll".into()]);
+            hints.extend(["(S)hell".into(), "Esc: back".into(), "(j/k)scroll".into()]);
             hints
         }
     }

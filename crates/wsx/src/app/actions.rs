@@ -1140,6 +1140,12 @@ impl App {
         // dimension-first baseline gate before Terminal input resumes.
         self.mode = Mode::Workspace;
         self.attach_session(project_idx, worktree_idx, session_idx, terminal)?;
+        self.show_pending_terminal();
+        Ok(())
+    }
+
+    /// Terminal mode once a stream was opened; a failed one stays in Workspace.
+    fn show_pending_terminal(&mut self) {
         if let Some(pending) = self.pending_terminal_entry {
             self.mode = Mode::Terminal {
                 pane_id: pending.pane_id,
@@ -1147,6 +1153,80 @@ impl App {
             self.force_terminal_redraw = true;
             self.needs_redraw = true;
         }
+    }
+
+    /// `S` in the Tasks view (docs/tasks.md "TUI"): a shell in the project's main checkout or
+    /// in the task's working copy. A shell open there is entered, else one is created as `s`
+    /// creates an empty session. Unlike `wsx task hand`, the worker keeps running.
+    pub(super) fn action_task_shell(&mut self, terminal: &mut Tui) -> Result<()> {
+        let Mode::Tasks { list } = &self.mode else {
+            return Ok(());
+        };
+        let (path, worker) = match list.shell_target() {
+            Ok(target) => target,
+            Err(error) => {
+                self.set_status(format!("No shell: {error}"));
+                return Ok(());
+            }
+        };
+        let Some((pi, wi)) = self
+            .workspace
+            .projects
+            .iter()
+            .enumerate()
+            .find_map(|(pi, p)| {
+                p.worktrees
+                    .iter()
+                    .position(|worktree| worktree.path == path)
+                    .map(|wi| (pi, wi))
+            })
+        else {
+            self.set_status(format!("No shell: {} is not listed", path.display()));
+            return Ok(());
+        };
+        // ^ A shell by identity, not by label: no agent, nothing in its foreground, and not
+        // the task's own worker pane.
+        let shell = self.workspace.projects[pi].worktrees[wi]
+            .sessions
+            .iter()
+            .position(|session| {
+                !session.is_agentic()
+                    && !session.has_foreground_job()
+                    && session
+                        .panes
+                        .iter()
+                        .all(|pane| Some(pane.pane_id.0) != worker)
+            });
+        if let Some(si) = shell {
+            return match self.reveal_session(pi, wi, si) {
+                Some(target) => self.switch_to_flat_session(target, terminal),
+                None => {
+                    self.set_status("No shell: its session is hidden by the group");
+                    Ok(())
+                }
+            };
+        }
+        let Some((session_id, label)) = self.do_create_session(pi, wi, String::new(), None)? else {
+            return Ok(());
+        };
+        let snapshot = ops::runtime_snapshot()?;
+        let Some(pane) = snapshot
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .and_then(|session| {
+                snapshot
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == session.primary_pane)
+            })
+        else {
+            self.set_error(format!("Session '{label}' was created but is not listed"));
+            return Ok(());
+        };
+        self.mode = Mode::Workspace;
+        self.enter_terminal(pane.id, pane.terminal_id, label, terminal)?;
+        self.show_pending_terminal();
         Ok(())
     }
 
