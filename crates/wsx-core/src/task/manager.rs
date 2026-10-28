@@ -269,6 +269,10 @@ pub struct LimitHold {
     /// Limits in a row, for the backoff when no reset time is known.
     pub attempt: u32,
     pub ids: Vec<u64>,
+    /// Every held message came from events, so the reply after the reset may be quiet. A hold
+    /// an older host wrote has no such mark: it counts as not events-only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub events: bool,
 }
 
 /// A stable digest of an agent's instructions, to tell whether a conversation began with them.
