@@ -1700,8 +1700,8 @@ if (inChat.tag !== "To check" || inChat.author !== "Atlas" || inChat.image !== 4
 await evaluate(`${bubbleOf(8)}.scrollIntoView({ block: 'center' })`);
 await pause(300);
 await shot("to-check-bubble", ".composer-send");
-// ^ #7's bubble has a capture too: each bubble is its own set.
-const bubbleKey = await evaluate(`${bubbleOf(8)}.dataset.key`);
+// ^ Each bubble is its own set; #7's capture is an image (#8's is a video).
+const bubbleKey = await evaluate(`${bubbleOf(7)}.dataset.key`);
 await viewImages("to-check-bubble", `.log .check-bubble[data-key=${JSON.stringify(bubbleKey)}] .check-capture`, 1);
 await resize([1280, 800, 1]);
 await showEarlier();
