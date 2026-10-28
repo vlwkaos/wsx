@@ -962,7 +962,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  g             Assign project group",
         "  d             Unregister project",
         "  e             View/edit wsx.config.yml",
-        "  t             Tasks (read-only), Enter for one task's detail",
+        "  t             Tasks: Enter for one task's detail, m for the manager chat",
         "",
         " Worktree",
         "  w             Add worktree (branch: prompt)",
