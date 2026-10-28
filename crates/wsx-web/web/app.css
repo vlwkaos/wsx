@@ -819,7 +819,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .fold-note { font-weight: normal; color: var(--color-muted); }
 /* Hook: .check-list — the To check list (docs/web-client-tasks.md "To check"): each item's title is
    its task chip and what the task did; the check, where to look and when it passes are labeled
-   lines under it. Try, Fail and Pass sit in one place on every item: their own row at the bottom
+   lines under it. Try, Fail, Skip and Pass sit in one place on every item: their own row at the bottom
    right on a phone, so the words keep the full width, and a column right of the words when wide. */
 .check-list { list-style: none; margin: 0; padding: 0; font-size: var(--font-size-sm); }
 .check-item + .check-item { border-top: var(--border-width) solid var(--color-hairline); }
