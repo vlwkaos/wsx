@@ -74,7 +74,7 @@ fn below(area: Rect, rows: usize) -> Rect {
     }
 }
 
-fn muted(text: &str) -> Line<'static> {
+pub(super) fn muted(text: &str) -> Line<'static> {
     Line::styled(text.to_string(), Style::default().fg(theme::TEXT_MUTED))
 }
 

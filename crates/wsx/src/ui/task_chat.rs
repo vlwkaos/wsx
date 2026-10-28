@@ -1,6 +1,6 @@
 //! The manager chat: the conversation with the newest at the bottom, the owner's open
 //! items under it and the message line last. ref: docs/tasks.md "TUI"
-use super::{theme, workspace_tree::truncate_to_width};
+use super::{tasks::muted, theme, workspace_tree::truncate_to_width};
 use crate::task_chat::{Focus, Item, ManagerChat, Row, Who};
 use ratatui::{
     layout::Rect,
@@ -97,10 +97,6 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
             hints
         }
     }
-}
-
-fn muted(text: &str) -> Line<'static> {
-    Line::styled(text.to_string(), Style::default().fg(theme::TEXT_MUTED))
 }
 
 /// `Manager <project>` on the left, the To check and approval counts on the right.

@@ -108,7 +108,7 @@ pub struct ManagerChat {
     pub focus: Focus,
     pub composer: InputState,
     pub note: InputState,
-    /// What runs now ("Sending", "Passing c3"), until its answer comes.
+    /// What runs now ("Sending", "Failing c3"), until its answer comes.
     pub acting: Option<String>,
     stamp: Option<Stamp>,
     pending: Option<mpsc::Receiver<Read>>,
