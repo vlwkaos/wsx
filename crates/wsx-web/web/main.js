@@ -147,9 +147,10 @@ function App() {
 
 // The project this page shows while it is visible, so the server pushes no task
 // notification for it to this device. Sent when it changes and when the stream reopens.
-let shown;
+// ^ Only while the stream is up: the server knows a page by its open stream, and `up` sends it.
+let shown, streamUp = false;
 function tellPresence(force) {
-  if (!can("task_view") || !can("push")) return;
+  if (!streamUp || !can("task_view") || !can("push")) return;
   const route = parseRoute(location.hash);
   const project = document.visibilityState === "visible" && ["project", "sessions", "task", "files"].includes(route.screen) ? route.id : null;
   if (project === shown && !force) return;
@@ -212,10 +213,14 @@ function start(session) {
     revoked: () => location.reload(),
     // ^ docs/web-client.md "Notices": a deploy restarts the server in about 3 s; the page says
     // "Connection lost" only when the stream stays away longer.
-    down: () => { offline ??= setTimeout(() => update({ online: false }), QUIET_MS); },
+    down: () => {
+      streamUp = false;
+      offline ??= setTimeout(() => update({ online: false }), QUIET_MS);
+    },
     // Everything is read again once the stream is open, so no change falls between the read
     // and the stream; a reconnected or resumed stream may have missed changes.
     up: () => {
+      streamUp = true;
       clearTimeout(offline);
       offline = null;
       update({ online: true });
@@ -226,6 +231,7 @@ function start(session) {
   // ^ iOS suspends a PWA in the background, and a stream that was down drops its events.
   const back = () => {
     if (document.visibilityState !== "visible") return;
+    streamUp = false;
     resume();
     restartLoops();
   };
