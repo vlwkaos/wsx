@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-## [0.40.1] - 2026-10-28
+## [0.40.2] - 2026-10-28
+
+0.40.1 was tagged but never published: its release tests failed on a lint, so this release carries everything listed here.
 
 ### Added
 
