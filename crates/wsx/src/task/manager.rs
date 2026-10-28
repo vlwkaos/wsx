@@ -1242,7 +1242,14 @@ impl Manager {
             text.push_str(&format!("{heading} (message {id}):\n{body}\n\n"));
             ids.push(id);
         }
-        let events_only = first == Author::Events && held.is_none();
+        // ^ The limit preface is no owner message: a held turn is events-only when its
+        // held and its new messages all are.
+        let events_only = held.as_ref().map_or(true, |hold| hold.events)
+            && if ids.is_empty() {
+                held.is_some()
+            } else {
+                first == Author::Events
+            };
         if held.is_some() {
             text = format!("{LIMIT_CONTINUE}\n\n{text}");
         }
@@ -1519,6 +1526,7 @@ impl Manager {
                 until_ms,
                 attempt,
                 ids: to,
+                events: self.turn_events,
             });
             self.save();
             self.report(runtime::AgentState::Idle);

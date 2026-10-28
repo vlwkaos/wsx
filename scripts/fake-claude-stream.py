@@ -25,6 +25,7 @@ Each user message is a small script of words:
   LIMIT <s>    (once per process) end the turn as Claude's usage limit does, resetting in <s> s;
                the next message continues this one (also for the manager); with
                CHECKRUN_LATE its check-run starts before the limit
+  MLIMIT <s>   (manager, in an events message; once per <s>) like LIMIT; DASH there answers "-"
   PROBE <script> <spec> <out>  run the test's boundary probe script (python3 <script> <spec> <out>)
                and trace what it wrote to <out>
   BIG          a last model call of 400k tokens (two lines of one call), past the worker's rotateTokens
@@ -209,6 +210,8 @@ def manager_turn(text, project, page):
                                            text=True, check=True).stdout)
         rows = ['#%d %s' % (row['id'], row['state']) for row in ledger['open']]
         replies.append('open: ' + (', '.join(rows) if rows else 'none'))
+    if text.startswith('Events') and 'DASH' in text.split():
+        return '-'
     if text.startswith('Events'):
         # ^ A land gets a reply of two sentences, with a task number inside one: the web shows its
         # first sentence and More (docs/web-client-tasks.md "Project screen").
@@ -265,7 +268,7 @@ def main():
     spending = lambda: json.load(open(spent_file)) if os.path.exists(spent_file) else {}
     model, spent = options.get('--model'), spending().get(session, 0.0) if '--resume' in options else 0.0
     no_result = 0
-    limited, limit_hit = None, False
+    limited, limit_hit, event_limits = None, False, set()
     while True:
         line = stdin.readline()
         if not line:
@@ -281,6 +284,12 @@ def main():
         transcript(session, text)
         if limited is not None:
             text, limited = limited + '\n\n' + text, None
+        elif project is not None and text.startswith('Events') and 'MLIMIT' in text.split() and (
+                seconds := int(text.split()[text.split().index('MLIMIT') + 1])) not in event_limits:
+            event_limits.add(seconds)
+            limited = text
+            usage_limit(session, seconds)
+            continue
         elif 'LIMIT' in text.split() and not limit_hit:
             limit_hit, limited = True, text
             words = text.split()
