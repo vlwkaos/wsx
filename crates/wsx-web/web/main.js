@@ -232,7 +232,7 @@ function start(session) {
   // ^ The first load's pageshow is not a return: the stream's first `up` reads everything.
   addEventListener("pageshow", (event) => { if (event.persisted) back(); });
   // ^ A swipe back and the top bar's Back both go through history: one popstate, one hashchange.
-  addEventListener("hashchange", () => requestAnimationFrame(restartLoops));
+  addEventListener("hashchange", restartLoops);
   addEventListener("online", back);
   document.addEventListener("visibilitychange", back);
   const opened = parseRoute(location.hash);
