@@ -726,7 +726,7 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 /* Open, a running row reads like the closed line: its small size, rows close together. */
 .reservoir-running .row-link { min-height: 0; padding-block: var(--space-1); font-size: var(--font-size-sm); align-items: baseline; }
 .reservoir-running .row-open { align-self: baseline; }
-.reservoir-label { padding: var(--space-3) var(--column-inset, var(--space-4)) var(--space-1); }
+.reservoir-label { padding: var(--space-3) var(--column-inset, var(--space-4)) var(--space-1); font-size: var(--font-size-sm); }
 /* Open, the chevron has no row of its own: it sits at the right end of the list's first row
    (the first label, or the first item row), which keeps room for it. */
 .reservoir[data-open] .reservoir-head { position: absolute; top: 0; right: 0; z-index: 1; width: var(--reservoir-chevron); }
