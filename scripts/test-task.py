@@ -1507,21 +1507,23 @@ def run(wsx, wsxd, work, owned):
     assert not turn_with('STATUS again')['message'].startswith('Handover')
     # ^ A usage limit is no reply: the message waits and is answered after the reset.
     limited = js('task', 'say', 'LIMIT 1 STATUS limited')
-    held = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'agent'
-                              and e['text'].startswith('session limit; resumes at ')), None), 'the manager limit wait')
+    held = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'limit' and e.get('until')), None), 'the manager limit wait')
+    assert re.fullmatch(r'\d\d:\d\d', held['until']), held
     answer = reply_to(limited['id'])
     assert answer['text'].startswith('open: ') and answer['unix_ms'] >= held['unix_ms'] + 1000, (held, answer)
     assert not any(e['kind'] == 'reply' and 'session limit' in e['text'] for e in chat())
+    # ^ wsx says the pause and the resume in the chat, in that order, before the answer.
+    kinds = [(e['kind'], bool(e.get('until'))) for e in chat() if e['kind'] in ('limit', 'reply') and e['unix_ms'] >= held['unix_ms']]
+    assert kinds[:3] == [('limit', True), ('limit', False), ('reply', False)], kinds
     assert turn_with('The session limit has reset'), 'the manager continues after its limit'
     # ^ A turn of only events that a limit held stays quiet after the reset: "-" shows nothing.
     # One with an owner message is a message (docs/web-client-tasks.md).
     for seconds, owner_says in ((1, None), (3, 'STATUS while held')):
-        held_count = len([e for e in manager_entries() if e['kind'] == 'agent' and e['text'].startswith('session limit; resumes at ')])
+        held_count = len([e for e in manager_entries() if e['kind'] == 'limit' and e.get('until')])
         title = js('task', 'new', 'NOOP MLIMIT %d DASH' % seconds)['id']
         event = wait(lambda: events_with('#%d ready r1' % title), 'the event the limit holds')[0]
         if owner_says:
-            wait(lambda: len([e for e in manager_entries() if e['kind'] == 'agent'
-                              and e['text'].startswith('session limit; resumes at ')]) > held_count, 'the second limit wait')
+            wait(lambda: len([e for e in manager_entries() if e['kind'] == 'limit' and e.get('until')]) > held_count, 'the second limit wait')
             owner_id = js('task', 'say', owner_says)['id']
         dash = reply_to(event['id'])
         assert dash['text'] == '-' and (owner_says is None) == (dash.get('quiet') is True), dash

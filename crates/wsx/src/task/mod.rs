@@ -2168,6 +2168,10 @@ fn chat(project: Option<&str>, role: Option<&str>, after: Option<u64>, json: boo
             ManagerEvent::Rotated { tokens, .. } => {
                 println!("(new conversation after {tokens} tokens)")
             }
+            ManagerEvent::Limit { until: Some(until) } => {
+                println!("(manager paused: session limit, resumes at {until})")
+            }
+            ManagerEvent::Limit { until: None } => println!("(manager resumed)"),
             ManagerEvent::Stopped { reason } => println!("(manager stopped: {reason})"),
             _ => {}
         }

@@ -36,7 +36,7 @@ function shortLine(line) {
 // wsx line, and so does a line said again within a minute. A pending approval goes into the
 // manager's reply that ended the turn which asked for it, and each To check item is a bubble at
 // the time it was added (docs/web-client-tasks.md "Project screen").
-export function conversation(entries, resolutions, approvals = [], checks = []) {
+export function conversation(entries, resolutions, approvals = [], checks = [], manager = "") {
   const rows = [];
   // ^ wsx's recap request is not shown; the manager's answer to it is tagged Recap
   // (docs/tasks.md "Recap").
@@ -61,6 +61,10 @@ export function conversation(entries, resolutions, approvals = [], checks = []) 
       rows.push({ kind: "bubble", at, key, author: "manager", entry, to: entry.to });
     } else if (entry.kind === "message") {
       entry.text.split("\n").filter(Boolean).forEach((line, part) => rows.push({ kind: "line", at, key: `${key}-${part}`, text: shortLine(line) }));
+    } else if (entry.kind === "limit") {
+      // ^ wsx's own line: the usage limit paused the manager, or lifted (docs/web-client-tasks.md).
+      const text = entry.until ? `${manager} paused: session limit, resumes at ${entry.until}` : `${manager} resumed`;
+      rows.push({ kind: "line", at, key, text });
     } else if (entry.kind === "rotated" || entry.kind === "stopped") {
       rows.push({ kind: "note", at, key, entry });
     }

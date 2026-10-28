@@ -1260,6 +1260,9 @@ impl Manager {
             });
             return;
         }
+        if held.is_some() {
+            self.log(ManagerEvent::Limit { until: None });
+        }
         if !ids.is_empty() {
             self.log(ManagerEvent::Delivered { ids: ids.clone() });
         }
@@ -1519,9 +1522,10 @@ impl Manager {
             let attempt = self.state.limit.as_ref().map_or(0, |hold| hold.attempt) + 1;
             let now = now_unix_ms();
             let until_ms = limit::resume_at(reached.resets_at, attempt, now);
-            let text = limit::reason(until_ms, now);
-            self.say(&text);
-            self.log(ManagerEvent::Agent { text });
+            self.say(&limit::reason(until_ms, now));
+            self.log(ManagerEvent::Limit {
+                until: Some(limit::resume_time(until_ms, now)),
+            });
             self.state.limit = Some(LimitHold {
                 until_ms,
                 attempt,

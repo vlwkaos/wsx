@@ -809,7 +809,7 @@ export function Manager({ project: id, task, page, checks, role = null }) {
   const entries = chat?.entries ?? [];
   const items = role ? [] : overview?.needs ?? [];
   const words = withChips(id);
-  const rows = ready ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems) : [];
+  const rows = ready ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems, chat?.manager.name) : [];
   // The sent message shows until the log has it.
   if (sent && !entries.some((entry) => entry.kind === "message" && entry.id === sent.id)) {
     const last = rows.at(-1);

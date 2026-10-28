@@ -20,7 +20,15 @@ pub fn resume_at(resets_at: Option<u64>, attempt: u32, now_ms: u64) -> u64 {
 
 /// "session limit; resumes at 00:10", with the date when it is not within a day.
 pub fn reason(until_ms: u64, now_ms: u64) -> String {
-    let when = local_time(until_ms / 1000).map_or_else(
+    format!(
+        "session limit; resumes at {}",
+        resume_time(until_ms, now_ms)
+    )
+}
+
+/// The time of day (and the date when it is not within a day) the wait ends.
+pub fn resume_time(until_ms: u64, now_ms: u64) -> String {
+    local_time(until_ms / 1000).map_or_else(
         || {
             format!(
                 "in {} min",
@@ -34,8 +42,7 @@ pub fn reason(until_ms: u64, now_ms: u64) -> String {
                 false => format!("{} {} {clock}", MONTHS[tm.tm_mon as usize % 12], tm.tm_mday),
             }
         },
-    );
-    format!("session limit; resumes at {when}")
+    )
 }
 
 const MONTHS: [&str; 12] = [

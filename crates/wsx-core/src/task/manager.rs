@@ -125,6 +125,12 @@ pub enum ManagerEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// The usage limit paused the manager (`until`: the time it resumes, "00:10") or lifted.
+    /// Written by wsx; the chat shows it as a status line. ref: docs/web-client-tasks.md
+    Limit {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until: Option<String>,
+    },
     /// The agent process ended outside a reply.
     Stopped {
         reason: String,
