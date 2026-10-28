@@ -1572,7 +1572,7 @@ def run(wsx, wsxd, work, owned):
     assert [r['state'] for r in rows if r['id'] == item['id']][-1] == 'passed', rows
     assert js('task', 'ledger')['approvals'] == [] and show(asks)['state'] == 'ready'
     narrow = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'Manager demo', b'\x1b'),
+        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'(?m)^ You +\d\d:\d\d$', b'\x1b'),
         (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], cols=80)[2]
     assert re.search(r'(?m)^ You +\d\d:\d\d$', narrow) and 'hello from the tui' in narrow, narrow
     js('task', 'close', asks, '--discard')
