@@ -2,9 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- `wsx task new --skip <step>` leaves a `tasks.workflow.steps` step out of one task. The manager now picks the worker by the work: a change it has read and can state exactly runs on Sonnet without the context and plan steps, with a prompt that carries the files, the change and its proof; deep exploration, an unknown cause or a module redesign stays on the default model with every step; a broad bug hunt becomes one read-only audit per area, then one task per fix ([docs/tasks.md](docs/tasks.md) "Workflow").
+
 - Tasks: a To check item can carry a short MP4 video (at most 25 MiB) with a `poster` image; the web plays it in the image viewer, served with byte ranges for iPhone Safari. Captures of items passed or failed more than 7 days ago are removed; their rows stay.
 ### Fixed
 
+- A successful deploy reaches the manager as an event (`deploy of <commit> succeeded after <s> s`), as a release did. Before, a manager that waited for a deploy before it started work never heard that it could go on.
+- Web: a `Range` request for an empty To check capture or media file no longer panics the handler; it answers with the whole, empty file.
 - A resumed agent gets back the profile it ran with. After a crash or restart, wsxd resumed Claude with wsxd's own environment and PATH in the worktree root, so a session that ran with a work profile (`CLAUDE_CONFIG_DIR`) came back with the personal one. The agent's report now records its cwd and its config-root variables (`CLAUDE_CONFIG_DIR`, `CODEX_HOME` and the others wsx installs into), and the resume sets them on the agent; a variable the agent did not have is removed. Daemon revision 36, [docs/agent-orchestration.md](docs/agent-orchestration.md) "Resumed agents".
 - Web chat: a message to a Claude session no longer fails or lands in a busy editor while Claude compacts its conversation. Claude Code 2.1.310 compacts an idle conversation by itself about 54 minutes after a turn, a turn of its own of up to a minute. wsx reported only `/compact`, so wsxd showed the session done, and the message failed after 30 s ("not visibly idle") or was typed into Claude while it worked. Every compaction is now reported: an automatic one inside a turn keeps the turn, and one outside a turn shows "Compacting the conversation" and returns to the earlier state (daemon revision 37, Claude integration 27; run `wsx agent install claude` and restart Claude when it is idle) ([docs/agent-reporting.md](docs/agent-reporting.md) "Claude compaction").
 - Web chat: a sent message no longer vanishes for a moment when Claude takes it. It stays until the conversation shows it ([docs/web-client-chat.md](docs/web-client-chat.md) "Queue and Stop").

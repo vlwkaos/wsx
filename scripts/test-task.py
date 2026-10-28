@@ -618,6 +618,17 @@ def run(wsx, wsxd, work, owned):
     assert len(turns) == 2 and 'Step 1 of 2, plan: PLAN only' in turns[0]['summary'], turns
     assert 'Step 2 of 2, build: WORK s.txt' in turns[1]['summary'], turns
     js('task', 'close', stepped, '--discard')
+    # `--skip` leaves a step out for a prompt that carries its plan; the model goes with it.
+    skipped = js('task', 'new', '--skip', 'plan', '--model', 'sonnet', 'NOOP')['id']
+    done = wait_state(skipped, 'ready', 'failed')
+    assert done['state'] == 'ready' and done['record']['model'] == 'sonnet', done
+    assert any(t.get('model') == 'sonnet' for t in traces()), 'the worker did not start on sonnet'
+    assert [step['name'] for step in done['record']['steps']] == ['build'], done['record']
+    turns = [entry for entry in log(skipped) if entry['kind'] == 'result']
+    assert len(turns) == 1 and 'Step 1 of 1, build: WORK s.txt' in turns[0]['summary'], turns
+    js('task', 'close', skipped, '--discard')
+    assert 'has no such step (steps: plan, build)' in cli('task', 'new', '--skip', 'review', 'NOOP', ok=False).stderr
+    assert '--skip leaves no step' in cli('task', 'new', '--skip', 'plan', '--skip', 'build', 'NOOP', ok=False).stderr
     # 13r. Context rotation: a step that ends past tasks.agent.rotateTokens writes handoff notes
     # in its conversation; the next step runs in a fresh one that opens with the task's prompt,
     # those notes and the step.
@@ -1265,6 +1276,12 @@ def run(wsx, wsxd, work, owned):
     assert js('task', 'ledger')['deploys']['release']['commit'] == long_tip
     wait(lambda: events_with('release of %s succeeded after 6 s' % long_tip[:12]), 'the release event')
     wait(deploy_lock_free, 'the deploy lock')
+    # ^ A successful deploy is an event too, so a manager that waits for one goes on.
+    configure(LAND_CONFIG + "  deploy:\n    command: 'true'\n", 'quick deploy')
+    ran('deploy')
+    quick_deploy = deploy_records()[-1]
+    assert quick_deploy['kind'] == 'deploy' and quick_deploy['exit'] == 0, quick_deploy
+    wait(lambda: events_with('deploy of %s succeeded after' % quick_deploy['commit'][:12]), 'the deploy event')
     configure(release_config, 'release as before')
     # ^ Routines (docs/tasks.md "Routines"): the manager's `wsx task routine` writes one only
     # with the owner's words; a run that ends is an event and the ledger's row, and the TUI

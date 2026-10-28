@@ -30,8 +30,7 @@ use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
 use wsx_core::task::{
-    checks, ledger, now_unix_ms, DeployKind, LogEvent, TaskRecord, TaskState, WaitOn,
-    MAX_MESSAGE_BYTES,
+    checks, ledger, now_unix_ms, LogEvent, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
 };
 
 use wsx_core::task::owner::ACTOR_ENV;
@@ -195,7 +194,14 @@ fn instructions(
          most 60 characters, never starting with 'Owner'; pass one `--files` per path or \
          glob it will change, in every task new (`wsx task add <n> --files <glob> \
          \"<why>\"` adds more). The prompt stands alone, since a worker cannot ask: the goal, \
-         the owner's decisions, the scope, the files and how it proves the result. With \
+         the owner's decisions, the scope, the files and how it proves the result. Pick \
+         the worker by the work. When you have read the code and can state the goal exactly, \
+         and the prompt carries the files, what they do now, the change and its proof, run \
+         it with `--model sonnet` and `--skip` for each step of `tasks.workflow.steps` your \
+         prompt already did (context, plan). Work that needs deep exploration, an unknown \
+         cause or a change to a module's design keeps the default model and every step. A \
+         broad hunt (find all bugs, audit everything) is first one read-only audit task per \
+         area that writes its findings to a file, then one task per fix. With \
          `--plan` the worker writes a short plan and the task waits on `plan`; read it with \
          `wsx task show <n> --json` and continue with `wsx task add <n> \"go\"` or what to \
          change. Never ask the owner to wait. `wsx task add` or \
@@ -584,7 +590,7 @@ impl Manager {
     }
 
     /// Turn each new failed deploy or release into an event line with the end of its output, and
-    /// each new successful release into one line.
+    /// each new successful one into one line.
     /// ref: docs/tasks.md "Manager"
     fn watch_deploys(&mut self) {
         let Ok(records) = store::read_deploys(&self.dir.project_id) else {
@@ -595,16 +601,16 @@ impl Manager {
                 continue;
             }
             self.observed_deploys_ms = record.unix_ms;
-            // ^ A release runs detached for many minutes: its success is news, a deploy's is not.
+            // ^ Deploys and releases run detached for minutes: a success is news too, or a
+            // manager that waits for one never hears that it may go on.
             if record.exit == Some(0) {
-                if record.kind == DeployKind::Release {
-                    self.pending_events.push(format!(
-                        "release of {:.12} succeeded after {} s",
-                        record.commit,
-                        record.duration_ms / 1000
-                    ));
-                    self.last_event = Some(Instant::now());
-                }
+                self.pending_events.push(format!(
+                    "{} of {:.12} succeeded after {} s",
+                    ledger::kind_name(record.kind),
+                    record.commit,
+                    record.duration_ms / 1000
+                ));
+                self.last_event = Some(Instant::now());
                 continue;
             }
             self.pending_events.push(format!(

@@ -87,6 +87,10 @@ pub enum TaskCmd {
         /// The first turn writes a plan and stops without editing; an `add` continues it
         #[arg(long)]
         plan: bool,
+        /// Leave out this `tasks.workflow.steps` step (repeatable), for a prompt that already
+        /// carries the context and the plan
+        #[arg(long, value_name = "STEP")]
+        skip: Vec<String>,
         /// One turn without `tasks.workflow.steps`: the manager's idle task
         #[arg(long, hide = true)]
         no_steps: bool,
@@ -427,6 +431,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             hold,
             files,
             plan,
+            skip,
             no_steps,
             project,
             json,
@@ -438,7 +443,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             hold,
             files,
             plan,
-            no_steps,
+            (!no_steps).then_some(skip),
             project.as_deref(),
             json,
         ),
@@ -766,7 +771,7 @@ fn new(
     hold: Option<String>,
     files: Vec<String>,
     plan: bool,
-    no_steps: bool,
+    skip: Option<Vec<String>>,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
@@ -779,7 +784,7 @@ fn new(
         .transpose()?;
     let files = checked_files(&[], &files)?;
     let (dir, record, answered) = create(
-        prompt, from, title, model, None, hold, files, plan, no_steps, project,
+        prompt, from, title, model, None, hold, files, plan, skip, project,
     )?;
     let state = answered.unwrap_or(TaskState::Working);
     let id = dir.id;
@@ -804,9 +809,41 @@ fn new(
     Ok(())
 }
 
+/// `steps` without the ones `skip` names. Every name must be a step, and one step must stay.
+fn without_steps(
+    steps: &[wsx_core::model::workspace::WorkflowStep],
+    skip: &[String],
+) -> Result<Vec<wsx_core::model::workspace::WorkflowStep>> {
+    let names = || {
+        steps
+            .iter()
+            .map(|step| step.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if let Some(unknown) = skip
+        .iter()
+        .find(|name| !steps.iter().any(|step| &step.name == *name))
+    {
+        anyhow::bail!(
+            "--skip {unknown}: tasks.workflow.steps has no such step (steps: {}); no task was created",
+            names()
+        );
+    }
+    let kept: Vec<_> = steps
+        .iter()
+        .filter(|step| !skip.contains(&step.name))
+        .cloned()
+        .collect();
+    if kept.is_empty() && !steps.is_empty() {
+        anyhow::bail!("--skip leaves no step of {}; no task was created", names());
+    }
+    Ok(kept)
+}
+
 /// Create a task and start its host; `fixes` names the "To check" item it fixes; with `plan`
-/// its first turn writes a plan, with `no_steps` it runs no `tasks.workflow.steps`
-/// (docs/tasks.md "Workflow"). The state is none when the host
+/// its first turn writes a plan; it runs `tasks.workflow.steps` without the `skip` names, or no
+/// steps when `skip` is none (docs/tasks.md "Workflow"). The state is none when the host
 /// did not answer in time.
 #[allow(clippy::too_many_arguments)]
 fn create(
@@ -818,13 +855,17 @@ fn create(
     hold: Option<String>,
     files: Vec<String>,
     plan: bool,
-    no_steps: bool,
+    skip: Option<Vec<String>>,
     project: Option<&str>,
 ) -> Result<(TaskDir, TaskRecord, Option<TaskState>)> {
     let (config, workspace) = load_full_workspace()?;
     let project = resolve_project(&workspace, project)?;
     let settings = load_task_config(&project.path)
         .map_err(|error| anyhow::anyhow!("{error}; no task was created"))?;
+    let steps = match skip {
+        Some(skip) => without_steps(&settings.workflow.steps, &skip)?,
+        None => Vec::new(),
+    };
     let project_id = store::project_id(&project.name, &project.path);
     let dir = TaskDir::allocate(&project_id)?;
     let id = dir.id;
@@ -852,10 +893,7 @@ fn create(
         adapter: settings.adapter,
         model: model.unwrap_or(settings.model),
         checks: settings.checks,
-        steps: match no_steps {
-            true => Vec::new(),
-            false => settings.workflow.steps.clone(),
-        },
+        steps,
         step: 0,
         env: settings.env,
         check_timeout_secs: settings.check_timeout_secs,
@@ -997,7 +1035,7 @@ fn fail_check(project: &str, project_id: &str, id: &str, note: &str) -> Result<C
         None,
         Vec::new(),
         false,
-        false,
+        Some(Vec::new()),
         Some(project),
     )?;
     checks::fail(project_id, id, note, dir.id).with_context(|| {
