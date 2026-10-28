@@ -345,9 +345,7 @@ impl State {
     }
 
     /// Removes every trace of a closed pane and returns its runtime for the caller to
-    /// terminate after it drops the state lock. `agent_presence_leases` was missing from
-    /// the close paths. The entry could not matter: `expire_agent_presence` skips a pane
-    /// that is gone and drops its entry within the TTL.
+    /// terminate after it drops the state lock.
     fn forget_pane(&mut self, pane_id: PaneId) -> Option<Arc<TerminalRuntime>> {
         self.forget_pane_observations(pane_id);
         self.forget_pane_leases(pane_id);
