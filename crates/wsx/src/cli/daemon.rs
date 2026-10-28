@@ -86,7 +86,11 @@ pub(super) fn cmd_daemon_stop(force: bool, json: bool) -> Result<()> {
             "wsxd not stopped: {count} running session(s) would end. `wsx daemon restart` keeps them running. Use `wsx daemon stop --force` to end them."
         );
     }
-    client.shutdown()?;
+    if force {
+        client.force_shutdown()?;
+    } else {
+        client.shutdown()?;
+    }
     if json {
         println!("{}", serde_json::json!({"stopped": true}));
     } else {

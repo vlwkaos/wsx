@@ -63,6 +63,8 @@ A rollback ends the handoff in every case (revision 35 and later). It resumes th
 
 A source before revision 35 cleared its handoff state only after it had rewritten the marker. When that write or the new bind failed, the daemon kept answering `daemon_replacing` for ever, and nothing ends that state but a stop. Its sessions keep running inside it, but no client can read them.
 
+`wsx daemon stop --force` ends such a daemon. When the graceful stop is refused with `daemon_replacing` and no fresh marker is left, `Client::force_shutdown` in `crates/wsx-core/src/runtime/client.rs` asks the daemon once more on the socket and takes the pid of that connection's peer from the kernel (`LOCAL_PEERPID` on macOS, `SO_PEERCRED` on Linux). It signals that process only when it runs as the same user and its kernel start time matches the `started_unix_ms` the daemon reports in `LifecycleStatus` (at most 60 s before it, 2 s after). A reused pid or another process fails that test and is left alone, and the error says why. The client sends SIGTERM, then SIGKILL after 3 s, checks the process again before each signal, and waits until the socket refuses connections. It then leaves what a normal stop leaves: no socket and the marker `intentional`. The next wsx command starts a new wsxd. A plain stop still refuses, and a stop during a handoff with a fresh marker ends nothing.
+
 A client of this build does not wait on it. When the daemon refuses with `daemon_replacing` and the handoff marker is missing or older than 35 seconds, `explain_stuck_handoff` in `crates/wsx-core/src/runtime/client.rs` replaces the message. The message names the daemon's version, when the handoff started, that its sessions still run inside it, and that `wsx daemon stop --force` ends them and starts a new wsxd. The code stays `daemon_replacing`, so a client that retries reconnects when a daemon serves again. The CLI prints it once. An open TUI shows it without the code as its disconnect notice, which grows to six lines for an error so the next step stays visible, and checks again each second.
 
 ## A failed automatic upgrade
@@ -151,8 +153,9 @@ python3 scripts/test-terminal-context.py --released-wsx <path>/wsx --released-da
   1. the upgrade hands the sessions over;
   2. a successor that exits after the commit (`WSX_HANDOFF_FAULT`) gives them back;
   3. a successor and a rollback that cannot bind the socket (a folder at `wsx.sock~`) end the handoff, and the daemon binds again once it can.
+  4. a stand-in for a pre-35 daemon stuck in its handoff (it answers only Hello and LifecycleStatus and ignores SIGTERM) stays after a plain stop and after `--force` with a fresh marker, and `--force` with a 14 h old marker ends it; the next command starts a new wsxd.
 
-  With `WSX_SMOKE_RELEASED_DIR=<folder with wsx and wsxd of a release>` the source is that release, and a fourth step makes that release's rollback fail (its state folder read-only). The CLI and the TUI of this build must then say that the handoff did not finish and name `wsx daemon stop --force`.
+  With `WSX_SMOKE_RELEASED_DIR=<folder with wsx and wsxd of a release>` the source is that release, and a fifth step makes that release's rollback fail (its state folder read-only). The CLI and the TUI of this build must then say that the handoff did not finish and name `wsx daemon stop --force`.
 - `scripts/runtime-smoke.py` sends a request of a later release on a matching and on a mismatched connection, and stops a daemon with live sessions only with `--force`.
 
 ## Not covered yet
