@@ -469,50 +469,47 @@ struct StreamSlot {
 impl StreamSlot {
     /// A terminal past the device's limit is refused.
     fn take(app: &Shared, key: String, what: &str) -> Outcome<Self> {
-        let open = crate::locked(&app.streams).get(&key).map_or(0, Vec::len);
-        if open >= MAX_STREAMS_PER_DEVICE {
+        let mut streams = crate::locked(&app.streams);
+        let open = streams.entry(key.clone()).or_default();
+        if open.len() >= MAX_STREAMS_PER_DEVICE {
             return Err(Fault::new(
                 429,
                 "too_many_streams",
                 format!("too many open {what} on this device"),
             ));
         }
-        Ok(Self::open(app, key, None))
+        Ok(Self::open(app, open, key, None))
     }
 
     /// An event stream ends the device's older stream of the same page and, past the limit,
     /// its oldest one: a phone that changed networks or slept leaves streams that look open
     /// to the server for minutes (docs/web-client.md "Limits").
     fn take_newest(app: &Shared, key: String, page: Option<&str>) -> Self {
-        {
-            let mut streams = crate::locked(&app.streams);
-            let open = streams.entry(key.clone()).or_default();
-            open.retain(|stream| {
-                let same = page.is_some() && stream.page.as_deref() == page;
-                if same {
-                    stream.ended.notify_one();
-                }
-                !same
-            });
-            while open.len() >= MAX_STREAMS_PER_DEVICE {
-                open.remove(0).ended.notify_one();
+        let mut streams = crate::locked(&app.streams);
+        let open = streams.entry(key.clone()).or_default();
+        open.retain(|stream| {
+            let same = page.is_some() && stream.page.as_deref() == page;
+            if same {
+                stream.ended.notify_one();
             }
+            !same
+        });
+        while open.len() >= MAX_STREAMS_PER_DEVICE {
+            open.remove(0).ended.notify_one();
         }
-        Self::open(app, key, page)
+        Self::open(app, open, key, page)
     }
 
-    fn open(app: &Shared, key: String, page: Option<&str>) -> Self {
+    /// Adds the stream to the device's list `open`, under the same lock as the limit's check.
+    fn open(app: &Shared, open: &mut Vec<OpenStream>, key: String, page: Option<&str>) -> Self {
         static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let ended = Arc::new(tokio::sync::Notify::new());
-        crate::locked(&app.streams)
-            .entry(key.clone())
-            .or_default()
-            .push(OpenStream {
-                serial,
-                page: page.map(str::to_owned),
-                ended: ended.clone(),
-            });
+        open.push(OpenStream {
+            serial,
+            page: page.map(str::to_owned),
+            ended: ended.clone(),
+        });
         Self {
             app: app.clone(),
             key,

@@ -820,15 +820,16 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
 /// The open "To check" items, oldest first, each with its task's title and what the task
 /// did (the first sentence of its worker's summary, when it is not the title).
 pub fn checks(scope: &Scope) -> Outcome<Value> {
-    let mut items = checks::read(&scope.store).map_err(internal)?;
+    let items = checks::read(&scope.store).map_err(internal)?;
     // ^ The chat shows each item once, as a bubble at the time it was added, decided or not:
     // every open item and the newest decided ones.
     let recent = items.len().saturating_sub(CHAT_CHECKS);
-    let mut index = 0;
-    items.retain(|item| {
-        index += 1;
-        index > recent || item.state == checks::CheckState::Open
-    });
+    let items: Vec<_> = items
+        .into_iter()
+        .enumerate()
+        .filter(|(index, item)| *index >= recent || item.state == checks::CheckState::Open)
+        .map(|(_, item)| item)
+        .collect();
     let rows: Vec<Value> = items
         .iter()
         .map(|item| {
