@@ -225,8 +225,9 @@ def main():
         tasks.append(task_row(task, events, turns))
         repeats.update(mask(e.get("text", "")) for e in events if e.get("kind") == "agent")
         if a.task == task["id"]:
-            table(f"Task {task['id']} turns", ["day", "step", "status", "cost $", "ctx", "cache w/r tok", "rot", "limit", "model"],
-                  [[day(t["ms"]), t["step"], t["status"], usd(cost(t)), k(t["u"].get("context_tokens", 0)),
+            table(f"Task {task['id']} turns", ["day", "step", "trigger", "status", "cost $", "ctx", "calls", "cache w/r tok", "rot",
+                                               "limit", "model"],
+                  [[day(t["ms"]), t["step"], t["trigger"], t["status"], usd(cost(t)), k(t["u"].get("context_tokens", 0)), t["u"].get("calls", "-"),
                     f"{k(t['u'].get('cache_creation_tokens', 0))}/{k(t['u'].get('cache_read_tokens', 0))}",
                     "y" if t["after_rotation"] else "", "y" if t["after_limit"] else "", t["u"].get("model", "")]
                    for t in turns])

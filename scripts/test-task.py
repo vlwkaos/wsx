@@ -2728,6 +2728,12 @@ def run(wsx, wsxd, work, owned):
     handoff_asked = [t for t in sent if 'was idle past this task' in t['message']]
     fresh = [t for t in sent if 'handoff notes:\nNOTES from the fixture' in t['message'] and t['message'].endswith('NOOP')]
     assert len(handoff_asked) == 1 and fresh and handoff_asked[0]['session'] != fresh[-1]['session'], [t['message'][:80] for t in sent[-3:]]
+    # ^ The usage report reads the logged fields, not its replay of the steps.
+    report = subprocess.run([sys.executable, '-B', str(ROOT / 'scripts' / 'usage-report.py'),
+                             str(Path(show(idler)['log']).parent.parent), '--task', str(idler)],
+                            capture_output=True, text=True, check=True).stdout
+    assert re.search(r'worker rotations: \d+ by size, 1 after idle', report), report[-400:]
+    assert re.search(r'\| build +\| step +\| done', report) and re.search(r'\| build +\| rotation +\| done', report), report
     js('task', 'close', idler, '--discard')
     configure(LAND_CONFIG, 'no idle rotation')
 
