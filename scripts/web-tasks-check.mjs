@@ -100,7 +100,13 @@ async function shot(name, primary) {
   const row = { capture: file };
   if (auditSource) {
     await evaluate(`globalThis.SLOP_AUDIT_PRIMARY = ${JSON.stringify(primary ?? null)}`);
-    const audit = await evaluate(auditSource);
+    // ^ Behind an open modal dialog (the task sheet beside the chat at 1280 px) the page is
+    // inert, so the audit, which does not know modal dialogs, sees only the dialog.
+    const audit = await evaluate(`(() => { const modal = document.querySelector('dialog[open]:modal'), style = document.createElement('style');
+      if (modal) { style.textContent = 'body { visibility: hidden; } dialog:modal { visibility: visible; }'; document.head.append(style); }
+      try { return (
+${auditSource}
+); } finally { style.remove(); } })()`);
     fs.writeFileSync(path.join(captures, `tasks-${file}.slop.json`), JSON.stringify(audit, null, 1));
     if (audit.horizontalOverflow) await fail(`${label} overflows sideways`);
     if (audit.primaryAction.filledInViewport > 1) await fail(`${label} shows ${audit.primaryAction.filledInViewport} filled accent controls: ${JSON.stringify(audit.primaryAction.filled)}`);
