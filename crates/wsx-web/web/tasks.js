@@ -9,7 +9,7 @@ import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
 import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
 import { QuoteChip, useReply, withQuote } from "./reply.js";
-import { TaskPage } from "./task.js";
+import { readTaskAhead, TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
 import { ChecksPage } from "./checks.js";
 
@@ -392,6 +392,10 @@ function Reservoir({ project, items, tasks, checking }) {
     else if (open && !calm()) setClosing(true);
     else setOpen(!open);
   };
+  // ^ Open, each item's task is read ahead, so its sheet shows at once.
+  useEffect(() => {
+    if (open) for (const item of items) if (item.task != null) readTaskAhead(project, item.task);
+  }, [open, keys.join()]);
   const revealed = (event) => {
     if (closing && event.target === event.currentTarget) { setClosing(false); setOpen(false); }
   };
@@ -417,16 +421,20 @@ function Reservoir({ project, items, tasks, checking }) {
       ${open && (items.length || working.length || checking) ? html`
         <div class="reservoir-reveal" data-closing=${closing ? "" : null} onAnimationEnd=${revealed}>
           <div class="reservoir-body" id="reservoir-list">
-            ${items.length || needRows.length ? html`
-              <ul class="reservoir-list" aria-label="Needs you">
-                ${needRows.map(({ item, key, leaving }) => html`<${NeedRow} key=${key} project=${project} item=${item} index=${items.indexOf(item)} onActing=${onActing} onFailed=${onFailed} leaving=${leaving} />`)}
-              </ul>` : null}
             ${working.length || runRows.length ? html`
-              <h2 class="label reservoir-label">Running</h2>
-              <ul class="reservoir-list reservoir-running" aria-label="Running">
-                ${runRows.map(({ item, key, leaving }) => html`<${RunningRow} key=${key} project=${project} task=${item} leaving=${leaving} />`)}
-              </ul>` : null}
-            ${checking ? html`<ul class="reservoir-list" aria-label="To check"><${CheckingRow} project=${project} count=${checking} /></ul>` : null}
+              <div class="reservoir-fixed">
+                <h2 class="label reservoir-label">Running</h2>
+                <ul class="reservoir-list reservoir-running" aria-label="Running">
+                  ${runRows.map(({ item, key, leaving }) => html`<${RunningRow} key=${key} project=${project} task=${item} leaving=${leaving} />`)}
+                </ul>
+              </div>` : null}
+            <div class="reservoir-scroll">
+              ${items.length || needRows.length ? html`
+                <ul class="reservoir-list" aria-label="Needs you">
+                  ${needRows.map(({ item, key, leaving }) => html`<${NeedRow} key=${key} project=${project} item=${item} index=${items.indexOf(item)} onActing=${onActing} onFailed=${onFailed} leaving=${leaving} />`)}
+                </ul>` : null}
+              ${checking ? html`<ul class="reservoir-list" aria-label="To check"><${CheckingRow} project=${project} count=${checking} /></ul>` : null}
+            </div>
           </div>
         </div>` : null}
     </section>`;

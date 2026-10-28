@@ -157,13 +157,30 @@ function Message({ detail, act }) {
     </div>`;
 }
 
+// ^ The last read of each task this page made, so a sheet opens on its content at once and
+// reads again behind it; the open decision list reads its tasks ahead (docs/web-client-tasks.md
+// "Task sheet"). Kept for the page's life, at most DETAILS_KEPT, oldest out first.
+const details = new Map();
+const DETAILS_KEPT = 40;
+const keepDetail = (key, value) => {
+  details.delete(key);
+  details.set(key, value);
+  if (details.size > DETAILS_KEPT) details.delete(details.keys().next().value);
+};
+export function readTaskAhead(project, task) {
+  const key = `${project}/${task}`;
+  if (details.has(key)) return;
+  api(`api/tasks/${project}/t/${task}`).then((value) => { if (!details.has(key)) keepDetail(key, value); }, () => {});
+}
+
 export function TaskPage({ project, task, onClose, grip }) {
   const store = useStore();
-  const [detail, setDetail] = useState(null);
+  const [detail, setDetail] = useState(() => details.get(`${project}/${task}`) ?? null);
   const [failure, setFailure] = useState("");
   const load = useCoalescedLoad(async (current) => {
     const next = await api(`api/tasks/${project}/t/${task}`);
     if (!current()) return;
+    keepDetail(`${project}/${task}`, next);
     setDetail(next);
     setFailure("");
   }, (error) => setFailure(error.status === 404 ? "This task is not in this site's projects." : error.message), [project, task]);
@@ -202,8 +219,11 @@ export function TaskPage({ project, task, onClose, grip }) {
     trial && button(act.busy === "trial_end" ? "Ending…" : "End trial", () => act.run("trial_end", `api/tasks/${project}/t/${task}/trial_end`, {})),
     !trial && actions.includes("land") && button(act.busy === "land" ? "Landing…" : "Land", () => act.run("land", `api/tasks/${project}/t/${task}/land`, {}), {}, "land"),
     // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
-    actions.includes("hand") && button(act.busy === "hand" ? "Opening…" : "Work by hand", () => act.run("hand", `api/tasks/${project}/t/${task}/hand`, {})),
-    actions.includes("handback") && button(act.busy === "handback" ? "Handing back…" : "Hand back", () => act.run("handback", `api/tasks/${project}/t/${task}/handback`, {})),
+    // ^ Its name says what happens; the line under the buttons says the rest (docs/web-client-tasks.md "Task sheet").
+    actions.includes("hand") && button(act.busy === "hand" ? "Taking over…" : "Take over", () => act.run("hand", `api/tasks/${project}/t/${task}/hand`, {}),
+      { "aria-describedby": "hand-hint" }),
+    actions.includes("handback") && button(act.busy === "handback" ? "Handing back…" : "Hand back", () => act.run("handback", `api/tasks/${project}/t/${task}/handback`, {}),
+      { "aria-describedby": "hand-hint" }),
     store.tasks[project]?.preview && detail.state !== "closed" && html`<${TryButton} project=${project} task=${task} />`,
   ].filter(Boolean) : [];
   // ^ The main checkout's changed files this land would overwrite, said before the press
@@ -211,6 +231,9 @@ export function TaskPage({ project, task, onClose, grip }) {
   const blocked = acting && actions.includes("land") && detail.land_blocked_by?.length > 0 && html`
     <p class="task-approval" role="note">Land stops: ${detail.default_branch} has uncommitted changes in ${detail.land_blocked_by.join(", ")}. Commit or stash them in the main checkout first.</p>`;
   const held = detail.hold && html`<p class="task-approval">Held for you to try: ${detail.hold}</p>`;
+  const handHint = acting && (actions.includes("hand") || actions.includes("handback")) && html`<p class="task-approval task-hint" id="hand-hint">${actions.includes("hand")
+    ? "Take over: the worker stops, and you continue in its working copy with its conversation in your own terminal. Hand back gives the task back to the worker, which checks your work."
+    : "You work on this task in its working copy. Hand back gives it back to the worker, which checks your work."}</p>`;
   const report = sections(detail.report);
   const entries = detail.timeline.entries;
   return html`
@@ -220,7 +243,7 @@ export function TaskPage({ project, task, onClose, grip }) {
         <${TaskStory} detail=${detail} words=${words}>${held}${buttons.length ? html`
           <div class="task-next" role="group" aria-label="Actions">
             <div class="actions">${buttons}</div>
-            ${blocked}
+            ${blocked}${handHint}
           </div>` : null}</${TaskStory}>
 
         ${FOLDS.filter((title) => report[title] != null).map((title) => {

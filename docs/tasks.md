@@ -157,7 +157,7 @@ There is no verdict per task: a task the checks prove lands, and what needs a pe
 
 The owner can take a build over and work on it directly, with the worker's context.
 
-1. `wsx task hand <n>` (the web's *Work by hand*) refuses with `WSX_TASK_ACTOR=manager`, and while the task is `checking`, `landed`, `closed` or already worked by hand. The host stops a running turn, drops queued messages, logs `hand{by: owner, dropped}` and waits on `hand`.
+1. `wsx task hand <n>` (the web's *Take over*) refuses with `WSX_TASK_ACTOR=manager`, and while the task is `checking`, `landed`, `closed` or already worked by hand. The host stops a running turn, drops queued messages, logs `hand{by: owner, dropped}` and waits on `hand`.
 2. No second worktree or branch: the owner works in the task's own working copy on `wsx/t<n>`, with its warm build. `hand` opens a wsxd session `task-<n>-hand` there (one only; a second `hand` names the open one) running `claude --resume <agent_session> --fork-session --system-prompt-snapshot off`, or the login shell when the task has no conversation yet.
    - `--fork-session` copies the conversation under a new id, so the worker's own transcript stays as it was; the next `add` resumes it, and it sees the owner's commits in git.
    - Claude records a conversation's system prompt on its first request and reuses it after `--resume` until the conversation is compacted (https://code.claude.com/docs/en/cli-reference, "System prompt flags in resumed conversations"). `--system-prompt-snapshot off` rebuilds it, so the owner gets Claude's own prompt with their user settings and CLAUDE.md, not the headless worker rules. The worker's boundary, `--settings` and `--permission-mode` are launch flags and do not carry over.

@@ -737,8 +737,8 @@ await until("!document.querySelector('.reservoir-more')", "the closed line kept 
 // the reservoir's top. One row is the closed line's height.
 const lineHeight = await evaluate("document.querySelector('.reservoir-head').getBoundingClientRect().height");
 async function chevronInFirstRow(where) {
-  const seen = await evaluate(`(() => { const box = document.querySelector('.reservoir').getBoundingClientRect(), body = document.querySelector('.reservoir-body');
-    const first = body.firstElementChild.matches('.reservoir-label') ? body.firstElementChild : body.querySelector('.need');
+  const seen = await evaluate(`(() => { const box = document.querySelector('.reservoir').getBoundingClientRect(), body = document.querySelector('.reservoir-scroll');
+    const first = document.querySelector('.reservoir-body > .reservoir-fixed:first-child > .reservoir-label') ?? body.querySelector('.need');
     const row = first.getBoundingClientRect(), icon = document.querySelector('.reservoir-head .icon').getBoundingClientRect(), middle = icon.top + icon.height / 2;
     return { first: first.textContent.trim().slice(0, 20), down: Math.round(row.top - box.top), inside: row.top >= box.top && row.bottom <= box.bottom && row.left >= box.left && row.right <= box.right + 0.5 && body.scrollTop === 0,
       sameRow: middle > row.top && middle < row.bottom, right: Math.round(innerWidth - icon.right) }; })()`);
@@ -756,11 +756,30 @@ const listedRows = await rows();
 const rowWords = listedRows.map((row) => `${row[0]} ${row[3]}`);
 // ^ Done tasks (#7, #8) are not in it; the To check list is one row at its end. A task
 // without --title is named by its worker summary's first sentence ("did: WORK b.txt").
-const expectedRows = ["#1 Answer", "#4 Answer", " Deny+Approve", " Deny+Approve", "#2 Land", "#3 Land", "#6 ", " "];
+// ^ Running is first and stays at the top; what waits for the owner and To check scroll under it.
+const expectedRows = ["#6 ", "#1 Answer", "#4 Answer", " Deny+Approve", " Deny+Approve", "#2 Land", "#3 Land", " "];
 if (rowWords.join("|") !== expectedRows.join("|")) await fail(`the reservoir rows are ${JSON.stringify(listedRows)}`);
-if (listedRows[0][2] !== "needs an answer" || listedRows[2][1] !== "Approve land #3" || listedRows[3][1] !== "Approve discard #4" || listedRows[2][2] !== "did: WORK b.txt"
-  || listedRows[4][2] !== "ready to land" || listedRows[7][1] !== "2 to check") await fail(`the reservoir rows read ${JSON.stringify(listedRows)}`);
-if (!/^keep a worker busy WAIT /.test(listedRows[6][1])) await fail(`the running task's title is ${listedRows[6][1]}`);
+if (listedRows[1][2] !== "needs an answer" || listedRows[3][1] !== "Approve land #3" || listedRows[4][1] !== "Approve discard #4" || listedRows[3][2] !== "did: WORK b.txt"
+  || listedRows[5][2] !== "ready to land" || listedRows[7][1] !== "2 to check") await fail(`the reservoir rows read ${JSON.stringify(listedRows)}`);
+if (!/^keep a worker busy WAIT /.test(listedRows[0][1])) await fail(`the running task's title is ${listedRows[0][1]}`);
+// ^ Every row of the open list, its labels and its context, is the closed line's small size.
+const sizes = await evaluate("[...document.querySelectorAll('.reservoir-body :is(.row-label, .row-context, .reservoir-label)')].map((node) => getComputedStyle(node).fontSize)");
+if (!sizes.length || sizes.some((size) => size !== closedSize)) await fail(`the open list's words are not all ${closedSize}: ${JSON.stringify(sizes)}`);
+// ^ The open list reads its tasks ahead: a row's sheet shows its content in the frame it opens,
+// with no loading step, on a phone and a wide screen.
+for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
+  await resize([width, height, scale]);
+  await openReservoir();
+  await pause(1500);
+  const atOnce = await evaluate(`new Promise((done) => { ${rowOf("#2")}.querySelector('.row-open').click();
+    requestAnimationFrame(() => requestAnimationFrame(() => done({ open: !!document.querySelector('dialog.task-sheet'),
+      loading: !!document.querySelector('dialog.task-sheet .loading'), story: !!document.querySelector('dialog.task-sheet .story') }))); })`);
+  if (!atOnce.open || atOnce.loading || !atOnce.story) await fail(`a need's sheet did not show its content at once at ${width} px: ${JSON.stringify(atOnce)}`);
+  await shot(`need-open-${width}`, ".composer-send");
+  await closeSheet("a need's sheet", chat);
+}
+await resize([390, 844, 2]);
+await openReservoir();
 // ^ The manager's reply that asked for both approvals holds them, each with Deny and Approve:
 // one tap in the chat, besides the reservoir rows (docs/web-client-tasks.md "Project screen").
 const inBubble = await evaluate("[...document.querySelectorAll('.bubble[data-side=in] .bubble-approval')].map((node) => `${node.getAttribute('aria-label')}: ${[...node.querySelectorAll('button')].map((button) => button.textContent).join('+')}`)");
@@ -793,6 +812,16 @@ if (await count(".reservoir .facts-line")) await fail("the reservoir still shows
 await shot("reservoir-open", ".composer-send");
 await resize([390, 420, 2]);
 await shot("reservoir-short", ".composer-send");
+for (const [width, height, scale] of [[390, 560, 2], [1280, 520, 1]]) {
+  await resize([width, height, scale]);
+  await pause(300);
+  const fixed = await evaluate(`(async () => { const label = document.querySelector('.reservoir-fixed .reservoir-label'), list = document.querySelector('.reservoir-scroll');
+    const before = label.getBoundingClientRect().top; list.scrollTop = list.scrollHeight; await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+    return { scrolls: list.scrollHeight > list.clientHeight + 1, moved: list.scrollTop > 0, shift: Math.abs(label.getBoundingClientRect().top - before) }; })()`);
+  if (!fixed.scrolls || !fixed.moved || fixed.shift > 0.5) await fail(`Running does not stay while the list scrolls at ${width} px: ${JSON.stringify(fixed)}`);
+  await shot(`reservoir-running-fixed-${width}`, ".composer-send");
+  await evaluate("document.querySelector('.reservoir-scroll').scrollTop = 0");
+}
 await resize([320, 568, 2]);
 await shot("reservoir-narrow", ".composer-send");
 await resize([390, 844, 2]);
@@ -1351,7 +1380,12 @@ if (folds.join("|") !== "Changes|Evidence · 1 check passed|To check · 1 after 
 const sheetWords = await evaluate("document.querySelector('dialog.task-sheet').innerText");
 if (/Asked|Human Verify|Decisions|Review|Pass r\d|Verified/.test(sheetWords)) await fail(`the sheet still shows the verdict or old sections: ${sheetWords}`);
 if (await count(".task-sheet .label, .task-sheet .story-explain, .verify, .verify-note")) await fail("the sheet still has labels, Explain or the Verify panel");
-if ((await text(".task-next button")).join() !== "Land,Work by hand,Try") await fail(`a ready task offers ${await text(".task-next button")}`);
+if ((await text(".task-next button")).join() !== "Land,Take over,Try") await fail(`a ready task offers ${await text(".task-next button")}`);
+const handHint = await evaluate("(() => { const button = [...document.querySelectorAll('.task-next button')].find((node) => node.textContent === 'Take over'); return document.getElementById(button.getAttribute('aria-describedby'))?.textContent ?? ''; })()");
+if (!/you continue in its working copy with its conversation/.test(handHint) || !/Hand back gives the task back/.test(handHint)) await fail(`Take over does not say what it does: ${handHint}`);
+await resize([1280, 800, 1]);
+await shot("task-sheet-take-over-1280", ".composer-send");
+await resize([390, 844, 2]);
 if (await evaluate("/\\br\\d+\\b/.test(document.querySelector('.task-sheet .bar').textContent + document.querySelector('.task-next').textContent)")) await fail("the sheet names a revision");
 await shot("task-sheet", ".composer-send");
 // Evidence opens to the checks and what the worker showed; More shows the decisions.
@@ -1539,6 +1573,9 @@ await oneMotion("To check on a phone", async () => {
   await evaluate(`${rowOf("3 to check")}.querySelector('.row-open').click()`);
   await until(`location.hash === '#/p/${project}/checks' && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open");
 });
+// ^ The opened To check list uses the reservoir's small size.
+const checkSize = await evaluate("getComputedStyle(document.querySelector('.check-item .check-task')).fontSize");
+if (checkSize !== closedSize) await fail(`the To check list's words are ${checkSize}, not ${closedSize}`);
 await closeSheet("the To check list", chat);
 // ^ On a slow network the list and then its captures come late: the sheet still rises once,
 // since each capture's box has its size before the image arrives.
@@ -1666,10 +1703,10 @@ await until("!/to check/.test(document.querySelector('.reservoir-words')?.textCo
 // ^ With #4 and the fix task landed (a pending approval denied) only Running is left: its label
 // is the first row, whole at the reservoir's top, with the chevron at its right end.
 await openReservoir();
-const runningFirst = "document.querySelector('.reservoir-body')?.firstElementChild?.matches('.reservoir-label')";
+const runningFirst = "!!document.querySelector('.reservoir-body > .reservoir-fixed:first-child > .reservoir-label') && !document.querySelector('.reservoir-scroll .need')";
 for (let attempt = 0; attempt < 600 && !(await evaluate(runningFirst)); attempt++) {
   if (await evaluate("!!document.querySelector('.reservoir:not([data-open])')")) await click(".reservoir-head");
-  if (attempt % 40 === 0) await evaluate("document.querySelector('.reservoir-list:first-child .need:not([data-leaving]) :is(.need-action[title=Land], .need-action[title=Deny])')?.click()");
+  if (attempt % 40 === 0) await evaluate("document.querySelector('.reservoir-scroll .need:not([data-leaving]) :is(.need-action[title=Land], .need-action[title=Deny])')?.click()");
   await pause(100);
 }
 if (!(await evaluate(runningFirst))) await fail(`Running is not the first row of the open reservoir: ${JSON.stringify(await rows())}`);
