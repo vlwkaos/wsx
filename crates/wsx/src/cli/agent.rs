@@ -186,6 +186,7 @@ pub(super) fn cmd_agent_detach() -> Result<()> {
         capabilities: runtime::AgentCapabilities::default(),
         received: None,
         compacting: false,
+        compacted: false,
     })? {
         runtime::Response::Ack { revision } => {
             println!("detached agent at revision {revision}");
@@ -224,6 +225,7 @@ pub(super) struct AgentReportOptions {
     pub(super) capabilities: runtime::AgentCapabilities,
     pub(super) received: Option<runtime::PromptReceived>,
     pub(super) compacting: bool,
+    pub(super) compacted: bool,
 }
 
 fn with_agent_launch(
@@ -270,6 +272,7 @@ pub(super) fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Re
         capabilities,
         received,
         compacting,
+        compacted,
     } = report;
     // ^ Adapter callbacks already have the exact pane ID. A snapshot lookup can
     // start or reconcile wsxd before SessionStart reaches its current generation.
@@ -325,6 +328,7 @@ pub(super) fn cmd_agent_report(selector: &str, report: AgentReportOptions) -> Re
             capabilities,
             received,
             compacting,
+            compacted,
         },
     )? {
         runtime::Response::Ack { revision } => {

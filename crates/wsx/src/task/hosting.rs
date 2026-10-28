@@ -107,6 +107,7 @@ pub fn report_pane(
         capabilities: runtime::AgentCapabilities::default(),
         received: None,
         compacting: false,
+        compacted: false,
     };
     match runtime::Client::new(runtime::default_socket_path()).call(&request) {
         Ok(runtime::Response::Error(error)) => {

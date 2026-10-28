@@ -45,6 +45,7 @@ pub(crate) fn new_state(persisted: Persisted) -> State {
         agent_presence_leases: HashMap::new(),
         agent_wake_tokens: HashMap::new(),
         claude_reconciliations: HashMap::new(),
+        compactions: HashMap::new(),
         terminal_operation_locks: HashMap::new(),
         listening_ports: HashMap::new(),
         foreground_jobs: HashSet::new(),

@@ -61,7 +61,10 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // "A successor that dies").
 // Revision 36 resumes an agent in its own cwd with its own config root (`AgentLaunch` on the
 // session reference; docs/agent-orchestration.md "Resumed agents").
-pub const DAEMON_REVISION: u32 = 36;
+// Revision 37 follows every compaction of Claude, also an automatic and an idle one: the agent
+// works from its PreCompact report and returns to its earlier state on the `compacted` report
+// (docs/agent-reporting.md "Claude compaction").
+pub const DAEMON_REVISION: u32 = 37;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -375,6 +378,10 @@ pub enum Request {
         /// On a Working report: the agent compacts its conversation.
         #[serde(default)]
         compacting: bool,
+        /// The report that ends a compaction: the agent returns to the state it had before
+        /// it, and `state` is not used (daemon revision 37).
+        #[serde(default)]
+        compacted: bool,
     },
     AgentPresenceRenew {
         pane_id: PaneId,

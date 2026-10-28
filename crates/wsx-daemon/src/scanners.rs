@@ -57,6 +57,9 @@ pub(crate) fn spawn_foreground_scanner(daemon: &Arc<Daemon>) -> thread::JoinHand
             if let Err(error) = fail_untaken_rounds(&daemon, &mut state) {
                 eprintln!("wsxd: cannot end an untaken round: {}", error.message);
             }
+            if let Err(error) = end_stale_compactions(&daemon, &mut state) {
+                eprintln!("wsxd: cannot end a compaction: {}", error.message);
+            }
         }
         drop(state);
         thread::sleep(FOREGROUND_SCAN_INTERVAL);

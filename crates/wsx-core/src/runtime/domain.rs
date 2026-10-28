@@ -291,8 +291,9 @@ pub struct AgentInfo {
     pub session_ref: Option<AgentSessionRef>,
     pub capabilities: AgentCapabilities,
     pub source: String,
-    /// The agent compacts its conversation now (Claude's /compact, from its PreCompact report
-    /// to the next report).
+    /// The agent compacts its conversation now: Claude's /compact, an automatic compaction
+    /// inside a turn, or an idle one between turns, from its PreCompact report to its
+    /// PostCompact report or the next report (docs/agent-reporting.md "Claude compaction").
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub compacting: bool,
 }

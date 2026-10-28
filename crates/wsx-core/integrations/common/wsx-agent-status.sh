@@ -34,10 +34,8 @@ try:
  conversation=next((d[k] for k in ("session_id","conversation_id","conversationId","sessionId") if isinstance(d.get(k),str)),"")
  prompt=d.get("prompt_id","")
  transcript=d.get("transcript_path","") if os.environ.get("WSX_PROVIDER") == "claude" else ""
- # A compaction that no person asked for with /compact: the session start after any compaction,
- # and the compaction events of an automatic one (Claude Code 2.1.300 sends "trigger").
- compaction=os.environ.get("WSX_PROVIDER") == "claude" and (d.get("source") == "compact"
-  or (d.get("hook_event_name") in ("PreCompact","PostCompact") and d.get("trigger") != "manual"))
+ # The session start after any compaction (Claude Code 2.1.300 sends source "compact").
+ compaction=os.environ.get("WSX_PROVIDER") == "claude" and d.get("source") == "compact"
  # The prompt a Claude turn takes: a wsx round by its exchange line, as typed or inside the
  # paste wrapper Claude saves it in, else another prompt (docs/agent-orchestration.md "Taken, not typed").
  received=""
@@ -45,9 +43,10 @@ try:
   import re
   m=re.match(r"\s*(?:<pasted_content [^>]*>\s*)?\[wsx exchange (\d+), round (\d+), ",d["prompt"])
   received=m.group(1)+":"+m.group(2) if m else "other"
- # A /compact a person types runs from its PreCompact to its PostCompact (docs/web-client-chat.md "Timeline").
- compacting=os.environ.get("WSX_PROVIDER") == "claude" and d.get("hook_event_name") == "PreCompact" and d.get("trigger") == "manual"
- values=[conversation,prompt if isinstance(prompt,str) else "",transcript if isinstance(transcript,str) else "","1" if compaction else "",received,"1" if compacting else ""]
+ # Every compaction runs from its PreCompact to its PostCompact: a /compact a person types, an automatic
+ # one inside a turn, and an idle one between turns (Claude Code 2.1.310 "Compacted while idle").
+ compacting=d.get("hook_event_name") if os.environ.get("WSX_PROVIDER") == "claude" and d.get("hook_event_name") in ("PreCompact","PostCompact") else ""
+ values=[conversation,prompt if isinstance(prompt,str) else "",transcript if isinstance(transcript,str) else "","1" if compaction else "",received,compacting]
  if any("|" in value or any(ord(c)<32 for c in value) for value in values): raise SystemExit(1)
  print("|".join(values))
 except (TypeError, ValueError): pass' 2>/dev/null)"; then
@@ -65,8 +64,8 @@ except (TypeError, ValueError): pass' 2>/dev/null)"; then
   compacting="${remainder#*|}"
 fi
 # ^ docs/agent-reporting.md "Claude compaction": Claude starts its session again after every
-# compaction, also an automatic one inside a turn. That start must not end the turn; only the
-# person's /compact is reported, by its own PreCompact and PostCompact.
+# compaction, also an automatic one inside a turn. That start must not end the turn; every
+# compaction is reported by its own PreCompact and PostCompact.
 if [ "$compaction" = "1" ]; then
   exit 0
 fi
@@ -79,7 +78,9 @@ set -- agent report "$WSX_PANE_ID" --provider "@PROVIDER@" --state "$state"
 [ "$action" = "detached" ] && set -- "$@" --detached
 [ "@PROVIDER@" = "claude" ] && set -- "$@" --escape-interrupts --prompt --prompt-receipts
 [ -n "$received" ] && [ "$state" = "working" ] && set -- "$@" --received "$received"
-[ "$compacting" = "1" ] && [ "$state" = "working" ] && set -- "$@" --compacting
+# ^ wsxd keeps the turn of a compaction inside it and returns one outside a turn to its earlier state.
+[ "$compacting" = "PreCompact" ] && set -- "$@" --compacting
+[ "$compacting" = "PostCompact" ] && set -- "$@" --compacted
 [ "@PROVIDER@" = "claude" ] && [ "$state" = "working" ] && [ -n "$prompt_id" ] && set -- "$@" --wake-token "$prompt_id"
 [ -n "$conversation" ] && set -- "$@" --session-id "$conversation"
 [ -n "$conversation" ] && [ -n "$transcript" ] && set -- "$@" --transcript-path "$transcript"

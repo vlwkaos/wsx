@@ -290,6 +290,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
                 },
                 received: None,
                 compacting: false,
+                compacted: false,
             })
             .unwrap(),
         Response::Ack { .. }

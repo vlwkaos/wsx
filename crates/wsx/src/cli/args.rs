@@ -278,6 +278,9 @@ pub enum AgentCmd {
         /// The agent compacts its conversation (on a Working report)
         #[arg(long, hide = true)]
         compacting: bool,
+        /// The compaction ended: the agent returns to its state before it (`--state` is not used)
+        #[arg(long, hide = true, conflicts_with = "compacting")]
+        compacted: bool,
     },
     #[command(hide = true)]
     PresenceRenew {
