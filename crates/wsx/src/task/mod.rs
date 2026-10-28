@@ -999,6 +999,10 @@ fn create(
     let project = resolve_project(&workspace, project)?;
     let settings = load_task_config(&project.path)
         .map_err(|error| anyhow::anyhow!("{error}; no task was created"))?;
+    // ^ A missing profile folder would fail the host's start after the ID is taken.
+    config
+        .claude_config_dir(&project.path)
+        .map_err(|error| anyhow::anyhow!("{error}; no task was created"))?;
     let steps = match skip {
         Some(skip) => without_steps(&settings.workflow.steps, &skip)?,
         None => Vec::new(),
