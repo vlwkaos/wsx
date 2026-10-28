@@ -10,6 +10,8 @@
 ### Changed
 
 - Web: Home orders projects like a messenger. After the projects with needs come those with a message this device has not read, newest first, then the rest by the last owner-facing activity: a message, the owner's message, a task entering its state or an agent session changing state. A worker saving its record or the manager's own commands and events no longer lift a row; the overview's `last_unix_ms` and the row's time follow the same rule. A message arriving in the chat that is open leaves its project read ([docs/web-client-tasks.md](docs/web-client-tasks.md) "Home").
+- Web: a manager that writes to the owner on its own, a reply that is not quiet to a turn of only events such as a routine's result, sends a "Manager needs me" push `<manager> wrote to you` that opens the chat. A reply to the owner's message never pushes ([docs/web-client.md](docs/web-client.md) "Notifications").
+- Tasks: the handover of a fresh manager conversation also lists the routine results of the last 24 hours, at most 8, so a rotation no longer loses them ([docs/tasks.md](docs/tasks.md) "Manager").
 
 ### Fixed
 

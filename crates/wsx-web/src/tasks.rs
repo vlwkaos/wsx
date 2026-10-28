@@ -1026,6 +1026,8 @@ pub struct Watch {
     seen: HashMap<u64, HashMap<u32, (TaskState, u32)>>,
     /// Approval requests already seen, by project.
     requests: HashMap<u64, HashSet<String>>,
+    /// The last manager reply id seen, by project.
+    replies: HashMap<u64, u64>,
     /// New items for "Manager needs me" that wait for the merge window.
     pending: crate::events::Pending<(u64, Key)>,
     /// What waits on the owner now, by project, with the project's name.
@@ -1047,6 +1049,8 @@ enum Key {
     Task(u32),
     Approval(String),
     Checks,
+    /// A reply the manager started on its own; its line `<manager> wrote to you`.
+    Wrote(String),
 }
 
 /// An item that waits on the owner: a task that waits on them, an approval request, or the
@@ -1137,6 +1141,40 @@ fn notice(scope: &Scope, watch: &mut Watch) {
     }
 }
 
+/// Note a reply the manager started on its own for "Manager needs me": one that is a message
+/// (not quiet) to a turn of only events. A reply to the owner, a recap or another manager is
+/// no news (docs/tasks.md "Manager").
+fn wrote(scope: &Scope, watch: &mut Watch) {
+    let log = ManagerDir::existing(&scope.store)
+        .ok()
+        .flatten()
+        .and_then(|dir| dir.read_tail(MANAGER_TAIL_BYTES).ok())
+        .unwrap_or_default();
+    let events = |id: &u64| {
+        log.iter().any(|entry| match &entry.event {
+            ManagerEvent::Message { id: of, from, .. } => of == id && *from == Author::Events,
+            _ => false,
+        })
+    };
+    // ^ A project seen for the first time, as at a server start, notifies nothing.
+    let last = watch.replies.get(&scope.project).copied();
+    let mut news = false;
+    for entry in &log {
+        let ManagerEvent::Reply { id, to, quiet, .. } = &entry.event else {
+            continue;
+        };
+        if last.is_some_and(|last| *id > last) && !quiet && !to.is_empty() {
+            news |= to.iter().all(events);
+        }
+        watch.replies.insert(scope.project, *id);
+    }
+    watch.replies.entry(scope.project).or_default();
+    if news {
+        let line = format!("{} wrote to you", manager_name(scope));
+        watch.pending.add((scope.project, Key::Wrote(line)));
+    }
+}
+
 /// Once the merge window of new items passed: one "Manager needs me" push that names every
 /// open item, replacing the one before (its tag). A device whose page shows the project of
 /// every new item is skipped. `badge` is what needs the owner now, for the app badge.
@@ -1149,10 +1187,11 @@ pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
     let new: Vec<(u64, Key)> = new
         .into_iter()
         .filter(|(project, key)| {
-            watch
-                .open
-                .get(project)
-                .is_some_and(|(_, items)| items.iter().any(|item| item.key == *key))
+            matches!(key, Key::Wrote(_))
+                || watch
+                    .open
+                    .get(project)
+                    .is_some_and(|(_, items)| items.iter().any(|item| item.key == *key))
         })
         .collect();
     let Some((first, _)) = new.first() else {
@@ -1163,35 +1202,56 @@ pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
         let showing = app.showing(*project);
         skip.retain(|device| showing.contains(device));
     }
-    let mut projects: Vec<(&u64, &(String, Vec<Open>))> = watch
+    // ^ A reply the manager wrote is an item of this push only: it waits on nothing.
+    let wrote: Vec<(u64, Open)> = new
+        .iter()
+        .filter_map(|(project, key)| match key {
+            Key::Wrote(line) => Some((
+                *project,
+                Open {
+                    key: key.clone(),
+                    line: line.clone(),
+                    url: format!("#/p/{project}"),
+                    count: 1,
+                },
+            )),
+            _ => None,
+        })
+        .collect();
+    let mut projects: Vec<(u64, &str, Vec<&Open>)> = watch
         .open
         .iter()
-        .filter(|(_, (_, items))| !items.is_empty())
+        .map(|(project, (name, items))| {
+            let wrote = wrote.iter().filter(|(of, _)| of == project);
+            let items: Vec<&Open> = items.iter().chain(wrote.map(|(_, item)| item)).collect();
+            (*project, name.as_str(), items)
+        })
+        .filter(|(_, _, items)| !items.is_empty())
         .collect();
-    projects.sort_by_key(|(project, _)| **project);
+    projects.sort_by_key(|(project, _, _)| *project);
     let count: usize = projects
         .iter()
-        .flat_map(|(_, (_, items))| items)
+        .flat_map(|(_, _, items)| items)
         .map(|item| item.count)
         .sum();
-    let names: Vec<&str> = projects
-        .iter()
-        .map(|(_, (name, _))| name.as_str())
-        .collect();
+    let names: Vec<&str> = projects.iter().map(|(_, name, _)| *name).collect();
     let several = names.len() > 1;
     let lines: Vec<String> = projects
         .iter()
-        .flat_map(|(_, (name, items))| {
+        .flat_map(|(_, name, items)| {
             items.iter().map(move |item| match several {
                 false => item.line.clone(),
                 true => format!("{name}: {}", item.line),
             })
         })
         .collect();
-    let items: Vec<&Open> = projects.iter().flat_map(|(_, (_, items))| items).collect();
+    let items: Vec<&Open> = projects
+        .iter()
+        .flat_map(|(_, _, items)| items.iter().copied())
+        .collect();
     let url = match (items.as_slice(), projects.as_slice()) {
         ([item], _) => item.url.clone(),
-        (_, [(project, _)]) => format!("#/p/{project}"),
+        (_, [(project, _, _)]) => format!("#/p/{project}"),
         _ => "#/".into(),
     };
     let payload = json!({
@@ -1287,6 +1347,14 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
             .map(|(path, _)| path)
             .collect();
         notice(scope, watch);
+        let manager = |path: &&PathBuf| {
+            path.parent()
+                .and_then(|parent| parent.file_name())
+                .is_some_and(|name| name == "manager")
+        };
+        if before.is_none() || changed.iter().any(manager) {
+            wrote(scope, watch);
+        }
         // ^ A working agent appends a progress line about every second. Only a ready task's
         // log can change the overview (a landing that stopped), and the overview reads those
         // logs whole. The manager's log is `log.jsonl` too, outside a task's folder: its turn
