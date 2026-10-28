@@ -17,7 +17,7 @@ wsx web devices [<site>] [--revoke <id>] [--json]
 
 One site per process. The file must be a regular file owned by the user with mode `600`. Unknown fields are refused.
 
-A profile grant (`projects = { profile = "<name>" }`, README "Profiles") reaches the projects whose `profile` in `config-v2.toml` is that name; a project without one is in `default`. The server reads the config again for each request, so a project that joins the profile is reachable at once and one that leaves it is not. A profile the config does not declare refuses the start; a config that later does not parse reaches no project. A session the site starts (`session_start`) runs `agent_command` under the profile's `claude_config_dir`, and the `/` lists show the skills of that root.
+A profile grant (`projects = { profile = "<name>" }`, README "Profiles") reaches the projects whose `profile` in `config-v2.toml` is that name; a project without one is in `default`. The server reads the config again for each request, so a project that joins the profile is reachable at once and one that leaves it is not; an open page's project list follows on the next poll, within 2 s. A profile the config does not declare refuses the start; a config that later does not parse reaches no project. A session the site starts (`session_start`) runs `agent_command` under the profile's `claude_config_dir`, and the `/` lists show the skills of that root.
 
 ```toml
 id = "owner"                              # a-z, 0-9, '-'; names the state directory and cookie

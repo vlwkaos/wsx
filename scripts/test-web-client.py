@@ -2452,7 +2452,9 @@ capabilities = ["terminal_view"]
         assert call('session_close', {'session_id': session['id'], 'expected_revision': session['revision']})['type'] == 'ack'
         with registry.open('a') as file:
             file.write('[[projects]]\nname = "project3"\npath = %s\nprofile = "work"\n' % json.dumps(str((work / 'project3').resolve())))
-        assert work_projects() == ['project2', 'project3'], work_projects()
+        # ^ A request sees it at once; the page's project list on the next poll (2 s at most).
+        assert work_site.request('GET', '/api/tasks/%d/mentions' % projects['project3'])[0] == 200
+        wait(lambda: work_projects() == ['project2', 'project3'], 'project3 joins the profile site')
         ok('profile site: exactly its profile\'s projects, a project that joins later, agents and skills under its config root')
         session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == term)
         assert call('session_close', {'session_id': term, 'expected_revision': session['revision']})['type'] == 'ack'
