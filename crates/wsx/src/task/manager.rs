@@ -739,9 +739,7 @@ impl Manager {
                     .filter(|(parent, _)| *parent == record.id)
                     .map(|(_, child)| *child)
                     .collect();
-                if matches!(record.state, TaskState::Ready | TaskState::Failed)
-                    && !children.is_empty()
-                {
+                if record.at_rest() && !children.is_empty() {
                     summary.push_str(&format!(
                         "; children ready to land: {}",
                         view::task_list(children)

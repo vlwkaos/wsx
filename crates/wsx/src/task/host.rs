@@ -692,7 +692,7 @@ impl Host {
     /// ref: docs/tasks.md "Parent tasks"
     fn child_landed(&mut self, child: u32, commits: u32) -> Result<String> {
         self.log(LogEvent::ChildLanded { child, commits });
-        if !matches!(self.record.state, TaskState::Ready | TaskState::Failed) {
+        if !self.record.at_rest() {
             return Ok(format!("#{child} landed; the next checks include it"));
         }
         self.revise(format!(
@@ -1747,7 +1747,7 @@ impl Host {
             return Ok(());
         };
         let record = TaskDir::open(&self.record.project_id, parent)?.read_record()?;
-        if !matches!(record.state, TaskState::Ready | TaskState::Failed) {
+        if !record.at_rest() {
             let state = match (&record.waiting, record.state) {
                 (Some(waiting), TaskState::Waiting) => {
                     format!("waiting on {}", waiting.on.as_str())
