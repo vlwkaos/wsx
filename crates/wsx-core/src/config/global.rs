@@ -547,19 +547,15 @@ impl GlobalConfig {
     fn load_from_paths(canonical: &Path, legacy: &Path) -> Result<(Self, Option<String>)> {
         // A file that does not parse gives defaults and a warning, never an error.
         let parse = |text: &str| {
-            toml::from_str::<Self>(text).map_err(|error| {
-                (
-                    Self::default(),
-                    Some(format!("config parse error (using defaults): {error}")),
-                )
-            })
+            toml::from_str::<Self>(text)
+                .map_err(|error| format!("config parse error (using defaults): {error}"))
         };
         if canonical.exists() {
             let text = std::fs::read_to_string(canonical)
                 .with_context(|| format!("reading {}", canonical.display()))?;
             let config = match parse(&text) {
                 Ok(config) => config,
-                Err(fallback) => return Ok(fallback),
+                Err(warning) => return Ok((Self::default(), Some(warning))),
             };
             if stored_data_needs_migration(&text) {
                 config.save_to(canonical)?;
@@ -573,7 +569,7 @@ impl GlobalConfig {
             .with_context(|| format!("reading {}", legacy.display()))?;
         let config = match parse(&text) {
             Ok(config) => config,
-            Err(fallback) => return Ok(fallback),
+            Err(warning) => return Ok((Self::default(), Some(warning))),
         };
         let encoded = toml::to_string_pretty(&config)?;
         match atomic_create_private(canonical, encoded.as_bytes(), true) {
