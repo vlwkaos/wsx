@@ -227,6 +227,7 @@ pub(crate) fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Res
             capabilities,
             received,
             compacting,
+            compacted,
         } => agent_report_with_attachment(
             daemon,
             RuntimeAgentAuthority::new(pane_id, runtime_generation),
@@ -241,6 +242,7 @@ pub(crate) fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Res
                 capabilities,
                 received,
                 compacting,
+                compacted,
             },
         ),
         Request::AgentPresenceRenew {

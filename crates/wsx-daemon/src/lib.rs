@@ -301,6 +301,8 @@ struct State {
     agent_presence_leases: HashMap<PaneId, Instant>,
     agent_wake_tokens: HashMap<PaneId, String>,
     claude_reconciliations: HashMap<PaneId, ClaudeReconciliation>,
+    /// Compactions that began outside a turn: the state each returns to, and since when.
+    compactions: HashMap<PaneId, (AgentState, Instant)>,
     terminal_operation_locks: HashMap<PaneId, Arc<Mutex<()>>>,
     listening_ports: HashMap<PaneId, Vec<u16>>,
     foreground_jobs: HashSet<PaneId>,

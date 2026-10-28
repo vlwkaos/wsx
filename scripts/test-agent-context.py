@@ -698,9 +698,11 @@ def main():
         quiet = claude_hook('done')
         assert quiet.returncode == 0 and quiet.stderr == '' and claude_agent()['state'] == 'done'
         # Claude starts its session again after every compaction (SessionStart, source "compact"),
-        # also an automatic one inside a turn (real transcripts and hooks, Claude Code 2.1.300).
-        # Only the person's /compact is reported: working, then done. Every installed command
-        # of an event runs, as Claude runs them.
+        # also an automatic one inside a turn (real transcripts and hooks, Claude Code 2.1.300); that
+        # start is not reported. Every compaction works from its PreCompact to its PostCompact: one
+        # inside a turn leaves the turn working, one outside a turn (the person's /compact, or Claude
+        # Code 2.1.310's idle compaction, 37 to 55 s in real transcripts) returns to the state before
+        # it. Every installed command of an event runs, as Claude runs them.
         def hook_states(steps):
             seen = []
             for event, fields in steps:
@@ -717,7 +719,12 @@ def main():
                             ('PreCompact', {'trigger':'manual'}), ('SessionStart', {'source':'compact'}), ('PostCompact', {'trigger':'manual'}),
                             ('PreCompact', {'trigger':'auto'}), ('SessionStart', {'source':'compact'}), ('PostCompact', {'trigger':'auto'}),
                             ('SessionStart', {'source':'startup'})]) == ['working', 'working', 'working', 'working', 'done',
-                                                                         'working', 'working', 'done', 'done', 'done', 'done', 'idle']
+                                                                         'working', 'working', 'done', 'working', 'working', 'done', 'idle']
+        # An idle compaction holds a delivery as a turn does, and the agent is idle again after it.
+        assert hook_states([('PreCompact', {'trigger':'auto'})]) == ['working'] and claude_agent()['compacting']
+        assert 'agent_busy' in cli('agent','request',claude,'denied','--stash-draft','--json',ok=False).stderr
+        assert hook_states([('SessionStart', {'source':'compact'}), ('PostCompact', {'trigger':'auto'})]) == ['working', 'idle']
+        assert not claude_agent().get('compacting')
         # ^ docs/agent-reporting.md "Hook exit": expected rejections stay quiet and change nothing.
         assert claude_hook('idle').returncode == 0 and claude_agent()['state'] == 'idle'
         before_hook_rejection = claude_agent()

@@ -37,6 +37,7 @@ fn agent_test_daemon(persisted: Persisted) -> (Arc<Daemon>, PathBuf) {
             agent_presence_leases: HashMap::new(),
             agent_wake_tokens: HashMap::new(),
             claude_reconciliations: HashMap::new(),
+            compactions: HashMap::new(),
             terminal_operation_locks: HashMap::new(),
             listening_ports: HashMap::new(),
             foreground_jobs: HashSet::new(),
@@ -1336,6 +1337,7 @@ fn resident_presence_expires_without_erasing_resume_identity_or_event_only_agent
             capabilities: AgentCapabilities::default(),
             received: None,
             compacting: false,
+            compacted: false,
         },
     )
     .unwrap_err();
@@ -1355,6 +1357,7 @@ fn resident_presence_expires_without_erasing_resume_identity_or_event_only_agent
             capabilities: AgentCapabilities::default(),
             received: None,
             compacting: false,
+            compacted: false,
         },
     )
     .unwrap();
@@ -1434,6 +1437,7 @@ fn resident_presence_expires_without_erasing_resume_identity_or_event_only_agent
             capabilities: AgentCapabilities::default(),
             received: None,
             compacting: false,
+            compacted: false,
         },
     )
     .unwrap();
@@ -1506,6 +1510,7 @@ fn simultaneous_presence_expiry_detaches_each_pane_in_saved_snapshot() {
                 capabilities: AgentCapabilities::default(),
                 received: None,
                 compacting: false,
+                compacted: false,
             },
         )
         .unwrap();
@@ -1554,6 +1559,7 @@ fn expired_presence_retries_failed_persistence_without_restoring_working() {
             capabilities: AgentCapabilities::default(),
             received: None,
             compacting: false,
+            compacted: false,
         },
     )
     .unwrap();
@@ -1612,6 +1618,7 @@ fn detached_report_preserves_resume_metadata_and_releases_live_authority() {
             capabilities: AgentCapabilities::default(),
             received: None,
             compacting: false,
+            compacted: false,
         },
     )
     .unwrap();
@@ -2019,6 +2026,7 @@ fn report_claude_prompt(
             capabilities: claude_capabilities(),
             received: None,
             compacting: false,
+            compacted: false,
         },
     )
 }
@@ -2123,6 +2131,7 @@ fn claude_wake_heartbeat_cannot_outlive_authoritative_working_state() {
             capabilities: claude_capabilities(),
             received: None,
             compacting: false,
+            compacted: false,
         },
     )
     .unwrap();
@@ -3948,6 +3957,7 @@ fn exchange_wait_releases_the_mutation_fence_for_lifecycle_reports() {
             },
             received: None,
             compacting: false,
+            compacted: false,
         },
     );
     assert!(matches!(report, Response::Ack { .. }));

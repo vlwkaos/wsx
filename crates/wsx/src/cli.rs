@@ -168,6 +168,7 @@ pub fn run(cmd: Command) -> Result<()> {
                 prompt_receipts,
                 received,
                 compacting,
+                compacted,
             } => cmd_agent_report(
                 &pane,
                 AgentReportOptions {
@@ -190,6 +191,7 @@ pub fn run(cmd: Command) -> Result<()> {
                     },
                     received,
                     compacting,
+                    compacted,
                 },
             ),
             AgentCmd::PresenceRenew { pane, presence_id } => {

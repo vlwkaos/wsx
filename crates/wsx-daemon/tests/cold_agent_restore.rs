@@ -865,6 +865,7 @@ fn report_claude_ready(daemon: &DaemonGuard, invocation: &ClaudeInvocation) {
                 },
                 received: None,
                 compacting: false,
+                compacted: false,
             })
             .expect("report recovered Claude readiness"),
         Response::Ack { .. }

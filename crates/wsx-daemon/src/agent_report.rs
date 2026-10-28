@@ -50,6 +50,66 @@ pub(crate) fn request_claude_reconcile(daemon: &Daemon, pane_id: PaneId, interru
         });
 }
 
+/// How long a compaction that began outside a turn may go without its end. Claude's took 37 to
+/// 55 s (real transcripts, 2026-10); a compaction that fails sends no PostCompact.
+const COMPACTION_LIMIT: Duration = Duration::from_secs(10 * 60);
+
+/// A compaction outside a turn whose end never came returns its agent to the state before it,
+/// so a message does not wait for it for ever. Returns whether an agent changed.
+pub(crate) fn end_stale_compactions(daemon: &Daemon, state: &mut State) -> Result<bool, ApiError> {
+    let now = Instant::now();
+    let stale: Vec<(PaneId, AgentState)> = state
+        .compactions
+        .iter()
+        .filter(|(_, (_, since))| now.saturating_duration_since(*since) >= COMPACTION_LIMIT)
+        .map(|(pane_id, (earlier, _))| (*pane_id, *earlier))
+        .collect();
+    if stale.is_empty() {
+        return Ok(false);
+    }
+    let revision = state.revision.saturating_add(1);
+    let mut persisted = state.persisted.clone();
+    let mut changed = false;
+    for (pane_id, earlier) in &stale {
+        let Some(pane) = persisted.panes.iter_mut().find(|pane| pane.id == *pane_id) else {
+            continue;
+        };
+        let Some(agent) = pane.agent.as_mut().filter(|agent| agent.compacting) else {
+            continue;
+        };
+        changed = true;
+        agent.compacting = false;
+        set_agent_state(agent, *earlier);
+        pane.revision = revision;
+        observe_agent_exchange(
+            &mut persisted,
+            *pane_id,
+            *earlier,
+            true,
+            revision,
+            unix_time_millis(),
+        );
+    }
+    if changed {
+        commit_publish(
+            daemon,
+            state,
+            persisted,
+            revision,
+            "agent.compaction_ended",
+            0,
+        )?;
+    }
+    for (pane_id, earlier) in stale {
+        state.compactions.remove(&pane_id);
+        // ^ The screen reconciler must not take the compaction's Working back.
+        if let Some(reconciliation) = state.claude_reconciliations.get_mut(&pane_id) {
+            reconciliation.event_state = earlier;
+        }
+    }
+    Ok(changed)
+}
+
 // ^ [[Agent Lifecycle Authority]] wsx-core normalizes provider events and bounded
 // companion evidence; this boundary owns reconciliation, generation checks,
 // persistence, wake authority, and resume identity.
@@ -64,6 +124,7 @@ pub(crate) struct AgentReportInput {
     pub(crate) capabilities: AgentCapabilities,
     pub(crate) received: Option<PromptReceived>,
     pub(crate) compacting: bool,
+    pub(crate) compacted: bool,
 }
 
 #[cfg(test)]
@@ -90,6 +151,7 @@ pub(crate) fn agent_report(
             capabilities,
             received: None,
             compacting: false,
+            compacted: false,
         },
     )
 }
@@ -110,6 +172,7 @@ pub(crate) fn agent_report_with_attachment(
         mut capabilities,
         received,
         compacting,
+        compacted,
     } = report;
     let RuntimeAgentAuthority {
         pane_id,
@@ -175,6 +238,37 @@ pub(crate) fn agent_report_with_attachment(
     let project_index = project_index_for_pane(&persisted, pane_id)?;
 
     let previous_agent = persisted.panes[pane_index].agent.clone();
+    // ^ docs/agent-reporting.md "Claude compaction": every compaction works from its PreCompact
+    // report. One that began outside a turn (an idle one, or the person's /compact) returns to
+    // the state before it on its PostCompact (`compacted`) report; one inside a turn leaves the
+    // turn going on. Any other report ends what is kept here.
+    let before = previous_agent
+        .as_ref()
+        .filter(|previous| previous.attached && previous.provider == provider);
+    let outside_turn = state
+        .compactions
+        .get(&pane_id)
+        .copied()
+        .filter(|_| before.is_some_and(|previous| previous.compacting));
+    let compacting = attached && compacting && !compacted;
+    let mut kept_compaction = None;
+    let agent_state = if !attached {
+        agent_state
+    } else if compacted {
+        match (outside_turn, before) {
+            (Some((earlier, _)), _) => earlier,
+            (None, Some(previous)) => previous.state,
+            (None, None) => agent_state,
+        }
+    } else if compacting {
+        kept_compaction = outside_turn.or_else(|| {
+            let earlier = before.map_or(AgentState::Idle, |previous| previous.state);
+            (earlier != AgentState::Working).then(|| (earlier, Instant::now()))
+        });
+        AgentState::Working
+    } else {
+        agent_state
+    };
     let agent_id = match previous_agent.as_ref().map(|agent| agent.id) {
         Some(id) => id,
         None => AgentInstanceId(next_id(&mut persisted)?),
@@ -258,10 +352,11 @@ pub(crate) fn agent_report_with_attachment(
         session_ref,
         capabilities,
         source: "adapter".into(),
-        compacting: attached && compacting,
+        compacting,
     });
     persisted.panes[pane_index].revision = revision;
-    if attached && agent_state == AgentState::Working {
+    // ^ A compaction outside a turn is Claude's own upkeep, not work on the project.
+    if attached && agent_state == AgentState::Working && kept_compaction.is_none() {
         persisted.projects[project_index].last_agent_active_unix_ms = Some(unix_time_millis());
         persisted.projects[project_index].revision = revision;
     }
@@ -281,6 +376,10 @@ pub(crate) fn agent_report_with_attachment(
         unix_time_millis(),
     );
     commit_persisted(daemon, &mut state, persisted)?;
+    match kept_compaction {
+        Some(kept) => state.compactions.insert(pane_id, kept),
+        None => state.compactions.remove(&pane_id),
+    };
     if presence_id.is_some() {
         state.agent_presence_leases.insert(pane_id, now);
     } else {

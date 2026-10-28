@@ -54,7 +54,7 @@ not require daemon handoff to finish; missing or unsafe candidates still fail ex
 
 ## Hook exit
 
-The shell hook (`wsx-agent-status.sh`, Claude integration 25, Codex integration 16) exits 0 without output when the daemon cannot take a report for an expected reason: the pane has no `WSX_PANE_ID`, wsxd answers `stale_runtime` (a stale or missing runtime generation), `terminal_unavailable` (the pane runtime is gone) or `not_found` (the pane is gone), or the socket or the reporter is gone. These follow a daemon restart, an upgrade or a closed pane, and a hook error on every tool call would only add noise. Any other rejection exits 1 with one bounded line, `wsx <provider> <action> report failed (report_failed)`, and no vendor input. No report is replayed.
+The shell hook (`wsx-agent-status.sh`, Claude integration 27, Codex integration 17) exits 0 without output when the daemon cannot take a report for an expected reason: the pane has no `WSX_PANE_ID`, wsxd answers `stale_runtime` (a stale or missing runtime generation), `terminal_unavailable` (the pane runtime is gone) or `not_found` (the pane is gone), or the socket or the reporter is gone. These follow a daemon restart, an upgrade or a closed pane, and a hook error on every tool call would only add noise. Any other rejection exits 1 with one bounded line, `wsx <provider> <action> report failed (report_failed)`, and no vendor input. No report is replayed.
 
 An installed integration is current when its version is newer than this build's, or the same and its primary file is exactly what this build writes. So a shared asset changed without a version bump, such as this shell hook of every shell provider, still shows as outdated. `wsx agent install <provider>`, and the TUI's update prompt for an outdated integration, rewrite the hook files to the current build. They also rewrite an older guarded binding, `if [ -x "X/wsx-agent-status.sh" ]; then "X/wsx-agent-status.sh" ACTION; fi`, to the managed command, so each event keeps one wsx binding and other hooks stay as they are. The 0.30.1 opt-in inspection (`wsx-agent-inspect.py`, `WSX_INSPECT`, the `wsx-inspect-enabled` marker) is retired: install deletes its files beside the hook.
 
@@ -66,20 +66,24 @@ Every wsx agent presents a reply by one rule, `crates/wsx-core/integrations/comm
 
 ## Claude compaction
 
-Claude Code fires `SessionStart` with `source: "compact"` after every compaction: the person's `/compact`, an automatic one at the context limit, which can come inside a turn, and one after a long idle time. Reporting it as `idle` ended an open turn early: wsxd showed the agent idle while Claude still worked, the exchange ended, and the chat delivered the next message into a busy editor. Claude integration 22 (`wsx-agent-status.sh`) does this instead:
+Claude Code compacts its conversation in three ways: the person's `/compact`, an automatic compaction at the context limit, which can come inside a turn, and (Claude Code 2.1.310) an idle compaction between turns. The idle one runs about 54 minutes after a turn ends, at 90% of the one-hour prompt cache, for a conversation of at least 100k tokens; Claude shows "Compacted while idle, before the prompt cache expired" and `"idleCompaction": false` turns it off. It is a turn of Claude's own: it took 37 to 55 s in real transcripts (2026-10), and it fires no `UserPromptSubmit` and no `Stop`. Each compaction fires `PreCompact` and `PostCompact` with its `trigger`, and `SessionStart` with `source: "compact"` after it. Claude integration 27 (`wsx-agent-status.sh`) reports:
 
-| Hook input (Claude Code 2.1.300) | Report |
+| Hook input (Claude Code 2.1.300 to 2.1.310) | Report |
 |---|---|
+| `PreCompact`, any trigger | `working --compacting` |
+| `PostCompact`, any trigger | `--compacted` |
 | `SessionStart`, `source: "compact"` | none: the turn, or the done state, goes on |
-| `PreCompact`, `trigger: "manual"` (`/compact`) | `working` |
-| `PostCompact`, `trigger: "manual"` | `done` |
-| `PreCompact` or `PostCompact` of an automatic compaction | none |
 | `SessionStart` from `startup`, `resume`, `clear` | `idle`, as before |
 
-- `/compact` has no `UserPromptSubmit` and no `Stop` (seen with Claude Code 2.1.300). Its `PostCompact` ends it, so its exchange ends `done_observed`, and a message sent while Claude compacts waits in the web queue until then.
-- The script decides, not the hook matchers, so an older copy of the managed hook command that still calls the same script is also fixed. `PostCompact` must exist: a Claude without it stays `working` after `/compact` until the next turn ends.
+wsxd (daemon revision 37) keeps the turn: a compaction that begins while the agent works leaves it working when it ends. One that begins outside a turn (idle, done, or a `/compact`) makes the agent work until it ends, then returns it to the state before it. So a message from the chat waits in the queue while Claude compacts, and is delivered after it. The agent's `compacting` is set from the start to the end, and the chat shows "Compacting the conversation".
+
+- Before, only `/compact` was reported. An idle compaction left wsxd showing done while Claude worked: the chat's message waited for an editor that did not look idle, failed after 30 s with `editor_unavailable`, or was typed into the busy Claude (seen by the owner on 2026-10-15 and 2026-10-27).
+- A compaction outside a turn whose `PostCompact` never comes (the compaction failed) ends after 10 minutes. Any other report of the agent ends it at once.
+- `/compact` has no `UserPromptSubmit` and no `Stop` (seen with Claude Code 2.1.300). Its `PostCompact` ends it, so its exchange ends `done_observed`.
+- The script decides, not the hook matchers, so an older copy of the managed hook command that still calls the same script is also fixed. `PostCompact` must exist: a Claude without it stays `working` after a compaction until the next report.
+- The reporter is the `wsx` beside wsxd, so it sends `--compacted` only to a wsxd that knows it. An older wsxd reads the end of a compaction as `done`.
 - Other providers are unchanged.
-- An installed integration below 25 shows as outdated. Run `wsx agent install claude`, then restart Claude when it is idle so that it loads the new hook configuration.
+- An installed integration below 27 shows as outdated. Run `wsx agent install claude`, then restart Claude when it is idle so that it loads the new hook configuration.
 
 ## Pi native exchange observer
 
@@ -100,6 +104,6 @@ Claude's `UserPromptSubmit` hook starts `wsx.reporter agent wake-heartbeat <pane
 - `node scripts/test-pi-agent-status.mjs` exercises Pi lifecycle events with a removed legacy path.
 - The daemon reporter test checks publication, aborted handoff, old-target removal and unsafe targets.
 - Isolated runtime scenarios verify actual reporting and live handoff without replacing pane processes.
-- `scripts/test-agent-context.py` runs the installed Claude hooks for a compaction inside a turn, a `/compact` and a session start against a real wsxd.
+- `scripts/test-agent-context.py` runs the installed Claude hooks for a compaction inside a turn, a `/compact`, an idle compaction (a stashed delivery is refused while it runs) and a session start against a real wsxd.
 - `scripts/web-real-agent-check.py --scenario compact` runs a real Claude with this build's hooks: `/compact`, and a message sent while it compacts.
 - `python3 -B scripts/test-agent-context.py --only context` starts the installed heartbeat hook in a detached shell and checks that it ends after a finished prompt, a replaced prompt, a deleted pane and a stopped wsxd, and that it starts no wsxd.
