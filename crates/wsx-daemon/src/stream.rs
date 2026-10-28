@@ -170,7 +170,10 @@ pub(crate) fn stream_terminal_updates(
         let mut ended = false;
         let operation_lock = terminal_operation_lock(daemon, lease.pane_id);
         let operation = lock(&operation_lock);
-        let runtime = match leased_stream_runtime(&lock(&daemon.state), lease) {
+        // ^ Bound first: a guard in a match scrutinee lives through its arms, and a write
+        // to a client that stopped reading would hold the daemon state for its timeout.
+        let leased = leased_stream_runtime(&lock(&daemon.state), lease);
+        let runtime = match leased {
             Ok(runtime) => runtime,
             Err(error) => {
                 drop(operation);
@@ -279,7 +282,8 @@ pub(crate) fn stream_raw_terminal_output(
         let mut ended = false;
         let operation_lock = terminal_operation_lock(daemon, lease.pane_id);
         let operation = lock(&operation_lock);
-        let runtime = match leased_stream_runtime(&lock(&daemon.state), lease) {
+        let leased = leased_stream_runtime(&lock(&daemon.state), lease);
+        let runtime = match leased {
             Ok(runtime) => runtime,
             Err(error) => {
                 drop(operation);
@@ -450,6 +454,18 @@ pub(crate) fn with_stream_runtime<T>(
     operation(&runtime)
 }
 
+/// A program that does not read its input leaves the rest of a stream write unwritten,
+/// as `INPUT_WRITE_LIMIT` bounds it. The stream stays: its heartbeat and frames go on
+/// (docs/terminal-raw-stream.md "Input").
+fn stream_write(result: Result<(), wsx_terminal::TerminalError>) -> Result<(), ApiError> {
+    match result {
+        Err(wsx_terminal::TerminalError::Io(error)) if error.kind() == io::ErrorKind::TimedOut => {
+            Ok(())
+        }
+        result => result.map_err(terminal_api),
+    }
+}
+
 pub(crate) fn handle_terminal_stream_input(
     daemon: &Daemon,
     pane_id: PaneId,
@@ -463,14 +479,14 @@ pub(crate) fn handle_terminal_stream_input(
                 return Err(api("invalid_input", "input exceeds limit"));
             }
             with_stream_runtime(daemon, pane_id, client_id, lease_generation, |runtime| {
-                runtime.write(&bytes).map_err(terminal_api)
+                stream_write(runtime.write(&bytes))
             })?;
             request_claude_reconcile(daemon, pane_id, bytes == [3]);
             Ok(())
         }
         TerminalClientMessage::Key(key) => {
             with_stream_runtime(daemon, pane_id, client_id, lease_generation, |runtime| {
-                runtime.key(&key).map_err(terminal_api)
+                stream_write(runtime.key(&key))
             })?;
             // Claude has no interrupt hook. Input only requests a fresh terminal
             // observation; current provider UI evidence decides the resulting state.
@@ -483,12 +499,12 @@ pub(crate) fn handle_terminal_stream_input(
                 return Err(api("invalid_input", "paste exceeds limit"));
             }
             with_stream_runtime(daemon, pane_id, client_id, lease_generation, |runtime| {
-                runtime.paste(&text).map_err(terminal_api)
+                stream_write(runtime.paste(&text))
             })
         }
         TerminalClientMessage::Mouse(mouse) => {
             with_stream_runtime(daemon, pane_id, client_id, lease_generation, |runtime| {
-                runtime.mouse(&mouse).map_err(terminal_api)
+                stream_write(runtime.mouse(&mouse))
             })
         }
         TerminalClientMessage::Resize { rows, cols } => {

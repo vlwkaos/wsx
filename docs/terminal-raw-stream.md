@@ -36,6 +36,10 @@ Protocol 16 (an added request, no protocol change), daemon revision 23, capabili
 5. **Messages are written outside the pane operation lock.** A client that stops reading cannot delay a takeover.
 6. **Live handoff.** The stream ends with `daemon_handoff`. The successor's tap starts empty; the client subscribes again and gets a replay.
 
+## Input
+
+A program that stops reading its input fills the PTY's input queue. A stream's input write waits at most `INPUT_WRITE_LIMIT` (1 s, `crates/wsx-terminal/src/lib.rs`) and leaves the rest unwritten; the stream stays, so its heartbeat, its frames and a session close go on. Before, the write waited for the program, and the pane stopped sending frames, lost its lease and could not be closed. This applies to both streams and to one-shot input requests.
+
 ## The client must not answer queries
 
 `wsxd`'s emulator answers device and color queries. A client emulator that answers them too sends a second reply into the PTY. The web client disables those replies in xterm.js.

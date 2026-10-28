@@ -64,7 +64,10 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Revision 37 follows every compaction of Claude, also an automatic and an idle one: the agent
 // works from its PreCompact report and returns to its earlier state on the `compacted` report
 // (docs/agent-reporting.md "Claude compaction").
-pub const DAEMON_REVISION: u32 = 37;
+// Revision 38 bounds a terminal input write to 1 s when the program stops reading its input,
+// and writes the end of a terminal stream without holding daemon state
+// (docs/terminal-raw-stream.md "Input").
+pub const DAEMON_REVISION: u32 = 38;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 

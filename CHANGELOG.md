@@ -10,6 +10,10 @@
 - Web chat: a sent message no longer vanishes for a moment when Claude takes it. It stays until the conversation shows it ([docs/web-client-chat.md](docs/web-client-chat.md) "Queue and Stop").
 - Web chat: the summary of a compacted conversation no longer disappears during the first long turn after the compaction ([docs/web-client-chat.md](docs/web-client-chat.md) "Timeline").
 - Web chat: a chat read that fails is read again after 2 s, so an answer no longer needs a reload to show, and a sent message shows at once from the send's answer.
+- A web terminal on a phone resumes after the phone slept. The socket could stay open while it carried nothing, so the page kept a stale screen and its keys went nowhere, and the server kept the pane's lease and, behind a full socket, one of the device's four terminal slots, until the page could not open a terminal at all. The server now pings each page every 5 s and closes one that answers nothing for 15 s; the page reconnects when it heard nothing for 12 s or when it is shown again ([docs/web-client-terminal.md](docs/web-client-terminal.md) "Liveness"). Keys typed right after a reconnect are no longer lost: the server could take them before it had the new stream to send them to.
+- A pane whose program stops reading its input no longer freezes. Typing or pasting into it held wsxd's input write until the program read again: the pane sent no frames, its window lost the terminal, and closing the session hung. The write now gives up after 1 s ([docs/terminal-raw-stream.md](docs/terminal-raw-stream.md) "Input"). wsxd is at daemon revision 38, so the first start of this release hands the running daemon off to the new one.
+- A wsx window or web page that stops reading no longer stalls other terminals. When its stream ended, wsxd wrote the last error while it held all of its state, so every terminal waited up to 5 s and other windows' leases ran out. wsxd now holds no state while it writes.
+- A TUI whose lease ran out while wsxd was busy reattaches once by itself, as the web terminal does, instead of leaving Terminal mode.
 
 ## [0.40.3] - 2026-10-28
 

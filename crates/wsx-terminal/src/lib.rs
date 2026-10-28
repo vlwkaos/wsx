@@ -43,6 +43,9 @@ const MAX_ARG_BYTES: usize = 64 * 1024;
 const MAX_STARTUP_INPUT_BYTES: usize = 64 * 1024;
 const STARTUP_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const QUERY_REPLY_QUEUE: usize = 256;
+/// docs/terminal-raw-stream.md "Input": the longest a write waits for a program that does
+/// not read its input. Stream heartbeats share the input thread and expire after 3 s.
+const INPUT_WRITE_LIMIT: Duration = Duration::from_secs(1);
 const BRACKETED_PASTE_MODE: u16 = 2004;
 const SYNCHRONIZED_OUTPUT_TIMEOUT: Duration = Duration::from_secs(1);
 // ^ docs/terminal-raw-stream.md: bounds of the PTY byte tap and of one stream message.
@@ -331,14 +334,10 @@ impl TerminalRuntime {
         foreground_group.is_some_and(|group| group > 1 && group != root_group)
     }
 
+    /// `write_within` the `INPUT_WRITE_LIMIT`: a program that stops reading its input
+    /// fails the write with `TimedOut` instead of holding the caller and its locks.
     pub fn write(&self, bytes: &[u8]) -> Result<(), TerminalError> {
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        if self.exited() {
-            return Err(TerminalError::Runtime("terminal process exited".into()));
-        }
-        write_pty(&self.shared.writer, bytes).map_err(TerminalError::Io)
+        self.write_within(bytes, Instant::now() + INPUT_WRITE_LIMIT)
     }
 
     pub fn key(&self, key: &KeyEvent) -> Result<(), TerminalError> {
@@ -371,7 +370,13 @@ impl TerminalRuntime {
             return write_master_until(master.as_ref(), bytes, deadline).map_err(TerminalError::Io);
         }
         let _ = deadline;
-        self.write(bytes)
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        if self.exited() {
+            return Err(TerminalError::Runtime("terminal process exited".into()));
+        }
+        write_pty(&self.shared.writer, bytes).map_err(TerminalError::Io)
     }
 
     pub fn paste(&self, text: &str) -> Result<(), TerminalError> {

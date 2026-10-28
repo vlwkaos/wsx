@@ -735,6 +735,8 @@ class Terminal:
             self.controls.append(json.loads(payload))
         elif opcode == 2:
             self.output += payload
+        elif opcode == 9:
+            self.write(10, payload)  # a browser answers each ping
         return opcode != 8
 
     def until(self, test, label):
@@ -748,7 +750,9 @@ class Terminal:
 
     def send(self, data):
         """bytes: terminal input. dict: a control message."""
-        opcode, payload = (2, data) if isinstance(data, bytes) else (1, json.dumps(data).encode())
+        self.write(*((2, data) if isinstance(data, bytes) else (1, json.dumps(data).encode())))
+
+    def write(self, opcode, payload):
         mask = os.urandom(4)
         size = bytes([0x80 | len(payload)]) if len(payload) < 126 else bytes([0x80 | 126]) + struct.pack('>H', len(payload))
         self.socket.sendall(bytes([0x80 | opcode]) + size + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
@@ -1794,8 +1798,9 @@ capabilities = ["terminal_view"]
         events.connection.sock.shutdown(socket.SHUT_RDWR)
         owner_process.terminate()
         owner_process.wait(timeout=5)
-        processes.append(start(work, [str(wsx), 'web', 'serve', '--site', str(files['owner'])], env=env, cwd=project,
-                                          stdout=subprocess.DEVNULL, stderr=(work / 'owner.log').open('a')))
+        owner_server = start(work, [str(wsx), 'web', 'serve', '--site', str(files['owner'])], env=env, cwd=project,
+                             stdout=subprocess.DEVNULL, stderr=(work / 'owner.log').open('a'))
+        processes.append(owner_server)
         wait(lambda: up(owner), 'restarted web server')
         events = Events(owner)
         streams.append(events)
@@ -2269,6 +2274,39 @@ capabilities = ["terminal_view"]
         lease_free(term)
         ok('terminal control: lost to a wsx window, busy without takeover, taken back, same-page reconnect with a new replay, lease released on close')
 
+        # Pages that went away without a close, as a phone that sleeps does: they read nothing
+        # and answer no ping. Each held the pane's lease, and one whose pane kept writing held a
+        # send, and its device slot, until TCP gave up (docs/web-client-terminal.md "Liveness").
+        gone = Terminal(owner, term, client='11')
+        gone.control('replay')
+        started = time.monotonic()
+        pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == term)
+        wait(lambda: call('terminal_acquire', {'pane_id': pane, 'client_id': 6, 'takeover': False})['type'] == 'ack',
+             'a page that went away keeps the lease', timeout=30)
+        assert call('terminal_release', {'pane_id': pane, 'client_id': 6})['type'] == 'ack'
+        assert time.monotonic() - started > 10, 'a silent page lost the terminal before its liveness bound'
+        flooded = []
+        for client in range(20, 24):
+            page = Terminal(owner, term, '&takeover=true', client=str(client))
+            page.control('replay')
+            # Echoed twice over until every buffer on the way is full and the bridge's send to
+            # this page waits; the page's own send then stops too.
+            page.socket.settimeout(1)
+            try:
+                for _ in range(200):
+                    page.send(b'f' * 60000)
+            except TimeoutError:
+                pass
+            flooded.append(page)
+        fifth = wait(lambda: (lambda page: page if page.status == 101 else page.socket.close())(
+            Terminal(owner, term, '&takeover=true', client='24')), 'a device whose pages went away gets a terminal again', timeout=40)
+        fifth.control('replay')
+        fifth.drop()
+        for page in flooded + [gone]:
+            page.drop()
+        lease_free(term)
+        ok('terminal liveness: a page that answers nothing frees the lease, and pages stuck behind a full socket free their slots')
+
         size_before = len(typed())
         watch = Terminal(viewer, term, '&rows=30&cols=90')
         replay = watch.control('replay')
@@ -2440,8 +2478,9 @@ capabilities = ["terminal_view"]
             code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
             args.captures.mkdir(parents=True, exist_ok=True)
             result = check(work, [node, str(ROOT / 'scripts/web-terminal-check.mjs'), owner.origin + owner.base + '/',
-                                  code, str(shell), str(args.captures), str(path), str(shell_pane), str(tools / 'keys.trace')],
-                           timeout=200)
+                                  code, str(shell), str(args.captures), str(path), str(shell_pane), str(tools / 'keys.trace'),
+                                  str(owner_server.pid)],
+                           timeout=240)
             assert result.returncode == 0, result.stdout + result.stderr
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
             session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == shell)

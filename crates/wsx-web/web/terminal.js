@@ -21,6 +21,9 @@ const FONT_PHONE = 11;
 const FONT_DESKTOP = 14;
 const REPLAY = "\x1bc"; // full reset, written in the stream so it stays in order with queued bytes
 const MAX_FRAME = 32 * 1024;
+// ^ docs/web-client-terminal.md "Liveness": the server sends `alive` every 5 s, so a socket
+// with nothing for this long is dead (a phone that slept, a lost network) though still open.
+const STALE_MS = 12000;
 const SIZE_KEY = "wsx-terminal-size";
 const SVG = "http://www.w3.org/2000/svg";
 const ICONS = {
@@ -119,6 +122,7 @@ export function terminalView(mount, current, tools) {
   let retries = 0;
   let retryTimer = 0;
   let quietTimer = null;
+  let heard = 0;
   let state = "loading";
 
   const sizeToggle = h("button", { type: "button", class: "icon-button terminal-size", onclick: toggleSize });
@@ -229,6 +233,7 @@ export function terminalView(mount, current, tools) {
     let explained = false;
     link.onmessage = (event) => {
       if (mine !== generation) return;
+      heard = Date.now();
       if (typeof event.data !== "string") {
         term.write(new Uint8Array(event.data));
         return;
@@ -485,9 +490,19 @@ export function terminalView(mount, current, tools) {
     disposers.push(() => observer.disconnect());
     // main.js pins the page to the visual viewport; the grid follows the new height.
     if (window.visualViewport) listen(window.visualViewport, "resize", () => requestAnimationFrame(layout));
-    // A phone that wakes up or regains its network reconnects at once.
-    listen(window, "online", () => { if (state === "reconnecting") connect(); });
-    listen(document, "visibilitychange", () => { if (!document.hidden && state === "reconnecting") connect(); });
+    // A phone that wakes up or regains its network reconnects at once, also from a socket that
+    // still looks open but has been silent; while visible the same check runs every few seconds.
+    const silent = () => { if (state === "live" && Date.now() - heard > STALE_MS) retryLater("Connection lost. Reconnecting…"); };
+    const revive = () => {
+      if (document.hidden) return;
+      if (state === "reconnecting") connect();
+      else silent();
+    };
+    listen(window, "online", revive);
+    listen(window, "pageshow", revive);
+    listen(document, "visibilitychange", revive);
+    const watchdog = setInterval(silent, STALE_MS / 4);
+    disposers.push(() => clearInterval(watchdog));
     // ^ Opening the terminal is the person's action, so it takes the pane from a wsx
     // window. A reconnect never does, or two clients would take it back and forth.
     connect({ takeover: canType });
