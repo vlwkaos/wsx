@@ -81,7 +81,7 @@ The event observer decides from the task records, `approvals.jsonl` and the open
 
 | Change | Goes to |
 |---|---|
-| a task starts waiting (not on `hand`), a new approval request, new To check items, a reply the manager starts on its own (`manager/log.jsonl`) | "Manager needs me": one push that names every open item of these kinds and the new reply, replacing the earlier one |
+| a task starts waiting (not on `hand`), a new approval request, new To check items, a reply the manager starts on its own after events or a recap (`manager/log.jsonl`) | "Manager needs me": one push that names every open item of these kinds and the new reply, replacing the earlier one |
 | a task becomes `ready`, `failed` or `landed`, a deploy or a release | the daily digest, read from the store at its time |
 
 - A change is counted by its (state, revision); a project first seen after a server start notifies nothing, and working, checking and stopped never notify.
