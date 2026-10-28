@@ -1052,7 +1052,10 @@ impl Host {
         else {
             return;
         };
+        // ^ Claude's own turn after a result, or an agent that ended: no turn of the host's
+        // waits, and the next one gets its own bound.
         if !self.turn_active {
+            self.background_wait = None;
             return;
         }
         let text = format!(
