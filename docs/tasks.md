@@ -18,6 +18,7 @@ wsx task preview <n> [--stop] --json             # a link to try the task (tasks
 wsx task check-run [<n>...]                      # from a worker: run the checks as after its result
 wsx task check -p <project> [--json]             # the open "To check" items
 wsx task check pass <id>... | --all --json       # owner only
+wsx task check skip <id>... | --all --json       # owner only; closes without a verdict
 wsx task check fail <id> --note <text> --json    # owner only; starts a task that fixes it
 wsx task close <n> [--discard] [--owner-said <id>] --json
 ```
@@ -144,13 +145,14 @@ The worker proves what it can: its result has `evidence` (`{check, proof}`, the 
 There is no verdict per task: a task the checks prove lands, and what needs a person waits in one list per project, `tasks/<project-id>/checks.jsonl`. When a task lands, its host adds the `human_verify` items of the landed revision as `{id: c<n>, task, revision, commit, check, where, capture, poster, pass_if, state: open, note, fix_task, unix_ms}` (`poster` only with a video; a row without it reads as none), once per task and revision, before it sets `landed` (items of a revision whose landing conflicted are kept when the resolving turn leaves them out). The file only grows, under a lock: a later line with the same id is the item's current row.
 
 - A worker's item is `{check, where, capture, poster, pass_if}`: what a person looks at or feels in plain words, where (a URL, a page path or the screen), the path of an image or a short video of it in the working copy (or empty), a video's thumbnail image (or empty; ignored for an image) and when it passes. At the land the host copies each capture inside the working copy, a PNG, JPEG or WebP image of at most 2 MiB or an MP4 video (an ISO BMFF file, its first box `ftyp`) of at most 25 MiB, to `captures/r<revision>-<n>.<ext>` in the task folder, and a video's poster, an image, to `captures/r<revision>-<n>.poster.<ext>`, before the copy goes; another file is dropped with a line in the pane. A worker that sends a video for an iPhone writes it with `-movflags +faststart`, so it plays before it is all read.
-- A capture stays while its item is open. The manager host removes the files (image, video, poster) of an item passed or failed more than 7 days ago, the web media lifetime ([web-client.md](web-client.md) "Media"), when it starts and then hourly, under the list's lock. The row stays without its files; the web shows "Capture removed".
+- A capture stays while its item is open. The manager host removes the files (image, video, poster) of an item passed, failed or skipped more than 7 days ago, the web media lifetime ([web-client.md](web-client.md) "Media"), when it starts and then hourly, under the list's lock. The row stays without its files; the web shows "Capture removed".
 - An item is the worker's to prove when its check or `pass_if` holds a code span (a command) or when it has no capture and its `where` does not name a real device or real data: an item about a screen comes with a capture of that state. A `done` result with such items goes back to the worker once, in one message, before the checks and within the check retries: it stages the state in a fixture, proves it in evidence and keeps only what a person checks.
 
 - `wsx task check` lists the open items; `show --json` has the task's items as `to_check`; the ledger counts them.
 - `check pass <id>...` or `--all` marks open items `passed`; an unknown or settled id refuses the whole call.
+- `check skip <id>...` or `--all` closes open items as `skipped` the same way: not passed and not failed, for an item long overdue or no longer worth a look. It starts no task, leaves the open list (so it does not hold a release) and stays `skipped` in `checks.jsonl`, `show --json` and the web.
 - `check fail <id> --note <text>` starts a task titled "Fix: <check>" whose prompt holds the check, `pass_if`, the note and the original `report.md` path; the new record has `fixes: c<n>`, and the item gets `state: failed`, the note and `fix_task`.
-- Both refuse with `WSX_TASK_ACTOR=manager`: checking is the owner's.
+- All three refuse with `WSX_TASK_ACTOR=manager`: checking is the owner's.
 - A log line that does not parse (a last line cut by a crash) is skipped when a log is read.
 
 ## By hand

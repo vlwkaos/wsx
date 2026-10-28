@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::git::output_with_timeout_tail;
-use wsx_core::task::checks::{self, CheckItem};
+use wsx_core::task::checks::{self, CheckItem, CheckState};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
 use wsx_core::task::manager::{chat_window, ApprovalAction, ApprovalLine, ManagerEvent};
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
@@ -213,7 +213,7 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
-    /// List what the owner has to check of the landed tasks, or pass or fail items (owner only)
+    /// List what the owner has to check of the landed tasks, or pass, skip or fail items (owner only)
     Check {
         #[command(subcommand)]
         action: Option<CheckAction>,
@@ -406,12 +406,9 @@ impl TaskCmd {
 #[derive(Subcommand)]
 pub enum CheckAction {
     /// The named items passed, or every open item with --all
-    Pass {
-        #[arg(required_unless_present = "all", conflicts_with = "all")]
-        ids: Vec<String>,
-        #[arg(long)]
-        all: bool,
-    },
+    Pass(Chosen),
+    /// Close the named items, or every open item with --all, without a verdict: no fix task
+    Skip(Chosen),
     /// The item failed: a new task fixes it, linked to the item
     Fail {
         id: String,
@@ -419,6 +416,15 @@ pub enum CheckAction {
         #[arg(long)]
         note: String,
     },
+}
+
+/// The items a pass or a skip closes.
+#[derive(clap::Args)]
+pub struct Chosen {
+    #[arg(required_unless_present = "all", conflicts_with = "all")]
+    ids: Vec<String>,
+    #[arg(long)]
+    all: bool,
 }
 
 pub fn run(command: TaskCmd) -> Result<()> {
@@ -956,7 +962,7 @@ fn create(
     Ok((dir, record, state))
 }
 
-/// `wsx task check`: list the open items, or pass or fail them (docs/tasks.md "To check").
+/// `wsx task check`: list the open items, or pass, skip or fail them (docs/tasks.md "To check").
 fn check(action: Option<CheckAction>, project: Option<&str>, json: bool) -> Result<()> {
     let (name, main) = project_entry(project)?;
     let project_id = store::project_id(&name, &main);
@@ -977,10 +983,11 @@ fn check(action: Option<CheckAction>, project: Option<&str>, json: bool) -> Resu
             }
             return Ok(());
         }
-        Some(CheckAction::Pass { ids, all }) => {
-            owner_only("check pass")?;
-            let ids = if all { Vec::new() } else { ids };
-            checks::pass(&project_id, &ids)?
+        Some(CheckAction::Pass(chosen)) => {
+            close_checks(&project_id, chosen, CheckState::Passed, "check pass")?
+        }
+        Some(CheckAction::Skip(chosen)) => {
+            close_checks(&project_id, chosen, CheckState::Skipped, "check skip")?
         }
         Some(CheckAction::Fail { id, note }) => {
             owner_only("check fail")?;
@@ -994,7 +1001,13 @@ fn check(action: Option<CheckAction>, project: Option<&str>, json: bool) -> Resu
             item.id,
             item.fix_task.unwrap_or_default()
         ),
-        items => format!("{} passed. {open} to check", items.len()),
+        items => format!(
+            "{} {}. {open} to check",
+            items.len(),
+            items
+                .first()
+                .map_or("closed", |item| checks::state_name(item.state))
+        ),
     };
     if json {
         return print_json(
@@ -1003,6 +1016,18 @@ fn check(action: Option<CheckAction>, project: Option<&str>, json: bool) -> Resu
     }
     println!("{message}");
     Ok(())
+}
+
+/// Pass or skip the chosen items as the owner.
+fn close_checks(
+    project_id: &str,
+    chosen: Chosen,
+    state: CheckState,
+    command: &str,
+) -> Result<Vec<CheckItem>> {
+    owner_only(command)?;
+    let ids = if chosen.all { Vec::new() } else { chosen.ids };
+    checks::close(project_id, &ids, state)
 }
 
 /// A failed item starts a task that fixes it and links both.

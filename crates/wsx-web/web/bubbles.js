@@ -187,8 +187,8 @@ export function Bubble({ project, row, words, names, fresh }) {
     </article>`;
 }
 
-// A To check item in the chat: from the manager, with what to check, its capture and Try, Fail
-// and Pass, or its result once decided (checks.js `CheckRow`). It counts as a new message.
+// A To check item in the chat: from the manager, with what to check, its capture and Try, Fail,
+// Skip and Pass, or its result once decided (checks.js `CheckRow`). It counts as a new message.
 export function CheckBubble({ project, row, names, fresh }) {
   return html`
     <article class="bubble check-bubble" data-side="in" data-speaker="manager" data-first="" data-last=""

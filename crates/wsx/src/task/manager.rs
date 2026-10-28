@@ -216,7 +216,7 @@ fn instructions(
          `checks` and trust them over the worker's words. {review}When a worker leaves for a \
          person what a command, a test or a capture could prove, tell that worker to prove \
          it. What only a person can check goes to the To check list (the ledger's \
-         `to_check`); never pass or fail items yourself. A release refuses while items are \
+         `to_check`); never pass, fail or skip items yourself. A release refuses while items are \
          open, unless the owner's message asks for it (`--owner-said`): then the items stay \
          to check on the release. `deploy` and `release` answer that they started; the \
          result comes as an event and in the ledger's `deploys`, so do not run them again \

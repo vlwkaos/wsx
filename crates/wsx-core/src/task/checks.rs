@@ -30,6 +30,8 @@ pub enum CheckState {
     Open,
     Passed,
     Failed,
+    /// Closed by the owner without a verdict: not passed, not failed, no fix task.
+    Skipped,
 }
 
 /// One line of `checks.jsonl`. The file only grows: a later line with the same id is the
@@ -164,9 +166,9 @@ pub fn collect(
     })
 }
 
-/// Mark open items passed: the named ones, or every open one when `ids` is empty.
-/// An unknown id or one that is not open refuses the whole call.
-pub fn pass(project_id: &str, ids: &[String]) -> Result<Vec<CheckItem>> {
+/// Close open items as `state` (passed or skipped): the named ones, or every open one when
+/// `ids` is empty. An unknown id or one that is not open refuses the whole call.
+pub fn close(project_id: &str, ids: &[String], state: CheckState) -> Result<Vec<CheckItem>> {
     change(project_id, |items| {
         let chosen = if ids.is_empty() {
             items
@@ -182,7 +184,7 @@ pub fn pass(project_id: &str, ids: &[String]) -> Result<Vec<CheckItem>> {
         Ok(chosen
             .into_iter()
             .map(|item| CheckItem {
-                state: CheckState::Passed,
+                state,
                 unix_ms: now,
                 ..item.clone()
             })
@@ -222,6 +224,7 @@ pub fn state_name(state: CheckState) -> &'static str {
         CheckState::Open => "open",
         CheckState::Passed => "passed",
         CheckState::Failed => "failed",
+        CheckState::Skipped => "skipped",
     }
 }
 
@@ -302,7 +305,7 @@ pub fn capture_removed(dir: &TaskDir, item: &CheckItem) -> bool {
         .is_some_and(|path| !path.exists())
 }
 
-/// Remove the capture files (image, video, poster) of items passed or failed more than 7 days
+/// Remove the capture files (image, video, poster) of items passed, failed or skipped more than 7 days
 /// ago, under the list's lock; their rows stay. Returns how many files went.
 /// ref: docs/tasks.md "To check"
 pub fn remove_old_captures(project_id: &str) -> Result<usize> {

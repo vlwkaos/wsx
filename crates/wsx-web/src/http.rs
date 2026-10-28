@@ -1234,7 +1234,7 @@ fn byte_range(headers: &HeaderMap, size: u64) -> Result<Option<(u64, u64)>, Rang
     Ok(Some((start, end)))
 }
 
-/// Pass or fail one "To check" item, or pass them all (`all/pass`).
+/// Pass, skip or fail one "To check" item, or pass or skip them all (`all/pass`, `all/skip`).
 async fn task_check(
     State(app): State<Shared>,
     Paired(device): Paired,

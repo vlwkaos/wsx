@@ -952,7 +952,8 @@ def run(wsx, wsxd, work, owned):
     recent = js('task', 'new', 'WORK r.txt HV CAPTURE')['id']
     assert reviewed(recent)['state'] == 'landed', show(recent)
     wait_closed(recent)
-    js('task', 'check', 'pass', *[i['id'] for i in js('task', 'check')['open'] if i['task'] in (video, recent)])
+    # ^ Skipped, so the capture sweep (part 20) frees a skipped item's files like a passed one's.
+    js('task', 'check', 'skip', *[i['id'] for i in js('task', 'check')['open'] if i['task'] in (video, recent)])
     # No checks: nothing proves the work, so a ready task waits for a land by hand.
     configure(LAND_CONFIG.replace('  land: { auto: false }\n', '').replace(
         '  checks:\n    - "test ! -e broken.txt"\n', ''), 'no checks')
@@ -1031,7 +1032,20 @@ def run(wsx, wsxd, work, owned):
     deployed = ran('deploy')
     assert deployed['message'].endswith('; 1 to check on the deployed site'), deployed
     (base / 'deploy.log').unlink()
-    assert js('task', 'check', 'pass', '--all')['open'] == 0
+    # A skip closes the item without a verdict: it is recorded as skipped, starts no task, refuses
+    # the manager, and the release below runs (docs/tasks.md "To check").
+    tasks_before = len(js('task', 'list', '--all')['tasks'])
+    refused = subprocess.run([str(wsx), 'task', 'check', 'skip', '--all'], cwd=project, env=manager_env,
+                             capture_output=True, text=True)
+    assert refused.returncode != 0 and 'check skip is for the owner' in refused.stderr, refused.stderr
+    skipped = js('task', 'check', 'skip', '--all')
+    assert [c['state'] for c in skipped['changed']] == ['skipped'] and skipped['open'] == 0, skipped
+    assert skipped['message'] == '1 skipped. 0 to check', skipped
+    (skipped_item,) = skipped['changed']
+    assert skipped_item.get('fix_task') is None and skipped_item.get('note') is None, skipped_item
+    assert 'already skipped' in cli('task', 'check', 'pass', skipped_item['id'], ok=False).stderr
+    assert next(i for i in show(skipped_item['task'])['to_check'] if i['id'] == skipped_item['id'])['state'] == 'skipped'
+    assert len(js('task', 'list', '--all')['tasks']) == tasks_before
     deployed = ran('deploy')
     tip = git('rev-parse', 'main')
     assert deployed['commit'] == tip and deployed['exit'] == 0, deployed
@@ -1348,7 +1362,7 @@ def run(wsx, wsxd, work, owned):
     switches = [t['set_model'] for t in traces() if 'set_model' in t and t['session'] == event_turn['session']]
     assert switches[-2:] == ['fake-events', 'fake-manager'], switches
     # A decided item's capture files go 7 days after the decision, when the manager starts and
-    # hourly; its row stays. Staged: the video item decided 8 days ago, #recent's item open for 8
+    # hourly; its row stays. Staged: the video item skipped 8 days ago, #recent's item open for 8
     # days; the shot item was passed just now (docs/tasks.md "To check").
     checks_file = Path(show(video)['report']).parent.parent / 'checks.jsonl'
     current = {}
