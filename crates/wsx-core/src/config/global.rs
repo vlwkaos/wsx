@@ -396,34 +396,35 @@ fn profile_dir(name: &str, dir: &Path) -> std::result::Result<PathBuf, String> {
 }
 
 fn validate_profiles(
-    profiles: Vec<ProfileEntry>,
+    profiles: &[ProfileEntry],
     projects: &[ProjectEntry],
-) -> std::result::Result<Vec<ProfileEntry>, String> {
-    let mut valid: Vec<ProfileEntry> = Vec::with_capacity(profiles.len());
-    for profile in profiles {
-        if profile.name.trim().is_empty() || profile.name.trim() != profile.name {
+) -> std::result::Result<(), String> {
+    for (index, profile) in profiles.iter().enumerate() {
+        if profile.name.is_empty() || profile.name.trim() != profile.name {
             return Err(format!("profile name {:?} must be a word", profile.name));
         }
-        if valid.iter().any(|seen| seen.name == profile.name) {
+        if profiles[..index]
+            .iter()
+            .any(|seen| seen.name == profile.name)
+        {
             return Err(format!("profile {} is declared twice", profile.name));
         }
         if let Some(dir) = &profile.claude_config_dir {
             profile_dir(&profile.name, dir)?;
         }
-        valid.push(profile);
     }
     for project in projects {
         let Some(name) = &project.profile else {
             continue;
         };
-        if !(valid.iter().any(|profile| &profile.name == name) || name == DEFAULT_PROFILE) {
+        if !(profiles.iter().any(|profile| &profile.name == name) || name == DEFAULT_PROFILE) {
             return Err(format!(
                 "project {} names profile {name}, which no [[profiles]] declares",
                 project.name
             ));
         }
     }
-    Ok(valid)
+    Ok(())
 }
 
 fn append_unique(target: &mut Vec<String>, values: impl IntoIterator<Item = String>) {
@@ -472,7 +473,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
                 profile: project.profile,
             });
         }
-        let profiles = validate_profiles(wire.profiles, &projects).map_err(D::Error::custom)?;
+        validate_profiles(&wire.profiles, &projects).map_err(D::Error::custom)?;
 
         if wire.notification_timeout_seconds == 0 {
             return Err(D::Error::custom(
@@ -495,7 +496,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
         .map_err(D::Error::custom)?;
         let mut config = Self {
             groups,
-            profiles,
+            profiles: wire.profiles,
             projects,
             exclude_worktree_paths: wire.exclude_worktree_paths,
             terminal_escape_chord: wire.terminal_escape_chord,
