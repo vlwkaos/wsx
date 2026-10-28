@@ -966,7 +966,7 @@ fn create(
 fn check(action: Option<CheckAction>, project: Option<&str>, json: bool) -> Result<()> {
     let (name, main) = project_entry(project)?;
     let project_id = store::project_id(&name, &main);
-    let changed = match action {
+    let (changed, verdict) = match action {
         None => {
             let items = checks::open_items(&project_id)?;
             if json {
@@ -983,15 +983,17 @@ fn check(action: Option<CheckAction>, project: Option<&str>, json: bool) -> Resu
             }
             return Ok(());
         }
-        Some(CheckAction::Pass(chosen)) => {
-            close_checks(&project_id, chosen, CheckState::Passed, "check pass")?
-        }
-        Some(CheckAction::Skip(chosen)) => {
-            close_checks(&project_id, chosen, CheckState::Skipped, "check skip")?
-        }
+        Some(CheckAction::Pass(chosen)) => (
+            close_checks(&project_id, chosen, CheckState::Passed, "check pass")?,
+            "passed",
+        ),
+        Some(CheckAction::Skip(chosen)) => (
+            close_checks(&project_id, chosen, CheckState::Skipped, "check skip")?,
+            "skipped",
+        ),
         Some(CheckAction::Fail { id, note }) => {
             owner_only("check fail")?;
-            vec![fail_check(&name, &project_id, &id, &note)?]
+            (vec![fail_check(&name, &project_id, &id, &note)?], "failed")
         }
     };
     let open = checks::open_items(&project_id)?.len();
@@ -1001,13 +1003,7 @@ fn check(action: Option<CheckAction>, project: Option<&str>, json: bool) -> Resu
             item.id,
             item.fix_task.unwrap_or_default()
         ),
-        items => format!(
-            "{} {}. {open} to check",
-            items.len(),
-            items
-                .first()
-                .map_or("closed", |item| checks::state_name(item.state))
-        ),
+        items => format!("{} {verdict}. {open} to check", items.len()),
     };
     if json {
         return print_json(

@@ -305,8 +305,8 @@ pub fn capture_removed(dir: &TaskDir, item: &CheckItem) -> bool {
         .is_some_and(|path| !path.exists())
 }
 
-/// Remove the capture files (image, video, poster) of items passed, failed or skipped more than 7 days
-/// ago, under the list's lock; their rows stay. Returns how many files went.
+/// Remove the capture files (image, video, poster) of items passed, failed or skipped more
+/// than 7 days ago, under the list's lock; their rows stay. Returns how many files went.
 /// ref: docs/tasks.md "To check"
 pub fn remove_old_captures(project_id: &str) -> Result<usize> {
     if !project_dir(project_id)?.join(CHECKS_FILE).exists() {
