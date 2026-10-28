@@ -59,6 +59,9 @@ fn one_line(text: &str) -> String {
 
 /// The handover of a fresh conversation: this many last messages and replies, each clipped.
 const HANDOVER_ENTRIES: usize = 4;
+/// The handover also lists the routine runs that ended in this window, at most this many.
+const HANDOVER_ROUTINES: usize = 8;
+const HANDOVER_ROUTINE_MS: u64 = 24 * 60 * 60 * 1000;
 const HANDOVER_CHARS: usize = 600;
 const EVENT_SUMMARY_CHARS: usize = 160;
 /// A failed deploy's event carries this many last lines of its output.
@@ -1429,10 +1432,33 @@ impl Manager {
             .take(HANDOVER_ENTRIES)
             .collect();
         lines.reverse();
+        // ^ A routine's result may not have been acted on before the rotation.
+        let since = now_unix_ms().saturating_sub(HANDOVER_ROUTINE_MS);
+        let mut routines: Vec<&str> = log
+            .iter()
+            .filter(|entry| entry.unix_ms >= since)
+            .filter_map(|entry| match &entry.event {
+                ManagerEvent::Message {
+                    from: Author::Events,
+                    text,
+                    ..
+                } => Some(text.lines().filter(|line| line.starts_with("routine "))),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        routines.drain(..routines.len().saturating_sub(HANDOVER_ROUTINES));
+        let routines = match routines.is_empty() {
+            true => String::new(),
+            false => format!(
+                "\nRoutine results of the last 24 hours:\n{}\n",
+                routines.join("\n")
+            ),
+        };
         // ^ Always sent after a rotation: it is the manager's cue to fold the memos.
         format!(
             "Handover (this is a new conversation; fold the ledger's memos into your context \
-             first; the last exchanges before it, read the ledger for the state):\n{}\n\n",
+             first; the last exchanges before it, read the ledger for the state):\n{}\n{routines}\n",
             lines.join("\n")
         )
     }

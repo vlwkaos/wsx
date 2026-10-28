@@ -3635,8 +3635,9 @@ merge_seconds = 3
             title = row['title'] if len(row['title']) <= 60 else row['title'][:60] + '…'  # cut as the push cuts it
             return '#%d %s: %s' % (n, title, what)
 
-        def manager_push():
-            """The push the overviews the page shows call for: every waiting task, approval and To check count."""
+        def manager_push(wrote=None):
+            """The push the overviews the page shows call for: every waiting task, approval and To check count,
+            and `wrote`'s line when that project's manager wrote to the owner on its own."""
             names = {value: key for key, value in ids.items()}
             projects = []
             for overview in sorted(steady(owner, 'GET', '/api/tasks')[1], key=lambda overview: overview['project']):
@@ -3649,6 +3650,8 @@ merge_seconds = 3
                         items.append((1, need['label'], task_url))
                 if overview['to_check']:
                     items.append((overview['to_check'], '%d to check' % overview['to_check'], '#/p/%d/checks' % project))
+                if names[project] == wrote:
+                    items.append((1, overview['manager'] + ' wrote to you', '#/p/%d' % project))
                 if items:
                     projects.append((project, names[project], items))
             count = sum(item[0] for _, _, items in projects for item in items)
@@ -3715,7 +3718,21 @@ merge_seconds = 3
         js('task', 'say', 'RUN wsx task land %d -p demo --json' % first, '-p', 'demo')
         asked = new_pushes('manager', 'approval push')
         assert asked[0] == manager_push() and says(asked[0], 'Approve land #%d' % first), asked
-        ok('manager push: waiting merged in one, a new To check item, an approval; each names every open item and replaces the one before; ready and failed do not push; the shown project skipped for that device; presence ends with the stream; manager needs task_view')
+        # A reply the manager starts on its own, a table to a task's event, pushes; its reply to
+        # the owner does not, and neither adds to the badge.
+        talk = lambda: [e for e in js('task', 'chat', '-p', 'demo')['entries'] if e['kind'] == 'reply']
+        replies = len(talk())
+        js('task', 'say', 'TABLE', '-p', 'demo')
+        wait(lambda: len(talk()) > replies and 'Where things stand' in talk()[-1]['text'], 'the reply to the owner')
+        time.sleep(5)
+        assert len(pushes('manager')) == baselines['manager'], 'a push for a reply to the owner'
+        tabled = js('task', 'new', 'NOOP TABLE', '-p', 'demo')['id']
+        wait_state(tabled, 'ready')
+        own = new_pushes('manager', 'the push of a reply the manager started')
+        assert len(own) == 1 and own[0] == manager_push(wrote='demo'), (own, manager_push(wrote='demo'))
+        # ^ manager_push()'s badge counts the overviews' needs only.
+        assert says(own[0], 'demo wrote to you'), own
+        ok('manager push: waiting merged in one, a new To check item, an approval, a reply the manager started (not one to the owner); each names every open item and replaces the one before; ready and failed do not push; the shown project skipped for that device; presence ends with the stream; manager needs task_view')
 
         # The daily digest, moved to the next minute: the window since the switch was turned on
         # stays, so it lists what became ready, failed or landed since, each in its latest state.

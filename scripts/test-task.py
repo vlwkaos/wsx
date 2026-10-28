@@ -1431,6 +1431,8 @@ def run(wsx, wsxd, work, owned):
     # ^ The notes come first, then the handover.
     assert opened.startswith("The owner's decisions") and '\n\nHandover (this is a new conversation' in opened and 'You: noted events' in opened, opened
     assert "fold the ledger's memos into your context first" in opened, opened
+    # ^ A routine's result before the rotation is in the handover, its first line only.
+    assert '\nRoutine results of the last 24 hours:\nroutine nightly failed (exit 3); its output ends:\n' in opened, opened
     assert 'keep the store in sqlite' in opened and 'SECRET-OUTSIDE' not in opened, opened
     # ^ Only a short reply to events is quiet: one with a table is a message (docs/tasks.md "Manager").
     tabled = js('task', 'new', 'NOOP TABLE')['id']
