@@ -17,7 +17,6 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::git::{git_cmd, output_with_timeout_tail};
-use wsx_core::model::workspace::TaskConfig;
 use wsx_core::runtime;
 use wsx_core::task::view::checked_files;
 use wsx_core::task::{
@@ -28,7 +27,7 @@ use wsx_core::task::{
     report,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
     view, Actor, CheckResult, HostRequest, HostResponse, HumanVerify, LogEvent, MessageKind,
-    TaskRecord, TaskState, WaitOn, Waiting, WorkerResult, MAX_MESSAGE_BYTES,
+    TaskRecord, TaskState, TurnTrigger, WaitOn, Waiting, WorkerResult, MAX_MESSAGE_BYTES,
 };
 
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -158,9 +157,14 @@ struct Host {
     carried_verify: Vec<HumanVerify>,
     /// The context of the worker's last model call, from the log when the host starts.
     context_tokens: u64,
-    /// The turn that waits while the worker writes its handoff notes: it starts the fresh
-    /// conversation. ref: docs/tasks.md "Context rotation"
-    rotating: Option<String>,
+    /// The turn that waits while the worker writes its handoff notes, and the idle reason
+    /// when an idle gap rotated it: it starts the fresh conversation.
+    /// ref: docs/tasks.md "Context rotation"
+    rotating: Option<(String, Option<String>)>,
+    /// What started the running turn, logged on its result.
+    trigger: TurnTrigger,
+    /// When the agent last answered (unix ms), from the log when the host starts.
+    answered_ms: u64,
     started: Instant,
 }
 
@@ -206,9 +210,11 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         carried_verify: Vec::new(),
         context_tokens: 0,
         rotating: None,
+        trigger: TurnTrigger::Step,
+        answered_ms: 0,
         started: Instant::now(),
     };
-    host.context_tokens = host.last_context();
+    (host.context_tokens, host.answered_ms) = host.last_context();
     let to_host = events.clone();
     std::thread::spawn(move || {
         broker::serve(brokered, move |request| {
@@ -261,7 +267,7 @@ impl Host {
         // ^ A host that exec'd its replaced binary starts the turn the old one handed over.
         if let Some(text) = self.take_handoff() {
             self.say("restarted with the replaced wsx binary");
-            self.start_turn(&text);
+            self.start_turn(&text, TurnTrigger::Restart);
         } else {
             self.resume_state()?;
         }
@@ -356,7 +362,7 @@ impl Host {
                             response.stdout.trim_end()
                         ));
                         if !self.turn_active {
-                            self.deliver_pending();
+                            self.deliver_pending(TurnTrigger::CheckRun);
                         }
                     }
                 }
@@ -387,7 +393,7 @@ impl Host {
                 if self.record.plan {
                     text.push(PLAN_REQUEST.into());
                 }
-                self.start_turn(&text.join("\n\n"));
+                self.start_turn(&text.join("\n\n"), TurnTrigger::Step);
             }
             // ^ The checks of a result do not depend on the host that lost them: they run
             // again on the worker's last result, as the land or retry that follows would.
@@ -608,7 +614,7 @@ impl Host {
             self.pending.push_back(text);
             "queued until the current turn ends".into()
         } else {
-            self.start_turn(&text);
+            self.start_turn(&text, TurnTrigger::Message);
             "started a new turn".into()
         }
     }
@@ -757,13 +763,13 @@ impl Host {
         self.start_checks();
     }
 
-    fn start_turn(&mut self, text: &str) {
+    fn start_turn(&mut self, text: &str, trigger: TurnTrigger) {
         // ^ Every path that starts a turn ends here: none runs while the owner works by hand.
         if self.record.waits_on(WaitOn::Hand) {
             self.say("by hand: no agent turn starts until handback");
             return;
         }
-        if let Err(error) = self.try_start_turn(text) {
+        if let Err(error) = self.try_start_turn(text, trigger) {
             let reason = format!("cannot start the agent: {error:#}");
             self.say(&reason);
             self.log(LogEvent::Stopped {
@@ -781,7 +787,7 @@ impl Host {
         }
     }
 
-    fn try_start_turn(&mut self, text: &str) -> Result<()> {
+    fn try_start_turn(&mut self, text: &str, trigger: TurnTrigger) -> Result<()> {
         // ^ A message during a usage limit joins the turn that continues after it.
         if let Some(wait) = &mut self.limit_wait {
             wait.text = format!("{}\n\n{text}", wait.text);
@@ -806,13 +812,13 @@ impl Host {
             return Ok(());
         }
         let handoff;
-        let text = match self.rotation_due(text) {
-            true => {
-                self.rotating = Some(text.to_string());
-                handoff = self.handoff_request();
+        let text = match self.rotation_due(trigger) {
+            Some(idle) => {
+                handoff = self.handoff_request(idle.as_deref());
+                self.rotating = Some((text.to_string(), idle));
                 handoff.as_str()
             }
-            false => text,
+            None => text,
         };
         if self.agent.is_none() {
             let (session, resume) = match &self.record.agent_session {
@@ -836,6 +842,7 @@ impl Host {
             .context("the agent is not running")?
             .send(text)?;
         self.turn_active = true;
+        self.trigger = trigger;
         self.set_state(TaskState::Working);
         Ok(())
     }
@@ -883,6 +890,7 @@ impl Host {
             return;
         };
         self.turn_active = false;
+        self.answered_ms = now_unix_ms();
         // ^ An error without a model call (a session limit) says nothing of the context.
         if turn.usage.context_tokens > 0 {
             self.context_tokens = turn.usage.context_tokens;
@@ -900,11 +908,11 @@ impl Host {
             return;
         }
         self.limit_attempt = 0;
-        if let Some(waiting) = self.rotating.take() {
+        if let Some((waiting, idle)) = self.rotating.take() {
             self.log(LogEvent::Agent {
                 text: format!("handoff notes: {}", first_line(&turn.text)),
             });
-            self.rotate(waiting);
+            self.rotate(waiting, idle);
             return;
         }
         let structured = turn
@@ -916,7 +924,7 @@ impl Host {
             && !std::mem::replace(&mut self.result_asked, true)
         {
             self.say("the turn ended without a result: asked for it once");
-            self.start_turn(RESULT_RETRY);
+            self.start_turn(RESULT_RETRY, TurnTrigger::ResultRetry);
             return;
         }
         self.result_asked = false;
@@ -938,6 +946,12 @@ impl Host {
             summary: result.summary.clone(),
             usage: Some(turn.usage.clone()),
             denials: turn.denials.clone(),
+            step: self
+                .record
+                .steps
+                .get(self.record.step as usize)
+                .map(|step| step.name.clone()),
+            trigger: Some(self.trigger),
         });
         self.say(&format!(
             "result {}: {}",
@@ -986,7 +1000,7 @@ impl Host {
             self.save();
             let mut text: Vec<String> = self.pending.drain(..).collect();
             text.extend(self.step_text());
-            self.start_turn(&text.join("\n\n"));
+            self.start_turn(&text.join("\n\n"), TurnTrigger::Step);
             return;
         }
         // ^ What a test, an assert or a capture shows is the worker's to prove: such an item
@@ -1013,7 +1027,7 @@ impl Host {
                  before.",
                 items.join(" | ")
             );
-            self.start_turn(&text);
+            self.start_turn(&text, TurnTrigger::Verify);
             return;
         }
         if self.gate.is_some() {
@@ -1081,28 +1095,46 @@ impl Host {
         self.on_result(turn);
     }
 
-    /// Whether the turn `text` goes to a fresh conversation, after the handoff notes: the
-    /// context reached `tasks.agent.rotateTokens`. Never for the result the last turn left
-    /// out, nor while a `check-run` waits (its answer goes to this conversation).
-    fn rotation_due(&self, text: &str) -> bool {
-        let limit = load_task_config(&self.record.project_path)
-            .map_or(TaskConfig::default().rotate_tokens, |settings| {
-                settings.rotate_tokens
-            });
-        self.rotating.is_none()
-            && self.check_run.is_none()
-            && text != RESULT_RETRY
-            && self.record.agent_session.is_some()
-            && self.context_tokens >= limit
+    /// Whether the next turn goes to a fresh conversation, after the handoff notes: the
+    /// context reached `tasks.agent.rotateTokens`, or it is at least half of that and the
+    /// agent was idle past `tasks.agent.rotateIdleSeconds` (`Some(Some(reason))`), since the
+    /// prompt cache is gone then and a resume writes the whole context again. Never for the
+    /// result the last turn left out, nor while a `check-run` waits (its answer goes to this
+    /// conversation).
+    fn rotation_due(&self, trigger: TurnTrigger) -> Option<Option<String>> {
+        let config = load_task_config(&self.record.project_path).unwrap_or_default();
+        if self.rotating.is_some()
+            || self.check_run.is_some()
+            || trigger == TurnTrigger::ResultRetry
+            || self.record.agent_session.is_none()
+        {
+            return None;
+        }
+        if self.context_tokens >= config.rotate_tokens {
+            return Some(None);
+        }
+        let idle_ms = now_unix_ms().saturating_sub(self.answered_ms);
+        (config.rotate_idle_seconds > 0
+            && self.answered_ms > 0
+            && idle_ms > config.rotate_idle_seconds * 1000
+            && self.context_tokens >= config.rotate_tokens / 2)
+            .then(|| Some(format!("idle {} min", idle_ms / 60_000)))
     }
 
-    fn handoff_request(&self) -> String {
+    fn handoff_request(&self, idle: Option<&str>) -> String {
         self.say(&format!(
-            "context {}k: the worker writes handoff notes, then a fresh conversation continues",
-            self.context_tokens / 1000
+            "context {}k{}: the worker writes handoff notes, then a fresh conversation continues",
+            self.context_tokens / 1000,
+            idle.map(|idle| format!(", {idle}")).unwrap_or_default()
         ));
+        let why = match idle {
+            Some(_) => {
+                "this conversation was idle past this task's limit, so its prompt cache is gone"
+            }
+            None => "past this task's limit",
+        };
         format!(
-            "Your context is {}k tokens, past this task's limit. This conversation ends after \
+            "Your context is {}k tokens, {why}. This conversation ends after \
              this turn and a fresh one continues the task; your working copy and commits stay. \
              Do no other work now. Write {} for that fresh conversation, at most 12 KB: what \
              the task is doing now, what is done, what remains and the next action, decisions \
@@ -1116,7 +1148,7 @@ impl Host {
 
     /// End the conversation after its handoff notes and start `waiting` in a fresh one,
     /// with the task's prompt, the notes and the current step.
-    fn rotate(&mut self, waiting: String) {
+    fn rotate(&mut self, waiting: String, reason: Option<String>) {
         let tokens = self.context_tokens;
         if let Some(agent) = self.agent.take() {
             self.stop_requested = true;
@@ -1125,7 +1157,7 @@ impl Host {
         self.record.agent_session = None;
         self.context_tokens = 0;
         self.save();
-        self.log(LogEvent::Rotated { tokens });
+        self.log(LogEvent::Rotated { tokens, reason });
         // ^ Notes too long to inline are read from their file.
         let notes = match self.dir.read_file(ROTATE_NOTES, MAX_ROTATE_NOTES_BYTES) {
             Ok(Some(bytes)) if !bytes.trim_ascii().is_empty() => format!(
@@ -1164,7 +1196,7 @@ impl Host {
         }
         text.push(waiting);
         text.extend(self.pending.drain(..));
-        self.start_turn(&text.join("\n\n"));
+        self.start_turn(&text.join("\n\n"), TurnTrigger::Rotation);
     }
 
     /// The turn text of the current workflow step, when the task has steps.
@@ -1233,7 +1265,7 @@ impl Host {
             return;
         };
         match what {
-            DiskWait::Turn(text) => self.start_turn(&text),
+            DiskWait::Turn(text) => self.start_turn(&text, TurnTrigger::Disk),
             DiskWait::Checks => self.start_checks(),
         }
     }
@@ -1276,7 +1308,7 @@ impl Host {
         self.limit_queue = None;
         if let Some(wait) = self.limit_wait.take() {
             self.say("the session limit has reset: the agent continues");
-            self.start_turn(&wait.text);
+            self.start_turn(&wait.text, TurnTrigger::Limit);
         }
     }
 
@@ -1654,7 +1686,7 @@ impl Host {
                             "checks failed on r{revision}: sent back to the worker ({attempt} of {MAX_CHECK_RETRIES})"
                         ));
                         let text = check_retry_request(&failed, attempt);
-                        self.start_turn(&text);
+                        self.start_turn(&text, TurnTrigger::CheckRetry);
                     }
                     // ^ Every ready task waits for the manager's review; one that resolved
                     // the conflict of a landing lands again at once when the project lands
@@ -1697,7 +1729,7 @@ impl Host {
                 self.set_state(TaskState::Failed);
             }
         }
-        self.deliver_pending();
+        self.deliver_pending(TurnTrigger::Message);
     }
 
     /// Whether the project lands ready tasks by itself (`tasks.land.auto`).
@@ -1720,28 +1752,33 @@ impl Host {
     }
 
     /// Send the messages queued during the turn or the checks as one new turn.
-    fn deliver_pending(&mut self) {
+    fn deliver_pending(&mut self, trigger: TurnTrigger) {
         if !self.pending.is_empty() {
             let text: Vec<String> = self.pending.drain(..).collect();
-            self.start_turn(&text.join("\n\n"));
+            self.start_turn(&text.join("\n\n"), trigger);
         }
     }
 
     /// The last result's context (a session limit's error result has none), or 0 when a
     /// rotation came after it: a host that starts again (after a session limit, a re-exec)
-    /// rotates a large conversation on its first turn.
-    fn last_context(&self) -> u64 {
-        self.dir
-            .last_event(|event| match event {
-                LogEvent::Result {
-                    usage: Some(usage), ..
-                } if usage.context_tokens > 0 => Some(usage.context_tokens),
-                LogEvent::Rotated { .. } => Some(0),
-                _ => None,
-            })
-            .ok()
-            .flatten()
-            .unwrap_or(0)
+    /// rotates a large conversation on its first turn. Then when the agent last answered: a
+    /// result or a session limit.
+    fn last_context(&self) -> (u64, u64) {
+        let context = self.dir.last_event(|event| match event {
+            LogEvent::Result {
+                usage: Some(usage), ..
+            } if usage.context_tokens > 0 => Some(usage.context_tokens),
+            LogEvent::Rotated { .. } => Some(0),
+            _ => None,
+        });
+        let answered = self.dir.last_entry(|entry| match entry.event {
+            LogEvent::Result { .. } | LogEvent::LimitWait { .. } => Some(entry.unix_ms),
+            _ => None,
+        });
+        (
+            context.ok().flatten().unwrap_or(0),
+            answered.ok().flatten().unwrap_or(0),
+        )
     }
 
     /// The worker conversation's last `session_cost_micro_usd`.
@@ -1864,14 +1901,17 @@ impl Host {
             onto: tip.to_string(),
             paths: paths.to_vec(),
         });
-        self.start_turn(&format!(
-            "Landing needs branch {branch} rebased onto {tip} (the current {default}). \
+        self.start_turn(
+            &format!(
+                "Landing needs branch {branch} rebased onto {tip} (the current {default}). \
              Run `git rebase {tip}`, resolve the conflicts in {paths}, `git add` them and \
              `git rebase --continue`, then report.",
-            branch = self.record.branch,
-            default = self.record.default_branch,
-            paths = paths.join(", "),
-        ));
+                branch = self.record.branch,
+                default = self.record.default_branch,
+                paths = paths.join(", "),
+            ),
+            TurnTrigger::Conflict,
+        );
         format!(
             "the rebase onto {} conflicted in {}; the worker is resolving it{}",
             self.record.default_branch,

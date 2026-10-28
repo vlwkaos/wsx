@@ -270,6 +270,11 @@ pub enum LogEvent {
         /// Tool calls the agent refused during the turn; the worker may have continued without them.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         denials: Vec<String>,
+        /// The workflow step the turn ran in, and what started it (docs/tasks.md "Usage").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trigger: Option<TurnTrigger>,
     },
     Checks {
         results: Vec<CheckResult>,
@@ -314,6 +319,9 @@ pub enum LogEvent {
     /// next turn starts a fresh conversation (docs/tasks.md "Context rotation").
     Rotated {
         tokens: u64,
+        /// Set when an idle gap, not the size, rotated it: the prompt cache was gone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     /// The agent's usage limit ended a turn: it continues at `until_ms` (unix ms).
     LimitWait {
@@ -364,6 +372,34 @@ pub enum LogEvent {
     },
 }
 
+/// What started a worker turn, logged on its `result`. ref: docs/tasks.md "Usage"
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnTrigger {
+    /// The task's first turn, or a workflow step's start.
+    Step,
+    /// An `add` or a steer with no running turn, or messages queued until a turn ended.
+    Message,
+    /// Failed checks sent back to the worker.
+    CheckRetry,
+    /// Human Verify items the worker proves itself.
+    Verify,
+    /// The answer of a `check-run` that ended after the worker's result.
+    CheckRun,
+    /// A landing's rebase conflict.
+    Conflict,
+    /// The one turn that asks for a result the last turn left out.
+    ResultRetry,
+    /// The turn after a usage limit reset.
+    Limit,
+    /// The first turn of a fresh conversation after a rotation.
+    Rotation,
+    /// A turn that waited for free disk.
+    Disk,
+    /// The turn a host handed over when it exec'd a replaced binary.
+    Restart,
+}
+
 fn is_zero(value: &u32) -> bool {
     *value == 0
 }
@@ -396,6 +432,9 @@ pub struct TurnUsage {
     /// The model of the turn's last model call.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub model: String,
+    /// Main-conversation model calls in the turn (distinct `assistant` message ids).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub calls: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

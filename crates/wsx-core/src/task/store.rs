@@ -399,6 +399,11 @@ impl TaskDir {
     /// last `LOG_TAIL_SCAN_BYTES` first, the whole log only when they hold no hit. Gives
     /// the answer of `read_log().iter().rev().find_map(..)` without a full parse per call.
     pub fn last_event<T>(&self, pick: impl Fn(&LogEvent) -> Option<T>) -> Result<Option<T>> {
+        self.last_entry(|entry| pick(&entry.event))
+    }
+
+    /// `last_event` with the whole entry, for its time.
+    pub fn last_entry<T>(&self, pick: impl Fn(&LogEntry) -> Option<T>) -> Result<Option<T>> {
         let path = self.file(LOG_FILE);
         let Some(mut file) = open_if_exists(&path)? else {
             return Ok(None);
@@ -410,15 +415,11 @@ impl TaskDir {
             .split(|byte| *byte == b'\n')
             .rev()
             .filter_map(|line| serde_json::from_slice::<LogEntry>(line).ok())
-            .find_map(|entry| pick(&entry.event));
+            .find_map(|entry| pick(&entry));
         if hit.is_some() || skipped == 0 {
             return Ok(hit);
         }
-        Ok(self
-            .read_log()?
-            .iter()
-            .rev()
-            .find_map(|entry| pick(&entry.event)))
+        Ok(self.read_log()?.iter().rev().find_map(&pick))
     }
 
     /// The original prompt, read from the start of the log only.

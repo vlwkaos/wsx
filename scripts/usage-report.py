@@ -100,7 +100,8 @@ def mask(text):
 
 
 def task_turns(task, events):
-    """One row per worker turn with its step, replaying docs/tasks.md "Steps":
+    """One row per worker turn with its step and trigger. A result that names them
+    (docs/tasks.md "Usage") is read as logged; an older one replays docs/tasks.md "Steps":
     a `done` result moves to the next step; turns after the last step are `after`."""
     steps = [s["name"] for s in task.get("steps") or []] or ["build"]
     idx, rot_next, limit_next, last_end, trigger, turns = 0, False, False, None, None, []
@@ -116,10 +117,13 @@ def task_turns(task, events):
             # resumes the same session hours later
             limit = u.get("model") == "<synthetic>"
             step = "limit hit" if limit else steps[idx] if idx < len(steps) else "after"
+            if "trigger" in e:
+                step, trigger = e.get("step") or "no steps", e["trigger"]
             start = e["unix_ms"] - u.get("duration_ms", 0)
             turns.append({"ms": e["unix_ms"], "step": step, "u": u, "status": e.get("status"),
                           "after_rotation": rot_next, "after_limit": limit_next,
                           "gap": start - last_end if last_end is not None else None,
+                          "logged": "trigger" in e,
                           "trigger": trigger or "no event (result retry, limit resume)"})
             last_end, trigger = e["unix_ms"], None
             rot_next, limit_next = False, limit
@@ -200,7 +204,7 @@ def main():
     except ValueError as err:
         sys.exit(f"usage-report: {err}")
 
-    tasks, all_turns, repeats = [], [], collections.Counter()
+    tasks, all_turns, rotations, repeats = [], [], [], collections.Counter()
     for name in os.listdir(a.state_dir):
         folder = os.path.join(a.state_dir, name)
         if not name.isdigit() or not os.path.exists(os.path.join(folder, "task.json")):
@@ -217,6 +221,7 @@ def main():
             continue
         turns = task_turns(task, events)
         all_turns += turns
+        rotations += [e for e in events if e.get("kind") == "rotated"]
         tasks.append(task_row(task, events, turns))
         repeats.update(mask(e.get("text", "")) for e in events if e.get("kind") == "agent")
         if a.task == task["id"]:
@@ -261,17 +266,21 @@ def main():
         for name, ts in sorted(g.items(), key=lambda x: -sum(map(cost, x[1]))):
             total = sum(map(cost, ts))
             ctx = [t["u"]["context_tokens"] for t in ts if t["u"].get("context_tokens")]
-            # ^ each model call re-reads the context, so cache reads / context ~ calls in the turn
-            calls = [t["u"].get("cache_read_tokens", 0) / t["u"]["context_tokens"] for t in ts if t["u"].get("context_tokens")]
+            # ^ `calls` as logged; on older lines each model call re-reads the context, so
+            # cache reads / context ~ calls in the turn
+            calls = [t["u"]["calls"] if t["u"].get("calls") else t["u"].get("cache_read_tokens", 0) / t["u"]["context_tokens"]
+                     for t in ts if t["u"].get("calls") or t["u"].get("context_tokens")]
             rows.append([name, len(ts), usd(total), usd(total / len(ts)),
                          k(statistics.median(ctx)) if ctx else "-",
                          f"{statistics.median(t['u'].get('duration_ms', 0) for t in ts) / 60000:.1f}",
                          f"{statistics.median(calls):.0f}" if calls else "-",
                          write_share(ts)])
         table(title, ["", "turns", "cost $", "$/turn", "median ctx", "median min", "~calls/turn", "cache write share"], rows)
-    group(lambda t: t["step"], "Per worker step (replayed from task.json steps; after = check retries, adds, conflicts)")
+    group(lambda t: t["step"], "Per worker step (as logged; on older lines replayed from task.json steps, "
+          "after = check retries, adds, conflicts)")
     group(lambda t: (t["u"].get("model") or "unrecorded").replace("claude-", ""), "Per worker model")
-    group(lambda t: t["trigger"], "What started each `after` turn (latest event since the task's previous turn)",
+    group(lambda t: t["trigger"], "What started each turn (logged `trigger`)", [t for t in all_turns if t["logged"]])
+    group(lambda t: t["trigger"], "What started each `after` turn on older lines (latest event since the task's previous turn)",
           [t for t in all_turns if t["step"] == "after"])
     group(lambda t: "limit hit" if t["step"] == "limit hit" else "after rotation" if t["after_rotation"]
           else "after session limit" if t["after_limit"]
@@ -330,6 +339,9 @@ def main():
         print(f"per landed task: ${per_task}, {turns} turns, {wall} h wall, {wait} min check wait, "
               f"{back} send-backs, {failed} failed check runs")
     print(f"turns over {BIG_CTX // 1000}k context: ${usd(big)}; turns after > 1 h idle (cold cache): ${usd(cold)}")
+    idle = sum(1 for e in rotations if (e.get("reason") or "").startswith("idle"))
+    print(f"worker rotations: {len(rotations) - idle} by size, {idle} after idle; "
+          f"turns with a logged trigger: {sum(t['logged'] for t in all_turns)} of {len(all_turns)}")
 
 
 if __name__ == "__main__":
