@@ -170,6 +170,8 @@ pub struct TaskPreview {
     pub command: String,
     pub ready: String,
     pub ports: (u16, u16),
+    /// `tasks.preview.local`: serve on 127.0.0.1 only, without `tailscale serve`.
+    pub local: bool,
 }
 
 impl TaskConfig {

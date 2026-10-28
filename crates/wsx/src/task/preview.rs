@@ -1,9 +1,10 @@
-//! `wsx task preview`: serve one task for a person to try, on its own tailnet port.
+//! `wsx task preview`: serve one task for a person to try, on its own tailnet or local port.
 //! ref: docs/tasks.md "Preview"
 //!
 //! A detached `wsx task preview-host` owns the preview: it starts `tasks.preview.command`
 //! with `$PORT` in the task's working copy (or a temporary copy of a landed commit), waits
-//! for `tasks.preview.ready`, maps the port with `tailscale serve` and writes
+//! for `tasks.preview.ready`, maps the port with `tailscale serve` (not with
+//! `tasks.preview.local` or without tailscale: then the url is local) and writes
 //! `preview.json`. It stops after an hour, on `preview --stop` (`preview.stop`), when the
 //! task closes or the command exits, and then removes the mapping, the process group and
 //! the temporary copy.
@@ -192,16 +193,20 @@ impl Preview {
                 .context("cannot start tasks.preview.command")?,
         );
         self.wait_ready(port, &config.ready)?;
-        tailscale(&[
-            "serve",
-            "--bg",
-            &format!("--https={port}"),
-            &format!("http://127.0.0.1:{port}"),
-        ])?;
-        self.served = Some(port);
-        let host = tailnet_name()?;
+        let url = if config.local || !tailscale_on_path() {
+            format!("http://127.0.0.1:{port}/")
+        } else {
+            tailscale(&[
+                "serve",
+                "--bg",
+                &format!("--https={port}"),
+                &format!("http://127.0.0.1:{port}"),
+            ])?;
+            self.served = Some(port);
+            format!("https://{}:{port}/", tailnet_name()?)
+        };
         let running = Running {
-            url: format!("https://{host}:{port}/"),
+            url,
             port,
             pid: std::process::id(),
             until_unix_ms: now_unix_ms() + LIFETIME.as_millis() as u64,
@@ -310,6 +315,12 @@ fn answers_ok(port: u16, path: &str) -> bool {
     let read = stream.read(&mut head).unwrap_or(0);
     let line = String::from_utf8_lossy(&head[..read]);
     line.starts_with("HTTP/1.") && line.get(9..12) == Some("200")
+}
+
+/// Whether a `tailscale` executable is on PATH; without one a preview stays local.
+fn tailscale_on_path() -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("tailscale").is_file()))
 }
 
 /// Run `tailscale <args>`: port-scoped only, never `serve reset`.

@@ -33,20 +33,20 @@ impl App {
         wi: usize,
         session_label: String,
         command: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<Option<(runtime::SessionId, String)>> {
         let Some((proj_name, wt_path, wt_slug)) = self.workspace.projects.get(pi).and_then(|p| {
             let wt = p.worktrees.get(wi)?;
             Some((p.name.clone(), wt.path.clone(), wt.session_slug(&p.name)))
         }) else {
             self.set_status("Worktree is no longer available");
-            return Ok(());
+            return Ok(None);
         };
         let explicit_name = if session_label.is_empty() {
             None
         } else {
             Some(session_label)
         };
-        let (_pane_id, display_name) = ops::create_session(
+        let (session_id, display_name) = ops::create_session(
             &self.config,
             &proj_name,
             &wt_slug,
@@ -58,7 +58,7 @@ impl App {
         // Expand before the authoritative Runtime refresh reveals the new pane.
         self.set_worktree_expanded(pi, wi, true);
         self.spawn_runtime_refresh();
-        Ok(())
+        Ok(Some((session_id, display_name)))
     }
 
     pub(super) fn do_delete_project(&mut self, pi: usize) -> Result<()> {

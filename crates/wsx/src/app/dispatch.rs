@@ -123,6 +123,16 @@ impl App {
             return self.dispatch_routine_editor(action);
         }
         if let Mode::Tasks { list } = &mut self.mode {
+            let shell = match &list.chat {
+                // ^ The chat takes characters; `S` is the shell only where it types nothing.
+                Some(chat) => {
+                    chat.focus == crate::task_chat::Focus::Chat && action == Action::InputChar('S')
+                }
+                None => action == Action::Shell,
+            };
+            if shell {
+                return self.action_task_shell(terminal);
+            }
             if let Some(chat) = &mut list.chat {
                 if !chat.key(&action) {
                     list.chat = None;

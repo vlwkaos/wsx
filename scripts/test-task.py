@@ -873,6 +873,50 @@ def run(wsx, wsxd, work, owned):
     for n in (d1, d2, d3):
         js('task', 'close', n, '--discard')
 
+    # 14e. `S` in the Tasks view opens a shell: in the task's working copy on its row, in the
+    # main checkout from the chat. A second `S` enters the same session, and the worker keeps
+    # its turn: no hand, no stop (docs/tasks.md "TUI").
+    mark('14e')
+    shell_gate = work / 'shell-gate'
+    sh = js('task', 'new', 'WAIT %s' % shell_gate)['id']
+    wait_state(sh, 'working')
+    copy_name = Path(show(sh)['record']['working_copy']).name
+    where = b'printf "at:%s\\n" "${PWD##*/}"\r'
+
+    def sessions_at(path):
+        data = daemon_call('snapshot')['data']
+        ids = {w['id'] for w in data['worktrees'] if os.path.realpath(w['path']) == os.path.realpath(path)}
+        return [s['label'] for s in data['sessions'] if s['worktree_id'] in ids]
+    prompt = r'(?m)\$ *$'
+    tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'),
+        (r'#%d +working' % sh, b'S'),
+        (prompt, where),
+        (r'at:%s' % re.escape(copy_name), b'\x01w'),
+        (r'WORKSPACE', b'tm'),
+        (r'MANAGER', b'S'),
+        (prompt, where),
+        (r'at:%s' % re.escape(project.name), b'')])
+    copy_path = show(sh)['record']['working_copy']
+    task_shells = [label for label in sessions_at(copy_path) if label != 'task-%d' % sh]
+    main_shells = [label for label in sessions_at(project) if not label.startswith('task-')]
+    assert len(task_shells) == 1 and len(main_shells) == 1, (task_shells, main_shells)
+    again = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'),
+        (r'#%d +working' % sh, b'S'),
+        (r'at:%s' % re.escape(copy_name), b'\x01w'),
+        (r'WORKSPACE', b'tm'),
+        (r'MANAGER', b'S'),
+        (r'at:%s' % re.escape(project.name), b'')])
+    assert 'TASKS' not in again[2] and 'MANAGER' not in again[-1], again
+    assert [label for label in sessions_at(copy_path) if label != 'task-%d' % sh] == task_shells
+    assert [label for label in sessions_at(project) if not label.startswith('task-')] == main_shells
+    assert show(sh)['state'] == 'working' and not kinds(sh, 'hand', 'stopped'), log(sh)
+    shell_gate.write_text('open')
+    wait_state(sh, 'ready', 'failed')
+    js('task', 'close', sh, '--discard')
+    cli('session', 'delete', main_shells[0], '-p', 'demo')
+
     def land(n, *flags, ok=True):
         return json.loads(cli('task', 'land', n, *flags, '--json', ok=ok).stdout)
 
@@ -1946,16 +1990,17 @@ def run(wsx, wsxd, work, owned):
     (bin_dir / 'tailscale').write_text('#!/bin/sh\necho "$@" >> ' + str(tailscale_log) + '\n'
                                        'if [ "$1" = status ]; then echo \'{"Self":{"DNSName":"host.example.ts.net."}}\'; fi\n')
     (bin_dir / 'tailscale').chmod(0o755)
-    configure(LAND_CONFIG + """  preview:
+    preview_config = LAND_CONFIG + """  preview:
     command: 'exec python3 -m http.server "$PORT" --bind 127.0.0.1'
     ports: 9150-9199
-""", 'preview')
+"""
+    configure(preview_config, 'preview')
     pv = js('task', 'new', 'WORK pv.txt')['id']
     assert wait_state(pv, 'ready', 'failed')['state'] == 'ready'
 
-    def answers(port):
+    def answers(port, name='pv.txt'):
         try:
-            with urllib.request.urlopen('http://127.0.0.1:%d/pv.txt' % port, timeout=3) as response:
+            with urllib.request.urlopen('http://127.0.0.1:%d/%s' % (port, name), timeout=3) as response:
                 return response.status == 200
         except OSError:
             return False
@@ -1972,6 +2017,20 @@ def run(wsx, wsxd, work, owned):
     again = js('task', 'preview', pv)['port']
     js('task', 'close', pv, '--discard')
     assert not answers(again) and tailscale_log.read_text().count('--https=%d off' % again) >= 1
+    # `local: true`, and a machine without tailscale: the url is local and tailscale never runs.
+    calls = tailscale_log.read_text()
+    configure(preview_config + "    local: true\n", 'local preview')
+    lp = js('task', 'new', 'WORK lp.txt')['id']
+    assert wait_state(lp, 'ready', 'failed')['state'] == 'ready'
+    local = js('task', 'preview', lp)
+    assert local['url'] == 'http://127.0.0.1:%d/' % local['port'] and answers(local['port'], 'lp.txt'), local
+    assert js('task', 'preview', lp, '--stop')['stopped'] is True and not answers(local['port'], 'lp.txt')
+    (bin_dir / 'tailscale').unlink()
+    configure(preview_config, 'preview without tailscale')
+    absent = js('task', 'preview', lp)
+    assert absent['url'] == 'http://127.0.0.1:%d/' % absent['port'] and answers(absent['port'], 'lp.txt'), absent
+    js('task', 'close', lp, '--discard')
+    assert not answers(absent['port'], 'lp.txt') and tailscale_log.read_text() == calls
     configure(LAND_CONFIG, 'no preview')
     plain = js('task', 'new', 'WORK plain.txt')['id']
     assert wait_state(plain, 'ready', 'failed')['state'] == 'ready'

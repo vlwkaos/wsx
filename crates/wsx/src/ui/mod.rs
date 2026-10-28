@@ -722,7 +722,7 @@ fn status_bar_view(app: &App) -> StatusBarView {
         Mode::Tasks { list } if list.detail.is_some() => (
             "TASK",
             theme::ModeBadge::Info,
-            vec!["(j/k)scroll".into(), "Esc: back".into()],
+            vec!["(j/k)scroll".into(), "(S)hell".into(), "Esc: back".into()],
         ),
         Mode::Tasks { list } => (
             "TASKS",
@@ -734,6 +734,7 @@ fn status_bar_view(app: &App) -> StatusBarView {
                     None => "(enter)detail".into(),
                 },
                 "(m)anager".into(),
+                "(S)hell".into(),
                 "Esc: close".into(),
             ],
         ),
@@ -970,7 +971,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  g             Assign project group",
         "  d             Unregister project",
         "  e             View/edit wsx.config.yml",
-        "  t             Tasks (Enter: detail, m: manager chat)",
+        "  t             Tasks (Enter: detail, m: chat, S: shell)",
         "",
         " Worktree",
         "  w             Add worktree (branch: prompt)",
