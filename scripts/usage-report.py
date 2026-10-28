@@ -18,9 +18,10 @@ import re
 import statistics
 import sys
 
-# ^ Cache price weights relative to base input tokens (Anthropic prompt caching: 5-minute
-# write 1.25x, read 0.1x). Only used to split a turn's input cost into write and read shares.
-WRITE_W, READ_W = 1.25, 0.10
+# ^ Cache price weights relative to base input tokens: Claude Code writes 1-hour cache entries
+# (transcripts: `ephemeral_1h_input_tokens`, 5m always 0), priced 2x; reads 0.1x. Only used to
+# split a turn's input cost into write and read shares.
+WRITE_W, READ_W = 2.0, 0.10
 BIG_CTX = 200_000
 
 
@@ -65,9 +66,15 @@ def k(tokens):
     return f"{tokens / 1000:.0f}k" if tokens else "-"
 
 
-def cache_split(u):
-    """(write, read) input-equivalent token weights of one usage."""
-    return u.get("cache_creation_tokens", 0) * WRITE_W, u.get("cache_read_tokens", 0) * READ_W
+def cost(t):
+    return t["u"].get("cost_micro_usd", 0)
+
+
+def write_share(turns):
+    """Cache writes' part of the cache-priced input of these turns."""
+    w = sum(t["u"].get("cache_creation_tokens", 0) for t in turns) * WRITE_W
+    r = sum(t["u"].get("cache_read_tokens", 0) for t in turns) * READ_W
+    return f"{w / max(w + r, 1):.0%}"
 
 
 def table(title, head, rows):
@@ -150,12 +157,11 @@ def task_row(task, events, turns):
         "id": task["id"], "title": (task.get("title") or "")[:28], "state": task.get("state", "?"),
         "model": (models.most_common(1)[0][0] if models else task.get("model", "?")).replace("claude-", ""),
         "steps": len(task.get("steps") or []), "turns": len(turns),
-        "cost": sum(t["u"].get("cost_micro_usd", 0) for t in turns),
+        "cost": sum(map(cost, turns)),
         "dur": sum(t["u"].get("duration_ms", 0) for t in turns),
         "ctx_max": max(ctx, default=0), "ctx_trail": " ".join(k(c) for c in ctx[-6:]),
         "rot": sum(1 for e in events if e.get("kind") == "rotated"),
-        "limits": sum(1 for e in events if e.get("kind") == "result"
-                      and (e.get("usage") or {}).get("model") == "<synthetic>"),
+        "limits": sum(1 for t in turns if t["step"] == "limit hit"),
         "rev": revisions, "sendback": adds, "failed": failed, "check_wait": wait,
         "wall": (landed - first) if landed else None, "day": day(first), "kind": area(task),
     }
@@ -185,11 +191,10 @@ def main():
     a = ap.parse_args()
     if not os.path.isdir(a.state_dir):
         sys.exit(f"usage-report: no such folder: {a.state_dir}")
+    if a.days:
+        a.since = (datetime.date.today() - datetime.timedelta(days=a.days - 1)).isoformat()
     try:
         since = datetime.datetime.strptime(a.since, "%Y-%m-%d").timestamp() * 1000 if a.since else 0
-        if a.days:
-            a.since = (datetime.date.today() - datetime.timedelta(days=a.days - 1)).isoformat()
-            since = datetime.datetime.strptime(a.since, "%Y-%m-%d").timestamp() * 1000
         until = (datetime.datetime.strptime(a.until, "%Y-%m-%d") + datetime.timedelta(days=1)).timestamp() * 1000 \
             if a.until else float("inf")
     except ValueError as err:
@@ -211,14 +216,12 @@ def main():
         if not events or not since <= events[0]["unix_ms"] < until:
             continue
         turns = task_turns(task, events)
-        for t in turns:
-            t["task"] = task["id"]
         all_turns += turns
         tasks.append(task_row(task, events, turns))
         repeats.update(mask(e.get("text", "")) for e in events if e.get("kind") == "agent")
         if a.task == task["id"]:
             table(f"Task {task['id']} turns", ["day", "step", "status", "cost $", "ctx", "cache w/r tok", "rot", "limit", "model"],
-                  [[day(t["ms"]), t["step"], t["status"], usd(t["u"].get("cost_micro_usd", 0)), k(t["u"].get("context_tokens", 0)),
+                  [[day(t["ms"]), t["step"], t["status"], usd(cost(t)), k(t["u"].get("context_tokens", 0)),
                     f"{k(t['u'].get('cache_creation_tokens', 0))}/{k(t['u'].get('cache_read_tokens', 0))}",
                     "y" if t["after_rotation"] else "", "y" if t["after_limit"] else "", t["u"].get("model", "")]
                    for t in turns])
@@ -228,18 +231,16 @@ def main():
     mturns = manager_turns(mevents)
 
     # Per day
-    days = collections.defaultdict(lambda: collections.Counter())
+    days, wturns = collections.defaultdict(collections.Counter), collections.defaultdict(list)
     for t in all_turns:
         d = days[day(t["ms"])]
-        d["wcost"] += t["u"].get("cost_micro_usd", 0)
+        d["wcost"] += cost(t)
         d["wturns"] += 1
-        w, r = cache_split(t["u"])
-        d["w"] += w
-        d["r"] += r
         d["big"] += t["u"].get("context_tokens", 0) > BIG_CTX
+        wturns[day(t["ms"])].append(t)
     for t in mturns:
         d = days[day(t["ms"])]
-        d["mcost"] += t["u"].get("cost_micro_usd", 0)
+        d["mcost"] += cost(t)
         d["mturns"] += 1
     for r in tasks:
         days[r["day"]]["tasks"] += 1
@@ -249,7 +250,7 @@ def main():
            "manager $", "m turns"],
           [[dk, d["tasks"], d["landed"], usd(d["wcost"]), d["wturns"], f"{d['wturns'] / max(d['tasks'], 1):.1f}",
             usd(d["wcost"] / max(d["wturns"], 1)), d["big"],
-            f"{d['w'] / max(d['w'] + d['r'], 1):.0%}", usd(d["mcost"]), d["mturns"]] for dk, d in sorted(days.items())])
+            write_share(wturns[dk]), usd(d["mcost"]), d["mturns"]] for dk, d in sorted(days.items())])
 
     # Per step and per model
     def group(key, title, turns=all_turns):
@@ -257,17 +258,16 @@ def main():
         for t in turns:
             g[key(t)].append(t)
         rows = []
-        for name, ts in sorted(g.items(), key=lambda x: -sum(t["u"].get("cost_micro_usd", 0) for t in x[1])):
-            cost = sum(t["u"].get("cost_micro_usd", 0) for t in ts)
+        for name, ts in sorted(g.items(), key=lambda x: -sum(map(cost, x[1]))):
+            total = sum(map(cost, ts))
             ctx = [t["u"]["context_tokens"] for t in ts if t["u"].get("context_tokens")]
-            w = sum(cache_split(t["u"])[0] for t in ts)
             # ^ each model call re-reads the context, so cache reads / context ~ calls in the turn
             calls = [t["u"].get("cache_read_tokens", 0) / t["u"]["context_tokens"] for t in ts if t["u"].get("context_tokens")]
-            rows.append([name, len(ts), usd(cost), usd(cost / len(ts)),
+            rows.append([name, len(ts), usd(total), usd(total / len(ts)),
                          k(statistics.median(ctx)) if ctx else "-",
                          f"{statistics.median(t['u'].get('duration_ms', 0) for t in ts) / 60000:.1f}",
                          f"{statistics.median(calls):.0f}" if calls else "-",
-                         f"{w / max(w + sum(cache_split(t['u'])[1] for t in ts), 1):.0%}"])
+                         write_share(ts)])
         table(title, ["", "turns", "cost $", "$/turn", "median ctx", "median min", "~calls/turn", "cache write share"], rows)
     group(lambda t: t["step"], "Per worker step (replayed from task.json steps; after = check retries, adds, conflicts)")
     group(lambda t: (t["u"].get("model") or "unrecorded").replace("claude-", ""), "Per worker model")
@@ -307,11 +307,9 @@ def main():
         g[t["kind"]].append(t)
     table("Manager turns by kind (reply.to -> message.from)",
           ["kind", "turns", "cost $", "$/turn", "median ctx", "quiet", "cache write share"],
-          [[kind, len(ts), usd(sum(t["u"].get("cost_micro_usd", 0) for t in ts)),
-            usd(sum(t["u"].get("cost_micro_usd", 0) for t in ts) / len(ts)),
+          [[kind, len(ts), usd(sum(map(cost, ts))), usd(sum(map(cost, ts)) / len(ts)),
             k(statistics.median([t["u"]["context_tokens"] for t in ts if t["u"].get("context_tokens")] or [0])),
-            sum(t["quiet"] for t in ts),
-            f"{sum(cache_split(t['u'])[0] for t in ts) / max(sum(sum(cache_split(t['u'])) for t in ts), 1):.0%}"]
+            sum(t["quiet"] for t in ts), write_share(ts)]
            for kind, ts in sorted(g.items())])
     print(f"\nManager rotations: {sum(1 for e in mevents if e.get('kind') == 'rotated')}")
 
@@ -321,16 +319,15 @@ def main():
 
     # ^ Summary last: a routine's event carries the last 10 lines of its output.
     landed = [r for r in tasks if r["wall"]]
-    wcost = sum(t["u"].get("cost_micro_usd", 0) for t in all_turns)
-    mcost = sum(t["u"].get("cost_micro_usd", 0) for t in mturns)
-    big = sum(t["u"].get("cost_micro_usd", 0) for t in all_turns if t["u"].get("context_tokens", 0) > BIG_CTX)
-    cold = sum(t["u"].get("cost_micro_usd", 0) for t in all_turns if (t["gap"] or 0) >= 3_600_000)
+    wcost, mcost = sum(map(cost, all_turns)), sum(map(cost, mturns))
+    big = sum(cost(t) for t in all_turns if t["u"].get("context_tokens", 0) > BIG_CTX)
+    cold = sum(cost(t) for t in all_turns if (t["gap"] or 0) >= 3_600_000)
     print("\n## Summary\n")
     print(f"window {a.since or 'start'} .. {a.until or 'now'}: tasks {len(tasks)}, landed {len(landed)}, "
           f"worker ${usd(wcost)} in {len(all_turns)} turns, manager ${usd(mcost)} in {len(mturns)} turns")
     if landed:
-        n, cost, turns, wall, wait, back, failed = medians(landed)
-        print(f"per landed task: ${cost}, {turns} turns, {wall} h wall, {wait} min check wait, "
+        _, per_task, turns, wall, wait, back, failed = medians(landed)
+        print(f"per landed task: ${per_task}, {turns} turns, {wall} h wall, {wait} min check wait, "
               f"{back} send-backs, {failed} failed check runs")
     print(f"turns over {BIG_CTX // 1000}k context: ${usd(big)}; turns after > 1 h idle (cold cache): ${usd(cold)}")
 

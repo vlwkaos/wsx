@@ -26,22 +26,22 @@ Window since 10-24 (92 tasks, worker $608.50, manager $73.75):
 
 | worker turns by | turns | cost $ | $/turn | median ctx | cache write share |
 |---|---|---|---|---|---|
-| context > 200k | 151 | 270.28 | 1.79 | 259k | 14% |
-| other | 447 | 273.93 | 0.61 | 110k | 23% |
-| after > 1 h idle (all days) | 73 | 171.22 | 2.35 | 208k | 51% |
-| after 5-60 min idle (all days) | 178 | 93.48 | 0.53 | 189k | 7% |
-| first turn after a session limit | 10 | 31.97 | 3.20 | 231k | 44% |
-| step `build` | 108 | 204.68 | 1.90 | 121k | 14% |
-| after the last step: `add` (send-back) | 32 | 60.83 | 1.90 | 197k | 31% |
-| after the last step: `check_run` answer | 57 | 40.13 | 0.70 | 194k | 15% |
-| after the last step: `conflict` | 22 | 35.32 | 1.61 | 285k | 13% |
-| after the last step: no event (result retry, limit resume) | 109 | 47.56 | 0.44 | 186k | 26% |
-| model opus | 569 | 565.04 | 0.99 | 144k | 19% |
-| model sonnet | 29 | 3.15 | 0.11 | 59k | 38% |
-| manager turn: events | 350 | 41.10 | 0.12 | 97k | 21% |
-| manager turn: owner | 165 | 27.38 | 0.17 | 100k | 25% |
+| context > 200k | 151 | 270.28 | 1.79 | 259k | 21% |
+| other | 447 | 273.93 | 0.61 | 110k | 32% |
+| after > 1 h idle (all days) | 73 | 171.22 | 2.35 | 208k | 62% |
+| after 5-60 min idle (all days) | 178 | 93.48 | 0.53 | 189k | 11% |
+| first turn after a session limit | 10 | 31.97 | 3.20 | 231k | 56% |
+| step `build` | 108 | 204.68 | 1.90 | 121k | 20% |
+| after the last step: `add` (send-back) | 32 | 60.83 | 1.90 | 197k | 42% |
+| after the last step: `check_run` answer | 57 | 40.13 | 0.70 | 194k | 22% |
+| after the last step: `conflict` | 22 | 35.32 | 1.61 | 285k | 19% |
+| after the last step: no event (result retry, limit resume) | 109 | 47.56 | 0.44 | 186k | 37% |
+| model opus | 569 | 565.04 | 0.99 | 144k | 28% |
+| model sonnet | 29 | 3.15 | 0.11 | 59k | 49% |
+| manager turn: events | 350 | 41.10 | 0.12 | 97k | 30% |
+| manager turn: owner | 165 | 27.38 | 0.17 | 100k | 35% |
 
-Fields used: `result.usage` and `reply.usage` (`cost_micro_usd`, `session_cost_micro_usd`, `context_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `duration_ms`, `model`), plus `rotated`, `revision`, `message.mode`, `check_queued`, `check_run`, `checks`, `check_retry`, `conflict`, `landed`, the manager's `message.from` and `delivered`, and `task.json` `steps`, `files`, `model`. Lines from before `session_cost_micro_usd` existed (before commit 94f0b26, 10-21) store the session's running total in `cost_micro_usd`. The report turns those totals back into per-turn costs. The cache 5-60 min row writes only 7%, so the cache lives about 1 hour.
+Fields used: `result.usage` and `reply.usage` (`cost_micro_usd`, `session_cost_micro_usd`, `context_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `duration_ms`, `model`), plus `rotated`, `revision`, `message.mode`, `check_queued`, `check_run`, `checks`, `check_retry`, `conflict`, `landed`, the manager's `message.from` and `delivered`, and `task.json` `steps`, `files`, `model`. Lines from before `session_cost_micro_usd` existed (before commit 94f0b26, 10-21) store the session's running total in `cost_micro_usd`. The report turns those totals back into per-turn costs. Cache write share prices writes at 2x and reads at 0.1x base input: the transcripts show only 1-hour cache writes (`ephemeral_1h_input_tokens`). The 5-60 min idle row writes 11% and the over-1-h row 62%, so the cache lives 1 hour.
 
 ## What is traceable and what is not
 
@@ -60,11 +60,11 @@ Fields used: `result.usage` and `reply.usage` (`cost_micro_usd`, `session_cost_m
 |---|---|---|---|---|---|
 | 1 | Volume: 7 → 30 tasks a day, 5 steps each; $/turn stayed about $1 | manager: one task per request area (`add` over `new`); `--skip context,plan` with `--model sonnet` for exact changes (only 29 sonnet turns) | = | -30% for small tasks | = when the prompt carries the files |
 | 2 | Contexts over 200k: 151 turns, $270 (44%), $1.79/turn against $0.61 | `rotateTokens` 350000 → 200000; rotate at a step start (review and memo need the diff, not the history) | = | estimate -20 to -30% on these turns | review sees a fresh context, which can be better |
-| 3 | Cold cache after more than 1 hour idle: 73 turns, $171, 51% cache write; session limits add $57 | before a turn after more than 1 h idle with context over 150k, rotate instead of resuming (a fresh 30k start writes less than 250k) | = | estimate -$1 to -2 per cold turn | needs good handoff notes |
+| 3 | Cold cache after more than 1 hour idle: 73 turns, $171, 62% cache write; session limits add $57 | before a turn after more than 1 h idle with context over 150k, rotate instead of resuming (a fresh 30k start writes less than 250k) | = | estimate -$1 to -2 per cold turn | needs good handoff notes |
 | 4 | Turns after the last step: 234 turns, $196; send-backs $61 at $1.90 | the manager's review findings go into the review step (one turn) rather than an `add` after the checks; handle conflicts in the host when only CHANGELOG or docs conflict | faster land | about -$60 since 10-24 (estimate) | = |
 | 5 | Retries for a missing result: 109 turns, $48 | count these turns per step in the host and put the result call in each step prompt; find why a step ends without one | = | up to -$48 | = |
 | 6 | Manager events turns: 350, $41; 155 quiet | `eventModel: sonnet`, or handle a `landed` or `closed` event with no memo in the host with no turn | = | up to -$41 (estimate) | = |
-| 7 | `context` step writes 55% cache, then `/recall` again in build | the host puts the seek result for the task's `--files` in the first prompt; drop the `context` step for kinds that do not need it | -1 min per task | up to -$41 | = |
+| 7 | `context` step writes 66% cache, then `/recall` again in build | the host puts the seek result for the task's `--files` in the first prompt; drop the `context` step for kinds that do not need it | -1 min per task | up to -$41 | = |
 
 ## Next 3 changes
 
