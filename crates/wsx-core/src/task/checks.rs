@@ -60,7 +60,12 @@ pub struct CheckItem {
     /// The task a fail started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix_task: Option<u32>,
+    /// When this row was written: the item was added, passed, skipped or failed.
     pub unix_ms: u64,
+    /// When the item was added: its first row's `unix_ms`, set by `fold`. The chat places the
+    /// item there, so a decision changes it in place (docs/web-client-tasks.md "Project screen").
+    #[serde(default)]
+    pub added_unix_ms: u64,
 }
 
 /// Every item in its current row, in the order collected.
@@ -85,8 +90,16 @@ fn fold(bytes: &[u8]) -> Vec<CheckItem> {
         .filter_map(|line| serde_json::from_slice::<CheckItem>(line).ok())
     {
         match items.iter_mut().find(|known| known.id == item.id) {
-            Some(known) => *known = item,
-            None => items.push(item),
+            Some(known) => {
+                *known = CheckItem {
+                    added_unix_ms: known.added_unix_ms,
+                    ..item
+                }
+            }
+            None => items.push(CheckItem {
+                added_unix_ms: item.unix_ms,
+                ..item
+            }),
         }
     }
     items
@@ -161,6 +174,7 @@ pub fn collect(
                 note: None,
                 fix_task: None,
                 unix_ms: now,
+                added_unix_ms: now,
             })
             .collect())
     })

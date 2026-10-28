@@ -6,6 +6,10 @@
 
 - Tasks: the owner can skip a To check item, `wsx task check skip <id>...` or `--all`, or Skip on the web row. A skipped item is neither passed nor failed: it leaves the open list, no longer holds a release, starts no fix task and stays recorded as skipped. Its capture goes 7 days later, like a decided item's ([docs/tasks.md](docs/tasks.md) "To check").
 
+### Fixed
+
+- Web: passing, skipping or failing a To check item in the manager chat no longer moves its bubble to the end as a new message from the manager. The bubble stays at the time the item was added; the decision changes it in place.
+
 ## [0.40.4] - 2026-10-28
 
 ### Added

@@ -227,7 +227,7 @@ pub fn overview(scope: &Scope) -> Value {
     // (docs/web-client-tasks.md "Home").
     let news = check_items
         .last()
-        .map(|item| (item.unix_ms, format!("To check: {}", item.check)))
+        .map(|item| (item.added_unix_ms, format!("To check: {}", item.check)))
         .into_iter()
         .chain(last_reply.clone())
         .max_by_key(|(unix_ms, _)| *unix_ms)
