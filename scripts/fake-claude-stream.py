@@ -284,8 +284,9 @@ def main():
         transcript(session, text)
         if limited is not None:
             text, limited = limited + '\n\n' + text, None
-        elif project is not None and text.startswith('Events') and 'MLIMIT' in text.split() and (
-                seconds := int(text.split()[text.split().index('MLIMIT') + 1])) not in event_limits:
+        elif project is not None and text.startswith('Events') and (seconds := next(
+                (int(b) for a, b in zip(text.split(), text.split()[1:]) if a == 'MLIMIT' and b.isdigit()
+                 and int(b) not in event_limits), None)) is not None:
             event_limits.add(seconds)
             limited = text
             usage_limit(session, seconds)
