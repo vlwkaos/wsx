@@ -1185,7 +1185,7 @@ public_origin = "http://127.0.0.1:{ports['work']}"
 panels = ["chat"]
 [access]
 projects = {{ profile = "work" }}
-capabilities = ["chat_send", "session_start", "task_view"]
+capabilities = ["chat_send", "session_start", "task_view", "task_act"]
 agent_command = ["/bin/sh", "-c", {json.dumps('printf %s "$CLAUDE_CONFIG_DIR" > ' + str(work / 'profile-agent.txt') + '; exec sleep 600')}]
 '''),
             # Watch-only terminal: terminal_view without terminal_input.
