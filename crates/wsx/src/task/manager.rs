@@ -167,8 +167,7 @@ fn instructions(
         false => String::new(),
     };
     format!(
-        "You are the manager of the wsx project {project}. The owner talks to you in a chat, \
-         as to a colleague. You never edit the project's files or run builds or tests; \
+        "You are the manager of the wsx project {project}. You never edit the project's files or run builds or tests; \
          workers do that in tasks. Keep your notes in {notes}. \
          Messages headed 'Owner' come from the owner; 'Events' come from \
          wsx. Each message ends with wsx's ledger summary. The ledger is the truth, not \
@@ -211,16 +210,15 @@ fn instructions(
          diff <base>..HEAD`; `wsx task show <n> --json` names both) against the owner's \
          words and for lean code: no copy of a helper that exists, no dead code, nothing \
          the request did not ask for. Then `wsx task land <n>`, or `wsx task add <n> \
-         \"<what to change>\"`. A land rebases onto the newest main and runs the checks \
+         \"<what to change>\"`. A land rebases and runs the checks \
          again by itself: never send a task back to rebase. Report checks from the ledger's \
          `checks` and trust them over the worker's words. {review}When a worker leaves for a \
          person what a command, a test or a capture could prove, tell that worker to prove \
          it. What only a person can check goes to the To check list (the ledger's \
          `to_check`); never pass, fail or skip items yourself. A release refuses while items are \
          open, unless the owner's message asks for it (`--owner-said`): then the items stay \
-         to check on the release. `deploy` and `release` answer that they started; the \
-         result comes as an event and in the ledger's `deploys`, so do not run them again \
-         meanwhile. `wsx task routine` lists and runs the project's \
+         to check on the release. `deploy` and `release` answer at once; the \
+         result comes as an event, so do not run them again meanwhile. `wsx task routine` lists and runs the project's \
          routines (results as events and in the ledger's `routines`); add, edit and delete \
          need `--owner-said`. When the last task of a request \
          lands and no open task \
@@ -229,6 +227,9 @@ fn instructions(
          When the owner wants to be sure of a change or to try it, start \
          it with `wsx task new --hold \"<why>\"` (`wsx task hold <n> \"<why>\"` holds a \
          running one, `--off` releases it). A held task lands only when the owner says so. \
+         Long multi-step work goes into one task: each step is `wsx task new --into <n>`, \
+         which holds #<n>; land a step when an event names it ready, and #<n> once the owner \
+         says so. \
          Say in one line how to try it: Try live (`wsx task trial <n>`), or a preview \
          (`wsx task preview <n>`) when the live site cannot roll back from it, such as a \
          daemon or a migration. \
@@ -245,8 +246,7 @@ fn instructions(
          words. On `disk` or `limit` (the agent's usage limit), it resumes by itself. On \
          `hand`, the owner works in its copy: never add, steer, land or close it; only the \
          owner runs `wsx task hand` and `handback`. \
-         You run inside wsx's boundary and nothing asks you for permission; it refuses the \
-         owner's secrets, wsx's state and the tasks' copies. Read the \
+         Nothing asks you for permission inside wsx's boundary. Read the \
          project and the copies with the file and web tools and read-only git in Bash (also \
          `git -C <working copy>`). The \
          one git command that writes: when a land refuses because the main checkout has the \
@@ -694,6 +694,14 @@ impl Manager {
         let Ok(tasks) = project_tasks(&self.dir.project_id) else {
             return;
         };
+        // ^ A child's land waits for its parent at rest: the parent's event names them.
+        // ref: docs/tasks.md "Parent tasks"
+        let ready_children: Vec<(u32, u32)> = tasks
+            .iter()
+            .filter_map(|(_, record)| record.as_ref().ok())
+            .filter(|record| record.state == TaskState::Ready)
+            .filter_map(|record| record.parent.map(|parent| (parent, record.id)))
+            .collect();
         for (dir, record) in tasks {
             let Ok(record) = record else { continue };
             let now = Seen::of(&record);
@@ -725,6 +733,19 @@ impl Manager {
                         waiting.on.as_str(),
                         waiting.reason
                     );
+                }
+                let children: Vec<u32> = ready_children
+                    .iter()
+                    .filter(|(parent, _)| *parent == record.id)
+                    .map(|(_, child)| *child)
+                    .collect();
+                if matches!(record.state, TaskState::Ready | TaskState::Failed)
+                    && !children.is_empty()
+                {
+                    summary.push_str(&format!(
+                        "; children ready to land: {}",
+                        view::task_list(children)
+                    ));
                 }
                 if let Some(hold) = record.hold.as_ref().filter(|_| record.state.is_open()) {
                     summary.push_str(&format!(

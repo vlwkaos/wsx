@@ -32,11 +32,21 @@ pub struct Boundary {
 
 impl Boundary {
     /// A worker: its own copy and task folder; never the default branch's ref: wsx lands.
+    /// A child's default branch is its parent's branch; the branch the parent lands on is
+    /// denied too. ref: docs/tasks.md "Parent tasks"
     pub fn worker(record: &TaskRecord, own: &Path) -> Result<Self> {
         let common = copy::git_common_dir(&record.project_path)?;
-        let branch = format!("refs/heads/{}", record.default_branch);
+        let mut branches = vec![record.default_branch.clone()];
+        if let Some(parent) = record.parent {
+            let parent = store::TaskDir::open(&record.project_id, parent)?.read_record()?;
+            branches.push(parent.default_branch);
+        }
         let mut boundary = Self::new(&record.project_path, own)?;
-        boundary.deny_write_prefix = vec![common.join(&branch), common.join("logs").join(&branch)];
+        boundary.deny_write_prefix = branches
+            .iter()
+            .map(|branch| format!("refs/heads/{branch}"))
+            .flat_map(|branch| [common.join(&branch), common.join("logs").join(&branch)])
+            .collect();
         boundary.own.push(real(&record.working_copy));
         Ok(boundary)
     }

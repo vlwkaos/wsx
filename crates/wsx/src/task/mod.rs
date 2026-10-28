@@ -30,7 +30,8 @@ use wsx_core::task::manager::{chat_window, ApprovalAction, ApprovalLine, Manager
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{
-    checked_files, overlaps, project_tasks, task_summary, MAX_RESULT_READ_BYTES,
+    checked_files, overlaps, project_tasks, refuse_open_children, task_summary,
+    MAX_RESULT_READ_BYTES,
 };
 use wsx_core::task::{
     call_host, copy, now_unix_ms,
@@ -72,6 +73,10 @@ pub enum TaskCmd {
         /// Start from this branch, tag or commit instead of the default branch
         #[arg(long, value_name = "REF")]
         from: Option<String>,
+        /// Start from this open task's branch and land into it, not the default branch; the
+        /// task is held so it lands only on the owner's word (docs/tasks.md "Parent tasks")
+        #[arg(long, value_name = "TASK", conflicts_with = "from")]
+        into: Option<u32>,
         /// A short title in plain words (at most 60 characters); default: the prompt's first line
         #[arg(long)]
         title: Option<String>,
@@ -432,6 +437,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
         TaskCmd::New {
             prompt,
             from,
+            into,
             title,
             model,
             hold,
@@ -444,6 +450,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
         } => new(
             prompt,
             from.as_deref(),
+            into,
             title.as_deref(),
             model.as_deref(),
             hold,
@@ -772,6 +779,7 @@ fn print_json(value: &serde_json::Value) -> Result<()> {
 fn new(
     prompt: PromptSource,
     from: Option<&str>,
+    into: Option<u32>,
     title: Option<&str>,
     model: Option<&str>,
     hold: Option<String>,
@@ -790,7 +798,7 @@ fn new(
         .transpose()?;
     let files = checked_files(&[], &files)?;
     let (dir, record, answered) = create(
-        prompt, from, title, model, None, hold, files, plan, skip, project,
+        prompt, from, into, title, model, None, hold, files, plan, skip, project,
     )?;
     let state = answered.unwrap_or(TaskState::Working);
     let id = dir.id;
@@ -855,6 +863,7 @@ fn without_steps(
 fn create(
     prompt: String,
     from: Option<&str>,
+    into: Option<u32>,
     title: Option<String>,
     model: Option<String>,
     fixes: Option<String>,
@@ -873,25 +882,56 @@ fn create(
         None => Vec::new(),
     };
     let project_id = store::project_id(&project.name, &project.path);
+    let parent = into
+        .map(|parent| -> Result<(TaskDir, TaskRecord)> {
+            let parent_dir = TaskDir::open(&project_id, parent)?;
+            let record = parent_dir.read_record()?;
+            if !record.state.is_open() {
+                bail!("--into: task t{parent} is {}; no task was created", record.state.as_str());
+            }
+            if let Some(grandparent) = record.parent {
+                bail!("--into: task t{parent} lands into #{grandparent}, and a child takes no children; no task was created");
+            }
+            Ok((parent_dir, record))
+        })
+        .transpose()?;
     let dir = TaskDir::allocate(&project_id)?;
     let id = dir.id;
-    let working_copy =
-        match copy::create(&project.path, from.unwrap_or(&project.default_branch), id) {
-            Ok(copy) => copy,
-            Err(error) => {
-                let _ = dir.remove();
-                return Err(error.context(format!(
-                    "task t{id} was not created and its number is not reused"
-                )));
+    // ^ A child starts from its parent's tip and lands on its branch; the parent is held so
+    // it never lands by itself. ref: docs/tasks.md "Parent tasks"
+    let created = (|| -> Result<(String, copy::WorkingCopy)> {
+        let default_branch = match &parent {
+            Some((parent_dir, record)) => {
+                if record.hold.is_none() {
+                    let hold = HostRequest::Hold {
+                        reason: Some(format!("parent of #{id}")),
+                        by: actor(),
+                    };
+                    ask_host_ok(parent_dir, &hold)?;
+                }
+                record.branch.clone()
             }
+            None => project.default_branch.clone(),
         };
+        let working_copy = copy::create(&project.path, from.unwrap_or(&default_branch), id)?;
+        Ok((default_branch, working_copy))
+    })();
+    let (default_branch, working_copy) = match created {
+        Ok(created) => created,
+        Err(error) => {
+            let _ = dir.remove();
+            return Err(error.context(format!(
+                "task t{id} was not created and its number is not reused"
+            )));
+        }
+    };
     let now = now_unix_ms();
     let record = TaskRecord {
         id,
         project: project.name.clone(),
         project_id: project_id.clone(),
         project_path: project.path.clone(),
-        default_branch: project.default_branch.clone(),
+        default_branch,
         base: working_copy.base.clone(),
         branch: working_copy.branch.clone(),
         working_copy: working_copy.path.clone(),
@@ -913,6 +953,7 @@ fn create(
         fixes,
         created_by: actor(),
         hold: hold.clone(),
+        parent: into,
         plan,
         waiting: None,
         created_unix_ms: now,
@@ -1055,6 +1096,7 @@ pub(crate) fn fail_check(
     );
     let (dir, ..) = create(
         prompt,
+        None,
         None,
         Some(fix_title(&item.check)),
         None,
@@ -1425,6 +1467,8 @@ fn hand_context(dir: &TaskDir, record: &TaskRecord) -> serde_json::Value {
 
 fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
     let mut record = dir.read_record()?;
+    // ^ Also with --discard: the children's work would lose its branch.
+    refuse_open_children(&dir.project_id, record.id, "close")?;
     let main = record.project_path.clone();
     let working_copy_exists = record.working_copy.exists();
     // ^ A landed task's commits are on the default branch, also when a remote merged them.

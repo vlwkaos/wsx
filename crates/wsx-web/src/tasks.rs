@@ -787,8 +787,9 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
             }
         }
         // ^ They open and close the hand session or the trial slot: `run_task`, not this,
-        // runs them.
+        // runs them. A child's host alone sends `ChildLanded`.
         HostRequest::Hand
+        | HostRequest::ChildLanded { .. }
         | HostRequest::Handback
         | HostRequest::Trial
         | HostRequest::Status

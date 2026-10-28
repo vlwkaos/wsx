@@ -163,6 +163,10 @@ pub struct TaskRecord {
     /// ref: docs/tasks.md "Hold and trial"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<String>,
+    /// `task new --into`: the open task this one lands into, never the default branch.
+    /// ref: docs/tasks.md "Parent tasks"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u32>,
     /// `task new --plan`: the first result is a plan, with no checks; set until it arrives.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plan: bool,
@@ -291,6 +295,11 @@ pub enum LogEvent {
     /// The owner gave the task back; `commits` were made since the last revision.
     Handback {
         by: Actor,
+        commits: u32,
+    },
+    /// Child task `child` landed `commits` on this task's branch.
+    ChildLanded {
+        child: u32,
         commits: u32,
     },
     /// The task is held for the owner to try (`reason`), or no longer (`None`).
@@ -452,6 +461,12 @@ pub enum HostRequest {
     Hand,
     /// The owner's commits become the next revision and its checks run.
     Handback,
+    /// A child task landed `commits` on this task's branch: they become the next revision
+    /// and its checks run. ref: docs/tasks.md "Parent tasks"
+    ChildLanded {
+        child: u32,
+        commits: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

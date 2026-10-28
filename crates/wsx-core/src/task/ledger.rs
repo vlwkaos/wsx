@@ -54,30 +54,38 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
             continue;
         }
         let result = read_result(dir);
-        open.push((
-            attention(record.state),
-            record.id,
-            json!({
-                "id": record.id,
-                "title": title,
-                "state": record.state,
-                "revision": record.revision,
-                "overlaps": overlaps(record, &records, false),
-                "human_verify": result.as_ref().map_or(0, |r| r["result"]["human_verify"].as_array().map_or(0, Vec::len)),
-                "summary": result.as_ref().and_then(|r| r["result"]["summary"].as_str()).map(|s| clip(s, SUMMARY_CHARS)),
-                // ^ What the host ran; it outranks the worker's summary (docs/tasks.md "Ledger").
-                "checks": result.as_ref().map(check_outcomes).unwrap_or_default().into_iter()
-                    .map(|(command, outcome)| json!({ "command": command, "outcome": outcome }))
-                    .collect::<Vec<_>>(),
-                // ^ What a waiting task waits for: the owner, disk, the check slot or a person's hands.
-                "waiting": record.waiting,
-                // ^ Held for the owner to try before it lands (docs/tasks.md "Hold and trial").
-                "hold": record.hold,
-                // ^ The main checkout's changed files this land would overwrite: pressing
-                // Land refuses until they are committed or stashed (docs/tasks.md "Ledger").
-                "land_blocked_by": (record.state == TaskState::Ready).then(|| land_blockers(record)),
-            }),
-        ));
+        let mut row = json!({
+            "id": record.id,
+            "title": title,
+            "state": record.state,
+            "revision": record.revision,
+            "overlaps": overlaps(record, &records, false),
+            "human_verify": result.as_ref().map_or(0, |r| r["result"]["human_verify"].as_array().map_or(0, Vec::len)),
+            "summary": result.as_ref().and_then(|r| r["result"]["summary"].as_str()).map(|s| clip(s, SUMMARY_CHARS)),
+            // ^ What the host ran; it outranks the worker's summary (docs/tasks.md "Ledger").
+            "checks": result.as_ref().map(check_outcomes).unwrap_or_default().into_iter()
+                .map(|(command, outcome)| json!({ "command": command, "outcome": outcome }))
+                .collect::<Vec<_>>(),
+            // ^ What a waiting task waits for: the owner, disk, the check slot or a person's hands.
+            "waiting": record.waiting,
+            // ^ Held for the owner to try before it lands (docs/tasks.md "Hold and trial").
+            "hold": record.hold,
+            // ^ The main checkout's changed files this land would overwrite: pressing
+            // Land refuses until they are committed or stashed (docs/tasks.md "Ledger").
+            "land_blocked_by": (record.state == TaskState::Ready).then(|| land_blockers(record)),
+        });
+        // ^ A parent task and its open children (docs/tasks.md "Parent tasks").
+        if let Some(parent) = record.parent {
+            row["parent"] = json!(parent);
+        }
+        let children = records
+            .iter()
+            .filter(|other| other.parent == Some(record.id) && other.state.is_open())
+            .count();
+        if children > 0 {
+            row["children"] = json!(children);
+        }
+        open.push((attention(record.state), record.id, row));
     }
     open.sort_by_key(|(order, id, _)| (*order, *id));
     recent.sort_by_key(|(updated, _)| std::cmp::Reverse(*updated));

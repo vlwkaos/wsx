@@ -266,6 +266,7 @@ pub fn task_summary(dir: &TaskDir, record: &TaskRecord) -> Value {
         "title": title(dir, record),
         "branch": record.branch,
         "revision": record.revision,
+        "parent": record.parent,
         "updated_unix_ms": record.updated_unix_ms,
     })
 }
@@ -290,6 +291,40 @@ pub fn project_tasks(project_id: &str) -> Result<Vec<(TaskDir, Result<TaskRecord
     Ok(tasks)
 }
 
+/// The tasks that name `parent` with `task new --into`, in number order.
+/// ref: docs/tasks.md "Parent tasks"
+pub fn children(project_id: &str, parent: u32) -> Result<Vec<(TaskDir, TaskRecord)>> {
+    Ok(project_tasks(project_id)?
+        .into_iter()
+        .filter_map(|(dir, record)| record.ok().map(|record| (dir, record)))
+        .filter(|(_, record)| record.parent == Some(parent))
+        .collect())
+}
+
+/// Refuse to `act` on a task while it has open children, naming them.
+pub fn refuse_open_children(project_id: &str, parent: u32, act: &str) -> Result<()> {
+    let open: Vec<u32> = children(project_id, parent)?
+        .into_iter()
+        .filter(|(_, record)| record.state.is_open())
+        .map(|(_, record)| record.id)
+        .collect();
+    if !open.is_empty() {
+        anyhow::bail!(
+            "task t{parent} has open child tasks {}; land or close them before you {act} it",
+            task_list(open)
+        );
+    }
+    Ok(())
+}
+
+/// `#a, #b` for an error that names tasks.
+pub fn task_list(ids: impl IntoIterator<Item = u32>) -> String {
+    ids.into_iter()
+        .map(|id| format!("#{id}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The other open tasks whose paths meet this task's. A task's paths are the ones its
 /// revisions changed plus its declared `files` globs; `declared` marks a meeting found only
 /// through a glob. Changed paths are capped per record, so `complete` is false when either
@@ -298,7 +333,13 @@ pub fn overlaps(record: &TaskRecord, others: &[&TaskRecord], with_paths: bool) -
     let mine: std::collections::HashSet<&str> = record.paths.iter().map(String::as_str).collect();
     let rows: Vec<_> = others
         .iter()
-        .filter(|other| other.id != record.id && other.state.is_open())
+        // ^ A parent and its children always share paths: not an overlap.
+        .filter(|other| {
+            other.id != record.id
+                && other.state.is_open()
+                && record.parent != Some(other.id)
+                && other.parent != Some(record.id)
+        })
         .filter_map(|other| {
             let mut common: Vec<&str> = other
                 .paths
