@@ -2446,7 +2446,8 @@ capabilities = ["terminal_view"]
         assert work_site.request('GET', '/api/tasks/%d/mentions' % projects['project'])[0] == 404
         status, started = work_site.request('POST', '/api/sessions', {'project': projects['project2']})
         assert status == 200, started
-        assert wait(lambda: (work / 'profile-agent.txt').exists() and (work / 'profile-agent.txt').read_text()) == str(profile_root)
+        seen = wait(lambda: (work / 'profile-agent.txt').exists() and (work / 'profile-agent.txt').read_text(), 'the profile agent starts')
+        assert seen == str(profile_root), seen
         session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == started['session_id'])
         assert call('session_close', {'session_id': session['id'], 'expected_revision': session['revision']})['type'] == 'ack'
         with registry.open('a') as file:
