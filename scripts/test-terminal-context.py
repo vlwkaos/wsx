@@ -20,6 +20,7 @@ import time
 import wsxd_client
 
 ROOT = Path(__file__).resolve().parents[1]
+SUN_LEN = 104  # macOS sun_path
 
 
 def main():
@@ -52,6 +53,7 @@ def main():
                                             args.next_daemon and args.next_daemon.resolve())
         result = run_scenario(args, tmux, wsx, wsxd, work)
         result["released_upgrade"] = released
+        result["longest_socket_path"] = Fixture.longest_socket
     finally:
         if not args.keep:
             shutil.rmtree(work)
@@ -66,6 +68,7 @@ CONFIG_TEXT = ('resume_agents_on_restore = false\nshow_release_status = false\n'
 
 class Fixture:
     """One private home, state directory, Git project, wsxd socket and tmux server."""
+    longest_socket = 0
 
     def __init__(self, work, tmux, daemon_bin):
         self.work, self.tmux = work, tmux
@@ -78,11 +81,19 @@ class Fixture:
         self.config = config_dir / "config-v2.toml"
         self.configure(position="bottom")
         self.daemon_socket, self.tmux_socket = state / "wsx/wsx.sock", work / "t.sock"
+        # ^ asched's routine socket defaults to HOME/Library/Application Support/asched, which passes
+        # sun_path's 104 bytes under a long ROOT (a release copy), so its root is a short sibling.
+        asched_root = work / "a"
+        # Every socket the fixture makes, the longest handoff name (h-<16 hex>.sock) included.
+        sockets = (self.daemon_socket, self.tmux_socket, asched_root / "daemon-v1.sock",
+                   self.daemon_socket.parent / ("h-" + "f" * 16 + ".sock"))
+        Fixture.longest_socket = max([Fixture.longest_socket, *(len(str(s)) for s in sockets)])
+        assert Fixture.longest_socket < SUN_LEN, ("a fixture socket path is too long", sockets)
         # ^ Use an allowlist: fixture processes must not inherit credentials or pane authority.
         self.env = {"LANG": os.environ.get("LANG", "en_US.UTF-8")}
         self.env.update({"HOME": str(home), "XDG_STATE_HOME": str(state),
                          "XDG_CONFIG_HOME": str(work / "config"), "XDG_CACHE_HOME": str(work / "cache"),
-                         "WSX_DAEMON_BIN": str(daemon_bin), "WSX_SOCKET": str(self.daemon_socket),
+                         "ASCHED_ROOT": str(asched_root), "WSX_DAEMON_BIN": str(daemon_bin), "WSX_SOCKET": str(self.daemon_socket),
                          "SHELL": "/bin/sh", "TERM": "xterm-256color",
                          "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
                          # ^ A fixture git command must never reach the repository this runs in.
