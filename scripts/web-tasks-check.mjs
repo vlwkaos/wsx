@@ -1573,7 +1573,7 @@ async function failForm() {
 }
 
 // --- To check: the reservoir's row opens the list; Fail needs a note and starts a task that
-// fixes it; Skip closes one without a verdict; All passed empties the list.
+// fixes it; Pass in a bubble changes it in place; Skip closes the last without a verdict.
 // ^ The actions above spent this device's burst (10, then one per 3 s); this part sends four.
 await pause(12000);
 await go(chat);
@@ -1712,14 +1712,24 @@ await shot("to-check-bubble-wide", ".composer-send");
 await resize([390, 844, 2]);
 await showEarlier();
 await until(`!!${bubbleOf(8)}`, "the chat has no To check bubble after the wide layout");
-// ^ Skip closes an item without a verdict and no task; it goes through the same route arm as
-// Pass by id (docs/tasks.md "To check").
-await evaluate(`${bubbleOf(8)}.querySelector('.check-act[title="Skip"]').click()`);
-await until(`(${bubbleOf(8)}?.querySelector('.check-state')?.textContent ?? '') === 'Skipped' && !${bubbleOf(8)}.querySelector('.check-acts')`, "Skip in the bubble did not settle it", 60);
+// ^ A decision changes the bubble in place: it stays at the time the item was added, so it
+// neither moves to the end nor counts as new (docs/web-client-tasks.md "Project screen").
+const chatPlace = `(() => { const log = document.querySelector('.log'); return { keys: [...log.children].map((node) => node.dataset.key ?? '').join(), at: ${bubbleOf(8)}.dataset.at,
+  jump: document.querySelector('.jump')?.textContent ?? '', fresh: ${bubbleOf(8)}.hasAttribute('data-fresh') }; })()`;
+const beforePass = await evaluate(chatPlace);
+await evaluate(`${bubbleOf(8)}.querySelector('.check-act[title="Pass"]').click()`);
+await until(`(${bubbleOf(8)}?.querySelector('.check-state')?.textContent ?? '') === 'Passed' && !${bubbleOf(8)}.querySelector('.check-acts')`, "Pass in the bubble did not settle it", 60);
+await pause(500);
+const afterPass = await evaluate(chatPlace);
+// ^ Rows that came meanwhile (an event line) go after it; with none, the "N new" count is unchanged.
+const samePlace = afterPass.keys.startsWith(beforePass.keys) && afterPass.at === beforePass.at && !afterPass.fresh
+  && (afterPass.keys !== beforePass.keys || afterPass.jump === beforePass.jump);
+if (!samePlace) await fail(`a passed item's bubble moved or counts as new: ${JSON.stringify({ beforePass, afterPass })}`);
 await go(`#/p/${project}/checks`);
-await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 1", "the item skipped in the chat stayed in the list", 60);
-await evaluate("document.querySelector('.check-all').click()");
-await until("(document.querySelector('dialog.task-sheet .empty')?.textContent ?? '') === 'Nothing to check.'", "All passed did not empty the list", 60);
+await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 1", "the item passed in the chat stayed in the list", 60);
+// ^ Skip closes an item without a verdict and no task (docs/tasks.md "To check").
+await evaluate(`document.querySelector('dialog.task-sheet[open] .check-item .check-act[title="Skip"]').click()`);
+await until("(document.querySelector('dialog.task-sheet .empty')?.textContent ?? '') === 'Nothing to check.'", "the skipped item stayed in the list", 60);
 await shot("to-check-done");
 await closeSheet("the To check list", chat);
 await until(`${statusLines}.some((node) => /#7 failed a check; #\\d+ fixes it/.test(node.textContent))`, "the chat does not say which task fixes the failed check", 60);
@@ -2071,6 +2081,6 @@ await pause(300);
 const shifted = (await rowAt(reading.key)) - reading.down;
 if (Math.abs(shifted) > 2) await fail(`Show earlier moved the row in view by ${shifted} px`);
 await toLatest("390 px");
-console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Skip, All passed, the fix task's line), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project page (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass in a bubble that stays in place, Skip, the fix task's line), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

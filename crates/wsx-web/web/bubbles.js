@@ -73,7 +73,7 @@ export function conversation(entries, resolutions, approvals = [], checks = []) 
     if (said.some((row) => near(row) && same(row))) return;
     rows.push({ kind: "line", at: resolution.unix_ms, key: `res-${resolution.unix_ms}-${resolution.text}`, text: resolution.text });
   });
-  for (const item of checks) rows.push({ kind: "check", at: item.unix_ms, key: `check-${item.id}`, item });
+  for (const item of checks) rows.push({ kind: "check", at: item.added_unix_ms, key: `check-${item.id}`, item });
   rows.sort((left, right) => left.at - right.at);
   for (const approval of approvals) {
     const reply = rows.find((row) => row.entry?.kind === "reply" && row.at >= approval.unix_ms);
