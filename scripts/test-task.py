@@ -888,6 +888,19 @@ def run(wsx, wsxd, work, owned):
         ids = {w['id'] for w in data['worktrees'] if os.path.realpath(w['path']) == os.path.realpath(path)}
         return [s['label'] for s in data['sessions'] if s['worktree_id'] in ids]
     prompt = r'(?m)\$ *$'
+    # ^ The raw frames of the list and the chat with the `S` hint, replayed into the Human
+    # Verify captures; `.work/` is git-ignored.
+    captures = Path(__file__).resolve().parents[1] / '.work' / 'captures'
+    captures.mkdir(parents=True, exist_ok=True)
+    for cols in (80, 120):
+        frames = []
+        hinted = tui_screens(wsx, env, project, [
+            (r'WORKSPACE', b't'),
+            (r'#%d +working' % sh, b'm'),
+            (r'MANAGER', b'')], cols=cols, raw=frames)
+        (captures / ('tasks-%d.ans' % cols)).write_bytes(frames[1])
+        (captures / ('manager-%d.ans' % cols)).write_bytes(frames[2])
+        assert '(S)hell' in hinted[1] and '(S)hell' in hinted[2], hinted
     tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
         (r'#%d +working' % sh, b'S'),
