@@ -13,7 +13,7 @@
 - Web: a manager that writes to the owner on its own, a reply that is not quiet to a turn of only events such as a routine's result, sends a "Manager needs me" push `<manager> wrote to you` that opens the chat. A reply to the owner's message never pushes ([docs/web-client.md](docs/web-client.md) "Notifications").
 - Tasks: the handover of a fresh manager conversation also lists the routine results of the last 24 hours, at most 8, so a rotation no longer loses them ([docs/tasks.md](docs/tasks.md) "Manager").
 - Web: a manager that writes to the owner on its own, a reply that is not quiet to a turn of only events or a recap, such as after a routine's result, sends a "Manager needs me" push `<manager> wrote to you` that opens the chat. A reply to the owner's message never pushes ([docs/web-client.md](docs/web-client.md) "Notifications").
-- Tasks: the handover of a fresh manager conversation also lists the routine results it may not have acted on: each routine's newest run, its failures since its last success and every run after the previous conversation's last reply, so a rotation no longer loses them ([docs/tasks.md](docs/tasks.md) "Manager").
+- Tasks: the handover of a fresh manager conversation also lists the routine results it may not have acted on: at most two lines per routine: its newest run with its failures since its last success folded in, and how often it ran since the previous conversation's last reply, so a rotation no longer loses them ([docs/tasks.md](docs/tasks.md) "Manager").
 
 ### Fixed
 

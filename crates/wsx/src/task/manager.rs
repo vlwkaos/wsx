@@ -1415,15 +1415,12 @@ impl Manager {
             .rev()
             .find(|entry| matches!(entry.event, ManagerEvent::Reply { .. }))
             .map_or(0, |entry| (entry.unix_ms / 1000) as i64);
-        let routines: Vec<String> = handover_runs(self.finished_routine_runs(), replied)
-            .iter()
-            .filter_map(|run| routine_line(run).lines().next().map(str::to_owned))
-            .collect();
+        let routines = handover_routines(self.finished_routine_runs(), replied);
         let routines = match routines.is_empty() {
             true => String::new(),
             false => format!(
-                "\nRoutine results (each routine's newest, its failures since its last success, \
-                 and any since your last reply):\n{}\n",
+                "\nRoutine results (each routine's newest with its failures since its last \
+                 success, and its runs since your last reply):\n{}\n",
                 routines.join("\n")
             ),
         };
@@ -1478,6 +1475,14 @@ fn newest_ms(folder: &Path) -> Option<u64> {
 
 /// A routine run that ended as an event line, a failure with the end of its output.
 fn routine_line(run: &RunRecord) -> String {
+    match run.status {
+        RunStatus::Succeeded => routine_result(run),
+        _ => format!("{}{}", routine_result(run), output_ends(&run.final_output)),
+    }
+}
+
+/// `routine <name> succeeded after 4 s`, `routine <name> failed (exit 3)`.
+fn routine_result(run: &RunRecord) -> String {
     let end = run.finished_epoch.unwrap_or_default();
     match &run.status {
         RunStatus::Succeeded => format!(
@@ -1486,7 +1491,7 @@ fn routine_line(run: &RunRecord) -> String {
             end - run.started_epoch
         ),
         status => format!(
-            "routine {} {} ({}){}",
+            "routine {} {} ({})",
             run.routine,
             match status {
                 RunStatus::SpawnFailed => "could not start",
@@ -1495,37 +1500,77 @@ fn routine_line(run: &RunRecord) -> String {
                 _ => "failed",
             },
             exit_words(run.exit_code),
-            output_ends(&run.final_output)
         ),
     }
 }
 
-/// The runs a fresh conversation needs, oldest first: each routine's newest, every run that
-/// did not succeed since its routine's last success, and every run that ended after the
-/// previous conversation's last reply (`replied`, epoch seconds). ref: docs/tasks.md "Manager"
-fn handover_runs(mut runs: Vec<RunRecord>, replied: i64) -> Vec<RunRecord> {
+/// What a fresh conversation needs of the routines, at most two lines per routine, the
+/// routines in the order of their newest run: its standing (the newest run, or the newest
+/// failure since its last success with how many there were), then its runs after the previous
+/// conversation's last reply (`replied`, epoch seconds) when they are more than that newest run.
+/// ref: docs/tasks.md "Manager"
+fn handover_routines(mut runs: Vec<RunRecord>, replied: i64) -> Vec<String> {
     runs.sort_by_key(|run| run.finished_epoch);
-    let newest = |run: &RunRecord, succeeded: bool| {
-        runs.iter()
-            .filter(|other| other.routine == run.routine)
-            .filter(|other| !succeeded || other.status == RunStatus::Succeeded)
-            .filter_map(|other| other.finished_epoch)
-            .max()
-    };
-    let wanted: Vec<bool> = runs
-        .iter()
-        .map(|run| {
-            let end = run.finished_epoch;
-            end == newest(run, false)
-                || (run.status != RunStatus::Succeeded
-                    && newest(run, true).is_none_or(|last| end > Some(last)))
-                || end.is_some_and(|end| end > replied)
-        })
-        .collect();
-    runs.into_iter()
-        .zip(wanted)
-        .filter_map(|(run, wanted)| wanted.then_some(run))
-        .collect()
+    let mut names: Vec<&str> = Vec::new();
+    for run in runs.iter().rev() {
+        if !names.contains(&run.routine.as_str()) {
+            names.push(&run.routine);
+        }
+    }
+    let mut lines = Vec::new();
+    for name in names.into_iter().rev() {
+        let mine: Vec<&RunRecord> = runs.iter().filter(|run| run.routine == name).collect();
+        let Some(newest) = mine.last() else { continue };
+        let success = mine
+            .iter()
+            .rposition(|run| run.status == RunStatus::Succeeded);
+        let failed = mine.len() - success.map_or(0, |at| at + 1);
+        let plural = if failed == 1 { "" } else { "s" };
+        lines.push(match success {
+            _ if failed == 0 => routine_result(newest),
+            Some(at) => format!(
+                "{}; {failed} failure{plural} since its last success at {}",
+                routine_result(newest),
+                clock(mine[at].finished_epoch.unwrap_or_default())
+            ),
+            None => format!(
+                "{}; {failed} failure{plural}, never succeeded",
+                routine_result(newest)
+            ),
+        });
+        let after: Vec<&&RunRecord> = mine
+            .iter()
+            .filter(|run| run.finished_epoch.is_some_and(|end| end > replied))
+            .collect();
+        if after.len() > 1 {
+            let failed = after
+                .iter()
+                .filter(|run| run.status != RunStatus::Succeeded)
+                .count();
+            lines.push(format!(
+                "routine {name} ran {} times since your last reply, {failed} of them without success",
+                after.len()
+            ));
+        }
+    }
+    lines
+}
+
+/// `2026-10-28 03:00` in this machine's zone.
+fn clock(secs: i64) -> String {
+    limit::local_time(secs.max(0) as u64).map_or_else(
+        || secs.to_string(),
+        |tm| {
+            format!(
+                "{}-{:02}-{:02} {:02}:{:02}",
+                tm.tm_year + 1900,
+                tm.tm_mon + 1,
+                tm.tm_mday,
+                tm.tm_hour,
+                tm.tm_min
+            )
+        },
+    )
 }
 
 fn exit_words(exit: Option<i32>) -> String {

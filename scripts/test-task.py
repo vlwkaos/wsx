@@ -1311,10 +1311,11 @@ def run(wsx, wsxd, work, owned):
     text = reply_to(js('task', 'say', 'RUN wsx task routine run nightly -p demo --json')['id'])['text']
     assert '-> 0 ' in text, text
     wait(lambda: events_with('routine nightly failed (exit 3); its output ends:\n    boom'), 'the routine event')
-    # ^ A second failure: the handover after the rotation below lists both (no success since).
-    text = reply_to(js('task', 'say', 'RUN wsx task routine run nightly -p demo --json')['id'])['text']
-    assert '-> 0 ' in text, text
-    wait(lambda: len(events_with('routine nightly failed (exit 3)')) == 2, 'the second routine event')
+    # ^ Two more failures: the handover after the rotation below folds all three in one line.
+    for count in (2, 3):
+        text = reply_to(js('task', 'say', 'RUN wsx task routine run nightly -p demo --json')['id'])['text']
+        assert '-> 0 ' in text, text
+        wait(lambda: len(events_with('routine nightly failed (exit 3)')) == count, 'routine event %d' % count)
     row = js('task', 'ledger')['routines'][0]
     assert (row['name'], row['trigger'], row['enabled'], row['running']) == ('nightly', '0 3 * * *', True, False), row
     assert row['next_run_unix_ms'] > time.time() * 1000, row
@@ -1435,9 +1436,9 @@ def run(wsx, wsxd, work, owned):
     # ^ The notes come first, then the handover.
     assert opened.startswith("The owner's decisions") and '\n\nHandover (this is a new conversation' in opened and 'You: noted events' in opened, opened
     assert "fold the ledger's memos into your context first" in opened, opened
-    # ^ Both failures before the rotation are in the handover, each by its first line.
+    # ^ The three failures before the rotation are one line: the newest and how many.
     routines = opened.split('\nRoutine results (')[1].split('\n\n')[0].split('\n')[1:]
-    assert routines == ['routine nightly failed (exit 3); its output ends:'] * 2, opened
+    assert routines == ['routine nightly failed (exit 3); 3 failures, never succeeded'], opened
     assert 'keep the store in sqlite' in opened and 'SECRET-OUTSIDE' not in opened, opened
     # ^ Only a short reply to events is quiet: one with a table is a message (docs/tasks.md "Manager").
     tabled = js('task', 'new', 'NOOP TABLE')['id']
