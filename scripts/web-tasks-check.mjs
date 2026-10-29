@@ -1049,9 +1049,12 @@ await until(`location.hash === '#/p/${project}/usage' && !!document.querySelecto
 const usageRows = await text(".usage tbody th");
 if (usageRows.join() !== "Cost,Input,Cache read,Cache write,Output,Turns") await fail(`the usage rows are ${usageRows}`);
 const usageCost = await text(".usage tbody tr:first-child td");
-// ^ Columns: Today workers, Today manager, 7 days workers, 7 days manager.
-if (usageCost.length !== 4 || !usageCost.every((cell) => /^\$\d+\.\d\d$/.test(cell)) || usageCost[0] === "$0.00" || usageCost[2] === "$0.00") {
-  await fail(`the usage costs are ${usageCost}`);
+const usageTurns = await text(".usage tbody tr:last-child td");
+// ^ Columns: Today workers, Today manager, 7 days workers, 7 days manager. The fake worker's
+// results cost nothing; each manager turn costs 0.001 USD.
+if (usageCost.length !== 4 || !usageCost.every((cell) => /^\$\d+\.\d\d$/.test(cell)) || usageCost[3] === "$0.00"
+  || usageTurns.length !== 4 || !(Number(usageTurns[2]) > 0) || !(Number(usageTurns[3]) > 0)) {
+  await fail(`the usage costs are ${usageCost}, the turns ${usageTurns}`);
 }
 await shot("usage");
 const usageSize = size;
