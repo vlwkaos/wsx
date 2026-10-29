@@ -1853,7 +1853,7 @@ def run(wsx, wsxd, work, owned):
     # is sent again to the new host, not lost as an empty answer.
     shutil.copy2(wsx, swapped / 'wsx.new')
     os.replace(swapped / 'wsx.new', swapped / 'wsx')
-    adds = [subprocess.Popen([str(wsx), 'task', 'add', first, 'WORK lg%d.txt' % i, '--json'], cwd=project, env=env,
+    adds = [subprocess.Popen([str(wsx), 'task', 'add', str(first), 'WORK lg%d.txt' % i, '--json'], cwd=project, env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for i in range(2)]
     answers = [add.communicate(timeout=60) for add in adds]
     assert all(add.returncode == 0 and json.loads(out)['ok'] for add, (out, _) in zip(adds, answers)), answers
