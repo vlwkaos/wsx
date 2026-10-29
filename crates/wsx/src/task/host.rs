@@ -448,6 +448,8 @@ impl Host {
                     | HostRequest::Add { .. }
                     | HostRequest::Land { .. }
                     | HostRequest::Trial
+                    | HostRequest::Notice { .. }
+                    | HostRequest::LandBatch { .. }
             );
         let message = match request {
             _ if held => Err(self.by_hand_refusal()),
@@ -455,12 +457,14 @@ impl Host {
             HostRequest::Steer { text } => self.steer(text),
             HostRequest::Add { text, files } => self.add(text, files),
             HostRequest::Stop => self.stop(),
-            HostRequest::Land { tried } => self.land(false, tried),
+            HostRequest::Land { tried, batch_tree } => self.land(false, tried, batch_tree),
             HostRequest::Hold { reason, by } => self.hold(reason, by),
             HostRequest::Trial => self.trial(),
             HostRequest::Hand => self.hand(),
             HostRequest::Handback => self.handback(),
             HostRequest::ChildLanded { child, commits } => self.child_landed(child, commits),
+            HostRequest::Notice { text } => self.notice(text),
+            HostRequest::LandBatch { tasks } => self.land_batch(&tasks),
             HostRequest::Close { discard } => {
                 if let Some(agent) = self.agent.take() {
                     agent.stop();
@@ -519,6 +523,43 @@ impl Host {
         // ^ The answer is a new revision, so the one on trial is no longer what lands.
         self.end_trial("a message went to the worker");
         Ok(self.deliver_or_queue(text))
+    }
+
+    /// Another task's land changed files this one shares. The text joins the worker's next
+    /// turn, at its step boundary; a task with no turn to come (ready, checking, failed)
+    /// gets nothing, as its own land rebases it. ref: docs/tasks.md "Landing"
+    fn notice(&mut self, text: String) -> Result<String> {
+        check_message(&text)?;
+        if !self.turn_active && self.record.state != TaskState::Waiting {
+            return Ok(format!(
+                "not sent: t{} is {}",
+                self.record.id,
+                self.state_words()
+            ));
+        }
+        self.log(LogEvent::Message {
+            mode: MessageKind::Add,
+            text: text.clone(),
+        });
+        self.pending.push_back(text);
+        Ok("queued for the worker's next turn".into())
+    }
+
+    /// Start `wsx task land-batch` as this host's own process: the caller may be the
+    /// manager, whose boundary cannot write the state folder. ref: docs/tasks.md "Batch land"
+    fn land_batch(&mut self, tasks: &[u32]) -> Result<String> {
+        self.require_ready(false)?;
+        let names: Vec<String> = tasks.iter().map(u32::to_string).collect();
+        let mut args = vec!["task", "land-batch"];
+        args.extend(names.iter().map(String::as_str));
+        args.extend(["-p", self.record.project.as_str()]);
+        let log = store::follow_up_log(&self.record.project_id)?;
+        hosting::spawn_wsx(&args, log, None)?;
+        Ok(format!(
+            "the batch land of {} started: its checks run once on them all; its lines go to {}",
+            view::task_list(tasks.iter().copied()),
+            store::follow_up_log_path(&self.record.project_id)?.display()
+        ))
     }
 
     /// Hold the task for the owner to try before it lands, or release it.
@@ -1559,9 +1600,42 @@ impl Host {
             _ => Priority::Normal,
         };
         let events = self.events.clone();
-        let checks = self.record.checks.iter().cloned().enumerate().collect();
-        self.spawn_checks(Some(priority), "check", checks, move |results| {
-            let _ = events.send(Event::ChecksDone(results));
+        let checks: Vec<(usize, String)> = self.record.checks.iter().cloned().enumerate().collect();
+        // ^ A check a `check-run` ran on this clean tree answers from that run: the gate runs
+        // only the others (#137 ran fmt, build and nextest twice on one tree).
+        let tree = copy::clean_tree(&self.record.working_copy).ok().flatten();
+        let mut stored: BTreeMap<usize, CheckResult> = match (&tree, &self.stored_checks) {
+            (Some(tree), Some((on, results))) if tree == on => results
+                .iter()
+                .filter(|(index, check)| {
+                    checks
+                        .get(**index)
+                        .is_some_and(|(_, command)| *command == check.command)
+                })
+                .map(|(index, check)| {
+                    let check = CheckResult {
+                        queued_ms: 0,
+                        stored: true,
+                        ..check.clone()
+                    };
+                    (*index, check)
+                })
+                .collect(),
+            _ => BTreeMap::new(),
+        };
+        let to_run: Vec<(usize, String)> = checks
+            .into_iter()
+            .filter(|(index, _)| !stored.contains_key(index))
+            .collect();
+        if to_run.is_empty() {
+            self.say("every check already ran on this tree");
+            let _ = events.send(Event::ChecksDone(stored.into_values().collect()));
+            return;
+        }
+        let indexes: Vec<usize> = to_run.iter().map(|(index, _)| *index).collect();
+        self.spawn_checks(Some(priority), "check", to_run, move |results| {
+            stored.extend(indexes.into_iter().zip(results));
+            let _ = events.send(Event::ChecksDone(stored.into_values().collect()));
         });
     }
 
@@ -1587,6 +1661,7 @@ impl Host {
             .collect::<Vec<_>>();
         std::thread::spawn(move || {
             let results = {
+                let queued = std::time::Instant::now();
                 let _slot = priority.and_then(|priority| {
                     let taken = slot::take(priority, &label, |reason| {
                         let _ = events.send(Event::CheckQueued(reason));
@@ -1595,9 +1670,14 @@ impl Host {
                     let _ = events.send(Event::CheckSlot(error));
                     taken.ok()
                 });
+                // ^ The wait is the run's: each of its results carries it.
+                let queued_ms = queued.elapsed().as_millis() as u64;
                 let results = checks
                     .iter()
-                    .map(|(command, log)| run_check(&working_copy, command, &env, timeout, log))
+                    .map(|(command, log)| CheckResult {
+                        queued_ms,
+                        ..run_check(&working_copy, command, &env, timeout, log)
+                    })
                     .collect();
                 build::prune(&working_copy, born);
                 results
@@ -1735,13 +1815,13 @@ impl Host {
                         && self.pending.is_empty()
                         && self.auto_land() =>
                     {
-                        let landed = self.land(true, false);
+                        let landed = self.land(true, false, None);
                         self.finish_landing(landed, state);
                     }
                     None => self.set_state(state),
                     Some(AfterRebase::Land { tried }) => {
                         let finished = if state == TaskState::Ready {
-                            self.land_on_tip(tried)
+                            self.land_on_tip(tried, None)
                         } else {
                             Err(anyhow::anyhow!("checks failed on the rebased revision"))
                         };
@@ -1855,7 +1935,8 @@ impl Host {
     /// Land the current revision on the default branch (docs/tasks.md "Landing").
     /// `auto`: the checks of this revision just passed, so the task is not yet `ready`.
     /// `tried`: the owner passed this task's trial.
-    fn land(&mut self, auto: bool, tried: bool) -> Result<String> {
+    /// `batch_tree`: the tree a batch land checked with this task on top (see land_on_tip).
+    fn land(&mut self, auto: bool, tried: bool, batch_tree: Option<String>) -> Result<String> {
         self.require_ready(auto)?;
         view::refuse_open_children(&self.record.project_id, self.record.id, "land")?;
         self.require_committed()?;
@@ -1865,13 +1946,15 @@ impl Host {
                 self.record.id
             );
         }
-        self.land_on_tip(tried)
+        self.land_on_tip(tried, batch_tree.as_deref())
     }
 
     /// Fast-forward when the branch has the default branch tip, else rebase onto it. The
     /// checks of a rebased revision come back here, so a tip that moved while they ran
     /// rebases and checks again (#84 stopped on it, 2026-10-27).
-    fn land_on_tip(&mut self, tried: bool) -> Result<String> {
+    /// A rebase that gives `batch_tree` lands at once: a batch land checked that tree, with
+    /// the tasks before this one already on the default branch (docs/tasks.md "Batch land").
+    fn land_on_tip(&mut self, tried: bool, batch_tree: Option<&str>) -> Result<String> {
         self.require_parent_at_rest()?;
         let working_copy = self.record.working_copy.clone();
         let tip = self.default_tip()?;
@@ -1880,7 +1963,8 @@ impl Host {
         // past the ready revision.
         let revision = format!("refs/wsx/task/{}/r{}", self.record.id, self.record.revision);
         if copy::is_ancestor(&working_copy, &tip, &head)? {
-            if copy::tree(&working_copy, &revision)? == copy::tree(&working_copy, "HEAD")? {
+            let tree = copy::tree(&working_copy, "HEAD")?;
+            if copy::tree(&working_copy, &revision)? == tree || batch_tree == Some(&tree) {
                 return self.fast_forward(tried);
             }
             return Ok(self.check_then_land(tried, "HEAD moved after the ready revision"));
@@ -1892,6 +1976,14 @@ impl Host {
             }
             // ^ The rebase kept the tree whose checks passed: their results stand.
             Rebase::Done if self.rebase_kept_tree()? => self.fast_forward(tried),
+            Rebase::Done
+                if batch_tree.is_some_and(|batch| {
+                    copy::tree(&working_copy, "HEAD").is_ok_and(|tree| tree == batch)
+                }) =>
+            {
+                self.say("the rebase gave the tree the batch land checked");
+                self.fast_forward(tried)
+            }
             Rebase::Done => Ok(self.check_then_land(
                 tried,
                 &format!("rebased onto {} at {tip:.12}", self.record.default_branch),
@@ -1940,7 +2032,8 @@ impl Host {
             &format!(
                 "Landing needs branch {branch} rebased onto {tip} (the current {default}). \
              Run `git rebase {tip}`, resolve the conflicts in {paths}, `git add` them and \
-             `git rebase --continue`, then report.",
+             `git rebase --continue`, then report. Run no `wsx task check-run`: the host \
+             runs the checks on your report.",
                 branch = self.record.branch,
                 default = self.record.default_branch,
                 paths = paths.join(", "),
@@ -2036,6 +2129,47 @@ impl Host {
         ))
     }
 
+    /// Tell each open task that shares files with this land to rebase onto `commit` at its
+    /// next step boundary, without a check-run. ref: docs/tasks.md "Landing"
+    fn tell_overlaps(&self, commit: &str) {
+        let Ok(tasks) = view::project_tasks(&self.record.project_id) else {
+            return;
+        };
+        let records: Vec<&TaskRecord> = tasks
+            .iter()
+            .filter_map(|(_, record)| record.as_ref().ok())
+            .collect();
+        let overlaps = view::overlaps(&self.record, &records, true);
+        for row in overlaps.as_array().into_iter().flatten() {
+            let Some((dir, _)) = tasks
+                .iter()
+                .find(|(_, record)| record.as_ref().is_ok_and(|r| row["id"] == r.id))
+            else {
+                continue;
+            };
+            let paths: Vec<&str> = row["paths"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|path| path.as_str())
+                .collect();
+            let text = format!(
+                "#{} landed on {} at {commit}, changing files this task shares: {}. At your \
+                 next step boundary run `git rebase {commit}`, resolve any conflict and commit, \
+                 then go on. Run no `wsx task check-run` for it: the checks after your result \
+                 run on the rebased tree.",
+                self.record.id,
+                self.record.default_branch,
+                paths.join(", ")
+            );
+            let request = HostRequest::Notice { text };
+            match call_host(&dir.socket_path(), &request, HOST_TIMEOUT) {
+                Ok(response) => self.say(&format!("#{}: {}", row["id"], response.message)),
+                Err(error) => self.say(&format!("#{} did not hear the land: {error:#}", row["id"])),
+            }
+        }
+    }
+
     /// Ask the parent's host to check the commits this land put on its branch.
     fn tell_parent(&self, parent: u32, old_tip: &str, head: &str) {
         let told =
@@ -2077,6 +2211,9 @@ impl Host {
         });
         self.write_report(TaskState::Landed);
         self.set_state(TaskState::Landed);
+        if self.record.parent.is_none() {
+            self.tell_overlaps(commit);
+        }
         self.after_landing();
     }
 
@@ -2421,7 +2558,7 @@ fn light(command: &str) -> bool {
 }
 
 /// `env`: `tasks.env`, as the worker's commands have it. ref: docs/tasks.md "Config"
-fn run_check(
+pub(super) fn run_check(
     working_copy: &Path,
     command: &str,
     env: &BTreeMap<String, String>,
@@ -2445,6 +2582,7 @@ fn run_check(
     // ^ The pipes get only what the shell says before its redirection, such as a log it
     // cannot open; then no earlier run's log stands in for this one.
     let _ = std::fs::remove_file(log);
+    let started = std::time::Instant::now();
     let (exit, timed_out, said) =
         match output_with_timeout_tail(&mut process, timeout, CHECK_OUTPUT_BYTES) {
             Ok(output) => (output.status.code(), false, output_text(&output)),
@@ -2459,6 +2597,9 @@ fn run_check(
         exit,
         timed_out,
         output: joined([log_tail(log).unwrap_or_default(), said]),
+        ms: started.elapsed().as_millis() as u64,
+        queued_ms: 0,
+        stored: false,
     }
 }
 

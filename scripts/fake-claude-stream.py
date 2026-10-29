@@ -19,6 +19,7 @@ Each user message is a small script of words:
   WAIT <file>  keep working until <file> exists, at most 10 minutes
   CHECKRUN_AGAIN  start `wsx task check-run`, kill it after 1 s, run it again and trace that answer
   CHECKRUN_TWICE  run `wsx task check-run` twice on the same tree and trace both answers
+  CHECKRUN_AFTER  after WORK's commit run `wsx task check-run` and trace its answer
   CHECKRUN_WITH <a,b>  run `wsx task check-run a b`, then a bare `wsx task check-run`, and trace both
   CHECKRUN_LATE <a>  start `wsx task check-run a` in the background and finish before its answer
   REPEAT       return the result again 1 s later, as Claude's own turn for a background notice
@@ -413,6 +414,10 @@ def main():
             subprocess.run(['git', 'add', name], check=True)
             subprocess.run(['git', '-c', 'user.name=fake', '-c', 'user.email=fake@example.invalid',
                             'commit', '-q', '-m', 'add ' + name], check=True)
+            if 'CHECKRUN_AFTER' in words:
+                # ^ On the committed tree the result's checks then run on.
+                ran = subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True)
+                trace({'check_run_after': [ran.returncode, ran.stdout + ran.stderr]})
         if not blocked and 'LINE' in words:
             at = words.index('LINE')
             name, number = words[at + 1], int(words[at + 2])

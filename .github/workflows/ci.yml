@@ -83,3 +83,56 @@ jobs:
 
       - name: Run runtime smoke test
         run: python3 scripts/runtime-smoke.py
+
+  # ^ The task scenario (scripts/test-task.py, 20+ min) runs here instead of on the owner's Mac:
+  # on a push or pull request that changes the task code, and always on a tag (release.yml
+  # calls this workflow). Seatbelt (part 23) needs macOS. ref: docs/tasks.md "Verify"
+  task-scenario:
+    name: task scenario
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Look for a change to the task code
+        id: changed
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          paths='crates/wsx/src/task crates/wsx-core/src/task scripts/test-task.py'
+          if [ "$REF_TYPE" = tag ] || [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            run=true
+          elif git diff --quiet "$BEFORE" "$AFTER" -- $paths; then
+            run=false
+          else
+            run=true
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        if: steps.changed.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.96.1
+
+      - name: Install Zig
+        if: steps.changed.outputs.run == 'true'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+
+      - name: Cache Rust build
+        if: steps.changed.outputs.run == 'true'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: task-scenario
+
+      - name: Run the task scenario
+        if: steps.changed.outputs.run == 'true'
+        run: cargo build --locked -p wsx -p wsx-daemon && python3 -B scripts/test-task.py

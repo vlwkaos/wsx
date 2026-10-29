@@ -326,7 +326,8 @@ fn check_run_note(record: &TaskRecord) -> String {
          result while it has no answer. A check that already ran on the \
          same commit, with nothing uncommitted, answers from its stored result. Fix what \
          fails in code you changed. A check that fails in code you did not touch is not \
-         yours: do not run it again, name it in your summary. ",
+         yours: do not run it again, name it in your summary. After a rebase or a conflict \
+         fix run no check-run: the checks after your result prove the rebased tree. ",
         listed.join(" ")
     )
 }

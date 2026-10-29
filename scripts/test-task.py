@@ -2417,6 +2417,84 @@ def run(wsx, wsxd, work, owned):
     assert 'checks run on the new revision' in land(moved)['message']
     assert wait_state(moved, 'landed', 'failed')['state'] == 'landed' and len(kinds(moved, 'checks')) == ran + 1, log(moved)
     wait_closed(moved)
+    # 32w. Each check's result has its run time and its run's wait for the check slot (ms), in
+    # show and the ledger; the checks after a result answer from a check-run on the same clean
+    # tree and do not run again (docs/tasks.md "Checks, revisions and report").
+    mark('32w')
+    configure(LAND_CONFIG.replace('  checks:\n', '  checks:\n    - "sleep 1"\n'), 'timed checks')
+    timed = js('task', 'new', 'WORK timed.txt CHECKRUN_AFTER')['id']
+    assert wait_state(timed, 'ready', 'failed')['state'] == 'ready', log(timed)
+    code, said = next(t for t in traces() if 'check_run_after' in t)['check_run_after']
+    assert code == 0 and 'stored' not in said, said
+    ran = [e for e in log(timed) if e['kind'] == 'check_run'][-1]['results']
+    assert ran[0]['ms'] >= 1000 and all(isinstance(c['queued_ms'], int) for c in ran), ran
+    gate = [e for e in log(timed) if e['kind'] == 'checks'][-1]['results']
+    assert [c.get('stored') for c in gate] == [True, True] and gate[0]['ms'] == ran[0]['ms'], gate
+    assert [c['ms'] for c in show(timed)['result']['checks']] == [c['ms'] for c in gate]
+    row = next(t for t in js('task', 'ledger')['open'] if t['id'] == timed)
+    assert row['checks'][0]['ms'] >= 1000 and 'queued_ms' in row['checks'][0], row
+    js('task', 'close', timed, '--discard')
+    configure(LAND_CONFIG, 'untimed checks')
+    # 32x. A land tells each open task that shares its files to rebase: the message names the
+    # landed commit and the files and joins the next turn; a task with no turn to come gets
+    # nothing, as its own land rebases it (docs/tasks.md "Landing").
+    mark('32x')
+    notice_gate = base / 'notice-gate'
+    busy = js('task', 'new', 'WAIT %s' % notice_gate, '--files', 'shared.txt')['id']
+    idle = js('task', 'new', 'WORK idle.txt', '--files', 'shared.txt')['id']
+    lander = js('task', 'new', 'WORK shared.txt')['id']
+    for n in (idle, lander):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    wait(lambda: show(busy)['record']['agent_session'], 't%s works' % busy)
+    assert land(lander)['state'] == 'landed'
+    tip = git('rev-parse', 'main')
+    heard = lambda n: [e['text'] for e in log(n) if e['kind'] == 'message' and 'landed on main' in e['text']]
+    wait(lambda: heard(busy), 't%s hears the land' % busy)
+    assert tip in heard(busy)[0] and 'shared.txt' in heard(busy)[0] and 'Run no `wsx task check-run`' in heard(busy)[0], heard(busy)
+    assert not heard(idle) and kinds(idle, 'result') == ['result'], log(idle)
+    notice_gate.write_text('go')
+    wait(lambda: any(tip in t.get('message', '') for t in traces()), 'the notice reaches the worker', 30)
+    for n in (busy, idle):
+        js('task', 'close', n, '--discard')
+    wait_closed(lander)
+    # 32y. A batch land: ready tasks stack on main in order, the checks run once on the
+    # combined tree and each lands without checks of its own. A batch whose checks fail splits
+    # until the failing task lands alone through its own checks (docs/tasks.md "Batch land").
+    mark('32y')
+    batch = [js('task', 'new', 'WORK %s.txt' % name)['id'] for name in ('b1', 'b2', 'b3')]
+    for n in batch:
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    ran = {n: len(kinds(n, 'checks')) for n in batch}
+    started = js('task', 'land', *map(str, batch))
+    assert started['ok'] and 'batch land of #%d, #%d, #%d started' % tuple(batch) in started['message'], started
+    for n in batch:
+        wait(lambda: show(n)['state'] == 'landed', 't%s lands in the batch' % n, 60)
+        assert len(kinds(n, 'checks')) == ran[n], log(n)
+    assert all(main_has('%s.txt' % name) for name in ('b1', 'b2', 'b3'))
+    wait(lambda: 'after' in follow_up.read_text().rsplit('batch land ended', 1)[-1], 'the batch ends')
+    assert 'and 1 batch check run(s)' in follow_up.read_text().rsplit('batch land ended', 1)[-1], follow_up.read_text()[-2000:]
+    assert not any(Path(p).name.startswith(project.name + '-batch-') for p in base.iterdir())
+    for n in batch:
+        wait_closed(n)
+    refused = cli('task', 'land', batch[0], batch[1], ok=False)
+    assert 'is landed: a batch lands only ready tasks' in refused.stderr, refused.stderr
+    configure(LAND_CONFIG.replace('  checks:\n', '  checks:\n    - "! test -e s1.txt -a -e s2.txt"\n'), 'no s1 with s2')
+    split = [js('task', 'new', 'WORK %s.txt' % name)['id'] for name in ('g1', 's1', 's2')]
+    for n in split:
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    assert js('task', 'land', *map(str, split))['ok']
+    g1, s1, s2 = split
+    for n in (g1, s1):
+        wait(lambda: show(n)['state'] == 'landed', 't%s lands' % n, 60)
+    wait(lambda: show(s2)['state'] == 'failed', 't%s fails alone' % s2, 60)
+    assert any(e['kind'] == 'land_stopped' for e in log(s2)) and not main_has('s2.txt'), log(s2)
+    wait(lambda: 'after' in follow_up.read_text().rsplit('batch land ended', 1)[-1], 'the split batch ends')
+    tail = follow_up.read_text().rsplit('the checks failed on the batch', 1)
+    assert len(tail) == 2 and 'and 2 batch check run(s)' in tail[-1], follow_up.read_text()[-3000:]
+    for n in (g1, s1):
+        wait_closed(n)
+    js('task', 'close', s2, '--discard')
+    configure(LAND_CONFIG, 'no batch check')
     # 32s. A scenario runs through check-run by name or by number after the checks, never in a
     # bare check-run or after a result; the worker's instructions list it.
     mark('32s')

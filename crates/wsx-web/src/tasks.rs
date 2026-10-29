@@ -851,6 +851,8 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
         // runs them. A child's host alone sends `ChildLanded`.
         HostRequest::Hand
         | HostRequest::ChildLanded { .. }
+        | HostRequest::Notice { .. }
+        | HostRequest::LandBatch { .. }
         | HostRequest::Handback
         | HostRequest::Trial
         | HostRequest::Status

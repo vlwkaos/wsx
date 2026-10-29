@@ -1119,9 +1119,15 @@ async fn task_act(
         "steer" => HostRequest::Steer {
             text: input.text.ok_or_else(|| missing("text"))?,
         },
-        "land" => HostRequest::Land { tried: false },
+        "land" => HostRequest::Land {
+            tried: false,
+            batch_tree: None,
+        },
         // ^ Pass on a trial: the owner tried it on the live site.
-        "pass" => HostRequest::Land { tried: true },
+        "pass" => HostRequest::Land {
+            tried: true,
+            batch_tree: None,
+        },
         "hold" => HostRequest::Hold {
             reason: Some(input.text.unwrap_or_else(|| "the owner holds it".into())),
             by: wsx_core::task::Actor::Owner,

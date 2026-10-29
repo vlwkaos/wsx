@@ -63,9 +63,15 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
             "human_verify": result.as_ref().map_or(0, |r| r["result"]["human_verify"].as_array().map_or(0, Vec::len)),
             "summary": result.as_ref().and_then(|r| r["result"]["summary"].as_str()).map(|s| clip(s, SUMMARY_CHARS)),
             // ^ What the host ran; it outranks the worker's summary (docs/tasks.md "Ledger").
-            "checks": result.as_ref().map(check_outcomes).unwrap_or_default().into_iter()
-                .map(|(command, outcome)| json!({ "command": command, "outcome": outcome }))
-                .collect::<Vec<_>>(),
+            // ^ With each check's run time and its run's wait for the check slot, in ms.
+            "checks": result.as_ref().map(|result| check_outcomes(result).into_iter()
+                .zip(result["checks"].as_array().into_iter().flatten())
+                .map(|((command, outcome), check)| json!({
+                    "command": command, "outcome": outcome,
+                    "ms": check["ms"].as_u64().unwrap_or(0),
+                    "queued_ms": check["queued_ms"].as_u64().unwrap_or(0),
+                }))
+                .collect::<Vec<_>>()).unwrap_or_default(),
             // ^ What a waiting task waits for: the owner, disk, the check slot or a person's hands.
             "waiting": record.waiting,
             // ^ Held for the owner to try before it lands (docs/tasks.md "Hold and trial").
