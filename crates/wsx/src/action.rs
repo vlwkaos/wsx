@@ -42,7 +42,6 @@ pub enum Action {
     GroupNext,
     GroupManager,
     Tasks,
-    /// `S` in the Tasks view: a shell in the project's or the task's checkout.
     Shell,
     InputChar(char),
     InputBackspace,
@@ -57,15 +56,8 @@ pub enum Action {
     TerminalMouse(crossterm::event::MouseEvent),
     TerminalPrefixedMouse(crossterm::event::KeyEvent, crossterm::event::MouseEvent),
     ToggleTerminalSidebar,
-    MouseClick {
-        col: u16,
-        row: u16,
-    },
-    MouseScroll {
-        col: u16,
-        row: u16,
-        delta: i8,
-    },
+    MouseClick { col: u16, row: u16 },
+    MouseScroll { col: u16, row: u16, delta: i8 },
     Resize,
     FocusGained,
     None,

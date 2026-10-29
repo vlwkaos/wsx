@@ -1242,7 +1242,7 @@ impl App {
             self.pending_shell = Some((session_id, Instant::now()));
             return self.open_pending_shell(terminal);
         }
-        if let Some((session_id, _)) = self.do_create_session(pi, wi, String::new(), None)? {
+        if let Some(session_id) = self.do_create_session(pi, wi, String::new(), None)? {
             // ^ Entering needs the cursor on the session's row, which the next refresh adds.
             self.pending_shell = Some((session_id, Instant::now()));
         }

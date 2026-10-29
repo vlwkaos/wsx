@@ -33,7 +33,7 @@ impl App {
         wi: usize,
         session_label: String,
         command: Option<String>,
-    ) -> Result<Option<(runtime::SessionId, String)>> {
+    ) -> Result<Option<runtime::SessionId>> {
         let Some((proj_name, wt_path, wt_slug)) = self.workspace.projects.get(pi).and_then(|p| {
             let wt = p.worktrees.get(wi)?;
             Some((p.name.clone(), wt.path.clone(), wt.session_slug(&p.name)))
@@ -58,7 +58,7 @@ impl App {
         // Expand before the authoritative Runtime refresh reveals the new pane.
         self.set_worktree_expanded(pi, wi, true);
         self.spawn_runtime_refresh();
-        Ok(Some((session_id, display_name)))
+        Ok(Some(session_id))
     }
 
     pub(super) fn do_delete_project(&mut self, pi: usize) -> Result<()> {
