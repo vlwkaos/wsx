@@ -10,7 +10,7 @@ use super::claude::{
     account_env, config_root, new_session_id, skills_plugin, AgentLine, ClaudeAgent, Launch,
     TurnResult, SKILLS_PLUGIN_NAME,
 };
-use super::{broker, hosting, limit};
+use super::{broker, hosting, limit, stall};
 use anyhow::{Context, Result};
 use asched_core::routine::{store::RoutineStore, RunRecord, RunStatus};
 use std::collections::BTreeMap;
@@ -139,6 +139,11 @@ struct Manager {
     observed_deploys_ms: u64,
     /// The `finished_epoch` of the newest routine run seen.
     observed_routines: i64,
+    /// The stall reported for each open task, by marker, including ones not yet logged.
+    observed_stalls: BTreeMap<u32, String>,
+    /// The stall each task shows now, and since when: it is reported after `stall::GRACE`.
+    stall_suspects: BTreeMap<u32, (String, Instant)>,
+    stalls_swept: Option<Instant>,
     /// Event lines not yet logged as a message, and when the last one came.
     pending_events: Vec<String>,
     last_event: Option<Instant>,
@@ -261,7 +266,10 @@ fn instructions(
          `deploys` shows its commit. \
          A task waits when the ledger shows `waiting`. On `owner`, the worker asked or \
          stopped: answer with `wsx task add` when you can, else ask the owner in plain \
-         words. On `disk` or `limit` it resumes by itself. On \
+         words. On `disk` or `limit` it resumes by itself. An event '#<n> stalled' is wsx's \
+         finding that the task is stuck with the evidence: act on it with `wsx task` (a silent \
+         worker: `stop`, then `add` what to do), start a task that fixes wsx when the evidence \
+         shows its bug, else tell the owner in one line what is stuck and why. On \
          `hand`, the owner works in its copy: never add, steer, land or close it; only the \
          owner runs `wsx task hand` and `handback`. \
          Nothing asks you for permission inside wsx's boundary. Read the \
@@ -351,6 +359,9 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         observed_decisions: 0,
         observed_deploys_ms: 0,
         observed_routines: 0,
+        observed_stalls: BTreeMap::new(),
+        stall_suspects: BTreeMap::new(),
+        stalls_swept: None,
         pending_events: Vec::new(),
         last_event: None,
         recap_quiet: (settings.manager_recap_secs > 0)
@@ -444,6 +455,7 @@ impl Manager {
                 Event::Tick if self.dir.role.is_some() => self.leave_when_done(),
                 Event::Tick => {
                     self.watch_tasks();
+                    self.watch_stalls();
                     self.ask_recap();
                     self.sweep_captures();
                     self.close_idle_roles();
@@ -550,6 +562,7 @@ impl Manager {
             Some(seen) => {
                 self.observed = seen;
                 self.observed_decisions = self.state.decisions_seen;
+                self.observed_stalls = self.state.stalls.clone();
                 self.observed_deploys_ms = self
                     .state
                     .deploys_seen_ms
@@ -860,21 +873,83 @@ impl Manager {
                 clip(&title, EVENT_TITLE_CHARS),
                 summary,
             );
-            // ^ Only a task's creator hears of it: an open role, else the manager.
-            // ref: docs/tasks.md "Roles"
-            match record
-                .created_by
-                .role()
-                .filter(|role| open_roles.iter().any(|open| open == role))
-            {
-                Some(role) => self
-                    .role_events
-                    .entry(role.to_string())
-                    .or_default()
-                    .push(line),
-                None => self.pending_events.push(line),
+            self.task_event(&record, &open_roles, line);
+        }
+    }
+
+    /// Queue a task's event line. Only a task's creator hears of it: an open role, else the
+    /// manager. ref: docs/tasks.md "Roles"
+    fn task_event(&mut self, record: &TaskRecord, open_roles: &[String], line: String) {
+        match record
+            .created_by
+            .role()
+            .filter(|role| open_roles.iter().any(|open| open == role))
+        {
+            Some(role) => self
+                .role_events
+                .entry(role.to_string())
+                .or_default()
+                .push(line),
+            None => self.pending_events.push(line),
+        }
+        self.last_event = Some(Instant::now());
+    }
+
+    /// Turn each new stall of an open task into one event line, after it lasted
+    /// `stall::GRACE`. ref: docs/tasks.md "Manager" (Stalls)
+    fn watch_stalls(&mut self) {
+        if self
+            .stalls_swept
+            .is_some_and(|at| at.elapsed() < stall::SWEEP)
+        {
+            return;
+        }
+        self.stalls_swept = Some(Instant::now());
+        let Ok(tasks) = project_tasks(&self.dir.project_id) else {
+            return;
+        };
+        let open_roles: Vec<String> = roles::open_roles(&self.dir.project_id)
+            .iter()
+            .map(|dir| dir.name().to_string())
+            .collect();
+        let now = now_unix_ms();
+        let mut open = Vec::new();
+        let mut suspects = BTreeMap::new();
+        for (dir, record) in tasks {
+            let Ok(record) = record else { continue };
+            if !record.state.is_open() {
+                continue;
             }
-            self.last_event = Some(Instant::now());
+            open.push(record.id);
+            let Some(found) = stall::find(&dir, &record, now) else {
+                continue;
+            };
+            let since = match self.stall_suspects.get(&record.id) {
+                Some((marker, since)) if *marker == found.marker => *since,
+                _ => Instant::now(),
+            };
+            suspects.insert(record.id, (found.marker.clone(), since));
+            if since.elapsed() < stall::GRACE
+                || self.observed_stalls.get(&record.id) == Some(&found.marker)
+            {
+                continue;
+            }
+            let title = view::title(&dir, &record).unwrap_or_default();
+            let line = format!(
+                "#{} stalled r{}: {}; {}",
+                record.id,
+                record.revision,
+                clip(&title, EVENT_TITLE_CHARS),
+                found.words
+            );
+            self.observed_stalls.insert(record.id, found.marker);
+            self.task_event(&record, &open_roles, line);
+        }
+        self.stall_suspects = suspects;
+        let before = self.observed_stalls.len();
+        self.observed_stalls.retain(|id, _| open.contains(id));
+        if self.observed_stalls.len() != before && self.pending_events.is_empty() {
+            self.save_seen();
         }
     }
 
@@ -972,6 +1047,7 @@ impl Manager {
         self.state.decisions_seen = self.observed_decisions;
         self.state.deploys_seen_ms = Some(self.observed_deploys_ms);
         self.state.routines_seen = Some(self.observed_routines);
+        self.state.stalls = self.observed_stalls.clone();
         self.save();
     }
 

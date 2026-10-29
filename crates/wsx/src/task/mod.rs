@@ -11,6 +11,7 @@ pub(crate) mod limit;
 pub mod manager;
 mod preview;
 mod slot;
+mod stall;
 mod trial;
 
 use crate::cli::{
