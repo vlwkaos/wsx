@@ -900,7 +900,9 @@ def run(wsx, wsxd, work, owned):
             (r'MANAGER', b'')], cols=cols, raw=frames)
         (captures / ('tasks-%d.ans' % cols)).write_bytes(frames[1])
         (captures / ('manager-%d.ans' % cols)).write_bytes(frames[2])
-        assert '(S)hell' in hinted[1] and '(S)hell' in hinted[2], hinted
+        # ^ The whole footer fits at both widths, `(S)hell` in its place.
+        assert re.search(r'(?m)^ TASKS +\(j/k\)move +\(enter\)detail +\(m\)anager +\(S\)hell +Esc: close ', hinted[1]), hinted[1]
+        assert re.search(r'(?m)^ MANAGER +\(i\)message +\(S\)hell +Esc: back +\(j/k\)scroll ', hinted[2]), hinted[2]
     # ^ Open tasks of earlier steps sort above a working one (task_list.rs `rows`): move to
     # its row, and its detail shows it is the one.
     rank = {'waiting': 0, 'failed': 1, 'ready': 2, 'checking': 3}
