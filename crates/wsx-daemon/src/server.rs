@@ -330,8 +330,6 @@ pub(crate) fn raise_descriptor_limit() {
     }
 }
 
-// ^ An accept error that belongs to one connection or to a short resource shortage ends
-// that connection only. Before 0.40.0 it stopped wsxd and ended every PTY at once.
 // ^ A sleep after an empty accept made every new connection wait up to 20 ms before its
 // hello. poll(2) accepts at once; the timeout bounds how late the loop sees a handoff,
 // a stop or a due timer.
@@ -352,6 +350,8 @@ fn wait_for_connection(listener: &UnixListener, timeout: Duration) {
     }
 }
 
+// ^ An accept error that belongs to one connection or to a short resource shortage ends
+// that connection only. Before 0.40.0 it stopped wsxd and ended every PTY at once.
 pub(crate) fn accept_error_is_transient(error: &io::Error) -> bool {
     matches!(
         error.kind(),
