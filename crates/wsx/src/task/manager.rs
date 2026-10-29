@@ -421,11 +421,13 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
     manager.report(runtime::AgentState::Idle);
     manager.run(receiver)?;
     if manager.leaving {
+        // ^ The sockets go first: a `say` during the agent's stop (up to 5 s) starts the next
+        // host, which refuses to bind while this one still accepts on the same path.
+        let _ = std::fs::remove_file(manager.dir.socket_path());
+        let _ = std::fs::remove_file(manager.dir.broker_path());
         if let Some(agent) = manager.agent.take() {
             agent.stop();
         }
-        let _ = std::fs::remove_file(manager.dir.socket_path());
-        let _ = std::fs::remove_file(manager.dir.broker_path());
         return Ok(());
     }
     if let (true, Some(binary)) = (manager.reexec, &manager.binary) {
