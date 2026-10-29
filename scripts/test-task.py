@@ -2462,9 +2462,10 @@ def run(wsx, wsxd, work, owned):
     configure(LAND_CONFIG, 'no scenario')
     # 32d. The disk queue (docs/tasks.md "Checks, revisions and report"): tasks that wait for
     mark('32d')
-    # disk resume one at a time, oldest first, so they do not fill the freed space at once.
+    # disk resume one at a time, oldest first, so they do not fill the freed space at once, but
+    # the next one resumes about a minute later, while the first one's checks still run.
     release.unlink()
-    slot_config(120)
+    slot_config(240)
     roomy = (project / 'wsx.config.yml').read_text()
     configure(roomy.replace('minFreeGb: 0', 'minFreeGb: 100000'), 'no disk for two')
     older, newer = [js('task', 'new', 'WORK disk%d.txt' % i)['id'] for i in (1, 2)]
@@ -2477,10 +2478,12 @@ def run(wsx, wsxd, work, owned):
                   'the newer disk wait queued', 45)
     assert queued == {'on': 'disk', 'reason': 'queued for disk behind demo t%s' % older}, queued
     assert show(newer)['state'] == 'waiting' and show(older)['state'] in ('working', 'checking')
+    # ^ The settle time (60 s) and one disk poll (30 s), never the older one's whole turn.
+    wait(lambda: show(newer)['state'] in ('working', 'checking'), 'the newer disk wait resumed', 150)
+    assert show(older)['state'] == 'checking', show(older)
     release.touch()
-    assert wait_state(older, 'ready', 'failed')['state'] == 'ready'
-    assert wait(lambda: (current := show(newer))['state'] in ('ready', 'failed') and current,
-                'the newer disk wait resumed', 60)['state'] == 'ready'
+    for n in (older, newer):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
     for n in (older, newer):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'disk as before')

@@ -89,6 +89,9 @@ const LIMIT_CONTINUE: &str = "The session limit has reset. Continue the task whe
 const LIMIT_POLL_MS: u64 = 2_000;
 /// How often a task that waits for disk looks again.
 const DISK_POLL: Duration = Duration::from_secs(30);
+/// How long a task resumed from a disk wait holds the disk slot, so the next one sees the
+/// space its turn takes before it resumes.
+const DISK_SETTLE: Duration = Duration::from_secs(60);
 /// What a check prints when the disk is full: the check then waits instead of failing.
 const NO_SPACE: &str = "No space left on device";
 /// The handoff notes a worker writes before its conversation rotates, in its task folder.
@@ -134,9 +137,9 @@ struct Host {
     after_rebase: Option<AfterRebase>,
     disk_wait: Option<DiskWait>,
     /// The place of a disk wait in the machine's disk queue, and the disk slot it took to
-    /// resume: held until its turn or checks end.
+    /// resume, with when it took it: held for `DISK_SETTLE` or until its turn or checks end.
     disk_queue: Option<slot::Ticket>,
-    disk_slot: Option<slot::Slot>,
+    disk_slot: Option<(slot::Slot, Instant)>,
     limit_wait: Option<LimitWait>,
     /// Usage limits in a row, for the backoff when no reset time is known.
     limit_attempt: u32,
@@ -285,11 +288,22 @@ impl Host {
             if !self.turn_active {
                 self.limit_slot = None;
             }
+            if self
+                .disk_slot
+                .as_ref()
+                .is_some_and(|(_, taken)| taken.elapsed() >= DISK_SETTLE)
+            {
+                self.disk_slot = None;
+            }
             // ^ On a deadline, not after a quiet spell: status calls arrive all the time.
             let disk_due = self
                 .disk_wait
                 .as_ref()
                 .map(|_| DISK_POLL.saturating_sub(disk_checked.elapsed()));
+            let settle_due = self
+                .disk_slot
+                .as_ref()
+                .map(|(_, taken)| DISK_SETTLE.saturating_sub(taken.elapsed()));
             let limit_due = self
                 .limit_wait
                 .as_ref()
@@ -303,13 +317,16 @@ impl Host {
                 .into_iter()
                 .chain(limit_due)
                 .chain(background_due)
+                .chain(settle_due)
                 .min()
             {
                 None => receiver.recv().ok(),
                 Some(due) => match receiver.recv_timeout(due) {
                     Ok(event) => Some(event),
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        if disk_due == Some(due) {
+                        if settle_due == Some(due) {
+                            // ^ Dropped at the top of the loop.
+                        } else if disk_due == Some(due) {
                             disk_checked = Instant::now();
                             self.resume_after_disk();
                         } else if background_due == Some(due) {
@@ -1241,8 +1258,8 @@ impl Host {
         true
     }
 
-    /// Resume once there is space. Tasks resume one at a time, oldest wait first: resumed at
-    /// once, they would fill the disk again. ref: docs/tasks.md "Checks, revisions and report"
+    /// Resume once there is space. Tasks resume one at a time, oldest wait first, each
+    /// `DISK_SETTLE` after the one before: resumed at once, they would fill the disk again. ref: docs/tasks.md "Checks, revisions and report"
     fn resume_after_disk(&mut self) {
         if self.low_disk().is_some() {
             return;
@@ -1250,7 +1267,7 @@ impl Host {
         if let Some(queue) = &self.disk_queue {
             let label = format!("{} t{}", self.record.project, self.record.id);
             match queue.try_take(&label) {
-                Ok(taken) => self.disk_slot = Some(taken),
+                Ok(taken) => self.disk_slot = Some((taken, Instant::now())),
                 Err(reason) => {
                     if self.record.waiting.as_ref().map(|w| &w.reason) != Some(&reason) {
                         self.say(&reason);

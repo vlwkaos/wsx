@@ -1,6 +1,6 @@
 //! The check slot: one check run at a time for every task host of this wsx state folder.
 //! The disk slot (`tasks/disk-slot/`) queues the same way: one task resumes from a disk wait
-//! at a time. ref: docs/tasks.md "Checks, revisions and report"
+//! at a time, and holds the slot for a short settle time. ref: docs/tasks.md "Checks, revisions and report"
 //!
 //! The slot is an `flock` on `tasks/<queue>/slot.lock`, which the kernel drops with the
 //! process, so a killed host never blocks the queue. A waiter queues as a ticket file that
