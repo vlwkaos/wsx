@@ -119,6 +119,7 @@ impl IsolatedInstall {
             .current_dir(&self.project)
             .env("ASCHED_ROOT", &self.scheduler_root)
             .env("HOME", self.root.join("home"))
+            .env("WSX_EXIT_WITH_PID", std::process::id().to_string())
             .env("XDG_CONFIG_HOME", self.root.join("home/config"))
             .env("XDG_DATA_HOME", self.root.join("home/data"))
             .env("PATH", path_without_asched)

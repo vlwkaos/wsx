@@ -194,7 +194,7 @@ def orchestration(wsx, wsxd, released):
             '[[projects]]\nname = "%s"\npath = %s\n' % (name, json.dumps(str(repos / name))) for name in ('fixture','other')))
         path = work / 'state/wsx/wsx.sock'
         env = {'HOME':str(work / 'home'),'XDG_CONFIG_HOME':str(work / 'config'),'XDG_STATE_HOME':str(work / 'state'),
-               'XDG_CACHE_HOME':str(work / 'cache'),'WSX_SOCKET':str(path),'WSX_DAEMON_BIN':str(wsxd),
+               'XDG_CACHE_HOME':str(work / 'cache'),'WSX_SOCKET':str(path),'WSX_DAEMON_BIN':str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()),
                'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','SHELL':'/bin/sh','TERM':'xterm-256color','LANG':'en_US.UTF-8',
                'GIT_AUTHOR_NAME':'fixture','GIT_AUTHOR_EMAIL':'fixture@example.invalid',
                'GIT_COMMITTER_NAME':'fixture','GIT_COMMITTER_EMAIL':'fixture@example.invalid',
@@ -531,7 +531,7 @@ def main():
         (config / 'config-v2.toml').write_text('resume_agents_on_restore = false\n')
         path = work / 'state/wsx/wsx.sock'
         env = {'HOME':str(work / 'home'),'XDG_CONFIG_HOME':str(work / 'config'),'XDG_STATE_HOME':str(work / 'state'),
-               'XDG_CACHE_HOME':str(work / 'cache'),'WSX_SOCKET':str(path),'WSX_DAEMON_BIN':str(wsxd),
+               'XDG_CACHE_HOME':str(work / 'cache'),'WSX_SOCKET':str(path),'WSX_DAEMON_BIN':str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()),
                'PATH':'/usr/bin:/bin:/usr/sbin:/sbin','SHELL':'/bin/sh','TERM':'xterm-256color','LANG':'en_US.UTF-8',
                'GIT_CEILING_DIRECTORIES':str(work)}
         subprocess.run(['git','init','-q','-b','main',str(work / 'project')],env=env,check=True,timeout=5)

@@ -75,6 +75,7 @@ impl Fixture {
             .env("WSX_SOCKET", &self.socket)
             .env("XDG_STATE_HOME", &self.root)
             .env("HOME", &self.root)
+            .env("WSX_EXIT_WITH_PID", std::process::id().to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(

@@ -119,6 +119,8 @@ for key in ("WSX_PANE_ID", "WSX_RUNTIME_GENERATION"):
     env.pop(key, None)
 env.update({
     "HOME": str(HOME),
+    # ^ docs/daemon-discovery.md "Lifetime": its daemons exit with this script.
+    "WSX_EXIT_WITH_PID": str(os.getpid()),
     "XDG_STATE_HOME": str(STATE),
     "XDG_CONFIG_HOME": str(WORK / "config"),
     "XDG_CACHE_HOME": str(WORK / "cache"),
