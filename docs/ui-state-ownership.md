@@ -55,7 +55,15 @@ Commands remain pending if locking, reading, parsing, or publication fails. A fa
 
 The canonical cache is `workspace-v3.toml` in the platform wsx cache directory. On first use it imports `workspace-v2.toml`, falling back to `workspace.toml`. Import does not rewrite the predecessor. Later reads use only v3, so older clients with whole-snapshot writers cannot undo repaired-client state. Group selection remains independently persisted. Each write refreshes its affected projects from the committed state. Unrelated windows and rows do not live-sync.
 
-The old core snapshot-write API is replaced by explicit changes. `WorkspaceCacheChanges::save` returns `ProjectCacheState` per submitted project. `AppliedCache` additionally returns saved worktree expansion for deferred discovery. Wire protocol, daemon revision, terminal leases, and configuration schema do not change.
+The old core snapshot-write API is replaced by explicit changes. `WorkspaceCacheChanges::save(path, sync)` returns `ProjectCacheState` per submitted project. `AppliedCache` additionally returns saved worktree expansion for deferred discovery. Wire protocol, daemon revision, terminal leases, and configuration schema do not change.
+
+## Test isolation
+
+A TUI reads the whole cache only at startup, including the start after it follows an upgraded wsxd, and adopts committed state only for projects it submits. It never polls the file. So another writer changes what a running TUI shows only through the next start, or through the daemon both of them use.
+
+The App owns both: `App::new` resolves `cache::workspace_cache_path()` once into `App.cache_path` and creates `App.runtime_client` once. Every cache read and write and every wsxd call made by the App uses them. The `ops` functions that call wsxd take a `&Client`. `runtime::ensure_available` and `ensure_background_available` refuse a custom client (`Client::new`), so only `Client::local` starts or replaces a daemon. A test App gets a fresh file under `.work/tests/workspace-cache/`, named after its test, and a client for a socket that does not exist.
+
+Before, `persist_state` wrote the platform cache and the App's refresh threads used `Client::local()`. A test run in a wsx pane (same HOME, inherited `WSX_SOCKET`) then wrote its cursor, folds and dismissals into the user's cache, and its `SynchronizeProjects` with the test config removed the user's projects and worktrees that had no sessions. On macOS `dirs::cache_dir` and `dirs::config_dir` follow `HOME`, not `XDG_*`. `scripts/test-ui-state.py` runs the wsx unit tests beside a live TUI and wsxd that share their HOME and socket, and checks that the cache bytes, the daemon's worktrees and the viewed session after a restart do not change.
 
 ## Selected row
 
