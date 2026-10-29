@@ -2467,13 +2467,14 @@ def run(wsx, wsxd, work, owned):
     for n in batch:
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
     ran = {n: len(kinds(n, 'checks')) for n in batch}
+    ended = follow_up.read_text().count('batch land ended')
     started = js('task', 'land', *map(str, batch))
     assert started['ok'] and 'batch land of #%d, #%d, #%d started' % tuple(batch) in started['message'], started
     for n in batch:
         wait(lambda: show(n)['state'] == 'landed', 't%s lands in the batch' % n, 60)
         assert len(kinds(n, 'checks')) == ran[n], log(n)
     assert all(main_has('%s.txt' % name) for name in ('b1', 'b2', 'b3'))
-    wait(lambda: 'after' in follow_up.read_text().rsplit('batch land ended', 1)[-1], 'the batch ends')
+    wait(lambda: follow_up.read_text().count('batch land ended') == ended + 1, 'the batch ends', 60)
     assert 'and 1 batch check run(s)' in follow_up.read_text().rsplit('batch land ended', 1)[-1], follow_up.read_text()[-2000:]
     assert not any(Path(p).name.startswith(project.name + '-batch-') for p in base.iterdir())
     for n in batch:
@@ -2490,7 +2491,7 @@ def run(wsx, wsxd, work, owned):
         wait(lambda: show(n)['state'] == 'landed', 't%s lands' % n, 60)
     wait(lambda: show(s2)['state'] == 'failed', 't%s fails alone' % s2, 60)
     assert any(e['kind'] == 'land_stopped' for e in log(s2)) and not main_has('s2.txt'), log(s2)
-    wait(lambda: 'after' in follow_up.read_text().rsplit('batch land ended', 1)[-1], 'the split batch ends')
+    wait(lambda: follow_up.read_text().count('batch land ended') == ended + 2, 'the split batch ends', 60)
     tail = follow_up.read_text().rsplit('the checks failed on the batch', 1)
     assert len(tail) == 2 and 'and 2 batch check run(s)' in tail[-1], follow_up.read_text()[-3000:]
     for n in (g1, s1):
