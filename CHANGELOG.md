@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Web: the image viewer has a Download control for a To check capture, image or video, so a copy can be kept before the capture is removed 7 days after the item is decided. `GET api/tasks/<project>/checks/<id>/capture?download=1` answers as an attachment named `task-<n>-<id>.<ext>`; the plain URL stays inline. On a phone it offers the file to the share sheet first, and iPhone Safari otherwise saves it to Files ([docs/web-client.md](docs/web-client.md) "Image viewer").
+
 ## [0.41.0] - 2026-10-29
 
 ### Added

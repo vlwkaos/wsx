@@ -926,7 +926,11 @@ pub fn checks(scope: &Scope) -> Outcome<Value> {
 
 /// The capture kept with an item, an image or a video, or with `poster` the video's poster.
 /// ref: docs/tasks.md "To check"
-pub fn check_capture(scope: &Scope, id: &str, poster: bool) -> Outcome<(Vec<u8>, &'static str)> {
+pub fn check_capture(
+    scope: &Scope,
+    id: &str,
+    poster: bool,
+) -> Outcome<(Vec<u8>, &'static str, String)> {
     let items = checks::read(&scope.store).map_err(internal)?;
     let item = items
         .iter()
@@ -935,7 +939,11 @@ pub fn check_capture(scope: &Scope, id: &str, poster: bool) -> Outcome<(Vec<u8>,
     let name = if poster { &item.poster } else { &item.capture };
     let name = name.as_deref().ok_or_else(Fault::not_found)?;
     let dir = open_task(scope, item.task).map_err(|_| Fault::not_found())?;
-    checks::read_capture(&dir, name).map_err(|_| Fault::not_found())
+    let (bytes, media) = checks::read_capture(&dir, name).map_err(|_| Fault::not_found())?;
+    // ^ The name a saved copy gets: task, item and kind, such as `task-7-c12.png`.
+    let kind = if poster { "-poster" } else { "" };
+    let ext = media.rsplit('/').next().unwrap_or("bin");
+    Ok((bytes, media, format!("task-{}-{id}{kind}.{ext}", item.task)))
 }
 
 /// Pass, skip or fail an item as the owner, through `wsx task check` so a fail starts its

@@ -99,7 +99,7 @@ export function CheckRow({ project, item, revision, onChanged, tag = "li" }) {
           </dl>
           ${item.capture_removed && html`<p class="check-state">Capture removed</p>`}
           ${item.capture && !item.capture_removed && html`
-            <a class="check-capture" href=${capture} data-view data-video=${video || undefined} data-poster=${poster}
+            <a class="check-capture" href=${capture} data-view data-download=${`${capture}?download=1`} data-video=${video || undefined} data-poster=${poster}
               aria-label=${`${video ? "Video" : "Capture"} of: ${item.check}`}>
               ${video && !poster ? html`<span class="check-frame"></span>` : html`<img src=${poster ?? capture} alt="" style=${item.capture_size && { "--w": item.capture_size[0], "--h": item.capture_size[1], "--width": `${item.capture_size[0]}px` }} />`}
               ${video && html`<span class="check-play"><${Icon} name="play" /></span>`}

@@ -13,7 +13,7 @@ const TAP_MS = 300;
 const TAP_PX = 10;
 const SWIPE_PX = 50;
 
-// Show `images` ([{ src, alt, width?, height?, video?, poster? }]) from `index`; the focus goes
+// Show `images` ([{ src, alt, width?, height?, video?, poster?, download? }]) from `index`; the focus goes
 // back to `opener`.
 // `dark` puts the images on the dark scheme whatever the page's is (a diagram keeps the page's:
 // it is drawn in it).
@@ -37,7 +37,7 @@ export function viewImageLinks() {
     const group = link.closest("[data-gallery]");
     const links = group ? [...group.querySelectorAll("a[data-view]")] : [link];
     const images = links.map((each) => ({ src: each.href, alt: each.querySelector("img")?.alt || each.getAttribute("aria-label") || "",
-      video: each.hasAttribute("data-video"), poster: each.dataset.poster }));
+      video: each.hasAttribute("data-video"), poster: each.dataset.poster, download: each.dataset.download }));
     openViewer(images, links.indexOf(link), link);
   });
 }
@@ -194,6 +194,24 @@ function Viewer({ images, start, dark, onClosed }) {
     else return;
     event.preventDefault();
   };
+  // ^ iPhone: the share sheet can save to Photos, but its files must be read first, which may end
+  // the tap's permission; then the attachment URL is opened, which saves to Files. Elsewhere
+  // the link's own `download` runs.
+  const save = async (event) => {
+    if (!matchMedia("(pointer: coarse)").matches || !navigator.canShare || !navigator.share) return;
+    event.preventDefault();
+    try {
+      const response = await fetch(image.download);
+      if (!response.ok) throw new Error("not readable");
+      const name = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "")?.[1] ?? "capture";
+      const blob = await response.blob();
+      const file = new File([blob], name, { type: blob.type });
+      if (!navigator.canShare({ files: [file] })) throw new Error("cannot share");
+      await navigator.share({ files: [file] });
+    } catch (error) {
+      if (error?.name !== "AbortError") location.href = image.download;
+    }
+  };
   const cancel = (event) => { event.preventDefault(); close(); };
   const clicked = () => {
     if (beside.current) close();
@@ -215,6 +233,7 @@ function Viewer({ images, start, dark, onClosed }) {
           <span class="time" aria-live="polite">${Math.round(zoom * 100)}%</span>
           <button class="button" type="button" aria-label="Zoom in" disabled=${zoom >= MAX_ZOOM} onClick=${() => zoomCenter(zoom * ZOOM_STEP)}>+</button>`}
         </span>
+        ${image.download && html`<a class="icon-button" href=${image.download} download aria-label="Download" title="Download" onClick=${save}><${Icon} name="down" /></a>`}
         <button class="icon-button" type="button" aria-label="Close" autofocus onClick=${close}><${Icon} name="fail" /></button>
       </div>
       <div class="viewer-stage" ref=${stage} data-video=${image.video || undefined} onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up} onWheel=${wheel} onClick=${clicked}>
