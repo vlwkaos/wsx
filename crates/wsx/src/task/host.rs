@@ -632,7 +632,10 @@ impl Host {
             "queued until the current turn ends".into()
         } else {
             self.start_turn(&text, TurnTrigger::Message);
-            "started a new turn".into()
+            match self.disk_wait {
+                Some(_) => "joined the work that waits for disk".into(),
+                None => "started a new turn".into(),
+            }
         }
     }
 
@@ -809,6 +812,20 @@ impl Host {
         if let Some(wait) = &mut self.limit_wait {
             wait.text = format!("{}\n\n{text}", wait.text);
             return Ok(());
+        }
+        // ^ A message during a disk wait joins the held turn, or follows the held checks: it
+        // never starts a turn of its own, which would skip the disk queue and drop the held
+        // prompt. ref: docs/tasks.md "Free disk"
+        match &mut self.disk_wait {
+            Some(DiskWait::Turn(waiting)) => {
+                *waiting = format!("{waiting}\n\n{text}");
+                return Ok(());
+            }
+            Some(DiskWait::Checks) => {
+                self.pending.push_back(text.to_string());
+                return Ok(());
+            }
+            None => {}
         }
         // ^ Not while a check-run waits: the exec would close its socket unanswered. Not for
         // the turn after a limit either: the exec would drop the limit slot before the agent
@@ -1245,9 +1262,6 @@ impl Host {
             return false;
         };
         self.disk_wait = Some(match (self.disk_wait.take(), what) {
-            (Some(DiskWait::Turn(waiting)), DiskWait::Turn(text)) => {
-                DiskWait::Turn(format!("{waiting}\n\n{text}"))
-            }
             (Some(DiskWait::Turn(waiting)), DiskWait::Checks) => DiskWait::Turn(waiting),
             (_, what) => what,
         });

@@ -2478,12 +2478,19 @@ def run(wsx, wsxd, work, owned):
                   'the newer disk wait queued', 45)
     assert queued == {'on': 'disk', 'reason': 'queued for disk behind demo t%s' % older}, queued
     assert show(newer)['state'] == 'waiting' and show(older)['state'] in ('working', 'checking')
+    # ^ An add while it waits before its first turn joins that turn: it neither skips the queue
+    # nor replaces the held prompt.
+    added = js('task', 'add', str(newer), 'ADDED-WHILE-DISK')
+    assert added['ok'] and 'joined the work that waits for disk' in added['message'], added
+    assert show(newer)['record'].get('waiting') == queued and not [t for t in traces() if 'ADDED-WHILE-DISK' in t.get('message', '')]
     # ^ The settle time (60 s) and one disk poll (30 s), never the older one's whole turn.
     wait(lambda: show(newer)['state'] in ('working', 'checking'), 'the newer disk wait resumed', 150)
     assert show(older)['state'] == 'checking', show(older)
     release.touch()
     for n in (older, newer):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    joined = [t['message'] for t in traces() if 'ADDED-WHILE-DISK' in t.get('message', '')]
+    assert len(joined) == 1 and 'WORK disk2.txt' in joined[0], joined
     for n in (older, newer):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'disk as before')
