@@ -1770,7 +1770,7 @@ await capture("to-check-video");
 await key("Escape", 27);
 await until("!document.querySelector('dialog.viewer') && !!document.querySelector('dialog.task-sheet[open]')", "Escape did not close the video viewer alone");
 await shot("to-check", ".composer-send");
-await viewImages("to-check", ".check-list .check-item:first-child .check-capture", 1);
+await viewImages("to-check", ".check-list .check-item:first-child .check-capture", 1, true);
 // ^ Try starts the preview of the item's task and becomes a link to it (docs/tasks.md "Preview").
 await evaluate(`${firstItem}.querySelector('.check-act[title="Try it on a preview"]').click()`);
 await until(`!!${firstItem}.querySelector('a.check-act[href^="https://host.example.ts.net:"]')`, "Try did not become a preview link", 300);
@@ -1801,7 +1801,7 @@ await pause(300);
 await shot("to-check-bubble", ".composer-send");
 // ^ Each bubble is its own set; #7's capture is an image (#8's is a video).
 const bubbleKey = await evaluate(`${bubbleOf(7)}.dataset.key`);
-await viewImages("to-check-bubble", `.log .check-bubble[data-key=${JSON.stringify(bubbleKey)}] .check-capture`, 1);
+await viewImages("to-check-bubble", `.log .check-bubble[data-key=${JSON.stringify(bubbleKey)}] .check-capture`, 1, true);
 await resize([1280, 800, 1]);
 await showEarlier();
 await until(`!!${bubbleOf(8)}`, "the wide chat has no To check bubble");
