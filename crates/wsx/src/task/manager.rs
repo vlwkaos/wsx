@@ -784,10 +784,7 @@ impl Manager {
         let Ok(tasks) = project_tasks(&self.dir.project_id) else {
             return;
         };
-        let open_roles: Vec<String> = roles::open_roles(&self.dir.project_id)
-            .iter()
-            .map(|dir| dir.name().to_string())
-            .collect();
+        let open_roles = self.open_role_names();
         // ^ A child's land waits for its parent at rest: the parent's event names them.
         // ref: docs/tasks.md "Parent tasks"
         let ready_children: Vec<(u32, u32)> = tasks
@@ -877,6 +874,13 @@ impl Manager {
         }
     }
 
+    fn open_role_names(&self) -> Vec<String> {
+        roles::open_roles(&self.dir.project_id)
+            .iter()
+            .map(|dir| dir.name().to_string())
+            .collect()
+    }
+
     /// Queue a task's event line. Only a task's creator hears of it: an open role, else the
     /// manager. ref: docs/tasks.md "Roles"
     fn task_event(&mut self, record: &TaskRecord, open_roles: &[String], line: String) {
@@ -908,10 +912,7 @@ impl Manager {
         let Ok(tasks) = project_tasks(&self.dir.project_id) else {
             return;
         };
-        let open_roles: Vec<String> = roles::open_roles(&self.dir.project_id)
-            .iter()
-            .map(|dir| dir.name().to_string())
-            .collect();
+        let open_roles = self.open_role_names();
         let now = now_unix_ms();
         let mut open = Vec::new();
         let mut suspects = BTreeMap::new();
@@ -946,11 +947,8 @@ impl Manager {
             self.task_event(&record, &open_roles, line);
         }
         self.stall_suspects = suspects;
-        let before = self.observed_stalls.len();
+        // ^ Saved with the next event's `seen`.
         self.observed_stalls.retain(|id, _| open.contains(id));
-        if self.observed_stalls.len() != before && self.pending_events.is_empty() {
-            self.save_seen();
-        }
     }
 
     /// Close the roles with no turn for `tasks.roles.closeDays`, and tell the manager.
@@ -1125,7 +1123,7 @@ impl Manager {
                 line.starts_with("approval ")
                     || matches!(
                         line.split(' ').nth(1),
-                        Some("landed" | "closed" | "waiting")
+                        Some("landed" | "closed" | "waiting" | "stalled")
                     )
             }),
             _ => false,

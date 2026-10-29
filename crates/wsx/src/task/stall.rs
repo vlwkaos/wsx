@@ -158,7 +158,10 @@ fn holder_record(own_project_id: &str, project: &str, id: u32) -> Option<(TaskDi
 /// ref: crates/wsx/src/task/slot.rs `try_take`
 fn queued_behind(reason: &str) -> Option<(&str, u32)> {
     let (_, holder) = reason.split_once(" behind ")?;
-    let holder = holder.split(" and ").next()?;
+    let holder = match holder.rsplit_once(" and ") {
+        Some((holder, more)) if more.ends_with(" more") => holder,
+        _ => holder,
+    };
     let (project, id) = holder.rsplit_once(" t")?;
     Some((project, id.parse().ok()?))
 }
@@ -189,7 +192,7 @@ fn progress_ms(dir: &TaskDir) -> u64 {
         .unwrap_or(0)
 }
 
-/// "its last log entry, 2 h ago: agent \"cargo build\"".
+/// "its last write 2 h ago; its log ends with agent \"cargo build\"".
 fn last_entry(dir: &TaskDir, progress: u64, now_ms: u64) -> String {
     let ago = span(now_ms.saturating_sub(progress));
     let line = tail_line(&dir.file(LOG_FILE)).unwrap_or_default();
@@ -204,7 +207,7 @@ fn last_entry(dir: &TaskDir, progress: u64, now_ms: u64) -> String {
                     wsx_core::task::view::clip(&text, LAST_ENTRY_CHARS)
                 )
             });
-            format!("its last log entry, {ago} ago: {kind}{text}")
+            format!("its last write {ago} ago; its log ends with {kind}{text}")
         }
         None => format!("its last write {ago} ago"),
     }
