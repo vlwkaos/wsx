@@ -389,7 +389,6 @@ def main():
         cache_before, worktrees_before = cache_file.read_text(), worktrees()
         tests = subprocess.run([str(test_binary), 'app::tests', '-q'], cwd=work, env=env,
                                capture_output=True, text=True, timeout=300)
-        assert tests.returncode == 0, tests.stdout[-4096:] + tests.stderr[-4096:]
         leaks = {'cache': cache_file.read_text() != cache_before, 'daemon': worktrees() != worktrees_before}
         a = view()
         wait(lambda: b'provider-label' in a.output, 'session row after the tests', [a])
@@ -401,6 +400,7 @@ def main():
             leaks['viewed_session'] = True
         close(a)
         assert not any(leaks.values()), 'unit tests changed what the TUI shows: ' + repr(leaks)
+        assert tests.returncode == 0, tests.stdout[-4096:] + tests.stderr[-4096:]
         report['unit_tests_leave_cache_and_daemon_alone'] = 'passed: cache bytes, daemon worktrees and viewed session unchanged'
 
         command = [str(test_binary), 'tui::tests::terminal_owner_probe', '--ignored', '--exact', '--nocapture']
