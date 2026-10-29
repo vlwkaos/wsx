@@ -2734,6 +2734,16 @@ def run(wsx, wsxd, work, owned):
                             capture_output=True, text=True, check=True).stdout
     assert re.search(r'worker rotations: \d+ by size, 1 after idle', report), report[-400:]
     assert re.search(r'\| build +\| step +\| done', report) and re.search(r'\| build +\| rotation +\| done', report), report
+    # ^ Idle with a context under half of rotateTokens (400k of 2M): the same conversation resumes.
+    js('task', 'add', idler, 'BIG')
+    wait(lambda: len(results()) == 4, 't%s fourth result' % idler)
+    assert wait_state(idler, 'ready', 'failed')['state'] == 'ready', show(idler)['result']
+    configure(LAND_CONFIG + '  agent: { rotateTokens: 2000000, rotateIdleSeconds: 2 }\n', 'idle under half')
+    time.sleep(3)
+    js('task', 'add', idler, 'NOOP')
+    wait(lambda: len(results()) == 5, 't%s fifth result' % idler)
+    assert results()[4]['trigger'] == 'message', results()[4]
+    assert len([e for e in log(idler) if e['kind'] == 'rotated']) == 1, log(idler)
     js('task', 'close', idler, '--discard')
     configure(LAND_CONFIG, 'no idle rotation')
 
