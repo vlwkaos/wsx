@@ -1815,54 +1815,60 @@ def run(wsx, wsxd, work, owned):
     assert resumed == [first, second], resumed
     for n in (first, second):
         js('task', 'close', n, '--discard')
-    # 27b. A limit wait ends with the resume whatever comes meanwhile: here a background
+    # 27b. A limit wait ends with the resume whatever comes meanwhile, also for the task the
     mark('27b')
-    # check-run ends during the wait and wsx is replaced, so the reset's turn goes to the new
-    # binary. Nothing calls the host after the reset (`show` would wake it): only files are read.
+    # limit slot passes to: a background check-run ends during the wait and wsx is replaced
+    # under both hosts. Nothing calls a host after the reset (`show` would wake it): only files
+    # are read.
     limit_gate = base / 'limit-gate'
     configure(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n' % limit_gate,
               'a slow scenario')
     swapped = work / 'swapped'
     swapped.mkdir(mode=0o700)
     shutil.copy2(wsx, swapped / 'wsx')
-    started = subprocess.run([str(swapped / 'wsx'), 'task', 'new', 'LIMIT 10 CHECKRUN_LATE slow WORK le.txt', '--json'],
-                             cwd=project, env=env, capture_output=True, text=True, timeout=60)
-    first = json.loads(started.stdout)['id']
-    waiting = wait(lambda: limited(first), 'the limit wait during a check-run')['record']
-    record_path, session = Path(show(first)['log']).parent / 'task.json', waiting['agent_session']
-    first_log = Path(show(first)['log'])
-    limit_gate.touch()
-    on_file = lambda: [json.loads(line) for line in first_log.read_text().splitlines()]
-    wait(lambda: any(e['kind'] == 'check_run' for e in on_file()), 'the check-run ends during the wait', 30)
-    assert json.loads(record_path.read_text())['waiting']['on'] == 'limit', record_path.read_text()
-    shutil.copy2(wsx, swapped / 'wsx.new')
-    os.replace(swapped / 'wsx.new', swapped / 'wsx')
-    second = js('task', 'new', 'LIMIT 1 WORK lf.txt')['id']
+
+    def swapped_new(prompt):
+        started = subprocess.run([str(swapped / 'wsx'), 'task', 'new', prompt, '--json'],
+                                 cwd=project, env=env, capture_output=True, text=True, timeout=60)
+        return json.loads(started.stdout)['id']
+    first = swapped_new('LIMIT 10 CHECKRUN_LATE slow WORK le.txt')
+    session = wait(lambda: limited(first), 'the limit wait during a check-run')['record']['agent_session']
+    second = swapped_new('LIMIT 1 WORK lf.txt')
     wait(lambda: (w := limited(second)) and 'queued for limit behind' in w['record']['waiting']['reason'],
          'the second limit wait queued behind the first', 30)
-    assert json.loads(record_path.read_text())['waiting']['on'] == 'limit', 'a limit wait that ended before its reset'
+    first_log = Path(show(first)['log'])
+    on_file = lambda: [json.loads(line) for line in first_log.read_text().splitlines()]
+    record = lambda: json.loads((first_log.parent / 'task.json').read_text())
+    limit_gate.touch()
+    wait(lambda: any(e['kind'] == 'check_run' for e in on_file()), 'the check-run ends during the wait', 30)
+    assert record()['waiting']['on'] == 'limit', record()
+    shutil.copy2(wsx, swapped / 'wsx.new')
+    os.replace(swapped / 'wsx.new', swapped / 'wsx')
+    assert record()['waiting']['on'] == 'limit', 'a limit wait that ended before its reset'
     resumes = lambda: [t['session'] for t in traces()
                        if not t.get('manager') and str(t.get('message', '')).startswith('The session limit has reset')]
     seen = len(resumes())
-    wait(lambda: session in resumes()[seen:], 'the resume after the reset with a replaced wsx', 40)
+    wait(lambda: len(resumes()[seen:]) == 2, 'both resumes after the reset with a replaced wsx', 60)
+    assert resumes()[seen:][0] == session, resumes()[seen:]
     for n in (first, second):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
-    later = resumes()[seen:]
-    assert later.index(session) == 0 and len(later) == 2, later
-    # ^ Two actions while the host restarts with a replaced wsx: the one it had not answered
-    # is sent again to the new host, not lost as an empty answer.
+    # ^ A stop, then two adds while the host restarts with a replaced wsx: the add it had not
+    # answered is sent again to the new host, not lost behind an empty answer.
     shutil.copy2(wsx, swapped / 'wsx.new')
     os.replace(swapped / 'wsx.new', swapped / 'wsx')
+    assert js('task', 'stop', first)['ok']
     adds = [subprocess.Popen([str(wsx), 'task', 'add', str(first), 'WORK lg%d.txt' % i, '--json'], cwd=project, env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for i in range(2)]
     answers = [add.communicate(timeout=60) for add in adds]
     assert all(add.returncode == 0 and json.loads(out)['ok'] for add, (out, _) in zip(adds, answers)), answers
     wait(lambda: all(any('WORK lg%d.txt' % i in str(t.get('message', '')) for t in traces()) for i in range(2)),
          'both adds reach the agent', 30)
+    logged = [e['text'] for e in log(first) if e['kind'] == 'message']
+    assert all(any('WORK lg%d.txt' % i in text for text in logged) for i in range(2)), logged
     for n in (first, second):
         js('task', 'close', n, '--discard')
 
-    # 28.A land deploys by itself with tasks.deploy.auto; deploys run one at a time and a
+    # 28. A land deploys by itself with tasks.deploy.auto; deploys run one at a time and a
     mark('28')
     # deploy that waited runs for the newest commit, so quick lands skip the ones between.
     configure(LAND_CONFIG + """  deploy:
