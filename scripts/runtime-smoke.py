@@ -1750,9 +1750,9 @@ def cursor_terminal():
     return match and int(match.group(1))
 
 
-def cursor_session(label):
+def cursor_session(label, command=("/bin/sh",)):
     created = call("session_create", {"worktree_id": call("snapshot")["data"]["worktrees"][0]["id"],
-                                      "label": label, "command": ["/bin/sh"], "rows": 24, "cols": 80})
+                                      "label": label, "command": list(command), "rows": 24, "cols": 80})
     assert created["type"] == "created", created
     return next(pane["terminal_id"] for pane in call("snapshot")["data"]["panes"]
                 if pane["session_id"] == created["data"]["id"]), created["data"]["id"]
@@ -1800,6 +1800,28 @@ try:
     wait_for(lambda: cursor_terminal() == cursor_sessions["keep-c"][0],
              "the cursor did not reach keep-c")
     viewed = cursor_sessions["keep-c"][0]
+
+    # docs/ui-state-ownership.md "Runtime refresh": a new connection is accepted at once,
+    # and a pane that prints without pause does not make the TUI fetch a snapshot and draw
+    # for each read. Each draw opens synchronized output (`CSI ? 2026 h`).
+    connect_ms = []
+    for _ in range(21):
+        started = time.monotonic()
+        wsxd_client.connect(SOCKET).close()
+        connect_ms.append((time.monotonic() - started) * 1000)
+    connect_ms = sorted(connect_ms)[10]
+    printer = cursor_session("printer", ("/bin/sh", "-c", "while :; do date; sleep 0.02; done"))
+    time.sleep(2)
+    drawn_from = len(tui_screen)
+    time.sleep(5)
+    draws = tui_screen[drawn_from:].count(b"\x1b[?2026h")
+    print(f"tui refresh: connect median {connect_ms:.1f} ms, {draws} draws in 5 s of output")
+    assert connect_ms < 5, f"a new connection waited {connect_ms:.1f} ms for its hello"
+    assert draws <= 5, f"the TUI drew {draws} times in 5 s while only a pane printed"
+    printer_session = next(item for item in call("snapshot")["data"]["sessions"]
+                           if item["id"] == printer[1])
+    assert call("session_close", {"session_id": printer_session["id"],
+                                  "expected_revision": printer_session["revision"]})["type"] == "ack"
 
     def viewed_shell_answers(marker, value):
         # ^ The shell's answer, not the typed line, on the TUI's screen: the screen is still

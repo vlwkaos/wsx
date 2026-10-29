@@ -251,6 +251,9 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
                     }
                 });
             }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                wait_for_connection(active_listener, ACCEPT_WAIT)
+            }
             Err(error) if accept_error_is_transient(&error) => {
                 thread::sleep(Duration::from_millis(20))
             }
@@ -329,6 +332,26 @@ pub(crate) fn raise_descriptor_limit() {
 
 // ^ An accept error that belongs to one connection or to a short resource shortage ends
 // that connection only. Before 0.40.0 it stopped wsxd and ended every PTY at once.
+// ^ A sleep after an empty accept made every new connection wait up to 20 ms before its
+// hello. poll(2) accepts at once; the timeout bounds how late the loop sees a handoff,
+// a stop or a due timer.
+const ACCEPT_WAIT: Duration = Duration::from_millis(100);
+
+fn wait_for_connection(listener: &UnixListener, timeout: Duration) {
+    use std::os::fd::AsRawFd;
+    let mut fd = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout_ms = timeout.as_millis() as libc::c_int;
+    if unsafe { libc::poll(&mut fd, 1, timeout_ms) } < 0
+        && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
+    {
+        thread::sleep(timeout);
+    }
+}
+
 pub(crate) fn accept_error_is_transient(error: &io::Error) -> bool {
     matches!(
         error.kind(),

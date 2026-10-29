@@ -2471,7 +2471,10 @@ impl EventMonitor {
                                     .send(EventSignal::Connected(recovery_availability.take()));
                             }
                             revision = next;
-                            if !events.is_empty() {
+                            // ^ A PTY read publishes `terminal.changed`, yet no snapshot field
+                            // derives from output (docs/ui-state-ownership.md "Runtime refresh").
+                            // Refreshing on it made every TUI fetch and apply a snapshot per read.
+                            if events.iter().any(|event| !is_terminal_output(event)) {
                                 let _ = sender.send(EventSignal::Dirty);
                             }
                         }
@@ -2541,6 +2544,12 @@ impl EventMonitor {
         ))
     }
 }
+/// Output-only event: a PTY read in one pane. Stream and frame readers consume it; a snapshot
+/// reader has nothing to refresh for it.
+fn is_terminal_output(event: &super::protocol::Event) -> bool {
+    matches!(event, super::protocol::Event::Changed { entity, .. } if entity == "terminal.changed")
+}
+
 impl Drop for EventMonitor {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::Release);
