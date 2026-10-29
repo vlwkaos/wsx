@@ -1,6 +1,7 @@
 //! `wsx task`: start a headless worker and steer, read and close it.
 //! ref: docs/tasks.md
 
+mod batch;
 mod boundary;
 pub mod broker;
 mod claude;
@@ -156,9 +157,10 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Bring a ready task onto the default branch
+    /// Bring a ready task onto the default branch; several land as one batch, checked once
     Land {
-        task: String,
+        #[arg(required = true, num_args = 1..)]
+        task: Vec<String>,
         /// The owner passed its trial: its Human Verify items are not added to To check
         #[arg(long)]
         tried: bool,
@@ -367,6 +369,12 @@ pub enum TaskCmd {
     #[command(hide = true)]
     PreviewHost { project_id: String, task: String },
     #[command(hide = true)]
+    LandBatch {
+        tasks: Vec<String>,
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+    #[command(hide = true)]
     Host { project_id: String, task: String },
     #[command(hide = true)]
     ManagerHost {
@@ -443,7 +451,8 @@ impl TaskCmd {
             Self::CheckRun { .. }
             | Self::Host { .. }
             | Self::ManagerHost { .. }
-            | Self::PreviewHost { .. } => false,
+            | Self::PreviewHost { .. }
+            | Self::LandBatch { .. } => false,
         }
     }
 
@@ -566,8 +575,21 @@ pub fn run(command: TaskCmd) -> Result<()> {
             said,
             project,
             json,
+        } if task.len() > 1 => land_batch(project.as_deref(), &task, tried, json),
+        TaskCmd::LandBatch { tasks, project } => batch::run(
+            tasks
+                .iter()
+                .map(|task| open(project.as_deref(), task))
+                .collect::<Result<_>>()?,
+        ),
+        TaskCmd::Land {
+            task,
+            tried,
+            said,
+            project,
+            json,
         } => {
-            let dir = open_owned(project.as_deref(), &task)?;
+            let dir = open_owned(project.as_deref(), &task[0])?;
             // ^ Only the owner tries a trial, so only the owner passes one.
             if tried && acting_as_manager() {
                 bail!("only the owner passes a trial; ask the owner to try it");
@@ -597,7 +619,14 @@ pub fn run(command: TaskCmd) -> Result<()> {
             {
                 return Ok(());
             }
-            send(&dir, HostRequest::Land { tried }, json)
+            send(
+                &dir,
+                HostRequest::Land {
+                    tried,
+                    batch_tree: None,
+                },
+                json,
+            )
         }
         TaskCmd::Hold {
             task,
@@ -856,6 +885,42 @@ fn project_by_id(project_id: &str) -> Result<(String, PathBuf)> {
         .find(|project| store::project_id(&project.name, &project.path) == project_id)
         .map(|project| (project.name, project.path))
         .with_context(|| format!("no registered project has the task ID {project_id}"))
+}
+
+/// `land <a> <b>...`: refuse what one land would refuse, then ask the first task's host to
+/// start the batch land. ref: docs/tasks.md "Batch land"
+fn land_batch(project: Option<&str>, tasks: &[String], tried: bool, json: bool) -> Result<()> {
+    if tried {
+        bail!("--tried passes one trial: land that task alone");
+    }
+    if actor().role().is_some() {
+        bail!("a role lands only a child into its parent task, one at a time");
+    }
+    let mut ids = Vec::new();
+    let mut first = None;
+    for task in tasks {
+        let record = open_owned(project, task)?.read_record()?;
+        if ids.contains(&record.id) {
+            bail!("#{} is named twice; nothing was landed", record.id);
+        }
+        if record.state != TaskState::Ready || record.parent.is_some() || record.hold.is_some() {
+            bail!(
+                "#{} is {}: a batch lands only ready tasks with no parent and no hold; nothing was landed",
+                record.id,
+                record.state.as_str()
+            );
+        }
+        ids.push(record.id);
+        first.get_or_insert(record);
+    }
+    let first = first.context("no task to land")?;
+    let settings = load_task_config(&first.project_path)
+        .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
+    if acting_as_manager() && settings.land_approve {
+        bail!("each land needs the owner's approval: land the tasks one at a time");
+    }
+    let dir = open_owned(project, &tasks[0])?;
+    send(&dir, HostRequest::LandBatch { tasks: ids }, json)
 }
 
 fn open(project: Option<&str>, task: &str) -> Result<TaskDir> {

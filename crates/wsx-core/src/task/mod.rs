@@ -243,6 +243,15 @@ pub struct CheckResult {
     pub timed_out: bool,
     /// The start of stdout, then of stderr, bounded.
     pub output: String,
+    /// How long the check ran, in ms (docs/tasks.md "Checks, revisions and report").
+    #[serde(default)]
+    pub ms: u64,
+    /// How long its run waited for the check slot before it, in ms.
+    #[serde(default)]
+    pub queued_ms: u64,
+    /// The result came from an earlier run on the same tree; `ms` is that run's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stored: bool,
 }
 
 /// One line of `log.jsonl`.
@@ -538,6 +547,10 @@ pub enum HostRequest {
     Land {
         #[serde(default)]
         tried: bool,
+        /// A batch land checked a tree with this task on top of the ones before it: when
+        /// the rebase gives this tree, it lands without its own checks. ref: docs/tasks.md "Batch land"
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        batch_tree: Option<String>,
     },
     /// Hold the task for the owner to try (`reason`), or release it (`None`).
     Hold {
@@ -559,6 +572,16 @@ pub enum HostRequest {
     ChildLanded {
         child: u32,
         commits: u32,
+    },
+    /// Another task landed files this one shares: the text joins the worker's next turn,
+    /// and no turn starts for it. ref: docs/tasks.md "Landing"
+    Notice {
+        text: String,
+    },
+    /// Start the batch land of `tasks`, this one first, outside the caller's boundary.
+    /// ref: docs/tasks.md "Batch land"
+    LandBatch {
+        tasks: Vec<u32>,
     },
 }
 

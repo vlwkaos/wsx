@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Tasks: batch land. `wsx task land <a> <b>...` lands several ready tasks with one run of the checks. A detached copy stacks their revisions on the default branch tip and runs the checks once on the combined tree. Each task then lands without checks of its own when its rebase gives the tree that was checked. A failed batch splits in halves until the failing task lands alone through its own checks ([docs/tasks.md](docs/tasks.md) "Batch land").
+- Tasks: each check result has `ms`, how long the check ran, and `queued_ms`, how long its run waited for the machine's check slot, in the task log, `result.json`, `show --json` and the ledger's `checks` rows ([docs/tasks.md](docs/tasks.md) "Checks, revisions and report").
+- Tasks: land notice. After a land, each open task that shares files with it gets a message at its next step boundary: the landed commit, the shared files, and to rebase without a `check-run`. A task with no turn to come gets nothing, as its own land rebases it ([docs/tasks.md](docs/tasks.md) "Landing").
+- CI: the task scenario (`scripts/test-task.py`) runs on GitHub Actions (macOS) for a push or pull request that changes the task code, and on every release tag ([docs/tasks.md](docs/tasks.md) "Checks, revisions and report").
+
+### Changed
+
+- Tasks: the checks after a result no longer run a check again when a `check-run` already ran it on the same clean tree; the result is reused and marked `stored`. Before, a worker's `check-run` of the checks was followed by the same checks once more (11 min on wsx). After a rebase or a conflict fix the worker is told to run no `check-run`, and wsx's worker words no longer ask for the `task` scenario on this machine ([docs/tasks.md](docs/tasks.md) "Checks, revisions and report").
+- Build: the dev profile's debug level is `line-tables-only` in `Cargo.toml`, for the main checkout as for task copies, and no longer `CARGO_PROFILE_DEV_DEBUG` in `tasks.env`. The debug level is part of cargo's artifact hash, so each task copy compiled every dependency again; now it reuses the build cloned from main. A debugger that needs local variables builds with `CARGO_PROFILE_DEV_DEBUG=full` ([docs/tasks.md](docs/tasks.md) "Build output").
+
 ## [0.41.0] - 2026-10-29
 
 ### Added

@@ -8,12 +8,11 @@ git:
     - vendor/asched
 # Manager mode: workers and the manager run inside wsx's boundary (docs/tasks.md "Permissions").
 tasks:
-  # ^ Incremental builds leave every rebuild's object files behind; line tables keep panics'
-  # and backtraces' file:line in a smaller build. A task copy stays about 1.8 GB, so 3 GB free
+  # ^ Incremental builds leave every rebuild's object files behind; the debug level is
+  # Cargo.toml's [profile.dev], the same as main's. A task copy stays about 1.8 GB, so 3 GB free
   # is one task's build (docs/tasks.md "Config", "Build output").
   env:
     CARGO_INCREMENTAL: "0"
-    CARGO_PROFILE_DEV_DEBUG: line-tables-only
   minFreeGb: 3
   # ^ Fast checks after each result and each land. The slow end-to-end scripts are the
   # scenarios below, run by the worker whose change touches their area.
@@ -39,9 +38,10 @@ tasks:
     build: >-
       Follow CLAUDE.md and AGENTS.md. Keep the change lean: reuse what exists, remove what your
       change makes dead; prefer removing code to adding it. Before your result, run the
-      scenario of each area you changed: `wsx task check-run task` for crates/wsx/src/task or
-      scripts/test-task.py, `web` for crates/wsx-web, `smoke` for the daemon or terminal; fix
-      what fails, also an assert your change made stale. The memo step saves durable
+      scenario of each area you changed: `wsx task check-run web` for crates/wsx-web, `smoke`
+      for the daemon or terminal; fix what fails, also an assert your change made stale. The
+      `task` scenario (task code, scripts/test-task.py) runs on GitHub Actions, not here. After
+      a rebase or a conflict fix run no check-run: the host's checks follow. The memo step saves durable
       lessons into knowledge/sessions/; never commit knowledge/: it is git-ignored.
     # ^ When session notes are newer than the last idle task, the manager host starts one task
     # with this prompt.
