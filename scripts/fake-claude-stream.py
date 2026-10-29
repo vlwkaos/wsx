@@ -23,8 +23,8 @@ Each user message is a small script of words:
   CHECKRUN_LATE <a>  start `wsx task check-run a` in the background and finish before its answer
   REPEAT       return the result again 1 s later, as Claude's own turn for a background notice
   LIMIT <s>    (once per process) end the turn as Claude's usage limit does, resetting in <s> s;
-               the next message, also to a resumed process, continues this one (also for the
-               manager); with CHECKRUN_LATE its check-run starts before the limit
+               the next message continues this one (also for the manager); with
+               CHECKRUN_LATE its check-run starts before the limit
   PROBE <script> <spec> <out>  run the test's boundary probe script (python3 <script> <spec> <out>)
                and trace what it wrote to <out>
   BIG          a last model call of 400k tokens, past the worker's rotateTokens
@@ -265,19 +265,7 @@ def main():
     spending = lambda: json.load(open(spent_file)) if os.path.exists(spent_file) else {}
     model, spent = options.get('--model'), spending().get(session, 0.0) if '--resume' in options else 0.0
     no_result = 0
-    # ^ The turn a limit ended outlives the process, as Claude's session does: a host that
-    # restarts after the reset resumes it.
-    limited_file = TRACE + '.limited'
-    held = lambda: json.load(open(limited_file)) if os.path.exists(limited_file) else {}
-
-    def hold(text):
-        turns = held()
-        if text is None:
-            turns.pop(session, None)
-        else:
-            turns[session] = text
-        json.dump(turns, open(limited_file, 'w'))
-    limited, limit_hit = held().get(session), False
+    limited, limit_hit = None, False
     while True:
         line = stdin.readline()
         if not line:
@@ -293,17 +281,15 @@ def main():
         transcript(session, text)
         if limited is not None:
             text, limited = limited + '\n\n' + text, None
-            hold(None)
         elif 'LIMIT' in text.split() and not limit_hit:
             limit_hit, limited = True, text
-            hold(text)
             words = text.split()
             if 'CHECKRUN_LATE' in words:
                 # ^ A background check-run that ends during the limit wait.
                 subprocess.Popen(['wsx', 'task', 'check-run', words[words.index('CHECKRUN_LATE') + 1]],
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 time.sleep(1)
-            usage_limit(session, int(text.split()[text.split().index('LIMIT') + 1]))
+            usage_limit(session, int(words[words.index('LIMIT') + 1]))
             continue
         if project is not None:
             # ^ The host's ledger summary ends the message; its titles are not this turn's words.
