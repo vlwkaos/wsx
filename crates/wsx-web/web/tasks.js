@@ -102,9 +102,12 @@ export function TaskChip({ project, id }) {
     </a>`;
 }
 
+// A ready task or a plan waits for the manager's review: it is under Running, but nothing runs.
+const awaitsManager = (task) => task.state === "ready" || task.waiting?.on === "plan";
+
 // A task's state dot. A task that stops running settles its dot once instead of snapping from the pulse.
 function StateMark({ task }) {
-  const live = running(task);
+  const live = running(task) && !awaitsManager(task);
   const settle = useAfter(live, LEAVE_MS * 3);
   return html`<span class="mark" data-tone=${taskStage(task)[1]} data-running=${live ? "" : null} data-settle=${settle ? "" : null} aria-hidden="true"></span>`;
 }
@@ -303,7 +306,8 @@ function NeedRow({ project, item, index, onActing, onFailed, leaving }) {
 
 // What a working task does, in one line: a conflict, the owner's hands, the checks, or the
 // workflow step it is on (docs/tasks.md "Workflow").
-const workingWords = (task) => task.conflict ? "resolving a conflict" : task.waiting?.on === "hand" ? "by hand"
+const workingWords = (task) => task.state === "ready" ? "waiting for the manager's review" : task.waiting?.on === "plan" ? "plan waiting for the manager"
+  : task.conflict ? "resolving a conflict" : task.waiting?.on === "hand" ? "by hand"
   : task.waiting?.on === "check_slot" ? "waiting to run checks" : task.state === "checking" ? "running checks" : task.step ?? "";
 
 // A working task in the reservoir: its pulsing dot, title and number.
