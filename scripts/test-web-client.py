@@ -1016,6 +1016,9 @@ def web_journey(args):
                     'pane_id': pane, 'client_id': 77, 'takeover': False, 'rows': 12, 'cols': 100}}).encode() + b'\n')
                 assert json.loads(lines.readline())['type'] == 'ack'
                 seen = []
+                # ^ A pane lease ends 3 s after the last input or heartbeat; reading does not renew it.
+                done = threading.Event()
+                threading.Thread(target=wsxd_client.heartbeat_streams, args=([link], done), daemon=True).start()
 
                 def read():
                     try:
@@ -1024,7 +1027,10 @@ def web_journey(args):
                     except (OSError, ValueError):
                         pass
                 threading.Thread(target=read, daemon=True).start()
-                yield seen
+                try:
+                    yield seen
+                finally:
+                    done.set()
 
         def told_control_moved(seen):
             moved = wait(lambda: [m for m in seen if m['type'] == 'error'], 'the wsx window is displaced')

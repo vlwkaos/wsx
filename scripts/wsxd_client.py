@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import socket
+import threading
 import weakref
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,3 +61,23 @@ def call(path, method, params=None, timeout=5):
     with connect(path, timeout) as client:
         send(client, method, params)
         return recv_line(client)
+
+
+stream_send_lock = threading.Lock()
+
+
+def send_stream(stream, message):
+    with stream_send_lock:
+        stream.sendall(json.dumps(message).encode() + b"\n")
+
+
+def heartbeat_streams(streams, done):
+    """Renew each stream's lease every second until `done`; a stream wsxd ended is skipped.
+
+    Close a stream under `stream_send_lock`, so a heartbeat never reaches a reused descriptor."""
+    while not done.wait(1):
+        for stream in list(streams):
+            try:
+                send_stream(stream, {"type": "heartbeat"})
+            except OSError:
+                pass
