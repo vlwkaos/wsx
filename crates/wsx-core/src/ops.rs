@@ -497,6 +497,7 @@ pub struct CreatedWorktree {
     pub session_error: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create_configured_worktree(
     client: &Client,
     config: &GlobalConfig,
