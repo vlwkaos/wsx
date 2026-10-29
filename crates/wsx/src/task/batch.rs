@@ -130,7 +130,8 @@ fn stack(scratch: &Path, tip: &str, group: &[TaskDir]) -> Result<Stacked> {
 fn checks_pass(scratch: &Path, first: &TaskRecord, stacked: &[(TaskDir, String)]) -> Result<bool> {
     let settings = load_task_config(&first.project_path).map_err(|error| anyhow::anyhow!(error))?;
     let dirs: Vec<TaskDir> = stacked.iter().map(|(dir, _)| dir.clone()).collect();
-    let label = format!("{} batch {}", first.project, ids(&dirs));
+    let batch = ids(&dirs);
+    let label = format!("{} batch {batch}", first.project);
     let queued = Instant::now();
     let _slot = slot::take(Priority::Land, &label, |reason| println!("{reason}"));
     let queued_ms = queued.elapsed().as_millis() as u64;
@@ -141,8 +142,7 @@ fn checks_pass(scratch: &Path, first: &TaskRecord, stacked: &[(TaskDir, String)]
         let log = beside.with_file_name(format!("batch-check-{}.log", index + 1));
         let check = run_check(scratch, command, &settings.env, timeout, &log);
         println!(
-            "batch {}: check `{command}`: {} in {} ms, queued {queued_ms} ms",
-            ids(&dirs),
+            "batch {batch}: check `{command}`: {} in {} ms, queued {queued_ms} ms",
             check
                 .exit
                 .map_or("no exit code".into(), |code| format!("exit {code}")),
