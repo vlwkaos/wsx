@@ -14,6 +14,19 @@ pub fn run_routine_daemon(mut arguments: impl Iterator<Item = OsString>) -> io::
         ));
     }
     let root = asched_core::RegistryStore::default_root().map_err(io::Error::other)?;
+    fs::create_dir_all(&root)?;
+    let socket = asched_core::routine::RoutineClient::new(root.clone()).socket_path();
+    Lifetime::new(&root)?.watch(move || {
+        // ^ Shutdown lets asched settle running routines; a deleted root has no socket left.
+        let shutdown = asched_core::routine::ipc::Request::new(
+            PathBuf::new(),
+            asched_core::routine::ipc::Action::Shutdown,
+        );
+        if asched_core::routine::ipc::send(&socket, &shutdown).is_ok() {
+            thread::sleep(Duration::from_secs(5));
+        }
+        std::process::exit(0);
+    })?;
     asched_core::routine::daemon::serve_from_startup_env(root).map_err(io::Error::other)
 }
 
@@ -78,6 +91,7 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     let socket = default_socket_path();
     let state_path = state_path(&socket);
     secure_parent(&socket)?;
+    let lifetime = socket.parent().map(Lifetime::new).transpose()?;
 
     let (singleton_lock, persisted, recovered_from_backup, import) = match import {
         Some(handoff::Received {
@@ -189,6 +203,10 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     let foreground_scanner = spawn_foreground_scanner(&daemon);
     let claude_reconciler = spawn_claude_reconciler(&daemon);
     let wake_controller = spawn_wake_controller(&daemon);
+    // ^ Same stop as SIGTERM, when the socket's directory or the WSX_EXIT_WITH_PID process goes.
+    if let Some(lifetime) = lifetime {
+        lifetime.watch(|| STOP_REQUESTED.store(true, Ordering::Release))?;
+    }
 
     while !advance_replacement(&daemon) {
         retry_dirty_persistence(&daemon);

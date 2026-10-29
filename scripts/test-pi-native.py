@@ -37,7 +37,7 @@ def main():
         (config / 'config-v2.toml').write_text('resume_agents_on_restore = false\n')
         address = work / 's/wsx/wsx.sock'
         env = {'HOME': str(work / 'h'), 'XDG_CONFIG_HOME': str(work / 'c'), 'XDG_STATE_HOME': str(work / 's'),
-            'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(address), 'WSX_DAEMON_BIN': str(wsxd),
+            'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(address), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()),
             'WSX_REPORT_BIN': str(wsx), 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
             'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'GIT_CEILING_DIRECTORIES': str(work)}
         subprocess.run(['git', 'init', '-q', '-b', 'main', str(work / 'p')], env=env, check=True, timeout=5)

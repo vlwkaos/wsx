@@ -91,6 +91,7 @@ impl Fixture {
         command
             .current_dir(self.root.join("project"))
             .env("HOME", self.root.join("home"))
+            .env("WSX_EXIT_WITH_PID", std::process::id().to_string())
             .env("XDG_STATE_HOME", self.root.join("state"))
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_CACHE_HOME", self.root.join("cache"))

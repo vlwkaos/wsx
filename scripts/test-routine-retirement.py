@@ -144,7 +144,7 @@ def run_case(wsx, wsxd, scratch, mode):
     worker = threading.Thread(target=serve, daemon=True)
     worker.start()
     env = {'LANG': 'en_US.UTF-8', 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
-           'ASCHED_ROOT': str(scheduler), 'HOME': str(home), 'WSX_DAEMON_BIN': str(wsxd),
+           'ASCHED_ROOT': str(scheduler), 'HOME': str(home), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()),
            'XDG_CONFIG_HOME': str(home / 'c'), 'XDG_DATA_HOME': str(home / 'd'),
            'XDG_STATE_HOME': str(home / 's'), 'XDG_CACHE_HOME': str(home / 'k')}
     started = time.monotonic()

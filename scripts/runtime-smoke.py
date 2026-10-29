@@ -94,6 +94,8 @@ env.pop("CLAUDE_CODE_NO_FLICKER", None)
 env.pop("WSX_SOCKET", None)
 env.update({
     "HOME": str(HOME),
+    # ^ docs/daemon-discovery.md "Lifetime": its daemons exit with this script.
+    "WSX_EXIT_WITH_PID": str(os.getpid()),
     "XDG_STATE_HOME": str(STATE),
     "XDG_CONFIG_HOME": str(WORK / "config"),
     "XDG_CACHE_HOME": str(WORK / "cache"),
@@ -2136,4 +2138,45 @@ for attempt in range(1, 4):
         latency_failures += 1
         if latency_failures == 2:
             raise RuntimeError("terminal latency gate failed two independent attempts")
+# docs/daemon-discovery.md "Lifetime": a main and a routine wsxd exit when the
+# WSX_EXIT_WITH_PID process ends or the directory they serve is deleted, so a killed or
+# finished test leaves none behind.
+LIFETIME = WORK / "lifetime"
+shutil.rmtree(LIFETIME, ignore_errors=True)
+
+
+def lifetime_daemons(root, owner=None):
+    root.mkdir(mode=0o700, parents=True)
+    extra = {"WSX_SOCKET": str(root / "wsx.sock"), "ASCHED_ROOT": str(root / "asched")}
+    extra |= {"WSX_EXIT_WITH_PID": str(owner)} if owner else {}
+    base = {key: value for key, value in env.items() if key != "WSX_EXIT_WITH_PID"}
+    daemons = [subprocess.Popen([str(DAEMON), *args], env=base | extra, stdin=subprocess.DEVNULL)
+               for args in ([], ["__wsx_routine_daemon"])]
+    wait_for(lambda: (root / "wsx.sock").exists() and (root / "asched" / "daemon-v1.sock").exists(),
+             "lifetime daemons did not start")
+    return daemons
+
+
+def assert_lifetime_ended(daemons, label):
+    wait_for(lambda: all(daemon.poll() is not None for daemon in daemons), label)
+
+
+owner = subprocess.Popen(["sleep", "600"])
+with_owner = lifetime_daemons(LIFETIME / "owner", owner.pid)
+time.sleep(2)
+assert all(daemon.poll() is None for daemon in with_owner), "a lifetime daemon exited early"
+owner.kill()
+owner.wait()
+assert_lifetime_ended(with_owner, "wsxd outlived its WSX_EXIT_WITH_PID process")
+assert not (LIFETIME / "owner" / "wsx.sock").exists(), "wsxd kept its socket after its owner"
+assert not (LIFETIME / "owner" / "asched" / "daemon-v1.sock").exists(), "routine socket kept"
+deleted = lifetime_daemons(LIFETIME / "deleted")
+shutil.rmtree(LIFETIME / "deleted")
+assert_lifetime_ended(deleted, "wsxd outlived its deleted directory")
+invalid = subprocess.run([str(DAEMON)], env=env | {"WSX_EXIT_WITH_PID": "1",
+                         "WSX_SOCKET": str(LIFETIME / "owner" / "invalid.sock")},
+                         capture_output=True, text=True, timeout=10)
+assert invalid.returncode != 0 and "WSX_EXIT_WITH_PID" in invalid.stderr, invalid
+shutil.rmtree(LIFETIME)
+print("daemon lifetime: PASS", flush=True)
 print("wsxd runtime smoke: PASS")

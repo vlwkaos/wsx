@@ -91,7 +91,7 @@ class Fixture:
         assert Fixture.longest_socket < SUN_LEN, ("a fixture socket path is too long", sockets)
         # ^ Use an allowlist: fixture processes must not inherit credentials or pane authority.
         self.env = {"LANG": os.environ.get("LANG", "en_US.UTF-8")}
-        self.env.update({"HOME": str(home), "XDG_STATE_HOME": str(state),
+        self.env.update({"HOME": str(home), "WSX_EXIT_WITH_PID": str(os.getpid()), "XDG_STATE_HOME": str(state),
                          "XDG_CONFIG_HOME": str(work / "config"), "XDG_CACHE_HOME": str(work / "cache"),
                          "ASCHED_ROOT": str(asched_root), "WSX_DAEMON_BIN": str(daemon_bin), "WSX_SOCKET": str(self.daemon_socket),
                          "SHELL": "/bin/sh", "TERM": "xterm-256color",

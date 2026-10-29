@@ -940,7 +940,7 @@ def web_journey(args):
                             % (json.dumps(str(profile_root)), json.dumps(str((work / 'project2').resolve()))))
         path = work / 'state/wsx/wsx.sock'
         env = {'HOME': str(work / 'home'), 'XDG_CONFIG_HOME': str(work / 'config'), 'XDG_STATE_HOME': str(work / 'state'),
-               'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(path), 'WSX_DAEMON_BIN': str(wsxd),
+               'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(path), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()),
                'PATH': str(work / 'bin') + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8',
                # ^ A fixture git command must never reach the repository this script runs in.
                'GIT_CEILING_DIRECTORIES': str(work)}
@@ -3037,7 +3037,7 @@ def task_journey(args):
         (bin_dir / 'tailscale').chmod(0o755)
         path = state / 'wsx/wsx.sock'
         env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
-               'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_SOCKET': str(path),
+               'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(path),
                'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
                'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp),
                # ^ A fixture git command must never reach the repository this script runs in.

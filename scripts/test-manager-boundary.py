@@ -71,7 +71,7 @@ def run(wsx, wsxd, claude, model, work, owned):
         % (json.dumps(str(Path.home())), json.dumps(str(claude)), json.dumps(str(stream))))
     (bin_dir / 'claude').chmod(0o755)
     env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
-           'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_SOCKET': str(work / 'd.sock'),
+           'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(work / 'd.sock'),
            'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
            'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp), 'GIT_CEILING_DIRECTORIES': str(work)}
     owned['env'] = env
