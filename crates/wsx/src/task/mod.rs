@@ -1880,6 +1880,9 @@ fn deploy(
             json!({ "kind": kind, "commit": commit, "started": true, "message": message }),
         );
     }
+    for orphan in copy::remove_orphans(&main, &["deploy", "release"]) {
+        eprintln!("removed {}: the run that made it is gone", orphan.display());
+    }
     let path = copy::working_copy_path_named(&main, &format!("{name}-{}", std::process::id()))?;
     let commit = copy::create_detached(&main, &revision, &path)
         .map_err(|error| error.context(format!("nothing was run or recorded for this {name}")))?;

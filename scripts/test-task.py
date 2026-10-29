@@ -326,6 +326,17 @@ def run(wsx, wsxd, work, owned):
     # Ignored build output is kept (warm builds); an untracked file is cleaned.
     (project / 'target').mkdir()
     (project / 'target/warm').write_text('cached')
+    # ^ docs/tasks.md "Build output": incremental/ is not cloned; stale units and objects are
+    # pruned after checks. bar is a dependency with two rustc sessions, foo a unit rebuilt below.
+    deps = project / 'target/debug/deps'
+    deps.mkdir(parents=True)
+    (project / 'target/debug/incremental/foo-1/s-1').mkdir(parents=True)
+    (project / 'target/debug/incremental/foo-1/s-1/a.o').write_text('o')
+    for name, when in [('libbar-00000000000000aa.rlib', 100), ('bar-00000000000000aa.c1.old.rcgu.o', 0),
+                       ('bar-00000000000000aa.c1.new.rcgu.o', 100), ('foo-00000000000000bb', 0),
+                       ('foo-00000000000000bb.d', 0)]:
+        (deps / name).write_text(name)
+        os.utime(deps / name, (1_600_000_000 + when,) * 2)
     (project / 'scratch.txt').write_text('untracked')
     # ^ An unchanged tracked file keeps its clone's mtime, so cargo reuses the warm build.
     os.utime(project / 'README', (1_600_000_000, 1_600_000_000))
@@ -427,6 +438,11 @@ def run(wsx, wsxd, work, owned):
     copy = Path(created['working_copy'])
     assert copy == base / 'project-t1' and created['branch'] == 'wsx/t1'
     assert (copy / 'target/warm').read_text() == 'cached'
+    assert not (copy / 'target/debug/incremental').exists() and (deps / 'foo-00000000000000bb').exists()
+    copy_deps = copy / 'target/debug/deps'
+    assert sorted(p.name for p in copy_deps.iterdir()) == sorted(p.name for p in deps.iterdir())
+    # ^ The copy's own build of foo: other settings, another hash.
+    (copy_deps / 'foo-00000000000000cc').write_text('rebuilt')
     assert not (copy / 'scratch.txt').exists()
     assert (copy / 'README').stat().st_mtime == 1_600_000_000, (copy / 'README').stat().st_mtime
     assert (copy / '.git').is_file() and git('rev-parse', '--abbrev-ref', 'HEAD', cwd=copy) == 'wsx/t1'
@@ -457,6 +473,9 @@ def run(wsx, wsxd, work, owned):
     assert any(t.get('steer_in_turn') == 'use capitals' for t in traces())
     assert [e['mode'] for e in log(1) if e['kind'] == 'message'] == ['prompt', 'steer']
     assert ready['result']['checks'] and all(c['exit'] == 0 for c in ready['result']['checks'])
+    assert sorted(p.name for p in copy_deps.iterdir()) == [
+        'bar-00000000000000aa.c1.new.rcgu.o', 'foo-00000000000000cc', 'libbar-00000000000000aa.rlib']
+    assert (deps / 'foo-00000000000000bb').exists(), 'main is never pruned'
     commit = git('rev-parse', 'refs/wsx/task/1/r1')
     assert commit == git('rev-parse', 'wsx/t1')
     report = Path(ready['report']).read_text()
@@ -1088,7 +1107,12 @@ def run(wsx, wsxd, work, owned):
     assert 'already skipped' in cli('task', 'check', 'pass', skipped_item['id'], ok=False).stderr
     assert next(i for i in show(skipped_item['task'])['to_check'] if i['id'] == skipped_item['id'])['state'] == 'skipped'
     assert len(js('task', 'list', '--all')['tasks']) == tasks_before
+    # ^ A release whose process was killed left its copy; the next deploy removes it. A pid
+    # above macOS's 99998 is never alive.
+    orphan = base / 'project-release-999999'
+    git('worktree', 'add', '-q', '--detach', str(orphan))
     deployed = ran('deploy')
+    assert not orphan.exists() and str(orphan) not in git('worktree', 'list')
     tip = git('rev-parse', 'main')
     assert deployed['commit'] == tip and deployed['exit'] == 0, deployed
     commit_line, where = (base / 'deploy.log').read_text().split()

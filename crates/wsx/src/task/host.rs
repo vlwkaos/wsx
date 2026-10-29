@@ -20,7 +20,7 @@ use wsx_core::git::{git_cmd, output_with_timeout_tail};
 use wsx_core::runtime;
 use wsx_core::task::view::checked_files;
 use wsx_core::task::{
-    call_host, checks,
+    build, call_host, checks,
     copy::{self, Rebase},
     now_unix_ms,
     owner::HOST_TIMEOUT,
@@ -1546,6 +1546,7 @@ impl Host {
         let timeout = Duration::from_secs(self.record.check_timeout_secs);
         let working_copy = self.record.working_copy.clone();
         let env = self.record.env.clone();
+        let born = std::time::UNIX_EPOCH + Duration::from_millis(self.record.created_unix_ms);
         let events = self.events.clone();
         let label = format!("{} t{}", self.record.project, self.record.id);
         let checks = checks
@@ -1562,10 +1563,12 @@ impl Host {
                     let _ = events.send(Event::CheckSlot(error));
                     taken.ok()
                 });
-                checks
+                let results = checks
                     .iter()
                     .map(|(command, log)| run_check(&working_copy, command, &env, timeout, log))
-                    .collect()
+                    .collect();
+                build::prune(&working_copy, born);
+                results
             };
             done(results);
         });

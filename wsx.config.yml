@@ -8,10 +8,12 @@ git:
     - vendor/asched
 # Manager mode: workers and the manager run inside wsx's boundary (docs/tasks.md "Permissions").
 tasks:
-  # ^ Incremental builds leave every rebuild's object files behind; without them a task copy
-  # stays about 2.5 GB, so 3 GB free is one task's build (docs/tasks.md "Config", "Build output").
+  # ^ Incremental builds leave every rebuild's object files behind; line tables keep panics'
+  # and backtraces' file:line in a smaller build. A task copy stays about 1.8 GB, so 3 GB free
+  # is one task's build (docs/tasks.md "Config", "Build output").
   env:
     CARGO_INCREMENTAL: "0"
+    CARGO_PROFILE_DEV_DEBUG: line-tables-only
   minFreeGb: 3
   # ^ Fast checks after each result and each land. The slow end-to-end scripts are the
   # scenarios below, run by the worker whose change touches their area.
