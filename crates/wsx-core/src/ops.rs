@@ -56,8 +56,8 @@ fn is_git_repo(path: &Path) -> bool {
     path.exists() && path.join(".git").exists()
 }
 
-pub fn runtime_snapshot() -> Result<Snapshot> {
-    match Client::local().call(&Request::Snapshot)? {
+pub fn runtime_snapshot(client: &Client) -> Result<Snapshot> {
+    match client.call(&Request::Snapshot)? {
         Response::Snapshot(snapshot) => Ok(snapshot),
         Response::Error(error) => bail!("{}: {}", error.code, error.message),
         _ => bail!("wsx daemon returned an unexpected snapshot response"),
@@ -128,7 +128,7 @@ where
     Ok(WorkspaceDiscovery { projects })
 }
 
-pub fn synchronize_discovery(discovery: &WorkspaceDiscovery) -> Result<Snapshot> {
+pub fn synchronize_discovery(client: &Client, discovery: &WorkspaceDiscovery) -> Result<Snapshot> {
     let projects = discovery
         .projects
         .iter()
@@ -145,7 +145,7 @@ pub fn synchronize_discovery(discovery: &WorkspaceDiscovery) -> Result<Snapshot>
                 .collect(),
         })
         .collect();
-    synchronize(&Client::local(), projects)
+    synchronize(client, projects)
 }
 
 fn apply_discovery(
@@ -162,9 +162,9 @@ fn apply_discovery(
     refresh_workspace_with_worktrees(workspace, config, snapshot, worktrees)
 }
 
-pub fn load_full_workspace(config: &GlobalConfig) -> Result<WorkspaceState> {
+pub fn load_full_workspace(client: &Client, config: &GlobalConfig) -> Result<WorkspaceState> {
     let discovery = discover_workspace(config)?;
-    let snapshot = synchronize_discovery(&discovery)?;
+    let snapshot = synchronize_discovery(client, &discovery)?;
     let mut workspace = workspace_from_config(config);
     apply_discovery(&mut workspace, config, &snapshot, discovery)?;
     Ok(workspace)
@@ -498,6 +498,7 @@ pub struct CreatedWorktree {
 }
 
 pub fn create_configured_worktree(
+    client: &Client,
     config: &GlobalConfig,
     project_name: &str,
     repo_path: &Path,
@@ -509,10 +510,17 @@ pub fn create_configured_worktree(
     let (path, warning) = create_worktree(repo_path, default_branch, project_config, branch)?;
     let session_result = match project_config.initial_session(fallback_session) {
         WorktreeInitialSession::Disabled => None,
-        WorktreeInitialSession::Shell => {
-            Some(create_session(config, project_name, "", &path, None, None))
-        }
+        WorktreeInitialSession::Shell => Some(create_session(
+            client,
+            config,
+            project_name,
+            "",
+            &path,
+            None,
+            None,
+        )),
         WorktreeInitialSession::Command(command) => Some(create_session(
+            client,
             config,
             project_name,
             "",
@@ -537,10 +545,14 @@ pub fn create_configured_worktree(
 /// Close the worktree's sessions and remove it. Uncommitted work refuses before anything
 /// closes; a Rust worktree is `cargo clean`ed first; a branch with unmerged commits stays.
 /// Returns whether the branch was deleted.
-pub fn delete_worktree(repo_path: &Path, wt_path: &Path, branch: &str) -> Result<bool> {
+pub fn delete_worktree(
+    client: &Client,
+    repo_path: &Path,
+    wt_path: &Path,
+    branch: &str,
+) -> Result<bool> {
     git_worktree::require_clean(wt_path)?;
-    let client = Client::local();
-    let snapshot = runtime_snapshot()?;
+    let snapshot = runtime_snapshot(client)?;
     if let Some(worktree) = snapshot
         .worktrees
         .iter()
@@ -605,6 +617,7 @@ where
 }
 
 pub fn create_session(
+    client: &Client,
     config: &GlobalConfig,
     project_name: &str,
     _worktree_slug: &str,
@@ -620,23 +633,23 @@ pub fn create_session(
                 .and_then(|command| command.split_whitespace().next().map(str::to_owned))
         })
         .unwrap_or_else(|| project_name.to_owned());
-    create_session_launch(config, worktree_path, base, Vec::new(), command)
+    create_session_launch(client, config, worktree_path, base, Vec::new(), command)
 }
 
 /// Create a session whose pane runs `argv` directly (empty: the login shell),
 /// optionally typing `initial_input` into it. The label gets a suffix when taken.
 pub fn create_session_launch(
+    client: &Client,
     config: &GlobalConfig,
     worktree_path: &Path,
     base: String,
     argv: Vec<String>,
     initial_input: Option<String>,
 ) -> Result<(SessionId, String)> {
-    let client = Client::local();
     let (snapshot, worktree_id) =
-        snapshot_with_worktree(runtime_snapshot()?, worktree_path, || {
+        snapshot_with_worktree(runtime_snapshot(client)?, worktree_path, || {
             let discovery = discover_workspace(config)?;
-            synchronize_discovery(&discovery)
+            synchronize_discovery(client, &discovery)
         })?;
     let used = snapshot
         .sessions
@@ -706,12 +719,13 @@ pub fn with_account(
 }
 
 pub fn reorder_session(
+    client: &Client,
     session_id: SessionId,
     target_session_id: SessionId,
     placement: SessionPlacement,
     expected_revision: u64,
 ) -> Result<u64> {
-    expect_ack_revision(Client::local().call(&Request::SessionReorder {
+    expect_ack_revision(client.call(&Request::SessionReorder {
         session_id,
         target_session_id,
         placement,
@@ -719,27 +733,27 @@ pub fn reorder_session(
     })?)
 }
 
-pub fn rename_session(session_id: SessionId, new_label: &str) -> Result<()> {
-    let snapshot = runtime_snapshot()?;
+pub fn rename_session(client: &Client, session_id: SessionId, new_label: &str) -> Result<()> {
+    let snapshot = runtime_snapshot(client)?;
     let session = snapshot
         .sessions
         .iter()
         .find(|session| session.id == session_id)
         .ok_or_else(|| anyhow!("session not found"))?;
-    expect_ack(Client::local().call(&Request::SessionRename {
+    expect_ack(client.call(&Request::SessionRename {
         session_id,
         label: new_label.into(),
         expected_revision: session.revision,
     })?)
 }
-pub fn kill_session(session_id: SessionId) -> Result<()> {
-    let snapshot = runtime_snapshot()?;
+pub fn kill_session(client: &Client, session_id: SessionId) -> Result<()> {
+    let snapshot = runtime_snapshot(client)?;
     let session = snapshot
         .sessions
         .iter()
         .find(|session| session.id == session_id)
         .ok_or_else(|| anyhow!("session not found"))?;
-    expect_ack(Client::local().call(&Request::SessionClose {
+    expect_ack(client.call(&Request::SessionClose {
         session_id,
         expected_revision: session.revision,
     })?)
@@ -747,14 +761,14 @@ pub fn kill_session(session_id: SessionId) -> Result<()> {
 
 /// Restart one exited pane with its own saved command.
 /// ^ [[Session Model]] Only an exited pane is restartable, so this never interrupts live work.
-pub fn restart_session(pane_id: PaneId) -> Result<u64> {
-    let snapshot = runtime_snapshot()?;
+pub fn restart_session(client: &Client, pane_id: PaneId) -> Result<u64> {
+    let snapshot = runtime_snapshot(client)?;
     let pane = snapshot
         .panes
         .iter()
         .find(|pane| pane.id == pane_id)
         .ok_or_else(|| anyhow!("session pane not found"))?;
-    expect_ack_revision(Client::local().call(&Request::SessionRestart {
+    expect_ack_revision(client.call(&Request::SessionRestart {
         pane_id,
         expected_revision: pane.revision,
     })?)

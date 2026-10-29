@@ -12,7 +12,7 @@ pub(crate) fn load_config() -> Result<GlobalConfig> {
 
 pub(crate) fn load_full_workspace() -> Result<(GlobalConfig, WorkspaceState)> {
     let config = load_config()?;
-    let workspace = ops::load_full_workspace(&config)?;
+    let workspace = ops::load_full_workspace(&runtime::Client::local(), &config)?;
     Ok((config, workspace))
 }
 
@@ -330,6 +330,7 @@ pub(super) fn cmd_worktree_create(
     refuse_start_point_of_existing_branch(project, branch, from)?;
     let proj_config = project.config.clone().unwrap_or_default();
     let created = ops::create_configured_worktree(
+        &runtime::Client::local(),
         &config,
         &project.name,
         &project.path,
@@ -385,7 +386,7 @@ pub(super) fn created_session_line(session_id: runtime::SessionId) -> String {
 pub(super) fn created_session_pane(
     session_id: runtime::SessionId,
 ) -> (Option<runtime::PaneId>, Option<String>) {
-    let Ok(snapshot) = ops::runtime_snapshot() else {
+    let Ok(snapshot) = ops::runtime_snapshot(&runtime::Client::local()) else {
         return (None, None);
     };
     let pane_id = snapshot
@@ -417,7 +418,12 @@ pub(super) fn cmd_worktree_delete(branch: &str, project_name: Option<&str>) -> R
                 project.name
             )
         })?;
-    let branch_deleted = ops::delete_worktree(&project.path, &wt.path, &wt.branch)?;
+    let branch_deleted = ops::delete_worktree(
+        &runtime::Client::local(),
+        &project.path,
+        &wt.path,
+        &wt.branch,
+    )?;
     println!("deleted worktree: {}", wt.path.display());
     if !branch_deleted {
         println!(

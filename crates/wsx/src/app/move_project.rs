@@ -109,6 +109,7 @@ impl App {
             runtime::SessionPlacement::After
         };
         let revision = ops::reorder_session(
+            &self.runtime_client,
             session_id,
             target_session_id,
             placement,

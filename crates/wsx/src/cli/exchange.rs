@@ -119,7 +119,7 @@ pub(super) fn exchange_result(
     ) {
         return unavailable("round_not_completed");
     }
-    let Ok(snapshot) = ops::runtime_snapshot() else {
+    let Ok(snapshot) = ops::runtime_snapshot(&runtime::Client::local()) else {
         return unavailable("daemon_unavailable");
     };
     let Some(agent) = snapshot
@@ -388,7 +388,8 @@ pub(super) fn cmd_agent_start(args: AgentStartArgs) -> Result<()> {
         runtime::AgentExchangeAccess::ReadOnly
     };
     let outcome = (|| -> std::result::Result<(), (&'static str, anyhow::Error)> {
-        let snapshot = ops::runtime_snapshot().map_err(|error| ("session", error))?;
+        let snapshot =
+            ops::runtime_snapshot(&runtime::Client::local()).map_err(|error| ("session", error))?;
         let existing = snapshot
             .worktrees
             .iter()
@@ -403,6 +404,7 @@ pub(super) fn cmd_agent_start(args: AgentStartArgs) -> Result<()> {
             None => {
                 start.session_created = true;
                 ops::create_session(
+                    &runtime::Client::local(),
                     &config,
                     &project.name,
                     "",
@@ -604,7 +606,7 @@ pub(super) fn wait_for_prompt_agent(
 ) -> Result<(runtime::PaneId, String)> {
     let mut screen_read = None::<Instant>;
     loop {
-        let snapshot = ops::runtime_snapshot()?;
+        let snapshot = ops::runtime_snapshot(&runtime::Client::local())?;
         let session = snapshot
             .sessions
             .iter()
@@ -872,7 +874,7 @@ pub(super) fn wait_any_agent_exchange(
     requested: &SessionScope,
     deadline: Instant,
 ) -> Result<WatchedExchanges> {
-    let snapshot = ops::runtime_snapshot()?;
+    let snapshot = ops::runtime_snapshot(&runtime::Client::local())?;
     let scope = requested_runtime_scope(&snapshot, requested)?;
     let mut watched = named;
     if watched.is_empty() {
@@ -1005,7 +1007,7 @@ pub(super) fn scoped_agent_exchanges(
     let mut pane_id = None;
     let mut scope = RuntimeSessionScope::default();
     if selector.is_some() || requested.project.is_some() || requested.worktree.is_some() {
-        let snapshot = ops::runtime_snapshot()?;
+        let snapshot = ops::runtime_snapshot(&runtime::Client::local())?;
         scope = requested_runtime_scope(&snapshot, requested)?;
         if let Some(selector) = selector {
             pane_id = Some(resolve_session_in_snapshot(&snapshot, selector, scope)?.pane_id);

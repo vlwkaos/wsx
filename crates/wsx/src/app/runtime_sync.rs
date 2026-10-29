@@ -19,7 +19,7 @@ impl App {
         if cursor != self.cache_cursor {
             self.cache_changes.cursor = Some(cursor.clone());
         }
-        let committed = match self.cache_changes.save(sync) {
+        let committed = match self.cache_changes.save(&self.cache_path, sync) {
             Ok(committed) => committed,
             Err(error) => {
                 self.set_error(format!("Cache save failed: {error}"));
@@ -95,7 +95,7 @@ impl App {
 
     pub(super) fn spawn_runtime_refresh_with(
         &mut self,
-        availability: fn() -> std::io::Result<runtime::Availability>,
+        availability: fn(&runtime::Client) -> std::io::Result<runtime::Availability>,
     ) {
         if self.runtime_refresh_pending {
             self.runtime_full_refresh_stale = true;
@@ -104,8 +104,10 @@ impl App {
         self.runtime_refresh_pending = true;
         let tx = self.runtime_tx.clone();
         let config = self.config.clone();
+        let client = self.runtime_client.clone();
         std::thread::spawn(move || {
             let _ = tx.send(RuntimeResult::FullRefresh(collect_runtime_refresh(
+                &client,
                 &config,
                 availability,
             )));
@@ -119,8 +121,10 @@ impl App {
         self.runtime_refresh_pending = true;
         let tx = self.runtime_tx.clone();
         let config = self.config.clone();
+        let client = self.runtime_client.clone();
         std::thread::spawn(move || {
             let _ = tx.send(RuntimeResult::FullRefresh(collect_runtime_refresh(
+                &client,
                 &config,
                 runtime::ensure_background_available,
             )));
@@ -134,8 +138,11 @@ impl App {
         }
         self.runtime_refresh_pending = true;
         let tx = self.runtime_tx.clone();
+        let client = self.runtime_client.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(RuntimeResult::SessionRefresh(ops::runtime_snapshot()));
+            let _ = tx.send(RuntimeResult::SessionRefresh(ops::runtime_snapshot(
+                &client,
+            )));
         });
     }
 

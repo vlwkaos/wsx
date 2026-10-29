@@ -160,7 +160,7 @@ pub(super) fn resolve_session_in_snapshot(
 }
 
 pub(super) fn resolve_session(selector: &str, requested: &SessionScope) -> Result<ResolvedSession> {
-    let snapshot = ops::runtime_snapshot()?;
+    let snapshot = ops::runtime_snapshot(&runtime::Client::local())?;
     let scope = requested_runtime_scope(&snapshot, requested)?;
     resolve_session_in_snapshot(&snapshot, selector, scope)
 }
@@ -203,6 +203,7 @@ pub(super) fn cmd_session_create(
     let cwd = std::env::current_dir().ok();
     let (project, worktree) = resolve_creation_worktree(&workspace, &scope, cwd.as_deref())?;
     let (session_id, label) = ops::create_session(
+        &runtime::Client::local(),
         &config,
         &project.name,
         &worktree.session_slug(&project.name),
@@ -289,7 +290,7 @@ pub(super) fn cmd_session_current(json: bool) -> Result<()> {
 
 pub(super) fn cmd_session_delete(selector: &str, scope: &SessionScope, json: bool) -> Result<()> {
     let session = resolve_session(selector, scope)?;
-    ops::kill_session(session.session_id)?;
+    ops::kill_session(&runtime::Client::local(), session.session_id)?;
     if json {
         print_json(&serde_json::json!({
             "deleted": true,
@@ -307,7 +308,7 @@ pub(super) fn cmd_session_delete(selector: &str, scope: &SessionScope, json: boo
 
 pub(super) fn cmd_session_restart(selector: &str, json: bool, scope: &SessionScope) -> Result<()> {
     let session = resolve_session(selector, scope)?;
-    let revision = ops::restart_session(session.pane_id)?;
+    let revision = ops::restart_session(&runtime::Client::local(), session.pane_id)?;
     if json {
         print_json(&serde_json::json!({
             "restarted": true,
@@ -387,7 +388,7 @@ pub(super) fn cmd_session_rename(
     scope: &SessionScope,
 ) -> Result<()> {
     let session = resolve_session(selector, scope)?;
-    ops::rename_session(session.session_id, new_label)?;
+    ops::rename_session(&runtime::Client::local(), session.session_id, new_label)?;
     println!("renamed session {} to '{}'", session.session_id, new_label);
     Ok(())
 }

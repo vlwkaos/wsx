@@ -879,25 +879,19 @@ fn process_identity(_pid: libc::pid_t) -> io::Result<(libc::uid_t, u128)> {
     ))
 }
 
-pub fn ensure_available() -> io::Result<Availability> {
-    ensure_available_with(&Client::local(), false)
+/// Confirm, start or upgrade `client`'s wsxd. Only a `Client::local` may start or replace
+/// one; a custom client, such as a test's, never does (docs/ui-state-ownership.md "Test isolation").
+pub fn ensure_available(client: &Client) -> io::Result<Availability> {
+    require_automatic_start(client)?;
+    ensure_available_with(client, false)
 }
 
 pub fn recover_daemon() -> io::Result<Availability> {
     ensure_available_with(&Client::local(), true)
 }
 
-pub fn ensure_background_available() -> io::Result<Availability> {
-    ensure_background_available_with(&Client::local())
-}
-
-fn ensure_background_available_with(client: &Client) -> io::Result<Availability> {
-    if !client.automatic_start {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "automatic recovery is disabled for a custom wsxd client",
-        ));
-    }
+pub fn ensure_background_available(client: &Client) -> io::Result<Availability> {
+    require_automatic_start(client)?;
     if !client.socket().exists() && !background_recovery_allowed(client.socket()) {
         return Err(io::Error::new(
             io::ErrorKind::ConnectionAborted,
@@ -905,6 +899,16 @@ fn ensure_background_available_with(client: &Client) -> io::Result<Availability>
         ));
     }
     ensure_available_with(client, false)
+}
+
+fn require_automatic_start(client: &Client) -> io::Result<()> {
+    if client.automatic_start {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "automatic recovery is disabled for a custom wsxd client",
+    ))
 }
 
 fn ensure_available_with(client: &Client, reset_crash_budget: bool) -> io::Result<Availability> {
@@ -2517,7 +2521,7 @@ impl EventMonitor {
                             if daemon_is_stopped_error(&error)
                                 && background_recovery_allowed(client.socket())
                             {
-                                match ensure_background_available_with(&client) {
+                                match ensure_background_available(&client) {
                                     Ok(availability) => {
                                         recovery_availability = Some(availability);
                                         continue;

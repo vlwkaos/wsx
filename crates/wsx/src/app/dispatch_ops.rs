@@ -47,6 +47,7 @@ impl App {
             Some(session_label)
         };
         let (session_id, display_name) = ops::create_session(
+            &self.runtime_client,
             &self.config,
             &proj_name,
             &wt_slug,
@@ -87,8 +88,9 @@ impl App {
         };
         let session_id = session.session_id;
         let display_name = session.display_name.clone();
+        let client = self.runtime_client.clone();
         self.spawn_bg(format!("kill {display_name}"), move || {
-            ops::kill_session(session_id)?;
+            ops::kill_session(&client, session_id)?;
             Ok(BgOutcome::SessionKilled {
                 session_id,
                 display_name,
@@ -136,7 +138,7 @@ impl App {
         let session_id = session.session_id;
         let pane_id = session.pane_id;
         self.unmute_on_interaction(pane_id);
-        ops::rename_session(session_id, &new_name)?;
+        ops::rename_session(&self.runtime_client, session_id, &new_name)?;
         if let Some(session) = self.workspace.session_mut(pi, wi, si) {
             session.display_name = new_name.clone();
         }

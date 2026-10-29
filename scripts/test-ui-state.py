@@ -369,6 +369,40 @@ def main():
         report['active_stale_exclusion_and_long_provider_identity'] = 'passed through real TUI frames with saved provenance unchanged'
         report['folded_status_and_background_execution'] = 'passed with unchanged runtime generation and advancing heartbeat'
 
+        # ^ docs/ui-state-ownership.md "Test isolation": the wsx unit tests, run in a pane that
+        # shares this HOME and WSX_SOCKET, neither write the cache nor synchronize the daemon.
+        git_identity = ['-c', 'user.name=probe', '-c', 'user.email=probe@example.invalid']
+        subprocess.run(['git', *git_identity, '-C', str(project), 'commit', '-q', '--allow-empty', '-m', 'base'],
+                       env=env, check=True)
+        subprocess.run(['git', '-C', str(project), 'worktree', 'add', '-q', '-b', 'side', str(work/'p-side')],
+                       env=env, check=True)
+        terminal_id = call('snapshot')['data']['panes'][0]['terminal_id']
+        cache_file.write_text('[project_expanded]\n'+key+' = true\n[worktree_expanded]\n'+key+' = true\n'
+                              '[cursor_identity.Session]\nworktree_path = '+key+'\nterminal_id = "'+str(terminal_id)+'"\n')
+        a = view()
+        worktrees = lambda: sorted((w['id'], w['path']) for w in call('snapshot')['data']['worktrees'])
+        wait(lambda: len(worktrees()) == 2 and b'provider-label' in a.output, 'side worktree and session row', [a])
+        a.drain(.3)
+        a.send(b'\r')
+        wait(lambda: b'SELECT_THIS_TEXT' in a.output, 'viewed session before the tests', [a])
+        close(a)
+        cache_before, worktrees_before = cache_file.read_text(), worktrees()
+        tests = subprocess.run([str(test_binary), 'app::tests', '-q'], cwd=work, env=env,
+                               capture_output=True, text=True, timeout=300)
+        assert tests.returncode == 0, tests.stdout[-4096:] + tests.stderr[-4096:]
+        leaks = {'cache': cache_file.read_text() != cache_before, 'daemon': worktrees() != worktrees_before}
+        a = view()
+        wait(lambda: b'provider-label' in a.output, 'session row after the tests', [a])
+        a.drain(.3)
+        a.send(b'\r')
+        try:
+            wait(lambda: b'SELECT_THIS_TEXT' in a.output, 'same viewed session after the tests', [a], seconds=3)
+        except RuntimeError:
+            leaks['viewed_session'] = True
+        close(a)
+        assert not any(leaks.values()), 'unit tests changed what the TUI shows: ' + repr(leaks)
+        report['unit_tests_leave_cache_and_daemon_alone'] = 'passed: cache bytes, daemon worktrees and viewed session unchanged'
+
         command = [str(test_binary), 'tui::tests::terminal_owner_probe', '--ignored', '--exact', '--nocapture']
         a = view(command, b'PROBE_READY')
         assert a.raw() and ENABLE in a.output

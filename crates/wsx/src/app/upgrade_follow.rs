@@ -105,9 +105,10 @@ impl App {
     // The handoff blocks its caller until the successor answers, so it runs off the UI thread.
     pub(super) fn spawn_upgrade_attempt(&mut self) {
         let tx = self.runtime_tx.clone();
+        let client = self.runtime_client.clone();
         std::thread::spawn(move || {
             let _ = tx.send(RuntimeResult::UpgradeAttempt(
-                runtime::ensure_available().map_err(Into::into),
+                runtime::ensure_available(&client).map_err(Into::into),
             ));
         });
     }
@@ -148,7 +149,7 @@ impl App {
                     runtime::WSX_VERSION
                 ));
                 // Do not request the handoff again on the way in: read the running daemon.
-                self.spawn_runtime_refresh_with(|| Ok(runtime::Availability::Current));
+                self.spawn_runtime_refresh_with(|_| Ok(runtime::Availability::Current));
             }
         }
     }

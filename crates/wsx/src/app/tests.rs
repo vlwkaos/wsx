@@ -229,6 +229,23 @@ fn test_runtime_client() -> runtime::Client {
     )
 }
 
+// ^ docs/ui-state-ownership.md "Test isolation": each App gets a fresh cache file named after its
+// test, so no test reads another test's intent or writes the user's cache.
+fn test_cache_path() -> PathBuf {
+    thread_local!(static NEXT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+    let index = NEXT.with(|next| next.replace(next.get() + 1));
+    let test = std::thread::current()
+        .name()
+        .unwrap_or("unnamed")
+        .replace("::", "-");
+    let path = std::env::current_dir()
+        .unwrap()
+        .join(".work/tests/workspace-cache")
+        .join(format!("{test}-{index}.toml"));
+    let _ = std::fs::remove_file(&path);
+    path
+}
+
 fn make_test_app(
     config: GlobalConfig,
     workspace: WorkspaceState,
@@ -308,6 +325,7 @@ fn make_test_app(
         fetch_rx,
         fetch_pending: HashSet::new(),
         cache_dirty: false,
+        cache_path: test_cache_path(),
         cache_changes: Default::default(),
         cache_cursor: (0, None),
         cached_worktree_expansion: HashMap::new(),

@@ -461,10 +461,11 @@ impl App {
             return;
         };
         let tx = self.runtime_tx.clone();
+        let client = self.runtime_client.clone();
         std::thread::spawn(move || {
             let result = (|| {
-                runtime::ensure_background_available()?;
-                ops::runtime_snapshot()
+                runtime::ensure_background_available(&client)?;
+                ops::runtime_snapshot(&client)
             })();
             let _ = tx.send(RuntimeResult::ResumeRefresh { generation, result });
         });

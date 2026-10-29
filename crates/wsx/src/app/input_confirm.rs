@@ -167,8 +167,9 @@ impl App {
                     self.workspace.projects[pi].worktrees.remove(wi);
                     self.rebuild_flat();
                     self.clamp_selected();
+                    let client = self.runtime_client.clone();
                     self.spawn_bg(format!("delete {}", branch), move || {
-                        ops::delete_worktree(&repo, &wt_path, &branch)?;
+                        ops::delete_worktree(&client, &repo, &wt_path, &branch)?;
                         Ok(BgOutcome::WorktreeRemoved { label })
                     });
                 }
@@ -188,8 +189,10 @@ impl App {
                         p.config.clone().unwrap_or_default(),
                     );
                     let label = format!("Created worktree: {branch}");
+                    let client = self.runtime_client.clone();
                     self.spawn_bg(format!("create {branch}"), move || {
                         let created = ops::create_configured_worktree(
+                            &client,
                             &config,
                             &project_name,
                             &repo_path,
