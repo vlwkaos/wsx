@@ -2489,18 +2489,18 @@ def run(wsx, wsxd, work, owned):
     # 32p. A turn with no result (docs/tasks.md "Claude adapter"): Claude's own 0-token turn for
     mark('32p')
     # a background-task notification is ignored; a model turn without a result is asked once.
-    def asked(n):
+    def result_retries(n):
         session = show(n)['record']['agent_session']
         return [t for t in traces() if t.get('session') == session
                 and t.get('message', '').startswith('Your turn ended without a result.')]
     once = js('task', 'new', 'NORESULT 1 WORK once.txt')['id']
     assert wait_state(once, 'ready', 'failed')['state'] == 'ready', show(once)['result']
-    assert len(asked(once)) == 1
+    assert len(result_retries(once)) == 1
     assert [(e['status'], e.get('trigger')) for e in log(once) if e['kind'] == 'result'] == [('done', 'result_retry')]
     assert any(e.get('text') == 'claude ended its own turn with no result: ignored' for e in log(once))
     twice = js('task', 'new', 'NORESULT 2 WORK twice.txt')['id']
     assert wait_state(twice, 'ready', 'failed')['state'] == 'failed'
-    assert len(asked(twice)) == 1
+    assert len(result_retries(twice)) == 1
     assert show(twice)['result']['result']['summary'] == 'the agent ended with success and no result'
     js('task', 'close', once, '--discard')
     js('task', 'close', twice, '--discard')
@@ -2702,7 +2702,7 @@ def run(wsx, wsxd, work, owned):
     waiting = 'the turn ended while 1 background job(s) run: waiting for their notice'
     bg = js('task', 'new', 'BACKGROUND 2 WORK background.txt')['id']
     assert wait_state(bg, 'ready', 'failed')['state'] == 'ready', show(bg)['result']
-    assert asked(bg) == []
+    assert result_retries(bg) == []
     assert [e['status'] for e in log(bg) if e['kind'] == 'result'] == ['done']
     assert [e.get('text') for e in log(bg)].count(waiting) == 1
     # ^ A job that never reports waits at most tasks.checkTimeoutSeconds, then the result is
@@ -2710,7 +2710,7 @@ def run(wsx, wsxd, work, owned):
     configure(LAND_CONFIG + '  checkTimeoutSeconds: 2\n', 'short background wait')
     stuck = js('task', 'new', 'BACKGROUND never WORK stuck.txt')['id']
     assert wait_state(stuck, 'ready', 'failed')['state'] == 'ready', show(stuck)['result']
-    assert len(asked(stuck)) == 1
+    assert len(result_retries(stuck)) == 1
     texts = [e.get('text') for e in log(stuck)]
     assert waiting in texts and 'no notice from 1 background job(s) in 2 s: the turn ended without a result' in texts, texts
     assert texts.index(waiting) < texts.index('no notice from 1 background job(s) in 2 s: the turn ended without a result')
