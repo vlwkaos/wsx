@@ -40,6 +40,15 @@ CONFIG = '''tasks:
     - "test ! -e broken.txt"
 '''
 
+# A process that holds a slot of tasks/<queue>/ (crates/wsx/src/task/slot.rs) under a label.
+HOLD_SLOT = """import fcntl, os, sys, time
+slot = open(os.path.join(sys.argv[1], 'slot.lock'), 'a')
+fcntl.flock(slot, fcntl.LOCK_EX)
+slot.truncate(0)
+slot.write(sys.argv[2])
+slot.flush()
+time.sleep(600)
+"""
 LAND_CONFIG = '''tasks:
   minFreeGb: 0
   land: { auto: false }
@@ -1901,8 +1910,34 @@ def run(wsx, wsxd, work, owned):
     assert any(e['kind'] == 'disk_wait' for e in log(dw))
     row = next(r for r in js('task', 'ledger')['open'] if r['id'] == dw)
     assert row['waiting']['on'] == 'disk', row
-    configure(LAND_CONFIG, 'disk back')
+    # Stalls (docs/tasks.md "Manager"): a wait whose cause is real is none, past the grace.
+    js('task', 'manager')
+
+    def stalls(n):
+        return [line for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
+                for line in e['text'].split('\n') if line.startswith('#%d stalled' % n)]
+
+    time.sleep(75)
+    assert not stalls(dw), stalls(dw)
+    # ^ Space is back, but a process holds the disk slot under the label of a closed task: one
+    # event names the wait, its age and the evidence, and a later sweep does not repeat it.
+    disk_slot = state / 'wsx' / 'tasks' / 'disk-slot'
+    holder = subprocess.Popen([sys.executable, '-c', HOLD_SLOT, str(disk_slot), 'demo t%d' % cr])
+    try:
+        wait(lambda: (disk_slot / 'slot.lock').read_text() == 'demo t%d' % cr, 'the fixture holds the disk slot')
+        configure(LAND_CONFIG, 'disk back')
+        wait(lambda: 'queued for disk behind demo t%d' % cr in (show(dw)['record'].get('waiting') or {}).get('reason', ''),
+             'queued behind the fixture', 60)
+        stalled = wait(lambda: stalls(dw), 'the stall event', 120)
+        assert len(stalled) == 1 and 'waiting on disk for ' in stalled[0], stalled
+        assert 'free ' in stalled[0] and 'tasks.minFreeGb is 0; queued behind demo t%d, which is closed' % cr in stalled[0], stalled
+        time.sleep(25)
+        assert stalls(dw) == stalled, stalls(dw)
+    finally:
+        holder.kill()
+        holder.wait()
     wait(lambda: show(dw)['state'] == 'ready', 'resumed after disk', 60)
+    assert stalls(dw) == stalled, stalls(dw)
     assert 'waiting' not in show(dw)['record'] and not any(e['kind'] == 'check_retry' for e in log(dw))
     js('task', 'close', dw, '--discard')
     # A usage limit is no failure: the task waits on `limit` and its session continues after the

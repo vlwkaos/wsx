@@ -242,6 +242,10 @@ pub struct ManagerState {
     /// The `finished_epoch` of the newest routine run already turned into events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routines_seen: Option<i64>,
+    /// The stall of each open task already turned into an event, by its marker: the same
+    /// stall is reported once. ref: docs/tasks.md "Manager" (Stalls)
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub stalls: BTreeMap<u32, String>,
     /// The digest of the instructions the conversation in `agent_session` began with.
     /// Claude keeps a conversation's first system prompt also on resume, so other
     /// instructions start a new conversation; settings, tools and model apply at every start.

@@ -19,4 +19,9 @@ try:
 except BlockingIOError:
     print("waiting for the check slot", flush=True)
     fcntl.flock(slot, fcntl.LOCK_EX)
+# ^ Its own label, as a task host writes one (slot.rs): a stale task label would read as a holder
+# that holds without running (docs/tasks.md "Manager", Stalls).
+slot.truncate(0)
+slot.write("%s (pid %d)" % (" ".join(sys.argv[1:])[:120], os.getpid()))
+slot.flush()
 sys.exit(subprocess.call(sys.argv[1:]))
