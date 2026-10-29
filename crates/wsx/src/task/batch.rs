@@ -10,7 +10,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::store::{self, TaskDir};
-use wsx_core::task::{call_host_waiting, copy, HostRequest, TaskRecord, TaskState};
+use wsx_core::task::{call_host_waiting, copy, view, HostRequest, TaskRecord, TaskState};
 
 /// A land rebases before it answers; one that runs its own checks answers sooner.
 const LAND_TIMEOUT: Duration = Duration::from_secs(120);
@@ -85,8 +85,7 @@ pub(super) fn run(dirs: Vec<TaskDir>) -> Result<()> {
 }
 
 fn ids(dirs: &[TaskDir]) -> String {
-    let ids: Vec<String> = dirs.iter().map(|dir| format!("#{}", dir.id)).collect();
-    ids.join(", ")
+    view::task_list(dirs.iter().map(|dir| dir.id))
 }
 
 /// The tasks stacked with the tree after each, and the ones that did not stack.

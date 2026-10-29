@@ -1507,22 +1507,8 @@ impl Host {
             self.say("check-run: joined the run of the same checks");
             return;
         }
-        // ^ A check that ran on this clean tree gives the same answer: it does not run again.
         let working_copy = self.record.working_copy.clone();
-        let tree = copy::clean_tree(&working_copy).ok().flatten();
-        let stored = match (&tree, &self.stored_checks) {
-            (Some(tree), Some((on, results))) if tree == on => results.clone(),
-            _ => BTreeMap::new(),
-        };
-        let to_run: Vec<(usize, String)> = picked
-            .iter()
-            .filter(|(index, command)| {
-                stored
-                    .get(index)
-                    .is_none_or(|check| check.command != *command)
-            })
-            .cloned()
-            .collect();
+        let (tree, stored, to_run) = self.kept_checks(&picked);
         if to_run.is_empty() {
             self.say("check-run: every check already ran on this tree");
             let _ = reply.send(check_run_response(&picked, &stored, &BTreeMap::new()));
@@ -1563,6 +1549,35 @@ impl Host {
         });
     }
 
+    /// A check that ran on this clean tree with the same command gives the same answer: the
+    /// clean tree, those kept results (`stored: true`, no wait) and the checks left to run.
+    fn kept_checks(&self, checks: &[(usize, String)]) -> KeptChecks {
+        let tree = copy::clean_tree(&self.record.working_copy).ok().flatten();
+        let kept = match (&tree, &self.stored_checks) {
+            (Some(tree), Some((on, results))) if tree == on => checks
+                .iter()
+                .filter_map(|(index, command)| {
+                    let check = results
+                        .get(index)
+                        .filter(|check| check.command == *command)?;
+                    let check = CheckResult {
+                        queued_ms: 0,
+                        stored: true,
+                        ..check.clone()
+                    };
+                    Some((*index, check))
+                })
+                .collect(),
+            _ => BTreeMap::new(),
+        };
+        let to_run = checks
+            .iter()
+            .filter(|(index, _)| !kept.contains_key(index))
+            .cloned()
+            .collect();
+        (tree, kept, to_run)
+    }
+
     /// Take `tasks.checks` and their timeout from the main checkout's config as it is now:
     /// the gate a task lands through is the default branch's, also for a task started
     /// before it changed. A config that does not load keeps the record's.
@@ -1601,32 +1616,8 @@ impl Host {
         };
         let events = self.events.clone();
         let checks: Vec<(usize, String)> = self.record.checks.iter().cloned().enumerate().collect();
-        // ^ A check a `check-run` ran on this clean tree answers from that run: the gate runs
-        // only the others (#137 ran fmt, build and nextest twice on one tree).
-        let tree = copy::clean_tree(&self.record.working_copy).ok().flatten();
-        let mut stored: BTreeMap<usize, CheckResult> = match (&tree, &self.stored_checks) {
-            (Some(tree), Some((on, results))) if tree == on => results
-                .iter()
-                .filter(|(index, check)| {
-                    checks
-                        .get(**index)
-                        .is_some_and(|(_, command)| *command == check.command)
-                })
-                .map(|(index, check)| {
-                    let check = CheckResult {
-                        queued_ms: 0,
-                        stored: true,
-                        ..check.clone()
-                    };
-                    (*index, check)
-                })
-                .collect(),
-            _ => BTreeMap::new(),
-        };
-        let to_run: Vec<(usize, String)> = checks
-            .into_iter()
-            .filter(|(index, _)| !stored.contains_key(index))
-            .collect();
+        // ^ #137 ran fmt, build and nextest twice on one tree.
+        let (_, mut stored, to_run) = self.kept_checks(&checks);
         if to_run.is_empty() {
             self.say("every check already ran on this tree");
             let _ = events.send(Event::ChecksDone(stored.into_values().collect()));
@@ -1977,9 +1968,8 @@ impl Host {
             // ^ The rebase kept the tree whose checks passed: their results stand.
             Rebase::Done if self.rebase_kept_tree()? => self.fast_forward(tried),
             Rebase::Done
-                if batch_tree.is_some_and(|batch| {
-                    copy::tree(&working_copy, "HEAD").is_ok_and(|tree| tree == batch)
-                }) =>
+                if batch_tree.is_some()
+                    && copy::tree(&working_copy, "HEAD").ok().as_deref() == batch_tree =>
             {
                 self.say("the rebase gave the tree the batch land checked");
                 self.fast_forward(tried)
@@ -2141,10 +2131,7 @@ impl Host {
             .collect();
         let overlaps = view::overlaps(&self.record, &records, true);
         for row in overlaps.as_array().into_iter().flatten() {
-            let Some((dir, _)) = tasks
-                .iter()
-                .find(|(_, record)| record.as_ref().is_ok_and(|r| row["id"] == r.id))
-            else {
+            let Some((dir, _)) = tasks.iter().find(|(dir, _)| row["id"] == dir.id) else {
                 continue;
             };
             let paths: Vec<&str> = row["paths"]
@@ -2499,6 +2486,11 @@ fn head(working_copy: &Path) -> Option<String> {
 
 /// A tree id and the check results that ran on it, by check index.
 type StoredChecks = (String, BTreeMap<usize, CheckResult>);
+type KeptChecks = (
+    Option<String>,
+    BTreeMap<usize, CheckResult>,
+    Vec<(usize, String)>,
+);
 
 /// The answer to a worker's `check-run`: each picked check and how it ended (the output of a
 /// failed one), exit 0 when all passed: from `ran`, or `stored` from an earlier run.

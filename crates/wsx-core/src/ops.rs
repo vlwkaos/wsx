@@ -734,29 +734,26 @@ pub fn reorder_session(
     })?)
 }
 
-pub fn rename_session(client: &Client, session_id: SessionId, new_label: &str) -> Result<()> {
-    let snapshot = runtime_snapshot(client)?;
-    let session = snapshot
+fn session_revision(client: &Client, session_id: SessionId) -> Result<u64> {
+    runtime_snapshot(client)?
         .sessions
         .iter()
         .find(|session| session.id == session_id)
-        .ok_or_else(|| anyhow!("session not found"))?;
+        .map(|session| session.revision)
+        .ok_or_else(|| anyhow!("session not found"))
+}
+
+pub fn rename_session(client: &Client, session_id: SessionId, new_label: &str) -> Result<()> {
     expect_ack(client.call(&Request::SessionRename {
         session_id,
         label: new_label.into(),
-        expected_revision: session.revision,
+        expected_revision: session_revision(client, session_id)?,
     })?)
 }
 pub fn kill_session(client: &Client, session_id: SessionId) -> Result<()> {
-    let snapshot = runtime_snapshot(client)?;
-    let session = snapshot
-        .sessions
-        .iter()
-        .find(|session| session.id == session_id)
-        .ok_or_else(|| anyhow!("session not found"))?;
     expect_ack(client.call(&Request::SessionClose {
         session_id,
-        expected_revision: session.revision,
+        expected_revision: session_revision(client, session_id)?,
     })?)
 }
 

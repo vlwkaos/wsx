@@ -899,7 +899,8 @@ fn land_batch(project: Option<&str>, tasks: &[String], tried: bool, json: bool) 
     let mut ids = Vec::new();
     let mut first = None;
     for task in tasks {
-        let record = open_owned(project, task)?.read_record()?;
+        let dir = open(project, task)?;
+        let record = dir.read_record()?;
         if ids.contains(&record.id) {
             bail!("#{} is named twice; nothing was landed", record.id);
         }
@@ -911,15 +912,14 @@ fn land_batch(project: Option<&str>, tasks: &[String], tried: bool, json: bool) 
             );
         }
         ids.push(record.id);
-        first.get_or_insert(record);
+        first.get_or_insert((dir, record));
     }
-    let first = first.context("no task to land")?;
+    let (dir, first) = first.context("no task to land")?;
     let settings = load_task_config(&first.project_path)
         .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
     if acting_as_manager() && settings.land_approve {
         bail!("each land needs the owner's approval: land the tasks one at a time");
     }
-    let dir = open_owned(project, &tasks[0])?;
     send(&dir, HostRequest::LandBatch { tasks: ids }, json)
 }
 
