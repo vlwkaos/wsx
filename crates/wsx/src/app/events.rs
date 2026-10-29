@@ -228,6 +228,12 @@ impl App {
         }
 
         if self.fast_timer.ready() {
+            // ^ A moved cursor is saved here, not per key: without a snapshot apply nothing
+            // else writes it before the slow timer (docs/ui-state-ownership.md "Selected row").
+            if self.tree_selected != self.cache_cursor.0 {
+                self.mark_dirty();
+                self.write_cache_if_dirty();
+            }
             self.spawn_runtime_capture();
             self.spawn_plugin_view();
             self.spawn_git_local_for_selected();
