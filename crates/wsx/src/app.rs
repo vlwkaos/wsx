@@ -75,12 +75,13 @@ enum RuntimeRefreshOutcome {
 type RuntimeRefresh = Result<RuntimeRefreshOutcome>;
 
 fn collect_runtime_refresh(
+    client: &runtime::Client,
     config: &GlobalConfig,
-    availability: fn() -> std::io::Result<runtime::Availability>,
+    availability: fn(&runtime::Client) -> std::io::Result<runtime::Availability>,
 ) -> RuntimeRefresh {
     let discovery = ops::discover_workspace(config)?;
     let worktrees = discovery.clone().into_worktrees();
-    let availability = match availability() {
+    let availability = match availability(client) {
         Ok(availability) => availability,
         Err(error) => {
             return Ok(RuntimeRefreshOutcome::DiscoveryOnly {
@@ -89,7 +90,7 @@ fn collect_runtime_refresh(
             })
         }
     };
-    let snapshot = match ops::synchronize_discovery(&discovery) {
+    let snapshot = match ops::synchronize_discovery(client, &discovery) {
         Ok(snapshot) => snapshot,
         Err(error) => return Ok(RuntimeRefreshOutcome::DiscoveryOnly { worktrees, error }),
     };
@@ -1046,6 +1047,8 @@ pub struct App {
     fetch_pending: HashSet<PathBuf>,
     /// Retry pending commands without publishing the surrounding presentation snapshot.
     cache_dirty: bool,
+    /// ^ docs/ui-state-ownership.md "Test isolation": every cache read and write uses this file.
+    cache_path: PathBuf,
     cache_changes: wsx_core::cache::WorkspaceCacheChanges,
     cache_cursor: (usize, Option<wsx_core::cache::CursorIdentity>),
     cached_worktree_expansion: HashMap<String, bool>,
@@ -1142,6 +1145,7 @@ impl App {
                 .and_then(|config| config.notice.clone())
         });
         let mut initial_notice = config_warn.or(project_config_notice);
+        let cache_path = wsx_core::cache::workspace_cache_path()?;
         let (
             raw_selected,
             cursor_identity,
@@ -1152,7 +1156,7 @@ impl App {
             acknowledged_outcomes,
             dismissed_integration_prompts,
             cached_worktree_expansion,
-        ) = wsx_core::cache::apply_cache(&mut workspace)?;
+        ) = wsx_core::cache::apply_cache(&cache_path, &mut workspace)?;
         let stored = match wsx_core::cache::load_group_selection() {
             Ok(selection) => selection,
             Err(error) => {
@@ -1284,6 +1288,7 @@ impl App {
             fetch_rx,
             fetch_pending: HashSet::new(),
             cache_dirty: false,
+            cache_path,
             cache_changes: Default::default(),
             cache_cursor: (raw_selected, cursor_identity.clone()),
             cached_worktree_expansion,

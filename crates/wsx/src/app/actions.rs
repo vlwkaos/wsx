@@ -265,7 +265,7 @@ impl App {
 
     /// `SessionRestart` with the pane's revision as wsxd has it now: the exit itself moved it.
     pub(super) fn restart_exited_pane(&mut self, pane_id: runtime::PaneId) -> Result<()> {
-        let revision = ops::restart_session(pane_id)?;
+        let revision = ops::restart_session(&self.runtime_client, pane_id)?;
         // ^ A refresh read before the restart still says exited and would end the new stream.
         if let Some((_, applied)) = self.applied_revision.as_mut() {
             *applied = (*applied).max(revision);

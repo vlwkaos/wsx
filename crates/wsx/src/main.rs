@@ -62,7 +62,8 @@ fn main() -> Result<()> {
         Some(cmd) => {
             // ^ [[wsx Architecture]] CLI mutations require a ready adjacent daemon.
             let availability =
-                wsx_core::runtime::ensure_available().context("wsxd is unavailable")?;
+                wsx_core::runtime::ensure_available(&wsx_core::runtime::Client::local())
+                    .context("wsxd is unavailable")?;
             // ^ JSON callers parse the output; other callers get the notice on one line.
             if !cmd.json_output() {
                 if let Some((_, message)) = app::runtime_availability_notice(&availability) {

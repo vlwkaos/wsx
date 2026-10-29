@@ -953,7 +953,7 @@ fn custom_client_never_spawns_a_default_daemon() {
     drop(listener);
     std::fs::remove_file(&path).unwrap();
     assert_eq!(
-        ensure_background_available_with(&Client::new(path.clone()))
+        ensure_background_available(&Client::new(path.clone()))
             .unwrap_err()
             .kind(),
         io::ErrorKind::Unsupported
@@ -971,7 +971,7 @@ fn intentional_stop_marker_disables_background_recovery() {
     std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert!(!background_recovery_allowed(&path));
     assert_eq!(
-        ensure_background_available_with(&Client {
+        ensure_background_available(&Client {
             socket: path.clone(),
             automatic_start: true,
         })

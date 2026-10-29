@@ -201,12 +201,6 @@ impl<'de> Deserialize<'de> for WorkspaceCache {
 }
 
 impl WorkspaceCache {
-    pub fn load() -> anyhow::Result<Self> {
-        let path = cache_path()?;
-        let _lock = CacheLock::acquire(&path)?;
-        Self::load_from_paths(&path, &legacy_cache_path()?)
-    }
-
     fn load_from_paths(
         canonical: &std::path::Path,
         legacy: &std::path::Path,
@@ -220,13 +214,6 @@ impl WorkspaceCache {
             cache.migration_needed = false;
         }
         Ok(cache)
-    }
-
-    /// Explicit whole-cache replacement. Interactive clients use `WorkspaceCacheChanges`.
-    pub fn save(&self, sync: bool) -> anyhow::Result<()> {
-        let path = cache_path()?;
-        let _lock = CacheLock::acquire(&path)?;
-        self.save_to(&path, sync)
     }
 
     fn save_to(&self, path: &std::path::Path, sync: bool) -> anyhow::Result<()> {
@@ -290,12 +277,15 @@ fn cache_file(name: &str) -> anyhow::Result<PathBuf> {
     Ok(directory.join("wsx").join(name))
 }
 
-fn cache_path() -> anyhow::Result<PathBuf> {
+/// The TUI's cache, `workspace-v3.toml` in the platform cache directory. A client resolves it
+/// once and passes it on, so a test gives its client a private file instead
+/// (docs/ui-state-ownership.md "Test isolation").
+pub fn workspace_cache_path() -> anyhow::Result<PathBuf> {
     cache_file("workspace-v3.toml")
 }
 
-fn legacy_cache_path() -> anyhow::Result<PathBuf> {
-    cache_file("workspace-v2.toml")
+fn legacy_cache_path(canonical: &Path) -> PathBuf {
+    canonical.with_file_name("workspace-v2.toml")
 }
 
 /// The TUI's active group and, beside it, its active profile (README "Profiles").
@@ -349,11 +339,10 @@ pub type AppliedCache = (
 );
 
 /// Apply only cached UI and local mute state. Sessions always come from wsxd.
-pub fn apply_cache(workspace: &mut WorkspaceState) -> anyhow::Result<AppliedCache> {
-    let path = cache_path()?;
-    let _lock = CacheLock::acquire(&path)?;
-    let cache = WorkspaceCache::load_from_paths(&path, &legacy_cache_path()?)?;
-    apply_workspace_cache(workspace, cache, |cache| cache.save_to(&path, false))
+pub fn apply_cache(path: &Path, workspace: &mut WorkspaceState) -> anyhow::Result<AppliedCache> {
+    let _lock = CacheLock::acquire(path)?;
+    let cache = WorkspaceCache::load_from_paths(path, &legacy_cache_path(path))?;
+    apply_workspace_cache(workspace, cache, |cache| cache.save_to(path, false))
 }
 
 fn apply_workspace_cache(
@@ -556,8 +545,12 @@ impl WorkspaceCacheChanges {
             && self.cursor.is_none()
     }
 
-    pub fn save(&self, sync: bool) -> anyhow::Result<HashMap<PathBuf, ProjectCacheState>> {
-        self.save_to(&cache_path()?, &legacy_cache_path()?, sync)
+    pub fn save(
+        &self,
+        path: &Path,
+        sync: bool,
+    ) -> anyhow::Result<HashMap<PathBuf, ProjectCacheState>> {
+        self.save_to(path, &legacy_cache_path(path), sync)
     }
 
     fn save_to(
