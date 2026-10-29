@@ -7,7 +7,6 @@ use super::slot::{self, Priority};
 use anyhow::{bail, Context, Result};
 use std::collections::VecDeque;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::store::{self, TaskDir};
@@ -186,11 +185,8 @@ fn land(dir: &TaskDir, batch_tree: Option<String>) -> Result<()> {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<()> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let output = wsx_core::git::git_cmd(repo)
         .args(args)
-        .stdin(std::process::Stdio::null())
         .output()
         .context("cannot run git")?;
     if !output.status.success() {
