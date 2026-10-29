@@ -1009,9 +1009,9 @@ if (!(await evaluate("window.answerLine.isConnected"))) await fail("a status lin
 await shot("reservoir-acted", ".composer-send");
 await closeReservoir();
 
-// --- The ⋯ menu: Page and Sessions (Roles are checked below); the worktree list hides task sessions.
+// --- The ⋯ menu: Page, Sessions and Usage (Roles are checked below); the worktree list hides task sessions.
 await click(".more-button");
-if ((await text(".more-menu a:not(.role-contact)")).join() !== "Page,Sessions") await fail(`the ⋯ menu offers ${await text(".more-menu a:not(.role-contact)")}`);
+if ((await text(".more-menu a:not(.role-contact)")).join() !== "Page,Sessions,Usage") await fail(`the ⋯ menu offers ${await text(".more-menu a:not(.role-contact)")}`);
 await shot("more-menu", ".composer-send");
 await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Sessions').click()");
 await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.worktree')`, "Sessions did not open the worktree list");
@@ -1040,6 +1040,25 @@ for (let attempt = 0; attempt < 300 && !factsRead(facts); attempt++) {
 if (!factsRead(facts)) await fail(`the page's facts read ${facts}`);
 await shot("page");
 await closeSheet("the page", chat);
+
+// --- Usage: the ⋯ menu's sheet has the project's spend today and in 7 days, workers and
+// manager apart, from the overview's `usage` (docs/web-client-tasks.md "Usage").
+await click(".more-button");
+await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Usage').click()");
+await until(`location.hash === '#/p/${project}/usage' && !!document.querySelector('dialog.task-sheet[open] .usage table')`, "Usage did not open the usage sheet");
+const usageRows = await text(".usage tbody th");
+if (usageRows.join() !== "Cost,Input,Cache read,Cache write,Output,Turns") await fail(`the usage rows are ${usageRows}`);
+const usageCost = await text(".usage tbody tr:first-child td");
+// ^ Columns: Today workers, Today manager, 7 days workers, 7 days manager.
+if (usageCost.length !== 4 || !usageCost.every((cell) => /^\$\d+\.\d\d$/.test(cell)) || usageCost[0] === "$0.00" || usageCost[2] === "$0.00") {
+  await fail(`the usage costs are ${usageCost}`);
+}
+await shot("usage");
+const usageSize = size;
+await resize([1280, 800, 1]);
+await shot("usage");
+await resize(usageSize);
+await closeSheet("the usage sheet", chat);
 
 // --- A turn of the manager: two messages group on the right; while it runs a typing bubble
 // ends the chat and the header says "typing"; the reply edits the page (with a link to it),
@@ -1211,6 +1230,9 @@ const top0 = await logTop();
 await openReservoir();
 await evaluate(`${rowOf("#2")}.querySelector('.row-open').click()`);
 await until(`location.hash === '#/p/${project}/t/2' && !!document.querySelector('dialog.task-sheet[open] .story')`, "a reservoir row did not open the task sheet");
+// ^ The task's usage line (docs/web-client-tasks.md "Task sheet").
+const usageLine = (await text(".task-sheet .task-usage"))[0] ?? "";
+if (!/^Usage: \$\d+\.\d\d · in \d+k? · cache \S+ read \/ \S+ write · out \S+ · \d+ turns?$/.test(usageLine)) await fail(`the task's usage line reads ${usageLine}`);
 const phoneSheet = await evaluate("({ sheet: getComputedStyle(document.querySelector('dialog.task-sheet')).animationName, backdrop: getComputedStyle(document.querySelector('dialog.task-sheet'), '::backdrop').animationName })");
 if (phoneSheet.sheet !== "sheet-in" || phoneSheet.backdrop !== "arrive") await fail(`the sheet enters with ${JSON.stringify(phoneSheet)}`);
 if (await logTop() !== top0) await fail(`a row moved the chat from ${top0} to ${await logTop()}`);

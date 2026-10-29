@@ -4,7 +4,7 @@
 use super::view::{
     attention, check_outcomes, clip, overlaps, project_tasks, read_result, task_summary,
 };
-use super::{checks, copy, store, DeployKind, DeployRecord, TaskRecord, TaskState};
+use super::{checks, copy, store, usage, DeployKind, DeployRecord, TaskRecord, TaskState};
 use crate::config::project::load_task_config;
 use crate::model::workspace::TaskConfig;
 use crate::{ops, runtime};
@@ -79,6 +79,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
             // ^ The main checkout's changed files this land would overwrite: pressing
             // Land refuses until they are committed or stashed (docs/tasks.md "Ledger").
             "land_blocked_by": (record.state == TaskState::Ready).then(|| land_blockers(record)),
+            "usage": usage::task(dir),
         });
         // ^ A parent task and its open children (docs/tasks.md "Parent tasks").
         if let Some(parent) = record.parent {
@@ -96,6 +97,12 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     open.sort_by_key(|(order, id, _)| (*order, *id));
     recent.sort_by_key(|(updated, _)| std::cmp::Reverse(*updated));
     recent.truncate(RECENT_TASKS);
+    // ^ Read after the cut: a closed task's log is read only when its row stays.
+    for (_, row) in &mut recent {
+        if let Some((dir, _)) = tasks.iter().find(|(dir, _)| row["id"] == dir.id) {
+            row["usage"] = json!(usage::task(dir));
+        }
+    }
     let copies: Vec<&Path> = records
         .iter()
         .filter(|record| record.state.is_open())
@@ -108,6 +115,8 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         "auto_land": settings.land_auto,
         // ^ Open "To check" items: a release waits for them (docs/tasks.md "To check").
         "to_check": checks::open_items(&project_id).map_or(0, |items| items.len()),
+        // ^ Spend today and in 7 days, workers and manager apart (docs/tasks.md "Usage").
+        "usage": usage::project(&project_id, super::now_unix_ms()),
         "main": main_checkout(main),
         "stray_worktrees": strays,
         "stray_worktrees_omitted": stray_omitted,

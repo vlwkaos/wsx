@@ -145,6 +145,7 @@ export function markSeen(session) {
 // #/projects, #/settings, #/s/<id>/chat|terminal, #/p/<id> (the manager with task_view, else the
 // sessions), #/p/<id>/sessions, #/p/<id>/files, #/p/<id>/t/<task> (the manager with the task's sheet),
 // #/p/<id>/page (the manager with the project page's sheet), #/p/<id>/checks (with the To check list),
+// #/p/<id>/usage (with the project's token use and cost),
 // #/p/<id>/r/<role> (a role's chat, docs/tasks.md "Roles").
 export function parseRoute(hash) {
   const [, first = "", second, third, fourth] = hash.split("/");
@@ -152,6 +153,7 @@ export function parseRoute(hash) {
   if (first === "p" && Number(second) && third === "t" && Number(fourth)) return { screen: "task", id: Number(second), task: Number(fourth) };
   if (first === "p" && Number(second) && third === "page") return { screen: "task", id: Number(second), task: null, page: true };
   if (first === "p" && Number(second) && third === "checks") return { screen: "task", id: Number(second), task: null, checks: true };
+  if (first === "p" && Number(second) && third === "usage") return { screen: "task", id: Number(second), task: null, usage: true };
   if (first === "p" && Number(second) && third === "r" && fourth) return { screen: "role", id: Number(second), role: decodeURIComponent(fourth) };
   if (first === "p" && Number(second)) {
     return { screen: { files: "files", sessions: "sessions" }[third] ?? "project", id: Number(second) };

@@ -881,6 +881,9 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .timeline-list { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); }
 .timeline-list li { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: var(--space-3); }
 .timeline-what { font-weight: var(--font-weight-medium); }
+/* One task's token use and cost (usage.js), and the project's in the Usage sheet. */
+.task-usage { padding-inline: var(--space-4); font-variant-numeric: tabular-nums; }
+.usage { padding: var(--space-3) var(--space-4) var(--space-4); }
 .timeline-more { grid-column: 2; color: var(--color-muted); overflow-wrap: anywhere; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 /* The messages to the worker, as bubbles. */
 .task-talk { padding: var(--space-4) var(--space-4) 0; display: flex; flex-direction: column; gap: var(--space-3); }

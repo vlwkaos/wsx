@@ -10,7 +10,9 @@ use ratatui::{
     widgets::{Clear, Paragraph, Wrap},
     Frame,
 };
+use serde::Deserialize;
 use serde_json::Value;
+use wsx_core::task::usage::{self, Usage};
 
 const STATE_WIDTH: usize = 8;
 /// Below this width a row drops its number; below `WAITS_MIN_WIDTH` what it waits for.
@@ -26,6 +28,9 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
     };
     let width = inner.width as usize;
     let mut lines = vec![heading(list, width)];
+    if let Some(spent) = list.ledger.as_ref().and_then(project_usage) {
+        lines.push(muted(&truncate_to_width(&spent, width)));
+    }
     if let Some(error) = &list.error {
         lines.push(Line::styled(
             truncate_to_width(&format!("Could not read tasks: {error}"), width),
@@ -199,6 +204,25 @@ fn task_lines(
     (lines, selected_line)
 }
 
+/// The ledger's project spend: "Today $3.42 (manager $0.80) · 7 days $21.10 (manager $4.02)".
+fn project_usage(ledger: &Value) -> Option<String> {
+    let spent = |window: &str| {
+        let cost = |who: &str| {
+            Usage::deserialize(&ledger["usage"][window][who])
+                .map_or(0, |usage| usage.cost_micro_usd)
+        };
+        let manager = cost("manager");
+        format!(
+            "{} (manager {})",
+            usage::usd(cost("workers") + manager),
+            usage::usd(manager)
+        )
+    };
+    ledger["usage"]
+        .is_object()
+        .then(|| format!("Today {} · 7 days {}", spent("today"), spent("week")))
+}
+
 /// One task's ledger entry as labeled rows: state, what it waits for, its checks, its
 /// To check items, then the worker's summary or memo.
 fn detail(task: &Value) -> Vec<Line<'static>> {
@@ -225,6 +249,12 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
             Span::styled(state.clone(), Style::default().fg(state_color(&state))),
         ]),
     ];
+    if let Some(spent) = Usage::deserialize(&task["usage"])
+        .ok()
+        .filter(|usage| usage.turns > 0)
+    {
+        lines.push(Line::from(vec![label("Usage"), Span::raw(spent.line())]));
+    }
     let waiting = waits(task);
     if !waiting.is_empty() {
         lines.push(Line::from(vec![label("Waits"), Span::raw(waiting)]));

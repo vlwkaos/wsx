@@ -1392,6 +1392,7 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
         summary["result"] = result.unwrap_or(serde_json::Value::Null);
         summary["report"] = json!(report);
         summary["log"] = json!(dir.file(store::LOG_FILE));
+        summary["usage"] = json!(wsx_core::task::usage::task(dir));
         summary["host_running"] = json!(host);
         if record.waits_on(wsx_core::task::WaitOn::Hand) {
             summary["hand"] = json!({
@@ -1438,6 +1439,10 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
     }
     if let Some(report) = report {
         println!("report:       {}", report.display());
+    }
+    let usage = wsx_core::task::usage::task(dir);
+    if usage.turns > 0 {
+        println!("usage:        {}", usage.line());
     }
     Ok(())
 }

@@ -14,6 +14,7 @@ pub mod owner;
 pub mod report;
 pub mod roles;
 pub mod store;
+pub mod usage;
 pub mod view;
 
 use serde::{Deserialize, Serialize};

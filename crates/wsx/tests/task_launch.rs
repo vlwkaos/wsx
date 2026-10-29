@@ -221,3 +221,85 @@ fn a_host_inside_another_sandbox_fails_with_the_reason() {
     let ledger = fixture.json(&["task", "ledger", "--json"]);
     assert!(ledger.to_string().contains("another sandbox"), "{ledger}");
 }
+
+/// `show --json` and the ledger sum a task's turns, also lines from before
+/// `session_cost_micro_usd`, whose `cost_micro_usd` held the session's running total
+/// (docs/tasks.md "Usage").
+#[test]
+fn usage_sums_a_tasks_turns_and_older_running_totals() {
+    use std::io::Write;
+    let fixture = Fixture::new();
+    fixture.json(&["task", "new", "NOOP", "--json"]);
+    let task = fixture.wait("first result", |task| {
+        (task["usage"]["turns"].as_u64() >= Some(1) && task["state"] != "working")
+            .then(|| task.clone())
+    });
+    let first = task["usage"].clone();
+    // ^ The fake costs 0.001 USD a turn and reads 10 input tokens per model call.
+    assert_eq!(
+        first["cost_micro_usd"].as_u64(),
+        first["turns"].as_u64().map(|turns| turns * 1000),
+        "{first}"
+    );
+    assert!(first["input_tokens"].as_u64() > Some(0), "{first}");
+
+    // ^ Two turns of one older session (running totals 3000, then 5000), then a new process
+    // whose total starts lower again (1000): 3000 + 2000 + 1000 spent.
+    let mut log = fs::OpenOptions::new()
+        .append(true)
+        .open(task["log"].as_str().expect("log path"))
+        .expect("open the task log");
+    for (total, unix_ms) in [(3000, 1), (5000, 2), (1000, 3)] {
+        writeln!(
+            log,
+            r#"{{"unix_ms":{unix_ms},"kind":"result","status":"done","summary":"old","usage":{{"duration_ms":1,"input_tokens":100,"output_tokens":20,"cache_read_tokens":4000,"cache_creation_tokens":300,"cost_micro_usd":{total},"context_tokens":0}}}}"#
+        )
+        .expect("append an older result");
+    }
+    drop(log);
+    let shown = fixture.json(&["task", "show", "1", "--json"])["usage"].clone();
+    let sum = |key: &str, extra: u64| first[key].as_u64().unwrap() + extra;
+    assert_eq!(
+        shown["cost_micro_usd"].as_u64(),
+        Some(sum("cost_micro_usd", 6000)),
+        "{shown}"
+    );
+    assert_eq!(
+        shown["input_tokens"].as_u64(),
+        Some(sum("input_tokens", 300)),
+        "{shown}"
+    );
+    assert_eq!(
+        shown["cache_read_tokens"].as_u64(),
+        Some(sum("cache_read_tokens", 12000)),
+        "{shown}"
+    );
+    assert_eq!(
+        shown["cache_creation_tokens"].as_u64(),
+        Some(sum("cache_creation_tokens", 900)),
+        "{shown}"
+    );
+    assert_eq!(
+        shown["output_tokens"].as_u64(),
+        Some(sum("output_tokens", 60)),
+        "{shown}"
+    );
+    assert_eq!(shown["turns"].as_u64(), Some(sum("turns", 3)), "{shown}");
+
+    let ledger = fixture.json(&["task", "ledger", "--json"]);
+    let row = ledger["open"]
+        .as_array()
+        .into_iter()
+        .chain(ledger["recent"].as_array())
+        .flatten()
+        .find(|row| row["id"] == 1)
+        .unwrap_or_else(|| panic!("no ledger row for #1: {ledger}"));
+    assert_eq!(row["usage"], shown, "{row}");
+    // ^ The older lines are from 1970: only the fake's own turns are in today's and the week's.
+    for window in ["today", "week"] {
+        assert_eq!(ledger["usage"][window]["workers"], first, "{ledger}");
+    }
+    let text = fixture.wsx(&["task", "show", "1"]);
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.contains("usage:        $0.0"), "{text}");
+}
