@@ -11,6 +11,7 @@ import { Bubble } from "./bubbles.js";
 import { SheetBar } from "./ui.js";
 import { TaskStory } from "./story.js";
 import { CheckRow, TryButton } from "./checks.js";
+import { usageLine } from "./usage.js";
 
 const TRIAL_WORDS = {
   preparing: "Going live: rebasing onto the default branch and checking",
@@ -273,6 +274,7 @@ export function TaskPage({ project, task, onClose, grip }) {
                 </li>`)}
             </ul>
           </section>` : null}
+        ${detail.usage?.turns > 0 && html`<p class="note task-usage">Usage: ${usageLine(detail.usage)}</p>`}
         <details class="task-section timeline">
           <summary class="task-heading fold-head"><${Icon} name="chevron" />History</summary>
           ${detail.timeline.skipped ? html`<p class="note">${detail.timeline.skipped} earlier entries are not shown.</p>` : null}

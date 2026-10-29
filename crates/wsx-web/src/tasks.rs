@@ -283,6 +283,8 @@ pub fn overview(scope: &Scope) -> Value {
             settings.deploy_command.is_some() && !settings.deploy_public
         }),
         "trial": ledger::trial_status(&scope.store, &store::read_deploys(&scope.store).unwrap_or_default()),
+        // ^ Spend today and in 7 days, workers and manager apart (docs/tasks.md "Usage").
+        "usage": task::usage::project(&scope.store, now),
     })
 }
 
@@ -465,6 +467,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["report"] = json!(report);
     summary["talk"] = talk(&log);
     summary["timeline"] = timeline(&log);
+    summary["usage"] = json!(task::usage::task(&dir));
     summary["overlaps"] = if record.state.is_open() {
         view::overlaps(&record, &records, true)
     } else {

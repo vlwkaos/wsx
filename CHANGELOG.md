@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Tasks: token use and cost show in the TUI and the web. Each task's cost, input, cache read, cache write, output and turns are in `wsx task show` (and `--json`), the ledger's rows, the TUI task detail and a line on the web task sheet. The project's spend today and in the last 7 days, workers and manager apart, is under the TUI Tasks heading and in the web's `⋯` *Usage* sheet. One reader in wsx-core sums the logs' `usage`, also older lines that held a session's running total, and reads a log again only when it changed ([docs/tasks.md](docs/tasks.md) "Usage").
+
 ## [0.41.0] - 2026-10-29
 
 ### Added

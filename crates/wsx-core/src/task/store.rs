@@ -739,6 +739,11 @@ impl ManagerDir {
             .with_context(|| format!("cannot append to {}", path.display()))
     }
 
+    /// The old log and the current one, in reading order.
+    pub fn log_files(&self) -> [PathBuf; 2] {
+        [self.path.join(MANAGER_OLD_LOG), self.path.join(MANAGER_LOG)]
+    }
+
     /// The old log, then the current one; unreadable lines are skipped.
     pub fn read_log(&self) -> Result<Vec<super::manager::ManagerEntry>> {
         let mut entries = Vec::new();

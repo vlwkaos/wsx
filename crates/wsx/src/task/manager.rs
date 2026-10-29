@@ -32,9 +32,9 @@ use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
 use wsx_core::task::{
-    checks, ledger, now_unix_ms, LogEvent, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
+    checks, ledger, now_unix_ms, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
 };
-use wsx_core::task::{owner, roles};
+use wsx_core::task::{owner, roles, usage};
 
 use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -1144,39 +1144,20 @@ impl Manager {
     /// The spend since `since` from the logs' `cost_micro_usd`: the manager's replies and the
     /// workers' results, the costliest tasks named. ref: docs/tasks.md "Recap"
     fn cost_since(&self, log: &[ManagerEntry], since: u64) -> String {
-        let manager: Vec<u64> = log
-            .iter()
-            .filter_map(|entry| match &entry.event {
-                ManagerEvent::Reply { usage, .. } => {
-                    Some(usage.as_ref().map_or(0, |usage| usage.cost_micro_usd))
-                }
-                _ => None,
-            })
-            .collect();
-        let mut tasks: Vec<(u64, u32, usize)> = project_tasks(&self.dir.project_id)
+        let manager = usage::Usage::since(&usage::manager_log_turns(log), 0);
+        let mut tasks: Vec<(u64, u32, u64)> = project_tasks(&self.dir.project_id)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(dir, record)| {
-                let costs: Vec<u64> = dir
-                    .read_log()
-                    .ok()?
-                    .into_iter()
-                    .filter(|entry| entry.unix_ms > since)
-                    .filter_map(|entry| match entry.event {
-                        LogEvent::Result { usage, .. } => {
-                            Some(usage.map_or(0, |usage| usage.cost_micro_usd))
-                        }
-                        _ => None,
-                    })
-                    .collect();
+                let spent = usage::Usage::since(&usage::task_turns(&dir), since + 1);
                 let id = record.ok()?.id;
-                (!costs.is_empty()).then(|| (costs.iter().sum(), id, costs.len()))
+                (spent.turns > 0).then_some((spent.cost_micro_usd, id, spent.turns))
             })
             .collect();
         tasks.sort_by(|left, right| right.cmp(left));
         let usd = |micro: u64| format!("{:.2} USD", micro as f64 / 1e6);
         let workers: u64 = tasks.iter().map(|(cost, ..)| cost).sum();
-        let turns: usize = tasks.iter().map(|(.., turns)| turns).sum();
+        let turns: u64 = tasks.iter().map(|(.., turns)| turns).sum();
         let top: Vec<String> = tasks
             .iter()
             .take(3)
@@ -1184,9 +1165,9 @@ impl Manager {
             .collect();
         format!(
             "Token cost since the last recap: {} in all; you {} in {} turn(s), workers {} in {turns} turn(s){}.",
-            usd(manager.iter().sum::<u64>() + workers),
-            usd(manager.iter().sum()),
-            manager.len(),
+            usd(manager.cost_micro_usd + workers),
+            usd(manager.cost_micro_usd),
+            manager.turns,
             usd(workers),
             match top.is_empty() {
                 true => String::new(),

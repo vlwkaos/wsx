@@ -3298,6 +3298,17 @@ merge_seconds = 3
         assert detail['result']['human_verify'] == [{'check': 'open the file', 'where': 'a real device', 'capture': '', 'poster': '', 'pass_if': 'it has text'}]
         headings = [line for line in detail['report'].splitlines() if line.startswith('## ')]
         assert headings == ['## Summary', '## Changes', '## Evidence', '## To check', '## Left open'], headings
+        # ^ Usage: the task's sum is `show --json`'s, and the project's workers today hold every
+        # task's turns (the fake costs 0.001 USD a turn; docs/tasks.md "Usage").
+        usage = detail['usage']
+        assert usage['turns'] >= 1 and usage['cost_micro_usd'] == 1000 * usage['turns'] and usage['input_tokens'] > 0, usage
+        assert js('task', 'show', 2, '-p', 'demo')['usage'] == usage
+        spent = [steady(owner, 'GET', '/api/tasks/%d/t/%d' % (demo, row['id']))[1]['usage'] for row in overview['tasks']]
+        workers = overview['usage']['today']['workers']
+        assert workers['turns'] == sum(one['turns'] for one in spent) and workers['cost_micro_usd'] == sum(one['cost_micro_usd'] for one in spent), (workers, spent)
+        assert overview['usage']['week']['workers'] == workers, overview['usage']
+        ledger_usage = json.loads(cli('task', 'ledger', '-p', 'demo').stdout)['usage']
+        assert ledger_usage['today']['workers'] == workers, ledger_usage
         kinds = [entry['kind'] for entry in detail['timeline']['entries']]
         assert kinds[:2] == ['created', 'message'] and 'result' in kinds and 'revision' in kinds, kinds
         assert 'verification' not in detail and detail['overlaps'] == []
@@ -3404,6 +3415,9 @@ merge_seconds = 3
         reply = next(e for e in chat['entries'] if e['kind'] == 'reply')
         assert reply['text'].startswith('open: #1 ready') and chat['running'], chat
         assert all(e['kind'] not in ('delivered', 'agent') for e in chat['entries'])
+        # ^ The manager's replies count apart from the workers' (docs/tasks.md "Usage").
+        manager_usage = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['usage']['today']['manager']
+        assert manager_usage['turns'] >= 1 and manager_usage['cost_micro_usd'] == 1000 * manager_usage['turns'], manager_usage
         later = steady(owner, 'GET', '/api/tasks/%d/chat?after=%d' % (demo, reply['id']))[1]
         assert all(e.get('id', reply['id'] + 1) > reply['id'] for e in later['entries']), later
         # --- A role (docs/tasks.md "Roles"): its chat by ?role=, a say to it starts it, and the
