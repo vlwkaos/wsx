@@ -17,7 +17,7 @@ import threading
 import time
 
 import wsxd_client
-from wsxd_client import PROTOCOL, recv_line
+from wsxd_client import PROTOCOL, heartbeat_streams, recv_line, send_stream, stream_send_lock
 
 ROOT = Path(__file__).resolve().parents[1]
 # ^ Plugin manifest commands must be absolute even when the scratch root is relative.
@@ -307,26 +307,6 @@ burst_terminals = {pane["id"]: pane["terminal_id"] for pane in call("snapshot")[
 burst_streams = {}
 burst_stream_ends = []
 burst_done = threading.Event()
-stream_send_lock = threading.Lock()
-
-
-def send_stream(stream, message):
-    with stream_send_lock:
-        stream.sendall(json.dumps(message).encode() + b"\n")
-
-
-def heartbeat_streams(streams, done):
-    """Renew each stream's lease every second until `done`; a stream wsxd ended is skipped.
-
-    Close a stream under `stream_send_lock`, so a heartbeat never reaches a reused descriptor."""
-    while not done.wait(1):
-        for stream in list(streams):
-            try:
-                send_stream(stream, {"type": "heartbeat"})
-            except OSError:
-                pass
-
-
 def drain_burst_stream(pane_id, stream):
     last = b""
     try:
