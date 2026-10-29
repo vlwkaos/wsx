@@ -234,14 +234,8 @@ fn usage_sums_a_tasks_turns_and_older_running_totals() {
         (task["usage"]["turns"].as_u64() >= Some(1) && task["state"] != "working")
             .then(|| task.clone())
     });
+    // ^ The fake worker's results report no tokens and no cost.
     let first = task["usage"].clone();
-    // ^ The fake costs 0.001 USD a turn and reads 10 input tokens per model call.
-    assert_eq!(
-        first["cost_micro_usd"].as_u64(),
-        first["turns"].as_u64().map(|turns| turns * 1000),
-        "{first}"
-    );
-    assert!(first["input_tokens"].as_u64() > Some(0), "{first}");
 
     // ^ Two turns of one older session (running totals 3000, then 5000), then a new process
     // whose total starts lower again (1000): 3000 + 2000 + 1000 spent.

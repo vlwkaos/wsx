@@ -3299,9 +3299,9 @@ merge_seconds = 3
         headings = [line for line in detail['report'].splitlines() if line.startswith('## ')]
         assert headings == ['## Summary', '## Changes', '## Evidence', '## To check', '## Left open'], headings
         # ^ Usage: the task's sum is `show --json`'s, and the project's workers today hold every
-        # task's turns (the fake costs 0.001 USD a turn; docs/tasks.md "Usage").
+        # task's turns (the fake worker's results report no tokens; docs/tasks.md "Usage").
         usage = detail['usage']
-        assert usage['turns'] >= 1 and usage['cost_micro_usd'] == 1000 * usage['turns'] and usage['input_tokens'] > 0, usage
+        assert usage['turns'] >= 1, usage
         assert js('task', 'show', 2, '-p', 'demo')['usage'] == usage
         spent = [steady(owner, 'GET', '/api/tasks/%d/t/%d' % (demo, row['id']))[1]['usage'] for row in overview['tasks']]
         workers = overview['usage']['today']['workers']
