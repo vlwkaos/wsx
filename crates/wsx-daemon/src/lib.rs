@@ -390,8 +390,8 @@ impl State {
         ));
     }
 
-    /// Records `terminal.changed` for a PTY read. Pollers act on a changed revision or any new
-    /// event and never read the entity, so a burst of reads for one pane moves the newest
+    /// Records `terminal.changed` for a PTY read. Pollers read only its pane, or skip it when
+    /// they keep no output (the TUI monitor), so a burst of reads for one pane moves the newest
     /// event to the new revision instead of filling the ring and evicting other events.
     /// The first event stays as it is: `poll` takes the first revision as the ring floor.
     fn push_terminal_changed(&mut self, revision: u64, pane_id: PaneId) {
