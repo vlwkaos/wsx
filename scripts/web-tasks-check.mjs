@@ -906,7 +906,8 @@ for (const [width, height, scale] of [[390, 844, 2], [390, 560, 2], [900, 700, 1
     for (const list of reservoir.querySelectorAll('.reservoir-running, .reservoir-scroll')) {
       list.scrollTop = list.scrollHeight;
       const last = [...list.querySelectorAll('.need')].at(-1), end = box(list);
-      if (last && box(last).bottom > end.bottom + 0.5) found.push(\`\${list.className}: its last row does not show at its end\`);
+      // ^ scrollTop is whole pixels at a fractional scale, so a pixel is allowed.
+      if (last && box(last).bottom > end.bottom + 1) found.push(\`\${list.className}: its last row ends \${Math.round(box(last).bottom - end.bottom)} px under its end\`);
       list.scrollTop = 0;
     }
     const body = box(document.querySelector('.reservoir-body')), fixed = box(document.querySelector('.reservoir-fixed'));
