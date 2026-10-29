@@ -163,17 +163,17 @@ fn make(main: &Path, revision: &str, path: &Path, branch: Option<&str>) -> Resul
 }
 
 fn fill(main: &Path, path: &Path, base: &str, branch: Option<&str>) -> Result<()> {
-    let mut entries: Vec<PathBuf> = fs::read_dir(main)
-        .with_context(|| format!("cannot list {}", main.display()))?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_name() != ".git")
-        .map(|entry| entry.path())
-        .collect();
-    entries.sort();
-    if !entries.is_empty() && clone_entries(&entries, path, true).is_err() {
+    let groups = super::build::clone_groups(main, path)?;
+    let clone_all = |copy_on_write| {
+        groups.iter().try_for_each(|(sources, destination)| {
+            clone_entries(sources, destination, copy_on_write)
+        })
+    };
+    if clone_all(true).is_err() {
         // ^ Not a copy-on-write volume: clear the partial copy and copy plainly.
         clear_except_git(path)?;
-        clone_entries(&entries, path, false)?;
+        super::build::clone_groups(main, path)?;
+        clone_all(false)?;
     }
     // ^ A worktree nested in the main checkout keeps a `.git` file pointing at
     // the main repository's admin folder. Its copy must not exist here.
@@ -239,6 +239,42 @@ fn clear_except_git(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Remove the `<repo>-<kind>-<pid>` copies of `kinds` (deploy, release) whose process is
+/// gone, after `cargo clean`: a run killed before its end (a caller's timeout) leaves its
+/// copy. Returns the removed paths. ref: docs/tasks.md "Deploy and release"
+pub fn remove_orphans(main: &Path, kinds: &[&str]) -> Vec<PathBuf> {
+    let Some(repo) = main
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+    else {
+        return Vec::new();
+    };
+    let mut removed = Vec::new();
+    for worktree in list_worktrees(main).unwrap_or_default() {
+        let Some(name) = worktree.path.file_name().map(|name| name.to_string_lossy()) else {
+            continue;
+        };
+        let orphan = kinds.iter().any(|kind| {
+            name.strip_prefix(&format!("{repo}-{kind}-"))
+                .and_then(|pid| pid.parse::<i32>().ok())
+                .is_some_and(|pid| pid > 0 && !alive(pid))
+        });
+        if orphan {
+            crate::ops::cargo_clean(&worktree.path);
+            if remove(main, &worktree.path, None).is_ok() {
+                removed.push(worktree.path);
+            }
+        }
+    }
+    removed
+}
+
+/// `kill(pid, 0)`: a process another user owns (`EPERM`) is alive too.
+fn alive(pid: i32) -> bool {
+    (unsafe { libc::kill(pid, 0) } == 0)
+        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// Remove the worktree, its folder and its branch, if it has one.
