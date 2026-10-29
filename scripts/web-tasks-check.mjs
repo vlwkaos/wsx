@@ -231,7 +231,17 @@ const closeSheet = async (what, hash) => {
 // set's other image and back, and Escape, Back and a tap beside the image close it with the page
 // where it was. `links` selects the set's `many` links (one: the viewer shows no count and
 // nowhere to go); the open viewer is captured as `name`.
-async function viewImages(name, links, many = 2) {
+// The download control's URL answers as an attachment named task-<n>-<id>.<ext> with the bytes
+// of the inline capture; the capture's own URL stays inline.
+async function savedCopy(what, href) {
+  const got = await evaluate(`(async () => {
+    const kept = await fetch(${JSON.stringify(href)}); const plain = await fetch(${JSON.stringify(href.replace("?download=1", ""))});
+    const same = new Uint8Array(await kept.arrayBuffer()).join() === new Uint8Array(await plain.arrayBuffer()).join();
+    return { status: kept.status, disposition: kept.headers.get("content-disposition"), inline: plain.headers.get("content-disposition"), same };
+  })()`);
+  if (got.status !== 200 || !/^attachment; filename="task-\d+-c\d+(-poster)?\.(png|jpeg|webp|mp4)"/.test(got.disposition ?? "") || got.inline !== null || !got.same) await fail(`${what}: the saved copy is wrong: ${JSON.stringify(got)}`);
+}
+async function viewImages(name, links, many = 2, saves = false) {
   const what = `${name} at ${size[0]} px`;
   const place = "JSON.stringify([location.pathname, location.search, location.hash, [...document.querySelectorAll('.scroll, .log')].map((node) => Math.round(node.scrollTop))])";
   // ^ The set's images are in and the log has followed them to its end before the page's place is read.
@@ -279,6 +289,9 @@ async function viewImages(name, links, many = 2) {
   if (first.place !== before) await fail(`${what}: opening the image navigated: ${first.place}, was ${before}`);
   await until("document.querySelector('dialog.viewer').getAnimations({ subtree: true }).length === 0", `${what}: the viewer kept moving`);
   await shot(`viewer-${name}`);
+  const download = await evaluate("document.querySelector('dialog.viewer .viewer-bar a[download]')?.getAttribute('href') ?? null");
+  if (saves !== (download !== null)) await fail(`${what}: the viewer ${saves ? "has no" : "has a"} download control`);
+  if (saves) await savedCopy(what, download);
   if (many > 1) {
     if (phone()) await swipe(size[0] - 60, 60);
     else await key("ArrowRight", 39);
@@ -1693,7 +1706,8 @@ const wideRoom = await evaluate(`[...document.querySelectorAll('.check-list .che
   return [Math.round(box('.check-acts').left - box('.check-words').right), Math.round(box('.check-acts').top - box('.check-task').top), Math.round(box('.check-acts').right)]; })`);
 if (!wideRoom.every(([gap, top, right]) => gap >= 8 && Math.abs(top) <= 12 && Math.abs(right - wideRoom[0][2]) <= 1)) await fail(`the wide To check buttons are not in one column: ${JSON.stringify(wideRoom)}`);
 await shot("to-check", ".composer-send");
-await viewImages("to-check", ".check-list .check-item:first-child .check-capture", 1);
+await viewImages("to-check", ".check-list .check-item:first-child .check-capture", 1, true);
+for (const href of await evaluate("[...document.querySelectorAll('.check-list .check-capture[data-video]')].map((link) => link.dataset.download)")) await savedCopy("the To check video", href);
 await failForm();
 await key("Escape", 27);
 await until("!document.querySelector('.check-list .check-item .need-form')", "Escape did not close the wide note");

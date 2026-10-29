@@ -1184,6 +1184,7 @@ async fn check_capture(
     State(app): State<Shared>,
     Paired(_): Paired,
     UrlPath((project, id, part)): UrlPath<(u64, String, String)>,
+    Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Outcome<Response> {
     tasks_allowed(&app, false)?;
@@ -1192,7 +1193,7 @@ async fn check_capture(
         "poster" => true,
         _ => return Err(Fault::not_found()),
     };
-    let (bytes, media) = with_scope(&app, project, |scope| {
+    let (bytes, media, name) = with_scope(&app, project, |scope| {
         crate::tasks::check_capture(scope, &id, poster)
     })?;
     let size = bytes.len() as u64;
@@ -1209,6 +1210,10 @@ async fn check_capture(
         .header(header::CONTENT_TYPE, media)
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CACHE_CONTROL, "no-cache");
+    // ^ `?download=1` asks for a saved copy; the plain URL stays inline for the viewer.
+    if query.get("download").is_some_and(|value| value == "1") {
+        response = response.header(header::CONTENT_DISPOSITION, attachment_disposition(&name));
+    }
     let body = match range {
         Some((start, end)) => {
             response =
@@ -1220,6 +1225,27 @@ async fn check_capture(
     response
         .body(Body::from(body))
         .map_err(|_| Fault::new(500, "task_capture", "cannot build the response"))
+}
+
+/// `Content-Disposition: attachment` for a saved copy. The name has no quote or control
+/// character (media::clean_name, task capture names). RFC 6266: an ASCII fallback plus the
+/// exact UTF-8 name.
+fn attachment_disposition(name: &str) -> String {
+    let ascii: String = name
+        .chars()
+        .map(|c| if c.is_ascii() && c != '\\' { c } else { '_' })
+        .collect();
+    let exact: String = name
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                (byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect();
+    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{exact}")
 }
 
 /// A `Range` past the end of a file of this many bytes, answered with 416.
@@ -1368,25 +1394,7 @@ async fn media_get(
         {
             "inline".to_owned()
         } else {
-            // The stored name has no quote or control character (media::clean_name).
-            // RFC 6266: an ASCII fallback plus the exact UTF-8 name.
-            let ascii: String = entry
-                .name
-                .chars()
-                .map(|c| if c.is_ascii() && c != '\\' { c } else { '_' })
-                .collect();
-            let exact: String = entry
-                .name
-                .bytes()
-                .map(|byte| {
-                    if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-                        (byte as char).to_string()
-                    } else {
-                        format!("%{byte:02X}")
-                    }
-                })
-                .collect();
-            format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{exact}")
+            attachment_disposition(&entry.name)
         };
     let mut response = Response::builder()
         .status(if range.is_some() {

@@ -152,7 +152,7 @@ Motion shows that something arrived, changed or left; nothing moves for its own 
 - Zoom: pinch, a double tap on the image (2.5×, at that point, and back), ctrl+wheel, or − and + in the top bar. A drag moves a zoomed image. The page itself never zooms.
 - The set is the other `data-view` links of the closest `data-gallery`: the captures of one To check item, the images of one message. A swipe at 1× or ArrowLeft and ArrowRight go to the previous and next; the top bar shows "1 of 2" with Previous and Next. A set of one image has no count and nowhere to go.
 - × (Close), Escape, a tap beside the image at 1× and Back close it. The viewer pushes a history entry with the same URL when it opens and goes Back when it closes, so the phone's back gesture closes it and the page and its scroll stay where they were. The focus goes back to the link.
-- Left out: download and share buttons.
+- Download (↓ in the top bar) on a To check capture, image or video: a link with `download` to the capture URL plus `?download=1`, which the server answers as `Content-Disposition: attachment` named `task-<n>-<id>.<ext>`. On a touch screen that can share files, it first offers the file to the share sheet (Save to Photos on iPhone) and, when that cannot start, opens the attachment URL, which iPhone Safari saves to Files. Other images (chat, diagrams) have no download; a removed capture has no link, so no control. Left out: a share button.
 
 `scripts/web-tasks-check.mjs` (`viewImages`) opens a To check capture (a set of one) and a chat message's images at 390 × 844 and 1280 × 800, and checks the fit, a swipe or the arrow keys, the three ways to close and that the page did not move.
 
