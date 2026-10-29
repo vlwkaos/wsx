@@ -34,3 +34,10 @@ asched-core = { path = "vendor/asched/crates/asched-core", version = "=0.2.0" }
 ratatui = { version = "0.29", features = ["crossterm"] }
 crossterm = "0.28"
 clap = { version = "4", features = ["derive"] }
+
+# ^ Line tables keep a panic's and a backtrace's file:line in a smaller build. Set here, not
+# in tasks.env, so the main checkout and every task copy build third-party crates with one
+# artifact hash and a copy reuses main's cloned build (docs/tasks.md "Build output"). A
+# debugger that needs locals: CARGO_PROFILE_DEV_DEBUG=full.
+[profile.dev]
+debug = "line-tables-only"
