@@ -352,7 +352,7 @@ pub enum TaskCmd {
     },
     /// From a task's worker: run the project's checks as after its result (all, or by number)
     CheckRun { numbers: Vec<u32> },
-    /// Serve the task for a person to try on its own tailnet port (tasks.preview)
+    /// Serve the task for a person to try on its own tailnet or local port (tasks.preview)
     Preview {
         task: String,
         /// Stop the running preview
