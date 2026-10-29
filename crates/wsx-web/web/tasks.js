@@ -870,12 +870,12 @@ export function Manager({ project: id, task, page, checks, role = null }) {
           </div>
           ${away && html`<${JumpButton} unread=${unread} onClick=${toEnd} />`}
         </div>
-        ${menu}
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
         ${!role && html`<${Reservoir} project=${id} items=${items} tasks=${overview?.tasks ?? []} checking=${overview?.to_check ?? 0} />`}
         ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
           onSent=${(message) => { toEnd(); setSent(message); load(); }} />`}
       </div>
+      ${menu}
       ${task != null && html`
         <${Sheet} key=${`t${task}`} label=${`Task #${task}`} onClose=${() => leaveFor(`#/p/${id}`)}>
           ${(grip) => html`<${TaskPage} key=${task} project=${id} task=${task} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}

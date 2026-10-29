@@ -626,6 +626,8 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
    task changes are muted lines; what is open is one panel over the composer, bounded so the
    conversation keeps the height. */
 .manager .chat { --strip-share: 0.4; container-type: size; }
+/* ^ Some engines make a size container the containing block of its fixed descendants (task 129
+   saw it), so the reply menu is rendered beside .chat, not in it (tasks.js). */
 .since {
   flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2);
   padding: var(--space-1) var(--column-inset, var(--space-4)); font-size: var(--font-size-sm);

@@ -953,6 +953,24 @@ for (const [width, height, scale] of [[390, 844, 2], [390, 560, 2], [900, 700, 1
   await shot(`reservoir-many-running-${width}x${height}`, ".composer-send");
 }
 await inStore(`update({ tasks: { ...state.tasks, [${project}]: ${JSON.stringify(beforeRunners)} } })`);
+// ^ The reply menu is fixed to the viewport: it opens at the press point, kept on screen. An
+// ancestor with layout containment (container-type: size on the chat) would make the chat its
+// containing block and move it by the chat's offset.
+for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
+  await resize([width, height, scale]);
+  await until("!!document.querySelector('.log > [data-quote]')", `no message to press at ${width} px`);
+  const at = { x: Math.round(width / 3), y: Math.round(height / 3) };
+  await evaluate(`(document.querySelector('.log > [data-quote] .bubble-body p') ?? document.querySelector('.log > [data-quote]'))
+    .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: ${at.x}, clientY: ${at.y}, button: 2 }))`);
+  await until("!!document.querySelector('.reply-menu')", `a press on a manager message opened no reply menu at ${width}x${height}`);
+  await pause(100);
+  const placed = await evaluate(`(() => { const box = document.querySelector('.reply-menu').getBoundingClientRect(); return { left: box.left, top: box.top, width: box.width, height: box.height }; })()`);
+  const want = { left: Math.min(at.x, width - placed.width), top: Math.min(at.y, height - placed.height) };
+  if (Math.abs(placed.left - want.left) > 1 || Math.abs(placed.top - want.top) > 1) await fail(`the reply menu is at ${Math.round(placed.left)},${Math.round(placed.top)} not ${want.left},${want.top} at ${width}x${height}`);
+  await shot(`reply-menu-manager-${width}`);
+  await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))");
+  await until("!document.querySelector('.reply-menu')", `Escape did not close the reply menu at ${width} px`);
+}
 // ^ 1280 px is the wide layout: its page tree is another, so the list comes back closed.
 await resize([390, 844, 2]);
 await openReservoir();
