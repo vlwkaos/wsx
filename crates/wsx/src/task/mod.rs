@@ -1112,7 +1112,7 @@ fn create(
             id.to_string(),
         ];
         ops::create_session_launch(
-            &wsx_core::runtime::Client::local(),
+            &runtime::Client::local(),
             &config,
             &record.working_copy,
             format!("task-{id}"),
@@ -1485,7 +1485,7 @@ fn hand(dir: &TaskDir, json: bool) -> Result<()> {
                 ],
                 None => Vec::new(),
             };
-            ops::create_session_launch(&wsx_core::runtime::Client::local(), &load_config()?, &record.working_copy, label.clone(), argv, None)
+            ops::create_session_launch(&runtime::Client::local(), &load_config()?, &record.working_copy, label.clone(), argv, None)
                 .with_context(|| {
                     format!(
                         "task t{} is worked by hand, but session {label} did not open; work in {} or run `wsx task handback {}`",
@@ -1532,7 +1532,7 @@ fn handback(dir: &TaskDir, json: bool) -> Result<()> {
     let record = dir.read_record()?;
     let mut closed = Vec::new();
     for session in sessions_in(&record.working_copy, Some(&hand_label(record.id)))? {
-        ops::kill_session(&wsx_core::runtime::Client::local(), session).with_context(|| {
+        ops::kill_session(&runtime::Client::local(), session).with_context(|| {
             format!(
                 "task t{} was handed back, but its hand session remains",
                 record.id
@@ -1655,7 +1655,7 @@ fn close(dir: &TaskDir, discard: bool, json: bool) -> Result<()> {
     }
     let mut removed = Vec::new();
     for session in sessions_in(&record.working_copy, None)? {
-        ops::kill_session(&wsx_core::runtime::Client::local(), session).with_context(|| {
+        ops::kill_session(&runtime::Client::local(), session).with_context(|| {
             format!(
                 "task t{} is closed but session {session} remains",
                 record.id
@@ -2060,7 +2060,7 @@ fn deployed(project: Option<&str>, json: bool) -> Result<()> {
 pub(crate) fn launch_manager(main: &Path) -> impl FnOnce(String, Vec<String>) -> Result<()> + '_ {
     move |label, argv| {
         ops::create_session_launch(
-            &wsx_core::runtime::Client::local(),
+            &runtime::Client::local(),
             &load_config()?,
             main,
             label,
