@@ -891,10 +891,31 @@ for (const [width, height, scale] of [[390, 560, 2], [1280, 520, 1]]) {
   await shot(`reservoir-running-fixed-${width}`, ".composer-send");
   await evaluate("document.querySelector('.reservoir-scroll').scrollTop = 0");
 }
+// ^ The open list ends at its last row: between that row and the composer is only the list's own
+// bottom padding, never an empty block (a percentage cap on Running once left a quarter of the screen).
+const gapUnderList = () => evaluate(`(() => {
+  const rows = [...document.querySelectorAll('.reservoir .need')], last = rows.at(-1), composer = document.querySelector('.composer').getBoundingClientRect();
+  let end = last.getBoundingClientRect().bottom;
+  for (let node = last.parentElement; node && node !== document.querySelector('.reservoir'); node = node.parentElement) if (/auto|scroll/.test(getComputedStyle(node).overflowY)) end = Math.min(end, node.getBoundingClientRect().bottom);
+  return { gap: composer.top - end, pad: parseFloat(getComputedStyle(document.querySelector('.reservoir-body')).paddingBottom), last: last.textContent.trim().replace(/\\s+/g, ' ').slice(0, 30) };
+})()`);
+const noEmptyBlock = async (where) => {
+  const seen = await gapUnderList();
+  if (seen.gap > seen.pad + 1.5) await fail(`${where}: ${Math.round(seen.gap)} px of empty space under the list's last row (${JSON.stringify(seen)}), only ${seen.pad} px is padding`);
+};
 // ^ With many running tasks and a To check count, no word of the open list is cut: a row is cut
 // only by the list that scrolls it, each such list sits whole inside the reservoir, its last
 // row shows whole at its end, and Running keeps at most half so the rest keeps its share.
 const beforeRunners = await inStore(`return JSON.parse(JSON.stringify(state.tasks[${project}]))`);
+await inStore(`const ov = state.tasks[${project}], base = ov.tasks.find((task) => task.stage === 'working');
+  update({ tasks: { ...state.tasks, [${project}]: { ...ov, needs: [], to_check: 16, tasks: [base, { ...base, id: 91, title: 'a second running task' }] } } })`);
+await resize([390, 844, 2]);
+await openReservoir();
+await until("document.querySelectorAll('.reservoir-running .need').length === 2 && !!document.querySelector('.reservoir-scroll .need')", "the open list does not show two running tasks and To check");
+await pause(400);
+await noEmptyBlock("two running tasks and To check at 390x844");
+await shot("reservoir-two-running", ".composer-send");
+await inStore(`update({ tasks: { ...state.tasks, [${project}]: ${JSON.stringify(beforeRunners)} } })`);
 await inStore(`const ov = state.tasks[${project}], base = ov.tasks.find((task) => task.stage === 'working');
   update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: [...ov.tasks, ...[1, 2, 3, 4, 5, 6].map((n) => ({ ...base, id: 90 + n, title: 'runner ' + n + ' with a title long enough to be cut at the end' }))] } } })`);
 for (const [width, height, scale] of [[390, 844, 2], [390, 560, 2], [900, 700, 1]]) {
@@ -929,6 +950,7 @@ for (const [width, height, scale] of [[390, 844, 2], [390, 560, 2], [900, 700, 1
     return { found, at: Object.fromEntries(['.reservoir', '.reservoir-reveal', '.reservoir-body', '.reservoir-fixed', '.reservoir-running', '.reservoir-scroll', '.composer'].map((selector) => [selector, rect(selector)])) };
   })()`);
   if (cut.found.length) await fail(`the open list cuts words at ${width}x${height}: ${JSON.stringify(cut)}`);
+  await noEmptyBlock(`seven running tasks at ${width}x${height}`);
   await shot(`reservoir-many-running-${width}x${height}`, ".composer-send");
 }
 await inStore(`update({ tasks: { ...state.tasks, [${project}]: ${JSON.stringify(beforeRunners)} } })`);
