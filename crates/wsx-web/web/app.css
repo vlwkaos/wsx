@@ -625,7 +625,7 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
    (docs/web-client-tasks.md "Project screen"). Each message is one bubble with its author and time;
    task changes are muted lines; what is open is one panel over the composer, bounded so the
    conversation keeps the height. */
-.manager .chat { --strip-share: 0.4; }
+.manager .chat { --strip-share: 0.4; container-type: size; }
 .since {
   flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2);
   padding: var(--space-1) var(--column-inset, var(--space-4)); font-size: var(--font-size-sm);
@@ -716,8 +716,11 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 /* Running stays at the top of the open list; what waits for the owner and To check scroll under it. */
 .reservoir-body { min-height: 0; min-width: 0; display: flex; flex-direction: column; padding-bottom: var(--space-2); }
 /* ^ Running takes at most half of the open list and scrolls inside itself under its label, so
-   with many running tasks the rest keeps its share and no row is cut by the reveal's clip. */
-.reservoir-fixed { flex: 0 0 auto; max-height: 50%; display: flex; flex-direction: column; }
+   with many running tasks the rest keeps its share and no row is cut by the reveal's clip.
+   The cap is half of the reservoir's own cap, in the chat's height (a size container): a
+   percentage of the body, whose height comes from its content, resolved after that height was
+   set and left an empty block under the last row. */
+.reservoir-fixed { flex: 0 0 auto; max-height: calc((100cqh * var(--strip-share) - var(--border-width)) / 2); display: flex; flex-direction: column; }
 .reservoir-running { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .reservoir-scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .reservoir-fixed + .reservoir-scroll:not(:empty) { border-top: var(--border-width) solid var(--color-hairline); }
