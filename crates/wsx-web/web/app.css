@@ -715,7 +715,10 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .reservoir-head:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 /* Running stays at the top of the open list; what waits for the owner and To check scroll under it. */
 .reservoir-body { min-height: 0; min-width: 0; display: flex; flex-direction: column; padding-bottom: var(--space-2); }
-.reservoir-fixed { flex: 0 0 auto; }
+/* ^ Running takes at most half of the open list and scrolls inside itself under its label, so
+   with many running tasks the rest keeps its share and no row is cut by the reveal's clip. */
+.reservoir-fixed { flex: 0 0 auto; max-height: 50%; display: flex; flex-direction: column; }
+.reservoir-running { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .reservoir-scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .reservoir-fixed + .reservoir-scroll:not(:empty) { border-top: var(--border-width) solid var(--color-hairline); }
 /* Every row of the open list, its labels and its answer field are the closed line's small size. */
@@ -726,7 +729,7 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 /* Open, a running row reads like the closed line: its small size, rows close together. */
 .reservoir-running .row-link { min-height: 0; padding-block: var(--space-1); font-size: var(--font-size-sm); align-items: baseline; }
 .reservoir-running .row-open { align-self: baseline; }
-.reservoir-label { padding: var(--space-3) var(--column-inset, var(--space-4)) var(--space-1); font-size: var(--font-size-sm); }
+.reservoir-label { padding: var(--space-3) var(--column-inset, var(--space-4)) var(--space-1); font-size: var(--font-size-sm); text-transform: none; letter-spacing: normal; }
 /* Open, the chevron has no row of its own: it sits at the right end of the list's first row
    (the first label, or the first item row), which keeps room for it. */
 .reservoir[data-open] .reservoir-head { position: absolute; top: 0; right: 0; z-index: 1; width: var(--reservoir-chevron); }

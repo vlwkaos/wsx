@@ -813,6 +813,10 @@ if (!/^keep a worker busy WAIT /.test(listedRows[0][1])) await fail(`the running
 // ^ Every row of the open list, its labels and its context, is the closed line's small size.
 const sizes = await evaluate("[...document.querySelectorAll('.reservoir-body :is(.row-label, .row-context, .reservoir-label)')].map((node) => getComputedStyle(node).fontSize)");
 if (!sizes.length || sizes.some((size) => size !== closedSize)) await fail(`the open list's words are not all ${closedSize}: ${JSON.stringify(sizes)}`);
+// ^ The Running label reads as the rows do: no capitals or wide tracking that make it look bigger.
+const labelLook = await evaluate(`[document.querySelector('.reservoir-label'), document.querySelector('.reservoir-body .row-label')].map((node) => {
+  const style = getComputedStyle(node); return [style.fontSize, style.textTransform, style.letterSpacing].join(' '); })`);
+if (labelLook[0] !== labelLook[1] || labelLook[0].split(' ')[0] !== closedSize) await fail(`the Running label does not look like the rows: ${JSON.stringify(labelLook)}`);
 // ^ The open list reads its tasks ahead: a row's sheet shows its content in the frame it opens,
 // with no loading step, on a phone and a wide screen.
 for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
@@ -874,6 +878,46 @@ for (const [width, height, scale] of [[390, 560, 2], [1280, 520, 1]]) {
   await shot(`reservoir-running-fixed-${width}`, ".composer-send");
   await evaluate("document.querySelector('.reservoir-scroll').scrollTop = 0");
 }
+// ^ With many running tasks and a To check count, no word of the open list is cut: a row is cut
+// only by the list that scrolls it, each such list sits whole inside the reservoir, its last
+// row shows whole at its end, and Running keeps at most half so the rest keeps its share.
+const beforeRunners = await inStore(`return JSON.parse(JSON.stringify(state.tasks[${project}]))`);
+await inStore(`const ov = state.tasks[${project}], base = ov.tasks.find((task) => task.stage === 'working');
+  update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: [...ov.tasks, ...[1, 2, 3, 4, 5, 6].map((n) => ({ ...base, id: 90 + n, title: 'runner ' + n + ' with a title long enough to be cut at the end' }))] } } })`);
+for (const [width, height, scale] of [[390, 844, 2], [390, 560, 2], [900, 700, 1]]) {
+  await resize([width, height, scale]);
+  await openReservoir();
+  await until("document.querySelectorAll('.reservoir-running .need').length === 7", `the open list does not show seven running tasks at ${width} px`);
+  await pause(400);
+  const cut = await evaluate(`(() => {
+    const box = (node) => node.getBoundingClientRect(), scroller = (node) => /auto|scroll/.test(getComputedStyle(node).overflowY);
+    const reservoir = document.querySelector('.reservoir'), found = [];
+    for (const word of reservoir.querySelectorAll('.reservoir-label, .row-label, .row-context, .task-number')) {
+      const name = word.textContent.trim().slice(0, 24);
+      if (word.scrollHeight > word.clientHeight + 0.5) found.push(\`\${name}: taller than its box\`);
+      let shown = box(word);
+      for (let node = word.parentElement; node !== reservoir.parentElement; node = node.parentElement) {
+        if (getComputedStyle(node).overflowY === 'visible') continue;
+        const clip = box(node);
+        if (scroller(node)) { shown = clip; continue; }
+        if (shown.top < clip.top - 0.5 || shown.bottom > clip.bottom + 0.5) found.push(\`\${name}: cut by .\${node.classList[0]}\`);
+      }
+    }
+    for (const list of reservoir.querySelectorAll('.reservoir-running, .reservoir-scroll')) {
+      list.scrollTop = list.scrollHeight;
+      const last = [...list.querySelectorAll('.need')].at(-1), end = box(list);
+      if (last && box(last).bottom > end.bottom + 0.5) found.push(\`\${list.className}: its last row does not show at its end\`);
+      list.scrollTop = 0;
+    }
+    const body = box(document.querySelector('.reservoir-body')), fixed = box(document.querySelector('.reservoir-fixed'));
+    if (fixed.height > body.height / 2 + 0.5) found.push('Running takes more than half of the open list');
+    const rect = (selector) => { const node = document.querySelector(selector), area = box(node); return [area.top, area.bottom, node.scrollHeight, node.clientHeight].map(Math.round); };
+    return { found, at: Object.fromEntries(['.reservoir', '.reservoir-reveal', '.reservoir-body', '.reservoir-fixed', '.reservoir-running', '.reservoir-scroll', '.composer'].map((selector) => [selector, rect(selector)])) };
+  })()`);
+  if (cut.found.length) await fail(`the open list cuts words at ${width}x${height}: ${JSON.stringify(cut)}`);
+  await shot(`reservoir-many-running-${width}x${height}`, ".composer-send");
+}
+await inStore(`update({ tasks: { ...state.tasks, [${project}]: ${JSON.stringify(beforeRunners)} } })`);
 // ^ 1280 px is the wide layout: its page tree is another, so the list comes back closed.
 await resize([390, 844, 2]);
 await openReservoir();
