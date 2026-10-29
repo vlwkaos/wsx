@@ -1111,8 +1111,14 @@ def run(wsx, wsxd, work, owned):
     # above macOS's 99998 is never alive.
     orphan = base / 'project-release-999999'
     git('worktree', 'add', '-q', '--detach', str(orphan))
+    # ^ A worktree on a branch with the same name shape is someone's work: it stays.
+    owned = base / 'project-deploy-999998'
+    git('worktree', 'add', '-q', '-b', 'owned-999998', str(owned))
     deployed = ran('deploy')
     assert not orphan.exists() and str(orphan) not in git('worktree', 'list')
+    assert owned.is_dir() and str(owned) in git('worktree', 'list')
+    git('worktree', 'remove', '--force', str(owned))
+    git('branch', '-D', 'owned-999998')
     tip = git('rev-parse', 'main')
     assert deployed['commit'] == tip and deployed['exit'] == 0, deployed
     commit_line, where = (base / 'deploy.log').read_text().split()

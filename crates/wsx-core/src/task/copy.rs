@@ -172,7 +172,6 @@ fn fill(main: &Path, path: &Path, base: &str, branch: Option<&str>) -> Result<()
     if clone_all(true).is_err() {
         // ^ Not a copy-on-write volume: clear the partial copy and copy plainly.
         clear_except_git(path)?;
-        super::build::clone_groups(main, path)?;
         clone_all(false)?;
     }
     // ^ A worktree nested in the main checkout keeps a `.git` file pointing at
@@ -196,6 +195,8 @@ fn fill(main: &Path, path: &Path, base: &str, branch: Option<&str>) -> Result<()
 }
 
 fn clone_entries(entries: &[PathBuf], destination: &Path, copy_on_write: bool) -> Result<()> {
+    fs::create_dir_all(destination)
+        .with_context(|| format!("cannot make {}", destination.display()))?;
     let mut command = Command::new("cp");
     if copy_on_write {
         command.arg(if cfg!(target_os = "macos") {
@@ -241,9 +242,9 @@ fn clear_except_git(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Remove the `<repo>-<kind>-<pid>` copies of `kinds` (deploy, release) whose process is
-/// gone, after `cargo clean`: a run killed before its end (a caller's timeout) leaves its
-/// copy. Returns the removed paths. ref: docs/tasks.md "Deploy and release"
+/// Remove the detached `<repo>-<kind>-<pid>` copies of `kinds` (deploy, release) whose
+/// process is gone, after `cargo clean`: a run killed before its end (a caller's timeout)
+/// leaves its copy. A worktree on a branch is never one of them. Returns the removed paths. ref: docs/tasks.md "Deploy and release"
 pub fn remove_orphans(main: &Path, kinds: &[&str]) -> Vec<PathBuf> {
     let Some(repo) = main
         .file_name()
@@ -256,11 +257,12 @@ pub fn remove_orphans(main: &Path, kinds: &[&str]) -> Vec<PathBuf> {
         let Some(name) = worktree.path.file_name().map(|name| name.to_string_lossy()) else {
             continue;
         };
-        let orphan = kinds.iter().any(|kind| {
-            name.strip_prefix(&format!("{repo}-{kind}-"))
-                .and_then(|pid| pid.parse::<i32>().ok())
-                .is_some_and(|pid| pid > 0 && !alive(pid))
-        });
+        let orphan = worktree.branch == "HEAD"
+            && kinds.iter().any(|kind| {
+                name.strip_prefix(&format!("{repo}-{kind}-"))
+                    .and_then(|pid| pid.parse::<i32>().ok())
+                    .is_some_and(|pid| pid > 0 && !alive(pid))
+            });
         if orphan {
             crate::ops::cargo_clean(&worktree.path);
             if remove(main, &worktree.path, None).is_ok() {

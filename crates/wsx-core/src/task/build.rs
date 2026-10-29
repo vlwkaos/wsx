@@ -31,10 +31,6 @@ pub(super) fn clone_groups(main: &Path, copy: &Path) -> Result<Vec<(Vec<PathBuf>
         }
     }
     groups.push((plain, copy.join("target")));
-    for (_, destination) in &groups[1..] {
-        fs::create_dir_all(destination)
-            .with_context(|| format!("cannot make {}", destination.display()))?;
-    }
     groups.retain(|(sources, _)| !sources.is_empty());
     Ok(groups)
 }
