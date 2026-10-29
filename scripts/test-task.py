@@ -1236,7 +1236,9 @@ def run(wsx, wsxd, work, owned):
     assert [(row['id'], row['state']) for row in ledger['open']] == [(blocked_task, 'waiting'), (ready_task, 'ready')]
     assert ledger['open'][0]['waiting']['on'] == 'owner', ledger['open'][0]
     assert ledger['open'][1]['summary'] == 'did: WORK l.txt could not run the browser test' and ledger['open'][1]['human_verify'] == 0
-    assert ledger['open'][1]['checks'] == [{'command': 'test ! -e broken.txt', 'outcome': 'passed'}], ledger['open'][1]
+    checked = ledger['open'][1]['checks']
+    assert [{k: c[k] for k in ('command', 'outcome')} for c in checked] == [{'command': 'test ! -e broken.txt', 'outcome': 'passed'}], checked
+    assert all(isinstance(c['ms'], int) and isinstance(c['queued_ms'], int) for c in checked), checked
     assert 0 < len(ledger['recent']) <= 10 and all(row['state'] in ('landed', 'closed') for row in ledger['recent'])
     assert ledger['deploys']['deploy']['commit'] == older and ledger['main']['branch'] == 'main'
     assert ledger['main']['changed_files'] >= 1  # scratch.txt is untracked in the main checkout
