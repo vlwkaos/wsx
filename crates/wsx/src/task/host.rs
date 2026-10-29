@@ -1259,7 +1259,8 @@ impl Host {
     }
 
     /// Resume once there is space. Tasks resume one at a time, oldest wait first, each
-    /// `DISK_SETTLE` after the one before: resumed at once, they would fill the disk again. ref: docs/tasks.md "Checks, revisions and report"
+    /// `DISK_SETTLE` after the one before: resumed at once, they would fill the disk again.
+    /// ref: docs/tasks.md "Checks, revisions and report"
     fn resume_after_disk(&mut self) {
         if self.low_disk().is_some() {
             return;
