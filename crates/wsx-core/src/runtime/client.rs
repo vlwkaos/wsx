@@ -245,7 +245,10 @@ impl Client {
                 _ => false,
             },
         };
-        let mut result = if undelivered && wait_for_handoff(&self.socket, CALL_HANDOFF_WAIT) {
+        let mut result = if undelivered {
+            // ^ The marker may already read `ready` when this looks: a request that certainly
+            // was not applied goes once more whether or not this client saw the handoff.
+            wait_for_handoff(&self.socket, CALL_HANDOFF_WAIT);
             self.call_once(request)
         } else {
             result
@@ -2457,6 +2460,7 @@ impl EventMonitor {
                 let mut revision = 0;
                 let mut connected = false;
                 let mut recovery_availability = None;
+                let mut retried = false;
                 while !stop.load(Ordering::Acquire) {
                     // The monitor must see a replaced daemon itself, so it does not use the
                     // retrying call: a reconnect is what tells the TUI to take a new snapshot.
@@ -2469,6 +2473,7 @@ impl EventMonitor {
                             revision: next,
                             events,
                         }) => {
+                            retried = false;
                             if !connected {
                                 connected = true;
                                 let _ = sender
@@ -2485,7 +2490,9 @@ impl EventMonitor {
                         Ok(Response::Error(mut error)) => {
                             connected = false;
                             revision = 0;
-                            if wait_for_handoff(client.socket(), HANDOFF_WAIT) {
+                            if wait_for_handoff(client.socket(), HANDOFF_WAIT)
+                                || !std::mem::replace(&mut retried, true)
+                            {
                                 continue;
                             }
                             // ^ docs/daemon-live-upgrade.md "A stuck handoff": say that the
@@ -2513,8 +2520,13 @@ impl EventMonitor {
                         Err(error) => {
                             connected = false;
                             revision = 0;
-                            // ^ docs/daemon-live-upgrade.md: a live handoff is not a failure.
-                            if wait_for_handoff(client.socket(), HANDOFF_WAIT) {
+                            // ^ docs/daemon-live-upgrade.md "Transition marker": a live handoff
+                            // is not a failure. This thread can wake after the successor wrote
+                            // `ready`, so the daemon gets one more poll per outage before the
+                            // owner hears of it; a daemon that died fails that one too.
+                            if wait_for_handoff(client.socket(), HANDOFF_WAIT)
+                                || !std::mem::replace(&mut retried, true)
+                            {
                                 continue;
                             }
                             let _ = sender.send(EventSignal::Disconnected(error.to_string()));
