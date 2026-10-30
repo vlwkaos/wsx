@@ -72,6 +72,12 @@ export function firstSentence(text, max = 200) {
   return sentence.length > max ? `${sentence.slice(0, max - 1).trimEnd()}…` : sentence;
 }
 
+// The last whole sentence of a line, or the line when none ends in it.
+export function lastSentence(text) {
+  const whole = (text ?? "").trim().match(/[^.!?]+[.!?]+(?=\s|$)/g);
+  return (whole?.at(-1) ?? text ?? "").trim();
+}
+
 // A commit hash shortened for reading.
 export const short = (commit) => (commit ?? "").slice(0, 8);
 

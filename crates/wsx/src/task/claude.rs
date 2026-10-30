@@ -47,7 +47,11 @@ const KEPT_ENV: &[&str] = &[
 pub enum AgentLine {
     /// The conversation ID the agent runs under.
     Init(String),
-    Progress(String),
+    Progress {
+        text: String,
+        /// The agent's own words, not a tool call.
+        said: bool,
+    },
     Result(Box<TurnResult>),
 }
 
@@ -623,16 +627,19 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
                 .iter()
                 .rev()
                 .find_map(progress_text)
-                .map(AgentLine::Progress)
+                .map(|(text, said)| AgentLine::Progress { text, said })
         }
         "control_response" if value.pointer("/response/subtype")?.as_str()? == "error" => {
-            Some(AgentLine::Progress(format!(
-                "claude refused a control request: {}",
-                value
-                    .pointer("/response/error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("no reason")
-            )))
+            Some(AgentLine::Progress {
+                text: format!(
+                    "claude refused a control request: {}",
+                    value
+                        .pointer("/response/error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("no reason")
+                ),
+                said: false,
+            })
         }
         "result" => Some(AgentLine::Result(Box::new(TurnResult {
             limit: usage_limit(value, turns.resets_at.take()),
@@ -770,18 +777,19 @@ fn key_argument(input: &Value) -> Option<String> {
         .find_map(|key| input.get(key)?.as_str().map(str::to_string))
 }
 
-fn progress_text(item: &Value) -> Option<String> {
+fn progress_text(item: &Value) -> Option<(String, bool)> {
     match item.get("type")?.as_str()? {
         "tool_use" => {
             let name = item.get("name")?.as_str()?;
-            Some(match item.get("input").and_then(key_argument) {
+            let line = match item.get("input").and_then(key_argument) {
                 Some(argument) => format!("{name} {}", clip(&argument, PROGRESS_CHARS)),
                 None => name.to_string(),
-            })
+            };
+            Some((line, false))
         }
         "text" => {
             let text = item.get("text")?.as_str()?.trim();
-            (!text.is_empty()).then(|| clip(text, PROGRESS_CHARS))
+            (!text.is_empty()).then(|| (clip(text, PROGRESS_CHARS), true))
         }
         _ => None,
     }

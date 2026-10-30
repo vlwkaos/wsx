@@ -878,7 +878,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .task-overlaps { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
 .fold-head { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; min-height: var(--size-control); padding-block: 0; }
 .fold-head::-webkit-details-marker { display: none; }
-:is(.task-fold, .timeline)[open] > .fold-head .icon { transform: rotate(90deg); }
+:is(.task-fold, .task-details, .timeline)[open] > .fold-head .icon { transform: rotate(90deg); }
 .timeline-list { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); }
 .timeline-list li { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: var(--space-3); }
 .timeline-what { font-weight: var(--font-weight-medium); }
@@ -899,6 +899,15 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
    of what changed, and what the owner should know next. */
 .story { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
 .story .link-action { align-self: flex-start; }
+/* How an open task is doing: its word and age, its workflow steps, the worker's last sentence. */
+.progress { display: flex; flex-direction: column; gap: var(--space-2); }
+.progress-head { display: flex; align-items: center; gap: var(--space-2); margin: 0; }
+.progress-health { font-weight: var(--font-weight-strong); }
+.progress-age { margin-left: auto; flex: none; font-size: var(--font-size-sm); color: var(--color-muted); font-variant-numeric: tabular-nums; }
+.progress-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); }
+.progress-steps li { display: flex; align-items: center; gap: var(--space-1); }
+.progress-steps [aria-current="step"] { color: var(--color-text); font-weight: var(--font-weight-strong); text-decoration: underline; }
+.progress-said { margin: 0; color: var(--color-muted); }
 .story-act { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
 .story-act > .story-next { flex: 1 1 calc(var(--size-rail) * 0.6); min-width: 0; }
 

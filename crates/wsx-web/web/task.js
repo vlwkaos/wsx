@@ -1,6 +1,6 @@
-// One task, in its sheet over the project chat: what changed and the one action when it needs
-// the owner, then the report folded (Changes, Evidence, To check, Left open), the messages to
-// the worker and its history (docs/web-client-tasks.md "Task sheet").
+// One task, in its sheet over the project chat: how it is doing and the one action when it needs
+// the owner, the To check items to act on, then one folded Details with the report, the messages
+// to the worker, its usage and its history (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
 import { clock, html, Icon, keepIn, Loading, readMap, short, useCoalescedLoad, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, useEventLoad, useStore } from "./store.js";
@@ -9,7 +9,7 @@ import { grow, isolate, release } from "./chat.js";
 import { announce, loadTasks, taskStage, TaskChip, TaskTitle, withChips } from "./tasks.js";
 import { Bubble } from "./bubbles.js";
 import { SheetBar } from "./ui.js";
-import { TaskStory } from "./story.js";
+import { summaryIsCurrent, TaskStory } from "./story.js";
 import { CheckRow, TryButton } from "./checks.js";
 import { usageLine } from "./usage.js";
 
@@ -185,7 +185,8 @@ export function TaskPage({ project, task, onClose, grip }) {
     setDetail(next);
     setFailure("");
   }, (error) => setFailure(error.status === 404 ? "This task is not in this site's projects." : error.message), [project, task]);
-  useEventLoad("task", load, (detail) => detail.project == null || (detail.project === project && detail.task === task), [project, task]);
+  // ^ A silent task raises no `task` event: the manager's event on a stall reads it again.
+  useEventLoad(["task", "manager"], load, (detail) => detail.project == null || (detail.project === project && (detail.task == null || detail.task === task)), [project, task]);
   // An approval or a decision changes the overview, not this task's files.
   const overview = store.tasks[project];
   useEffect(() => { if (detail) load(); }, [overview?.decisions?.[0]?.approval, overview?.needs?.length]);
@@ -195,7 +196,7 @@ export function TaskPage({ project, task, onClose, grip }) {
   const top = html`
     <${SheetBar} grip=${grip} onClose=${onClose}>
       ${detail?.title ? html`<${TaskTitle} title=${detail.title} id=${task} />` : html`<span class="bar-label">#${task}</span>`}
-      ${detail && html`<span class="bar-state" data-tone=${taskStage(detail)[1]}>${taskStage(detail)[0]}</span>`}
+      ${detail && !detail.progress && html`<span class="bar-state" data-tone=${taskStage(detail)[1]}>${taskStage(detail)[0]}</span>`}
     </${SheetBar}>`;
   if (!detail) return html`<div class="page">${top}${failure ? html`<p class="error empty">${failure}</p>` : html`<${Loading} />`}</div>`;
 
@@ -237,6 +238,14 @@ export function TaskPage({ project, task, onClose, grip }) {
     : "You work on this task in its working copy. Hand back gives it back to the worker, which checks your work."}</p>`;
   const report = sections(detail.report);
   const entries = detail.timeline.entries;
+  // ^ Open items are the owner's to act on, so they stay outside Details.
+  const toCheck = detail.to_check.some((item) => item.state === "open");
+  const folds = FOLDS.filter((title) => report[title] != null && !(toCheck && title === "To check"));
+  const lastResult = !summaryIsCurrent(detail) && detail.result?.summary?.trim();
+  const checkRows = html`
+    <ul class="check-list">${detail.to_check.map((item) => html`
+      <${CheckRow} key=${item.id} project=${project} item=${item} revision=${detail.revision} onChanged=${load} />`)}
+    </ul>`;
   return html`
     <div class="page task-page">
       ${top}
@@ -247,21 +256,29 @@ export function TaskPage({ project, task, onClose, grip }) {
             ${blocked}
           </div>` : null}${handHint}</${TaskStory}>
 
-        ${FOLDS.filter((title) => report[title] != null).map((title) => {
+        ${toCheck && html`
+          <section class="task-section" aria-label="To check">
+            <h2 class="task-heading">To check<span class="fold-note"> · ${foldNote("To check", "", detail)}</span></h2>
+            ${checkRows}
+          </section>`}
+        <details class="task-section task-details">
+          <summary class="task-heading fold-head"><${Icon} name="chevron" />Details</summary>
+        ${lastResult && html`
+          <section class="task-section" aria-label="Last result">
+            <h2 class="task-heading">Last result</h2>
+            <div class="task-body"><${Markdown} text=${lastResult} words=${words} prose /></div>
+          </section>`}
+        ${folds.map((title) => {
           const note = foldNote(title, report[title], detail);
           // ^ Landed items are live: Pass and Fail act on the project's list.
           const live = title === "To check" && detail.to_check.length;
           return html`
             <details class="task-section task-fold" key=${title}>
               <summary class="task-heading fold-head"><${Icon} name="chevron" />${title}${note && html`<span class="fold-note"> · ${note}</span>`}</summary>
-              ${live ? html`
-                <ul class="check-list">${detail.to_check.map((item) => html`
-                  <${CheckRow} key=${item.id} project=${project} item=${item} revision=${detail.revision} onChanged=${load} />`)}
-                </ul>`
+              ${live ? checkRows
                 : html`<div class="task-body"><${Markdown} text=${foldBody(title, report[title])} words=${words} prose /></div>`}
             </details>`;
         })}
-        ${!detail.report && !detail.result?.summary && html`<p class="empty">No report yet: the worker has not finished a revision.</p>`}
         ${detail.talk.length ? html`<${Talk} project=${project} talk=${detail.talk} words=${words} />` : null}
         ${detail.conflict && detail.overlaps.length ? html`
           <section class="task-section" aria-label="Shared files">
@@ -291,6 +308,7 @@ export function TaskPage({ project, task, onClose, grip }) {
                 </li>`;
             })}
           </ol>
+        </details>
         </details>
       </div>
       ${act.error && html`<p class="error chat-error" role="alert">${act.error}</p>`}

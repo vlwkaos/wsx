@@ -13,6 +13,7 @@ pub mod manager;
 pub mod owner;
 pub mod report;
 pub mod roles;
+pub mod stall;
 pub mod store;
 pub mod usage;
 pub mod view;
@@ -269,6 +270,10 @@ pub enum LogEvent {
     },
     Agent {
         text: String,
+        /// The worker's own words, not a tool call or a line of wsx.
+        /// ref: docs/web-client-tasks.md "Task sheet"
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        said: bool,
     },
     Blocked {
         denials: Vec<String>,

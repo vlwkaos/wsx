@@ -22,7 +22,7 @@ use wsx_core::task::{
         activity, chat_window, decided_request, pending_approvals, ApprovalLine, Author,
         ManagerEvent, ManagerRequest, ManagerResponse,
     },
-    owner,
+    owner, stall,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
     view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
 };
@@ -488,6 +488,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     } else {
         json!([])
     };
+    summary["progress"] = progress(&dir, &record, &log);
     let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
     summary["stage"] = json!(stage(&record, land_auto));
     summary["conflict"] =
@@ -549,6 +550,26 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     Ok(summary)
 }
 
+/// What the top of an open task's sheet shows: its workflow steps, whether it is stuck, the
+/// last write and the worker's last words; `null` once it is finished.
+/// ref: docs/web-client-tasks.md "Task sheet"
+fn progress(dir: &TaskDir, record: &TaskRecord, log: &[task::LogEntry]) -> Value {
+    if !record.state.is_open() {
+        return Value::Null;
+    }
+    let said = log.iter().rev().find_map(|entry| match &entry.event {
+        LogEvent::Agent { text, said: true } => Some(text),
+        _ => None,
+    });
+    json!({
+        "steps": record.steps.iter().map(|step| &step.name).collect::<Vec<_>>(),
+        "step": record.step,
+        "stuck": stall::stuck(dir, record, task::now_unix_ms()),
+        "last_unix_ms": stall::progress_ms(dir),
+        "said": said,
+    })
+}
+
 /// The workflow step a working task is on, as `plan (2/6)`; none without steps.
 /// ref: docs/tasks.md "Workflow"
 fn step_label(record: &TaskRecord) -> Option<String> {
@@ -599,7 +620,7 @@ fn talk(log: &[task::LogEntry]) -> Value {
 fn timeline(log: &[task::LogEntry]) -> Value {
     let mut rows: Vec<Value> = Vec::new();
     for entry in log {
-        if let LogEvent::Agent { text } = &entry.event {
+        if let LogEvent::Agent { text, .. } = &entry.event {
             match rows.last_mut() {
                 Some(last) if last["kind"] == "steps" => {
                     last["count"] = json!(last["count"].as_u64().unwrap_or(0) + 1);

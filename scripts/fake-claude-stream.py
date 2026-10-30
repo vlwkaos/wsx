@@ -360,6 +360,10 @@ def main():
                     emit({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'noted: ' + steer}]}})
         if 'WAIT' in words:
             release = words[words.index('WAIT') + 1]
+            # ^ The worker's words, then a tool line: the sheet shows the words, never the tool.
+            emit({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'First I read the parser. Now I change it.'}]}})
+            tool_use('wait-tool', 'cd /tmp && ls -la')
+            tool_result('wait-tool', 'ok', False)
             deadline = time.monotonic() + 600
             while not os.path.exists(release) and time.monotonic() < deadline:
                 time.sleep(0.2)

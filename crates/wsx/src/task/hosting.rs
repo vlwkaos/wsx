@@ -129,23 +129,6 @@ pub fn progress(started: std::time::Instant, text: &str) {
     );
 }
 
-/// Free space for unprivileged writes on the volume of `path`, in MiB.
-pub fn free_mb(path: &Path) -> Option<u64> {
-    use std::os::unix::ffi::OsStrExt;
-    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
-    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: `path` is a valid C string and `stats` is written before it is read.
-    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
-        return None;
-    }
-    // SAFETY: statvfs returned 0, so it filled `stats`.
-    let stats = unsafe { stats.assume_init() };
-    // ^ `into`: the field types differ between platforms.
-    #[allow(clippy::useless_conversion)]
-    let (blocks, size): (u64, u64) = (stats.f_bavail.into(), stats.f_frsize.into());
-    Some(blocks.saturating_mul(size) / (1024 * 1024))
-}
-
 /// Start `wsx <args>` in a session of its own, its output appended to `log`, so it outlives
 /// this host and its pane (a landed task closes itself). The file the host was started as
 /// runs, so a replaced binary is the one that starts. `keep` stays open in it under the same
