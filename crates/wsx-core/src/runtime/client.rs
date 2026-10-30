@@ -2104,9 +2104,6 @@ fn handoff_marker_fresh(reason: &str) -> bool {
     unix_millis().saturating_sub(started) < HANDOFF_WAIT.as_millis()
 }
 
-// ^ docs/daemon-live-upgrade.md: the source daemon marks the socket gap, so an
-// attached client waits for the successor instead of reporting a failure or
-// starting a competing daemon. Returns whether a handoff was observed.
 /// Whether `result` shows that the daemon did not apply the request: it refused it, or the
 /// socket was absent. A lost connection counts only when `repeats_lost` says a repeat is safe.
 fn not_applied(result: &io::Result<Response>, repeats_lost: bool) -> bool {
@@ -2150,6 +2147,9 @@ fn after_elapsed(request: &Request, elapsed: Duration) -> Cow<'_, Request> {
     }
 }
 
+// ^ docs/daemon-live-upgrade.md: the source daemon marks the socket gap, so an
+// attached client waits for the successor instead of reporting a failure or
+// starting a competing daemon. Returns whether a handoff was observed.
 fn wait_for_handoff(socket: &Path, limit: Duration) -> bool {
     let deadline = Instant::now() + limit;
     let mut observed = false;
