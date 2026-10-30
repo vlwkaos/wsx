@@ -901,6 +901,38 @@ def main():
         task_journey(args)
 
 
+def watch_wsxd(path, work):
+    """When a wsxd call times out, say why: every half second time one snapshot (the state lock),
+    one full disk sync in the run's folder (what a state save waits for, under that lock) and one
+    short sleep (how starved this machine is), and print the slowest at exit."""
+    import atexit, fcntl
+    samples, probe = [], work / 'watch-sync'
+    def sample():
+        while True:
+            at = time.monotonic()
+            try:
+                wsxd_client.call(str(path), 'snapshot', timeout=60)
+                answered = time.monotonic() - at
+            except (OSError, RuntimeError):
+                answered = 0  # not started yet, or stopped
+            at = time.monotonic()
+            try:
+                with probe.open('wb') as out:
+                    out.write(b'x' * 30000)
+                    out.flush()
+                    fcntl.fcntl(out, fcntl.F_FULLFSYNC if sys.platform == 'darwin' else fcntl.F_GETFD)
+            except OSError:
+                pass
+            synced = time.monotonic() - at
+            at = time.monotonic()
+            time.sleep(0.5)
+            samples.append((round(max(answered, synced), 2), round(answered, 2), round(synced, 2),
+                            round(time.monotonic() - at - 0.5, 2), round(os.getloadavg()[0], 1), time.strftime('%H:%M:%S')))
+    threading.Thread(target=sample, daemon=True).start()
+    atexit.register(lambda: print('wsxd watch (worst, snapshot s, full sync s, sleep overrun s, load, time): %s of %d samples'
+                                  % (sorted(samples, reverse=True)[:5], len(samples)), file=sys.stderr))
+
+
 def web_journey(args):
     wsx, wsxd = args.wsx.resolve(), args.daemon.resolve()
     if not wsx.is_file() or not wsxd.is_file() or wsx.parent != wsxd.parent:
@@ -940,6 +972,7 @@ def web_journey(args):
                             '[[projects]]\nname = "project2"\npath = %s\nprofile = "work"\n'
                             % (json.dumps(str(profile_root)), json.dumps(str((work / 'project2').resolve()))))
         path = work / 'state/wsx/wsx.sock'
+        watch_wsxd(path, work)
         env = {'HOME': str(work / 'home'), 'XDG_CONFIG_HOME': str(work / 'config'), 'XDG_STATE_HOME': str(work / 'state'),
                'XDG_CACHE_HOME': str(work / 'cache'), 'WSX_SOCKET': str(path), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()),
                'PATH': str(work / 'bin') + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8',
@@ -3043,6 +3076,7 @@ def task_journey(args):
                                            'if [ "$1" = status ]; then echo \'{"Self":{"DNSName":"host.example.ts.net."}}\'; fi\n')
         (bin_dir / 'tailscale').chmod(0o755)
         path = state / 'wsx/wsx.sock'
+        watch_wsxd(path, work)
         env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
                'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(path),
                'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
@@ -3302,9 +3336,11 @@ merge_seconds = 3
         # Three states for the owner; the store's own states stay in the record.
         assert {row['id']: row['stage'] for row in overview['tasks']} == {1: 'needs_you', 2: 'needs_you', 3: 'needs_you'}
         # Chips and the `#` picker: attention order, then the newest first.
-        assert [row['id'] for row in overview['tasks']] == [1, 3, 2], overview['tasks']
+        # ^ Tasks 2 and 3 finish concurrently: the rule is task 1 first, then the newest update first.
+        ready = sorted((row for row in overview['tasks'] if row['id'] != 1), key=lambda row: -row['updated_unix_ms'])
+        assert [row['id'] for row in overview['tasks']] == [1] + [row['id'] for row in ready], overview['tasks']
         # ^ A task without --title is named by the first sentence of its worker's summary.
-        assert overview['tasks'][2]['title'] == 'did: WORK a.txt HV'
+        assert next(row for row in overview['tasks'] if row['id'] == 2)['title'] == 'did: WORK a.txt HV'
         # ^ No Adopted list reads the task branches any more.
         assert 'task_branches' not in overview, list(overview)
         everything = steady(owner, 'GET', '/api/tasks')[1]
