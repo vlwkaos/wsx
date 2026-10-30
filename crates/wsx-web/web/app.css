@@ -300,12 +300,12 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .viewer-bar .button { min-width: var(--size-control); }
 .viewer-bar .icon-button { color: var(--color-text); }
 .viewer-zoom { display: flex; align-items: center; gap: var(--space-1); margin-left: auto; }
-/* On a touch screen the fingers zoom: the percent gives the bar's room to the image count. */
-@media (pointer: coarse) { .viewer-zoom .time { display: none; } }
-/* On a touch screen the bar sits under the stage, in reach of a thumb; the dialog's own padding
+/* On a touch screen the fingers zoom: the percent gives the bar's room to the image count.
+   The bar sits under the stage, in reach of a thumb; the dialog's own padding
    keeps the stage clear of the notch (the fit reads the stage's client size, so the stage gets none).
    A video's native controls end at the stage's edge, above the bar. */
 @media (pointer: coarse) {
+  .viewer-zoom .time { display: none; }
   .viewer-bar {
     order: 1; border-bottom: 0; border-top: var(--border-width) solid var(--color-hairline);
     padding-top: var(--space-2); padding-bottom: max(var(--space-2), env(safe-area-inset-bottom));
