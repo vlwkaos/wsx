@@ -292,6 +292,13 @@ async function viewImages(name, links, many = 2, saves = false) {
   const download = await evaluate("document.querySelector('dialog.viewer .viewer-bar a[download]')?.getAttribute('href') ?? null");
   if (saves !== (download !== null)) await fail(`${what}: the viewer ${saves ? "has no" : "has a"} download control`);
   if (saves) await savedCopy(what, download);
+  // ^ Touch: the bar is under the stage at the screen's bottom and the link is Share; wide: the bar is on top and it is Download.
+  const bar = await evaluate(`(() => { const bar = document.querySelector('.viewer-bar').getBoundingClientRect(); const stage = document.querySelector('.viewer-stage').getBoundingClientRect();
+    const link = document.querySelector('.viewer-bar a[download]'); return { top: Math.round(bar.top), bottom: Math.round(bar.bottom), stageTop: Math.round(stage.top), stageBottom: Math.round(stage.bottom), height: innerHeight,
+      label: link?.getAttribute('aria-label') ?? null, title: link?.title ?? null, icon: link?.querySelector('path')?.getAttribute('d')?.startsWith('M10 12.5V3.5') ?? false }; })()`);
+  const placed = phone() ? bar.top >= bar.stageBottom && bar.bottom === bar.height && bar.stageTop === 0 : bar.bottom <= bar.stageTop && bar.top === 0;
+  const word = phone() ? "Share" : "Download";
+  if (!placed || (saves && (bar.label !== word || bar.title !== word || !bar.icon))) await fail(`${what}: the viewer bar reads ${JSON.stringify(bar)}`);
   if (many > 1) {
     if (phone()) await swipe(size[0] - 60, 60);
     else await key("ArrowRight", 39);
@@ -1892,6 +1899,8 @@ const player = await evaluate(`(() => { const video = ${playing}; return { contr
   paused: video.paused, poster: video.poster.endsWith('/poster'), size: [video.videoWidth, video.videoHeight], zoom: !!document.querySelector('.viewer-zoom button') }; })()`);
 if (!player.controls || !player.inline || player.preload !== "metadata" || player.autoplay || !player.paused || !player.poster
   || player.size.join() !== "160,90" || player.zoom) await fail(`#8's video in the viewer reads ${JSON.stringify(player)}`);
+const clear = await evaluate(`(() => { const video = document.querySelector('dialog.viewer[open] .viewer-stage video').getBoundingClientRect(); const bar = document.querySelector('.viewer-bar').getBoundingClientRect(); return video.bottom <= bar.top + 1 || video.top >= bar.bottom - 1; })()`);
+if (!clear) await fail("#8's video in the viewer reaches under the bar");
 await capture("to-check-video");
 await key("Escape", 27);
 await until("!document.querySelector('dialog.viewer') && !!document.querySelector('dialog.task-sheet[open]')", "Escape did not close the video viewer alone");
