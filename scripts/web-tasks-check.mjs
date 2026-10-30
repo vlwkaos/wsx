@@ -590,13 +590,26 @@ if (await count(".adopted")) await fail("the project chat shows the Adopted list
 // "Since you left": this device left the project two hours ago; the line names what happened.
 // It sits in one compact line and goes by itself once the newest reply is on screen or the owner
 // sends. The log is scrolled to its top first, so no reply is on screen when the line appears.
-const scrollLogToTop = () => evaluate("document.querySelector('.log').scrollTop = 0");
+// ^ The line watches the newest bubble not the owner's (`SinceLine` in tasks.js): it must be out of
+// view, twice 300 ms apart, before the device comes back, or the line goes as it appears. The
+// chat may still follow its end after a sheet closes or a reply arrives, so the top is set again
+// on each try.
+const newestOutOfView = `(() => { const log = document.querySelector('.log'); log.scrollTop = 0;
+  const last = [...log.querySelectorAll('.bubble[data-side="in"]')].at(-1); if (!last) return false;
+  const box = log.getBoundingClientRect(), at = last.getBoundingClientRect(); return at.top >= box.bottom || at.bottom <= box.top; })()`;
+const sinceState = `(() => { const log = document.querySelector('.log'), last = [...log.querySelectorAll('.bubble[data-side="in"]')].at(-1), box = log.getBoundingClientRect(), at = last?.getBoundingClientRect();
+  return JSON.stringify({ since: document.querySelector('.since')?.textContent ?? null, top: log.scrollTop, height: log.scrollHeight, client: log.clientHeight, newestTop: at && Math.round(at.top - box.top), newestAt: last?.dataset.at ?? null }); })()`;
 async function comeBack() {
   await until("!document.querySelector('.since')", "an old since line is still shown");
-  await scrollLogToTop();
-  await pause(300);
+  let still = false;
+  for (let attempt = 0; attempt < 40 && !still; attempt++) {
+    still = (await evaluate(newestOutOfView)) && (await pause(300), await evaluate(newestOutOfView));
+  }
+  if (!still) await fail(`the newest reply does not stay out of view at the top of the chat: ${await evaluate(sinceState)}`);
   await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 })); document.dispatchEvent(new Event('visibilitychange'))`);
-  await until("/Since you left: .*#1 #2 #3 #4.* started.* repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')", "no since-you-left line");
+  const shown = "/Since you left: .*#1 #2 #3 #4.* started.* repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')";
+  for (let attempt = 0; attempt < 100 && !(await evaluate(shown)); attempt++) await pause(100);
+  if (!(await evaluate(shown))) await fail(`no since-you-left line: ${await evaluate(sinceState)}`);
 }
 await go("#/");
 // ^ The chat notes the time it closes at: set the earlier time after home replaced it.
