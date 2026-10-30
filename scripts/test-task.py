@@ -1637,8 +1637,8 @@ def run(wsx, wsxd, work, owned):
     shown = [(e['kind'], bool(e.get('until'))) for e in chat() if e['kind'] in ('limit', 'reply') and e['unix_ms'] >= held['unix_ms']]
     assert shown[:3] == [('limit', True), ('limit', False), ('reply', False)], shown
     assert turn_with('The session limit has reset'), 'the manager continues after its limit'
-    # ^ A turn of only events that a limit held stays quiet after the reset: "-" shows nothing.
-    # One with an owner message is a message (docs/web-client-tasks.md).
+    # ^ A turn that a limit held answers "-" after the reset, with or without an owner message:
+    # a reply that says nothing is quiet whatever its turn (docs/tasks.md).
     for seconds, owner_says in ((1, None), (3, 'STATUS while held')):
         held_count = len([e for e in manager_entries() if e['kind'] == 'limit' and e.get('until')])
         title = js('task', 'new', 'NOOP MLIMIT %d DASH' % seconds)['id']
@@ -1647,7 +1647,7 @@ def run(wsx, wsxd, work, owned):
             wait(lambda: len([e for e in manager_entries() if e['kind'] == 'limit' and e.get('until')]) > held_count, 'the second limit wait')
             owner_id = js('task', 'say', owner_says)['id']
         dash = reply_to(event['id'])
-        assert dash['text'] == '-' and (owner_says is None) == (dash.get('quiet') is True), dash
+        assert dash['text'] == '-' and dash.get('quiet') is True, dash
         assert owner_says is None or owner_id in dash['to'], dash
         js('task', 'close', title, '--discard')
     for n in (first, second, unseen):
