@@ -1308,7 +1308,7 @@ def run(wsx, wsxd, work, owned):
                  'Before `wsx task new`, compare the request', 'Never ask the owner to wait',
                  'for lean code', 'never send a task back to rebase', 'trust them over the worker',
                  'Check the fixture rule.', 'start one housekeeping task', 'Fold the fixture tasks.',
-                 'tell that worker to prove it', 'never pass, fail or skip items yourself',
+                 'tell that worker to prove it', 'never skip or fail items', 'only when the owner\'s message of this turn says',
                  'A release refuses while items are open, unless the owner', '`wsx task trial <n>`',
                  '`--owner-said <id>`', 'never name a message that did not ask',
                  'call a change live only when', 'On `hand`, the owner works in its copy',
@@ -2645,6 +2645,26 @@ def run(wsx, wsxd, work, owned):
     wait(lambda: (base / 'said-release.log').exists() and deploy_lock_free(), 'the release the owner asked for')
     assert (base / 'said-release.log').read_text() == 'released\n'
     assert [i['id'] for i in js('task', 'check')['open']] == open_ids
+    # ^ The manager passes an item only on the owner's message of its turn (docs/tasks.md "To check"):
+    # named ids, no --all, no skip or fail; the row keeps the message id.
+    item = open_ids[0]
+    def manager_run(words, *args):
+        return reply_to(js('task', 'say', words + '\nRUN wsx task check ' + args[0] + ' -p demo --json')['id'])['text']
+    text = manager_run('looks good', 'pass %s' % item)
+    assert '-> 1 ' in text and 'is for the owner' in text, text
+    text = manager_run('looks good', 'pass %s --owner-said 1' % item)
+    assert 'message 1 is not in the running turn; nothing was run' in text, text
+    for args in ('pass --all --owner-said OWNER_SAID', 'skip %s --owner-said OWNER_SAID' % item,
+                 'skip --all', 'fail %s --note no' % item):
+        text = manager_run('looks good', args)
+        assert '-> 1 ' in text and 'is for the owner' in text, (args, text)
+    assert [i['id'] for i in js('task', 'check')['open']] == open_ids
+    said = js('task', 'say', 'the %s looks good\nRUN wsx task check pass %s --owner-said OWNER_SAID -p demo --json' % (item, item))
+    text = reply_to(said['id'])['text']
+    assert '--owner-said %d -p demo --json -> 0' % said['id'] in text, text
+    rows = [json.loads(line) for line in (project_store / 'checks.jsonl').read_text().splitlines()]
+    assert [(r['state'], r.get('owner_said')) for r in rows if r['id'] == item][-1] == ('passed', said['id']), rows[-3:]
+    assert [i['id'] for i in js('task', 'check')['open']] == open_ids[1:]
     configure(LAND_CONFIG, 'release as before')
     # 32g. A plan first (docs/tasks.md "Workflow"): the first turn of a `--plan` task is told to
     # plan and stop; its result runs no check and waits on plan for the manager, and an add

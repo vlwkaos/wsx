@@ -236,7 +236,11 @@ fn instructions(
          `checks` and trust them over the worker's words. {review}When a worker leaves for a \
          person what a command, a test or a capture could prove, tell that worker to prove \
          it. What only a person can check goes to the To check list (the ledger's \
-         `to_check`); never pass, fail or skip items yourself. A release refuses while items are \
+         `to_check`); never skip or fail items. Pass one with `wsx task check pass <id> \
+         --owner-said <message>` only when the owner's message of this turn says the thing \
+         looks good and the item is clearly about that same thing; when in doubt, leave it \
+         open and ask. Name each item (no `--all`) and tell the owner in one line which items \
+         you passed. A release refuses while items are \
          open, unless the owner's message asks for it (`--owner-said`): then the items stay \
          to check on the release. `deploy` and `release` answer at once; the \
          result comes as an event. `wsx task routine` lists and runs the project's \

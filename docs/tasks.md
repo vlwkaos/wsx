@@ -153,7 +153,7 @@ There is no verdict per task: a task the checks prove lands, and what needs a pe
 - `check pass <id>...` or `--all` marks open items `passed`; an unknown or settled id refuses the whole call.
 - `check skip <id>...` or `--all` closes open items as `skipped` the same way: not passed and not failed, for an item long overdue or no longer worth a look. It starts no task, leaves the open list (so it does not hold a release) and stays `skipped` in `checks.jsonl`, `show --json` and the web.
 - `check fail <id> --note <text>` starts a task titled "Fix: <check>" whose prompt holds the check, `pass_if`, the note and the original `report.md` path; the new record has `fixes: c<n>`, and the item gets `state: failed`, the note and `fix_task`.
-- All three refuse with `WSX_TASK_ACTOR=manager`: checking is the owner's.
+- `check skip` and `check fail` refuse with `WSX_TASK_ACTOR=manager`: they are the owner's. `check pass` refuses it too, except `check pass <id>... --owner-said <message>`: the manager passes the named items when the owner's message of its running turn says the thing looks good and the item is clearly about it (the same proof as in "Approvals"; an id outside the turn refuses, and `--all` stays refused). The passed row keeps `owner_said: <message id>` in `checks.jsonl` and `show --json`, so the owner's word can be traced; the owner's own pass has none.
 - A log line that does not parse (a last line cut by a crash) is skipped when a log is read.
 
 ## By hand
