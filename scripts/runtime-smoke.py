@@ -1121,8 +1121,8 @@ time.sleep(1)
 started = time.monotonic()
 taker = frame_subscribe(flood["focused_pane"], 42, takeover=True)
 took = time.monotonic() - started
-# ^ A window that stops reading could hold wsxd for 5 s (its stream's write limit). A loaded CI
-# runner took 1.55 s without one, so the limit separates the two and not the runner's speed.
+# ^ A window that stops reading could hold wsxd for 5 s (its stream's write limit), which this
+# catches. CI usually reads 0.01 s here; one run read 1.55 s, cause not known, so the time is printed.
 print(f"takeover beside a window that stopped reading: {took:.2f} s", flush=True)
 assert took < 3, ("a takeover waited for a window that stopped reading", took)
 slowest = slowest_call(6)
