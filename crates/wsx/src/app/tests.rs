@@ -1381,7 +1381,9 @@ fn global_settings_opens_and_returns_from_agent_integration_manager() {
     while !form.opens_agent_integrations() {
         form.next_field(false);
     }
-    app.mode = Mode::GlobalSettings { form };
+    app.mode = Mode::GlobalSettings {
+        form: Box::new(form),
+    };
     let mut terminal = workspace_terminal();
 
     app.dispatch_global_settings(Action::Select, &mut terminal)

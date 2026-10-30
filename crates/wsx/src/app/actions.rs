@@ -598,7 +598,7 @@ impl App {
 
     pub(super) fn action_edit_global_config(&mut self, _terminal: &mut Tui) {
         self.mode = Mode::GlobalSettings {
-            form: GlobalSettingsForm::new(self.config.clone()),
+            form: Box::new(GlobalSettingsForm::new(self.config.clone())),
         };
     }
 
@@ -608,7 +608,7 @@ impl App {
         terminal: &mut Tui,
     ) -> Result<()> {
         if let Mode::GlobalSettings { form } = &mut self.mode {
-            if dispatch_text_edit(form, &action) {
+            if dispatch_text_edit(&mut **form, &action) {
                 return Ok(());
             }
         }
@@ -632,7 +632,7 @@ impl App {
                     if let Mode::GlobalSettings { form } = mode {
                         self.mode = Mode::IntegrationManager {
                             manager: IntegrationManager::new(self.integration_metadata.clone()),
-                            return_form: Box::new(form),
+                            return_form: form,
                         };
                     }
                 } else {
@@ -704,7 +704,7 @@ impl App {
             Action::InputEscape | Action::Quit => {
                 let mode = std::mem::replace(&mut self.mode, Mode::Workspace);
                 if let Mode::IntegrationManager { return_form, .. } = mode {
-                    self.mode = Mode::GlobalSettings { form: *return_form };
+                    self.mode = Mode::GlobalSettings { form: return_form };
                 }
             }
             Action::NavigateDown | Action::InputChar('j') => {
@@ -730,7 +730,7 @@ impl App {
                 } = mode
                 {
                     let targets = manager.targets();
-                    self.mode = Mode::GlobalSettings { form: *return_form };
+                    self.mode = Mode::GlobalSettings { form: return_form };
                     if targets.is_empty() {
                         self.set_status("Select at least one available integration");
                     } else {

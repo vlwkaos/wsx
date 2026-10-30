@@ -48,7 +48,7 @@ pub enum AgentLine {
     /// The conversation ID the agent runs under.
     Init(String),
     Progress(String),
-    Result(TurnResult),
+    Result(Box<TurnResult>),
 }
 
 pub struct TurnResult {
@@ -634,7 +634,7 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
                     .unwrap_or("no reason")
             )))
         }
-        "result" => Some(AgentLine::Result(TurnResult {
+        "result" => Some(AgentLine::Result(Box::new(TurnResult {
             limit: usage_limit(value, turns.resets_at.take()),
             background: turns.background,
             is_error: value
@@ -652,7 +652,7 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
                 .map(denial_text)
                 .collect(),
             usage: turn_usage(value, turns),
-        })),
+        }))),
         _ => None,
     }
 }

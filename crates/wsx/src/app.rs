@@ -487,7 +487,7 @@ pub enum Mode {
         project_idx: usize,
     },
     GlobalSettings {
-        form: GlobalSettingsForm,
+        form: Box<GlobalSettingsForm>,
     },
     IntegrationManager {
         manager: IntegrationManager,
