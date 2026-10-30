@@ -2307,6 +2307,11 @@ if ((await evaluate("fetch('api/push').then((response) => response.json())")).ch
   await until(`document.querySelector('.progress-said')?.textContent === 'Now I change it.'`, "the sheet never shows the worker's last sentence", 60);
   await shows(working, "working", { ...workingTop, age: /^(now|\dm ago)$/ });
   await shot("progress-working", ".composer-send");
+  // ^ The word's color moves by a transition: measured once it has settled.
+  const signal = () => evaluate(`(async () => { const word = document.querySelector('.progress-health'); await Promise.allSettled(word.getAnimations().map((animation) => animation.finished)); const mark = document.querySelector('.progress-head .mark'), takeOver = [...document.querySelectorAll('.task-sheet button')].find((node) => node.textContent.trim() === 'Take over')?.getBoundingClientRect();
+    return { tone: word.dataset.tone, color: getComputedStyle(word).color, pulses: mark.dataset.running != null, takeOver: !!takeOver && takeOver.top >= 0 && takeOver.bottom <= innerHeight }; })()`);
+  const workingSignal = await signal();
+  if (!workingSignal.pulses || workingSignal.tone === "danger") await fail(`a working task does not read as working: ${JSON.stringify(workingSignal)}`);
 
   // Stuck: wsx's own stall rule, staged by the log's file time; the sheet reads it, no guess.
   const log = show(working).log;
@@ -2316,6 +2321,11 @@ if ((await evaluate("fetch('api/push').then((response) => response.json())")).ch
   await go(`#/p/${plansArg}`);
   await open(working);
   await shows(working, "stuck", { ...workingTop, health: "stuck", age: "1h ago", next: "No output for 1 h 0 min." });
+  // ^ A stuck task stands out from a working one: its own color, no pulse, Take over on the screen.
+  const stuckSignal = await signal();
+  const [red, green] = stuckSignal.color.match(/\d+/g).map(Number);
+  if (stuckSignal.tone !== "danger" || red <= green || stuckSignal.pulses || !stuckSignal.takeOver) await fail(`a stuck task does not stand out: ${JSON.stringify({ stuckSignal, workingSignal })}`);
+  fs.appendFileSync(path.join(captures, "stuck-signal.txt"), `${JSON.stringify({ working: workingSignal, stuck: stuckSignal })}\n`);
   await shot("progress-stuck", ".composer-send");
 
   // Ready: every step is done, and neither age nor sentence shows.
