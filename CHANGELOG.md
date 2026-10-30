@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Client: a live handoff of wsxd is no longer reported as a failure by `wsx agent wait` or by opening a terminal. A wait open in the old daemon, or a stream opened while it handed off, waited for the successor and went on only in the TUI event monitor and `Client::call` before; now both wait for the successor once (a repeated wait keeps only the time it had left), and a daemon that died is still reported at once ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "Single requests", "Terminal streams").
+- Client: a live handoff of wsxd is no longer reported as a failure by `wsx agent wait` or by opening a terminal. The TUI event monitor and `Client::call` already waited for the successor; these two did not, so a wait open in the old daemon or a stream opened while it handed off ended in an error. Both now wait for the successor once and go on (a repeated wait keeps only the time it had left), and a daemon that died is still reported at once ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "Single requests", "Terminal streams").
 
 ## [0.41.0] - 2026-10-30
 
