@@ -107,6 +107,7 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 /* The work a session row is for: project › worktree, each with its own look; the session under it. */
 .row-work { display: flex; align-items: baseline; gap: var(--space-1); min-width: 0; }
 .row-work > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-asks { flex: none; font-size: var(--font-size-sm); }
 .row-project { flex: 0 1 auto; font-weight: var(--font-weight-medium); }
 .row-sep { flex: 0 0 auto; color: var(--color-faint); }
 .row-worktree { flex: 0 1 auto; }

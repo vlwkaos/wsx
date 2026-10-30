@@ -545,6 +545,18 @@ await motion();
 await homeUnread();
 await resize([390, 844, 2]);
 await go("#/");
+// ^ The manager's unanswered question shows on its project's row as in the chat, on that row only
+// (docs/web-client-tasks.md "Home"). The store is driven as in `homeUnread`.
+const homeAsks = (asks) => evaluate(`(async () => {
+  const { state, update } = await import(new URL("store.js", [...document.scripts].find((script) => script.type === 'module').src));
+  const calm = state.projects.find((project) => project.name === 'calm');
+  update({ tasks: { ...state.tasks, [calm.id]: { ...state.tasks[calm.id], asks: ${asks} } } });
+  await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+  return [...document.querySelectorAll('.home-rows > .row')].filter((row) => row.querySelector('.row-asks')?.textContent === 'Asks you').map((row) => row.querySelector('.row-label').textContent);
+})()`);
+if ((await homeAsks(true)).join() !== "calm") await fail("Asks you is not on the row of the project whose manager asks");
+await shot("home-asks");
+if ((await homeAsks(false)).length) await fail("Asks you stayed on a home row with no question");
 // Sessions, one tap from home: the session inbox, without task workers and the manager, with
 // the plain worktree's session.
 await click(".tabbar a[href='#/sessions']");
@@ -1004,6 +1016,24 @@ await until(`${statusLines}.some((node) => /#1 got an answer/.test(node.textCont
 await typeInto(".composer-field", "STATUS after the answer");
 await click(".composer-send");
 await until("[...document.querySelectorAll('.log .bubble[data-side=in]')].at(-1)?.textContent.includes('open:') && !document.querySelector('.log .typing')", "no reply after the answer", 300);
+// ^ A reply that ends with a question carries "Asks you" in the accent, and the overview's
+// `asks` with it, until the owner writes after it (docs/web-client-tasks.md "Project screen").
+const asking = "[...document.querySelectorAll('.log .bubble[data-side=in]')].find((node) => node.textContent.includes('Should I land it now?'))";
+const askTags = "[...document.querySelectorAll('.log .bubble-tag')].filter((node) => node.textContent === 'Asks you')";
+const overviewAsks = () => evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((view) => view.asks)`);
+await typeInto(".composer-field", "ASK");
+await click(".composer-send");
+await until(`!!${asking} && !document.querySelector('.log .typing')`, "no reply to the question", 300);
+const askBubble = await evaluate(`({ tags: ${askTags}.length, own: ${asking}.querySelector('.bubble-tag')?.textContent, tone: ${asking}.querySelector('.bubble-tag')?.dataset.tone })`);
+if (askBubble.tags !== 1 || askBubble.own !== "Asks you" || askBubble.tone !== "accent") await fail(`a reply that asks reads ${JSON.stringify(askBubble)}`);
+if ((await overviewAsks()) !== true) await fail("the overview does not say the manager asks");
+await shot("asks-you", ".composer-send");
+await typeInto(".composer-field", "STATUS after the question");
+await click(".composer-send");
+await until(`${askTags}.length === 0`, "the owner's message did not clear Asks you", 30);
+await until("[...document.querySelectorAll('.log .bubble[data-side=in]')].at(-1)?.textContent.includes('open:') && !document.querySelector('.log .typing')", "no reply after the question", 300);
+if ((await overviewAsks()) !== false) await fail("the overview still says the manager asks");
+await shot("asks-you-answered", ".composer-send");
 await evaluate(`window.answerLine = ${statusLines}.find((node) => /#1 got an answer/.test(node.textContent))`);
 let moved = await clearRow("Approve land #3", "Approve");
 if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))")) await fail("a notice repeats the status line of Approve");

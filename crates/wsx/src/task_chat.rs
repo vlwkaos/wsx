@@ -42,6 +42,8 @@ pub enum Row {
         who: Who,
         unix_ms: u64,
         text: String,
+        /// A manager reply that asks the owner, before the owner wrote again.
+        asks: bool,
     },
     Line(String),
 }
@@ -400,6 +402,7 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
             who,
             unix_ms: entry.unix_ms,
             text: text.trim().to_string(),
+            asks: false,
         };
         match &entry.event {
             ManagerEvent::Message { from, text, .. } => match from {
@@ -430,7 +433,12 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
             ManagerEvent::Reply {
                 text, quiet: true, ..
             } => rows.push(Row::Line(text.trim().to_string())),
-            ManagerEvent::Reply { text, .. } => rows.push(said(Who::Manager, text)),
+            ManagerEvent::Reply { text, asks, .. } => rows.push(Row::Said {
+                who: Who::Manager,
+                unix_ms: entry.unix_ms,
+                text: text.trim().to_string(),
+                asks: *asks,
+            }),
             // ^ An empty `sent` (older hosts logged one without --json) shows nothing.
             ManagerEvent::Sent { text, .. } if text.trim().is_empty() => {}
             ManagerEvent::Sent { to, text, .. } => {
@@ -446,6 +454,21 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
             ))),
             ManagerEvent::Limit { until: None } => rows.push(Row::Line("Manager resumed".into())),
             ManagerEvent::Delivered { .. } | ManagerEvent::Agent { .. } => {}
+        }
+    }
+    // ^ A reply asks until the owner writes after it (docs/tasks.md "Manager").
+    let answered = rows.iter().rposition(|row| {
+        matches!(
+            row,
+            Row::Said {
+                who: Who::Owner,
+                ..
+            }
+        )
+    });
+    for row in &mut rows[..answered.map_or(0, |at| at + 1)] {
+        if let Row::Said { asks, .. } = row {
+            *asks = false;
         }
     }
     // ^ To check items and approvals are the manager's (docs/tasks.md "Roles").

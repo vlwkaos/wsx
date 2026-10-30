@@ -1603,6 +1603,19 @@ def run(wsx, wsxd, work, owned):
     raw_reply = next(e for e in manager_entries() if e['kind'] == 'reply' and e['id'] == table_reply['id'])
     assert 'Where things stand' in raw_reply['text'] and 'quiet' not in raw_reply and 'quiet' not in table_reply, raw_reply
     js('task', 'close', tabled)
+    # ^ A reply that ends with a question asks the owner and is never quiet, also to a turn of
+    # only events; a reply that ends with a table, or a report, does not ask (docs/tasks.md "Manager").
+    asking = js('task', 'new', 'NOOP ASK')['id']
+    wait_state(asking, 'ready')
+    asked = reply_to(wait(lambda: events_with('#%d ready r1' % asking), 'the event of a task that asks')[0]['id'])
+    assert asked['text'] == 'Should I land it now?' and asked.get('asks') is True and 'quiet' not in asked, asked
+    js('task', 'close', asking)
+    question_table = reply_to(js('task', 'say', 'ASK TABLE')['id'])
+    assert question_table['text'].startswith('Should I land it now?\nWhere things stand') and 'asks' not in question_table, question_table
+    assert 'asks' not in raw_reply and 'asks' not in event_reply, (raw_reply, event_reply)
+    # ^ A question in a last table row with no closing pipe does not ask either.
+    question_row = reply_to(js('task', 'say', 'ASKROW')['id'])
+    assert question_row['text'].endswith('| #2 | land it?') and 'asks' not in question_row, question_row
     (notes / 'context.md').unlink()
     # ^ The config named no manager model since the restart: the manager defaults to opus.
     assert fresh['model'] == 'opus', fresh

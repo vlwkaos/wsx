@@ -821,6 +821,8 @@ export function Manager({ project: id, task, page, checks, usage, role = null })
     const last = rows.at(-1);
     const grouped = last?.kind === "bubble" && last.author === "owner";
     if (grouped) last.last = false;
+    // ^ The owner answered: no reply asks any more.
+    for (const row of rows) row.asks = false;
     rows.push({ kind: "bubble", key: "sending", author: "owner", at: Date.now(), first: !grouped, last: true, pending: true, entry: { text: sent.text } });
   }
   const firstNew = since == null ? null : rows.find((row) => row.kind === "bubble" && row.author !== "owner" && !row.pending && row.at > since);

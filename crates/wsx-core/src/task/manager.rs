@@ -106,6 +106,10 @@ pub enum ManagerEvent {
         /// shows as a muted line, not a message (`quiet_reply`, docs/tasks.md "Manager").
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         quiet: bool,
+        /// The reply asks the owner (`asks_owner`); such a reply is never quiet. The chat tags it
+        /// until the owner writes after it (docs/tasks.md "Manager").
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        asks: bool,
     },
     /// This manager's message to another project's manager (`say --from-manager`).
     Sent {
@@ -158,6 +162,17 @@ pub fn quiet_reply(text: &str) -> bool {
 /// no chat shows it (docs/tasks.md "Manager").
 pub fn says_nothing(text: &str) -> bool {
     matches!(text.trim(), "" | "-")
+}
+
+/// Whether a reply asks the owner: its last line ends with a question mark. A reply that ends with
+/// a code block ends with its fence, and one that ends with a table with a row, which does not
+/// count; trailing emphasis or a closing bracket does not hide the mark.
+pub fn asks_owner(text: &str) -> bool {
+    let last = text.trim_end().lines().last().unwrap_or_default().trim();
+    !last.starts_with('|')
+        && last
+            .trim_end_matches(['*', '_', '`', ')', '"', '\''])
+            .ends_with(['?', '？'])
 }
 
 impl ManagerEntry {
