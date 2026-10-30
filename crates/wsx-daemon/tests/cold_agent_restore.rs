@@ -207,7 +207,7 @@ fn cold_recovery_resumes_claude_with_its_own_config_root_and_cwd() {
     // ^ A crash: a graceful stop would end the agents, and their supervisors clear the records.
     let state = daemon.root.join("state/wsx/state.json");
     let deadline = Instant::now() + TIMEOUT;
-    while !fs::read_to_string(&state).unwrap().contains(work_profile) {
+    while !fs::read_to_string(&state).is_ok_and(|saved| saved.contains(work_profile)) {
         assert!(Instant::now() < deadline, "the work profile was not saved");
         thread::sleep(POLL_INTERVAL);
     }
