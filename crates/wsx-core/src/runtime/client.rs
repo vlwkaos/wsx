@@ -4,6 +4,7 @@ use super::protocol::{
     PROTOCOL_VERSION, ROUTINE_DAEMON_ARG,
 };
 use std::{
+    borrow::Cow,
     collections::HashMap,
     fs::{self, File},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
@@ -224,32 +225,23 @@ impl Client {
     }
 
     pub fn call(&self, request: &Request) -> io::Result<Response> {
+        let started = Instant::now();
         let result = self.call_once(request);
         // ^ docs/daemon-live-upgrade.md: a request that a handing-off daemon refused or
         // never received is sent once more to the successor.
-        let undelivered = match &result {
-            Ok(Response::Error(error)) => {
-                matches!(
-                    error.code.as_str(),
-                    "daemon_replacing" | "daemon_unavailable"
-                )
-            }
-            Ok(_) => false,
-            Err(error) => match error.kind() {
-                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => true,
-                // A connection lost mid-request may have applied a mutation; only a read repeats.
-                io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof => matches!(
-                    request,
-                    Request::Snapshot | Request::View { .. } | Request::LifecycleStatus
-                ),
-                _ => false,
-            },
-        };
-        let mut result = if undelivered {
+        // A connection lost mid-request may have applied a mutation; only a read repeats.
+        let repeats_lost = matches!(
+            request,
+            Request::Snapshot
+                | Request::View { .. }
+                | Request::LifecycleStatus
+                | Request::AgentExchangeWait { .. }
+        );
+        let mut result = if not_applied(&result, repeats_lost) {
             // ^ The marker may already read `ready` when this looks: a request that certainly
             // was not applied goes once more whether or not this client saw the handoff.
             wait_for_handoff(&self.socket, CALL_HANDOFF_WAIT);
-            self.call_once(request)
+            self.call_once(&after_elapsed(request, started.elapsed()))
         } else {
             result
         };
@@ -270,7 +262,7 @@ impl Client {
                 "exchange wait requires an agent_exchange_wait request",
             ));
         }
-        self.call_once(request)
+        self.call(request)
     }
 
     fn call_at_protocol(&self, request: &Request, protocol: u32) -> io::Result<Response> {
@@ -504,6 +496,27 @@ impl RawTerminalStream {
 
 impl<M: TerminalStreamMessage> TerminalStream<M> {
     fn subscribe(client: &Client, request: &Request) -> io::Result<Self> {
+        // ^ docs/daemon-live-upgrade.md "Terminal streams": opening a stream while wsxd hands
+        // off waits for the successor once. Nothing but a lease for the same `client_id`
+        // exists before the Ack, so every failure before it is safe to repeat.
+        let mut outcome = Self::subscribe_once(client, request);
+        let again = match &outcome {
+            Ok(Err(error)) => refused_in_handoff(&error.code),
+            Ok(Ok(_)) => false,
+            Err(error) => not_applied_error(error, true),
+        };
+        if again {
+            wait_for_handoff(client.socket(), CALL_HANDOFF_WAIT);
+            outcome = Self::subscribe_once(client, request);
+        }
+        outcome?.map_err(|error| io::Error::other(format!("{}: {}", error.code, error.message)))
+    }
+
+    /// One connect, handshake and subscribe. The inner error is wsxd's refusal.
+    fn subscribe_once(
+        client: &Client,
+        request: &Request,
+    ) -> io::Result<Result<Self, super::protocol::ApiError>> {
         let mut stream = client.connect()?;
         let mut reader = BufReader::with_capacity(64 * 1024, stream.try_clone()?);
         let protocol = active_protocol(client.socket());
@@ -513,12 +526,7 @@ impl<M: TerminalStreamMessage> TerminalStream<M> {
         )?;
         match round_trip_buffered(&mut stream, &mut reader, request)? {
             Response::Ack { .. } => {}
-            Response::Error(error) => {
-                return Err(io::Error::other(format!(
-                    "{}: {}",
-                    error.code, error.message
-                )))
-            }
+            Response::Error(error) => return Ok(Err(error)),
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -547,7 +555,7 @@ impl<M: TerminalStreamMessage> TerminalStream<M> {
         let reader = thread::Builder::new()
             .name("wsx-terminal-reader".into())
             .spawn(move || terminal_reader(reader, update_tx, &reader_stop))?;
-        Ok(Self {
+        Ok(Ok(Self {
             epoch: handshake.epoch,
             input: input_tx,
             updates: update_rx,
@@ -556,7 +564,7 @@ impl<M: TerminalStreamMessage> TerminalStream<M> {
             socket,
             writer: Some(writer),
             reader: Some(reader),
-        })
+        }))
     }
 
     pub fn epoch(&self) -> u64 {
@@ -2099,6 +2107,49 @@ fn handoff_marker_fresh(reason: &str) -> bool {
 // ^ docs/daemon-live-upgrade.md: the source daemon marks the socket gap, so an
 // attached client waits for the successor instead of reporting a failure or
 // starting a competing daemon. Returns whether a handoff was observed.
+/// Whether `result` shows that the daemon did not apply the request: it refused it, or the
+/// socket was absent. A lost connection counts only when `repeats_lost` says a repeat is safe.
+fn not_applied(result: &io::Result<Response>, repeats_lost: bool) -> bool {
+    match result {
+        Ok(Response::Error(error)) => refused_in_handoff(&error.code),
+        Ok(_) => false,
+        Err(error) => not_applied_error(error, repeats_lost),
+    }
+}
+
+fn not_applied_error(error: &io::Error, repeats_lost: bool) -> bool {
+    match error.kind() {
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => true,
+        io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof => repeats_lost,
+        _ => false,
+    }
+}
+
+fn refused_in_handoff(code: &str) -> bool {
+    matches!(code, "daemon_replacing" | "daemon_unavailable")
+}
+
+/// `request` for a repeat: an exchange wait keeps only the time it has left, so the caller's
+/// deadline holds across a handoff.
+fn after_elapsed(request: &Request, elapsed: Duration) -> Cow<'_, Request> {
+    match request {
+        Request::AgentExchangeWait {
+            exchange_id,
+            after_revision,
+            timeout_ms,
+            include_frame,
+        } => Cow::Owned(Request::AgentExchangeWait {
+            exchange_id: *exchange_id,
+            after_revision: *after_revision,
+            timeout_ms: timeout_ms
+                .saturating_sub(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+                .max(1),
+            include_frame: *include_frame,
+        }),
+        _ => Cow::Borrowed(request),
+    }
+}
+
 fn wait_for_handoff(socket: &Path, limit: Duration) -> bool {
     let deadline = Instant::now() + limit;
     let mut observed = false;

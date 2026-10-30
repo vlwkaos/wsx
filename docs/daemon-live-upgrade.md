@@ -115,13 +115,13 @@ The marker cannot prove that a connection was lost to a handoff. The handoff wak
 
 ## Single requests
 
-`Client::call` repeats a request once when it was certainly not applied, whether or not it saw the marker (see "Transition marker"): the daemon refused it (`daemon_replacing`, `daemon_unavailable`) or the socket was absent. A connection lost in the middle of a request repeats only for reads (`Snapshot`, `View`, `LifecycleStatus`), because a mutation may already have been applied. A single request waits at most five seconds for the handoff.
+`Client::call` repeats a request once when it was certainly not applied, whether or not it saw the marker (see "Transition marker"): the daemon refused it (`daemon_replacing`, `daemon_unavailable`) or the socket was absent. A connection lost in the middle of a request repeats only for reads (`Snapshot`, `View`, `LifecycleStatus`) and for `AgentExchangeWait`, which changes nothing, because a mutation may already have been applied. The repeated wait keeps only the time it had left, so `wsx agent wait --timeout` still holds. A single request waits at most five seconds for the handoff.
 
 The TUI event monitor does not use the repeating call. Its reconnect is the signal that tells the TUI to take a new snapshot.
 
 ## Terminal streams
 
-A stream attached during the handoff receives the error `daemon_handoff`. The TUI keeps Terminal mode, waits for the marker, takes a new snapshot, and reattaches only if the same `PaneId` and `TerminalId` are live. It then starts from a new full frame. Keys typed in that interval are dropped, as they are during terminal entry.
+Opening a stream while wsxd hands off waits for the successor once, as a single request does, and goes on. Before the Ack the only state is a lease for the same `client_id`, so a refusal (`daemon_replacing`, `daemon_unavailable`), an absent socket or a lost connection repeats; `terminal_busy` and a daemon that died do not wait. A stream attached during the handoff receives the error `daemon_handoff`. The TUI keeps Terminal mode, waits for the marker, takes a new snapshot, and reattaches only if the same `PaneId` and `TerminalId` are live. It then starts from a new full frame. Keys typed in that interval are dropped, as they are during terminal entry.
 
 A stream that ends without notice (`stream_disconnected`) reattaches the same way once. A second loss within five seconds is reported as a failure.
 
