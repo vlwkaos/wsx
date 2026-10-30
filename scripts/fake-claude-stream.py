@@ -220,7 +220,7 @@ def manager_turn(text, project, page):
     if text.startswith('Events') and 'DASH' in text.split():
         return '-'
     if text.startswith('Events') and asks:
-        return replies[-1]
+        return 'Should I land it now?'
     if text.startswith('Events'):
         # ^ A land gets a reply of two sentences, with a task number inside one: the web shows its
         # first sentence and More (docs/web-client-tasks.md "Project screen").
