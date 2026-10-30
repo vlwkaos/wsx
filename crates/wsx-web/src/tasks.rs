@@ -226,25 +226,15 @@ pub fn overview(scope: &Scope) -> Value {
     let asks = tail
         .iter()
         .rev()
-        .take_while(|entry| {
-            !matches!(
-                entry.event,
-                ManagerEvent::Message {
-                    from: Author::Owner,
-                    ..
-                }
-            )
+        .find_map(|entry| match entry.event {
+            ManagerEvent::Message {
+                from: Author::Owner,
+                ..
+            } => Some(false),
+            ManagerEvent::Reply { asks: true, .. } => Some(true),
+            _ => None,
         })
-        .any(|entry| {
-            matches!(
-                entry.event,
-                ManagerEvent::Reply {
-                    quiet: false,
-                    asks: true,
-                    ..
-                }
-            )
-        });
+        .unwrap_or(false);
     let check_items = checks::read(&scope.store).unwrap_or_default();
     // ^ The newest message the chat counts as new: a reply that is not quiet or a To check
     // item. The home row marks it until this device read the chat that far
