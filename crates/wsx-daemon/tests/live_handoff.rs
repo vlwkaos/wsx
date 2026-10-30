@@ -2,10 +2,14 @@
 
 use std::{
     fs,
+    io::ErrorKind,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -352,11 +356,36 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
     // handoff, and its stream must learn that the daemon, not the terminal, is leaving.
     // The TUI identifies its adjacent daemon; only this test reads the override.
     std::env::set_var("WSX_DAEMON_BIN", &source_binary);
-    let (tui, tui_signals) = EventMonitor::start(client.clone()).unwrap();
-    assert_eq!(
-        tui_signals.recv_timeout(Duration::from_secs(5)).unwrap(),
-        EventSignal::Connected(None)
-    );
+    // ^ docs/daemon-live-upgrade.md "Transition marker": each poll the handoff wakes connects
+    // again and is cut off when the source closes its listener. Many windows make it likely
+    // that one reads the marker only after the successor has written `ready`.
+    let tuis = (0..32)
+        .map(|_| {
+            let (tui, signals) = EventMonitor::start(client.clone()).unwrap();
+            assert_eq!(
+                signals.recv_timeout(Duration::from_secs(5)).unwrap(),
+                EventSignal::Connected(None)
+            );
+            (tui, signals)
+        })
+        .collect::<Vec<_>>();
+    let reading = Arc::new(AtomicBool::new(true));
+    let reader = {
+        let (client, reading) = (client.clone(), Arc::clone(&reading));
+        thread::spawn(move || {
+            while reading.load(Ordering::Acquire) {
+                if let Err(error) = client.call(&Request::Snapshot) {
+                    assert!(
+                        !matches!(
+                            error.kind(),
+                            ErrorKind::ConnectionReset | ErrorKind::UnexpectedEof
+                        ),
+                        "a read lost its connection to the handoff: {error}"
+                    );
+                }
+            }
+        })
+    };
     let response = client
         .call(&Request::PrepareHandoff {
             target_binary_id: target_identity,
@@ -404,22 +433,26 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
         );
         thread::sleep(Duration::from_millis(25));
     };
-    // The attached TUI reconnects to the successor without reporting a failure.
+    reading.store(false, Ordering::Release);
+    reader.join().unwrap();
+    // Every attached TUI reconnects to the successor without reporting a failure.
     let reconnect_deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match tui_signals.recv_timeout(Duration::from_millis(100)) {
-            Ok(EventSignal::Connected(_)) => break,
-            Ok(EventSignal::Disconnected(error)) => {
-                panic!("an attached TUI saw the handoff as a failure: {error}")
+    for (_, signals) in &tuis {
+        loop {
+            match signals.recv_timeout(Duration::from_millis(100)) {
+                Ok(EventSignal::Connected(_)) => break,
+                Ok(EventSignal::Disconnected(error)) => {
+                    panic!("an attached TUI saw the handoff as a failure: {error}")
+                }
+                Ok(EventSignal::Dirty) | Err(_) => {}
             }
-            Ok(EventSignal::Dirty) | Err(_) => {}
+            assert!(
+                Instant::now() < reconnect_deadline,
+                "an attached TUI did not reconnect to the successor"
+            );
         }
-        assert!(
-            Instant::now() < reconnect_deadline,
-            "an attached TUI did not reconnect to the successor"
-        );
     }
-    drop(tui);
+    drop(tuis);
     assert_eq!(after.projects.len(), 1);
     assert_eq!(after.projects[0].id, project_id);
     assert_eq!(after.projects[0].path, project_path);
