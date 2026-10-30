@@ -572,7 +572,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
         TaskCmd::Land {
             task,
             tried,
-            said,
+            said: _,
             project,
             json,
         } if task.len() > 1 => land_batch(project.as_deref(), &task, tried, json),

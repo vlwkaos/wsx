@@ -1320,7 +1320,7 @@ impl Manager {
         }
         // ^ The limit preface is no owner message: a held turn is events-only when its
         // held and its new messages all are.
-        let events_only = held.as_ref().map_or(true, |hold| hold.events)
+        let events_only = held.as_ref().is_none_or(|hold| hold.events)
             && if ids.is_empty() {
                 held.is_some()
             } else {
@@ -1574,7 +1574,7 @@ impl Manager {
                 self.say(&text);
                 self.log(ManagerEvent::Agent { text });
             }
-            Some(AgentLine::Result(result)) => self.on_result(result),
+            Some(AgentLine::Result(result)) => self.on_result(*result),
             None => {
                 self.agent = None;
                 if self.turn.take().is_some() {

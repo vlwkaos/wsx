@@ -936,7 +936,7 @@ impl Host {
                 self.say(&text);
                 self.log(LogEvent::Agent { text });
             }
-            Some(AgentLine::Result(result)) => self.on_result(result),
+            Some(AgentLine::Result(result)) => self.on_result(*result),
             None => {
                 self.agent = None;
                 // ^ A handoff turn that never ended leaves no notes: no later result is one.
