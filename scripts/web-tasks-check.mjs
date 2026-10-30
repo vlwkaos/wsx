@@ -1901,6 +1901,7 @@ if (!player.controls || !player.inline || player.preload !== "metadata" || playe
   || player.size.join() !== "160,90" || player.zoom) await fail(`#8's video in the viewer reads ${JSON.stringify(player)}`);
 const clear = await evaluate(`(() => { const video = document.querySelector('dialog.viewer[open] .viewer-stage video').getBoundingClientRect(); const bar = document.querySelector('.viewer-bar').getBoundingClientRect(); return video.bottom <= bar.top + 1 || video.top >= bar.bottom - 1; })()`);
 if (!clear) await fail("#8's video in the viewer reaches under the bar");
+await until("document.querySelector('dialog.viewer').getAnimations({ subtree: true }).length === 0", "#8's video viewer kept moving");
 await capture("to-check-video");
 await key("Escape", 27);
 await until("!document.querySelector('dialog.viewer') && !!document.querySelector('dialog.task-sheet[open]')", "Escape did not close the video viewer alone");
