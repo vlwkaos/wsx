@@ -913,7 +913,7 @@ def watch_wsxd(path, work):
             try:
                 wsxd_client.call(str(path), 'snapshot', timeout=60)
                 answered = time.monotonic() - at
-            except OSError:
+            except (OSError, RuntimeError):
                 answered = 0  # not started yet, or stopped
             at = time.monotonic()
             try:
