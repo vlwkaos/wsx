@@ -224,7 +224,7 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
-    /// List what the owner has to check of the landed tasks, or pass, skip or fail items (owner only)
+    /// List what the owner has to check of the landed tasks, or pass, skip or fail items (owner; the manager passes with --owner-said)
     Check {
         #[command(subcommand)]
         action: Option<CheckAction>,
@@ -477,8 +477,13 @@ impl TaskCmd {
 
 #[derive(Subcommand)]
 pub enum CheckAction {
-    /// The named items passed, or every open item with --all
-    Pass(Chosen),
+    /// The named items passed, or every open item with --all (the manager: named items with --owner-said)
+    Pass {
+        #[command(flatten)]
+        chosen: Chosen,
+        #[command(flatten)]
+        said: OwnerSaid,
+    },
     /// Close the named items, or every open item with --all, without a verdict: no fix task
     Skip(Chosen),
     /// The item failed: a new task fixes it, linked to the item
@@ -1218,14 +1223,33 @@ fn check(action: Option<CheckAction>, project: Option<&str>, json: bool) -> Resu
             }
             return Ok(());
         }
-        Some(CheckAction::Pass(chosen)) => (
-            close_checks(&project_id, chosen, CheckState::Passed, "check pass")?,
-            "passed",
-        ),
-        Some(CheckAction::Skip(chosen)) => (
-            close_checks(&project_id, chosen, CheckState::Skipped, "check skip")?,
-            "skipped",
-        ),
+        Some(CheckAction::Pass { chosen, said }) => {
+            // ^ The manager passes only the items it names, on the owner's message of this turn.
+            let owner_said = if acting_as_manager() {
+                match said.owner_said {
+                    Some(said) if !chosen.all => {
+                        owner::check_owner_said(&project_id, said)?;
+                        Some(said)
+                    }
+                    _ => bail!(
+                        "wsx task check pass is for the owner; the manager names each item with --owner-said <message>"
+                    ),
+                }
+            } else {
+                None
+            };
+            (
+                close_checks(&project_id, chosen, CheckState::Passed, owner_said)?,
+                "passed",
+            )
+        }
+        Some(CheckAction::Skip(chosen)) => {
+            owner_only("check skip")?;
+            (
+                close_checks(&project_id, chosen, CheckState::Skipped, None)?,
+                "skipped",
+            )
+        }
         Some(CheckAction::Fail { id, note }) => {
             owner_only("check fail")?;
             (vec![fail_check(&name, &project_id, &id, &note)?], "failed")
@@ -1249,16 +1273,15 @@ fn check(action: Option<CheckAction>, project: Option<&str>, json: bool) -> Resu
     Ok(())
 }
 
-/// Pass or skip the chosen items as the owner.
+/// Pass or skip the chosen items; `owner_said` is the manager's pass on that owner message.
 fn close_checks(
     project_id: &str,
     chosen: Chosen,
     state: CheckState,
-    command: &str,
+    owner_said: Option<u64>,
 ) -> Result<Vec<CheckItem>> {
-    owner_only(command)?;
     let ids = if chosen.all { Vec::new() } else { chosen.ids };
-    checks::close(project_id, &ids, state)
+    checks::close(project_id, &ids, state, owner_said)
 }
 
 /// A failed item starts a task that fixes it and links both.

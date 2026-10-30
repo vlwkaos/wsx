@@ -60,6 +60,9 @@ pub struct CheckItem {
     /// The task a fail started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix_task: Option<u32>,
+    /// A pass by the manager: the id of the owner's message it was passed on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_said: Option<u64>,
     /// When this row was written: the item was added, passed, skipped or failed.
     pub unix_ms: u64,
     /// When the item was added: its first row's `unix_ms`, set by `fold`. The chat places the
@@ -173,6 +176,7 @@ pub fn collect(
                 state: CheckState::Open,
                 note: None,
                 fix_task: None,
+                owner_said: None,
                 unix_ms: now,
                 added_unix_ms: now,
             })
@@ -182,7 +186,13 @@ pub fn collect(
 
 /// Close open items as `state` (passed or skipped): the named ones, or every open one when
 /// `ids` is empty. An unknown id or one that is not open refuses the whole call.
-pub fn close(project_id: &str, ids: &[String], state: CheckState) -> Result<Vec<CheckItem>> {
+/// `owner_said` is kept on the row when the manager passed on the owner's message.
+pub fn close(
+    project_id: &str,
+    ids: &[String],
+    state: CheckState,
+    owner_said: Option<u64>,
+) -> Result<Vec<CheckItem>> {
     change(project_id, |items| {
         let chosen = if ids.is_empty() {
             items
@@ -199,6 +209,7 @@ pub fn close(project_id: &str, ids: &[String], state: CheckState) -> Result<Vec<
             .into_iter()
             .map(|item| CheckItem {
                 state,
+                owner_said,
                 unix_ms: now,
                 ..item.clone()
             })

@@ -336,7 +336,7 @@ impl ManagerChat {
         let verb = checks::state_name(state);
         self.run(
             format!("Marking {id} {verb}"),
-            move |_, _, store| match checks::close(&store, std::slice::from_ref(&id), state) {
+            move |_, _, store| match checks::close(&store, std::slice::from_ref(&id), state, None) {
                 Ok(_) => (format!("{id} {verb}"), false, None),
                 Err(error) => (format!("{id} not {verb}: {error:#}"), true, None),
             },
