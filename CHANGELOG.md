@@ -5,6 +5,9 @@
 ### Added
 
 - Tasks: token use and cost show in the TUI and the web. Each task's cost, input, cache read, cache write, output and turns are in `wsx task show` (and `--json`), the ledger's rows, the TUI task detail and a line on the web task sheet. The project's spend today and in the last 7 days, workers and manager apart, is under the TUI Tasks heading and in the web's `⋯` *Usage* sheet. One reader in wsx-core sums the logs' `usage`, also older lines that held a session's running total, and reads a log again only when it changed ([docs/tasks.md](docs/tasks.md) "Usage").
+### Fixed
+
+- Tasks: the manager chat no longer shows empty rows. A manager's message to another project's manager or a role kept no text in its own log when the agent left out `--json`, so the web showed an empty "To <name>" bubble: such a `say` now always answers in JSON with its text, and an empty `sent` already logged shows nothing. A turn of only replies from other managers or roles is the manager's own work like a turn of events, so its short answer is quiet, and a reply of `-` or nothing shows nothing in the web or the TUI, also in older logs ([docs/tasks.md](docs/tasks.md) "Manager", "Managers talk").
 
 ## [0.41.0] - 2026-10-29
 

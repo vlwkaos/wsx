@@ -154,13 +154,19 @@ pub fn quiet_reply(text: &str) -> bool {
     !text.contains('\n') && text.chars().count() <= QUIET_REPLY_CHARS
 }
 
+/// Whether a reply says nothing to the owner: `-` (nothing changed) or no text. It is quiet, and
+/// no chat shows it (docs/tasks.md "Manager").
+pub fn says_nothing(text: &str) -> bool {
+    matches!(text.trim(), "" | "-")
+}
+
 impl ManagerEntry {
     /// An entry as read from the log: a reply stored as quiet before the length rule keeps its
-    /// flag only when it is short, and a reply of `-` or nothing is quiet, as it says nothing.
+    /// flag only when it is short, and one that `says_nothing` is quiet.
     pub(super) fn read(line: &[u8]) -> Option<Self> {
         let mut entry: Self = serde_json::from_slice(line).ok()?;
         if let ManagerEvent::Reply { text, quiet, .. } = &mut entry.event {
-            *quiet = (*quiet && quiet_reply(text)) || matches!(text.trim(), "" | "-");
+            *quiet = (*quiet && quiet_reply(text)) || says_nothing(text);
         }
         Some(entry)
     }

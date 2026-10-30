@@ -15,8 +15,8 @@ use wsx_core::task::{
     call_socket,
     checks::{self, CheckItem, CheckState},
     manager::{
-        activity, chat_window, pending_approvals, Author, ManagerEvent, ManagerRequest,
-        ManagerResponse,
+        activity, chat_window, pending_approvals, says_nothing, Author, ManagerEvent,
+        ManagerRequest, ManagerResponse,
     },
     owner,
     store::{self, ManagerDir, Stamp},
@@ -426,7 +426,7 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
             // ^ A quiet `-` or empty reply says nothing changed: it shows nothing, as on the web.
             ManagerEvent::Reply {
                 text, quiet: true, ..
-            } if matches!(text.trim(), "" | "-") => {}
+            } if says_nothing(text) => {}
             ManagerEvent::Reply {
                 text, quiet: true, ..
             } => rows.push(Row::Line(text.trim().to_string())),
