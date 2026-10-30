@@ -659,7 +659,8 @@ class Site:
             sent['Content-Type'] = 'application/json'
         sent.update(headers or {})
         sent = {name: value for name, value in sent.items() if value is not None}
-        connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
+        # ^ A busy disk holds a wsxd state save, and every request behind it, for over 14 s.
+        connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=30)
         try:
             connection.request(method, prefix + path, body=body, headers=sent)
             response = connection.getresponse()
@@ -996,7 +997,7 @@ def web_journey(args):
         actor.write_text(wsxd_client.fixture(ACTOR))
 
         def call(method, params=None):
-            return wsxd_client.call(path, method, params)
+            return wsxd_client.call(path, method, params, timeout=30)
 
         def wait(test, label, timeout=8):
             deadline = time.monotonic() + timeout
@@ -3221,7 +3222,7 @@ def task_journey(args):
             agent_script.write_text(wsxd_client.fixture(SESSION_AGENT))
 
             def call(method, params):
-                return wsxd_client.call(path, method, params)
+                return wsxd_client.call(path, method, params, timeout=30)
             snapshot = call('snapshot', None)['data']
             names = {item['id']: Path(item['path']).name for item in snapshot['projects']}
             worktrees = {names[item['project_id']]: item['id'] for item in snapshot['worktrees']}
