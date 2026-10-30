@@ -17,7 +17,7 @@ wsx task handback <n> --json                     # owner only: its commits are c
 wsx task preview <n> [--stop] --json             # a link to try the task (tasks.preview); see Preview
 wsx task check-run [<n>...]                      # from a worker: run the checks as after its result
 wsx task check -p <project> [--json]             # the open "To check" items
-wsx task check pass <id>... | --all --json       # owner only
+wsx task check pass <id>... | --all --json       # owner; the manager: <id>... --owner-said <message>
 wsx task check skip <id>... | --all --json       # owner only; closes without a verdict
 wsx task check fail <id> --note <text> --json    # owner only; starts a task that fixes it
 wsx task close <n> [--discard] [--owner-said <id>] --json
