@@ -1852,14 +1852,15 @@ try:
     def viewed_exited():
         return next(pane for pane in call("snapshot")["data"]["panes"]
                     if pane["terminal_id"] == viewed)["exited"]
-    # ^ As in viewed_shell_answers: a key typed while the stream reattaches is dropped.
+    # ^ As in viewed_shell_answers: a key typed while the stream reattaches is dropped. A pane
+    # that already exited gets no second line: its Enter would start the program again.
     exit_deadline = time.monotonic() + 20
     while b"Enter starts it again" not in tui_screen:
         assert time.monotonic() < exit_deadline, (
             "the TUI did not say the program exited", viewed_exited(), bytes(tui_screen[-600:]))
-        if in_terminal_mode():
+        if in_terminal_mode() and not viewed_exited():
             os.write(tui_master, b"exit\r")
-        time.sleep(3)
+        time.sleep(1)
     assert viewed_exited()
     os.write(tui_master, b"\r")
     viewed_shell_answers("restarted", 3)
