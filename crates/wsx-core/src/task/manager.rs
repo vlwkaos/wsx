@@ -156,11 +156,11 @@ pub fn quiet_reply(text: &str) -> bool {
 
 impl ManagerEntry {
     /// An entry as read from the log: a reply stored as quiet before the length rule keeps its
-    /// flag only when it is short.
+    /// flag only when it is short, and a reply of `-` or nothing is quiet, as it says nothing.
     pub(super) fn read(line: &[u8]) -> Option<Self> {
         let mut entry: Self = serde_json::from_slice(line).ok()?;
         if let ManagerEvent::Reply { text, quiet, .. } = &mut entry.event {
-            *quiet = *quiet && quiet_reply(text);
+            *quiet = (*quiet && quiet_reply(text)) || matches!(text.trim(), "" | "-");
         }
         Some(entry)
     }

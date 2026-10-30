@@ -58,7 +58,8 @@ export function conversation(entries, resolutions, approvals = [], checks = [], 
       const peer = from.startsWith("role") ? `role:${name}` : name;
       rows.push({ kind: "bubble", at, key, author: `peer:${peer}`, entry, tag: from.endsWith("-reply") ? "Reply" : null });
     } else if (entry.kind === "sent") {
-      rows.push({ kind: "bubble", at, key, author: "manager", entry, to: entry.to });
+      // ^ An empty `sent` (older hosts logged one without --json) shows nothing.
+      if (entry.text?.trim()) rows.push({ kind: "bubble", at, key, author: "manager", entry, to: entry.to });
     } else if (entry.kind === "message") {
       entry.text.split("\n").filter(Boolean).forEach((line, part) => rows.push({ kind: "line", at, key: `${key}-${part}`, text: shortLine(line) }));
     } else if (entry.kind === "limit") {
