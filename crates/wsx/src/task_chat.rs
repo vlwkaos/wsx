@@ -406,7 +406,15 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
         };
         match &entry.event {
             ManagerEvent::Message { from, text, .. } => match from {
-                Author::Owner => rows.push(said(Who::Owner, text)),
+                // ^ A reply asks until the owner writes after it (docs/tasks.md "Manager").
+                Author::Owner => {
+                    for row in &mut rows {
+                        if let Row::Said { asks, .. } = row {
+                            *asks = false;
+                        }
+                    }
+                    rows.push(said(Who::Owner, text))
+                }
                 // ^ wsx's recap request is not shown, only the manager's answer to it.
                 Author::Recap => {}
                 Author::Manager { project, .. } => {
@@ -454,21 +462,6 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
             ))),
             ManagerEvent::Limit { until: None } => rows.push(Row::Line("Manager resumed".into())),
             ManagerEvent::Delivered { .. } | ManagerEvent::Agent { .. } => {}
-        }
-    }
-    // ^ A reply asks until the owner writes after it (docs/tasks.md "Manager").
-    let answered = rows.iter().rposition(|row| {
-        matches!(
-            row,
-            Row::Said {
-                who: Who::Owner,
-                ..
-            }
-        )
-    });
-    for row in &mut rows[..answered.map_or(0, |at| at + 1)] {
-        if let Row::Said { asks, .. } = row {
-            *asks = false;
         }
     }
     // ^ To check items and approvals are the manager's (docs/tasks.md "Roles").

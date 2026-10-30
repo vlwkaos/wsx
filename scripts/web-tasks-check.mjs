@@ -1007,6 +1007,7 @@ await until("[...document.querySelectorAll('.log .bubble[data-side=in]')].at(-1)
 // ^ A reply that ends with a question carries "Asks you" in the accent, and the overview's
 // `asks` with it, until the owner writes after it (docs/web-client-tasks.md "Project screen").
 const asking = "[...document.querySelectorAll('.log .bubble[data-side=in]')].find((node) => node.textContent.includes('Should I land it now?'))";
+const answeredOpen = "[...document.querySelectorAll('.log .bubble[data-side=in]')].at(-1)?.textContent.includes('open:') && !document.querySelector('.log .typing')";
 const askTags = "[...document.querySelectorAll('.log .bubble-tag')].filter((node) => node.textContent === 'Asks you')";
 // ^ A shot of a bubble or a row still fading in shows it dim.
 const entered = () => until("document.getAnimations().every((animation) => animation.effect?.getTiming().iterations === Infinity || animation.playState !== 'running')", "the page kept moving");
@@ -1038,7 +1039,7 @@ await until(`!!${asking}`, "the chat did not come back after Home", 100);
 await typeInto(".composer-field", "STATUS after the question");
 await click(".composer-send");
 await until(`${askTags}.length === 0`, "the owner's message did not clear Asks you", 30);
-await until("[...document.querySelectorAll('.log .bubble[data-side=in]')].at(-1)?.textContent.includes('open:') && !document.querySelector('.log .typing')", "no reply after the question", 300);
+await until(answeredOpen, "no reply after the question", 300);
 if ((await overviewAsks()) !== false) await fail("the overview still says the manager asks");
 await entered();
 await shot("asks-you-answered", ".composer-send");
