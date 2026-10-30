@@ -221,22 +221,30 @@ pub fn overview(scope: &Scope) -> Value {
         } => Some((entry.unix_ms, view::clip(text.trim(), LAST_REPLY_CHARS))),
         _ => None,
     });
-    // ^ The manager's newest reply asks the owner and no owner message came after it: the home
+    // ^ A reply asks the owner and no owner message came after it, a later report or not: the home
     // row shows the chat's "Asks you" tag (docs/web-client-tasks.md "Home").
     let asks = tail
         .iter()
         .rev()
-        .find_map(|entry| match &entry.event {
-            ManagerEvent::Message {
-                from: Author::Owner,
-                ..
-            } => Some(false),
-            ManagerEvent::Reply {
-                quiet: false, asks, ..
-            } => Some(*asks),
-            _ => None,
+        .take_while(|entry| {
+            !matches!(
+                entry.event,
+                ManagerEvent::Message {
+                    from: Author::Owner,
+                    ..
+                }
+            )
         })
-        .unwrap_or(false);
+        .any(|entry| {
+            matches!(
+                entry.event,
+                ManagerEvent::Reply {
+                    quiet: false,
+                    asks: true,
+                    ..
+                }
+            )
+        });
     let check_items = checks::read(&scope.store).unwrap_or_default();
     // ^ The newest message the chat counts as new: a reply that is not quiet or a To check
     // item. The home row marks it until this device read the chat that far
