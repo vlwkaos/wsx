@@ -1172,3 +1172,153 @@ fn a_resumed_agent_that_quits_leaves_a_usable_shell() {
     client.shutdown().unwrap();
     wait_for_socket_removal(&fixture.socket);
 }
+
+// ^ docs/daemon-live-upgrade.md "Single requests" and "Terminal streams": a client that opens
+// a terminal stream or waits on an exchange while wsxd hands off is not told of a failure.
+#[test]
+fn opening_a_stream_and_waiting_on_an_exchange_go_on_through_a_handoff() {
+    let mut fixture = Fixture::new();
+    let binary = fixture.wsxd();
+    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
+    wait_for_socket(&fixture.socket);
+    let client = Client::new(fixture.socket.clone());
+    let pane = sessions(
+        &client,
+        "wait",
+        &[(
+            "live",
+            "printf 'gen=[%s]\\n' \"$WSX_RUNTIME_GENERATION\"; while IFS= read -r line; do :; done",
+        )],
+    )[0];
+    let stream = TerminalStream::connect(&client, pane, 100, true, 12, 60).unwrap();
+    let generation = reported_value(&frame_text(&stream, "gen=["), "gen=[");
+    drop(stream);
+    assert!(matches!(
+        client
+            .call(&Request::AgentReport {
+                pane_id: pane,
+                runtime_generation: Some(generation),
+                provider: "pi".into(),
+                state: AgentState::Done,
+                attached: true,
+                presence_id: Some("0d5a3f1e-7a1b-4f3c-9a55-5f2f1d6c8b11".into()),
+                conversation_id: None,
+                session_ref: None,
+                wake_token: None,
+                capabilities: AgentCapabilities {
+                    prompt: true,
+                    lifecycle: true,
+                    ..Default::default()
+                },
+                received: None,
+                compacting: false,
+                compacted: false,
+            })
+            .unwrap(),
+        Response::Ack { .. }
+    ));
+    let exchange = match client
+        .call(&Request::AgentExchangeCreate {
+            pane_id: pane,
+            prompt: "hold".into(),
+            timeout_ms: 60_000,
+            access: Default::default(),
+            write_claims: Vec::new(),
+            command: false,
+            takeover: true,
+        })
+        .unwrap()
+    {
+        Response::AgentExchange { exchange, .. } => exchange,
+        response => panic!("unexpected exchange response: {response:?}"),
+    };
+
+    // The wait is open in the source when the handoff starts; nothing changes the exchange.
+    let waiter = {
+        let (client, id, revision) = (client.clone(), exchange.id, exchange.revision);
+        thread::spawn(move || {
+            client.wait_agent_exchange(&Request::AgentExchangeWait {
+                exchange_id: id,
+                after_revision: revision,
+                timeout_ms: 8_000,
+                include_frame: false,
+            })
+        })
+    };
+    let opening = Arc::new(AtomicBool::new(true));
+    let opener = {
+        let (client, opening) = (client.clone(), Arc::clone(&opening));
+        thread::spawn(move || {
+            let mut failures = Vec::new();
+            let mut opened = 0;
+            while opening.load(Ordering::Acquire) {
+                match TerminalStream::connect(&client, pane, 100, true, 12, 60) {
+                    Ok(_) => opened += 1,
+                    Err(error) => failures.push(error.to_string()),
+                }
+            }
+            (opened, failures)
+        })
+    };
+    thread::sleep(Duration::from_millis(300));
+    let old_epoch = lifecycle(&client).epoch;
+    let response = client
+        .call(&Request::PrepareHandoff {
+            target_binary_id: binary_identity(&binary).unwrap(),
+            target_version: WSX_VERSION.into(),
+            target_protocol: PROTOCOL_VERSION,
+            target_daemon_revision: DAEMON_REVISION,
+            executable: binary,
+            restart: true,
+        })
+        .unwrap();
+    assert!(
+        matches!(&response, Response::Replacement { blockers, .. } if blockers.is_empty()),
+        "{response:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !matches!(client.call(&Request::LifecycleStatus), Ok(Response::Lifecycle(status)) if status.epoch != old_epoch)
+    {
+        assert!(Instant::now() < deadline, "the successor did not serve");
+        thread::sleep(Duration::from_millis(25));
+    }
+    opening.store(false, Ordering::Release);
+    let (opened, failures) = opener.join().unwrap();
+    assert!(
+        failures.is_empty(),
+        "opening a stream failed {} times, first: {:?}",
+        failures.len(),
+        failures.first()
+    );
+    assert!(opened > 0);
+    match waiter.join().unwrap() {
+        Ok(Response::AgentExchange {
+            exchange: after, ..
+        }) => assert_eq!(after.id, exchange.id),
+        other => panic!("the wait did not go on through the handoff: {other:?}"),
+    }
+}
+
+// ^ The repeat must not hide a daemon that died: both calls fail at once, not after a wait.
+#[test]
+fn a_daemon_that_died_is_reported_by_opening_a_stream_and_by_a_wait() {
+    let mut fixture = Fixture::new();
+    let binary = fixture.wsxd();
+    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
+    wait_for_socket(&fixture.socket);
+    let client = Client::new(fixture.socket.clone());
+    let pane = sessions(&client, "dead", &[("live", "sleep 60")])[0];
+    fixture.source.as_mut().unwrap().kill().unwrap();
+    fixture.source.as_mut().unwrap().wait().unwrap();
+    let started = Instant::now();
+    assert!(TerminalStream::connect(&client, pane, 100, true, 12, 60).is_err());
+    assert!(client
+        .wait_agent_exchange(&Request::AgentExchangeWait {
+            exchange_id: wsx_core::runtime::AgentExchangeId(1),
+            after_revision: 0,
+            timeout_ms: 1_000,
+            include_frame: false,
+        })
+        .is_err());
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
