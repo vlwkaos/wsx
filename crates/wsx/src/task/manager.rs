@@ -22,7 +22,7 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::TaskWorkflow;
 use wsx_core::runtime;
 use wsx_core::task::manager::{
-    decided_request, instructions_digest, pending_approvals, quiet_reply, ApprovalLine,
+    asks_owner, decided_request, instructions_digest, pending_approvals, quiet_reply, ApprovalLine,
 };
 use wsx_core::task::manager::{
     Author, LimitHold, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState,
@@ -201,7 +201,7 @@ fn instructions(
          A turn of only Events is your work, not a message for the owner. Act on it, then \
          reply with one short line of what you did, or with exactly `-` when nothing \
          changed for the owner. Write more only when the owner must decide now, and then \
-         ask one plain question. Never hand the owner chores: no commands, files, settings or \
+         end the reply with one plain question. Never hand the owner chores: no commands, files, settings or \
          tasks to verify. Do such work through a task, or drop \
          it. \
          Start a request for work at once and say the plan in a few lines in the same reply \
@@ -1609,13 +1609,15 @@ impl Manager {
             "reply {id}: {}",
             result.text.lines().next().unwrap_or_default()
         ));
-        let quiet = self.turn_events && quiet_reply(&result.text);
+        let asks = asks_owner(&result.text);
+        let quiet = self.turn_events && !asks && quiet_reply(&result.text);
         self.log(ManagerEvent::Reply {
             id,
             to,
             text: result.text,
             usage: Some(result.usage),
             quiet,
+            asks,
         });
         if context > self.rotate_tokens {
             self.rotate(context, None);

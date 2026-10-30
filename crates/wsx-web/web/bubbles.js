@@ -41,7 +41,9 @@ export function conversation(entries, resolutions, approvals = [], checks = [], 
   // ^ wsx's recap request is not shown; the manager's answer to it is tagged Recap
   // (docs/tasks.md "Recap").
   const recaps = new Set(entries.filter((entry) => entry.kind === "message" && entry.from === "recap").map((entry) => entry.id));
-  entries.forEach((entry) => {
+  // ^ A reply that asks the owner is tagged until the owner writes after it (docs/tasks.md "Manager").
+  const answered = entries.findLastIndex((entry) => entry.kind === "message" && entry.from === "owner");
+  entries.forEach((entry, index) => {
     const at = entry.unix_ms ?? 0;
     // ^ A key never names a place in a list: a row keeps its element while rows come and go.
     const key = entry.id != null ? `${entry.kind}-${entry.id}` : `${entry.kind}-${at}`;
@@ -50,7 +52,7 @@ export function conversation(entries, resolutions, approvals = [], checks = [], 
     } else if (entry.kind === "message" && entry.from === "recap") {
       return;
     } else if (entry.kind === "reply") {
-      rows.push({ kind: "bubble", at, key, author: "manager", entry, quiet: entry.quiet, tag: entry.to?.some((id) => recaps.has(id)) ? "Recap" : null });
+      rows.push({ kind: "bubble", at, key, author: "manager", entry, quiet: entry.quiet, asks: entry.asks && index > answered, tag: entry.to?.some((id) => recaps.has(id)) ? "Recap" : null });
     } else if (entry.kind === "message" && /^(manager|role)(-reply)?:/.test(entry.from ?? "")) {
       // ^ Another project's manager wrote (docs/tasks.md "Managers talk"), or a role or the
       // manager of this one (`role:<name>`, docs/tasks.md "Roles").
@@ -174,7 +176,7 @@ export function Bubble({ project, row, words, names, fresh }) {
   const out = row.author === "owner";
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
   const id = `bubble-${row.key}`;
-  const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${names.peers[row.to]}` : row.tag;
+  const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${names.peers[row.to]}` : row.asks ? "Asks you" : row.tag;
   let body;
   if (out) {
     body = html`<div class="bubble-body" id=${id}><${Quoted} text=${row.entry.text} words=${words} /></div><${Attachments} files=${row.entry.attachments} />`;
@@ -189,7 +191,7 @@ export function Bubble({ project, row, words, names, fresh }) {
       data-quote=${quoteOf(row.entry.text) || null}
       data-pending=${row.pending ? "" : null} aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}`}>
       ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${authorName(row.author, names)}</p>`}
-      <div class="bubble-box">${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
+      <div class="bubble-box">${tag && html`<p class="bubble-tag" data-tone=${row.asks ? "accent" : null}>${tag}</p>`}${body}</div>
       ${row.last && html`<p class="bubble-time" aria-hidden="true">${row.pending ? "Sending…" : clock(row.at)}</p>`}
     </article>`;
 }

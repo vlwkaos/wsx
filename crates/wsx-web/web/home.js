@@ -110,6 +110,7 @@ export function Home({ rail }) {
                 <span class="row-main">
                   <span class="row-work">
                     ${news ? html`<span class="news-mark" role="img" aria-label="New message"></span>` : null}<span class="row-label">${row.project.name}</span>
+                    ${row.overview?.asks ? html`<span class="row-asks" data-tone="accent">Asks you</span>` : null}
                     ${count ? html`<span class="count" key=${count} data-tone="attention" aria-label=${`${count} ${count === 1 ? "needs" : "need"} you`}>${count}</span>` : null}
                   </span>
                   <span class="row-context" key=${status.text} data-tone=${status.tone ?? null} data-loading=${status.loading ? "" : null}>

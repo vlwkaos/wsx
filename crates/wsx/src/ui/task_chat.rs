@@ -174,7 +174,12 @@ pub fn chat_lines(rows: &[Row], other: &str, width: usize) -> Vec<Line<'static>>
     let mut lines = Vec::new();
     for (index, row) in rows.iter().enumerate() {
         match row {
-            Row::Said { who, unix_ms, text } => {
+            Row::Said {
+                who,
+                unix_ms,
+                text,
+                asks,
+            } => {
                 if index > 0 {
                     lines.push(Line::raw(""));
                 }
@@ -183,13 +188,20 @@ pub fn chat_lines(rows: &[Row], other: &str, width: usize) -> Vec<Line<'static>>
                     Who::Manager => (other.to_string(), theme::DONE),
                     Who::Peer(project) => (project.clone(), theme::IDLE),
                 };
-                lines.push(Line::from(vec![
+                let mut heading = vec![
                     Span::styled(name, Style::default().fg(color).bold()),
                     Span::styled(
                         format!("  {}", clock(*unix_ms)),
                         Style::default().fg(theme::TEXT_SUBTLE),
                     ),
-                ]));
+                ];
+                if *asks {
+                    heading.push(Span::styled(
+                        "  Asks you",
+                        Style::default().fg(theme::ACCENT),
+                    ));
+                }
+                lines.push(Line::from(heading));
                 for paragraph in text.lines() {
                     lines.extend(
                         wrap(paragraph, width.saturating_sub(2).max(1))

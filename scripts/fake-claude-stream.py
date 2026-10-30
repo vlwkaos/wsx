@@ -191,6 +191,12 @@ def manager_turn(text, project, page):
             _, section, words = line.split(' ', 2)
             edit_page(page, section, words)
             replies.append('I updated the %s of the project page.' % section)
+    # ^ This turn's own words, not the ledger summary's titles or a handover's earlier messages.
+    asks = re.search(r'^(ASK\b|#\d+ ready r\d+: NOOP ASK\b)', text, re.M)
+    if asks:
+        replies.append('Should I land it now?')
+    if re.search(r'^ASKROW\b', text, re.M):
+        replies.append('| Task | Land? |\n|---|---|\n| #2 | land it?')
     if 'TABLE' in text.split():
         cell = 'a long cell that keeps going ' * 4
         replies.append('Where things stand:\n\n| Task | State | Note |\n|---|---|---|\n'
@@ -213,6 +219,8 @@ def manager_turn(text, project, page):
         replies.append('open: ' + (', '.join(rows) if rows else 'none'))
     if text.startswith('Events') and 'DASH' in text.split():
         return '-'
+    if text.startswith('Events') and asks:
+        return replies[-1]
     if text.startswith('Events'):
         # ^ A land gets a reply of two sentences, with a task number inside one: the web shows its
         # first sentence and More (docs/web-client-tasks.md "Project screen").
