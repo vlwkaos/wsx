@@ -219,6 +219,7 @@ function Viewer({ images, start, dark, onClosed }) {
   };
 
   const many = images.length > 1;
+  const saveLabel = matchMedia("(pointer: coarse)").matches ? "Share" : "Download";
   const scale = (fit ?? 1) * zoom;
   return html`
     <dialog class="viewer" ref=${dialog} data-scheme=${dark ? "dark" : undefined}
@@ -233,7 +234,7 @@ function Viewer({ images, start, dark, onClosed }) {
           <span class="time" aria-live="polite">${Math.round(zoom * 100)}%</span>
           <button class="button" type="button" aria-label="Zoom in" disabled=${zoom >= MAX_ZOOM} onClick=${() => zoomCenter(zoom * ZOOM_STEP)}>+</button>`}
         </span>
-        ${image.download && html`<a class="icon-button" href=${image.download} download aria-label="Download" title="Download" onClick=${save}><${Icon} name="down" /></a>`}
+        ${image.download && html`<a class="icon-button" href=${image.download} download aria-label=${saveLabel} title=${saveLabel} onClick=${save}><${Icon} name="share" /></a>`}
         <button class="icon-button" type="button" aria-label="Close" autofocus onClick=${close}><${Icon} name="fail" /></button>
       </div>
       <div class="viewer-stage" ref=${stage} data-video=${image.video || undefined} onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up} onWheel=${wheel} onClick=${clicked}>
