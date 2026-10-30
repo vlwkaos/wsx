@@ -939,3 +939,20 @@ pub fn read_approvals(project_id: &str) -> Result<Vec<super::manager::ApprovalLi
         .filter_map(|line| serde_json::from_slice(line).ok())
         .collect())
 }
+
+/// Free space for unprivileged writes on the volume of `path`, in MiB.
+pub fn free_mb(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is a valid C string and `stats` is written before it is read.
+    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: statvfs returned 0, so it filled `stats`.
+    let stats = unsafe { stats.assume_init() };
+    // ^ `into`: the field types differ between platforms.
+    #[allow(clippy::useless_conversion)]
+    let (blocks, size): (u64, u64) = (stats.f_bavail.into(), stats.f_frsize.into());
+    Some(blocks.saturating_mul(size) / (1024 * 1024))
+}

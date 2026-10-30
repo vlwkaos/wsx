@@ -930,11 +930,11 @@ impl Host {
                     self.save();
                 }
             }
-            Some(AgentLine::Progress(text)) => {
+            Some(AgentLine::Progress { text, said }) => {
                 // ^ The agent answers again: the next task in the limit queue may try.
                 self.limit_slot = None;
                 self.say(&text);
-                self.log(LogEvent::Agent { text });
+                self.log(LogEvent::Agent { text, said });
             }
             Some(AgentLine::Result(result)) => self.on_result(*result),
             None => {
@@ -955,6 +955,7 @@ impl Host {
     fn on_result(&mut self, turn: TurnResult) {
         if turn.answers_nothing() {
             self.log(LogEvent::Agent {
+                said: false,
                 text: "claude ended its own turn with no result: ignored".into(),
             });
             return;
@@ -985,6 +986,7 @@ impl Host {
         self.limit_attempt = 0;
         if let Some((waiting, idle)) = self.rotating.take() {
             self.log(LogEvent::Agent {
+                said: false,
                 text: format!("handoff notes: {}", first_line(&turn.text)),
             });
             self.rotate(waiting, idle);
@@ -1141,7 +1143,7 @@ impl Host {
         );
         wait.turn = Some(turn);
         self.say(&text);
-        self.log(LogEvent::Agent { text });
+        self.log(LogEvent::Agent { text, said: false });
         None
     }
 
@@ -1165,7 +1167,7 @@ impl Host {
             turn.background, self.record.check_timeout_secs
         );
         self.say(&text);
-        self.log(LogEvent::Agent { text });
+        self.log(LogEvent::Agent { text, said: false });
         turn.background = 0;
         self.on_result(turn);
     }
@@ -1389,7 +1391,7 @@ impl Host {
     fn low_disk(&self) -> Option<(u64, u64)> {
         let min_gb =
             load_task_config(&self.record.project_path).map_or(5, |settings| settings.min_free_gb);
-        hosting::free_mb(&self.record.working_copy)
+        store::free_mb(&self.record.working_copy)
             .filter(|free_mb| *free_mb < min_gb * 1024)
             .map(|free_mb| (free_mb, min_gb))
     }

@@ -2,8 +2,9 @@
 // task (from the record and the result), in plain words written by wsx, never by a model
 // (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
-import { firstSentence, html, Icon, short, useEffect, useRef, useState } from "./lib.js";
+import { ago, firstSentence, html, Icon, lastSentence, short, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
+import { running, taskHealth } from "./tasks.js";
 
 const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 // `refs/heads/main` reads as `main`, `refs/remotes/origin/main` as `origin/main`.
@@ -73,15 +74,18 @@ function toEnd(event) {
   if (event.currentTarget.open) pre.scrollTop = pre.scrollHeight;
 }
 
+const capital = (text) => `${text[0].toUpperCase()}${text.slice(1)}`;
+
 // What the owner should know next, in one sentence, or nothing while the agents just work.
 function nextWords(detail) {
   const main = detail.default_branch ?? "the default branch";
   const asked = detail.approvals?.[0];
   if (asked) return `The manager asks: ${asked.label}.`;
+  if (detail.progress?.stuck) return `${capital(detail.progress.stuck)}.`;
   switch (detail.state) {
     case "waiting": switch (detail.waiting?.on) {
       case "disk": return `${detail.waiting.reason}. It goes on by itself once there is space.`;
-      case "limit": return `${detail.waiting.reason[0].toUpperCase()}${detail.waiting.reason.slice(1)}. It goes on by itself.`;
+      case "limit": return `${capital(detail.waiting.reason)}. It goes on by itself.`;
       case "hand": return "You work on it by hand in its session. Commit, then hand it back: its checks run and it lands as usual.";
       default: return detail.waiting?.reason === "stopped by request"
         ? "The worker stopped. Add a message to resume it." : "The worker waits for your answer.";
@@ -100,7 +104,9 @@ function nextWords(detail) {
       if (reason.startsWith("no checks")) return `No checks prove it, so it waits for you. Land it to put it on ${main}.`;
       return `Land it to put it on ${main}.`;
     }
-    case "working": return detail.conflict ? `The worker resolves a conflict with ${main}; it lands when its checks pass.` : "";
+    case "working": case "checking":
+      if (detail.conflict) return `The worker resolves a conflict with ${main}; it lands when its checks pass.`;
+      return detail.waiting?.on === "check_slot" ? `${capital(detail.waiting.reason)}.` : "";
     case "landed": case "closed": {
       if (detail.state === "closed" && !detail.landed_commit) return "Closed without landing.";
       if (!detail.deploy?.configured || detail.deploy.deployed) return `On ${main}.`;
@@ -110,19 +116,61 @@ function nextWords(detail) {
   }
 }
 
-// The top of the task sheet: one sentence of what changed (More shows the whole summary and
-// what the worker decided), and what the owner should know next with the task's actions beside
-// it (docs/web-client-tasks.md "Task sheet").
+// A summary is the current word on a task only while no new work runs after it: the worker's
+// answer or result, not an older revision's.
+export const summaryIsCurrent = (detail) => ["ready", "failed", "landed", "closed"].includes(detail.state)
+  || ["owner", "plan"].includes(detail.waiting?.on);
+
+// ^ How often the age on an open sheet is said again; only the words change, nothing is read.
+const AGE_EVERY_MS = 30_000;
+
+// An open task at a glance: how it is doing, how long since the worker last did something, its
+// workflow steps and the worker's last sentence (docs/web-client-tasks.md "Task sheet").
+function Progress({ detail, words }) {
+  const [, setTick] = useState(0);
+  const health = taskHealth(detail);
+  useEffect(() => {
+    const timer = setInterval(() => setTick((tick) => tick + 1), AGE_EVERY_MS);
+    return () => clearInterval(timer);
+  }, []);
+  const { steps, step, stuck, last_unix_ms: last, said } = detail.progress;
+  const working = ["working", "checking"].includes(detail.state);
+  const ended = ["ready", "failed"].includes(detail.state);
+  // ^ Checks run after the last step's result, so every step is done by then.
+  const current = detail.state === "checking" || detail.state === "ready" ? steps.length : step;
+  const sentence = (working || stuck) && said ? lastSentence(said) : "";
+  return html`
+    <div class="progress">
+      <p class="progress-head">
+        <span class="mark" data-tone=${health[1]} data-running=${running(detail) && working && !stuck ? "" : null} aria-hidden="true"></span>
+        <span class="progress-health" data-tone=${health[1]}>${health[0]}</span>
+        ${!ended && last > 0 && html`<span class="progress-age">${ago(Date.now() - last)}</span>`}
+      </p>
+      ${steps.length > 0 && html`
+        <ol class="progress-steps" aria-label="Workflow steps">
+          ${steps.map((name, index) => html`
+            <li key=${name} data-done=${index < current ? "" : null} aria-current=${index === current ? "step" : null}>
+              ${index < current && html`<${Icon} name="pass" />`}${name}
+            </li>`)}
+        </ol>`}
+      ${sentence && html`<p class="progress-said">${words(sentence)}</p>`}
+    </div>`;
+}
+
+// The top of the task sheet: how an open task is doing, one sentence of what changed (More shows
+// the whole summary and what the worker decided), and what the owner should know next with the
+// task's actions beside it (docs/web-client-tasks.md "Task sheet").
 export function TaskStory({ detail, words, children }) {
   const [more, setMore] = useState(false);
-  const summary = (detail.result?.summary ?? "").trim();
+  const summary = summaryIsCurrent(detail) ? (detail.result?.summary ?? "").trim() : "";
   const sentence = firstSentence(summary);
   const decisions = detail.result?.decisions ?? [];
   const longer = summary !== sentence || decisions.length > 0;
   const next = nextWords(detail);
-  if (!sentence && !next && !children) return null;
+  if (!detail.progress && !sentence && !next && !children) return null;
   return html`
     <section class="story" aria-label="Where this task stands">
+      ${detail.progress && html`<${Progress} detail=${detail} words=${words} />`}
       ${sentence && (more ? html`
         <div class="story-summary" id="story-more">
           <${Markdown} text=${summary} words=${words} />

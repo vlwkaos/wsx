@@ -5,6 +5,14 @@
 ### Fixed
 
 - Client: a live handoff of wsxd is no longer reported as a failure by `wsx agent wait` or by opening a terminal. The TUI event monitor and `Client::call` already waited for the successor; these two did not, so a wait open in the old daemon or a stream opened while it handed off ended in an error. Both now wait for the successor once and go on (a repeated wait keeps only the time it had left), and a daemon that died is still reported at once ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "Single requests", "Terminal streams").
+### Changed
+
+- Web task sheet: an open task now opens on how it is doing and how far along it is. The top shows a health word from wsx's facts (working, running checks, waiting for a check slot, waiting for disk or the session limit, stuck, needs you), how long ago the worker last wrote, the workflow steps with the current one marked, and the worker's last sentence, never a raw tool line. A finished task leads with its outcome. Changes, Evidence, Left open, the messages to the worker, Shared files, usage and History are now under one folded *Details*; open To check items and all actions stay at the top ([docs/web-client-tasks.md](docs/web-client-tasks.md) "Task sheet").
+- Tasks: an `agent` log line has `said: true` when it is the worker's own words, and the stall finder moved to wsx-core so the web reads the same rule as the manager ([docs/tasks.md](docs/tasks.md) "Manager").
+
+### Fixed
+
+- Web task sheet: a sheet opened again no longer shows a message field with no height.
 
 ## [0.41.0] - 2026-10-30
 

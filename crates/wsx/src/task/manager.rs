@@ -10,7 +10,7 @@ use super::claude::{
     account_env, config_root, new_session_id, skills_plugin, AgentLine, ClaudeAgent, Launch,
     TurnResult, SKILLS_PLUGIN_NAME,
 };
-use super::{broker, hosting, limit, stall};
+use super::{broker, hosting, limit};
 use anyhow::{Context, Result};
 use asched_core::routine::{store::RoutineStore, RunRecord, RunStatus};
 use std::collections::BTreeMap;
@@ -28,6 +28,7 @@ use wsx_core::task::manager::{
     Author, LimitHold, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState,
     Seen,
 };
+use wsx_core::task::stall;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
@@ -1561,7 +1562,7 @@ impl Manager {
                     self.save();
                 }
             }
-            Some(AgentLine::Progress(text)) => {
+            Some(AgentLine::Progress { text, .. }) => {
                 self.say(&text);
                 self.log(ManagerEvent::Agent { text });
             }

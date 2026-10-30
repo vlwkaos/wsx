@@ -309,7 +309,22 @@ function NeedRow({ project, item, index, onActing, onFailed, leaving }) {
 // workflow step it is on (docs/tasks.md "Workflow").
 const workingWords = (task) => task.state === "ready" ? "waiting for the manager's review" : task.waiting?.on === "plan" ? "plan waiting for the manager"
   : task.conflict ? "resolving a conflict" : task.waiting?.on === "hand" ? "by hand"
-  : task.waiting?.on === "check_slot" ? "waiting to run checks" : task.state === "checking" ? "running checks" : task.step ?? "";
+  : task.waiting?.on === "check_slot" ? "waiting for a check slot" : task.state === "checking" ? "running checks" : task.step ?? "";
+
+// How an open task is doing, in one or a few words from wsx's facts (docs/web-client-tasks.md
+// "Task sheet"). [words, tone].
+export function taskHealth(task) {
+  const tone = taskStage(task)[1];
+  const on = task.waiting?.on;
+  if (task.approvals?.length) return ["needs you", "attention"];
+  if (task.state === "failed") return ["failed", "danger"];
+  if (task.progress.stuck) return ["stuck", "danger"];
+  if (on === "owner") return task.waiting.reason === "stopped by request" ? ["stopped", "attention"] : ["needs you", "attention"];
+  if (on === "disk") return ["waiting for disk", tone];
+  if (on === "limit") return ["waiting for the session limit", tone];
+  if (task.state === "ready" && task.land_reason !== "the manager reviews it") return ["ready to land", tone];
+  return [workingWords({ ...task, step: null }) || "working", tone];
+}
 
 // A working task in the reservoir: its pulsing dot, title and number.
 const RunningRow = ({ project, task, leaving }) => html`

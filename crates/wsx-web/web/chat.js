@@ -319,6 +319,8 @@ const CommandList = ({ listing, matches, active, onPick, onHover }) => html`
 // A composer field grows with its text, up to six lines.
 export function grow(node) {
   node.style.height = "auto";
+  // ^ A sheet read before its dialog opens lays nothing out: 0 px would hide the field.
+  if (!node.offsetHeight) return;
   const line = parseFloat(getComputedStyle(node).lineHeight);
   node.style.height = `${Math.min(node.scrollHeight, line * 6 + (node.offsetHeight - node.clientHeight))}px`;
 }
