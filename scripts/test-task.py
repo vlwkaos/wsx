@@ -2654,8 +2654,8 @@ def run(wsx, wsxd, work, owned):
     assert '-> 1 ' in text and 'is for the owner' in text, text
     text = manager_run('looks good', 'pass %s --owner-said 1' % item)
     assert 'message 1 is not in the running turn; nothing was run' in text, text
-    for args in ('pass --all --owner-said OWNER_SAID', 'skip %s --owner-said OWNER_SAID' % item,
-                 'skip --all', 'fail %s --note no' % item):
+    assert "unexpected argument '--owner-said'" in manager_run('looks good', 'skip %s --owner-said OWNER_SAID' % item)
+    for args in ('pass --all --owner-said OWNER_SAID', 'skip %s' % item, 'skip --all', 'fail %s --note no' % item):
         text = manager_run('looks good', args)
         assert '-> 1 ' in text and 'is for the owner' in text, (args, text)
     assert [i['id'] for i in js('task', 'check')['open']] == open_ids
