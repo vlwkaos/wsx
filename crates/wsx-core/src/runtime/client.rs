@@ -237,7 +237,12 @@ impl Client {
                 | Request::LifecycleStatus
                 | Request::AgentExchangeWait { .. }
         );
-        let mut result = if not_applied(&result, repeats_lost) {
+        let not_applied = match &result {
+            Ok(Response::Error(error)) => refused_in_handoff(&error.code),
+            Ok(_) => false,
+            Err(error) => not_applied_error(error, repeats_lost),
+        };
+        let mut result = if not_applied {
             // ^ The marker may already read `ready` when this looks: a request that certainly
             // was not applied goes once more whether or not this client saw the handoff.
             wait_for_handoff(&self.socket, CALL_HANDOFF_WAIT);
@@ -2104,16 +2109,8 @@ fn handoff_marker_fresh(reason: &str) -> bool {
     unix_millis().saturating_sub(started) < HANDOFF_WAIT.as_millis()
 }
 
-/// Whether `result` shows that the daemon did not apply the request: it refused it, or the
-/// socket was absent. A lost connection counts only when `repeats_lost` says a repeat is safe.
-fn not_applied(result: &io::Result<Response>, repeats_lost: bool) -> bool {
-    match result {
-        Ok(Response::Error(error)) => refused_in_handoff(&error.code),
-        Ok(_) => false,
-        Err(error) => not_applied_error(error, repeats_lost),
-    }
-}
-
+/// Whether `error` shows that the daemon did not apply the request: the socket was absent. A
+/// lost connection counts only when `repeats_lost` says a repeat is safe.
 fn not_applied_error(error: &io::Error, repeats_lost: bool) -> bool {
     match error.kind() {
         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => true,

@@ -108,6 +108,24 @@ impl Drop for Fixture {
     }
 }
 
+fn prepare_handoff(target_binary_id: String, executable: PathBuf, restart: bool) -> Request {
+    Request::PrepareHandoff {
+        target_binary_id,
+        target_version: WSX_VERSION.into(),
+        target_protocol: PROTOCOL_VERSION,
+        target_daemon_revision: DAEMON_REVISION,
+        executable,
+        restart,
+    }
+}
+
+/// Spawns the source wsxd of `fixture` and returns a client of it.
+fn start(fixture: &mut Fixture, binary: &Path) -> Client {
+    fixture.source = Some(fixture.command(binary).spawn().unwrap());
+    wait_for_socket(&fixture.socket);
+    Client::new(fixture.socket.clone())
+}
+
 fn wait_for_socket(path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -216,9 +234,7 @@ fn reported_pid(text: &str) -> String {
 fn daemon_handoff_preserves_live_shell_pid_and_io() {
     let mut fixture = Fixture::new();
     let source_binary = fixture.wsxd();
-    fixture.source = Some(fixture.command(&source_binary).spawn().unwrap());
-    wait_for_socket(&fixture.socket);
-    let client = Client::new(fixture.socket.clone());
+    let client = start(&mut fixture, &source_binary);
 
     let worktree = std::env::current_dir().unwrap();
     assert!(matches!(
@@ -387,14 +403,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
         })
     };
     let response = client
-        .call(&Request::PrepareHandoff {
-            target_binary_id: target_identity,
-            target_version: WSX_VERSION.into(),
-            target_protocol: PROTOCOL_VERSION,
-            target_daemon_revision: DAEMON_REVISION,
-            executable: target_binary,
-            restart: false,
-        })
+        .call(&prepare_handoff(target_identity, target_binary, false))
         .unwrap();
     assert!(
         matches!(
@@ -590,9 +599,7 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
 fn an_attached_tui_hears_of_a_daemon_that_died() {
     let mut fixture = Fixture::new();
     let binary = fixture.wsxd();
-    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
-    wait_for_socket(&fixture.socket);
-    let client = Client::new(fixture.socket.clone());
+    let client = start(&mut fixture, &binary);
     std::env::set_var("WSX_DAEMON_BIN", &binary);
     let (tui, signals) = EventMonitor::start(client).unwrap();
     assert_eq!(
@@ -617,9 +624,7 @@ fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
     const PANES: usize = 43;
     let mut fixture = Fixture::new();
     let source_binary = fixture.wsxd();
-    fixture.source = Some(fixture.command(&source_binary).spawn().unwrap());
-    wait_for_socket(&fixture.socket);
-    let client = Client::new(fixture.socket.clone());
+    let client = start(&mut fixture, &source_binary);
     let worktree = std::env::current_dir().unwrap();
     client
         .call(&Request::SynchronizeProjects {
@@ -691,14 +696,11 @@ fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
     permissions.set_mode(0o700);
     fs::set_permissions(&target_binary, permissions).unwrap();
     let response = client
-        .call(&Request::PrepareHandoff {
-            target_binary_id: binary_identity(&target_binary).unwrap(),
-            target_version: WSX_VERSION.into(),
-            target_protocol: PROTOCOL_VERSION,
-            target_daemon_revision: DAEMON_REVISION,
-            executable: target_binary,
-            restart: false,
-        })
+        .call(&prepare_handoff(
+            binary_identity(&target_binary).unwrap(),
+            target_binary,
+            false,
+        ))
         .unwrap();
     assert!(matches!(response, Response::Replacement { .. }));
 
@@ -758,9 +760,7 @@ fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
 fn restart_into_the_same_build_waits_only_for_a_tui_that_cannot_follow() {
     let mut fixture = Fixture::new();
     let binary = fixture.wsxd();
-    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
-    wait_for_socket(&fixture.socket);
-    let client = Client::new(fixture.socket.clone());
+    let client = start(&mut fixture, &binary);
     let worktree = std::env::current_dir().unwrap();
     client
         .call(&Request::SynchronizeProjects {
@@ -802,14 +802,7 @@ fn restart_into_the_same_build_waits_only_for_a_tui_that_cannot_follow() {
     drop(stream);
 
     let identity = binary_identity(&binary).unwrap();
-    let handoff = |restart| Request::PrepareHandoff {
-        target_binary_id: identity.clone(),
-        target_version: WSX_VERSION.into(),
-        target_protocol: PROTOCOL_VERSION,
-        target_daemon_revision: DAEMON_REVISION,
-        executable: binary.clone(),
-        restart,
-    };
+    let handoff = |restart| prepare_handoff(identity.clone(), binary.clone(), restart);
     assert!(
         matches!(
             client.call(&handoff(false)).unwrap(),
@@ -964,9 +957,7 @@ fn lifecycle(client: &Client) -> wsx_core::runtime::DaemonLifecycle {
 fn an_exited_pane_hands_off_as_its_last_screen() {
     let mut fixture = Fixture::new();
     let binary = fixture.wsxd();
-    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
-    wait_for_socket(&fixture.socket);
-    let client = Client::new(fixture.socket.clone());
+    let client = start(&mut fixture, &binary);
     let panes = sessions(
         &client,
         "exited",
@@ -995,14 +986,7 @@ fn an_exited_pane_hands_off_as_its_last_screen() {
     let identity = binary_identity(&next).unwrap();
     assert_ne!(identity, lifecycle(&client).binary_id);
     let restart = client
-        .call(&Request::PrepareHandoff {
-            target_binary_id: identity.clone(),
-            target_version: WSX_VERSION.into(),
-            target_protocol: PROTOCOL_VERSION,
-            target_daemon_revision: DAEMON_REVISION,
-            executable: next,
-            restart: true,
-        })
+        .call(&prepare_handoff(identity.clone(), next, true))
         .unwrap();
     assert!(
         matches!(
@@ -1063,9 +1047,7 @@ fn a_failed_handoff_keeps_its_reason() {
     use std::os::unix::fs::PermissionsExt;
     let mut fixture = Fixture::new();
     let binary = fixture.wsxd();
-    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
-    wait_for_socket(&fixture.socket);
-    let client = Client::new(fixture.socket.clone());
+    let client = start(&mut fixture, &binary);
     let panes = sessions(
         &client,
         "failed",
@@ -1077,14 +1059,11 @@ fn a_failed_handoff_keeps_its_reason() {
     let old_epoch = lifecycle(&client).epoch;
     let started = Instant::now();
     let response = client
-        .call(&Request::PrepareHandoff {
-            target_binary_id: binary_identity(&target).unwrap(),
-            target_version: WSX_VERSION.into(),
-            target_protocol: PROTOCOL_VERSION,
-            target_daemon_revision: DAEMON_REVISION,
-            executable: target,
-            restart: true,
-        })
+        .call(&prepare_handoff(
+            binary_identity(&target).unwrap(),
+            target,
+            true,
+        ))
         .unwrap();
     assert!(
         matches!(
@@ -1138,9 +1117,7 @@ fn a_failed_handoff_keeps_its_reason() {
 fn a_resumed_agent_that_quits_leaves_a_usable_shell() {
     let mut fixture = Fixture::new();
     let binary = fixture.wsxd();
-    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
-    wait_for_socket(&fixture.socket);
-    let client = Client::new(fixture.socket.clone());
+    let client = start(&mut fixture, &binary);
     let command = format!(
         "SHELL=/bin/sh WSX_RUNTIME_GENERATION=stale exec '{}' __wsx_resume_supervisor -- /bin/sh -c 'printf \"agent-quit\\033[?1049h\\033[>31u\\033[?1000h\"'",
         binary.display()
@@ -1179,9 +1156,7 @@ fn a_resumed_agent_that_quits_leaves_a_usable_shell() {
 fn opening_a_stream_and_waiting_on_an_exchange_go_on_through_a_handoff() {
     let mut fixture = Fixture::new();
     let binary = fixture.wsxd();
-    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
-    wait_for_socket(&fixture.socket);
-    let client = Client::new(fixture.socket.clone());
+    let client = start(&mut fixture, &binary);
     let pane = sessions(
         &client,
         "wait",
@@ -1263,14 +1238,11 @@ fn opening_a_stream_and_waiting_on_an_exchange_go_on_through_a_handoff() {
     thread::sleep(Duration::from_millis(300));
     let old_epoch = lifecycle(&client).epoch;
     let response = client
-        .call(&Request::PrepareHandoff {
-            target_binary_id: binary_identity(&binary).unwrap(),
-            target_version: WSX_VERSION.into(),
-            target_protocol: PROTOCOL_VERSION,
-            target_daemon_revision: DAEMON_REVISION,
-            executable: binary,
-            restart: true,
-        })
+        .call(&prepare_handoff(
+            binary_identity(&binary).unwrap(),
+            binary,
+            true,
+        ))
         .unwrap();
     assert!(
         matches!(&response, Response::Replacement { blockers, .. } if blockers.is_empty()),
@@ -1304,9 +1276,7 @@ fn opening_a_stream_and_waiting_on_an_exchange_go_on_through_a_handoff() {
 fn a_daemon_that_died_is_reported_by_opening_a_stream_and_by_a_wait() {
     let mut fixture = Fixture::new();
     let binary = fixture.wsxd();
-    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
-    wait_for_socket(&fixture.socket);
-    let client = Client::new(fixture.socket.clone());
+    let client = start(&mut fixture, &binary);
     let pane = sessions(&client, "dead", &[("live", "sleep 60")])[0];
     fixture.source.as_mut().unwrap().kill().unwrap();
     fixture.source.as_mut().unwrap().wait().unwrap();
