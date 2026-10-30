@@ -297,6 +297,16 @@ async function viewImages(name, links, many = 2, saves = false) {
     const link = document.querySelector('.viewer-bar a[download]'); return { top: Math.round(bar.top), bottom: Math.round(bar.bottom), stageTop: Math.round(stage.top), stageBottom: Math.round(stage.bottom), height: innerHeight,
       label: link?.getAttribute('aria-label') ?? null, title: link?.title ?? null, icon: link?.querySelector('path')?.getAttribute('d')?.startsWith('M10 12.5V3.5') ?? false }; })()`);
   const placed = phone() ? bar.top >= bar.stageBottom && bar.bottom === bar.height && bar.stageTop === 0 : bar.bottom <= bar.stageTop && bar.top === 0;
+  if (phone()) {
+    // ^ A notched phone: the stage starts under the top inset and the bar's buttons end above the bottom inset.
+    await send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 47, bottom: 34 } });
+    await pause(250);
+    const notch = await evaluate(`(() => { const stage = document.querySelector('.viewer-stage').getBoundingClientRect(); const bar = document.querySelector('.viewer-bar');
+      const lowest = Math.max(...[...bar.children].map((node) => node.getBoundingClientRect().bottom)); const img = document.querySelector('dialog.viewer .viewer-stage img').getBoundingClientRect();
+      return { stageTop: Math.round(stage.top), buttonsEnd: Math.round(lowest), height: innerHeight, imgInside: img.top >= stage.top - 1 && img.bottom <= stage.bottom + 1 }; })()`);
+    await send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, bottom: 0 } });
+    if (notch.stageTop !== 47 || notch.buttonsEnd > notch.height - 34 || !notch.imgInside) await fail(`${what}: the viewer ignores the safe area: ${JSON.stringify(notch)}`);
+  }
   const word = phone() ? "Share" : "Download";
   if (!placed || (saves && (bar.label !== word || bar.title !== word || !bar.icon))) await fail(`${what}: the viewer bar reads ${JSON.stringify(bar)}`);
   if (many > 1) {
