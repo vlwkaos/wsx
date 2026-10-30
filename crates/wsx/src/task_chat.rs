@@ -423,10 +423,16 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
                         .map(|line| Row::Line(event_line(line))),
                 ),
             },
+            // ^ A quiet `-` or empty reply says nothing changed: it shows nothing, as on the web.
+            ManagerEvent::Reply {
+                text, quiet: true, ..
+            } if matches!(text.trim(), "" | "-") => {}
             ManagerEvent::Reply {
                 text, quiet: true, ..
             } => rows.push(Row::Line(text.trim().to_string())),
             ManagerEvent::Reply { text, .. } => rows.push(said(Who::Manager, text)),
+            // ^ An empty `sent` (older hosts logged one without --json) shows nothing.
+            ManagerEvent::Sent { text, .. } if text.trim().is_empty() => {}
             ManagerEvent::Sent { to, text, .. } => {
                 let to = to.strip_prefix("role:").unwrap_or(to);
                 rows.push(said(Who::Manager, &format!("To {to}: {text}")))

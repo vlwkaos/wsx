@@ -1300,12 +1300,18 @@ impl Manager {
             ids.push(id);
         }
         // ^ The limit preface is no owner message: a held turn is events-only when its
-        // held and its new messages all are.
+        // held and its new messages all are. Another manager's or a role's reply is used, not
+        // answered: like events. ref: docs/tasks.md "Manager"
         let events_only = held.as_ref().is_none_or(|hold| hold.events)
             && if ids.is_empty() {
                 held.is_some()
             } else {
-                first == Author::Events
+                matches!(
+                    first,
+                    Author::Events
+                        | Author::Manager { reply: true, .. }
+                        | Author::Role { reply: true, .. }
+                )
             };
         if held.is_some() {
             text = format!("{LIMIT_CONTINUE}\n\n{text}");

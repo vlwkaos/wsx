@@ -3114,6 +3114,10 @@ def task_journey(args):
                           {'kind': 'limit', 'unix_ms': held_at + 1500}]
         # ^ Stored quiet before the length rule: a long reply to events reads as a message.
         logged('events', '#93 landed r1: Release notes', 'Release notes are ready:\n\n| Part | State |\n|---|---|\n| wsx | built |\n\n- the notes are written')
+        # ^ Older hosts logged a `-` reply to an owner message as a message, and a `sent` without
+        # --json with no text: the page shows neither (docs/web-client-tasks.md "Project screen").
+        logged('owner', 'Anything new?', '-', quiet=False)
+        old_log.append({'kind': 'sent', 'to': 'ui', 'text': '', 'unix_ms': old_log[-1]['unix_ms'] + 1000})
         (manager_dir / 'log.1.jsonl').write_text(''.join(json.dumps(entry) + '\n' for entry in old_log))
         # `plans`: #1 waits for the owner (its worker was refused a tool and asks), #2 is ready.
         assert js('task', 'new', 'Let me jump between projects from the keyboard NEEDS WebSearch NOOP', '-p', 'plans')['id'] == 1
@@ -3153,8 +3157,20 @@ def task_journey(args):
             js('task', 'say', 'RUN wsx task say -p ui --from-manager "How is ui?" --json', '-p', 'plans')
             wait(lambda: any(e.get('from') == 'manager:plans' for e in js('task', 'chat', '-p', 'ui')['entries']),
                  'ui heard plans', timeout=30)
-            js('task', 'say', 'RUN wsx task say -p plans --from-manager --reply "ui is fine" --json', '-p', 'ui')
+            # ^ Without --json: the sender's log still holds the words it sent.
+            js('task', 'say', 'RUN wsx task say -p plans --from-manager --reply "ui is fine"', '-p', 'ui')
             wait(lambda: any(e['kind'] == 'sent' for e in js('task', 'chat', '-p', 'ui')['entries']), 'ui answered plans', timeout=30)
+            sent = [e for e in js('task', 'chat', '-p', 'ui')['entries'] if e['kind'] == 'sent']
+            assert [e['text'] for e in sent] == ['ui is fine'], sent
+
+            # ^ plans' turn held only ui's reply: its short answer is quiet, as one to events
+            # (docs/tasks.md "Manager").
+            def answered():
+                entries = js('task', 'chat', '-p', 'plans')['entries']
+                asked = {e['id'] for e in entries if e.get('from') == 'manager-reply:ui'}
+                return [e for e in entries if e['kind'] == 'reply' and asked & set(e['to'])]
+            wait(answered, 'plans answered the reply of ui', timeout=30)
+            assert all(e.get('quiet') for e in answered()), answered()
             # A deploy of the default branch tip: the brief says it is up to date until a task lands.
             # A deploy by hand answers that it started; its detached run records the result.
             assert js('task', 'deploy', '-p', 'ui')['started'] is True

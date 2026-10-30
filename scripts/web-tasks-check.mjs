@@ -1959,6 +1959,9 @@ await until("!!document.querySelector('.reservoir-head')", "plans has no reservo
 await until("document.querySelectorAll('.log .bubble').length >= 2", "plans' chat shows no managers' bubbles", 30);
 const plansAuthors = await bubbles();
 if (!plansAuthors.some(({ author, tag }) => author === "plans" && tag === "To Atlas") || !plansAuthors.some(({ author }) => author === "Atlas")) await fail(`plans' managers read ${JSON.stringify(plansAuthors)}`);
+// ^ An empty `sent` and a `-` reply in plans' older log are no bubbles: no bubble says nothing.
+const emptyBubbles = plansAuthors.filter(({ tag, text }) => ["", "-"].includes(text.slice(tag.length).trim()));
+if (emptyBubbles.length) await fail(`plans' chat shows bubbles that say nothing: ${JSON.stringify(emptyBubbles)}`);
 // ^ plans' older log (test-web-client.py): six events with quiet replies fold into one row, the
 // tasks once each with their newest words and the count of rows it hides; the last event and its
 // reply stay under it. The owner's message ends the run: the one event after it does not fold.

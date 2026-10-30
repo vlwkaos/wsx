@@ -2207,7 +2207,9 @@ fn say(
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
     let sent = from.is_some().then(|| text.clone());
     let response = owner::say(&name, &main, &exe, role, launch_manager(&main), text, from)?;
-    if json {
+    // ^ A manager's or a role's message always answers in JSON: its host logs `sent` from
+    // the `text` (broker.rs). ref: docs/tasks.md "Managers talk"
+    if json || sent.is_some() {
         let mut value = serde_json::to_value(&response)?;
         if let Some(text) = sent {
             value["text"] = json!(text);
