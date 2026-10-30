@@ -545,18 +545,6 @@ await motion();
 await homeUnread();
 await resize([390, 844, 2]);
 await go("#/");
-// ^ The manager's unanswered question shows on its project's row as in the chat, on that row only
-// (docs/web-client-tasks.md "Home"). The store is driven as in `homeUnread`.
-const homeAsks = (asks) => evaluate(`(async () => {
-  const { state, update } = await import(new URL("store.js", [...document.scripts].find((script) => script.type === 'module').src));
-  const calm = state.projects.find((project) => project.name === 'calm');
-  update({ tasks: { ...state.tasks, [calm.id]: { ...state.tasks[calm.id], asks: ${asks} } } });
-  await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
-  return [...document.querySelectorAll('.home-rows > .row')].filter((row) => row.querySelector('.row-asks')?.textContent === 'Asks you').map((row) => row.querySelector('.row-label').textContent);
-})()`);
-if ((await homeAsks(true)).join() !== "calm") await fail("Asks you is not on the row of the project whose manager asks");
-await shot("home-asks");
-if ((await homeAsks(false)).length) await fail("Asks you stayed on a home row with no question");
 // Sessions, one tap from home: the session inbox, without task workers and the manager, with
 // the plain worktree's session.
 await click(".tabbar a[href='#/sessions']");
@@ -1028,12 +1016,31 @@ const askBubble = await evaluate(`({ tags: ${askTags}.length, own: ${asking}.que
 if (askBubble.tags !== 1 || askBubble.own !== "Asks you" || askBubble.tone !== "accent") await fail(`a reply that asks reads ${JSON.stringify(askBubble)}`);
 if ((await overviewAsks()) !== true) await fail("the overview does not say the manager asks");
 await shot("asks-you", ".composer-send");
+// ^ A later report does not drop the mark: plans' manager asks ui's, whose answer is a reply that
+// is not quiet and asks nothing. The chat keeps its tag and the Home row, from the real overview,
+// shows the same on that row only (docs/web-client-tasks.md "Home").
+await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ text: 'RUN wsx task say -p ui --from-manager "How is ui now?" --json' }))} })`);
+await until(`(() => { const bubbles = [...document.querySelectorAll('.log .bubble[data-side=in]')], heard = bubbles.findIndex((node) => node.textContent.includes('How is ui now?'));
+  return heard >= 0 && heard < bubbles.length - 1 && !document.querySelector('.log .typing'); })()`, "no report after the question", 300);
+if ((await evaluate(`${askTags}.length`)) !== 1) await fail("a later report dropped the chat's Asks you");
+if ((await overviewAsks()) !== true) await fail("a later report dropped the overview's asks");
+const askingChat = await evaluate("location.hash");
+const homeAskRows = "[...document.querySelectorAll('.home-rows > .row')].filter((row) => row.querySelector('.row-asks')?.textContent === 'Asks you').map((row) => row.dataset.key).join()";
+await go("#/");
+await until(`${homeAskRows} === ${JSON.stringify(String(project))}`, "Asks you is not on the row of the project whose manager asks", 100);
+await shot("home-asks");
+await go(askingChat);
+await until(`!!${asking}`, "the chat did not come back after Home", 100);
 await typeInto(".composer-field", "STATUS after the question");
 await click(".composer-send");
 await until(`${askTags}.length === 0`, "the owner's message did not clear Asks you", 30);
 await until("[...document.querySelectorAll('.log .bubble[data-side=in]')].at(-1)?.textContent.includes('open:') && !document.querySelector('.log .typing')", "no reply after the question", 300);
 if ((await overviewAsks()) !== false) await fail("the overview still says the manager asks");
 await shot("asks-you-answered", ".composer-send");
+await go("#/");
+await until(`!!document.querySelector('.home-rows > .row') && ${homeAskRows} === ""`, "Asks you stayed on the Home row after the owner wrote", 100);
+await go(askingChat);
+await until(`!!${asking}`, "the chat did not come back after Home", 100);
 await evaluate(`window.answerLine = ${statusLines}.find((node) => /#1 got an answer/.test(node.textContent))`);
 let moved = await clearRow("Approve land #3", "Approve");
 if (await evaluate("[...document.querySelectorAll('.notice')].some((node) => /Approved land #3/.test(node.textContent))")) await fail("a notice repeats the status line of Approve");
