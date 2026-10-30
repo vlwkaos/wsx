@@ -111,9 +111,11 @@ When the handoff starts, the source daemon writes `handoff:<unix_ms>` to the lif
 
 `wait_for_handoff` in `crates/wsx-core/src/runtime/client.rs` reads that marker. While it is fresh (35 seconds), a client waits. It does not report a disconnect and does not start another daemon. A stale marker means the source died inside the handoff, and normal recovery applies.
 
+The marker cannot prove that a connection was lost to a handoff. The handoff wakes each poll, the poll connects again, and it waits unaccepted until the source closes its listener: on Linux it reads `ECONNRESET`, on macOS an EOF. The successor can write `ready` before that client thread reads the marker. So the TUI event monitor polls once more per outage before it reports a disconnect. A successor answers it; a daemon that died fails it, and the disconnect and the recovery follow at once.
+
 ## Single requests
 
-`Client::call` repeats a request once on the successor when a handoff was in progress and the request was certainly not applied: the daemon refused it (`daemon_replacing`, `daemon_unavailable`) or the socket was absent. A connection lost in the middle of a request repeats only for reads (`Snapshot`, `View`, `LifecycleStatus`), because a mutation may already have been applied. A single request waits at most five seconds for the handoff.
+`Client::call` repeats a request once when it was certainly not applied, whether or not it saw the marker (see "Transition marker"): the daemon refused it (`daemon_replacing`, `daemon_unavailable`) or the socket was absent. A connection lost in the middle of a request repeats only for reads (`Snapshot`, `View`, `LifecycleStatus`), because a mutation may already have been applied. A single request waits at most five seconds for the handoff.
 
 The TUI event monitor does not use the repeating call. Its reconnect is the signal that tells the TUI to take a new snapshot.
 
@@ -137,7 +139,7 @@ A source daemon before revision 32 cannot do this, so its upgrade fails while it
 
 ## Verification
 
-- `crates/wsx-daemon/tests/live_handoff.rs` keeps a real `EventMonitor` and an open terminal stream attached. The handoff must report no blocker, the stream must end with `daemon_handoff`, and the monitor must reach the successor without a `Disconnected` signal. A second scenario restarts into the same build: a TUI below the target protocol defers it only when it does not follow, and the restart continues by itself when that TUI's presence expires.
+- `crates/wsx-daemon/tests/live_handoff.rs` keeps a real `EventMonitor` and an open terminal stream attached. The handoff must report no blocker, the stream must end with `daemon_handoff`, and 32 monitors must reach the successor without a `Disconnected` signal, while a reader never loses a Snapshot to a reset or an EOF. A second scenario restarts into the same build: a TUI below the target protocol defers it only when it does not follow, and the restart continues by itself when that TUI's presence expires.
 - In the same file, a live pane and an exited pane hand off into another copy of `wsxd` (another binary id): both stay listed, the exited one still reads exited and shows its last screen, and the live one keeps its shell's process ID. A target that exits at once rolls the handoff back within seconds; the daemon keeps serving, and `last_handoff_error` has step `send` and the exit.
 - `scripts/test-terminal-context.py` keeps a real TUI in Terminal mode through a refused stop, a same-build restart, a new install whose `wsx` cannot start, and the re-exec into the repaired install. After each step the PTY row must be unchanged, the mode line must still be Terminal, and typed input must reach the same shell. The re-exec must keep the process ID.
 
