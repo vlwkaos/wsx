@@ -584,6 +584,34 @@ fn daemon_handoff_preserves_live_shell_pid_and_io() {
     wait_for_socket_removal(&fixture.socket);
 }
 
+// ^ docs/daemon-live-upgrade.md "Transition marker": the extra poll must not hide a daemon
+// that died.
+#[test]
+fn an_attached_tui_hears_of_a_daemon_that_died() {
+    let mut fixture = Fixture::new();
+    let binary = fixture.wsxd();
+    fixture.source = Some(fixture.command(&binary).spawn().unwrap());
+    wait_for_socket(&fixture.socket);
+    let client = Client::new(fixture.socket.clone());
+    std::env::set_var("WSX_DAEMON_BIN", &binary);
+    let (tui, signals) = EventMonitor::start(client).unwrap();
+    assert_eq!(
+        signals.recv_timeout(Duration::from_secs(5)).unwrap(),
+        EventSignal::Connected(None)
+    );
+    fixture.source.as_mut().unwrap().kill().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match signals.recv_timeout(Duration::from_millis(100)) {
+            Ok(EventSignal::Disconnected(_)) => break,
+            Ok(EventSignal::Connected(_)) => panic!("a dead daemon answered"),
+            Ok(EventSignal::Dirty) | Err(_) => {}
+        }
+        assert!(Instant::now() < deadline, "a dead daemon was not reported");
+    }
+    drop(tui);
+}
+
 #[test]
 fn daemon_handoff_restores_a_legacy_sized_history_cohort() {
     const PANES: usize = 43;

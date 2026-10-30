@@ -1121,7 +1121,10 @@ time.sleep(1)
 started = time.monotonic()
 taker = frame_subscribe(flood["focused_pane"], 42, takeover=True)
 took = time.monotonic() - started
-assert took < 1.5, ("a takeover waited for a window that stopped reading", took)
+# ^ A window that stops reading could hold wsxd for 5 s (its stream's write limit). A loaded CI
+# runner took 1.55 s without one, so the limit separates the two and not the runner's speed.
+print(f"takeover beside a window that stopped reading: {took:.2f} s", flush=True)
+assert took < 3, ("a takeover waited for a window that stopped reading", took)
 slowest = slowest_call(6)
 assert slowest < 1, ("wsxd stalled behind a window that stopped reading", slowest)
 calm_stream.settimeout(0)
@@ -1849,8 +1852,14 @@ try:
     def viewed_exited():
         return next(pane for pane in call("snapshot")["data"]["panes"]
                     if pane["terminal_id"] == viewed)["exited"]
-    os.write(tui_master, b"exit\r")
-    wait_for(lambda: b"Enter starts it again" in tui_screen, "the TUI did not say the program exited")
+    # ^ As in viewed_shell_answers: a key typed while the stream reattaches is dropped.
+    exit_deadline = time.monotonic() + 20
+    while b"Enter starts it again" not in tui_screen:
+        assert time.monotonic() < exit_deadline, (
+            "the TUI did not say the program exited", viewed_exited(), bytes(tui_screen[-600:]))
+        if in_terminal_mode():
+            os.write(tui_master, b"exit\r")
+        time.sleep(3)
     assert viewed_exited()
     os.write(tui_master, b"\r")
     viewed_shell_answers("restarted", 3)
@@ -2173,7 +2182,9 @@ assert_lifetime_ended(with_owner, "wsxd outlived its WSX_EXIT_WITH_PID process")
 assert not (LIFETIME / "owner" / "wsx.sock").exists(), "wsxd kept its socket after its owner"
 assert not (LIFETIME / "owner" / "asched" / "daemon-v1.sock").exists(), "routine socket kept"
 deleted = lifetime_daemons(LIFETIME / "deleted")
-shutil.rmtree(LIFETIME / "deleted")
+# ^ The daemons still write in it (a marker's temporary file): one pass can fail or leave a file.
+wait_for(lambda: shutil.rmtree(LIFETIME / "deleted", ignore_errors=True) or not (LIFETIME / "deleted").exists(),
+         "the lifetime directory stayed")
 assert_lifetime_ended(deleted, "wsxd outlived its deleted directory")
 invalid = subprocess.run([str(DAEMON)], env=env | {"WSX_EXIT_WITH_PID": "1",
                          "WSX_SOCKET": str(LIFETIME / "owner" / "invalid.sock")},
