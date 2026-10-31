@@ -2143,7 +2143,14 @@ await until("!!document.querySelector('dialog.task-sheet[open] .task-next button
 await buttonRoom("the waiting sheet");
 // ^ The sheet's Answer closes the sheet over the chat and puts the mention into the composer. The
 // manager relays it, and the message shows read-only in the sheet's Details.
-await click(".task-next button[aria-label^=\"Answer #1\"]");
+// ^ All of it inside the tap, read in the same task: a phone raises the keyboard only for a focus
+// made there (docs/web-client-tasks.md "Task sheet").
+const inTap = await evaluate(`(() => {
+  document.querySelector('.task-next button[aria-label^="Answer #1"]').click();
+  const field = document.querySelector('.composer-field');
+  return { open: document.querySelector('dialog.task-sheet').open, focused: document.activeElement === field, value: field.value, caret: field.selectionStart, end: field.selectionEnd };
+})()`);
+if (inTap.open || !inTap.focused || inTap.value !== "#1 " || inTap.caret !== 3 || inTap.end !== 3) await fail(`the sheet's Answer did not focus the composer inside the tap: ${JSON.stringify(inTap)}`);
 await until(`location.hash === ${JSON.stringify(`#/p/${plans}`)} && !document.querySelector('dialog.task-sheet')`, "the sheet's Answer did not close the sheet");
 await composerHas("#1 ", "the sheet's Answer did not put #1 into the composer");
 await typeInto(".composer-field", `#1 go on\nRUN wsx task add 1 "WORK keys.txt" -p plans --json`);
