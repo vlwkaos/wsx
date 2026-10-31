@@ -907,6 +907,8 @@ def watch_wsxd(path, work):
     short sleep (how starved this machine is), and print the slowest at exit."""
     import atexit, fcntl
     samples, probe = [], work / 'watch-sync'
+    # ^ Never made again by this thread: a file made during the cleanup's rmtree fails its rmdir.
+    probe.touch()
     def sample():
         while True:
             at = time.monotonic()
@@ -917,7 +919,7 @@ def watch_wsxd(path, work):
                 answered = 0  # not started yet, or stopped
             at = time.monotonic()
             try:
-                with probe.open('wb') as out:
+                with probe.open('r+b') as out:
                     out.write(b'x' * 30000)
                     out.flush()
                     fcntl.fcntl(out, fcntl.F_FULLFSYNC if sys.platform == 'darwin' else fcntl.F_GETFD)
