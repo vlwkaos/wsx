@@ -17,7 +17,7 @@ wsx web devices [<site>] [--revoke <id>] [--json]
 
 One site per process. The file must be a regular file owned by the user with mode `600`. Unknown fields are refused.
 
-A profile grant (`projects = { profile = "<name>" }`, README "Profiles") reaches the projects whose `profile` in `config-v2.toml` is that name; a project without one is in `default`. The server reads the config again for each request, so a project that joins the profile is reachable at once and one that leaves it is not; an open page's project list follows on the next poll, within 2 s. A profile the config does not declare refuses the start; a config that later does not parse reaches no project. A session the site starts (`session_start`) runs `agent_command` under the profile's `claude_config_dir`, and the `/` lists show the skills of that root.
+A profile grant (`projects = { profile = "<name>" }`, README "Profiles") reaches the projects whose `profile` in `config-v2.toml` is that name; a project without one is in `default`. The server reads the config again for each request, so a project that joins the profile is reachable at once and one that leaves it is not; an open page's project list follows on the next poll, within 2 s. A profile the config does not declare refuses the start; a config that later does not parse reaches no project. A session the site starts (`session_start`) is a login shell under the profile's `claude_config_dir`; `agent_command` is typed into it, so the pane stays when the agent quits: the chat resumes the conversation in it, and the terminal can run another agent. Where `terminal_input` is granted, the *+* asks *Agent* or *Shell*: a shell opens in the terminal panel (`POST api/sessions` with `shell: true`; without `terminal_input` it is a 403). and the `/` lists show the skills of that root.
 
 ```toml
 id = "owner"                              # a-z, 0-9, '-'; names the state directory and cookie
@@ -62,7 +62,7 @@ private_key = "<base64url>"
 | `chat_send` | send and stop messages | chat |
 | `chat_answer` | answer a blocked agent's dialog from the chat with keys; needs `chat_send` | chat |
 | `agent_write` | exchanges are created as `writer` instead of `read-only` | chat |
-| `session_start` | start a new session that runs `agent_command` | chat |
+| `session_start` | start a new session: a login shell with `agent_command` typed into it, or with `terminal_input` a plain shell | chat |
 | `files_read`, `files_write` | browse and read text; replace an existing text file | files |
 | `terminal_view` | watch a session's live terminal at the pane's own size | terminal |
 | `terminal_input` | type, paste, resize the pane, take control from another wsx window | terminal |
@@ -98,8 +98,8 @@ A chat log (a session's and the manager's) renders its newest 60 rows, or from i
 | Route | Screen |
 |---|---|
 | `#/` | With `task_view`: Home, one row per project ([web-client-tasks.md](web-client-tasks.md) "Home"). Without it: the inbox, as `#/sessions` |
-| `#/sessions` | Inbox ("Sessions" with `task_view`): sessions by what they need. *Needs you* (blocked, error, exited agent), *Running* (with the activity line and elapsed time), *Finished* (the newest finish first, unseen ones marked "new"), then the remaining agent sessions and the shells by project. A section with no session is not shown. Task workers and the manager are not listed either (provider `task` or `manager`, or the label `task-<n>` or `task-manager`); their work shows in the project's chat. |
-| `#/projects` | Without `task_view` a tab; with it reached only by a link (the inbox's "Start one in a project"). Every granted project with its session count, *Files* and a *+* (its name is "New session in <project>") where granted. The project's name opens it: its sessions, with `task_view` too (`#/p/<project>/sessions`, not the manager) |
+| `#/sessions` | Inbox ("Sessions" with `task_view`): sessions by what they need. *Needs you* (blocked, error, exited agent), *Running* (with the activity line and elapsed time), *Finished* (the newest finish first, unseen ones marked "new"), then the remaining agent sessions and the shells by project. With `session_start` every granted project is listed there with its *+*, also one with no session, so a session can start after all are closed. A section with no session is not shown. Task workers and the manager are not listed either (provider `task` or `manager`, or the label `task-<n>` or `task-manager`); their work shows in the project's chat. |
+| `#/projects` | Without `task_view` a tab; with it reached from Home. Every granted project with its session count, *Files* and a *+* (its name is "New session in <project>") where granted. The project's name opens it: its sessions, with `task_view` too (`#/p/<project>/sessions`, not the manager) |
 | `#/p/<project>` | With `task_view`: the project's manager ([web-client-tasks.md](web-client-tasks.md) "Project screen"). Without it: the sessions, as `#/p/<project>/sessions` |
 | `#/p/<project>/sessions` | One project: a heading per worktree (the main checkout first) with a *+* ("New session in <branch>") for that worktree, and its sessions as in the inbox; a worktree with no session says so |
 | `#/p/<project>/t/<task>` | With `task_view`: the project screen with the task sheet open ([web-client-tasks.md](web-client-tasks.md) "Task sheet") |

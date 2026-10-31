@@ -736,6 +736,9 @@ struct StartInput {
     worktree: Option<u64>,
     #[serde(default)]
     label: String,
+    /// A plain shell for the terminal panel, instead of the site's agent.
+    #[serde(default)]
+    shell: bool,
 }
 
 async fn session_start(
@@ -744,7 +747,11 @@ async fn session_start(
     Json(input): Json<StartInput>,
 ) -> Outcome<Json<Value>> {
     need(&app, Panel::Chat)?;
-    allow(&app, Capability::SessionStart, "starting an agent session")?;
+    allow(&app, Capability::SessionStart, "starting a session")?;
+    // ^ A shell is only of use where the page can type into it.
+    if input.shell {
+        allow(&app, Capability::TerminalInput, "starting a shell")?;
+    }
     blocking(|| {
         let snapshot = chat::snapshot(&app.client)?;
         let project = chat::project(&snapshot, &app.site.access, input.project)?;
@@ -772,9 +779,11 @@ async fn session_start(
         // ^ The agent runs under the account of the project's profile (README "Profiles").
         let config = crate::site::global_config()
             .ok_or_else(|| Fault::new(409, "config_invalid", "the wsx config does not parse"))?;
-        let command =
-            wsx_core::ops::with_account(&config, &project.path, app.site.agent_command.clone())
-                .map_err(|error| Fault::new(409, "profile_unavailable", format!("{error:#}")))?;
+        // ^ Every session is a login shell; the agent is typed into it, so the pane outlives
+        // the agent: chat can resume it, and the terminal can start another (docs/web-client.md).
+        let command = wsx_core::ops::with_account(&config, &project.path, Vec::new())
+            .map_err(|error| Fault::new(409, "profile_unavailable", format!("{error:#}")))?;
+        let initial_input = (!input.shell).then(|| chat::shell_words(&app.site.agent_command));
         let label: String = input
             .label
             .chars()
@@ -785,13 +794,13 @@ async fn session_start(
             &app.client,
             &Daemon::SessionCreate {
                 worktree_id: worktree.id,
-                label: if label.trim().is_empty() {
-                    "chat".into()
-                } else {
-                    label.trim().into()
+                label: match label.trim() {
+                    "" if input.shell => "shell".into(),
+                    "" => "chat".into(),
+                    label => label.into(),
                 },
                 command,
-                initial_input: None,
+                initial_input,
                 rows: 40,
                 cols: 120,
             },

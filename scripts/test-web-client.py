@@ -1228,7 +1228,7 @@ panels = ["chat"]
 [access]
 projects = {{ profile = "work" }}
 capabilities = ["chat_send", "session_start", "task_view", "task_act"]
-agent_command = ["/bin/sh", "-c", {json.dumps('printf %s "$CLAUDE_CONFIG_DIR" > ' + str(work / 'profile-agent.txt') + '; exec sleep 600')}]
+agent_command = ["/bin/sh", "-c", {json.dumps('printf %s "$CLAUDE_CONFIG_DIR" > ' + str(work / 'profile-agent.txt'))}]
 '''),
             # Watch-only terminal: terminal_view without terminal_input.
             'viewer': site_file('viewer', f'''id = "viewer"
@@ -2490,7 +2490,11 @@ capabilities = ["terminal_view"]
         assert status == 200, started
         seen = wait(lambda: (work / 'profile-agent.txt').exists() and (work / 'profile-agent.txt').read_text(), 'the profile agent starts')
         assert seen == str(profile_root), seen
+        # ^ The agent ended at once; its login shell keeps the pane, so the chat can resume in it.
+        time.sleep(1.0)
         session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == started['session_id'])
+        pane = next(p for p in call('snapshot')['data']['panes'] if p['id'] == session['focused_pane'])
+        assert not pane['exited'], pane
         assert call('session_close', {'session_id': session['id'], 'expected_revision': session['revision']})['type'] == 'ack'
         with registry.open('a') as file:
             file.write('[[projects]]\nname = "project3"\npath = %s\nprofile = "work"\n' % json.dumps(str((work / 'project3').resolve())))
@@ -2643,6 +2647,16 @@ capabilities = ["terminal_view"]
             m2 = sites['m2']
             _, m2_cookie = pair(m2, 'm2')
             m2.cookie = m2_cookie.split(';')[0]
+            # --- A shell from the page: a live pane with no agent, labelled shell, for the terminal.
+            status, body = m2.request('POST', '/api/sessions', {'project': projects['design'], 'shell': True})
+            assert status == 200, body
+            time.sleep(1.0)
+            snap = call('snapshot')['data']
+            shell = next(s for s in snap['sessions'] if s['id'] == body['session_id'])
+            pane = next(p for p in snap['panes'] if p['id'] == shell['focused_pane'])
+            assert shell['label'] == 'shell' and not pane['exited'] and not pane['agent'], (shell, pane)
+            assert call('session_close', {'session_id': shell['id'], 'expected_revision': shell['revision']})['type'] == 'ack'
+            ok('session start: a shell where terminal_input is granted; refused without it; an agent that quits keeps its shell')
             shown = {}
             for role, label in (('blocked', 'Fix the login redirect loop on mobile Safari when third-party cookies are blocked'),
                                 ('permission', 'clean build'),
@@ -2915,6 +2929,8 @@ capabilities = ["terminal_view"]
                         {'project': projects['project2'], 'worktree': worktrees['project2']}, {'project': 987654}):
             assert root.request('POST', '/api/sessions', refused)[0] == 404, refused
         assert root.request('POST', '/api/sessions', {'label': 'no project'})[0] == 422
+        # A plain shell needs terminal_input: without it the page could not type into it.
+        assert root.request('POST', '/api/sessions', {'project': projects['project'], 'shell': True})[0] == 403
         ok('session start: site command, granted project and worktree, cleaned label; ungranted project and foreign worktree refused')
 
         # --- session_start also removes: wsxd closes the session; a task's own session stays.

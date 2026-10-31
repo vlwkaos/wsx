@@ -670,7 +670,7 @@ async function others() {
   await go("#/projects");
   await until("!!document.querySelector('.row-actions')", "the projects screen did not open");
   const project = await evaluate(`(() => { const row = document.querySelector('.row-actions').closest('.row');
-    return { row: row.querySelector('.row-label').textContent, count: row.querySelector('.row-context').textContent, actions: [...row.querySelectorAll('.row-actions > *')].map((n) => n.matches('.new-session') ? n.getAttribute('aria-label') : n.textContent).join() }; })()`);
+    return { row: row.querySelector('.row-label').textContent, count: row.querySelector('.row-context').textContent, actions: [...row.querySelectorAll('.row-actions > *')].map((n) => { const plus = n.matches('.new-session') ? n : n.querySelector(':scope > .new-session'); return plus ? plus.getAttribute('aria-label') : n.textContent; }).join() }; })()`);
   if (project.row !== "design" || !/^\d+ sessions$/.test(project.count) || project.actions !== "Files,New session in design") await fail(`the projects screen is wrong: ${JSON.stringify(project)}`);
   await sound("projects");
   await shot("projects");
@@ -689,9 +689,18 @@ async function others() {
   const projectHash = await evaluate("location.hash");
   await sound("project");
   // Each + names what it starts, has a 44 px hit area, and takes no more height than a line of text.
-  const plus = await evaluate(`[...document.querySelectorAll('.worktree .new-session')].map((button) => { const box = button.getBoundingClientRect(), head = button.parentElement.getBoundingClientRect();
+  // ^ With terminal_input the + opens a menu (Agent, Shell): its head is the menu's parent.
+  const plus = await evaluate(`[...document.querySelectorAll('.worktree .new-session')].map((button) => { const box = button.getBoundingClientRect(), head = (button.closest('.more') ?? button).parentElement.getBoundingClientRect();
     return { title: button.title === button.getAttribute('aria-label'), size: [Math.round(box.width), Math.round(box.height)], head: Math.round(head.height), right: Math.round(innerWidth - box.right), word: button.textContent.trim() }; })`);
   if (!plus.length || plus.some((button) => !button.title || button.size.join() !== "44,44" || button.head > 40 || button.right !== 4 || button.word)) await fail(`a New session + is wrong: ${JSON.stringify(plus)}`);
+  // With terminal_input the + asks what to start; Escape closes the menu and starts nothing.
+  await evaluate("document.querySelector('.worktree .new-session').click()");
+  await until("!!document.querySelector('.worktree .more-menu')", "the New session + opened no menu");
+  const choices = await evaluate("[...document.querySelectorAll('.worktree .more-menu [role=menuitem]')].map((item) => item.textContent).join()");
+  if (choices !== "Agent,Shell") await fail(`the New session menu offers ${JSON.stringify(choices)}`);
+  await shot("new-session-menu");
+  await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))");
+  await until("!document.querySelector('.worktree .more-menu')", "Escape did not close the New session menu");
   await shot("project");
   // A shell is marked as one and opens on the terminal, with no chat to switch to.
   const shellRow = await evaluate(`(() => { const link = document.querySelector('.worktree a[href^="#/s/${ids.shell}/"]'); const row = link?.closest('.row');
@@ -1145,13 +1154,13 @@ if (!facts.requests.includes(`${base}api/session`)) await fail("no API request u
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 
-// A site with no session: one sentence and the create action.
+// A site with no session: its project is still listed with the create action.
 await pair(emptyUrl, emptyCode);
 for (const next of SIZES) {
   await resize(next);
-  await until("(document.querySelector('.empty')?.textContent ?? '').includes('No session')", "the empty inbox did not show");
-  const empty = (await text(".empty")).join();
-  if (empty !== "No session is open. Start one") await fail(`the empty inbox says ${JSON.stringify(empty)}`);
+  await until("!!document.querySelector('.group-head .new-session')", "the empty inbox has no New session action");
+  const empty = (await text(".group-name")).join();
+  if (empty !== "bare" || await count(".empty")) await fail(`the empty inbox lists ${JSON.stringify(empty)}`);
   await sound("empty inbox");
   await shot("inbox-empty");
 }

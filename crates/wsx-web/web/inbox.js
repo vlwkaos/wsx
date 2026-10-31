@@ -3,7 +3,7 @@
 import { api } from "./api.js";
 import { elapsed, html, Icon, Loading, useNow, useState } from "./lib.js";
 import { can, isNew, listedSessions, sessionLink, shows, stateOf, useStore } from "./store.js";
-import { toast } from "./ui.js";
+import { MoreMenu, toast } from "./ui.js";
 
 // One session. Left: a state mark. Middle: the work first, project › worktree, then the
 // session and its provider, and for a working session what it does. Right: the state
@@ -55,28 +55,34 @@ export function SessionRow({ session, now, current, place }) {
 }
 
 // Starts a session in `worktree`, or in the project's main checkout without one.
-// A + icon; with `label`, a text action inside a sentence ("Start one").
-export function NewSession({ project, worktree, label }) {
+// A + icon. Where the page can type into a terminal, the + asks: the site's agent, or a plain
+// shell that opens in the terminal (docs/web-client.md "Sessions").
+export function NewSession({ project, worktree }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   if (!can("session_start")) return null;
   // ^ The name says what the + does: a session, not a project or a worktree.
   const name = `New session in ${worktree ? worktree.branch || "detached" : project.name}`;
-  const create = async () => {
+  const create = async (shell) => {
     setBusy(true);
     setError("");
     try {
-      const created = await api("api/sessions", { method: "POST", json: { project: project.id, worktree: worktree?.id, label: "chat" } });
-      location.hash = `#/s/${created.session_id}/${shows("chat") ? "chat" : "terminal"}`;
+      const created = await api("api/sessions", { method: "POST", json: { project: project.id, worktree: worktree?.id, label: shell ? "shell" : "chat", shell } });
+      location.hash = `#/s/${created.session_id}/${!shell && shows("chat") ? "chat" : "terminal"}`;
     } catch (failure) {
       setError(failure.message);
     }
     setBusy(false);
   };
+  const action = can("terminal_input")
+    ? html`
+      <${MoreMenu} name=${name} face=${html`<${Icon} name="plus" />`} disabled=${busy} look="icon-button new-session">
+        <button role="menuitem" type="button" onClick=${() => create(false)}>Agent</button>
+        <button role="menuitem" type="button" onClick=${() => create(true)}>Shell</button>
+      </${MoreMenu}>`
+    : html`<button class="icon-button new-session" type="button" disabled=${busy} onClick=${() => create(false)} aria-label=${name} title=${name}><${Icon} name="plus" /></button>`;
   return html`
-    ${label
-      ? html`<button class="link-action" type="button" disabled=${busy} onClick=${create} aria-label=${name}>${label}</button>`
-      : html`<button class="icon-button new-session" type="button" disabled=${busy} onClick=${create} aria-label=${name} title=${name}><${Icon} name="plus" /></button>`}
+    ${action}
     ${error && html`<span class="error" role="alert">${error}</span>`}`;
 }
 
@@ -96,18 +102,17 @@ export function Inbox({ rail }) {
   const finished = grouped("finished").sort((left, right) =>
     right.state_since_unix_ms - left.state_since_unix_ms || left.id - right.id);
   const rest = sessions.filter((session) => [null, "rest"].includes(stateOf(session).group));
-  const projects = store.projects.filter((project) => rest.some((session) => session.project.id === project.id));
+  // ^ Every project shows where a session can start, so one with no session left keeps its +.
+  const projects = store.projects.filter((project) =>
+    can("session_start") || rest.some((session) => session.project.id === project.id));
   let body;
   if (!store.daemon) {
     body = html`<p class="empty">wsx is not running on the host. Sessions return when it starts.</p>`;
   } else if (!store.loaded) {
     body = html`<${Loading} />`;
-  } else if (!sessions.length) {
+  } else if (!sessions.length && !projects.length) {
     body = html`
-      <p class="empty">No session is open.
-        ${store.projects.length === 1 ? html`${" "}<${NewSession} project=${store.projects[0]} label="Start one" />`
-          : can("session_start") && store.projects.length ? html`${" "}<a class="link-action" href="#/projects">Start one in a project</a>` : null}
-      </p>`;
+      <p class="empty">No session is open.</p>`;
   } else {
     body = html`
       ${SECTIONS.map(([group, title]) => {
