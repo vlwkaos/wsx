@@ -44,7 +44,7 @@ pub enum Switch {
 
 /// What a device chose: the API's body and part of its stored subscription.
 /// ^ No `deny_unknown_fields`: `open` drops every device when `push.json` does not parse, and
-/// a file or an open page from before 0.43 still has `digest`.
+/// a file or an open page of an earlier version still has `digest`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Choices {
     #[serde(default)]

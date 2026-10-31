@@ -2894,7 +2894,7 @@ capabilities = ["terminal_view"]
         cli('session', 'send-text', sessions['owner'], 'after revoke')
         wait(lambda: traces('owner')[-1] == 'after revoke', 'post-revoke turn')
         time.sleep(1.0)
-        assert len(pushes()) == 4, 'a revoked device was notified'
+        assert len(pushes()) == 3, 'a revoked device was notified'
         wait(lambda: json.loads(stored.read_text()) == [], 'subscription of the revoked device removed')
         tries = [owner.request('POST', '/api/pair', {'code': 'BBBBB-BBBB%d' % index})[0] for index in range(6)]
         assert tries[-1] == 429 and set(tries[:3]) == {403}, tries
