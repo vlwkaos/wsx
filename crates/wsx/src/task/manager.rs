@@ -23,8 +23,8 @@ use wsx_core::task::manager::{
     asks_owner, decided_request, instructions_digest, pending_approvals, quiet_reply, ApprovalLine,
 };
 use wsx_core::task::manager::{
-    Author, LimitHold, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, ManagerState,
-    Seen,
+    Author, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
+    ManagerState, Seen,
 };
 use wsx_core::task::stall;
 use wsx_core::task::store;
@@ -47,8 +47,11 @@ what landed and is live, what runs, and what waits for the owner and why. Read t
 task and change nothing. Name a task by its number and what it does.";
 const EVENT_TITLE_CHARS: usize = 80;
 /// The turn after a usage limit: the messages of the turn it ended got no answer yet.
-const LIMIT_CONTINUE: &str = "The session limit has reset. Answer the messages before this one \
+const LIMIT_CONTINUE: &str = "The usage limit has reset. Answer the messages before this one \
 that got no reply yet, then any below.";
+/// The first turn on a fallback agent: the limit ended the earlier conversation's turn.
+const SWITCH_CONTINUE: &str = "The earlier conversation's agent reached its usage limit before \
+it answered these messages; you continue on another agent. Answer them, then any below.";
 /// The title of the task `tasks.workflow.idle` starts.
 const IDLE_TITLE: &str = "Consolidate project knowledge";
 /// A role's host leaves after this long with no message and no turn; `say` starts it again.
@@ -1319,8 +1322,15 @@ impl Manager {
                         | Author::Role { reply: true, .. }
                 )
             };
-        if held.is_some() {
-            text = format!("{LIMIT_CONTINUE}\n\n{text}");
+        match &held {
+            Some(hold) if hold.switched => {
+                text = format!(
+                    "{SWITCH_CONTINUE}\n\n{}{text}",
+                    self.held_messages(&hold.ids)
+                )
+            }
+            Some(_) => text = format!("{LIMIT_CONTINUE}\n\n{text}"),
+            None => {}
         }
         if let Err(error) = self.send_turn(text.trim_end(), events_only) {
             self.say(&format!("cannot start the manager agent: {error:#}"));
@@ -1329,7 +1339,7 @@ impl Manager {
             });
             return;
         }
-        if held.is_some() {
+        if held.as_ref().is_some_and(|hold| !hold.switched) {
             self.log(ManagerEvent::Limit { until: None });
         }
         if !ids.is_empty() {
@@ -1352,10 +1362,35 @@ impl Manager {
                 .into_iter()
                 .any(|(_, record)| record.is_ok_and(|record| record.manager_reviews(land_auto)))
         };
+        // ^ A fallback runs its own model: the event model names one of the own agent's.
+        if let Some(agent) = &self.state.agent {
+            return agent.model.clone();
+        }
         match &self.event_model {
             Some(model) if events_only && !review_due() => model.clone(),
             _ => self.model.clone(),
         }
+    }
+
+    /// The adapter the manager runs on now: a fallback's, else `tasks.manager.adapter`.
+    fn current_adapter(&self) -> String {
+        self.state
+            .agent
+            .as_ref()
+            .map_or_else(|| self.adapter.clone(), |agent| agent.adapter.clone())
+    }
+
+    /// The held turn of a switch in full: a new conversation never saw its messages.
+    fn held_messages(&self, ids: &[u64]) -> String {
+        let log = self.dir.read_log().unwrap_or_default();
+        log.iter()
+            .filter_map(|entry| match &entry.event {
+                ManagerEvent::Message { id, text, .. } if ids.contains(id) => {
+                    Some(format!("Message {id}:\n{text}\n\n"))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// A few lines of the ledger for the end of a turn's message: the open tasks by state,
@@ -1502,7 +1537,7 @@ impl Manager {
             };
             self.agent_model = model.clone();
             self.agent = Some(Agent::spawn(
-                &self.adapter,
+                &self.current_adapter(),
                 &launch,
                 &session,
                 resume,
@@ -1540,6 +1575,13 @@ impl Manager {
         let mut text = instructions(&self.project, &notes, &page, skills.is_some(), &workflow);
         if let Some(role) = &self.dir.role {
             text = role_preamble(role, &self.project, &roles::brief(&self.dir)) + &text;
+        }
+        // ^ Other adapters list lent skills themselves (pi.rs `--skill`).
+        if self.current_adapter() != "claude" {
+            text = text.replace(
+                &format!("with the Skill tool as `{SKILLS_PLUGIN_NAME}:<name>`"),
+                "in your skills list",
+            );
         }
         let mut launch = Launch::new(&self.main, boundary, &self.model, text);
         launch.plugin_dirs = skills.into_iter().collect();
@@ -1592,6 +1634,41 @@ impl Manager {
             let attempt = self.state.limit.as_ref().map_or(0, |hold| hold.attempt) + 1;
             let now = now_unix_ms();
             let until_ms = limit::resume_at(reached.resets_at, attempt, now);
+            let adapter = self.current_adapter();
+            if let Err(error) = store::mark_limited(&adapter, until_ms) {
+                self.say(&format!("cannot record the usage limit: {error:#}"));
+            }
+            // ^ A short limit is waited out in the same conversation; a long one moves the
+            // manager to a fallback at once. ref: docs/tasks.md "Agents"
+            let settings = load_task_config(&self.main).unwrap_or_default();
+            if until_ms.saturating_sub(now) > settings.max_wait_secs * 1000 {
+                if let Some(next) =
+                    super::agent::fallback(&settings.manager_fallback, &adapter, now)
+                {
+                    let reason = format!(
+                        "switched to {}: {adapter} usage limit until {}",
+                        next.name,
+                        limit::resume_time(until_ms, now)
+                    );
+                    self.say(&reason);
+                    self.state.limit = Some(LimitHold {
+                        until_ms: now,
+                        attempt: 0,
+                        ids: to,
+                        events: self.turn_events,
+                        switched: true,
+                    });
+                    self.rotate(0, Some(reason));
+                    self.state.agent = Some(ManagerAgent {
+                        name: next.name,
+                        adapter: next.adapter,
+                        model: next.model,
+                    });
+                    self.save();
+                    self.report(runtime::AgentState::Idle);
+                    return;
+                }
+            }
             self.say(&limit::reason(until_ms, now));
             self.log(ManagerEvent::Limit {
                 until: Some(limit::resume_time(until_ms, now)),
@@ -1601,6 +1678,7 @@ impl Manager {
                 attempt,
                 ids: to,
                 events: self.turn_events,
+                switched: false,
             });
             self.save();
             self.report(runtime::AgentState::Idle);
@@ -1642,6 +1720,13 @@ impl Manager {
         self.state.instructions = None;
         self.state.turn_seen = None;
         self.state.handover = true;
+        // ^ A new conversation starts anyway: back on the own agent once its limit is over.
+        if self.state.agent.is_some()
+            && store::limited_until(&self.adapter, now_unix_ms()).is_none()
+        {
+            self.state.agent = None;
+            self.say(&format!("back on {}", self.adapter));
+        }
         self.save();
         self.log(ManagerEvent::Rotated { tokens, reason });
     }
