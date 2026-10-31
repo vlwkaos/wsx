@@ -3923,7 +3923,7 @@ merge_seconds = 3
         add_routine('demo', 'digest', *digest_argv)
         assert ran('demo', 'digest')['status'] == 'succeeded'
         told = wait(lambda: digests('demo'), 'the digest in the chat')
-        assert len(told) == 1 and told[0].get('usage') is None and not told[0]['quiet'], told
+        assert len(told) == 1 and told[0].get('usage') is None and not told[0].get('quiet'), told
         said = told[0]['text'].split('\n')
         for expected in (line(first, 'ready for review'), line(second, 'ready for review'),
                          line(broken, 'failed: test ! -e broken.txt failed'), line(checked, 'landed')):
