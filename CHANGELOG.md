@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Tasks: a Pi adapter (`tasks.agent.adapter: pi`, `tasks.manager.adapter: pi`). Pi runs headless over its RPC mode inside the same boundary, with only the project's own `AGENTS.md` and the lent skills; a Pi worker returns its result with `wsx task result -` ([docs/tasks.md](docs/tasks.md) "Pi adapter").
+- Tasks: fallback agents. The global `[[agents]]` registry names each agent's command, adapter and model; `tasks.agent.fallback` and `tasks.manager.fallback` list them in order. A usage limit that lifts within `tasks.agent.maxWaitMinutes` (default 300) is still waited out in the same conversation. A longer one, such as a weekly limit, moves a worker to the first available fallback for the rest of its task and the manager until its next rotation after the limit, each in a new conversation that opens with the unfinished turn. Limits are recorded for the machine, so a new task starts on a fallback while its agent is limited ([docs/tasks.md](docs/tasks.md) "Agents").
+
+### Changed
+
+- Tasks: the manager's turn after a limit says "usage limit", not "session limit".
+
 ## [0.43.0] - 2026-10-31
 
 ### Changed
