@@ -289,26 +289,23 @@ async function viewImages(name, links, many = 2, saves = false) {
   if (first.place !== before) await fail(`${what}: opening the image navigated: ${first.place}, was ${before}`);
   await until("document.querySelector('dialog.viewer').getAnimations({ subtree: true }).length === 0", `${what}: the viewer kept moving`);
   await shot(`viewer-${name}`);
-  const download = await evaluate("document.querySelector('dialog.viewer .viewer-bar a[download]')?.getAttribute('href') ?? null");
-  if (saves !== (download !== null)) await fail(`${what}: the viewer ${saves ? "has no" : "has a"} download control`);
-  if (saves) await savedCopy(what, download);
   // ^ Touch: the bar is under the stage at the screen's bottom and the link is Share; wide: the bar is on top and it is Download.
-  const bar = await evaluate(`(() => { const bar = document.querySelector('.viewer-bar').getBoundingClientRect(); const stage = document.querySelector('.viewer-stage').getBoundingClientRect();
-    const link = document.querySelector('.viewer-bar a[download]'); return { top: Math.round(bar.top), bottom: Math.round(bar.bottom), stageTop: Math.round(stage.top), stageBottom: Math.round(stage.bottom), height: innerHeight,
-      label: link?.getAttribute('aria-label') ?? null, title: link?.title ?? null, icon: link?.querySelector('path')?.getAttribute('d')?.startsWith('M10 12.5V3.5') ?? false }; })()`);
+  const bars = () => evaluate(`(() => { const node = document.querySelector('.viewer-bar'); const bar = node.getBoundingClientRect(); const stage = document.querySelector('.viewer-stage').getBoundingClientRect();
+    const link = node.querySelector('a[download]'); return { top: Math.round(bar.top), bottom: Math.round(bar.bottom), stageTop: Math.round(stage.top), stageBottom: Math.round(stage.bottom), height: innerHeight, buttonsEnd: Math.round(Math.max(...[...node.children].map((child) => child.getBoundingClientRect().bottom))),
+      download: link?.getAttribute('href') ?? null, label: link?.getAttribute('aria-label') ?? null, title: link?.title ?? null, icon: link?.querySelector('path')?.getAttribute('d')?.startsWith('M10 12.5V3.5') ?? false }; })()`);
+  const bar = await bars();
+  if (saves !== (bar.download !== null)) await fail(`${what}: the viewer ${saves ? "has no" : "has a"} download control`);
+  if (saves) await savedCopy(what, bar.download);
   const placed = phone() ? bar.top >= bar.stageBottom && bar.bottom === bar.height && bar.stageTop === 0 : bar.bottom <= bar.stageTop && bar.top === 0;
+  if (!placed || (saves && (bar.label !== (phone() ? "Share" : "Download") || bar.title !== bar.label || !bar.icon))) await fail(`${what}: the viewer bar reads ${JSON.stringify(bar)}`);
   if (phone()) {
     // ^ A notched phone: the stage starts under the top inset and the bar's buttons end above the bottom inset.
     await send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 47, bottom: 34 } });
     await pause(250);
-    const notch = await evaluate(`(() => { const stage = document.querySelector('.viewer-stage').getBoundingClientRect(); const bar = document.querySelector('.viewer-bar');
-      const lowest = Math.max(...[...bar.children].map((node) => node.getBoundingClientRect().bottom)); const img = document.querySelector('dialog.viewer .viewer-stage img').getBoundingClientRect();
-      return { stageTop: Math.round(stage.top), buttonsEnd: Math.round(lowest), height: innerHeight, imgInside: img.top >= stage.top - 1 && img.bottom <= stage.bottom + 1 }; })()`);
+    const notch = { ...await bars(), inside: (await state()).inside };
     await send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, bottom: 0 } });
-    if (notch.stageTop !== 47 || notch.buttonsEnd > notch.height - 34 || !notch.imgInside) await fail(`${what}: the viewer ignores the safe area: ${JSON.stringify(notch)}`);
+    if (notch.stageTop !== 47 || notch.buttonsEnd > notch.height - 34 || !notch.inside) await fail(`${what}: the viewer ignores the safe area: ${JSON.stringify(notch)}`);
   }
-  const word = phone() ? "Share" : "Download";
-  if (!placed || (saves && (bar.label !== word || bar.title !== word || !bar.icon))) await fail(`${what}: the viewer bar reads ${JSON.stringify(bar)}`);
   if (many > 1) {
     if (phone()) await swipe(size[0] - 60, 60);
     else await key("ArrowRight", 39);
@@ -1905,12 +1902,10 @@ const playAt = await evaluate(`(() => { const box = document.querySelector('${vi
 for (const type of ["mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x: playAt[0], y: playAt[1], button: "left", clickCount: 1 });
 const playing = "document.querySelector('dialog.viewer[open] .viewer-stage video')";
 await until(`${playing}?.readyState >= 1 && !${playing}.hasAttribute('data-loading')`, "#8's video did not load its metadata in the viewer");
-const player = await evaluate(`(() => { const video = ${playing}; return { controls: video.controls, inline: video.playsInline, preload: video.getAttribute('preload'), autoplay: video.autoplay,
+const player = await evaluate(`(() => { const video = ${playing}; const box = video.getBoundingClientRect(); const bar = document.querySelector('.viewer-bar').getBoundingClientRect(); return { clear: box.bottom <= bar.top + 1 || box.top >= bar.bottom - 1, controls: video.controls, inline: video.playsInline, preload: video.getAttribute('preload'), autoplay: video.autoplay,
   paused: video.paused, poster: video.poster.endsWith('/poster'), size: [video.videoWidth, video.videoHeight], zoom: !!document.querySelector('.viewer-zoom button') }; })()`);
-if (!player.controls || !player.inline || player.preload !== "metadata" || player.autoplay || !player.paused || !player.poster
+if (!player.clear || !player.controls || !player.inline || player.preload !== "metadata" || player.autoplay || !player.paused || !player.poster
   || player.size.join() !== "160,90" || player.zoom) await fail(`#8's video in the viewer reads ${JSON.stringify(player)}`);
-const clear = await evaluate(`(() => { const video = document.querySelector('dialog.viewer[open] .viewer-stage video').getBoundingClientRect(); const bar = document.querySelector('.viewer-bar').getBoundingClientRect(); return video.bottom <= bar.top + 1 || video.top >= bar.bottom - 1; })()`);
-if (!clear) await fail("#8's video in the viewer reaches under the bar");
 await until("document.querySelector('dialog.viewer').getAnimations({ subtree: true }).length === 0", "#8's video viewer kept moving");
 await capture("to-check-video");
 await key("Escape", 27);
