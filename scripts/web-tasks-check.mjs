@@ -1661,7 +1661,7 @@ if (/Asked|Human Verify|Decisions|Review|Pass r\d|Verified/.test(sheetWords)) aw
 if (await count(".task-sheet .label, .task-sheet .story-explain, .verify, .verify-note")) await fail("the sheet still has labels, Explain or the Verify panel");
 if ((await text(".task-next button")).join() !== "Land,Take over,Try") await fail(`a ready task offers ${await text(".task-next button")}`);
 const handHint = await evaluate("(() => { const button = [...document.querySelectorAll('.task-next button')].find((node) => node.textContent === 'Take over'); return document.getElementById(button.getAttribute('aria-describedby'))?.textContent ?? ''; })()");
-if (!/you continue in its working copy with its conversation/.test(handHint) || !/Hand back gives the task back/.test(handHint)) await fail(`Take over does not say what it does: ${handHint}`);
+if (handHint !== "Stops the worker. You continue in its session.") await fail(`Take over does not say what it does: ${handHint}`);
 await resize([1280, 800, 1]);
 await shot("task-sheet-take-over-1280", ".composer-send");
 await resize([390, 844, 2]);

@@ -179,7 +179,7 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
     // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
     // ^ Its name says what happens; the line under the buttons says the rest (docs/web-client-tasks.md "Task sheet").
     actions.includes("hand") && button(action.busy === "hand" ? "Taking over…" : "Take over", () => action.run("hand"), { "aria-describedby": "hand-hint" }),
-    actions.includes("handback") && button(action.busy === "handback" ? "Handing back…" : "Hand back", () => action.run("handback"), { "aria-describedby": "hand-hint" }),
+    actions.includes("handback") && button(action.busy === "handback" ? "Handing back…" : "Hand back", () => action.run("handback")),
     store.tasks[project]?.preview && detail.state !== "closed" && html`<${TryButton} project=${project} task=${task} />`,
   ].filter(Boolean) : [];
   // ^ The main checkout's changed files this land would overwrite, said before the press
@@ -187,9 +187,7 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
   const blocked = acting && actions.includes("land") && detail.land_blocked_by?.length > 0 && html`
     <p class="task-approval" role="note">Land stops: ${detail.default_branch} has uncommitted changes in ${detail.land_blocked_by.join(", ")}. Commit or stash them in the main checkout first.</p>`;
   const held = detail.hold && html`<p class="task-approval">Held for you to try: ${detail.hold}</p>`;
-  const handHint = acting && (actions.includes("hand") || actions.includes("handback")) && html`<p class="task-approval task-hint" id="hand-hint">${actions.includes("hand")
-    ? "Take over: the worker stops, and you continue in its working copy with its conversation in your own terminal. Hand back gives the task back to the worker, which checks your work."
-    : "You work on this task in its working copy. Hand back gives it back to the worker, which checks your work."}</p>`;
+  const handHint = acting && actions.includes("hand") && html`<p class="task-approval task-hint" id="hand-hint">Stops the worker. You continue in its session.</p>`;
   const report = sections(detail.report);
   const entries = detail.timeline.entries;
   // ^ Open items are the owner's to act on, so they stay outside Details.
