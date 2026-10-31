@@ -737,9 +737,8 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .reservoir-scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .reservoir-fixed + .reservoir-scroll:not(:empty) { border-top: var(--border-width) solid var(--color-hairline); }
 /* Every row of the open list and its labels are the closed line's small size. */
-.reservoir .row-link { font-size: var(--font-size-sm); }
+.reservoir .row-link { font-size: var(--font-size-sm); padding-inline: var(--column-inset, var(--space-4)); }
 .reservoir-list { list-style: none; margin: 0; padding: 0; }
-.reservoir .row-link { padding-inline: var(--column-inset, var(--space-4)); }
 .reservoir .need + .need { border-top: var(--border-width) solid var(--color-hairline); }
 /* Open, a running row reads like the closed line: its small size, rows close together. */
 .reservoir-running .row-link { min-height: 0; padding-block: var(--space-1); font-size: var(--font-size-sm); align-items: baseline; }

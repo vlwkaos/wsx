@@ -154,7 +154,7 @@ const actionOf = (key) => {
 const SAID_IN_CHAT = new Set(["approve", "deny"]);
 
 // What a fixed action did, as a notice: wsx's own answer, unless the chat says it already.
-export function announce(name, action, answer) {
+function announce(name, action, answer) {
   if (SAID_IN_CHAT.has(action) || (action === "land" && answer.state === "landed")) return;
   toast(`${name}: ${answer.message || "done"}`);
 }
@@ -176,7 +176,7 @@ export function noteDecisions(overview) {
 }
 
 // One fixed action. A success says what wsx did.
-async function act(project, item, action) {
+export async function act(project, item, action) {
   const path = item.kind === "approval"
     ? `api/tasks/${project}/approvals/${item.approval}/${action}`
     : `api/tasks/${project}/t/${item.task}/${action}`;
