@@ -2,15 +2,12 @@
 
 ## [Unreleased]
 
-### Fixed
+## [0.42.0] - 2026-10-31
 
-- Client: a live handoff of wsxd is no longer reported as a failure by `wsx agent wait` or by opening a terminal. The TUI event monitor and `Client::call` already waited for the successor; these two did not, so a wait open in the old daemon or a stream opened while it handed off ended in an error. Both now wait for the successor once and go on (a repeated wait keeps only the time it had left), and a daemon that died is still reported at once ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "Single requests", "Terminal streams").
 ### Changed
 
 - Web tasks: the owner no longer sends messages straight to a worker. The owner talks to the manager, which relays with `wsx task add`. *Answer* (a reservoir row and the task sheet) and *Fail: tell the manager* (a live trial's row) now put `#<n> ` into the manager's composer and focus it, keeping any draft. The sheet's message field, the row's form and the web's `add` and `steer` task actions are gone; those routes answer 404. `wsx task add` and `steer`, *Take over* and the sheet's read-only list of messages stay ([docs/web-client-tasks.md](docs/web-client-tasks.md) "Project screen").
 - Web image viewer: on a phone the buttons are under the image, within reach of one hand, and the save button is a share icon (labelled Share on a touch screen, Download elsewhere; a desktop keeps the bar on top) ([docs/web-client.md](docs/web-client.md) "Image viewer").
-- Web task sheet: an open task now opens on how it is doing and how far along it is. The top shows a health word from wsx's facts (working, running checks, waiting for a check slot, waiting for disk or the session limit, stuck, needs you), how long ago the worker last wrote, the workflow steps with the current one marked, and the worker's last sentence, never a raw tool line. A finished task leads with its outcome. Changes, Evidence, Left open, the messages to the worker, Shared files, usage and History are now under one folded *Details*; open To check items and all actions stay at the top ([docs/web-client-tasks.md](docs/web-client-tasks.md) "Task sheet").
-- Tasks: an `agent` log line has `said: true` when it is the worker's own words, and the stall finder moved to wsx-core so the web reads the same rule as the manager ([docs/tasks.md](docs/tasks.md) "Manager").
 
 ## [0.41.0] - 2026-10-30
 
@@ -40,6 +37,8 @@
 - Web: a manager that writes to the owner on its own, a reply that is not quiet to a turn of only events or a recap, such as after a routine's result, sends a "Manager needs me" push `<manager> wrote to you` that opens the chat. A reply to the owner's message never pushes ([docs/web-client.md](docs/web-client.md) "Notifications").
 - Tasks: the handover of a fresh manager conversation also lists the routine results it may not have acted on: at most two lines per routine: its newest run with its failures since its last success folded in, and how often it ran since the previous conversation's last reply, so a rotation no longer loses them ([docs/tasks.md](docs/tasks.md) "Manager").
 - Tasks: the checks after a result no longer run a check again when a `check-run` already ran it on the same clean tree; the result is reused and marked `stored`. Before, a worker's `check-run` of the checks was followed by the same checks once more (11 min on wsx). After a rebase or a conflict fix the worker is told to run no `check-run`, and wsx's worker words no longer ask for the `task` scenario on this machine ([docs/tasks.md](docs/tasks.md) "Checks, revisions and report").
+- Web task sheet: an open task now opens on how it is doing and how far along it is. The top shows a health word from wsx's facts (working, running checks, waiting for a check slot, waiting for disk or the session limit, stuck, needs you), how long ago the worker last wrote, the workflow steps with the current one marked, and the worker's last sentence, never a raw tool line. A finished task leads with its outcome. Changes, Evidence, Left open, the messages to the worker, Shared files, usage and History are now under one folded *Details*; open To check items and all actions stay at the top ([docs/web-client-tasks.md](docs/web-client-tasks.md) "Task sheet").
+- Tasks: an `agent` log line has `said: true` when it is the worker's own words, and the stall finder moved to wsx-core so the web reads the same rule as the manager ([docs/tasks.md](docs/tasks.md) "Manager").
 
 ### Fixed
 
@@ -57,6 +56,7 @@
 - Web: the chat says when the manager's usage limit pauses it and when it resumes, as muted lines ("Atlas paused: session limit, resumes at 07:45", "Atlas resumed").
 - Web: the open decision list of the manager chat no longer cuts rows. With many running tasks *Running* takes at most half of the list and scrolls inside itself under its label, so the rows that need the owner and To check keep their share. The *Running* label is no longer in capitals, so it reads at the rows' small size ([docs/web-client-tasks.md](docs/web-client-tasks.md) "Project screen").
 - Web: passing, skipping or failing a To check item in the manager chat no longer moves its bubble to the end as a new message from the manager. The bubble stays at the time the item was added; the decision changes it in place.
+- Client: a live handoff of wsxd is no longer reported as a failure by `wsx agent wait` or by opening a terminal. The TUI event monitor and `Client::call` already waited for the successor; these two did not, so a wait open in the old daemon or a stream opened while it handed off ended in an error. Both now wait for the successor once and go on (a repeated wait keeps only the time it had left), and a daemon that died is still reported at once ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "Single requests", "Terminal streams").
 
 ## [0.40.4] - 2026-10-28
 
