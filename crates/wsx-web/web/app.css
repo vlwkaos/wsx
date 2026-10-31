@@ -736,7 +736,7 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .reservoir-running { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .reservoir-scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .reservoir-fixed + .reservoir-scroll:not(:empty) { border-top: var(--border-width) solid var(--color-hairline); }
-/* Every row of the open list, its labels and its answer field are the closed line's small size. */
+/* Every row of the open list and its labels are the closed line's small size. */
 .reservoir .row-link { font-size: var(--font-size-sm); }
 .reservoir-list { list-style: none; margin: 0; padding: 0; }
 .reservoir .row-link { padding-inline: var(--column-inset, var(--space-4)); }
