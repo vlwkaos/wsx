@@ -12,6 +12,7 @@ const TAP_ZOOM = 2.5;
 const TAP_MS = 300;
 const TAP_PX = 10;
 const SWIPE_PX = 50;
+const coarse = () => matchMedia("(pointer: coarse)").matches;
 
 // Show `images` ([{ src, alt, width?, height?, video?, poster?, download? }]) from `index`; the focus goes
 // back to `opener`.
@@ -198,7 +199,7 @@ function Viewer({ images, start, dark, onClosed }) {
   // the tap's permission; then the attachment URL is opened, which saves to Files. Elsewhere
   // the link's own `download` runs.
   const save = async (event) => {
-    if (!matchMedia("(pointer: coarse)").matches || !navigator.canShare || !navigator.share) return;
+    if (!coarse() || !navigator.canShare || !navigator.share) return;
     event.preventDefault();
     try {
       const response = await fetch(image.download);
@@ -219,7 +220,7 @@ function Viewer({ images, start, dark, onClosed }) {
   };
 
   const many = images.length > 1;
-  const saveLabel = matchMedia("(pointer: coarse)").matches ? "Share" : "Download";
+  const saveLabel = coarse() ? "Share" : "Download";
   const scale = (fit ?? 1) * zoom;
   return html`
     <dialog class="viewer" ref=${dialog} data-scheme=${dark ? "dark" : undefined}
