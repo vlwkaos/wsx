@@ -151,8 +151,8 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
   const trial = detail.trial;
   const acting = can("task_act");
   const busy = Boolean(action.busy);
-  // ^ With an icon, a phone shows the icon alone and its words stay the name (app.css).
   const approval = (request) => ({ kind: "approval", approval: request.id, label: request.label });
+  // ^ With an icon, a phone shows the icon alone and its words stay the name (app.css).
   const button = (label, onClick, extra = {}, icon = null) => html`
     <button class="button" type="button" disabled=${busy} title=${icon ? label : null} onClick=${onClick} ...${extra}>
       ${icon && html`<${Icon} name=${icon} />`}<span class="button-words">${label}</span></button>`;
