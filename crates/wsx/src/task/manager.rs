@@ -5,9 +5,9 @@
 //! runs a role: its brief, its own folder and only its tasks' events, and it leaves once idle.
 //! ref: docs/tasks.md "Manager", "Roles"
 
-use super::agent::{new_session_id, AgentLine, Launch, TurnResult};
+use super::agent::{new_session_id, Agent, AgentLine, Launch, TurnResult};
 use super::boundary::Boundary;
-use super::claude::{account_env, config_root, skills_plugin, ClaudeAgent, SKILLS_PLUGIN_NAME};
+use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME};
 use super::{broker, hosting, limit};
 use anyhow::{Context, Result};
 use asched_core::routine::{store::RoutineStore, RunRecord, RunStatus};
@@ -112,6 +112,8 @@ struct Manager {
     dir: ManagerDir,
     project: String,
     main: PathBuf,
+    /// `tasks.manager.adapter`: the headless adapter the manager runs on.
+    adapter: String,
     model: String,
     /// `tasks.manager.eventModel`: the model of a turn with only events and no review due.
     event_model: Option<String>,
@@ -120,7 +122,7 @@ struct Manager {
     rotate_tokens: u64,
     state: ManagerState,
     events: Sender<Event>,
-    agent: Option<ClaudeAgent>,
+    agent: Option<Agent>,
     generation: u64,
     /// Logged messages not yet delivered, oldest first.
     queue: VecDeque<(u64, Author, String)>,
@@ -345,6 +347,7 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         dir,
         project,
         main,
+        adapter: settings.manager_adapter,
         model: settings.manager_model,
         event_model: settings.manager_event_model,
         agent_model: String::new(),
@@ -1498,7 +1501,8 @@ impl Manager {
                 ..launch
             };
             self.agent_model = model.clone();
-            self.agent = Some(ClaudeAgent::spawn(
+            self.agent = Some(Agent::spawn(
+                &self.adapter,
                 &launch,
                 &session,
                 resume,

@@ -4,10 +4,13 @@
 //! ref: docs/tasks.md "Agents"
 
 use super::boundary::Boundary;
-use anyhow::{Context, Result};
+use super::claude::ClaudeAgent;
+use super::pi::PiAgent;
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
 use wsx_core::task::TurnUsage;
 
 pub enum AgentLine {
@@ -84,6 +87,58 @@ impl Launch {
             env: Vec::new(),
             path_prefix: None,
             plugin_dirs: Vec::new(),
+        }
+    }
+}
+
+/// One running agent process of a configured adapter (`tasks.agent.adapter`,
+/// `tasks.manager.adapter`). ref: docs/tasks.md "Agents"
+pub enum Agent {
+    Claude(ClaudeAgent),
+    Pi(PiAgent),
+}
+
+impl Agent {
+    /// Start `adapter` on conversation `session`; `resume` says it exists already.
+    /// `cost_base` is the session's last `session_cost_micro_usd`.
+    pub fn spawn<E: Send + 'static>(
+        adapter: &str,
+        launch: &Launch,
+        session: &str,
+        resume: bool,
+        cost_base: u64,
+        events: Sender<E>,
+        wrap: impl Fn(Option<AgentLine>) -> E + Send + 'static,
+    ) -> Result<Self> {
+        Ok(match adapter {
+            "claude" => Self::Claude(ClaudeAgent::spawn(
+                launch, session, resume, cost_base, events, wrap,
+            )?),
+            "pi" => Self::Pi(PiAgent::spawn(launch, session, cost_base, events, wrap)?),
+            other => bail!("no task adapter {other}"),
+        })
+    }
+
+    /// Send one user message; during a turn the agent takes it as a steer.
+    pub fn send(&mut self, text: &str) -> Result<()> {
+        match self {
+            Self::Claude(agent) => agent.send(text),
+            Self::Pi(agent) => agent.send(text),
+        }
+    }
+
+    /// The next turns run on `model`; the conversation stays.
+    pub fn set_model(&mut self, model: &str) -> Result<()> {
+        match self {
+            Self::Claude(agent) => agent.set_model(model),
+            Self::Pi(agent) => agent.set_model(model),
+        }
+    }
+
+    pub fn stop(self) {
+        match self {
+            Self::Claude(agent) => agent.stop(),
+            Self::Pi(agent) => agent.stop(),
         }
     }
 }
