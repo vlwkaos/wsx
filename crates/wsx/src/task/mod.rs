@@ -1124,6 +1124,14 @@ fn create(
         }
     };
     let now = now_unix_ms();
+    // ^ New work starts on an available agent: a task never begins on one whose usage limit
+    // is on record. `--model` names the configured agent's model. ref: docs/tasks.md "Agents"
+    let (adapter, model) = match store::limited_until(&settings.adapter, now)
+        .and_then(|_| agent::fallback(&settings.fallback, &settings.adapter, now))
+    {
+        Some(next) => (next.adapter, next.model),
+        None => (settings.adapter, model.unwrap_or(settings.model)),
+    };
     let record = TaskRecord {
         id,
         project: project.name.clone(),
@@ -1134,8 +1142,8 @@ fn create(
         branch: working_copy.branch.clone(),
         working_copy: working_copy.path.clone(),
         pane_id: None,
-        adapter: settings.adapter,
-        model: model.unwrap_or(settings.model),
+        adapter,
+        model,
         checks: settings.checks,
         steps,
         step: 0,
