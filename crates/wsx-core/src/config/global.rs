@@ -227,7 +227,7 @@ pub struct GlobalConfig {
     /// Empty: one implicit `default` profile holds every project. ref: README "Profiles"
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<ProfileEntry>,
-    /// The agents a new session or a task may run, in order of preference. ref: README "Agents"
+    /// The agents a new session or a task may run, in order of preference. ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<AgentEntry>,
     #[serde(default)]
@@ -312,7 +312,7 @@ pub struct ProfileEntry {
 pub const TASK_ADAPTERS: &[&str] = &["claude", "pi"];
 
 /// One agent the owner uses: how a session starts it, and how a task host drives it.
-/// ref: README "Agents"
+/// ref: docs/tasks.md "Agents"
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentEntry {
