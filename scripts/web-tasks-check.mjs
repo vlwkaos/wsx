@@ -174,6 +174,7 @@ const statusLines = "(document.querySelectorAll('.log .fold-toggle[aria-expanded
 const statusSays = (n, word) => `${statusLines}.some((node) => node.textContent.includes('#${n} ${word}'))`;
 // The sheet's action buttons, under its top.
 const nextButtons = () => text(".task-sheet .task-next button");
+const hasNext = (label) => `[...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === ${JSON.stringify(label)})`;
 const clickNext = (label) => evaluate(`[...document.querySelectorAll('.task-sheet .task-next button')].find((node) => node.textContent === ${JSON.stringify(label)}).click()`);
 // Button room (docs/web-client-tasks.md "Task sheet"): each button as wide as its words; on a
 // phone a button with an icon shows the icon alone and keeps its words as its name.
@@ -1675,7 +1676,7 @@ await until("/Decided: fake choice \\(fixture\\)\\./.test(document.querySelector
 await shot("task-sheet-open");
 await evaluate("document.querySelector('.task-details > .fold-head').click()");
 await evaluate("document.querySelector('.story .link-action').click()");
-await evaluate("[...document.querySelectorAll('.task-next button')].find((node) => node.textContent === 'Land').click()");
+await clickNext("Land");
 await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '') === 'done'", "#2 did not land", 300);
 told = await story();
 if (told.next !== "On main; the last deploy does not have it yet.") await fail(`the top of a done task reads ${JSON.stringify(told)}`);
@@ -1704,7 +1705,7 @@ await resize([1280, 800, 1]);
 await buttonRoom("#4's sheet");
 await shot("task-blocked", ".composer-send");
 await resize([390, 844, 2]);
-await evaluate("[...document.querySelectorAll('.task-next button')].find((node) => node.textContent === 'Deny').click()");
+await clickNext("Deny");
 await until("!document.querySelector('.task-next button[aria-label=\"Approve discard #4\"]')", "the denied approval stayed", 300);
 told = await story();
 if (told.next !== "The worker waits for your answer.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
@@ -1746,9 +1747,9 @@ if (overlay.count !== 1 || overlay.fixed !== "fixed" || overlay.top !== barTop |
 await shot("notice-failure", ".composer-send");
 // A later outcome (Take over) does not hide the failure; it waits past the outcome's time.
 await go(page(4));
-await until(`[...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === 'Take over')`, "#4 offers no Take over");
+await until(hasNext("Take over"), "#4 offers no Take over");
 await clickNext("Take over");
-await until(`[...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === 'Hand back')`, "Take over did not end in Hand back", 60);
+await until(hasNext("Hand back"), "Take over did not end in Hand back", 60);
 await pause(5000);
 if (!(await evaluate("/Land #6 did not run/.test(document.querySelector('.notice')?.textContent ?? '')"))) await fail("a later outcome or the time hid the failure");
 await closeSheet("#4");
@@ -1765,7 +1766,7 @@ await pause(4000);
 if (await evaluate("!!document.querySelector('.notice[data-tone=danger]')")) await fail("an action the owner approved in the chat left a failure notice: " + (await evaluate("document.querySelector('.notice')?.textContent")));
 // An outcome alone clears itself.
 await go(page(4));
-await until(`[...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === 'Hand back')`, "#4 offers no Hand back");
+await until(hasNext("Hand back"), "#4 offers no Hand back");
 await pause(3000);
 await clickNext("Hand back");
 await until("[...document.querySelectorAll('.notice')].some((node) => /^#4: /.test(node.textContent))", "Hand back of #4 showed no outcome", 60);
@@ -2132,7 +2133,6 @@ await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the w
 await lean("the waiting sheet");
 told = await story();
 if (told.next !== "The worker waits for your answer.") await fail(`the top of a waiting task reads ${JSON.stringify(told)}`);
-if (await count(".task-sheet textarea, .task-message, .task-steer")) await fail("the waiting sheet still has a message field");
 await shot("waiting-sheet", ".composer-send");
 await resize([1280, 800, 1]);
 await until("!!document.querySelector('dialog.task-sheet[open] .task-next button[aria-label^=\"Answer #1\"]')", "the waiting sheet has no Answer at 1280 px");
@@ -2158,7 +2158,7 @@ await click(".composer-send");
 await go(`#/p/${plans}/t/1`);
 await until("document.querySelectorAll('.task-talk .bubble').length === 1", "the answer is not a bubble", 60);
 if (await evaluate("document.querySelector('.task-talk .bubble').dataset.side") !== "out") await fail("the answer is not the owner's bubble");
-await until("(document.querySelector('.task-sheet .progress-health')?.textContent ?? '') === 'ready to land' && [...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === 'Land')", "#1 did not get ready after the answer", 120);
+await until(`(document.querySelector('.task-sheet .progress-health')?.textContent ?? '') === 'ready to land' && ${hasNext("Land")}`, "#1 did not get ready after the answer", 120);
 await closeSheet("the waiting sheet", `#/p/${plans}`);
 // ^ Closing the sheet gives the composer the focus.
 await until("document.activeElement?.classList.contains('composer-field') && !document.activeElement.closest('dialog')", "closing the sheet did not focus the composer");

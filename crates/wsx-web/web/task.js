@@ -5,7 +5,7 @@ import { api } from "./api.js";
 import { clock, html, Icon, Loading, short, useCoalescedLoad, useEffect, useState } from "./lib.js";
 import { can, useEventLoad, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
-import { announce, loadTasks, taskStage, TaskChip, TaskTitle, withChips } from "./tasks.js";
+import { act, taskStage, TaskChip, TaskTitle, withChips } from "./tasks.js";
 import { Bubble } from "./bubbles.js";
 import { SheetBar } from "./ui.js";
 import { summaryIsCurrent, TaskStory } from "./story.js";
@@ -77,40 +77,31 @@ function foldNote(title, body, detail) {
 }
 
 // An action's error, kept while the page re-renders.
-function useAction(detail) {
+function useAction(project, task) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const run = async (name, path, label = `#${detail.id}`) => {
+  const run = async (name, item = { task }) => {
     setBusy(name);
     setError("");
-    let ok = false;
     try {
-      const answer = await api(path, { method: "POST", json: {} });
-      announce(label, name, answer);
-      loadTasks(detail.project);
-      ok = true;
+      await act(project, item, name);
     } catch (failure) {
       setError(failure.message);
     }
     setBusy("");
-    return ok;
   };
   return { busy, error, run };
 }
 
 // The messages added or steered to the worker after its prompt, as bubbles.
 function Talk({ project, talk, words }) {
-  const rows = talk.map((entry, index) => ({
-    kind: "bubble", key: `talk-${index}`, at: entry.unix_ms ?? 0, author: "owner",
-    entry: { text: entry.text },
-  }));
-  rows.forEach((row, index) => {
-    row.first = rows[index - 1]?.author !== row.author;
-    row.last = rows[index + 1]?.author !== row.author;
+  const rowOf = (entry, index) => ({
+    kind: "bubble", key: `talk-${index}`, at: entry.unix_ms ?? 0, author: "owner", entry: { text: entry.text },
+    first: index === 0, last: index === talk.length - 1,
   });
   return html`
     <section class="task-talk" aria-label="Messages">
-      ${rows.map((row) => html`<${Bubble} key=${row.key} project=${project} row=${row} words=${words} />`)}
+      ${talk.map((entry, index) => html`<${Bubble} key=${index} project=${project} row=${rowOf(entry, index)} words=${words} />`)}
     </section>`;
 }
 
@@ -146,7 +137,7 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
   // An approval or a decision changes the overview, not this task's files.
   const overview = store.tasks[project];
   useEffect(() => { if (detail) load(); }, [overview?.decisions?.[0]?.approval, overview?.needs?.length]);
-  const act = useAction(detail ?? { project, id: task });
+  const action = useAction(project, task);
   const words = withChips(project);
 
   const top = html`
@@ -159,8 +150,9 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
   const actions = detail.actions;
   const trial = detail.trial;
   const acting = can("task_act");
-  const busy = Boolean(act.busy);
+  const busy = Boolean(action.busy);
   // ^ With an icon, a phone shows the icon alone and its words stay the name (app.css).
+  const approval = (request) => ({ kind: "approval", approval: request.id, label: request.label });
   const button = (label, onClick, extra = {}, icon = null) => html`
     <button class="button" type="button" disabled=${busy} title=${icon ? label : null} onClick=${onClick} ...${extra}>
       ${icon && html`<${Icon} name=${icon} />`}<span class="button-words">${label}</span></button>`;
@@ -168,13 +160,13 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
   const buttons = acting ? [
     ...detail.approvals.map((request) => html`
       ${detail.approvals.length > 1 && html`<p class="task-approval">${request.label}</p>`}
-      ${button("Deny", () => act.run("deny", `api/tasks/${project}/approvals/${request.id}/deny`, request.label), { "aria-label": `Deny: ${request.label}` }, "fail")}
-      ${button("Approve", () => act.run("approve", `api/tasks/${project}/approvals/${request.id}/approve`, request.label), { "aria-label": request.label }, "pass")}`),
+      ${button("Deny", () => action.run("deny", approval(request)), { "aria-label": `Deny: ${request.label}` }, "fail")}
+      ${button("Approve", () => action.run("approve", approval(request)), { "aria-label": request.label }, "pass")}`),
     // ^ A trial: this revision on the live site before it lands (docs/tasks.md "Hold and trial").
     // Pass lands it; a message to the worker, through the manager, fails it; End only frees the live site.
     trial && html`<p class="task-approval" role="status">${TRIAL_WORDS[trial.stage]}</p>`,
-    trial?.stage === "live" && actions.includes("land") && button(act.busy === "pass" ? "Landing…" : "Pass and land", () => act.run("pass", `api/tasks/${project}/t/${task}/pass`), {}, "pass"),
-    trial && button(act.busy === "trial_end" ? "Ending…" : "End trial", () => act.run("trial_end", `api/tasks/${project}/t/${task}/trial_end`)),
+    trial?.stage === "live" && actions.includes("land") && button(action.busy === "pass" ? "Landing…" : "Pass and land", () => action.run("pass"), {}, "pass"),
+    trial && button(action.busy === "trial_end" ? "Ending…" : "End trial", () => action.run("trial_end")),
     // ^ The owner talks to the manager: the composer gets the mention, and the dialog closes in
     // the tap, since a modal dialog makes the composer inert and a phone raises its keyboard
     // only for a focus in the tap (docs/web-client-tasks.md "Task sheet").
@@ -183,13 +175,11 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
       onMention(task);
       onClose();
     }, { "aria-label": `Answer #${task}: mention it to the manager` }, "reply"),
-    !trial && actions.includes("land") && button(act.busy === "land" ? "Landing…" : "Land", () => act.run("land", `api/tasks/${project}/t/${task}/land`), {}, "land"),
+    !trial && actions.includes("land") && button(action.busy === "land" ? "Landing…" : "Land", () => action.run("land"), {}, "land"),
     // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
     // ^ Its name says what happens; the line under the buttons says the rest (docs/web-client-tasks.md "Task sheet").
-    actions.includes("hand") && button(act.busy === "hand" ? "Taking over…" : "Take over", () => act.run("hand", `api/tasks/${project}/t/${task}/hand`),
-      { "aria-describedby": "hand-hint" }),
-    actions.includes("handback") && button(act.busy === "handback" ? "Handing back…" : "Hand back", () => act.run("handback", `api/tasks/${project}/t/${task}/handback`),
-      { "aria-describedby": "hand-hint" }),
+    actions.includes("hand") && button(action.busy === "hand" ? "Taking over…" : "Take over", () => action.run("hand"), { "aria-describedby": "hand-hint" }),
+    actions.includes("handback") && button(action.busy === "handback" ? "Handing back…" : "Hand back", () => action.run("handback"), { "aria-describedby": "hand-hint" }),
     store.tasks[project]?.preview && detail.state !== "closed" && html`<${TryButton} project=${project} task=${task} />`,
   ].filter(Boolean) : [];
   // ^ The main checkout's changed files this land would overwrite, said before the press
@@ -261,9 +251,7 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
           ${detail.timeline.skipped ? html`<p class="note">${detail.timeline.skipped} earlier entries are not shown.</p>` : null}
           <ol class="timeline-list">
             ${entries.map((entry, index) => {
-              const said = described(entry);
-              if (!said) return null;
-              const [what, more, tone] = said;
+              const [what, more, tone] = described(entry);
               return html`
                 <li key=${index}>
                   <span class="time">${clock(entry.unix_ms)}</span>
@@ -275,6 +263,6 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
         </details>
         </details>
       </div>
-      ${act.error && html`<p class="error chat-error" role="alert">${act.error}</p>`}
+      ${action.error && html`<p class="error chat-error" role="alert">${action.error}</p>`}
     </div>`;
 }

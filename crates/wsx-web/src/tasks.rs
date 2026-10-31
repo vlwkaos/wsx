@@ -586,20 +586,14 @@ fn step_label(record: &TaskRecord) -> Option<String> {
 /// `hand` takes a build over in its working copy (docs/tasks.md "By hand").
 fn actions(record: &TaskRecord) -> Vec<&'static str> {
     let on = record.waiting.as_ref().map(|waiting| waiting.on);
-    let mut actions = match (record.state, on) {
-        (TaskState::Waiting, Some(WaitOn::Hand)) => return vec!["handback"],
-        (TaskState::Ready, _) => vec!["land"],
-        (TaskState::Working | TaskState::Checking | TaskState::Waiting | TaskState::Failed, _) => {
-            vec![]
-        }
-        (TaskState::Landed | TaskState::Closed, _) => return vec![],
-    };
     // ^ Hold and trial stay commands for the manager; the owner's buttons are land and hand: a message to
     // the worker goes through the manager (docs/web-client-tasks.md "Task sheet").
-    if record.state != TaskState::Checking {
-        actions.push("hand");
+    match (record.state, on) {
+        (TaskState::Waiting, Some(WaitOn::Hand)) => vec!["handback"],
+        (TaskState::Ready, _) => vec!["land", "hand"],
+        (TaskState::Working | TaskState::Waiting | TaskState::Failed, _) => vec!["hand"],
+        (TaskState::Checking | TaskState::Landed | TaskState::Closed, _) => vec![],
     }
-    actions
 }
 
 /// The messages the owner or the manager added or steered after the prompt, in order.
@@ -885,22 +879,9 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
                     .map_err(|error| Fault::new(400, "invalid_hold", error.to_string()))?;
             }
         }
-        // ^ They open and close the hand session or the trial slot: `run_task`, not this,
-        // runs them. A child's host alone sends `ChildLanded`.
-        // ^ Add and steer are the manager's, through `wsx task`: the owner talks to the manager.
-        HostRequest::Hand
-        | HostRequest::Steer { .. }
-        | HostRequest::Add { .. }
-        | HostRequest::ChildLanded { .. }
-        | HostRequest::Notice { .. }
-        | HostRequest::LandBatch { .. }
-        | HostRequest::Handback
-        | HostRequest::Trial
-        | HostRequest::Status
-        | HostRequest::Stop
-        | HostRequest::Close { .. } => {
-            return Err(Fault::new(400, "unsupported", "not a web action"));
-        }
+        // ^ `run_task` runs the hand session and the trial slot; a child's host alone sends
+        // `ChildLanded`; add and steer are the manager's, through `wsx task`.
+        _ => return Err(Fault::new(400, "unsupported", "not a web action")),
     }
     let dir = open_task(scope, task)?;
     let timeout = if matches!(request, HostRequest::Land { .. }) {
