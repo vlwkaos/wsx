@@ -3381,7 +3381,7 @@ merge_seconds = 3
         assert act(2, 'explode', {})[0] == 404 and act(99, 'land', {})[0] == 404
         say_route = '/api/tasks/%d/say' % demo
         assert steady(owner, 'POST', say_route, {'text': '  '})[0] == 400
-        assert steady(owner, 'POST', say_route, {'text': 'x' * (64 * 1024 + 1)})[0] == 413
+        assert steady(owner, 'POST', say_route, {'text': 'x' * (60 * 1024 + 1)})[0] == 400
         # ^ A second device of the owner: these steps keep to their own request budget.
         trier = Site(ports['owner'], '', origin=public['owner'])
         code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
