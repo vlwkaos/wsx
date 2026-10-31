@@ -80,14 +80,13 @@ function foldNote(title, body, detail) {
 function useAction(detail) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const run = async (name, path, body, done, label = `#${detail.id}`) => {
+  const run = async (name, path, label = `#${detail.id}`) => {
     setBusy(name);
     setError("");
     let ok = false;
     try {
-      const answer = await api(path, { method: "POST", json: body });
+      const answer = await api(path, { method: "POST", json: {} });
       announce(label, name, answer);
-      done?.();
       loadTasks(detail.project);
       ok = true;
     } catch (failure) {
@@ -169,13 +168,13 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
   const buttons = acting ? [
     ...detail.approvals.map((request) => html`
       ${detail.approvals.length > 1 && html`<p class="task-approval">${request.label}</p>`}
-      ${button("Deny", () => act.run("deny", `api/tasks/${project}/approvals/${request.id}/deny`, {}, null, request.label), { "aria-label": `Deny: ${request.label}` }, "fail")}
-      ${button("Approve", () => act.run("approve", `api/tasks/${project}/approvals/${request.id}/approve`, {}, null, request.label), { "aria-label": request.label }, "pass")}`),
+      ${button("Deny", () => act.run("deny", `api/tasks/${project}/approvals/${request.id}/deny`, request.label), { "aria-label": `Deny: ${request.label}` }, "fail")}
+      ${button("Approve", () => act.run("approve", `api/tasks/${project}/approvals/${request.id}/approve`, request.label), { "aria-label": request.label }, "pass")}`),
     // ^ A trial: this revision on the live site before it lands (docs/tasks.md "Hold and trial").
     // Pass lands it; a message to the worker, through the manager, fails it; End only frees the live site.
     trial && html`<p class="task-approval" role="status">${TRIAL_WORDS[trial.stage]}</p>`,
-    trial?.stage === "live" && actions.includes("land") && button(act.busy === "pass" ? "Landing…" : "Pass and land", () => act.run("pass", `api/tasks/${project}/t/${task}/pass`, {}), {}, "pass"),
-    trial && button(act.busy === "trial_end" ? "Ending…" : "End trial", () => act.run("trial_end", `api/tasks/${project}/t/${task}/trial_end`, {})),
+    trial?.stage === "live" && actions.includes("land") && button(act.busy === "pass" ? "Landing…" : "Pass and land", () => act.run("pass", `api/tasks/${project}/t/${task}/pass`), {}, "pass"),
+    trial && button(act.busy === "trial_end" ? "Ending…" : "End trial", () => act.run("trial_end", `api/tasks/${project}/t/${task}/trial_end`)),
     // ^ The owner talks to the manager: the composer gets the mention, and the dialog closes in
     // the tap, since a modal dialog makes the composer inert and a phone raises its keyboard
     // only for a focus in the tap (docs/web-client-tasks.md "Task sheet").
@@ -184,12 +183,12 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
       onMention(task);
       onClose();
     }, { "aria-label": `Answer #${task}: mention it to the manager` }, "reply"),
-    !trial && actions.includes("land") && button(act.busy === "land" ? "Landing…" : "Land", () => act.run("land", `api/tasks/${project}/t/${task}/land`, {}), {}, "land"),
+    !trial && actions.includes("land") && button(act.busy === "land" ? "Landing…" : "Land", () => act.run("land", `api/tasks/${project}/t/${task}/land`), {}, "land"),
     // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
     // ^ Its name says what happens; the line under the buttons says the rest (docs/web-client-tasks.md "Task sheet").
-    actions.includes("hand") && button(act.busy === "hand" ? "Taking over…" : "Take over", () => act.run("hand", `api/tasks/${project}/t/${task}/hand`, {}),
+    actions.includes("hand") && button(act.busy === "hand" ? "Taking over…" : "Take over", () => act.run("hand", `api/tasks/${project}/t/${task}/hand`),
       { "aria-describedby": "hand-hint" }),
-    actions.includes("handback") && button(act.busy === "handback" ? "Handing back…" : "Hand back", () => act.run("handback", `api/tasks/${project}/t/${task}/handback`, {}),
+    actions.includes("handback") && button(act.busy === "handback" ? "Handing back…" : "Hand back", () => act.run("handback", `api/tasks/${project}/t/${task}/handback`),
       { "aria-describedby": "hand-hint" }),
     store.tasks[project]?.preview && detail.state !== "closed" && html`<${TryButton} project=${project} task=${task} />`,
   ].filter(Boolean) : [];
