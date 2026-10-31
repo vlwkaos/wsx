@@ -222,6 +222,8 @@ async function oneMotion(where, open) {
     }
   }
 }
+// ^ A shot of a bubble or a row still fading in shows it dim.
+const entered = () => until("document.getAnimations().every((animation) => animation.effect?.getTiming().iterations === Infinity || animation.playState !== 'running')", "the page kept moving");
 // The manager's composer holds `value`, focused, the caret at its end and no `#` list open.
 const composerHas = (value, what) => until(`(() => { const field = document.querySelector('.composer-field');
   return field.value === ${JSON.stringify(value)} && document.activeElement === field && field.selectionStart === field.value.length
@@ -1018,12 +1020,14 @@ if (await count(".reservoir .need-form")) await fail("a reservoir row still has 
 await pressAnswer();
 await composerHas("about #12 first #1 ", "a second Answer changed the draft");
 if (!(await evaluate("Object.values(JSON.parse(localStorage.getItem('wsx-manager-drafts'))).includes('about #12 first #1 ')"))) await fail("the mention is not in the kept draft");
+await entered();
 await shot("answer-mention", ".composer-send");
 // ^ Wide: the composer is another element, with the same draft.
 await resize([1280, 800, 1]);
 await openReservoir();
 await pressAnswer();
 await composerHas("about #12 first #1 ", "Answer at 1280 px changed the draft");
+await entered();
 await shot("answer-mention", ".composer-send");
 await resize([390, 844, 2]);
 await openReservoir();
@@ -1053,8 +1057,6 @@ await until(answeredOpen, "no reply after the answer", 300);
 // `asks` with it, until the owner writes after it (docs/web-client-tasks.md "Project screen").
 const asking = "[...document.querySelectorAll('.log .bubble[data-side=in]')].find((node) => node.textContent.includes('Should I land it now?'))";
 const askTags = "[...document.querySelectorAll('.log .bubble-tag')].filter((node) => node.textContent === 'Asks you')";
-// ^ A shot of a bubble or a row still fading in shows it dim.
-const entered = () => until("document.getAnimations().every((animation) => animation.effect?.getTiming().iterations === Infinity || animation.playState !== 'running')", "the page kept moving");
 const overviewAsks = () => evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((view) => view.asks)`);
 await typeInto(".composer-field", "ASK");
 await click(".composer-send");
@@ -2202,6 +2204,8 @@ await until(`(${rowOf("#2")}?.querySelector('.need-action')?.title ?? '') === 'F
 await typeInto(".composer-field", "");
 await evaluate(`${rowOf("#2")}.querySelector('.need-action').click()`);
 await composerHas("#2 ", "Fail: tell the manager did not put #2 into the composer");
+await entered();
+if (await evaluate(`(() => { const [fail, pass] = ${rowOf("#2")}.querySelectorAll('.need-action'); return getComputedStyle(fail).color === getComputedStyle(pass).color; })()`)) await fail("Fail: tell the manager looks like Pass and land");
 await shot("trial-fail-mention", ".composer-send");
 await typeInto(".composer-field", "");
 if (await actOnTwo("trial_end") !== 200) await fail("the trial of #2 did not end");
