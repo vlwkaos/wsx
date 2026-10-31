@@ -54,6 +54,9 @@ enum Event {
     /// The worker's `wsx task check-run` through the broker, and its results to log; the
     /// last part is what to store when the tree stayed clean and unchanged during the run.
     CheckRun(Vec<String>, Sender<broker::Response>),
+    /// The worker's `wsx task result -`: its turn's result, for an adapter without
+    /// structured output.
+    Reported(Option<String>, Sender<broker::Response>),
     CheckRunDone(Vec<CheckResult>, broker::Response, Option<StoredChecks>),
     /// Checks wait for the machine's check slot, for this reason.
     CheckQueued(String),
@@ -150,6 +153,8 @@ struct Host {
     background_wait: Option<BackgroundWait>,
     /// The worker's queued or running `check-run`.
     check_run: Option<CheckRun>,
+    /// The result the worker reported with `wsx task result -` in the running turn.
+    reported: Option<serde_json::Value>,
     /// The queued or running checks of a result: the commit they check, and whether a newer
     /// result came meanwhile.
     gate: Option<(Option<String>, bool)>,
@@ -208,6 +213,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         limit_slot: None,
         background_wait: None,
         check_run: None,
+        reported: None,
         gate: None,
         stored_checks: None,
         carried_verify: Vec::new(),
@@ -222,7 +228,13 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
     std::thread::spawn(move || {
         broker::serve(brokered, move |request| {
             let (reply, answer) = channel();
-            if to_host.send(Event::CheckRun(request.argv, reply)).is_err() {
+            // ^ An adapter without structured output returns its result here (docs/tasks.md
+            // "Agents"): `wsx task result -` with the JSON on stdin.
+            let event = match request.argv.get(1).map(String::as_str) {
+                Some("result") => Event::Reported(request.stdin, reply),
+                _ => Event::CheckRun(request.argv, reply),
+            };
+            if to_host.send(event).is_err() {
                 return broker::refused("the task host is closing".into());
             }
             answer
@@ -357,6 +369,9 @@ impl Host {
                 Event::Agent(..) => {}
                 Event::ChecksDone(results) => self.on_checks(results),
                 Event::CheckRun(argv, reply) => self.check_run(&argv, reply),
+                Event::Reported(text, reply) => {
+                    let _ = reply.send(self.reported(text));
+                }
                 Event::CheckRunDone(results, response, stored) => {
                     let run = self.check_run.take();
                     for reply in run.iter().flat_map(|run| &run.replies) {
@@ -830,6 +845,7 @@ impl Host {
             self.say("by hand: no agent turn starts until handback");
             return;
         }
+        self.reported = None;
         if let Err(error) = self.try_start_turn(text, trigger) {
             let reason = format!("cannot start the agent: {error:#}");
             self.say(&reason);
@@ -937,7 +953,12 @@ impl Host {
                 self.say(&text);
                 self.log(LogEvent::Agent { text, said });
             }
-            Some(AgentLine::Result(result)) => self.on_result(*result),
+            Some(AgentLine::Result(mut result)) => {
+                if result.structured.is_none() {
+                    result.structured = self.reported.take();
+                }
+                self.on_result(*result)
+            }
             None => {
                 self.agent = None;
                 // ^ A handoff turn that never ended leaves no notes: no later result is one.
@@ -1433,6 +1454,33 @@ impl Host {
 
     /// `wsx task check-run [<n>...]` from the worker: the declared checks (all, or by number)
     /// run as after a result, in a thread, and answer the worker; no revision is recorded.
+    /// Keep a reported result for the turn that ends next; the last one of a turn counts.
+    fn reported(&mut self, text: Option<String>) -> broker::Response {
+        let Some(text) = text.filter(|_| self.turn_active) else {
+            return broker::refused(
+                "`wsx task result -` takes the result JSON on stdin during a turn".into(),
+            );
+        };
+        match serde_json::from_str::<serde_json::Value>(&text).map(|value| {
+            let valid = serde_json::from_value::<WorkerResult>(value.clone())
+                .map(|result| matches!(result.status.as_str(), "done" | "blocked" | "failed"));
+            (value, valid)
+        }) {
+            Ok((value, Ok(true))) => {
+                self.reported = Some(value);
+                broker::Response {
+                    stdout: "result kept: it counts when this turn ends; end the turn now\n".into(),
+                    stderr: String::new(),
+                    code: 0,
+                }
+            }
+            Ok((_, Ok(false))) => broker::refused("status must be done, blocked or failed".into()),
+            Ok((_, Err(error))) | Err(error) => {
+                broker::refused(format!("the result is not valid: {error}"))
+            }
+        }
+    }
+
     fn check_run(&mut self, argv: &[String], reply: Sender<broker::Response>) {
         let refuse = |message: String| {
             let _ = reply.send(broker::refused(message));

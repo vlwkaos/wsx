@@ -30,7 +30,7 @@ const HIDDEN: [&str; 2] = ["host", "manager-host"];
 #[derive(Serialize, Deserialize)]
 pub struct Request {
     pub argv: Vec<String>,
-    stdin: Option<String>,
+    pub stdin: Option<String>,
     cwd: PathBuf,
 }
 
