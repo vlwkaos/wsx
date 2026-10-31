@@ -1,6 +1,7 @@
 //! Claude worker adapter: one `claude -p` process with stream JSON on stdin and stdout.
 //! ref: docs/tasks.md "Claude adapter"; knowledge "Headless Worker Transport"
 
+use super::agent::{AgentLine, Launch, TurnResult, UsageLimit};
 use super::boundary::Boundary;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -44,74 +45,11 @@ const KEPT_ENV: &[&str] = &[
     "RUSTUP_HOME",
 ];
 
-pub enum AgentLine {
-    /// The conversation ID the agent runs under.
-    Init(String),
-    Progress {
-        text: String,
-        /// The agent's own words, not a tool call.
-        said: bool,
-    },
-    Result(Box<TurnResult>),
-}
-
-pub struct TurnResult {
-    pub is_error: bool,
-    pub subtype: String,
-    pub text: String,
-    pub structured: Option<Value>,
-    pub denials: Vec<String>,
-    pub usage: TurnUsage,
-    /// The agent's usage limit ended the turn, before any model call.
-    pub limit: Option<UsageLimit>,
-    /// Background jobs (subagents, Bash) still running when the turn ended: Claude starts
-    /// its own turn when each ends. ref: docs/tasks.md "Claude adapter"
-    pub background: usize,
-}
-
-/// Claude's usage limit: a result with `api_error: "usage_limit_reached"`.
-/// ref: docs/tasks.md "Claude adapter"
-pub struct UsageLimit {
-    /// When the limit resets, in unix seconds, when Claude said.
-    pub resets_at: Option<u64>,
-}
-
-impl TurnResult {
-    /// No result and no model call: Claude's own turn for a background-task notification
-    /// (a job that ended or was killed, also on `--resume`), which answers no message.
-    /// ref: docs/tasks.md "Claude adapter"
-    pub fn answers_nothing(&self) -> bool {
-        !self.is_error
-            && self.structured.is_none()
-            && self.usage.input_tokens == 0
-            && self.usage.output_tokens == 0
-    }
-}
-
 pub struct ClaudeAgent {
     child: Child,
     stdin: ChildStdin,
     /// Control requests sent, for their ids.
     requests: u64,
-}
-
-/// What one agent process runs with. Every role gets its launch from `Launch::new`.
-/// ref: docs/tasks.md "Permissions"
-pub struct Launch {
-    pub cwd: PathBuf,
-    pub model: String,
-    /// The role's OS boundary over the whole agent process tree; the agent itself prompts
-    /// for nothing.
-    pub boundary: Boundary,
-    /// JSON Schema of the final result, when the turn must end with structured output.
-    pub schema: Option<Value>,
-    pub instructions: String,
-    /// Set on top of `KEPT_ENV`.
-    pub env: Vec<(String, std::ffi::OsString)>,
-    /// Put first on `PATH`, so the agent's commands find this wsx build.
-    pub path_prefix: Option<PathBuf>,
-    /// `--plugin-dir`: the manager's plugin of the owner's skills.
-    pub plugin_dirs: Vec<PathBuf>,
 }
 
 const SKILLS_PLUGIN_DIR: &str = "skills-plugin";
@@ -178,19 +116,6 @@ pub(super) fn skills_plugin(folder: &Path, root: Option<&Path>) -> Result<Option
 }
 
 impl Launch {
-    pub fn new(cwd: &Path, boundary: Boundary, model: &str, instructions: String) -> Self {
-        Self {
-            cwd: cwd.to_path_buf(),
-            model: model.to_string(),
-            boundary,
-            schema: None,
-            instructions,
-            env: Vec::new(),
-            path_prefix: None,
-            plugin_dirs: Vec::new(),
-        }
-    }
-
     /// A worker edits its working copy and returns a result.
     /// `broker`: the task host's socket for `wsx task check-run` (broker.rs).
     /// `folder`: the task's folder, where the owner's skills plugin goes (`tasks.skills`).
@@ -793,23 +718,4 @@ fn progress_text(item: &Value) -> Option<(String, bool)> {
         }
         _ => None,
     }
-}
-
-/// A random version 4 UUID for a new conversation.
-pub fn new_session_id() -> Result<String> {
-    let mut bytes = [0u8; 16];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut bytes))
-        .context("cannot read /dev/urandom")?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    Ok(format!(
-        "{}-{}-{}-{}-{}",
-        &hex[..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
-    ))
 }

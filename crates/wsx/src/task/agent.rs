@@ -1,0 +1,108 @@
+//! What a task host and a manager host need from any headless agent: one process per
+//! conversation, messages in, progress and turn results out. Each adapter (claude.rs) maps
+//! its own stream to these types; the hosts never read an adapter's wire format.
+//! ref: docs/tasks.md "Agents"
+
+use super::boundary::Boundary;
+use anyhow::{Context, Result};
+use serde_json::Value;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use wsx_core::task::TurnUsage;
+
+pub enum AgentLine {
+    /// The conversation ID the agent runs under.
+    Init(String),
+    Progress {
+        text: String,
+        /// The agent's own words, not a tool call.
+        said: bool,
+    },
+    Result(Box<TurnResult>),
+}
+
+pub struct TurnResult {
+    pub is_error: bool,
+    pub subtype: String,
+    pub text: String,
+    /// The turn's structured result, when the launch asked for one.
+    pub structured: Option<Value>,
+    pub denials: Vec<String>,
+    pub usage: TurnUsage,
+    /// The agent's usage limit ended the turn, before any model call.
+    pub limit: Option<UsageLimit>,
+    /// Background jobs still running when the turn ended: the agent starts its own turn
+    /// when each ends. ref: docs/tasks.md "Claude adapter"
+    pub background: usize,
+}
+
+/// The agent's provider refused the turn for its usage limit.
+/// ref: docs/tasks.md "Usage limit"
+pub struct UsageLimit {
+    /// When the limit resets, in unix seconds, when the provider said.
+    pub resets_at: Option<u64>,
+}
+
+impl TurnResult {
+    /// No result and no model call: the agent's own turn for a background-task notification
+    /// (a job that ended or was killed, also on a resume), which answers no message.
+    pub fn answers_nothing(&self) -> bool {
+        !self.is_error
+            && self.structured.is_none()
+            && self.usage.input_tokens == 0
+            && self.usage.output_tokens == 0
+    }
+}
+
+/// What one agent process runs with. Every role gets its launch from `Launch::new`.
+/// ref: docs/tasks.md "Permissions"
+pub struct Launch {
+    pub cwd: PathBuf,
+    pub model: String,
+    /// The role's OS boundary over the whole agent process tree; the agent itself prompts
+    /// for nothing.
+    pub boundary: Boundary,
+    /// JSON Schema of the final result, when the turn must end with structured output.
+    pub schema: Option<Value>,
+    pub instructions: String,
+    /// Set on top of the adapter's kept environment.
+    pub env: Vec<(String, std::ffi::OsString)>,
+    /// Put first on `PATH`, so the agent's commands find this wsx build.
+    pub path_prefix: Option<PathBuf>,
+    /// `--plugin-dir`: the manager's plugin of the owner's skills.
+    pub plugin_dirs: Vec<PathBuf>,
+}
+
+impl Launch {
+    pub fn new(cwd: &Path, boundary: Boundary, model: &str, instructions: String) -> Self {
+        Self {
+            cwd: cwd.to_path_buf(),
+            model: model.to_string(),
+            boundary,
+            schema: None,
+            instructions,
+            env: Vec::new(),
+            path_prefix: None,
+            plugin_dirs: Vec::new(),
+        }
+    }
+}
+
+/// A random version 4 UUID for a new conversation.
+pub fn new_session_id() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .context("cannot read /dev/urandom")?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    ))
+}
