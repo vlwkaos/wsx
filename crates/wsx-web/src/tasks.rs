@@ -588,12 +588,14 @@ fn actions(record: &TaskRecord) -> Vec<&'static str> {
     let on = record.waiting.as_ref().map(|waiting| waiting.on);
     let mut actions = match (record.state, on) {
         (TaskState::Waiting, Some(WaitOn::Hand)) => return vec!["handback"],
-        (TaskState::Working | TaskState::Checking, _) => vec!["steer", "add"],
-        (TaskState::Ready, _) => vec!["land", "add"],
-        (TaskState::Waiting | TaskState::Failed, _) => vec!["add"],
+        (TaskState::Ready, _) => vec!["land"],
+        (TaskState::Working | TaskState::Checking | TaskState::Waiting | TaskState::Failed, _) => {
+            vec![]
+        }
         (TaskState::Landed | TaskState::Closed, _) => return vec![],
     };
-    // ^ Hold and trial stay commands for the manager; the owner's buttons are land, add, hand.
+    // ^ Hold and trial stay commands for the manager; the owner's buttons are land and hand: a message to
+    // the worker goes through the manager (docs/web-client-tasks.md "Task sheet").
     if record.state != TaskState::Checking {
         actions.push("hand");
     }
@@ -876,9 +878,6 @@ fn message(text: &str, what: &str) -> Outcome<String> {
 /// One request to a task's host. The host's refusal is a 409 with its reason.
 pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
     match &request {
-        HostRequest::Steer { text } | HostRequest::Add { text, .. } => {
-            message(text, "the message")?;
-        }
         HostRequest::Land { .. } => {}
         HostRequest::Hold { reason, .. } => {
             if let Some(reason) = reason {
@@ -888,7 +887,10 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
         }
         // ^ They open and close the hand session or the trial slot: `run_task`, not this,
         // runs them. A child's host alone sends `ChildLanded`.
+        // ^ Add and steer are the manager's, through `wsx task`: the owner talks to the manager.
         HostRequest::Hand
+        | HostRequest::Steer { .. }
+        | HostRequest::Add { .. }
         | HostRequest::ChildLanded { .. }
         | HostRequest::Notice { .. }
         | HostRequest::LandBatch { .. }

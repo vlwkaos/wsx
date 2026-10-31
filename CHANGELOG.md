@@ -7,13 +7,10 @@
 - Client: a live handoff of wsxd is no longer reported as a failure by `wsx agent wait` or by opening a terminal. The TUI event monitor and `Client::call` already waited for the successor; these two did not, so a wait open in the old daemon or a stream opened while it handed off ended in an error. Both now wait for the successor once and go on (a repeated wait keeps only the time it had left), and a daemon that died is still reported at once ([docs/daemon-live-upgrade.md](docs/daemon-live-upgrade.md) "Single requests", "Terminal streams").
 ### Changed
 
+- Web tasks: the owner no longer sends messages straight to a worker. The owner talks to the manager, which relays with `wsx task add`. *Answer* (a reservoir row and the task sheet) and *Fail: tell the manager* (a live trial's row) now put `#<n> ` into the manager's composer and focus it, keeping any draft. The sheet's message field, the row's form and the web's `add` and `steer` task actions are gone; those routes answer 404. `wsx task add` and `steer`, *Take over* and the sheet's read-only list of messages stay ([docs/web-client-tasks.md](docs/web-client-tasks.md) "Project screen").
 - Web image viewer: on a phone the buttons are under the image, within reach of one hand, and the save button is a share icon (labelled Share on a touch screen, Download elsewhere; a desktop keeps the bar on top) ([docs/web-client.md](docs/web-client.md) "Image viewer").
 - Web task sheet: an open task now opens on how it is doing and how far along it is. The top shows a health word from wsx's facts (working, running checks, waiting for a check slot, waiting for disk or the session limit, stuck, needs you), how long ago the worker last wrote, the workflow steps with the current one marked, and the worker's last sentence, never a raw tool line. A finished task leads with its outcome. Changes, Evidence, Left open, the messages to the worker, Shared files, usage and History are now under one folded *Details*; open To check items and all actions stay at the top ([docs/web-client-tasks.md](docs/web-client-tasks.md) "Task sheet").
 - Tasks: an `agent` log line has `said: true` when it is the worker's own words, and the stall finder moved to wsx-core so the web reads the same rule as the manager ([docs/tasks.md](docs/tasks.md) "Manager").
-
-### Fixed
-
-- Web task sheet: a sheet opened again no longer shows a message field with no height.
 
 ## [0.41.0] - 2026-10-30
 

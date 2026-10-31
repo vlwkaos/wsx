@@ -3346,7 +3346,7 @@ merge_seconds = 3
         everything = steady(owner, 'GET', '/api/tasks')[1]
         assert sorted(item['project'] for item in everything) == sorted(ids.values()), everything
         detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
-        assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'add', 'hand'], detail['actions']
+        assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'hand'], detail['actions']
         assert detail['land_reason'] == 'ready to land' and detail['to_check'] == [] and detail['fixes'] is None, detail
         assert detail['result']['human_verify'] == [{'check': 'open the file', 'where': 'a real device', 'capture': '', 'poster': '', 'pass_if': 'it has text'}]
         headings = [line for line in detail['report'].splitlines() if line.startswith('## ')]
@@ -3374,9 +3374,12 @@ merge_seconds = 3
         # ^ No per-task verdict: the route is gone, and so is its body field.
         assert act(2, 'verify', {})[0] == 404
         assert act(2, 'land', {'result': 'pass'})[0] == 422
-        assert act(2, 'add', {'text': '  '})[0] == 400
-        assert act(2, 'add', {'text': 'x' * (64 * 1024 + 1)})[0] == 413
-        assert act(2, 'explode', {})[0] == 404 and act(99, 'add', {'text': 'hi'})[0] == 404
+        # ^ The owner talks to the manager; only `wsx task add` and `steer` reach a worker.
+        assert act(2, 'add', {'text': 'hi'})[0] == 404 and act(2, 'steer', {'text': 'hi'})[0] == 404
+        assert act(2, 'explode', {})[0] == 404 and act(99, 'land', {})[0] == 404
+        say_route = '/api/tasks/%d/say' % demo
+        assert steady(owner, 'POST', say_route, {'text': '  '})[0] == 400
+        assert steady(owner, 'POST', say_route, {'text': 'x' * (64 * 1024 + 1)})[0] == 413
         # ^ A second device of the owner: these steps keep to their own request budget.
         trier = Site(ports['owner'], '', origin=public['owner'])
         code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
@@ -3391,7 +3394,7 @@ merge_seconds = 3
         assert act(2, 'hold', {}, site=trier)[0] == 200
         held = steady(trier, 'GET', '/api/tasks/%d/t/2' % demo)[1]
         assert held['hold'] == 'the owner holds it' and held['land_reason'] == 'try it first: the owner holds it', held
-        assert held['actions'] == ['land', 'add', 'hand'] and held['trial'] is None, held['actions']
+        assert held['actions'] == ['land', 'hand'] and held['trial'] is None, held['actions']
         overview = steady(trier, 'GET', '/api/tasks/%d' % demo)[1]
         assert overview['try_live'] is True and overview['trial'] is None, overview
         assert act(2, 'trial', {}, site=trier)[0] == 200
@@ -3424,11 +3427,9 @@ merge_seconds = 3
         assert steady(owner, 'GET', '/api/tasks/%d/checks/c99/capture' % demo)[0] == 404
         landed = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
         assert landed['stage'] == 'done' and [i['id'] for i in landed['to_check']] == ['c1'] and landed['actions'] == [], landed
-        status, body = act(1, 'add', {'text': 'NOOP'})
-        assert status == 200, body
+        js('task', 'add', 1, 'NOOP', '-p', 'demo')
         wait_state(1, 'ready')
-        status, body = act(1, 'add', {'text': 'NOOP and again'})
-        assert status == 200, body
+        js('task', 'add', 1, 'NOOP and again', '-p', 'demo')
         wait(lambda: 'NOOP and again' in (work / 'fake-claude.trace').read_text(), 'add reached the worker')
         wait_state(1, 'ready')
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
@@ -3437,8 +3438,7 @@ merge_seconds = 3
         # A steer reaches the running turn.
         assert js('task', 'new', 'SLOW WORK s.txt', '-p', 'demo')['id'] == 4
         wait_state(4, 'working')
-        status, body = act(4, 'steer', {'text': 'steer words'})
-        assert status == 200, body
+        js('task', 'steer', 4, 'steer words', '-p', 'demo')
         wait(lambda: 'steer words' in (work / 'fake-claude.trace').read_text(), 'steer reached the turn')
         wait_state(4, 'ready')
         # By hand (docs/tasks.md "By hand"): the owner's own pane in the task's copy; the
@@ -3451,8 +3451,7 @@ merge_seconds = 3
         handed = steady(owner, 'GET', '/api/tasks/%d/t/4' % demo)[1]
         assert handed['stage'] == 'working' and handed['actions'] == ['handback'], handed['actions']
         assert all(item.get('task') != 4 for item in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['needs'])
-        status, body = act(4, 'add', {'text': 'NOOP'})
-        assert status == 409 and 'handback' in body['error']['message'], body
+        assert 'handback' in cli('task', 'add', 4, 'NOOP', '-p', 'demo', '--json', expect=1).stdout
         status, body = act(4, 'handback', {})
         assert status == 200 and len(body['sessions_closed']) == 1, body
         wait_state(4, 'ready')
@@ -3641,7 +3640,7 @@ merge_seconds = 3
 
         # --- Refusals: the capability and the grant come from the site file only.
         for method, route, body in (('POST', '/api/tasks/%d/say' % demo, {'text': 'hi'}),
-                                    ('POST', '/api/tasks/%d/t/1/add' % demo, {'text': 'hi'}),
+                                    ('POST', '/api/tasks/%d/t/1/land' % demo, {}),
                                     ('POST', '/api/tasks/%d/approvals/a9/approve' % demo, {})):
             status, refused = steady(viewer, method, route, body)
             assert status == 403 and refused['error']['code'] == 'capability_denied', (route, refused)
@@ -3666,9 +3665,9 @@ merge_seconds = 3
         assert [(item['kind'], item['task']) for item in view['needs']] == [('waiting', 1), ('land', 2)], view['needs']
         assert view['needs'][0]['waiting']['on'] == 'owner', view['needs'][0]
         detail = steady(owner, 'GET', '/api/tasks/%d/t/1' % planned)[1]
-        assert detail['actions'] == ['add', 'hand'] and detail['talk'] == [] and 'brief' not in detail and 'phase' not in detail, detail
+        assert detail['actions'] == ['hand'] and detail['talk'] == [] and 'brief' not in detail and 'phase' not in detail, detail
         assert steady(owner, 'POST', '/api/tasks/%d/t/1/start' % planned, {})[0] == 404
-        ok('a waiting task: its need and reason, add and hand, no brief or start')
+        ok('a waiting task: its need and reason, hand, no brief or start')
         if args.browser:
             # A worker's report stays in the task sheet: the chat route carries the events lines only.
             entries = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]['entries']
@@ -3832,7 +3831,7 @@ merge_seconds = 3
         assert says(merged[0], line(first, 'asks')) and says(merged[0], line(second, 'asks')), merged
         # Ready and failed wait for the digest.
         for n in (first, second):
-            assert act(n, 'add', {'text': 'NOOP'})[0] == 200
+            js('task', 'add', n, 'NOOP', '-p', 'demo')
         wait_state(first, 'ready')
         wait_state(second, 'ready')
         broken = js('task', 'new', 'WORK broken.txt', '-p', 'demo')['id']

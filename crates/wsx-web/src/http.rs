@@ -1110,15 +1110,7 @@ async fn task_act(
         .await
         .map(Json);
     }
-    let missing = |field: &str| Fault::new(400, "invalid_body", format!("{action} needs {field}"));
     let request = match action.as_str() {
-        "add" => HostRequest::Add {
-            text: input.text.ok_or_else(|| missing("text"))?,
-            files: Vec::new(),
-        },
-        "steer" => HostRequest::Steer {
-            text: input.text.ok_or_else(|| missing("text"))?,
-        },
         "land" => HostRequest::Land {
             tried: false,
             batch_tree: None,

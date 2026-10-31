@@ -2,10 +2,9 @@
 // the owner, the To check items to act on, then one folded Details with the report, the messages
 // to the worker, its usage and its history (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
-import { clock, html, Icon, keepIn, Loading, readMap, short, useCoalescedLoad, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
+import { clock, html, Icon, Loading, short, useCoalescedLoad, useEffect, useState } from "./lib.js";
 import { can, useEventLoad, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
-import { grow, isolate, release } from "./chat.js";
 import { announce, loadTasks, taskStage, TaskChip, TaskTitle, withChips } from "./tasks.js";
 import { Bubble } from "./bubbles.js";
 import { SheetBar } from "./ui.js";
@@ -16,7 +15,7 @@ import { usageLine } from "./usage.js";
 const TRIAL_WORDS = {
   preparing: "Going live: rebasing onto the default branch and checking",
   deploying: "Going live: deploying",
-  live: "On the live site now: try it, then Pass, or send the worker what is wrong",
+  live: "On the live site now: try it, then Pass, or tell the manager what is wrong",
 };
 
 const MESSAGE_WORDS = { prompt: "Asked", steer: "Steered", add: "Added" };
@@ -77,7 +76,7 @@ function foldNote(title, body, detail) {
   return "";
 }
 
-// An action's draft and error, kept while the page re-renders; a success clears the draft.
+// An action's error, kept while the page re-renders.
 function useAction(detail) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -116,48 +115,6 @@ function Talk({ project, talk, words }) {
     </section>`;
 }
 
-// Unsent messages to a task, kept on this device by `<project>/<task>`.
-const DRAFTS_KEY = "wsx-task-drafts";
-
-// The task's message field: an add (an answer after the turn), or a steer into a running turn.
-function Message({ detail, act }) {
-  const field = useRef();
-  const key = `${detail.project}/${detail.id}`;
-  const [text, setText] = useState(() => readMap(DRAFTS_KEY)[key] ?? "");
-  useEffect(() => release, []);
-  useLayoutEffect(() => { field.current.value = text; grow(field.current); }, []);
-  const steering = detail.actions.includes("steer");
-  const changed = () => {
-    setText(field.current.value);
-    keepIn(DRAFTS_KEY, key, field.current.value);
-    grow(field.current);
-  };
-  const send = (action) => {
-    const body = field.current.value.trim();
-    if (!body) return;
-    act.run(action, `api/tasks/${detail.project}/t/${detail.id}/${action}`, { text: body }, () => {
-      field.current.value = "";
-      changed();
-    });
-  };
-  return html`
-    <div class="composer task-message">
-      <div class="composer-row" onPointerDown=${(event) => { if (!event.target.closest("button, textarea")) { event.preventDefault(); field.current.focus(); } }}>
-        <div class="composer-input">
-          <textarea class="composer-field" ref=${field} rows="1" aria-label=${`Message to #${detail.id}`}
-            placeholder=${detail.waiting?.on === "owner" ? "Answer the worker" : steering ? "Steer or add a message" : "Add a message"}
-            onInput=${changed} onFocus=${isolate} onBlur=${release}></textarea>
-        </div>
-        ${steering && html`<button class="link-action task-steer" type="button" disabled=${!text.trim() || Boolean(act.busy)}
-          onClick=${() => send("steer")}>Steer now</button>`}
-        <button class="button button-primary composer-send" type="button" aria-label=${steering ? "Add after the turn" : "Send"}
-          disabled=${!text.trim() || Boolean(act.busy)} onClick=${() => send("add")}>
-          <span class="send-mark" aria-hidden="true"><${Icon} name="send" /></span><span class="send-text">${steering ? "Add" : "Send"}</span>
-        </button>
-      </div>
-    </div>`;
-}
-
 // ^ The last read of each task this page made, so a sheet opens on its content at once and
 // reads again behind it; the open decision list reads its tasks ahead (docs/web-client-tasks.md
 // "Task sheet"). Kept for the page's life, at most DETAILS_KEPT, oldest out first.
@@ -174,7 +131,7 @@ export function readTaskAhead(project, task) {
   api(`api/tasks/${project}/t/${task}`).then((value) => { if (!details.has(key)) keepDetail(key, value); }, () => {});
 }
 
-export function TaskPage({ project, task, onClose, grip }) {
+export function TaskPage({ project, task, onClose, onMention, grip }) {
   const store = useStore();
   const [detail, setDetail] = useState(() => details.get(`${project}/${task}`) ?? null);
   const [failure, setFailure] = useState("");
@@ -215,10 +172,18 @@ export function TaskPage({ project, task, onClose, grip }) {
       ${button("Deny", () => act.run("deny", `api/tasks/${project}/approvals/${request.id}/deny`, {}, null, request.label), { "aria-label": `Deny: ${request.label}` }, "fail")}
       ${button("Approve", () => act.run("approve", `api/tasks/${project}/approvals/${request.id}/approve`, {}, null, request.label), { "aria-label": request.label }, "pass")}`),
     // ^ A trial: this revision on the live site before it lands (docs/tasks.md "Hold and trial").
-    // Pass lands it; a message to the worker fails it; End only frees the live site.
+    // Pass lands it; a message to the worker, through the manager, fails it; End only frees the live site.
     trial && html`<p class="task-approval" role="status">${TRIAL_WORDS[trial.stage]}</p>`,
     trial?.stage === "live" && actions.includes("land") && button(act.busy === "pass" ? "Landing…" : "Pass and land", () => act.run("pass", `api/tasks/${project}/t/${task}/pass`, {}), {}, "pass"),
     trial && button(act.busy === "trial_end" ? "Ending…" : "End trial", () => act.run("trial_end", `api/tasks/${project}/t/${task}/trial_end`, {})),
+    // ^ The owner talks to the manager: the composer gets the mention, and the dialog closes in
+    // the tap, since a modal dialog makes the composer inert and a phone raises its keyboard
+    // only for a focus in the tap (docs/web-client-tasks.md "Task sheet").
+    (detail.waiting?.on === "owner" || detail.state === "failed") && button("Answer", (event) => {
+      event.currentTarget.closest("dialog").close();
+      onMention(task);
+      onClose();
+    }, { "aria-label": `Answer #${task}: mention it to the manager` }, "reply"),
     !trial && actions.includes("land") && button(act.busy === "land" ? "Landing…" : "Land", () => act.run("land", `api/tasks/${project}/t/${task}/land`, {}), {}, "land"),
     // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
     // ^ Its name says what happens; the line under the buttons says the rest (docs/web-client-tasks.md "Task sheet").
@@ -312,6 +277,5 @@ export function TaskPage({ project, task, onClose, grip }) {
         </details>
       </div>
       ${act.error && html`<p class="error chat-error" role="alert">${act.error}</p>`}
-      ${acting && actions.includes("add") && html`<${Message} detail=${detail} act=${act} />`}
     </div>`;
 }

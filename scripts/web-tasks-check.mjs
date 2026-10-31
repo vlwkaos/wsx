@@ -222,6 +222,10 @@ async function oneMotion(where, open) {
     }
   }
 }
+// The manager's composer holds `value`, focused, the caret at its end and no `#` list open.
+const composerHas = (value, what) => until(`(() => { const field = document.querySelector('.composer-field');
+  return field.value === ${JSON.stringify(value)} && document.activeElement === field && field.selectionStart === field.value.length
+    && field.selectionEnd === field.value.length && !document.querySelector('#slash-list'); })()`, what);
 const closeSheet = async (what, hash) => {
   await key("Escape", 27);
   await until(`${hash ? `location.hash === ${JSON.stringify(hash)} && ` : ""}!document.querySelector('dialog.task-sheet')`, `Escape did not close ${what}`);
@@ -1002,14 +1006,39 @@ for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
 // ^ 1280 px is the wide layout: its page tree is another, so the list comes back closed.
 await resize([390, 844, 2]);
 await openReservoir();
-// Clear in place, one row after another: Answer #1 sends its answer and resumes it;
-// Approve land #3 lands it; #1, ready, lands. The chat stays at its end, and the settled
-// items become muted lines that join when close together.
+// Answer puts the task's mention into the composer, the owner tells the manager, and the manager
+// relays with `wsx task add` (docs/web-client-tasks.md "Project screen"). A draft stays, a second
+// press adds nothing, and #12 is not #1.
 const answerKey = await evaluate(`${rowOf("#1")}.dataset.key`);
-await evaluate(`${rowOf("#1")}.querySelector('.need-action').click()`);
-await until(`!!document.querySelector('.reservoir .need[data-key=${JSON.stringify(answerKey)}] .need-form input')`, "Answer did not open the field");
-await typeInto(`.reservoir .need[data-key=${JSON.stringify(answerKey)}] .need-form input`, "WORK answered.txt");
-await evaluate(`document.querySelector('.reservoir .need[data-key=${JSON.stringify(answerKey)}] .need-form').requestSubmit()`);
+const pressAnswer = () => evaluate(`${rowOf("#1")}.querySelector('.need-action').click()`);
+await typeInto(".composer-field", "about #12 first");
+await pressAnswer();
+await composerHas("about #12 first #1 ", "Answer did not add #1 after the draft");
+if (await count(".reservoir .need-form")) await fail("a reservoir row still has a message form");
+await pressAnswer();
+await composerHas("about #12 first #1 ", "a second Answer changed the draft");
+if (!(await evaluate("Object.values(JSON.parse(localStorage.getItem('wsx-manager-drafts'))).includes('about #12 first #1 ')"))) await fail("the mention is not in the kept draft");
+await shot("answer-mention", ".composer-send");
+// ^ Wide: the composer is another element, with the same draft.
+await resize([1280, 800, 1]);
+await openReservoir();
+await pressAnswer();
+await composerHas("about #12 first #1 ", "Answer at 1280 px changed the draft");
+await shot("answer-mention", ".composer-send");
+await resize([390, 844, 2]);
+await openReservoir();
+await typeInto(".composer-field", "#1 at the start, then words");
+await pressAnswer();
+await until("document.querySelector('.composer-field').selectionStart === 3 && document.activeElement === document.querySelector('.composer-field')", "Answer did not put the caret after the mention already there");
+if (await evaluate("document.querySelector('.composer-field').value") !== "#1 at the start, then words") await fail("Answer changed a draft that names the task");
+await typeInto(".composer-field", "");
+await pressAnswer();
+await composerHas("#1 ", "Answer did not put #1 into the empty composer");
+// Clear in place, one row after another: the manager's add resumes #1; Approve land #3 lands
+// it; #1, ready, lands. The chat stays at its end, and the settled items become muted lines
+// that join when close together.
+await typeInto(".composer-field", `#1 go on\nRUN wsx task add 1 "WORK answered.txt" -p ui --json`);
+await click(".composer-send");
 await until(`!document.querySelector('.reservoir .need[data-key=${JSON.stringify(answerKey)}]')`, "the answer did not clear the row of #1", 300);
 // ^ The chat says the answer as a status line.
 await until(`${statusLines}.some((node) => /#1 got an answer/.test(node.textContent))`, "the answer in the reservoir left no status line", 60);
@@ -1658,7 +1687,7 @@ const history = await text(".timeline-what");
 if ((await text(".timeline > .fold-head")).join() !== "History" || !history.includes("Landed") || history.some((line) => /Verified|without verification/.test(line))) await fail(`the history reads ${history}`);
 await shot("task-landed");
 
-// --- #4: a pending approval in the sentence and its buttons. Deny, then answer in the sheet.
+// --- #4: a pending approval in the sentence and its buttons. Deny, then answer through the manager.
 await go(page(4));
 await until("!!document.querySelector('.task-next button[aria-label=\"Approve discard #4\"]')", "#4 shows no pending approval");
 // ^ The story says what an action is for; its row holds the buttons alone.
@@ -1671,14 +1700,31 @@ await shot("task-blocked", ".composer-send");
 await buttonRoom("#4's sheet");
 await resize([1280, 800, 1]);
 await buttonRoom("#4's sheet");
+await shot("task-blocked", ".composer-send");
 await resize([390, 844, 2]);
 await evaluate("[...document.querySelectorAll('.task-next button')].find((node) => node.textContent === 'Deny').click()");
 await until("!document.querySelector('.task-next button[aria-label=\"Approve discard #4\"]')", "the denied approval stayed", 300);
 told = await story();
 if (told.next !== "The worker waits for your answer.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
-await typeInto(".task-message .composer-field", "WORK answered4.txt");
-await click(".task-message .composer-send");
-await until("document.querySelector('.story-next')?.textContent === 'Land it to put it on main.'", "#4 did not resume after its answer", 300);
+if (await count(".task-sheet textarea, .task-message, .task-steer")) await fail("the sheet still has a message field");
+// ^ Opened from another place, with Home under it: its Answer goes to the project's chat, and the
+// draft is there.
+await closeSheet("#4", chat);
+await typeInto(".composer-field", "see the logs");
+await go("#/");
+await until("!!document.querySelector('.home-rows > .row')", "Home did not open");
+await go(page(4));
+await until("!!document.querySelector('.task-next button[aria-label^=\"Answer #4\"]')", "#4's sheet has no Answer");
+await click(".task-next button[aria-label^=\"Answer #4\"]");
+await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "the sheet's Answer did not go to the chat");
+await composerHas("see the logs #4 ", "the sheet's Answer did not add #4 after the draft");
+await shot("answer-from-sheet", ".composer-send");
+await typeInto(".composer-field", `see the logs #4\nRUN wsx task add 4 "WORK answered4.txt" -p ui --json`);
+await click(".composer-send");
+await go(page(4));
+await until("document.querySelector('.story-next')?.textContent === 'Land it to put it on main.'", "#4 did not resume after the manager's add", 300);
+await until("document.querySelectorAll('.task-talk .bubble').length === 1", "the manager's add is not in the sheet's messages", 60);
+if ((await nextButtons()).includes("Answer")) await fail("a ready task's sheet offers Answer");
 
 // --- Notices lie over the screen, one at a time. An approved action that did not run stays
 // until dismissed, also when a later outcome comes; an outcome clears itself.
@@ -1696,11 +1742,11 @@ const overlay = await evaluate(`({ count: document.querySelectorAll('.notice').l
   top: Math.round(document.querySelector('.manager .bar').getBoundingClientRect().top), dismiss: !!document.querySelector('.notice[data-tone=danger] button') })`);
 if (overlay.count !== 1 || overlay.fixed !== "fixed" || overlay.top !== barTop || !overlay.dismiss) await fail(`the notice is not one overlay with Dismiss: ${JSON.stringify(overlay)} (top row was at ${barTop})`);
 await shot("notice-failure", ".composer-send");
-// A later outcome (a message to a task) does not hide the failure; it waits past the outcome's time.
+// A later outcome (Take over) does not hide the failure; it waits past the outcome's time.
 await go(page(4));
-await until("!!document.querySelector('.task-message .composer-field')", "#4 offers no message field");
-await typeInto(".task-message .composer-field", "NOOP and a note");
-await click(".task-message .composer-send");
+await until(`[...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === 'Take over')`, "#4 offers no Take over");
+await clickNext("Take over");
+await until(`[...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === 'Hand back')`, "Take over did not end in Hand back", 60);
 await pause(5000);
 if (!(await evaluate("/Land #6 did not run/.test(document.querySelector('.notice')?.textContent ?? '')"))) await fail("a later outcome or the time hid the failure");
 await closeSheet("#4");
@@ -1717,12 +1763,12 @@ await pause(4000);
 if (await evaluate("!!document.querySelector('.notice[data-tone=danger]')")) await fail("an action the owner approved in the chat left a failure notice: " + (await evaluate("document.querySelector('.notice')?.textContent")));
 // An outcome alone clears itself.
 await go(page(4));
-await until("!!document.querySelector('.task-message .composer-field')", "#4 offers no message field again");
+await until(`[...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === 'Hand back')`, "#4 offers no Hand back");
 await pause(3000);
-await typeInto(".task-message .composer-field", "NOOP once more");
-await click(".task-message .composer-send");
-await until("[...document.querySelectorAll('.notice')].some((node) => /^#4: /.test(node.textContent))", "a message to #4 showed no outcome");
+await clickNext("Hand back");
+await until("[...document.querySelectorAll('.notice')].some((node) => /^#4: /.test(node.textContent))", "Hand back of #4 showed no outcome", 60);
 await until("!document.querySelector('.notice')", "the outcome did not clear itself", 80);
+await until("document.querySelector('.story-next')?.textContent === 'Land it to put it on main.'", "#4 did not come back ready after Hand back", 300);
 await closeSheet("#4 again");
 
 // --- The manager chat attaches files as a session's chat does, and shows another project's
@@ -2084,10 +2130,23 @@ await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the w
 await lean("the waiting sheet");
 told = await story();
 if (told.next !== "The worker waits for your answer.") await fail(`the top of a waiting task reads ${JSON.stringify(told)}`);
-if (await evaluate("document.querySelector('.task-message .composer-field').placeholder") !== "Answer the worker") await fail("the sheet's field does not ask for the answer");
+if (await count(".task-sheet textarea, .task-message, .task-steer")) await fail("the waiting sheet still has a message field");
 await shot("waiting-sheet", ".composer-send");
-await typeInto(".task-message .composer-field", "WORK keys.txt");
-await click(".task-message .composer-send");
+await resize([1280, 800, 1]);
+await until("!!document.querySelector('dialog.task-sheet[open] .task-next button[aria-label^=\"Answer #1\"]')", "the waiting sheet has no Answer at 1280 px");
+await buttonRoom("the waiting sheet");
+await shot("waiting-sheet", ".composer-send");
+await resize([390, 844, 2]);
+await until("!!document.querySelector('dialog.task-sheet[open] .task-next button[aria-label^=\"Answer #1\"]')", "the waiting sheet has no Answer at 390 px");
+await buttonRoom("the waiting sheet");
+// ^ The sheet's Answer closes the sheet over the chat and puts the mention into the composer. The
+// manager relays it, and the message shows read-only in the sheet's Details.
+await click(".task-next button[aria-label^=\"Answer #1\"]");
+await until(`location.hash === ${JSON.stringify(`#/p/${plans}`)} && !document.querySelector('dialog.task-sheet')`, "the sheet's Answer did not close the sheet");
+await composerHas("#1 ", "the sheet's Answer did not put #1 into the composer");
+await typeInto(".composer-field", `#1 go on\nRUN wsx task add 1 "WORK keys.txt" -p plans --json`);
+await click(".composer-send");
+await go(`#/p/${plans}/t/1`);
 await until("document.querySelectorAll('.task-talk .bubble').length === 1", "the answer is not a bubble", 60);
 if (await evaluate("document.querySelector('.task-talk .bubble').dataset.side") !== "out") await fail("the answer is not the owner's bubble");
 await until("(document.querySelector('.task-sheet .progress-health')?.textContent ?? '') === 'ready to land' && [...document.querySelectorAll('.task-sheet .task-next button')].some((node) => node.textContent === 'Land')", "#1 did not get ready after the answer", 120);
@@ -2135,6 +2194,18 @@ await closeSheet("plans' page", `#/p/${plans}`);
 
 await openReservoir();
 await until(`(${rowOf("#1")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#1's row does not offer Land", 60);
+// ^ A trial on the live site: its Fail tells the manager, with the mention; the trial runs until
+// the manager's add or End (docs/tasks.md "Hold and trial").
+const actOnTwo = (name) => evaluate(`fetch('api/tasks/${plans}/t/2/${name}', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then((answer) => answer.status)`);
+if (await actOnTwo("trial") !== 200) await fail("the trial of #2 did not start");
+await until(`(${rowOf("#2")}?.querySelector('.need-action')?.title ?? '') === 'Fail: tell the manager'`, "the live trial's row has no Fail: tell the manager", 120);
+await typeInto(".composer-field", "");
+await evaluate(`${rowOf("#2")}.querySelector('.need-action').click()`);
+await composerHas("#2 ", "Fail: tell the manager did not put #2 into the composer");
+await shot("trial-fail-mention", ".composer-send");
+await typeInto(".composer-field", "");
+if (await actOnTwo("trial_end") !== 200) await fail("the trial of #2 did not end");
+await until(`(${rowOf("#2")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#2's row did not go back to Land", 60);
 moved = await clearRow("#2", "Land");
 moved = await clearRow("#1", "Land");
 await until("!document.querySelector('.reservoir')", "the cleared list still shows the reservoir", 60);
@@ -2299,11 +2370,9 @@ if ((await evaluate("fetch('api/push').then((response) => response.json())")).ch
     }
     if (/\bBash\b|cd \/tmp|No report yet/.test(seen.sheet)) await fail(`${state}: the sheet shows a raw line: ${seen.sheet}`);
     if (seen.bar) await fail(`${state}: the stage repeats in the top row: ${seen.bar}`);
-    // ^ One glance: Details is folded and its head is on the first screen, above the message field.
-    const room = await evaluate(`(() => { const details = document.querySelector('.task-details'), field = document.querySelector('.task-sheet .task-message'); return { open: details.open, bottom: details.querySelector('.fold-head').getBoundingClientRect().bottom, limit: field ? field.getBoundingClientRect().top : innerHeight, line: field?.querySelector('textarea').clientHeight }; })()`);
+    // ^ One glance: Details is folded and its head is on the first screen.
+    const room = await evaluate(`(() => { const details = document.querySelector('.task-details'); return { open: details.open, bottom: details.querySelector('.fold-head').getBoundingClientRect().bottom, limit: innerHeight }; })()`);
     if (room.open || room.bottom > room.limit) await fail(`${state}: Details is not on the first screen: ${JSON.stringify(room)}`);
-    // ^ A sheet opened again reads from memory, before its dialog is laid out.
-    if (room.line === 0) await fail(`${state}: the message field has no height`);
   };
   const config = path.join(plansCheckout, "wsx.config.yml");
   const before = fs.readFileSync(config, "utf8");
