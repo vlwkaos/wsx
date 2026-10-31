@@ -65,6 +65,12 @@ pub(crate) const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 20 * 60;
 pub struct TaskConfig {
     pub adapter: String,
     pub model: String,
+    /// `tasks.agent.fallback` and `tasks.manager.fallback`: global agent names, in order.
+    /// ref: docs/tasks.md "Agents"
+    pub fallback: Vec<String>,
+    pub manager_fallback: Vec<String>,
+    /// `tasks.agent.maxWaitMinutes`: a usage limit that lifts sooner is waited out.
+    pub max_wait_secs: u64,
     /// Context size after which a worker's next turn starts a fresh conversation from its
     /// handoff notes (`tasks.agent.rotateTokens`). ref: docs/tasks.md "Context rotation"
     pub rotate_tokens: u64,
@@ -189,6 +195,10 @@ impl Default for TaskConfig {
         Self {
             adapter: "claude".into(),
             model: "opus".into(),
+            fallback: Vec::new(),
+            manager_fallback: Vec::new(),
+            // ^ Claude's session limit is 5 hours: it is waited out, a weekly one is not.
+            max_wait_secs: 5 * 3_600,
             rotate_tokens: 200_000,
             rotate_idle_seconds: 3_600,
             owner_skills: false,

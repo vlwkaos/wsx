@@ -339,6 +339,13 @@ pub enum LogEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// The agent's long usage limit moved the task to a fallback agent (`adapter`/`model`).
+    /// ref: docs/tasks.md "Agents"
+    AgentSwitch {
+        from: String,
+        to: String,
+        reason: String,
+    },
     /// The agent's usage limit ended a turn: it continues at `until_ms` (unix ms).
     LimitWait {
         until_ms: u64,

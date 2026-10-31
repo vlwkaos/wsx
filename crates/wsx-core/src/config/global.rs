@@ -227,6 +227,9 @@ pub struct GlobalConfig {
     /// Empty: one implicit `default` profile holds every project. ref: README "Profiles"
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<ProfileEntry>,
+    /// The agents a new session or a task may run, in order of preference. ref: README "Agents"
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<AgentEntry>,
     #[serde(default)]
     pub projects: Vec<ProjectEntry>,
     #[serde(default = "default_exclude_worktree_paths")]
@@ -260,6 +263,7 @@ impl Default for GlobalConfig {
         Self {
             groups: vec![],
             profiles: vec![],
+            agents: vec![],
             projects: vec![],
             exclude_worktree_paths: default_exclude_worktree_paths(),
             terminal_escape_chord: default_terminal_escape_chord(),
@@ -304,6 +308,69 @@ pub struct ProfileEntry {
     pub claude_config_dir: Option<PathBuf>,
 }
 
+/// The headless adapters a task host can drive (`crates/wsx/src/task/agent.rs`).
+pub const TASK_ADAPTERS: &[&str] = &["claude", "pi"];
+
+/// One agent the owner uses: how a session starts it, and how a task host drives it.
+/// ref: README "Agents"
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentEntry {
+    pub name: String,
+    /// Typed into a new session's shell, so the pane outlives the agent.
+    pub command: Vec<String>,
+    /// The task host's headless adapter for this agent; None: sessions only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<String>,
+    /// The model a task host asks for; None: the task config's model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
+    for (index, agent) in agents.iter().enumerate() {
+        let word = |text: &str| {
+            !text.is_empty()
+                && text.len() <= 64
+                && text
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        };
+        if !word(&agent.name) {
+            return Err(format!(
+                "agent name {:?} must be letters, digits, -, _ or .",
+                agent.name
+            ));
+        }
+        if agents[..index].iter().any(|seen| seen.name == agent.name) {
+            return Err(format!("agent {} is declared twice", agent.name));
+        }
+        if agent.command.is_empty()
+            || agent.command.len() > 32
+            || agent.command.iter().any(|part| {
+                part.is_empty() || part.len() > 4096 || part.chars().any(char::is_control)
+            })
+        {
+            return Err(format!("agent {}: command is invalid", agent.name));
+        }
+        if let Some(adapter) = &agent.adapter {
+            if !TASK_ADAPTERS.contains(&adapter.as_str()) {
+                return Err(format!(
+                    "agent {}: adapter must be one of: {}",
+                    agent.name,
+                    TASK_ADAPTERS.join(", ")
+                ));
+            }
+        }
+        if agent.model.as_ref().is_some_and(|model| {
+            model.is_empty() || model.len() > 256 || model.chars().any(char::is_control)
+        }) {
+            return Err(format!("agent {}: model is invalid", agent.name));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum StringList {
@@ -330,6 +397,8 @@ struct GlobalConfigWire {
     tabs: Option<StringList>,
     #[serde(default)]
     profiles: Vec<ProfileEntry>,
+    #[serde(default)]
+    agents: Vec<AgentEntry>,
     #[serde(default)]
     projects: Vec<ProjectEntryWire>,
     #[serde(default = "default_exclude_worktree_paths")]
@@ -474,6 +543,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
             });
         }
         validate_profiles(&wire.profiles, &projects).map_err(D::Error::custom)?;
+        validate_agents(&wire.agents).map_err(D::Error::custom)?;
 
         if wire.notification_timeout_seconds == 0 {
             return Err(D::Error::custom(
@@ -497,6 +567,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
         let mut config = Self {
             groups,
             profiles: wire.profiles,
+            agents: wire.agents,
             projects,
             exclude_worktree_paths: wire.exclude_worktree_paths,
             terminal_escape_chord: wire.terminal_escape_chord,

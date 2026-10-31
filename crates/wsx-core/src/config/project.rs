@@ -64,7 +64,7 @@ const MIN_ROTATE_TOKENS: u64 = 1_000;
 const MAX_RECAP_MINUTES: u64 = 1_440;
 const MAX_ROTATE_TOKENS: u64 = 2_000_000;
 const MAX_ROTATE_IDLE_SECS: u64 = 24 * 60 * 60;
-const TASK_ADAPTERS: &[&str] = &["claude", "pi"];
+use super::global::TASK_ADAPTERS;
 const PROJECT_CONFIG_TEMPLATE: &str = "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\ngit:\n  subtrees: []\nworktree:\n  branchPrefix:\n  # defaultSession:\n  #   enabled: true\n  #   command:\n";
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -162,6 +162,10 @@ struct TaskManagerFile {
     rotate_tokens: Option<u64>,
     #[serde(rename = "recapMinutes", skip_serializing_if = "Option::is_none")]
     recap_minutes: Option<f64>,
+    /// Agents of the global `[[agents]]` the manager moves to when its own is at a long
+    /// usage limit, in order. ref: docs/tasks.md "Agents"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -211,6 +215,13 @@ struct TaskAgentFile {
     rotate_tokens: Option<u64>,
     #[serde(rename = "rotateIdleSeconds", skip_serializing_if = "Option::is_none")]
     rotate_idle_seconds: Option<u64>,
+    /// As the manager's `fallback`, for workers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback: Option<Vec<String>>,
+    /// A usage limit that lifts within this many minutes is waited out: one conversation
+    /// is worth more than a switch.
+    #[serde(rename = "maxWaitMinutes", skip_serializing_if = "Option::is_none")]
+    max_wait_minutes: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -475,6 +486,23 @@ fn validate_steps(
         .collect()
 }
 
+/// Up to 4 agent names; they are resolved against the global `[[agents]]` when used.
+fn validate_fallback(names: Option<Vec<String>>, key: &str) -> Result<Vec<String>, String> {
+    let names = names.unwrap_or_default();
+    if names.len() > 4
+        || names.iter().any(|name| {
+            name.is_empty()
+                || name.len() > 64
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
+    {
+        return Err(format!("{key} must be at most 4 agent names"));
+    }
+    Ok(names)
+}
+
 fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
     let mut config = TaskConfig::default();
     let Some(file) = file else {
@@ -492,6 +520,13 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
         if let Some(model) = validate_word(agent.model, "tasks.agent.model")? {
             config.model = model;
+        }
+        config.fallback = validate_fallback(agent.fallback, "tasks.agent.fallback")?;
+        if let Some(minutes) = agent.max_wait_minutes {
+            if minutes > 8 * 24 * 60 {
+                return Err("tasks.agent.maxWaitMinutes must be 0..=11520".into());
+            }
+            config.max_wait_secs = minutes * 60;
         }
         if let Some(tokens) = agent.rotate_tokens {
             if !(MIN_ROTATE_TOKENS..=MAX_ROTATE_TOKENS).contains(&tokens) {
@@ -622,6 +657,7 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
             }
             config.manager_adapter = adapter;
         }
+        config.manager_fallback = validate_fallback(manager.fallback, "tasks.manager.fallback")?;
         if let Some(model) = validate_word(manager.model, "tasks.manager.model")? {
             config.manager_model = model;
         }
