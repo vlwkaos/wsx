@@ -4,8 +4,9 @@
 //! One main loop owns the task files. The socket thread and the agent reader
 //! send to it over one channel; it answers each request after acting on it.
 
+use super::agent::{new_session_id, AgentLine, Launch, TurnResult};
 use super::broker;
-use super::claude::{new_session_id, AgentLine, ClaudeAgent, Launch, TurnResult};
+use super::claude::ClaudeAgent;
 use super::hosting;
 use super::limit;
 use super::slot::{self, Priority};
