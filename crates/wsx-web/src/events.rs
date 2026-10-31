@@ -22,6 +22,8 @@ const POLL_MS: u64 = 2_000;
 const WORKING_POLL_MS: u64 = 800;
 // How often the server reads whether an upgrade of the running wsxd failed.
 const UPGRADE_CHECK: Duration = Duration::from_secs(30);
+// How often the server drops the subscription of a device revoked by the CLI.
+const REVOKED_CHECK: Duration = Duration::from_secs(5);
 
 /// A named server-sent event with a JSON body.
 #[derive(Clone)]
@@ -64,6 +66,7 @@ fn observe(app: Arc<App>) {
     let mut questions: HashMap<u64, Option<String>> = HashMap::new();
     // Sessions whose agent began to need the owner, for "An agent needs me".
     let mut agents: Pending<u64> = Pending::default();
+    let mut last_revoked_check = Instant::now();
     let mut alive_before: Vec<u64> = Vec::new();
     // ^ docs/daemon-live-upgrade.md: wsxd takes a poll without presence for an old TUI
     // and defers every upgrade. This server reconnects by itself, so it says at which
@@ -238,6 +241,12 @@ fn observe(app: Arc<App>) {
         }
         if let Some(new) = agents.due(Duration::from_secs(app.site.notify.agents.merge_seconds)) {
             notify_agents(app, &targets, &new, badge);
+        }
+        if last_revoked_check.elapsed() >= REVOKED_CHECK {
+            last_revoked_check = Instant::now();
+            if let (Some(push), Some(paired)) = (&app.push, paired(app)) {
+                push.devices(&paired);
+            }
         }
         let alive: Vec<u64> = targets.iter().map(|target| target.session_id.0).collect();
         if alive != alive_before {
