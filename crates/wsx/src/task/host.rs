@@ -155,6 +155,8 @@ struct Host {
     check_run: Option<CheckRun>,
     /// The result the worker reported with `wsx task result -` in the running turn.
     reported: Option<serde_json::Value>,
+    /// The text of the running turn: a switch to another agent sends it again.
+    turn_text: String,
     /// The queued or running checks of a result: the commit they check, and whether a newer
     /// result came meanwhile.
     gate: Option<(Option<String>, bool)>,
@@ -214,6 +216,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         background_wait: None,
         check_run: None,
         reported: None,
+        turn_text: String::new(),
         gate: None,
         stored_checks: None,
         carried_verify: Vec::new(),
@@ -933,6 +936,7 @@ impl Host {
             .as_mut()
             .context("the agent is not running")?
             .send(text)?;
+        self.turn_text = text.to_string();
         self.turn_active = true;
         self.trigger = trigger;
         self.set_state(TaskState::Working);
@@ -999,6 +1003,20 @@ impl Host {
             self.limit_attempt += 1;
             let now = now_unix_ms();
             let until_ms = limit::resume_at(limit.resets_at, self.limit_attempt, now);
+            if let Err(error) = store::mark_limited(&self.record.adapter, until_ms) {
+                self.say(&format!("cannot record the usage limit: {error:#}"));
+            }
+            // ^ One conversation is worth more than a switch: a limit that lifts within
+            // `maxWaitMinutes` is waited out. ref: docs/tasks.md "Agents"
+            let settings = load_task_config(&self.record.project_path).unwrap_or_default();
+            if until_ms.saturating_sub(now) > settings.max_wait_secs * 1000 {
+                if let Some(next) =
+                    super::agent::fallback(&settings.fallback, &self.record.adapter, now)
+                {
+                    self.switch_agent(next, until_ms, now);
+                    return;
+                }
+            }
             let mut text = vec![LIMIT_CONTINUE.to_string()];
             text.extend(self.pending.drain(..));
             self.log(LogEvent::LimitWait { until_ms });
@@ -1454,6 +1472,39 @@ impl Host {
 
     /// `wsx task check-run [<n>...]` from the worker: the declared checks (all, or by number)
     /// run as after a result, in a thread, and answer the worker; no revision is recorded.
+    /// Continue the task on `next` in a new conversation: the limited agent wrote no notes,
+    /// so the turn it could not finish opens it after the usual rotation context. The task
+    /// stays on `next` until it ends: a second switch would cost another cold start.
+    /// ref: docs/tasks.md "Agents"
+    fn switch_agent(&mut self, next: super::agent::Choice, until_ms: u64, now: u64) {
+        let from = format!("{}/{}", self.record.adapter, self.record.model);
+        let to = format!("{} ({}/{})", next.name, next.adapter, next.model);
+        let reason = format!(
+            "{} usage limit until {}",
+            self.record.adapter,
+            limit::resume_time(until_ms, now)
+        );
+        self.say(&format!("switched to {to}: {reason}"));
+        self.log(LogEvent::AgentSwitch {
+            from,
+            to,
+            reason: reason.clone(),
+        });
+        let unfinished = match self.rotating.take() {
+            Some((waiting, _)) => waiting,
+            None => std::mem::take(&mut self.turn_text),
+        };
+        self.record.adapter = next.adapter;
+        self.record.model = next.model;
+        self.limit_attempt = 0;
+        let waiting = format!(
+            "The earlier conversation's agent reached its usage limit during this turn and \
+             could write no handoff notes; another agent continues. Check what the working copy \
+             already holds before you redo anything. The turn it could not finish:\n{unfinished}"
+        );
+        self.rotate(waiting, Some(reason));
+    }
+
     /// Keep a reported result for the turn that ends next; the last one of a turn counts.
     fn reported(&mut self, text: Option<String>) -> broker::Response {
         let Some(text) = text.filter(|_| self.turn_active) else {

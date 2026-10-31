@@ -143,6 +143,35 @@ impl Agent {
     }
 }
 
+/// A registry agent a host can run headless.
+pub struct Choice {
+    pub name: String,
+    pub adapter: String,
+    pub model: String,
+}
+
+/// The first of `names` (the global `[[agents]]`) with a headless adapter and a model,
+/// another adapter than `current`'s, and no usage limit on record. A name the registry does
+/// not hold is skipped. ref: docs/tasks.md "Agents"
+pub fn fallback(names: &[String], current: &str, now_ms: u64) -> Option<Choice> {
+    if names.is_empty() {
+        return None;
+    }
+    let (config, _) = wsx_core::config::global::GlobalConfig::load().ok()?;
+    names.iter().find_map(|name| {
+        let entry = config.agents.iter().find(|agent| &agent.name == name)?;
+        let adapter = entry.adapter.clone().filter(|adapter| adapter != current)?;
+        let model = entry.model.clone()?;
+        wsx_core::task::store::limited_until(&adapter, now_ms)
+            .is_none()
+            .then(|| Choice {
+                name: name.clone(),
+                adapter,
+                model,
+            })
+    })
+}
+
 /// A random version 4 UUID for a new conversation.
 pub fn new_session_id() -> Result<String> {
     let mut bytes = [0u8; 16];

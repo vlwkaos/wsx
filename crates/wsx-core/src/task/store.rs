@@ -257,6 +257,37 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     .with_context(|| format!("cannot write {}", path.display()))
 }
 
+/// `tasks/agents/<adapter>.json`: until when the adapter's provider refuses turns for its
+/// usage limit, shared by every host on this machine. ref: docs/tasks.md "Agents"
+fn limit_file(adapter: &str) -> Result<PathBuf> {
+    if !crate::config::global::TASK_ADAPTERS.contains(&adapter) {
+        bail!("no task adapter {adapter}");
+    }
+    Ok(tasks_root().join("agents").join(format!("{adapter}.json")))
+}
+
+/// Record that `adapter` is at its usage limit until `until_ms` (unix ms).
+pub fn mark_limited(adapter: &str, until_ms: u64) -> Result<()> {
+    let path = limit_file(adapter)?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    write_atomic(
+        &path,
+        serde_json::json!({ "until_ms": until_ms })
+            .to_string()
+            .as_bytes(),
+    )
+}
+
+/// When `adapter`'s recorded usage limit ends, if it is still ahead of `now_ms`. An
+/// unreadable record counts as none: the agent's own answer decides then.
+pub fn limited_until(adapter: &str, now_ms: u64) -> Option<u64> {
+    let bytes = read_bounded_if_exists(&limit_file(adapter).ok()?, 4096).ok()??;
+    let until = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?["until_ms"].as_u64()?;
+    (until > now_ms).then_some(until)
+}
+
 /// One task's folder. Every path inside it is fixed; no caller-given name reaches the disk.
 #[derive(Debug, Clone)]
 pub struct TaskDir {
