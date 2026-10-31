@@ -101,7 +101,7 @@ wsxd knows that an agent is blocked, not what it asks. The question is the dialo
 
 # Sessions without routine prompts
 
-`agent_command` is the whole command line of a session started from the page; every argument is passed on. The intended shape for Claude is:
+`agent_command` is the whole command line of the agent a session started from the page runs; every argument is passed on. The session is a login shell and the command is typed into it (quoted where needed), so the shell stays when the agent quits. The intended shape for Claude is:
 
 ```toml
 agent_command = ["claude", "--permission-mode", "auto"]

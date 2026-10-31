@@ -1269,7 +1269,7 @@ pub fn with_attachments(
 const RESUME_WAIT_MS: u64 = 60_000;
 
 /// An argv as one shell line: each word as written when it is plain, else in single quotes.
-fn shell_words(argv: &[String]) -> String {
+pub fn shell_words(argv: &[String]) -> String {
     argv.iter()
         .map(|word| {
             let plain = !word.is_empty()
