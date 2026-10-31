@@ -127,10 +127,26 @@ impl Launch {
             false => None,
         };
         let boundary = Boundary::worker(record, folder)?;
-        let instructions = worker_instructions(record, &settings.workflow, skills.is_some());
+        let structured = record.adapter == "claude";
+        let mut instructions = worker_instructions(record, &settings.workflow, skills.is_some());
+        // ^ An adapter without structured output reports through the broker (host.rs
+        // `reported`); the schema is the same. ref: docs/tasks.md "Agents"
+        if !structured {
+            instructions = instructions.replace(
+                "with the Skill tool as `owner:<name>`",
+                "in your skills list",
+            );
+            instructions.push_str(&format!(
+                " End every turn by sending your result, one JSON object that matches this JSON \
+                 Schema, on stdin to `wsx task result -` (for example with a quoted heredoc), \
+                 then end the turn with no further tool call. A result it refuses names why: \
+                 fix it and send it again. Schema: {}",
+                worker_result_schema()
+            ));
+        }
         let mut launch = Self::new(&record.working_copy, boundary, &record.model, instructions);
         launch.plugin_dirs = skills.into_iter().collect();
-        launch.schema = Some(worker_result_schema());
+        launch.schema = structured.then(worker_result_schema);
         launch.env = record
             .env
             .iter()
