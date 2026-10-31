@@ -2,18 +2,13 @@
 
 ## [Unreleased]
 
-## [0.43.0] - 2026-10-31
+## [0.42.0] - 2026-10-31
 
 ### Changed
 
 - Web: a new session is a login shell with the site's `agent_command` typed into it. When the agent quits, the session stays open instead of showing as exited, the chat resumes the conversation in it, and the terminal can start another agent ([docs/web-client.md](docs/web-client.md)).
 - Web: where `terminal_input` is granted, a session's *+* asks *Agent* or *Shell*; a shell opens in the terminal panel.
 - Web: the Sessions tab lists every granted project with its *+*, also one whose sessions are all closed, so a new session can always start.
-
-## [0.42.0] - 2026-10-31
-
-### Changed
-
 - Web tasks: the owner no longer sends messages straight to a worker. The owner talks to the manager, which relays with `wsx task add`. *Answer* (a reservoir row and the task sheet) and *Fail: tell the manager* (a live trial's row) now put `#<n> ` into the manager's composer and focus it, keeping any draft. The sheet's message field, the row's form and the web's `add` and `steer` task actions are gone; those routes answer 404. `wsx task add` and `steer`, *Take over* and the sheet's read-only list of messages stay ([docs/web-client-tasks.md](docs/web-client-tasks.md) "Project screen").
 - Web image viewer: on a phone the buttons are under the image, within reach of one hand, and the save button is a share icon (labelled Share on a touch screen, Download elsewhere; a desktop keeps the bar on top) ([docs/web-client.md](docs/web-client.md) "Image viewer").
 - Web tasks: the line under *Take over* is one short sentence, and *Hand back* has no line of its own.
