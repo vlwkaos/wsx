@@ -1650,7 +1650,7 @@ struct MuteInput {
     muted: bool,
 }
 
-/// Mute or unmute one granted session for this device's "An agent needs me" and digest.
+/// Mute or unmute one granted session for this device's "An agent needs me".
 async fn push_mute(
     State(app): State<Shared>,
     Paired(device): Paired,

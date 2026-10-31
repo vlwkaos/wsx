@@ -20,7 +20,7 @@ function SessionMore({ session }) {
   const store = useStore();
   useEffect(() => { loadPush().catch(() => {}); }, []);
   const choices = store.push?.choices;
-  if (!choices || !(choices.agents || choices.digest)) return null;
+  if (!choices?.agents) return null;
   const muted = store.push.muted.includes(session.id);
   const change = () => setMuted(session.id, !muted).then(
     () => toast(muted ? `Notifications about ${session.label} are back on.` : `No more notifications about ${session.label} on this device.`),

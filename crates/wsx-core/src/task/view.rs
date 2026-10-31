@@ -2,7 +2,7 @@
 //! ref: docs/tasks.md "Ledger", docs/web-client-tasks.md
 
 use super::store::{self, TaskDir, RESULT_FILE};
-use super::{TaskRecord, TaskState};
+use super::{DeployKind, TaskRecord, TaskState};
 use anyhow::Result;
 use serde_json::{json, Value};
 
@@ -20,6 +20,61 @@ pub fn attention(state: TaskState) -> u8 {
         TaskState::Checking | TaskState::Working => 3,
         TaskState::Landed | TaskState::Closed => 4,
     }
+}
+
+/// `#4 Fix the login: <what>`, the title cut at 60 characters and the line at 160.
+pub fn task_line(task: u32, title: &str, what: &str) -> String {
+    let title = clip(title.trim(), MAX_TITLE_CHARS);
+    let line = if title.is_empty() {
+        format!("#{task} {what}")
+    } else {
+        format!("#{task} {title}: {what}")
+    };
+    clip(&line, NOTICE_CHARS)
+}
+const NOTICE_CHARS: usize = 160;
+
+/// What a project's digest says since `after_ms`: each task that became ready, failed or
+/// landed, in its latest state (`failed` names the first check that did not pass), and the
+/// last deploy and release (docs/tasks.md "Routines").
+pub fn digest_lines(project_id: &str, after_ms: u64) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (dir, record) in project_tasks(project_id).unwrap_or_default() {
+        let Ok(record) = record else { continue };
+        if record.updated_unix_ms <= after_ms {
+            continue;
+        }
+        let what = match record.state {
+            TaskState::Failed => read_result(&dir)
+                .and_then(|result| {
+                    check_outcomes(&result)
+                        .into_iter()
+                        .find(|(_, outcome)| *outcome != "passed")
+                        .map(|(command, outcome)| format!("failed: {command} {outcome}"))
+                })
+                .unwrap_or_else(|| "failed".into()),
+            TaskState::Ready => "ready for review".into(),
+            TaskState::Landed => "landed".into(),
+            _ => continue,
+        };
+        let title = readable_title(&dir, &record).unwrap_or_default();
+        lines.push(task_line(record.id, &title, &what));
+    }
+    let deploys = store::read_deploys(project_id).unwrap_or_default();
+    for (kind, word) in [
+        (DeployKind::Deploy, "deployed"),
+        (DeployKind::Release, "released"),
+    ] {
+        if let Some(deploy) = deploys.iter().rev().find(|deploy| {
+            deploy.kind == kind && deploy.exit == Some(0) && deploy.unix_ms > after_ms
+        }) {
+            lines.push(format!(
+                "{word} {}",
+                deploy.commit.get(..7).unwrap_or(&deploy.commit)
+            ));
+        }
+    }
+    lines
 }
 
 /// The first line of `text`, at most `chars` characters with an ellipsis when cut.

@@ -564,7 +564,46 @@ impl Manager {
                     },
                 }
             }
+            ManagerRequest::Post { event, text } => {
+                let refusal = match (busy, text.trim().is_empty(), text.len() > MAX_MESSAGE_BYTES) {
+                    (true, ..) => Some("a manager turn runs"),
+                    (_, true, _) => Some("the text is empty"),
+                    (.., true) => Some("the text is larger than the limit"),
+                    _ => None,
+                };
+                if refusal.is_none() {
+                    self.post(event, text);
+                }
+                ManagerResponse {
+                    ok: refusal.is_none(),
+                    id: None,
+                    busy,
+                    message: refusal.unwrap_or("posted to the chat").into(),
+                }
+            }
         }
+    }
+
+    /// Write to the owner with no turn: a delivered events message, so that no restart hands it
+    /// to the agent, and the reply to it, which the web pushes like the manager's own. The reply
+    /// has no usage, and only the agent's replies have one.
+    fn post(&mut self, event: String, text: String) {
+        let id = self.next_id();
+        self.log(ManagerEvent::Message {
+            id,
+            from: Author::Events,
+            text: event,
+        });
+        self.log(ManagerEvent::Delivered { ids: vec![id] });
+        let reply = self.next_id();
+        self.log(ManagerEvent::Reply {
+            id: reply,
+            to: vec![id],
+            text,
+            usage: None,
+            quiet: false,
+            asks: false,
+        });
     }
 
     /// Re-queue messages logged but never delivered, and pick up what was last reported.
@@ -777,7 +816,8 @@ impl Manager {
     }
 
     /// Turn each routine run that ended into an event line, a failure with the end of its
-    /// output. ref: docs/tasks.md "Routines"
+    /// output. A success that printed nothing to stdout has nothing for the manager and costs
+    /// no turn. ref: docs/tasks.md "Routines"
     fn watch_routines(&mut self) {
         // ^ A run that ends in this second may be recorded after this read: wait the second out.
         let settled = (now_unix_ms() / 1000) as i64 - 1;
@@ -792,6 +832,9 @@ impl Manager {
         runs.sort_by_key(|run| run.finished_epoch);
         for run in runs {
             self.observed_routines = run.finished_epoch.unwrap_or_default();
+            if run.status == RunStatus::Succeeded && stdout_empty(&run) {
+                continue;
+            }
             self.pending_events.push(routine_line(&run));
             self.last_event = Some(Instant::now());
         }
@@ -2178,7 +2221,7 @@ impl Manager {
         let replied = log
             .iter()
             .rev()
-            .find(|entry| matches!(entry.event, ManagerEvent::Reply { .. }))
+            .find(|entry| matches!(entry.event, ManagerEvent::Reply { usage: Some(_), .. }))
             .map_or(0, |entry| (entry.unix_ms / 1000) as i64);
         let routines = handover_routines(self.finished_routine_runs(), replied);
         let routines = match routines.is_empty() {
@@ -2235,6 +2278,12 @@ fn newest_ms(folder: &Path) -> Option<u64> {
         })
         .map(|since| since.as_millis() as u64)
         .max()
+}
+
+/// Whether a run wrote nothing to stdout; an unreadable file counts as output, so that the
+/// manager still hears of the run.
+fn stdout_empty(run: &RunRecord) -> bool {
+    std::fs::metadata(&run.stdout_path).is_ok_and(|file| file.len() == 0)
 }
 
 /// A routine run that ended as an event line, a failure with the end of its output.

@@ -38,6 +38,10 @@
 - Web: a new session is a login shell with the site's `agent_command` typed into it. When the agent quits, the session stays open instead of showing as exited, the chat resumes the conversation in it, and the terminal can start another agent ([docs/web-client.md](docs/web-client.md)).
 - Web: where `terminal_input` is granted, a session's *+* starts a plain shell in the terminal panel; start any agent there, and the session's Chat tab appears for the agent that reports.
 - Web: the Sessions tab lists every granted project with its *+*, also one whose sessions are all closed, so a new session can always start.
+### Changed
+
+- The daily digest is now a routine per project, not a switch per device. Web Settings no longer has "Daily digest" and its time, and an existing device stops getting one. wsx adds nothing by itself. To keep it, give each project a routine at your own time: `wsx task routine add digest -p <project> --cron "0 9 * * *" --arg wsx --arg task --arg digest --arg=-p --arg <project>`. Each project posts one message to its chat with no manager turn, and "Manager needs me" shows its lines. It has no per-device time or mute, a device without "Manager needs me" hears nothing, and the "agents finished" line is gone: the Sessions list shows them. An older `push.json` still loads.
+- Routines: a run that succeeds with empty stdout gives no manager event and no turn. A failed run or a run with output is an event as before, and the ledger shows every run.
 
 ## [0.42.0] - 2026-10-31
 
