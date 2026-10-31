@@ -2370,8 +2370,9 @@ if ((await evaluate("fetch('api/push').then((response) => response.json())")).ch
     }
     if (/\bBash\b|cd \/tmp|No report yet/.test(seen.sheet)) await fail(`${state}: the sheet shows a raw line: ${seen.sheet}`);
     if (seen.bar) await fail(`${state}: the stage repeats in the top row: ${seen.bar}`);
-    // ^ One glance: Details is folded and its head is on the first screen.
-    const room = await evaluate(`(() => { const details = document.querySelector('.task-details'); return { open: details.open, bottom: details.querySelector('.fold-head').getBoundingClientRect().bottom, limit: innerHeight }; })()`);
+    // ^ One glance: Details is folded and its head is on the first screen. Against the sheet's
+    // own bottom, since a sheet opened just now is still rising.
+    const room = await evaluate(`(() => { const details = document.querySelector('.task-details'); return { open: details.open, bottom: details.querySelector('.fold-head').getBoundingClientRect().bottom, limit: details.closest('dialog').getBoundingClientRect().bottom }; })()`);
     if (room.open || room.bottom > room.limit) await fail(`${state}: Details is not on the first screen: ${JSON.stringify(room)}`);
   };
   const config = path.join(plansCheckout, "wsx.config.yml");
