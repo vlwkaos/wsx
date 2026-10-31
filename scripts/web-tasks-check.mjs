@@ -2313,11 +2313,12 @@ const switches = () => evaluate("Object.fromEntries([...document.querySelectorAl
 const settled = (what) => until("![...document.querySelectorAll('.options input[role=switch]')].some((node) => node.disabled)", `${what}: the switches stayed disabled`);
 const status = () => evaluate("document.querySelector('.option-status')?.textContent ?? ''");
 await go("#/settings");
-await until("document.querySelectorAll('.options input[role=switch]').length === 3", "Settings does not show the three switches");
+await until("document.querySelectorAll('.options input[role=switch]').length === 2", "Settings does not show the two switches");
 await settled("Settings opened");
-if (JSON.stringify(await switches()) !== JSON.stringify({ manager: false, agents: false, digest: false })) await fail(`a new device has switches on: ${JSON.stringify(await switches())}`);
+if (JSON.stringify(await switches()) !== JSON.stringify({ manager: false, agents: false })) await fail(`a new device has switches on: ${JSON.stringify(await switches())}`);
 const labels = await text(".option-row .option-text");
-if (!labels[0].startsWith("Manager needs me") || !labels[1].startsWith("An agent needs me") || !labels[2].startsWith("Daily digest")) await fail(`the switch labels are ${labels}`);
+if (!labels[0].startsWith("Manager needs me") || !labels[1].startsWith("An agent needs me") ) await fail(`the switch labels are ${labels}`);
+if (await evaluate("/digest/i.test(document.querySelector('[aria-label=Notifications]').textContent) || !!document.querySelector('input[name=digest], input[name=digest-time]')")) await fail("Settings still offers a digest");
 // ^ The label is left and the control right on a wide row; on a narrow one the control may wrap under it.
 await shot("settings-notifications-empty");
 await evaluate("globalThis.PUSH_PERMISSION = 'denied'");
@@ -2330,11 +2331,8 @@ await evaluate("globalThis.PUSH_PERMISSION = 'granted'");
 await click("input[name=manager]");
 await until("document.querySelector('.option-status')?.textContent === 'Saved.'", "turning on Manager needs me was not saved");
 await settled("the manager switch");
-await click("input[name=digest]");
-await until("document.querySelector('input[name=digest-time]')?.value === '09:00'", "the digest has no time after it was turned on");
-await settled("the digest switch");
 const stored = await evaluate("fetch('api/push').then((response) => response.json())");
-if (!stored.choices.manager || stored.choices.agents || stored.choices.digest?.minute !== 540) await fail(`the server stored ${JSON.stringify(stored.choices)}`);
+if (!stored.choices.manager || stored.choices.agents) await fail(`the server stored ${JSON.stringify(stored.choices)}`);
 await shot("settings-notifications-saved");
 // A failed save: the server refuses an endpoint the site does not list; the error stays.
 // ^ The refusal is a 400 the browser logs; only that one is not a page defect.
@@ -2349,6 +2347,9 @@ if (!(await status()).includes("not allowed")) await fail("the save error went a
 await shot("settings-notifications-failed");
 problems.splice(refusedFrom, problems.length - refusedFrom, ...problems.slice(refusedFrom).filter((problem) => !/status of 400 .*\/api\/push$/.test(problem)));
 await evaluate(`globalThis.PUSH_ENDPOINT = ${JSON.stringify(fixture.endpoint)}`);
+await click("input[name=agents]");
+await until("document.querySelector('.option-status')?.textContent === 'Saved.'", "turning on An agent needs me was not saved");
+await settled("the agents switch");
 // Mute a session from its menu; Settings counts it and unmutes it.
 await go("#/sessions");
 await until("[...document.querySelectorAll('a[href*=\"#/s/\"]')].some((node) => node.textContent.includes('old chat'))", "the inbox does not list old chat");
@@ -2369,9 +2370,8 @@ await until("![...document.querySelectorAll('.option-row')].some((node) => node.
 // Every switch off: the device has no subscription, so later pushes do not reach it.
 await click("input[name=manager]");
 await settled("the manager switch off");
-await click("input[name=digest]");
+await click("input[name=agents]");
 await until("document.querySelector('.option-status')?.textContent === 'Notifications are off for this device.'", "turning every switch off did not say so");
-if ((await evaluate("fetch('api/push').then((response) => response.json())")).choices.digest !== null) await fail("the digest stayed on");
 
 // --- Progress: the top of an open task's sheet at 390x844, for each state, from real tasks of
 // `plans` (docs/web-client-tasks.md "Task sheet").

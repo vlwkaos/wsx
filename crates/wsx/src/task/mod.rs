@@ -30,13 +30,14 @@ use wsx_core::git::output_with_timeout_tail;
 use wsx_core::task::checks::{self, CheckItem, CheckState};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
 use wsx_core::task::manager::{
-    chat_window, ApprovalAction, ApprovalLine, ManagerEvent, ManagerRequest, ManagerResponse,
+    chat_window, last_digest_ms, ApprovalAction, ApprovalLine, ManagerEvent, ManagerRequest,
+    ManagerResponse, DIGEST_EVENT,
 };
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::roles;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{
-    checked_files, overlaps, project_tasks, refuse_open_children, task_summary,
+    checked_files, digest_lines, overlaps, project_tasks, refuse_open_children, task_summary,
     MAX_RESULT_READ_BYTES,
 };
 use wsx_core::task::{
@@ -49,6 +50,10 @@ use wsx_core::{ops, runtime};
 
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
+const DAY_MS: u64 = 24 * 3600 * 1000;
+/// How long a digest waits for a manager turn to end, and how often it asks again.
+const DIGEST_TURN_WAIT: Duration = Duration::from_secs(30 * 60);
+const DIGEST_TURN_POLL: Duration = Duration::from_secs(5);
 /// ^ A deploy or release longer than this is killed with its process group and recorded as
 /// failed, so a hung command frees `deploy.lock`. wsx's own release takes about 30 minutes.
 const DEPLOY_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
@@ -283,6 +288,17 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Post what the project's tasks did since the last digest to its chat, with no manager
+    /// turn, and print nothing; a project gets one with a routine (docs/tasks.md "Routines")
+    Digest {
+        #[arg(short, long)]
+        project: Option<String>,
+        /// Start here (unix seconds) instead of at the last digest, else 24 h back
+        #[arg(long, value_name = "SECONDS")]
+        since: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
     /// The project's scheduled routines: `wsx routine` (docs/tasks.md "Routines")
     Routine {
         #[command(subcommand)]
@@ -436,6 +452,7 @@ impl TaskCmd {
             | Self::Deploy { json, .. }
             | Self::Release { json, .. }
             | Self::Deployed { json, .. }
+            | Self::Digest { json, .. }
             | Self::Preview { json, .. } => *json,
             Self::Role { action } => match action {
                 RoleCmd::New { json, .. }
@@ -738,6 +755,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             json,
         ),
         TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
+        TaskCmd::Digest { project, since, .. } => digest(project.as_deref(), since),
         TaskCmd::Role { action } => role(action),
         TaskCmd::Ledger { project, .. } => ledger::ledger(project.as_deref()),
         TaskCmd::Routine { action, owner_said } => {
@@ -2131,6 +2149,45 @@ fn trial_command(dir: &TaskDir, end: bool, json: bool) -> Result<()> {
 }
 
 /// The last successful deploy and release and how many default-branch commits each lacks.
+/// Post the project's digest. Each try reads the lines again and starts from the chat log, so
+/// a run that fails leaves its time to the next one. ref: docs/tasks.md "Routines"
+fn digest(project: Option<&str>, since: Option<u64>) -> Result<()> {
+    let (name, main) = project_entry(project)?;
+    let project_id = store::project_id(&name, &main);
+    let after_ms = since.map_or_else(
+        || {
+            let log = ManagerDir::existing(&project_id)
+                .ok()
+                .flatten()
+                .and_then(|dir| dir.read_log().ok())
+                .unwrap_or_default();
+            last_digest_ms(&log).unwrap_or_else(|| now_unix_ms().saturating_sub(DAY_MS))
+        },
+        |seconds| seconds.saturating_mul(1000),
+    );
+    // ^ The manager's own command runs inside the turn it would wait for.
+    let wait = match acting_as_manager() {
+        true => Duration::ZERO,
+        false => DIGEST_TURN_WAIT,
+    };
+    let deadline = Instant::now() + wait;
+    loop {
+        let lines = digest_lines(&project_id, after_ms);
+        if lines.is_empty() {
+            return Ok(());
+        }
+        let response = owner::post(&project_id, DIGEST_EVENT.into(), lines.join("\n"))
+            .with_context(|| format!("the manager host of {name} is not running"))?;
+        if response.ok {
+            return Ok(());
+        }
+        if !response.busy || Instant::now() >= deadline {
+            bail!("the digest was not posted: {}", response.message);
+        }
+        std::thread::sleep(DIGEST_TURN_POLL);
+    }
+}
+
 fn deployed(project: Option<&str>, json: bool) -> Result<()> {
     let (project_name, main) = project_entry(project)?;
     let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;

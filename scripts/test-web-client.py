@@ -2797,27 +2797,26 @@ capabilities = ["terminal_view"]
 
         # --- Web Push with explicit device consent, to the local receiver.
         status, info = owner.request('GET', '/api/push')
-        off = {'manager': False, 'agents': False, 'digest': None}
+        off = {'manager': False, 'agents': False}
         assert status == 200 and info['choices'] == off and info['muted'] == [] and len(info['public_key']) == 87, info
         keys = {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}
-        agents_only = {'manager': False, 'agents': True, 'digest': None}
+        agents_only = {'manager': False, 'agents': True}
         for endpoint in ('https://evil.example/push', 'http://127.0.0.1:1/push', push_origin + '@evil.example/x'):
             refused = owner.request('POST', '/api/push', {'subscription': {'endpoint': endpoint, 'keys': keys}, 'choices': agents_only})
             assert refused[0] == 400, endpoint
         assert owner.request('POST', '/api/push', {'subscription': {'endpoint': push_origin + '/push/1', 'keys': dict(keys, auth='AAAA')}, 'choices': agents_only})[0] == 400
         subscription = {'endpoint': push_origin + '/push/device-1', 'keys': keys, 'expirationTime': None}
-        # "Manager needs me" needs task_view; a digest time must be a minute of a day.
+        # "Manager needs me" needs task_view.
         assert owner.request('POST', '/api/push', {'subscription': subscription, 'choices': dict(agents_only, manager=True)})[0] == 403
-        assert owner.request('POST', '/api/push', {'subscription': subscription, 'choices': dict(agents_only, digest={'minute': 1440, 'utc_offset_minutes': 0})})[0] == 400
         assert pushes() == []
-        # The digest far off for now; it is moved to the next minute below.
-        later = {'minute': (time.gmtime().tm_hour * 60 + time.gmtime().tm_min + 180) % 1440, 'utc_offset_minutes': 0}
-        status, body = owner.request('POST', '/api/push', {'subscription': subscription, 'choices': dict(agents_only, digest=later)})
-        assert status == 200 and body['choices'] == dict(agents_only, digest=later), body
+        # A page opened before the digest went still sends its `digest`: the save ignores it.
+        old_page = dict(agents_only, digest={'minute': 540, 'utc_offset_minutes': 0})
+        status, body = owner.request('POST', '/api/push', {'subscription': subscription, 'choices': old_page})
+        assert status == 200 and body['choices'] == agents_only, body
         stored = (work / 'state/wsx/web/owner/push.json')
         assert stored.stat().st_mode & 0o777 == 0o600
         settle('owner')
-        # An agent that finished never pushes; it waits for the digest.
+        # An agent that finished never pushes.
         owner.request('POST', chat + '/send', {'text': 'notify me'})
         wait(lambda: traces('owner')[-1].splitlines()[-1] == 'notify me', 'finished turn')
         settle('owner')
@@ -2847,7 +2846,7 @@ capabilities = ["terminal_view"]
         assert both == {'kind': 'agents', 'title': '2 agents need input: owner chat, second chat',
                         'body': 'owner chat: %s\nsecond chat: %s' % (question, question), 'url': '#/',
                         'tag': 'wsx-owner-agents', 'badge': 2}, both
-        # Mute the second session on this device: it leaves the push and the digest.
+        # Mute the second session on this device: it leaves the push.
         assert owner.request('POST', '/api/push/mute', {'session': 999999, 'muted': True})[0] == 404
         status, body = owner.request('POST', '/api/push/mute', {'session': sessions['second'], 'muted': True})
         assert status == 200 and body['muted'] == [sessions['second']], body
@@ -2872,25 +2871,11 @@ capabilities = ["terminal_view"]
         assert failed['body'] == 'Stopped with an error' or failed['body'].startswith('Stopped with an error: '), failed
         ok('agent push: endpoint allowlist, VAPID verified and payload decrypted by an independent receiver; blocked and error push, finished does not; one push names every session and replaces the one before; a muted session is left out')
 
-        # The digest, moved to the next minute: it keeps the window and names the agent that
-        # finished, without the muted one.
-        cli('session', 'send-text', sessions['owner'], 'notify me again')
-        wait(lambda: traces('owner')[-1].splitlines()[-1] == 'notify me again', 'finished turn after the error')
-        settle('owner')
-        now = time.gmtime()
-        if now.tm_sec > 50:
-            time.sleep(61 - now.tm_sec)
-            now = time.gmtime()
-        soon = {'minute': (now.tm_hour * 60 + now.tm_min + 1) % 1440, 'utc_offset_minutes': 0}
-        assert owner.request('POST', '/api/push', {'subscription': subscription, 'choices': dict(agents_only, digest=soon)})[1]['muted'] == [sessions['second']]
-        digest = wait(lambda: len(pushes()) == 4 and pushes()[3], 'daily digest', timeout=90)['payload']
-        assert digest == {'kind': 'digest', 'title': 'Owner <wsx>: daily digest', 'body': '1 agent finished: owner chat',
-                          'url': '#/', 'tag': 'wsx-owner-digest', 'badge': 1}, digest
         # The muted session goes with its session.
         second = next(item for item in call('snapshot')['data']['sessions'] if item['id'] == sessions['second'])
         assert call('session_close', {'session_id': sessions['second'], 'expected_revision': second['revision']})['type'] == 'ack'
         wait(lambda: owner.request('GET', '/api/push')[1]['muted'] == [], 'mute forgotten with its session')
-        ok('agent digest: at the minute the device chose, an agent that finished; a muted session is left out and forgotten with its session')
+        ok('a muted session is forgotten with its session')
 
         # --- Per-device rate limit, then revocation.
         codes = [owner.request('GET', '/api/session')[0] for _ in range(140)]
@@ -3775,7 +3760,7 @@ merge_seconds = 3
             ok('a removed capture: capture_removed on the task\'s item, its route 404, the poster still served')
 
         # --- "Manager needs me": one push per device naming every open item, replacing the one
-        # before; ready, failed and landed wait for the daily digest (docs/web-client.md "Notifications").
+        # before; ready, failed and landed do not push (docs/web-client.md "Notifications").
         def pushes(kind, path='/push/tasks'):
             file = work / 'push.jsonl'
             records = [json.loads(line) for line in file.read_text().splitlines()] if file.exists() else []
@@ -3784,14 +3769,11 @@ merge_seconds = 3
         subscription = {'endpoint': push_origin + '/push/tasks', 'keys': keys}
         refused = steady(plain, 'POST', '/api/push', {'subscription': dict(subscription, endpoint=push_origin + '/push/plain'), 'choices': {'manager': True}})
         assert refused[0] == 403, refused
-        # The digest at a time far off for now; it is moved to the next minute below.
-        later = (time.gmtime().tm_hour * 60 + time.gmtime().tm_min + 180) % 1440
-        choices = {'manager': True, 'agents': False, 'digest': {'minute': later, 'utc_offset_minutes': 0}}
+        choices = {'manager': True, 'agents': False}
         status, body = steady(owner, 'POST', '/api/push', {'subscription': subscription, 'choices': choices})
         assert status == 200 and body['choices'] == choices and body['muted'] == [], body
-        subscribed_ms = time.time() * 1000
         time.sleep(4)  # items from the journey above went out to nobody
-        baselines = {'manager': len(pushes('manager')), 'digest': len(pushes('digest'))}
+        baselines = {'manager': len(pushes('manager'))}
 
         def new_pushes(kind, label, timeout=30):
             got = wait(lambda: len(pushes(kind)) > baselines[kind] and pushes(kind)[baselines[kind]:], label, timeout=timeout)
@@ -3848,7 +3830,7 @@ merge_seconds = 3
             lines = payload['body'].split('\n')
             return entry in lines or project + ': ' + entry in lines
         assert says(merged[0], line(first, 'asks')) and says(merged[0], line(second, 'asks')), merged
-        # Ready and failed wait for the digest.
+        # Ready and failed do not push.
         for n in (first, second):
             js('task', 'add', n, 'NOOP', '-p', 'demo')
         wait_state(first, 'ready')
@@ -3910,44 +3892,126 @@ merge_seconds = 3
         assert len(roled) == 1 and says(roled[0], 'notes wrote to you'), roled
         ok('manager push: waiting merged in one, a new To check item, an approval, a reply the manager started (not one to the owner); each names every open item and replaces the one before; ready and failed do not push; the shown project skipped for that device; presence ends with the stream; manager needs task_view')
 
-        # The daily digest, moved to the next minute: the window since the switch was turned on
-        # stays, so it lists what became ready, failed or landed since, each in its latest state.
-        now = time.gmtime()
-        if now.tm_sec > 50:
-            time.sleep(61 - now.tm_sec)
-            now = time.gmtime()
-        choices['digest'] = {'minute': (now.tm_hour * 60 + now.tm_min + 1) % 1440, 'utc_offset_minutes': 0}
-        assert steady(owner, 'POST', '/api/push', {'subscription': subscription, 'choices': choices})[1]['choices'] == choices
-        digest = new_pushes('digest', 'daily digest', timeout=90)
-        assert len(digest) == 1 and digest[0]['title'] == owner_name + ': daily digest' and digest[0]['tag'] == 'wsx-owner-digest' and digest[0]['url'] == '#/', digest
-        told = digest[0]['body'].split('\n')
-        prefix = 'demo: ' if any(entry.startswith('demo: ') for entry in told) else ''
+        # A project's digest is its routine (docs/tasks.md "Routines"): demo has one, ui has none.
+        def digests(name):
+            entries = js('task', 'chat', '-p', name)['entries']
+            asked = {e['id'] for e in entries if e['kind'] == 'message' and e['from'] == 'events' and e['text'] == 'daily digest'}
+            return [e for e in entries if e['kind'] == 'reply' and asked & set(e['to'])]
+
+        def row_of(name, routine):
+            return next(row for row in js('task', 'ledger', '-p', name)['routines'] if row['name'] == routine)
+
+        def add_routine(name, routine, *command):
+            js('task', 'routine', 'add', routine, '-p', name, '--cron', '0 3 1 1 *', *('--arg=' + word for word in command))
+
+        def ran(name, routine):
+            """Run a routine and wait for its end; the ledger counts in seconds."""
+            before = (row_of(name, routine)['last'] or {}).get('unix_ms')
+            time.sleep(1.1)
+            js('task', 'routine', 'run', routine, '-p', name)
+            def ended():
+                row = row_of(name, routine)
+                return not row['running'] and row['last'] and row['last']['unix_ms'] != before and row['last']
+            return wait(ended, 'routine %s of %s ended' % (routine, name), timeout=60)
+
+        def turns():
+            return (work / 'fake-claude.trace').read_text()
+
+        apart = js('task', 'new', 'NOOP only-in-ui', '-p', 'ui')['id']
+        wait(lambda: js('task', 'show', apart, '-p', 'ui')['state'] == 'ready', 'ui ready')
+        digest_argv = (str(wsx), 'task', 'digest', '-p', 'demo')
+        add_routine('demo', 'digest', *digest_argv)
+        assert ran('demo', 'digest')['status'] == 'succeeded'
+        told = wait(lambda: digests('demo'), 'the digest in the chat')
+        assert len(told) == 1 and told[0].get('usage') is None and not told[0]['quiet'], told
+        said = told[0]['text'].split('\n')
         for expected in (line(first, 'ready for review'), line(second, 'ready for review'),
                          line(broken, 'failed: test ! -e broken.txt failed'), line(checked, 'landed')):
-            assert prefix + expected in told, (expected, told)
-        # Each task once; nothing from before the switch, nothing that waits.
-        before = [row['id'] for row in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['tasks'] if row['updated_unix_ms'] <= subscribed_ms]
-        assert not any(entry.startswith(prefix + '#%d ' % n) for n in before + [hidden, gone] for entry in told), told
-        time.sleep(6)
-        assert len(pushes('digest')) == baselines['digest'], 'a second digest the same day'
-        ok('daily digest: at the minute the device chose, once a day, ready, failed and landed since the last one in their latest state; a new time keeps the window')
+            assert expected in said, (expected, said)
+        # Each task once, none of the other project, none that waits.
+        assert 'only-in-ui' not in told[0]['text'] and digests('ui') == [], told
+        assert not any(entry.startswith('#%d ' % n) for n in (hidden, gone) for entry in said), said
+        # The push shows the lines, and the manager had no turn for any of it.
+        posted = new_pushes('manager', 'the push of the digest')[-1]
+        assert any(says(posted, entry) for entry in said) and 'only-in-ui' not in posted['body'] and 'wrote to you' not in posted['body'], posted
+        time.sleep(4)
+        assert 'routine digest' not in turns() and 'daily digest' not in turns()
+        # Nothing new: the next run starts at this digest and posts nothing.
+        assert ran('demo', 'digest')['status'] == 'succeeded'
+        time.sleep(4)
+        assert len(digests('demo')) == 1 and len(pushes('manager')) == baselines['manager'], digests('demo')
+        ok('digest routine: one message in its own project, only its tasks, its lines in the push; no manager turn; nothing new posts nothing')
 
-        # Earlier topics are read once and map to the switches; the server keeps no topic list.
+        # A digest waits for a running turn: a reply inside it would read as the turn's end.
+        late = js('task', 'new', 'NOOP late-one', '-p', 'demo')['id']
+        wait_state(late, 'ready')
+        time.sleep(4)  # the manager's turn for that event
+        waited = js('task', 'say', 'LONG', '-p', 'demo')['id']
+        wait(lambda: next(o for o in steady(owner, 'GET', '/api/tasks')[1] if o['project'] == demo)['busy'], 'the long turn')
+        assert ran('demo', 'digest')['status'] == 'succeeded'
+        entries = js('task', 'chat', '-p', 'demo')['entries']
+        answer = next(e['id'] for e in entries if e['kind'] == 'reply' and waited in e['to'])
+        assert len(digests('demo')) == 2 and digests('demo')[1]['id'] > answer, digests('demo')
+        assert digests('demo')[1]['text'].split('\n') == [line(late, 'ready for review')], digests('demo')
+        new_pushes('manager', 'the push of the second digest')
+        ok('a digest waits for the running turn and starts at the last digest')
+
+        # Every routine: a success with empty stdout gives the manager no event and no turn, the
+        # ledger still shows it; one with output does; a digest with no host fails and is told.
+        add_routine('demo', 'silent', '/bin/sh', '-c', 'exit 0')
+        add_routine('demo', 'loud', '/bin/sh', '-c', 'echo hello')
+        assert ran('demo', 'silent')['status'] == 'succeeded'
+        time.sleep(4)
+        assert 'routine silent' not in turns() and row_of('demo', 'silent')['last']['exit'] == 0
+        assert ran('demo', 'loud')['status'] == 'succeeded'
+        wait(lambda: 'routine loud succeeded' in turns(), 'the turn for a routine with output')
+        ok('routines: empty stdout gives no event and no turn and stays in the ledger; output gives a turn')
+        js('task', 'manager', '-p', 'ui')
+        ui_socket = state / 'wsx/tasks' / ('ui-' + hashlib.sha256(str(other).encode()).hexdigest()[:8]) / 'manager/manager.sock'
+        hidden_socket = ui_socket.with_name('aside.sock')
+        add_routine('ui', 'digest', str(wsx), 'task', 'digest', '-p', 'ui')
+        ui_socket.rename(hidden_socket)  # ^ As far as a client can tell, no host runs.
+        refused = ran('ui', 'digest')
+        hidden_socket.rename(ui_socket)
+        assert refused['status'] == 'failed', refused
+        wait(lambda: 'routine digest failed' in turns(), 'the failure event of a digest with no host')
+        assert digests('ui') == []
+        ok('a digest with no manager host fails its run, and the manager hears of it')
+
+        # Web fields of earlier versions: a push.json with a digest time and a last digest loads, and
+        # a device with only the digest on has nothing left.
         viewer_device = steady(viewer, 'GET', '/api/session')[1]['device']['id']
         stop(servers['viewer'])
         stored = state / 'wsx/web/viewer/push.json'
+        old_digest = {'minute': 540, 'utc_offset_minutes': 0}
+        stored.write_text(json.dumps([
+            {'device_id': viewer_device, 'endpoint': push_origin + '/push/old', 'keys': keys, 'created_unix': int(time.time()),
+             'choices': {'manager': False, 'agents': True, 'digest': old_digest}, 'muted': [], 'digest_sent': [20000, 1700000000]},
+            {'device_id': 'digest-only', 'endpoint': push_origin + '/push/old2', 'keys': keys, 'created_unix': int(time.time()),
+             'choices': {'manager': False, 'agents': False, 'digest': old_digest}, 'digest_sent': [20000, 1700000000]}]))
+        servers['viewer'] = start(work, [str(wsx), 'web', 'serve', '--site', str(files['viewer'])], env=env, cwd=project,
+                                  stdout=subprocess.DEVNULL, stderr=(work / 'viewer.log').open('a'))
+        wait(lambda: _up(viewer), 'restarted viewer server')
+        assert steady(viewer, 'GET', '/api/push')[1]['choices'] == {'manager': False, 'agents': True}
+        saved = steady(viewer, 'POST', '/api/push', {'subscription': {'endpoint': push_origin + '/push/old', 'keys': keys}, 'choices': {'manager': False, 'agents': True}})
+        assert saved[0] == 200, saved
+        rewritten = json.loads(stored.read_text())
+        assert [device['device_id'] for device in rewritten] == [viewer_device] and 'digest' not in json.dumps(rewritten), rewritten
+        ok('an old push.json with digest fields loads; a digest-only device is dropped; the next save writes no digest')
+
+        # Earlier topics are read once and map to the switches; the server keeps no topic list.
+        stop(servers['viewer'])
         stored.write_text(json.dumps([{'device_id': viewer_device, 'endpoint': push_origin + '/push/old', 'keys': keys,
                                        'topics': ['blocked', 'done', 'tasks'], 'created_unix': int(time.time())}]))
         servers['viewer'] = start(work, [str(wsx), 'web', 'serve', '--site', str(files['viewer'])], env=env, cwd=project,
                                   stdout=subprocess.DEVNULL, stderr=(work / 'viewer.log').open('a'))
         wait(lambda: _up(viewer), 'restarted viewer server')
-        offset = time.localtime().tm_gmtoff // 60
         migrated = steady(viewer, 'GET', '/api/push')[1]
-        assert migrated['choices'] == {'manager': True, 'agents': True, 'digest': {'minute': 540, 'utc_offset_minutes': offset}}, migrated
+        assert migrated['choices'] == {'manager': True, 'agents': True}, migrated
         assert 'topics' not in stored.read_text() and json.loads(stored.read_text())[0]['choices']['manager'] is True
-        assert steady(viewer, 'DELETE', '/api/push', {})[1]['choices'] == {'manager': False, 'agents': False, 'digest': None}
+        assert steady(viewer, 'DELETE', '/api/push', {})[1]['choices'] == {'manager': False, 'agents': False}
         assert json.loads(stored.read_text()) == []
-        ok('old topics: blocked, done and tasks read as an agent needs me, manager needs me and a 09:00 digest; stored without topics')
+        ok('old topics: blocked and error read as an agent needs me, tasks as manager needs me; stored without topics')
         success = True
     finally:
         for process in reversed(STARTED):

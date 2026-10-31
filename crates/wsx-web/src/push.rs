@@ -35,48 +35,27 @@ enum OldTopic {
     Tasks,
 }
 
-/// The two switches that push at once; the digest has its own time (docs/web-client.md
-/// "Notifications").
+/// The two switches (docs/web-client.md "Notifications").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Switch {
     Manager,
     Agents,
 }
 
-/// When a device gets its daily digest: a minute of its day, in the offset it had then.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DigestTime {
-    pub minute: u16,
-    pub utc_offset_minutes: i16,
-}
-
-impl DigestTime {
-    /// The device's day number at `unix`, and whether its digest minute has come that day.
-    pub fn day(&self, unix: u64) -> (i64, bool) {
-        let local = unix as i64 + i64::from(self.utc_offset_minutes) * 60;
-        (
-            local.div_euclid(86_400),
-            local.rem_euclid(86_400) / 60 >= i64::from(self.minute),
-        )
-    }
-}
-
 /// What a device chose: the API's body and part of its stored subscription.
+/// ^ No `deny_unknown_fields`: `open` drops every device when `push.json` does not parse, and
+/// a file or an open page from before 0.43 still has `digest`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Choices {
     #[serde(default)]
     pub manager: bool,
     #[serde(default)]
     pub agents: bool,
-    #[serde(default)]
-    pub digest: Option<DigestTime>,
 }
 
 impl Choices {
     pub fn any(&self) -> bool {
-        self.manager || self.agents || self.digest.is_some()
+        self.manager || self.agents
     }
 }
 
@@ -107,9 +86,6 @@ pub struct Subscription {
     /// Sessions this device hears nothing about.
     #[serde(default)]
     pub muted: Vec<u64>,
-    /// The device's day of the last digest and when it went: the next lists what came after.
-    #[serde(default)]
-    pub digest_sent: Option<(i64, u64)>,
     #[serde(default, skip_serializing)]
     topics: Vec<OldTopic>,
     created_unix: u64,
@@ -124,38 +100,13 @@ impl Subscription {
     }
 
     /// Earlier topics as switches: blocked and error are "An agent needs me", tasks is
-    /// "Manager needs me", and done and tasks' digest are the daily digest, at 09:00 here.
+    /// "Manager needs me", and done maps to nothing.
     fn migrate(&mut self) {
         let topics = std::mem::take(&mut self.topics);
         let choices = &mut self.choices;
         choices.agents |= topics.contains(&OldTopic::Blocked) || topics.contains(&OldTopic::Error);
         choices.manager |= topics.contains(&OldTopic::Tasks);
-        if choices.digest.is_none()
-            && (topics.contains(&OldTopic::Done) || topics.contains(&OldTopic::Tasks))
-        {
-            choices.digest = Some(DigestTime {
-                minute: 9 * 60,
-                utc_offset_minutes: local_offset_minutes(),
-            });
-        }
     }
-}
-
-/// This host's UTC offset now, for a digest time migrated without the device's own.
-fn local_offset_minutes() -> i16 {
-    let now = now_unix() as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: both pointers are valid for the call; localtime_r is thread-safe.
-    if unsafe { libc::localtime_r(&now, &mut tm) }.is_null() {
-        return 0;
-    }
-    (tm.tm_gmtoff / 60) as i16
-}
-
-/// The first digest after the digest is switched on: today when its time is still to come.
-fn first_digest(time: DigestTime, now: u64) -> (i64, u64) {
-    let (day, passed) = time.day(now);
-    (if passed { day } else { day - 1 }, now)
 }
 
 pub struct Push {
@@ -205,12 +156,6 @@ impl Push {
             .any(|subscription| !subscription.topics.is_empty());
         for subscription in &mut subscriptions {
             subscription.migrate();
-            if subscription.digest_sent.is_none() {
-                subscription.digest_sent = subscription
-                    .choices
-                    .digest
-                    .map(|time| first_digest(time, now_unix()));
-            }
         }
         // ^ A device whose topics map to no switch has nothing left to receive.
         subscriptions.retain(|subscription| subscription.choices.any());
@@ -254,19 +199,13 @@ impl Push {
     }
 
     /// Store this device's choices. With every switch off the subscription is removed.
-    /// Its mutes and the last digest are kept while it stays.
+    /// Its mutes are kept while it stays.
     pub fn subscribe(
         &self,
         device_id: &str,
         input: SubscriptionInput,
         choices: Choices,
     ) -> Result<()> {
-        if let Some(time) = choices.digest {
-            ensure!(
-                time.minute < 24 * 60 && (-14 * 60..=14 * 60).contains(&time.utc_offset_minutes),
-                "digest time is out of range"
-            );
-        }
         ensure!(
             input.endpoint.len() <= MAX_ENDPOINT_BYTES
                 && !input.endpoint.chars().any(|c| c.is_control() || c == ' '),
@@ -285,18 +224,6 @@ impl Push {
             .map(|index| subscriptions.remove(index));
         if choices.any() {
             let now = now_unix();
-            // ^ The same time keeps the next digest; a new one keeps what it will list.
-            let digest_sent = choices.digest.map(|time| {
-                let kept = before.as_ref().and_then(|before| before.digest_sent);
-                match (
-                    kept,
-                    before.as_ref().and_then(|before| before.choices.digest),
-                ) {
-                    (Some(kept), Some(was)) if was == time => kept,
-                    (Some((_, since)), _) => (first_digest(time, now).0, since),
-                    (None, _) => first_digest(time, now),
-                }
-            });
             subscriptions.push(Subscription {
                 device_id: device_id.to_owned(),
                 endpoint: input.endpoint,
@@ -306,7 +233,6 @@ impl Push {
                     .as_ref()
                     .map(|before| before.muted.clone())
                     .unwrap_or_default(),
-                digest_sent,
                 topics: Vec::new(),
                 created_unix: before.map_or(now, |before| before.created_unix),
             });
@@ -350,18 +276,6 @@ impl Push {
             changed |= subscription.muted.len() != before;
         }
         if changed {
-            self.save(&subscriptions);
-        }
-    }
-
-    /// Record that a device's digest for `day` went (or had nothing to say) at `unix`.
-    pub fn digest_sent(&self, device_id: &str, day: i64, unix: u64) {
-        let mut subscriptions = crate::locked(&self.subscriptions);
-        if let Some(subscription) = subscriptions
-            .iter_mut()
-            .find(|subscription| subscription.device_id == device_id)
-        {
-            subscription.digest_sent = Some((day, unix));
             self.save(&subscriptions);
         }
     }

@@ -1144,8 +1144,8 @@ enum Key {
     Task(u32),
     Approval(String),
     Checks,
-    /// A reply the manager or a role started on its own: its line `<name> wrote to you`
-    /// and the chat it opens.
+    /// A reply the manager or a role started on its own: its line `<name> wrote to you`, or the
+    /// lines of one wsx wrote, and the chat it opens.
     Wrote(String, String),
 }
 
@@ -1176,7 +1176,7 @@ fn attention(project: u64, overview: &Value) -> Vec<Open> {
                 };
                 (
                     Key::Task(task),
-                    task_line(task, need["title"].as_str().unwrap_or(""), &what),
+                    view::task_line(task, need["title"].as_str().unwrap_or(""), &what),
                 )
             }
             (Some("approval"), _) => (
@@ -1240,7 +1240,8 @@ fn notice(scope: &Scope, watch: &mut Watch) {
 /// Note a reply the manager or a role started on its own for "Manager needs me": one that is
 /// a message (not quiet) to a turn of only wsx's events or a recap request, as after a
 /// routine's result. A reply to the owner or another manager is no news (docs/web-client.md
-/// "Notifications"). A role's names the role and opens its chat.
+/// "Notifications"). A role's names the role and opens its chat. A reply with no usage came from
+/// wsx, not the agent, so the push shows its text.
 fn wrote(scope: &Scope, watch: &mut Watch) {
     let roles = task::roles::open_roles(&scope.store);
     let chats = std::iter::once(ManagerDir::existing(&scope.store).ok().flatten())
@@ -1259,22 +1260,36 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
         let key = (scope.project, dir.name().to_string());
         // ^ A chat seen for the first time, as at a server start, notifies nothing.
         let last = watch.replies.get(&key).copied();
+        let (name, url) = match &dir.role {
+            Some(role) => (role.clone(), format!("#/p/{}/r/{role}", scope.project)),
+            None => (manager_name(scope), format!("#/p/{}", scope.project)),
+        };
         let mut news = false;
         for entry in &log {
-            let ManagerEvent::Reply { id, to, quiet, .. } = &entry.event else {
+            let ManagerEvent::Reply {
+                id,
+                to,
+                quiet,
+                text,
+                usage,
+                ..
+            } = &entry.event
+            else {
                 continue;
             };
-            if last.is_some_and(|last| *id > last) && !quiet && !to.is_empty() {
-                news |= to.iter().all(own);
+            if last.is_some_and(|last| *id > last) && !quiet && !to.is_empty() && to.iter().all(own)
+            {
+                match usage {
+                    Some(_) => news = true,
+                    None => watch
+                        .pending
+                        .add((scope.project, Key::Wrote(text.clone(), url.clone()))),
+                }
             }
             watch.replies.insert(key.clone(), *id);
         }
         watch.replies.entry(key).or_default();
         if news {
-            let (name, url) = match &dir.role {
-                Some(role) => (role.clone(), format!("#/p/{}/r/{role}", scope.project)),
-                None => (manager_name(scope), format!("#/p/{}", scope.project)),
-            };
             watch.pending.add((
                 scope.project,
                 Key::Wrote(format!("{name} wrote to you"), url),
@@ -1347,10 +1362,13 @@ pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
     let lines: Vec<String> = projects
         .iter()
         .flat_map(|(_, name, items)| {
-            items.iter().map(move |item| match several {
-                false => item.line.clone(),
-                true => format!("{name}: {}", item.line),
-            })
+            items
+                .iter()
+                .flat_map(|item| item.line.lines())
+                .map(move |line| match several {
+                    false => line.to_string(),
+                    true => format!("{name}: {line}"),
+                })
         })
         .collect();
     let items: Vec<&Open> = projects
@@ -1377,61 +1395,6 @@ pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
     crate::events::deliver(app, crate::push::Switch::Manager, |device| {
         (!skip.contains(&device.device_id)).then(|| payload.clone())
     });
-}
-
-/// `#4 Fix the login: <what>`, the title cut at 60 characters and the line at 160.
-fn task_line(task: u32, title: &str, what: &str) -> String {
-    let title = view::clip(title.trim(), view::MAX_TITLE_CHARS);
-    let line = if title.is_empty() {
-        format!("#{task} {what}")
-    } else {
-        format!("#{task} {title}: {what}")
-    };
-    view::clip(&line, NOTICE_CHARS)
-}
-const NOTICE_CHARS: usize = 160;
-
-/// What the daily digest says of a project since `after_ms`: each task that became ready,
-/// failed or landed, in its latest state (`failed` names the first check that did not pass),
-/// and the last deploy and release (docs/web-client.md "Notifications").
-pub fn digest_lines(scope: &Scope, after_ms: u64) -> Vec<String> {
-    let mut lines = Vec::new();
-    for (dir, record) in view::project_tasks(&scope.store).unwrap_or_default() {
-        let Ok(record) = record else { continue };
-        if record.updated_unix_ms <= after_ms {
-            continue;
-        }
-        let what = match record.state {
-            TaskState::Failed => view::read_result(&dir)
-                .and_then(|result| {
-                    view::check_outcomes(&result)
-                        .into_iter()
-                        .find(|(_, outcome)| *outcome != "passed")
-                        .map(|(command, outcome)| format!("failed: {command} {outcome}"))
-                })
-                .unwrap_or_else(|| "failed".into()),
-            TaskState::Ready => "ready for review".into(),
-            TaskState::Landed => "landed".into(),
-            _ => continue,
-        };
-        let title = view::readable_title(&dir, &record).unwrap_or_default();
-        lines.push(task_line(record.id, &title, &what));
-    }
-    let deploys = store::read_deploys(&scope.store).unwrap_or_default();
-    for (kind, word) in [
-        (task::DeployKind::Deploy, "deployed"),
-        (task::DeployKind::Release, "released"),
-    ] {
-        if let Some(deploy) = deploys.iter().rev().find(|deploy| {
-            deploy.kind == kind && deploy.exit == Some(0) && deploy.unix_ms > after_ms
-        }) {
-            lines.push(format!(
-                "{word} {}",
-                deploy.commit.get(..7).unwrap_or(&deploy.commit)
-            ));
-        }
-    }
-    lines
 }
 
 /// One observer step: publish `tasks` when a project's overview changed, `task` for each

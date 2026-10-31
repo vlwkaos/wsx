@@ -219,6 +219,22 @@ impl ManagerEntry {
     }
 }
 
+/// The events message of a digest in the chat (`wsx task digest`).
+pub const DIGEST_EVENT: &str = "daily digest";
+
+/// When the newest digest in `log` was posted: the next one starts there. A run with nothing
+/// to say posts nothing, so the next one covers its time too.
+pub fn last_digest_ms(log: &[ManagerEntry]) -> Option<u64> {
+    log.iter().rev().find_map(|entry| match &entry.event {
+        ManagerEvent::Message {
+            from: Author::Events,
+            text,
+            ..
+        } if text == DIGEST_EVENT => Some(entry.unix_ms),
+        _ => None,
+    })
+}
+
 /// Most entries the chat shows at once.
 pub const CHAT_ENTRIES: usize = 200;
 
@@ -482,6 +498,13 @@ pub enum ManagerRequest {
         /// Another project's manager; none is the owner.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<Author>,
+    },
+    /// wsx writes to the owner with no manager turn: `event` as a delivered events message and
+    /// `text` as the reply to it, with no usage. Refused while a turn runs: a reply after that
+    /// turn's delivery would read as its end. ref: docs/tasks.md "Routines"
+    Post {
+        event: String,
+        text: String,
     },
 }
 

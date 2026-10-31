@@ -4,14 +4,11 @@ import { html, useEffect, useState } from "./lib.js";
 import { can, loadPush, pageBuild, reloadForBuild, setMuted, state, update, useStore } from "./store.js";
 import { confirmDialog, hasDarkScheme, scheme, setScheme } from "./ui.js";
 
-// The three switches of this device (docs/web-client.md "Notifications").
+// The two switches of this device (docs/web-client.md "Notifications").
 const SWITCHES = [
   ["manager", "Manager needs me", "A task waits for you, an approval is asked, or there is something new to check.", "task_view"],
   ["agents", "An agent needs me", "A session's agent needs your input or stopped with an error."],
-  ["digest", "Daily digest", "Once a day: tasks that landed, failed or deployed, and agents that finished."],
 ];
-const DEFAULT_DIGEST = 9 * 60;
-const clock = (minute) => `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
 
 function keyBytes(base64url) {
   const text = atob(base64url.replaceAll("-", "+").replaceAll("_", "/"));
@@ -32,13 +29,13 @@ function Push() {
     }
     loadPush().then(() => setBusy(false), (failure) => setStatus({ text: failure.message, failed: true }));
   }, []);
-  const choices = store.push?.choices ?? { manager: false, agents: false, digest: null };
+  const choices = store.push?.choices ?? { manager: false, agents: false };
   const muted = store.push?.muted ?? [];
   const save = async (next) => {
     setBusy(true);
     try {
       const registration = await navigator.serviceWorker.ready;
-      if (!next.manager && !next.agents && !next.digest) {
+      if (!next.manager && !next.agents) {
         await (await registration.pushManager.getSubscription())?.unsubscribe();
         update({ push: await api("api/push", { method: "DELETE", json: {} }) });
         setStatus({ text: "Notifications are off for this device." });
@@ -57,8 +54,7 @@ function Push() {
     }
     setBusy(false);
   };
-  const digestAt = (minute) => ({ minute, utc_offset_minutes: -new Date().getTimezoneOffset() });
-  const flip = (name) => save({ ...choices, [name]: name === "digest" ? (choices.digest ? null : digestAt(DEFAULT_DIGEST)) : !choices[name] });
+  const flip = (name) => save({ ...choices, [name]: !choices[name] });
   const unmute = async () => {
     setBusy(true);
     try {
@@ -76,18 +72,9 @@ function Push() {
         ${SWITCHES.filter(([, , , needs]) => !needs || can(needs)).map(([name, label, hint]) => html`
           <label class="option option-row" key=${name}>
             <span class="option-text">${label}<span class="option-hint">${hint}</span></span>
-            <input type="checkbox" role="switch" name=${name} checked=${name === "digest" ? Boolean(choices.digest) : choices[name]}
+            <input type="checkbox" role="switch" name=${name} checked=${choices[name]}
               disabled=${busy} onChange=${() => flip(name)} />
           </label>`)}
-        ${choices.digest && html`
-          <label class="option option-row">
-            <span class="option-text">Digest time</span>
-            <input class="input option-time" type="time" name="digest-time" value=${clock(choices.digest.minute)} disabled=${busy}
-              onChange=${(event) => {
-                const [hours, minutes] = event.target.value.split(":").map(Number);
-                if (Number.isInteger(hours) && Number.isInteger(minutes)) save({ ...choices, digest: digestAt(hours * 60 + minutes) });
-              }} />
-          </label>`}
         ${muted.length > 0 && html`
           <div class="option option-row">
             <span class="option-text">${muted.length} ${muted.length === 1 ? "session" : "sessions"} muted</span>

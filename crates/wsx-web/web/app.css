@@ -976,7 +976,6 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .option-text { flex: 1 1 calc(var(--size-rail) * 0.6); min-width: 0; display: flex; flex-direction: column; }
 .option-hint { font-size: var(--font-size-sm); color: var(--color-muted); }
 .option-row input[type="checkbox"] { flex: none; margin: 0; }
-.option-time { width: auto; font-size: var(--font-size-field); color: var(--color-text); }
 .option-status { margin: 0; padding: var(--space-2) var(--space-4); font-size: var(--font-size-sm); }
 .device { padding: 0 var(--space-4); font-size: var(--font-size-sm); }
 /* Version facts: the label left, the value beside it. */

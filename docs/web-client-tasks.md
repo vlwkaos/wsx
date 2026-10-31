@@ -107,12 +107,12 @@ The event observer decides from the task records, `approvals.jsonl` and the open
 | Change | Goes to |
 |---|---|
 | a task starts waiting (not on `hand`), a new approval request, new To check items, a reply the manager or a role starts on its own after events or a recap (`manager/log.jsonl`, `roles/<name>/log.jsonl`) | "Manager needs me": one push that names every open item of these kinds and the new reply, replacing the earlier one |
-| a task becomes `ready`, `failed` or `landed`, a deploy or a release | the daily digest, read from the store at its time |
+| a task becomes `ready`, `failed` or `landed`, a deploy or a release | no push; a project's digest routine reports them ([tasks.md](tasks.md) "Routines") |
 
 - A change is counted by its (state, revision); a project first seen after a server start notifies nothing, and working, checking and stopped never notify.
 - No "Manager needs me" push goes to a device while one of its pages shows the project of every new item (any `#/p/<project>` route) and is visible. The page opens its event stream as `api/events?page=<id>` with an id it chose, and `POST api/presence {page, project}` tells the server the project it shows (`null` when hidden or elsewhere). The presence of a page ends with its last stream; a page id belongs to the device that opened it (404 for another device's or an unknown page).
 - "Since you left": the device records when it left a project's screen (route change or hidden page). On opening it again, or coming back to it, more than a minute later, the screen asks `since` and shows one line, "Since you left: #2 #3 landed · #1 blocked · 2 replies", with *Dismiss*. Nothing runs while the device is away; the line is computed from the logs.
-- Limits: a push or a digest waits while `wsxd` is unavailable, because the observer runs with the daemon's long-poll. Push text is written by wsx, never by the manager.
+- Limits: a push waits while `wsxd` is unavailable, because the observer runs with the daemon's long-poll. Push text is written by wsx, never by the manager.
 
 ## Motion
 

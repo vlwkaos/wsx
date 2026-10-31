@@ -4,7 +4,6 @@
 //! connected, compares transcript file stamps so new history reaches the page.
 use crate::{
     chat::{self, exchange_view, session_view},
-    devices::now_unix,
     push::{Subscription, Switch},
     App,
 };
@@ -23,8 +22,6 @@ const POLL_MS: u64 = 2_000;
 const WORKING_POLL_MS: u64 = 800;
 // How often the server reads whether an upgrade of the running wsxd failed.
 const UPGRADE_CHECK: Duration = Duration::from_secs(30);
-// How often the server looks whether a device's daily digest is due.
-const DIGEST_CHECK: Duration = Duration::from_secs(5);
 
 /// A named server-sent event with a JSON body.
 #[derive(Clone)]
@@ -67,7 +64,6 @@ fn observe(app: Arc<App>) {
     let mut questions: HashMap<u64, Option<String>> = HashMap::new();
     // Sessions whose agent began to need the owner, for "An agent needs me".
     let mut agents: Pending<u64> = Pending::default();
-    let mut last_digest_check = Instant::now();
     let mut alive_before: Vec<u64> = Vec::new();
     // ^ docs/daemon-live-upgrade.md: wsxd takes a poll without presence for an old TUI
     // and defers every upgrade. This server reconnects by itself, so it says at which
@@ -180,7 +176,7 @@ fn observe(app: Arc<App>) {
                 .insert(session, state)
                 .is_some_and(|previous| previous != state);
             // A transition is the only trigger: the first sight of a session, or a
-            // server restart, never notifies. "Finished" goes to the daily digest only.
+            // server restart, never notifies. An agent that finished never does.
             if transition && !first && chat::needs_owner(target).is_some() {
                 agents.add(session);
             }
@@ -242,10 +238,6 @@ fn observe(app: Arc<App>) {
         }
         if let Some(new) = agents.due(Duration::from_secs(app.site.notify.agents.merge_seconds)) {
             notify_agents(app, &targets, &new, badge);
-        }
-        if last_digest_check.elapsed() >= DIGEST_CHECK || first {
-            last_digest_check = Instant::now();
-            daily_digest(app, &snapshot, &targets, badge);
         }
         let alive: Vec<u64> = targets.iter().map(|target| target.session_id.0).collect();
         if alive != alive_before {
@@ -423,89 +415,6 @@ fn notify_agents(app: &Arc<App>, targets: &[chat::Target], new: &[u64], badge: u
             "tag": tag, "badge": badge,
         }))
     });
-}
-
-/// Each device's daily digest, once its time came that day: what the two switches leave
-/// out since the last one. Nothing to say sends nothing (docs/web-client.md "Notifications").
-fn daily_digest(
-    app: &Arc<App>,
-    snapshot: &runtime::Snapshot,
-    targets: &[chat::Target],
-    badge: usize,
-) {
-    let Some(push) = &app.push else {
-        return;
-    };
-    let Some(paired) = paired(app) else {
-        return;
-    };
-    let now = now_unix();
-    let scopes = if app.site.allows(crate::site::Capability::TaskView) {
-        crate::tasks::scopes(snapshot, &app.site.access)
-    } else {
-        Vec::new()
-    };
-    for device in push.devices(&paired) {
-        let Some(time) = device.choices.digest else {
-            continue;
-        };
-        let (day, passed) = time.day(now);
-        let (last, since) = device.digest_sent.unwrap_or((day - 1, now));
-        if !passed || last >= day {
-            continue;
-        }
-        push.digest_sent(&device.device_id, day, now);
-        let projects: Vec<(&str, Vec<String>)> = scopes
-            .iter()
-            .map(|scope| {
-                (
-                    scope.name.as_str(),
-                    crate::tasks::digest_lines(scope, since * 1000),
-                )
-            })
-            .filter(|(_, lines)| !lines.is_empty())
-            .collect();
-        let several = projects.len() > 1;
-        let mut lines: Vec<String> = projects
-            .into_iter()
-            .flat_map(|(name, lines)| {
-                lines.into_iter().map(move |line| match several {
-                    true => format!("{name}: {line}"),
-                    false => line,
-                })
-            })
-            .collect();
-        let finished: Vec<String> = targets
-            .iter()
-            .filter(|target| {
-                !chat::is_task_session(target)
-                    && !device.muted.contains(&target.session_id.0)
-                    && target.pane.agent.as_ref().is_some_and(|agent| {
-                        agent.attached
-                            && agent.state == AgentState::Done
-                            && agent
-                                .state_since_unix_ms
-                                .is_some_and(|ms| ms > since * 1000)
-                    })
-            })
-            .map(|target| wsx_core::task::view::clip(target.label, 30))
-            .collect();
-        if !finished.is_empty() {
-            lines.push(counted(&finished, "agent finished", "agents finished"));
-        }
-        if lines.is_empty() {
-            continue;
-        }
-        let payload = json!({
-            "kind": "digest",
-            "title": format!("{}: daily digest", app.site.name),
-            "body": notice_body(&lines),
-            "url": "#/",
-            "tag": format!("wsx-{}-digest", app.site.id),
-            "badge": badge,
-        });
-        send(app, vec![(device.device_id, payload)]);
-    }
 }
 
 /// `2 agents finished: a, b`.
