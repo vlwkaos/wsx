@@ -88,14 +88,14 @@ function nextWords(detail) {
       case "limit": return `${capital(detail.waiting.reason)}. It goes on by itself.`;
       case "hand": return "You work on it by hand in its session. Commit, then hand it back: its checks run and it lands as usual.";
       default: return detail.waiting?.reason === "stopped by request"
-        ? "The worker stopped. Add a message to resume it." : "The worker waits for your answer.";
+        ? "The worker stopped. Tell the manager to resume it." : "The worker waits for your answer.";
     }
     case "failed": {
       // ^ A check is a shell command; Evidence names them, this sentence only counts them.
       const failed = (detail.checks ?? []).filter((check) => check.exit !== 0).length;
       return failed
-        ? `${failed === 1 ? "A check" : `${failed} checks`} failed after the worker's retries. Add a message so it fixes ${failed === 1 ? "it" : "them"}.`
-        : "The worker could not finish. Add a message with what to do next.";
+        ? `${failed === 1 ? "A check" : `${failed} checks`} failed after the worker's retries. Tell the manager, so the worker fixes ${failed === 1 ? "it" : "them"}.`
+        : "The worker could not finish. Tell the manager what to do next.";
     }
     case "ready": {
       const reason = detail.land_reason ?? "";

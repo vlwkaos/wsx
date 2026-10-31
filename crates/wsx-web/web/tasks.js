@@ -143,10 +143,10 @@ export const needWords = (item) => item.kind === "approval" ? item.label
 export const needTone = (item) => KIND_TONE[item.kind];
 const itemKey = (item) => item.kind === "approval" ? item.approval : `${item.kind}-${item.task}`;
 
-// Drafts and outcomes of actions, by `<project>/<item>`, kept across the cards' re-renders.
+// Outcomes of actions, by `<project>/<item>`, kept across the cards' re-renders.
 const pending = new Map();
 const actionOf = (key) => {
-  if (!pending.has(key)) pending.set(key, { field: null, text: "", busy: false, error: "" });
+  if (!pending.has(key)) pending.set(key, { busy: false, error: "" });
   return pending.get(key);
 };
 
@@ -175,12 +175,12 @@ export function noteDecisions(overview) {
   }
 }
 
-// One fixed action. A success says what wsx did and clears the draft; a failure keeps it.
-async function act(project, item, action, body = {}) {
+// One fixed action. A success says what wsx did.
+async function act(project, item, action) {
   const path = item.kind === "approval"
     ? `api/tasks/${project}/approvals/${item.approval}/${action}`
     : `api/tasks/${project}/t/${item.task}/${action}`;
-  const answer = await api(path, { method: "POST", json: body });
+  const answer = await api(path, { method: "POST", json: {} });
   const name = item.kind === "approval" ? item.label : `#${item.task}`;
   announce(name, action, answer);
   await loadTasks(project);
@@ -215,62 +215,50 @@ export function ChatApprovals({ project, items }) {
 // task in its label) and what it waits for, with its one action. The title opens the task's sheet, where the
 // other actions are. `onActing` says an action started, `onFailed` that it failed: the
 // reservoir moves the focus on when the row leaves, before or after the action's answer.
-function NeedRow({ project, item, index, onActing, onFailed, leaving }) {
+// `onMention` puts the task's number into the manager's composer: the owner talks to the
+// manager, which relays to the worker (docs/web-client-tasks.md "Project screen").
+function NeedRow({ project, item, index, onActing, onFailed, onMention, leaving }) {
   const key = `${project}/${itemKey(item)}`;
-  const draft = actionOf(key);
+  const status = actionOf(key);
   const [, renew] = useState(0);
-  const field = useRef();
   const acting = can("task_act");
   const overview = useStore().tasks[project];
   // ^ This task's trial on the live site (docs/tasks.md "Hold and trial").
   const trial = overview?.trial?.task === item.task ? overview.trial : null;
   const refresh = () => renew((count) => count + 1);
-  useEffect(() => { if (draft.field) field.current?.focus(); }, [draft.field]);
-  const run = async (action, body) => {
-    draft.busy = true;
-    draft.error = "";
+  const run = async (action) => {
+    status.busy = true;
+    status.error = "";
     refresh();
     onActing(itemKey(item), index);
     try {
-      await act(project, item, action, body);
-      draft.field = null;
-      draft.text = "";
+      await act(project, item, action);
     } catch (failure) {
       onFailed(itemKey(item));
-      draft.error = failure.message;
+      status.error = failure.message;
     }
-    draft.busy = false;
+    status.busy = false;
     refresh();
-  };
-  const open = () => {
-    draft.field = draft.field ? null : "answer";
-    draft.error = "";
-    refresh();
-  };
-  const submit = (event) => {
-    event.preventDefault();
-    const text = field.current.value.trim();
-    if (text) run("add", { text });
   };
   // ^ Icons, so the title and what the item waits for keep the row's width; the name is the
   // button's title and, with what it acts on, its accessible name.
   const button = (label, icon, tone, onClick, extra = {}) => html`
-    <button class="button icon-button need-action" type="button" title=${label} data-tone=${tone} disabled=${draft.busy}
+    <button class="button icon-button need-action" type="button" title=${label} data-tone=${tone} disabled=${status.busy}
       onClick=${onClick} ...${extra}><${Icon} name=${icon} /></button>`;
   let actions = null;
   if (acting && ["waiting", "failed"].includes(item.kind)) {
-    actions = button("Answer", "reply", null, open, { "aria-expanded": draft.field === "answer", "aria-label": `Answer #${item.task}` });
-  } else if (acting && item.kind === "approval" && draft.running) {
+    actions = button("Answer", "reply", null, () => onMention(item.task), { "aria-label": `Answer #${item.task}: mention it to the manager` });
+  } else if (acting && item.kind === "approval" && status.running) {
     // ^ The approved action runs until its decision settles the row; it may take minutes.
     actions = html`<span class="row-context" role="status">Running…</span>`;
   } else if (acting && item.kind === "approval") {
     const approve = async () => {
       await run("approve");
-      if (!draft.error) { draft.running = true; refresh(); }
+      if (!status.error) { status.running = true; refresh(); }
     };
     actions = html`${button("Deny", "fail", "danger", () => run("deny"), { "aria-label": `Deny: ${item.label}` })}${button("Approve", "pass", "accent", approve, { "aria-label": item.label })}`;
   } else if (acting && item.kind === "land" && trial?.stage === "live") {
-    actions = html`${button("Fail: tell the worker", "reply", "danger", open, { "aria-expanded": draft.field === "answer", "aria-label": `Fail #${item.task}: tell the worker what is wrong` })}${button("Pass and land", "pass", "accent", () => run("pass"), { "aria-label": `Pass #${item.task} and land it` })}`;
+    actions = html`${button("Fail: tell the manager", "reply", "danger", () => onMention(item.task), { "aria-label": `Fail #${item.task}: tell the manager what is wrong` })}${button("Pass and land", "pass", "accent", () => run("pass"), { "aria-label": `Pass #${item.task} and land it` })}`;
   } else if (acting && item.kind === "land" && trial) {
     actions = html`<span class="row-context" role="status">Going live…</span>`;
   } else if (acting && item.kind === "land") {
@@ -294,14 +282,7 @@ function NeedRow({ project, item, index, onActing, onFailed, leaving }) {
           : html`<span class="row-main">${body}</span>`}
         ${actions && html`<span class="row-actions">${actions}</span>`}
       </div>
-      ${draft.field && html`
-        <form class="need-form" onSubmit=${submit}>
-          <input class="input" ref=${field} type="text" autocomplete="off" value=${draft.text}
-            aria-label=${`Answer to #${item.task}`} placeholder="Answer"
-            onInput=${(event) => { draft.text = event.target.value; }} disabled=${draft.busy} />
-          <button class="button" type="submit" disabled=${draft.busy}>Send</button>
-        </form>`}
-      ${draft.error && html`<p class="error need-error" role="alert">${draft.error}</p>`}
+      ${status.error && html`<p class="error need-error" role="alert">${status.error}</p>`}
     </li>`;
 }
 
@@ -353,7 +334,7 @@ const CheckingRow = ({ project, count }) => html`
 // the tasks that run and the To check row. Done tasks are not in it, and with nothing in it
 // there is no list. A cleared row leaves and the focus moves to the next row's action, or to
 // the composer after the last one. It never moves the chat.
-function Reservoir({ project, items, tasks, checking }) {
+function Reservoir({ project, items, tasks, checking, onMention }) {
   const [open, setOpen] = useState(false);
   const [closing, setClosing] = useState(false);
   const [paused, setPaused] = useState(false);
@@ -451,7 +432,7 @@ function Reservoir({ project, items, tasks, checking }) {
             <div class="reservoir-scroll">
               ${items.length || needRows.length ? html`
                 <ul class="reservoir-list" aria-label="Needs you">
-                  ${needRows.map(({ item, key, leaving }) => html`<${NeedRow} key=${key} project=${project} item=${item} index=${items.indexOf(item)} onActing=${onActing} onFailed=${onFailed} leaving=${leaving} />`)}
+                  ${needRows.map(({ item, key, leaving }) => html`<${NeedRow} key=${key} project=${project} item=${item} index=${items.indexOf(item)} onActing=${onActing} onFailed=${onFailed} onMention=${onMention} leaving=${leaving} />`)}
                 </ul>` : null}
               ${checking ? html`<ul class="reservoir-list" aria-label="To check"><${CheckingRow} project=${project} count=${checking} /></ul>` : null}
             </div>
@@ -506,6 +487,20 @@ const foldedNote = (tasks, query) => {
   const folded = query ? 0 : tasks.filter(settled).length;
   return folded ? `${folded} done more than a day ago: type a number or a word to find ${folded === 1 ? "it" : "them"}.` : null;
 };
+
+// A draft with a mention of task `n`, the caret after it: [text, caret]. A new mention goes after
+// the words; one already there stays where it is, and ends with a space so no `#` list opens.
+function withMention(text, n) {
+  const mark = `#${n}`;
+  const found = text.search(new RegExp(`${mark}\\b`));
+  if (found < 0) {
+    const next = `${text}${text && !/\s$/.test(text) ? " " : ""}${mark} `;
+    return [next, next.length];
+  }
+  const end = found + mark.length;
+  if (end === text.length) return [`${text} `, end + 1];
+  return [text, /\s/.test(text[end]) ? end + 1 : end];
+}
 
 function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent, field }) {
   const store = useStore();
@@ -789,6 +784,16 @@ export function Manager({ project: id, task, page, checks, usage, role = null })
   const field = useRef();
   const [reply, setReply] = useState(null);
   const [gestures, menu] = useReply((line) => { setReply(line); field.current?.focus(); });
+  // ^ A task's Answer: the composer takes the mention as typed text, so its own input handler
+  // keeps the draft (docs/web-client-tasks.md "Project screen").
+  const mention = (n) => {
+    const node = field.current;
+    const [text, caret] = withMention(node.value, n);
+    node.focus({ preventScroll: true });
+    node.value = text;
+    node.setSelectionRange(caret, caret);
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+  };
   const shown = useRef([]);
   const cut = useRef(false);
 
@@ -894,14 +899,14 @@ export function Manager({ project: id, task, page, checks, usage, role = null })
           ${away && html`<${JumpButton} unread=${unread} onClick=${toEnd} />`}
         </div>
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
-        ${!role && html`<${Reservoir} project=${id} items=${items} tasks=${overview?.tasks ?? []} checking=${overview?.to_check ?? 0} />`}
+        ${!role && html`<${Reservoir} project=${id} items=${items} tasks=${overview?.tasks ?? []} checking=${overview?.to_check ?? 0} onMention=${mention} />`}
         ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
           onSent=${(message) => { toEnd(); setSent(message); load(); }} />`}
       </div>
       ${menu}
       ${task != null && html`
         <${Sheet} key=${`t${task}`} label=${`Task #${task}`} onClose=${() => leaveFor(`#/p/${id}`)}>
-          ${(grip) => html`<${TaskPage} key=${task} project=${id} task=${task} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
+          ${(grip) => html`<${TaskPage} key=${task} project=${id} task=${task} onClose=${() => leaveFor(`#/p/${id}`)} onMention=${mention} grip=${grip} />`}
         </${Sheet}>`}
       ${page && html`
         <${Sheet} key="page" label="Project page" onClose=${() => leaveFor(`#/p/${id}`)}>

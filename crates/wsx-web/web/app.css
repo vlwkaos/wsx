@@ -737,7 +737,7 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .reservoir-scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .reservoir-fixed + .reservoir-scroll:not(:empty) { border-top: var(--border-width) solid var(--color-hairline); }
 /* Every row of the open list, its labels and its answer field are the closed line's small size. */
-.reservoir .row-link, .reservoir .need-form .input, .reservoir .need-form .button { font-size: var(--font-size-sm); }
+.reservoir .row-link { font-size: var(--font-size-sm); }
 .reservoir-list { list-style: none; margin: 0; padding: 0; }
 .reservoir .row-link { padding-inline: var(--column-inset, var(--space-4)); }
 .reservoir .need + .need { border-top: var(--border-width) solid var(--color-hairline); }
@@ -899,9 +899,6 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .task-talk { padding: var(--space-4) var(--space-4) 0; display: flex; flex-direction: column; gap: var(--space-3); }
 /* A section's name in plain case: the content under it speaks for the rest. */
 .task-heading { padding: var(--space-4) var(--space-4) var(--space-1); font-size: var(--font-size-sm); font-weight: var(--font-weight-strong); }
-.task-steer { align-self: center; }
-.app:not([data-wide]) .task-steer { margin-left: auto; }
-.app:not([data-wide]) .task-message .task-steer + .composer-send { margin-left: var(--space-2); }
 
 .visually-hidden { position: absolute; width: var(--border-width); height: var(--border-width); overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* Hook: .story — where a task stands, in words (docs/web-client-tasks.md "Task sheet"): one sentence
