@@ -64,7 +64,7 @@ const MIN_ROTATE_TOKENS: u64 = 1_000;
 const MAX_RECAP_MINUTES: u64 = 1_440;
 const MAX_ROTATE_TOKENS: u64 = 2_000_000;
 const MAX_ROTATE_IDLE_SECS: u64 = 24 * 60 * 60;
-const TASK_ADAPTERS: &[&str] = &["claude"];
+const TASK_ADAPTERS: &[&str] = &["claude", "pi"];
 const PROJECT_CONFIG_TEMPLATE: &str = "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\ngit:\n  subtrees: []\nworktree:\n  branchPrefix:\n  # defaultSession:\n  #   enabled: true\n  #   command:\n";
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -620,6 +620,7 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
                     TASK_ADAPTERS.join(", ")
                 ));
             }
+            config.manager_adapter = adapter;
         }
         if let Some(model) = validate_word(manager.model, "tasks.manager.model")? {
             config.manager_model = model;

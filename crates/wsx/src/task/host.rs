@@ -4,9 +4,8 @@
 //! One main loop owns the task files. The socket thread and the agent reader
 //! send to it over one channel; it answers each request after acting on it.
 
-use super::agent::{new_session_id, AgentLine, Launch, TurnResult};
+use super::agent::{new_session_id, Agent, AgentLine, Launch, TurnResult};
 use super::broker;
-use super::claude::ClaudeAgent;
 use super::hosting;
 use super::limit;
 use super::slot::{self, Priority};
@@ -117,7 +116,7 @@ struct Host {
     dir: TaskDir,
     record: TaskRecord,
     events: Sender<Event>,
-    agent: Option<ClaudeAgent>,
+    agent: Option<Agent>,
     generation: u64,
     turn_active: bool,
     /// Adds sent during a turn or a check, delivered when it ends.
@@ -904,7 +903,8 @@ impl Host {
             self.generation += 1;
             let generation = self.generation;
             self.stop_requested = false;
-            self.agent = Some(ClaudeAgent::spawn(
+            self.agent = Some(Agent::spawn(
+                &self.record.adapter,
                 &Launch::worker(&self.record, &self.dir.broker_path(), &self.dir.path)?,
                 &session,
                 resume,

@@ -105,6 +105,8 @@ pub struct TaskConfig {
     /// The project manager (`tasks.manager`).
     /// `tasks.manager.name`: the name the owner reads instead of the project's, when set.
     pub manager_name: Option<String>,
+    /// `tasks.manager.adapter`: the manager's headless adapter (docs/tasks.md "Agents").
+    pub manager_adapter: String,
     pub manager_model: String,
     /// The model of a turn with only wsx's events and no review due; `None` (`off`) keeps
     /// `manager_model`. ref: docs/tasks.md "Manager"
@@ -206,6 +208,7 @@ impl Default for TaskConfig {
             deploy_command: None,
             release_command: None,
             manager_name: None,
+            manager_adapter: "claude".into(),
             manager_model: "opus".into(),
             // ^ Off: a switch writes the conversation into the other model's cache, which cost
             // more than the turn saved (scripts/bench-manager.py, docs/tasks.md "Manager").
