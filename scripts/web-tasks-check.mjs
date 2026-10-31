@@ -290,10 +290,10 @@ async function viewImages(name, links, many = 2, saves = false) {
   await until("document.querySelector('dialog.viewer').getAnimations({ subtree: true }).length === 0", `${what}: the viewer kept moving`);
   await shot(`viewer-${name}`);
   // ^ Touch: the bar is under the stage at the screen's bottom and the link is Share; wide: the bar is on top and it is Download.
-  const bars = () => evaluate(`(() => { const node = document.querySelector('.viewer-bar'); const bar = node.getBoundingClientRect(); const stage = document.querySelector('.viewer-stage').getBoundingClientRect();
+  const readBar = () => evaluate(`(() => { const node = document.querySelector('.viewer-bar'); const bar = node.getBoundingClientRect(); const stage = document.querySelector('.viewer-stage').getBoundingClientRect();
     const link = node.querySelector('a[download]'); return { top: Math.round(bar.top), bottom: Math.round(bar.bottom), stageTop: Math.round(stage.top), stageBottom: Math.round(stage.bottom), height: innerHeight, buttonsEnd: Math.round(Math.max(...[...node.children].map((child) => child.getBoundingClientRect().bottom))),
       download: link?.getAttribute('href') ?? null, label: link?.getAttribute('aria-label') ?? null, title: link?.title ?? null, icon: link?.querySelector('path')?.getAttribute('d')?.startsWith('M10 12.5V3.5') ?? false }; })()`);
-  const bar = await bars();
+  const bar = await readBar();
   if (saves !== (bar.download !== null)) await fail(`${what}: the viewer ${saves ? "has no" : "has a"} download control`);
   if (saves) await savedCopy(what, bar.download);
   const placed = phone() ? bar.top >= bar.stageBottom && bar.bottom === bar.height && bar.stageTop === 0 : bar.bottom <= bar.stageTop && bar.top === 0;
@@ -302,7 +302,7 @@ async function viewImages(name, links, many = 2, saves = false) {
     // ^ A notched phone: the stage starts under the top inset and the bar's buttons end above the bottom inset.
     await send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 47, bottom: 34 } });
     await pause(250);
-    const notch = { ...await bars(), inside: (await state()).inside };
+    const notch = { ...await readBar(), inside: (await state()).inside };
     await send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, bottom: 0 } });
     if (notch.stageTop !== 47 || notch.buttonsEnd > notch.height - 34 || !notch.inside) await fail(`${what}: the viewer ignores the safe area: ${JSON.stringify(notch)}`);
   }
