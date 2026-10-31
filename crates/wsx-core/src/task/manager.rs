@@ -252,6 +252,10 @@ impl Seen {
 pub struct ManagerState {
     /// The conversation the next turn resumes; none after a rotation.
     pub agent_session: Option<String>,
+    /// A fallback agent in use; none: `tasks.manager.adapter` and `model`. It ends at the next
+    /// rotation after the own agent's limit, never inside a conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<ManagerAgent>,
     pub next_id: u64,
     /// Task states already turned into events. Absent until the host's first start.
     pub seen: Option<BTreeMap<u32, Seen>>,
@@ -304,6 +308,18 @@ pub struct LimitHold {
     /// an older host wrote has no such mark: it counts as not events-only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub events: bool,
+    /// The limit moved the manager to a fallback agent: the held turn goes to the new
+    /// conversation at once, with its messages in full. ref: docs/tasks.md "Agents"
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub switched: bool,
+}
+
+/// The fallback agent the manager runs on while its own is at a long usage limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagerAgent {
+    pub name: String,
+    pub adapter: String,
+    pub model: String,
 }
 
 /// A stable digest of an agent's instructions, to tell whether a conversation began with them.
