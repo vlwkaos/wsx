@@ -410,17 +410,29 @@ fn warn_once(warning: String) {
 /// cannot be read or parsed is an error: a task must not run with default tools.
 pub fn load_task_config(repo_path: &Path) -> Result<TaskConfig, String> {
     let mut tasks = read_tasks(&repo_path.join(PROJECT_CONFIG_FILE))?;
-    // ^ The owner's own workflow applies to every project that names no steps of its own.
-    if tasks.workflow.steps.is_empty() {
-        if let Some(path) = owner_config_path() {
-            tasks.workflow.steps = read_tasks(&path)?.workflow.steps;
+    // ^ The owner's workflow and fallback agents apply to every project that names none of
+    // its own (docs/tasks.md "Workflow", "Agents").
+    let wants_owner = tasks.workflow.steps.is_empty()
+        || tasks.fallback.is_empty()
+        || tasks.manager_fallback.is_empty();
+    if let Some(path) = owner_config_path().filter(|_| wants_owner) {
+        let owner = read_tasks(&path)?;
+        if tasks.workflow.steps.is_empty() {
+            tasks.workflow.steps = owner.workflow.steps;
+        }
+        if tasks.fallback.is_empty() {
+            tasks.fallback = owner.fallback;
+        }
+        if tasks.manager_fallback.is_empty() {
+            tasks.manager_fallback = owner.manager_fallback;
         }
     }
     Ok(tasks)
 }
 
 /// `~/.config/wsx/wsx.config.yml` (or under `$XDG_CONFIG_HOME`): only its
-/// `tasks.workflow.steps` is read. ref: docs/tasks.md "Workflow"
+/// `tasks.workflow.steps`, `tasks.agent.fallback` and `tasks.manager.fallback` are read.
+/// ref: docs/tasks.md "Workflow", "Agents"
 fn owner_config_path() -> Option<std::path::PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .filter(|value| !value.is_empty())
