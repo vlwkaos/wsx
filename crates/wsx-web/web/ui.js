@@ -120,8 +120,7 @@ export function Back({ fallback }) {
 }
 
 // A top row's ⋯ menu. A tap outside or Escape closes it, and so does choosing an item.
-// `name` and `face` replace the ⋯ button's name and look (the + of a new session).
-export function MoreMenu({ children, name = "More", face, disabled, look = "icon-button more-button" }) {
+export function MoreMenu({ children }) {
   const [open, setOpen] = useState(false);
   const menu = useRef();
   useEffect(() => {
@@ -134,8 +133,8 @@ export function MoreMenu({ children, name = "More", face, disabled, look = "icon
   }, [open]);
   return html`
     <div class="more" ref=${menu}>
-      <button class=${look} type="button" aria-label=${name} title=${face ? name : null} aria-haspopup="menu" aria-expanded=${open}
-        disabled=${disabled} onClick=${() => setOpen(!open)}>${face ?? html`<span aria-hidden="true">⋯</span>`}</button>
+      <button class="icon-button more-button" type="button" aria-label="More" aria-haspopup="menu" aria-expanded=${open}
+        onClick=${() => setOpen(!open)}><span aria-hidden="true">⋯</span></button>
       ${open && html`<div class="more-menu" role="menu" onClick=${() => setOpen(false)}>${children}</div>`}
     </div>`;
 }

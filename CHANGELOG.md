@@ -16,7 +16,7 @@
 ### Changed
 
 - Web: a new session is a login shell with the site's `agent_command` typed into it. When the agent quits, the session stays open instead of showing as exited, the chat resumes the conversation in it, and the terminal can start another agent ([docs/web-client.md](docs/web-client.md)).
-- Web: where `terminal_input` is granted, a session's *+* asks *Agent* or *Shell*; a shell opens in the terminal panel.
+- Web: where `terminal_input` is granted, a session's *+* starts a plain shell in the terminal panel; start any agent there, and the session's Chat tab appears for the agent that reports.
 - Web: the Sessions tab lists every granted project with its *+*, also one whose sessions are all closed, so a new session can always start.
 
 ## [0.42.0] - 2026-10-31

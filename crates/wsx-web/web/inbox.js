@@ -3,7 +3,7 @@
 import { api } from "./api.js";
 import { elapsed, html, Icon, Loading, useNow, useState } from "./lib.js";
 import { can, isNew, listedSessions, sessionLink, shows, stateOf, useStore } from "./store.js";
-import { MoreMenu, toast } from "./ui.js";
+import { toast } from "./ui.js";
 
 // One session. Left: a state mark. Middle: the work first, project › worktree, then the
 // session and its provider, and for a working session what it does. Right: the state
@@ -55,8 +55,9 @@ export function SessionRow({ session, now, current, place }) {
 }
 
 // Starts a session in `worktree`, or in the project's main checkout without one.
-// A + icon. Where the page can type into a terminal, the + asks: the site's agent, or a plain
-// shell that opens in the terminal (docs/web-client.md "Sessions").
+// A + icon. Where the page can type into a terminal it starts a plain shell in the terminal:
+// the owner starts any agent there, and the chat follows the agent that reports. Without
+// terminal input it starts the site's agent (docs/web-client.md "Sessions").
 export function NewSession({ project, worktree }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -74,13 +75,8 @@ export function NewSession({ project, worktree }) {
     }
     setBusy(false);
   };
-  const action = can("terminal_input")
-    ? html`
-      <${MoreMenu} name=${name} face=${html`<${Icon} name="plus" />`} disabled=${busy} look="icon-button new-session">
-        <button role="menuitem" type="button" onClick=${() => create(false)}>Agent</button>
-        <button role="menuitem" type="button" onClick=${() => create(true)}>Shell</button>
-      </${MoreMenu}>`
-    : html`<button class="icon-button new-session" type="button" disabled=${busy} onClick=${() => create(false)} aria-label=${name} title=${name}><${Icon} name="plus" /></button>`;
+  const shell = can("terminal_input");
+  const action = html`<button class="icon-button new-session" type="button" disabled=${busy} onClick=${() => create(shell)} aria-label=${name} title=${name}><${Icon} name="plus" /></button>`;
   return html`
     ${action}
     ${error && html`<span class="error" role="alert">${error}</span>`}`;
