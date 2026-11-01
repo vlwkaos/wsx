@@ -1669,7 +1669,7 @@ impl Manager {
                     return;
                 }
             }
-            self.say(&limit::reason(until_ms, now));
+            self.say(&limit::reason(&adapter, until_ms, now));
             self.log(ManagerEvent::Limit {
                 until: Some(limit::resume_time(until_ms, now)),
             });

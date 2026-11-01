@@ -87,7 +87,7 @@ struct BackgroundWait {
 }
 
 /// The turn that continues after a usage limit.
-const LIMIT_CONTINUE: &str = "The session limit has reset. Continue the task where it stopped.";
+const LIMIT_CONTINUE: &str = "The usage limit has reset. Continue the task where it stopped.";
 /// How often a resumable task behind another in the limit queue looks again.
 const LIMIT_POLL_MS: u64 = 2_000;
 /// How often a task that waits for disk looks again.
@@ -1392,7 +1392,7 @@ impl Host {
             until_ms,
             next_ms: until_ms,
         });
-        let reason = limit::reason(until_ms, now_unix_ms());
+        let reason = limit::reason(&self.record.adapter, until_ms, now_unix_ms());
         self.say(&reason);
         self.wait(WaitOn::Limit, reason);
     }
@@ -1411,7 +1411,7 @@ impl Host {
                 Ok(taken) => self.limit_slot = Some(taken),
                 Err(reason) => {
                     wait.next_ms = now + LIMIT_POLL_MS;
-                    let reason = format!("session limit has reset; {reason}");
+                    let reason = format!("usage limit has reset; {reason}");
                     if self.record.waiting.as_ref().map(|w| &w.reason) != Some(&reason) {
                         self.say(&reason);
                         self.wait(WaitOn::Limit, reason);
@@ -1422,7 +1422,7 @@ impl Host {
         }
         self.limit_queue = None;
         if let Some(wait) = self.limit_wait.take() {
-            self.say("the session limit has reset: the agent continues");
+            self.say("the usage limit has reset: the agent continues");
             self.start_turn(&wait.text, TurnTrigger::Limit);
         }
     }

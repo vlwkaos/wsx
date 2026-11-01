@@ -66,7 +66,7 @@ export function conversation(entries, resolutions, approvals = [], checks = [], 
       entry.text.split("\n").filter(Boolean).forEach((line, part) => rows.push({ kind: "line", at, key: `${key}-${part}`, text: shortLine(line) }));
     } else if (entry.kind === "limit") {
       // ^ wsx's own line: the usage limit paused the manager, or lifted (docs/web-client-tasks.md).
-      const text = entry.until ? `${manager} paused: session limit, resumes at ${entry.until}` : `${manager} resumed`;
+      const text = entry.until ? `${manager} paused: usage limit, resumes at ${entry.until}` : `${manager} resumed`;
       rows.push({ kind: "line", at, key, text });
     } else if (entry.kind === "rotated" || entry.kind === "stopped") {
       rows.push({ kind: "note", at, key, entry });

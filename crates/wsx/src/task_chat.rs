@@ -458,7 +458,7 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
                 rows.push(Row::Line(format!("Manager stopped: {reason}")))
             }
             ManagerEvent::Limit { until: Some(until) } => rows.push(Row::Line(format!(
-                "Manager paused: session limit, resumes at {until}"
+                "Manager paused: usage limit, resumes at {until}"
             ))),
             ManagerEvent::Limit { until: None } => rows.push(Row::Line("Manager resumed".into())),
             ManagerEvent::Delivered { .. } | ManagerEvent::Agent { .. } => {}

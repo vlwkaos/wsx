@@ -86,7 +86,7 @@ pub fn find(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
         WaitOn::Limit => waiting
             .until_ms
             .filter(|until_ms| *until_ms < now_ms)
-            .map(|until_ms| format!("its session limit reset {} ago", span(now_ms - until_ms))),
+            .map(|until_ms| format!("its usage limit reset {} ago", span(now_ms - until_ms))),
         _ => None,
     };
     match queued_behind(&waiting.reason) {
