@@ -305,6 +305,10 @@ def run(wsx, wsxd, work, owned):
     shutil.copytree(ROOT / 'scripts/fixtures', bin_dir / 'fixtures')
     fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(fake_script) + ' "$@"\n')
     fake.chmod(0o755)
+    # ^ The fallback agent of part 36 (docs/tasks.md "Agents").
+    shutil.copy(ROOT / 'scripts/fake-pi-rpc.py', bin_dir / 'fake-pi-rpc.py')
+    (bin_dir / 'pi').write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(bin_dir / 'fake-pi-rpc.py') + ' "$@"\n')
+    (bin_dir / 'pi').chmod(0o755)
     daemon_socket = work / 'd.sock'
     env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
            'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(daemon_socket),
@@ -1636,7 +1640,7 @@ def run(wsx, wsxd, work, owned):
     # ^ wsx says the pause and the resume in the chat, in that order, before the answer.
     shown = [(e['kind'], bool(e.get('until'))) for e in chat() if e['kind'] in ('limit', 'reply') and e['unix_ms'] >= held['unix_ms']]
     assert shown[:3] == [('limit', True), ('limit', False), ('reply', False)], shown
-    assert turn_with('The session limit has reset'), 'the manager continues after its limit'
+    assert turn_with('The usage limit has reset'), 'the manager continues after its limit'
     # ^ A turn that a limit held answers "-" after the reset, with or without an owner message:
     # a reply that says nothing is quiet whatever its turn (docs/tasks.md).
     for seconds, owner_says in ((1, None), (3, 'STATUS while held')):
@@ -1960,7 +1964,7 @@ def run(wsx, wsxd, work, owned):
     first = js('task', 'new', 'LIMIT 4 WORK la.txt')['id']
     limited = lambda n: (current := show(n))['state'] == 'waiting' and current['record'].get('waiting') and current
     waiting = wait(lambda: limited(first), 'limit wait')['record']['waiting']
-    assert waiting['on'] == 'limit' and waiting['reason'].startswith('session limit; resumes at '), waiting
+    assert waiting['on'] == 'limit' and waiting['reason'].startswith('claude usage limit; resumes at '), waiting
     assert waiting['until_ms'] > time.time() * 1000, waiting
     row = next(r for r in js('task', 'ledger')['open'] if r['id'] == first)
     assert row['waiting']['on'] == 'limit', row
@@ -1974,7 +1978,7 @@ def run(wsx, wsxd, work, owned):
         assert "You've hit" not in next(e for e in log(n) if e['kind'] == 'result')['summary']
     sessions = {show(n)['record']['agent_session']: n for n in (first, second)}
     resumed = [sessions.get(t['session']) for t in traces()
-               if not t.get('manager') and str(t.get('message', '')).startswith('The session limit has reset')]
+               if not t.get('manager') and str(t.get('message', '')).startswith('The usage limit has reset')]
     assert resumed == [first, second], resumed
     for n in (first, second):
         js('task', 'close', n, '--discard')
@@ -2009,7 +2013,7 @@ def run(wsx, wsxd, work, owned):
     os.replace(swapped / 'wsx.new', swapped / 'wsx')
     assert record()['waiting']['on'] == 'limit', 'a limit wait that ended before its reset'
     resumes = lambda: [t['session'] for t in traces()
-                       if not t.get('manager') and str(t.get('message', '')).startswith('The session limit has reset')]
+                       if not t.get('manager') and str(t.get('message', '')).startswith('The usage limit has reset')]
     seen = len(resumes())
     wait(lambda: len(resumes()[seen:]) == 2, 'both resumes after the reset with a replaced wsx', 60)
     assert resumes()[seen:][0] == session, resumes()[seen:]
@@ -3160,6 +3164,37 @@ def run(wsx, wsxd, work, owned):
     wait(lambda: len(recaps()) == 2, 'the recap after the idle task closed', 150)
     time.sleep(3)
     assert len(idle_tasks()) == 1 and len(other_tasks()) == 2, other_tasks()
+    # 36. Fallback agent (docs/tasks.md "Agents"): a usage limit that lifts after
+    mark('36')
+    # maxWaitMinutes moves the worker to the first fallback of the registry, a Pi RPC agent,
+    # in a new conversation with the unfinished turn; it reports through `wsx task result -`
+    # and the task stays there. The limit is on record for the machine, so the next task
+    # starts on the fallback. A short limit is still waited out (part 27).
+    with open(config_dir / 'config-v2.toml', 'a') as registry:
+        registry.write('[[agents]]\nname = "fake-pi"\ncommand = ["pi"]\nadapter = "pi"\nmodel = "fake/pi-model"\n')
+    configure(CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi]\n    maxWaitMinutes: 1\n'),
+              'fallback agent')
+    switched = js('task', 'new', 'LIMIT 600 WORK fa.txt')['id']
+    shown = wait_state(switched, 'ready', 'failed')
+    assert shown['state'] == 'ready', shown
+    assert shown['record']['adapter'] == 'pi' and shown['record']['model'] == 'fake/pi-model', shown['record']
+    switch = next(e for e in log(switched) if e['kind'] == 'agent_switch')
+    assert switch['to'] == 'fake-pi (pi/fake/pi-model)' and 'claude usage limit until' in switch['reason'], switch
+    assert kinds(switched, 'agent_switch', 'rotated', 'result', 'limit_wait') == ['agent_switch', 'rotated', 'result'], log(switched)
+    assert next(e for e in log(switched) if e['kind'] == 'result')['summary'] == 'fake pi finished the turn'
+    pi_turns = [t for t in traces() if t.get('adapter') == 'pi' and 'message' in t]
+    assert len(pi_turns) == 1 and 'LIMIT 600 WORK fa.txt' in pi_turns[0]['message'], pi_turns
+    assert 'could write no handoff notes' in pi_turns[0]['message'], pi_turns[0]
+    assert any(t.get('adapter') == 'pi' and t.get('reported') == 0 for t in traces()), 'the result was not kept'
+    limit_file = state / 'wsx/tasks/agents/claude.json'
+    assert json.loads(limit_file.read_text())['until_ms'] > time.time() * 1000 + 500_000, limit_file.read_text()
+    on_pi = js('task', 'new', 'WORK fb.txt')['id']
+    assert wait_state(on_pi, 'ready', 'failed')['record']['adapter'] == 'pi', show(on_pi)
+    assert not any(e['kind'] == 'agent_switch' for e in log(on_pi)), log(on_pi)
+    for n in (switched, on_pi):
+        js('task', 'close', n, '--discard')
+    limit_file.unlink()
+    configure(CONFIG, 'no fallback')
 
 if __name__ == '__main__':
     main()

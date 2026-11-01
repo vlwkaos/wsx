@@ -1,5 +1,5 @@
 //! The wait on an agent's usage limit, shared by the task host and the manager host.
-//! ref: docs/tasks.md "Claude adapter"
+//! ref: docs/tasks.md "Claude adapter" (Usage limit), "Agents"
 
 /// After the reset: the limit lifts on the provider's clock, not this machine's.
 const MARGIN_MS: u64 = 5_000;
@@ -18,10 +18,11 @@ pub fn resume_at(resets_at: Option<u64>, attempt: u32, now_ms: u64) -> u64 {
     }
 }
 
-/// "session limit; resumes at 00:10", with the date when it is not within a day.
-pub fn reason(until_ms: u64, now_ms: u64) -> String {
+/// "claude usage limit; resumes at 00:10" for `adapter`, with the date when it is not
+/// within a day.
+pub fn reason(adapter: &str, until_ms: u64, now_ms: u64) -> String {
     format!(
-        "session limit; resumes at {}",
+        "{adapter} usage limit; resumes at {}",
         resume_time(until_ms, now_ms)
     )
 }

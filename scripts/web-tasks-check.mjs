@@ -2107,7 +2107,7 @@ if (JSON.stringify(folding.chips) !== JSON.stringify(["#89 done", "#91 done", "#
   || folding.inside.length || folding.hidden || folding.next[0] !== "#88 done" || !/#88 is on main/.test(folding.next[1] ?? "") || !folding.short) await fail(`plans' folded run reads ${JSON.stringify(folding)}`);
 // ^ The usage limit's pause and resume are muted wsx lines with the manager's name, between the owner's
 // message and the reply it held, never a bubble or under the name as a reply.
-const limitSeen = await evaluate(`(() => { const log = [...document.querySelectorAll('.log > *')]; const at = log.findIndex((node) => node.textContent.trim() === 'plans paused: session limit, resumes at 07:45');
+const limitSeen = await evaluate(`(() => { const log = [...document.querySelectorAll('.log > *')]; const at = log.findIndex((node) => node.textContent.trim() === 'plans paused: usage limit, resumes at 07:45');
   return { at, resumed: log[at + 1]?.textContent.trim(), tone: at < 0 ? '' : log[at].className, before: log[at - 1]?.textContent.trim().slice(0, 12), after: log[at + 2]?.textContent.trim().slice(0, 12) }; })()`);
 if (limitSeen.at < 0 || limitSeen.resumed !== "plans resumed" || limitSeen.tone !== "status-line" || !/Thanks/.test(limitSeen.before) || !/Noted/.test(limitSeen.after)) await fail(`plans' limit rows read ${JSON.stringify(limitSeen)}`);
 // ^ A long reply stored as quiet (a table and a list after an event) is a whole bubble.
