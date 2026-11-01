@@ -670,7 +670,7 @@ async function others() {
   await go("#/projects");
   await until("!!document.querySelector('.row-actions')", "the projects screen did not open");
   const project = await evaluate(`(() => { const row = document.querySelector('.row-actions').closest('.row');
-    return { row: row.querySelector('.row-label').textContent, count: row.querySelector('.row-context').textContent, actions: [...row.querySelectorAll('.row-actions > *')].map((n) => { const plus = n.matches('.new-session') ? n : n.querySelector(':scope > .new-session'); return plus ? plus.getAttribute('aria-label') : n.textContent; }).join() }; })()`);
+    return { row: row.querySelector('.row-label').textContent, count: row.querySelector('.row-context').textContent, actions: [...row.querySelectorAll('.row-actions > *')].map((n) => n.matches('.new-session') ? n.getAttribute('aria-label') : n.textContent).join() }; })()`);
   if (project.row !== "design" || !/^\d+ sessions$/.test(project.count) || project.actions !== "Files,New session in design") await fail(`the projects screen is wrong: ${JSON.stringify(project)}`);
   await sound("projects");
   await shot("projects");
@@ -689,18 +689,11 @@ async function others() {
   const projectHash = await evaluate("location.hash");
   await sound("project");
   // Each + names what it starts, has a 44 px hit area, and takes no more height than a line of text.
-  // ^ With terminal_input the + opens a menu (Agent, Shell): its head is the menu's parent.
-  const plus = await evaluate(`[...document.querySelectorAll('.worktree .new-session')].map((button) => { const box = button.getBoundingClientRect(), head = (button.closest('.more') ?? button).parentElement.getBoundingClientRect();
+  // ^ With terminal_input the + starts a plain shell at once: one button, no menu.
+  const plus = await evaluate(`[...document.querySelectorAll('.worktree .new-session')].map((button) => { const box = button.getBoundingClientRect(), head = button.parentElement.getBoundingClientRect();
     return { title: button.title === button.getAttribute('aria-label'), size: [Math.round(box.width), Math.round(box.height)], head: Math.round(head.height), right: Math.round(innerWidth - box.right), word: button.textContent.trim() }; })`);
   if (!plus.length || plus.some((button) => !button.title || button.size.join() !== "44,44" || button.head > 40 || button.right !== 4 || button.word)) await fail(`a New session + is wrong: ${JSON.stringify(plus)}`);
-  // With terminal_input the + asks what to start; Escape closes the menu and starts nothing.
-  await evaluate("document.querySelector('.worktree .new-session').click()");
-  await until("!!document.querySelector('.worktree .more-menu')", "the New session + opened no menu");
-  const choices = await evaluate("[...document.querySelectorAll('.worktree .more-menu [role=menuitem]')].map((item) => item.textContent).join()");
-  if (choices !== "Agent,Shell") await fail(`the New session menu offers ${JSON.stringify(choices)}`);
-  await shot("new-session-menu");
-  await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))");
-  await until("!document.querySelector('.worktree .more-menu')", "Escape did not close the New session menu");
+  if (await count(".worktree .more-menu, .worktree .new-session[aria-haspopup]")) await fail("the New session + opens a menu instead of starting a shell");
   await shot("project");
   // A shell is marked as one and opens on the terminal, with no chat to switch to.
   const shellRow = await evaluate(`(() => { const link = document.querySelector('.worktree a[href^="#/s/${ids.shell}/"]'); const row = link?.closest('.row');
