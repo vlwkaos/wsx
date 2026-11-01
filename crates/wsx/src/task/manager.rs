@@ -1236,6 +1236,13 @@ impl Manager {
 
     /// Start a turn with every waiting owner message, or else with the waiting events.
     fn next_turn(&mut self) {
+        // ^ A hold from before a fallback was configured, or from an older wsx, still moves:
+        // a manager waiting days for a weekly limit switches on its next tick.
+        if let Some(hold) = self.state.limit.clone().filter(|hold| !hold.switched) {
+            if self.switch_agent(hold.until_ms, &hold.ids, hold.events) {
+                self.save();
+            }
+        }
         // ^ During a usage limit the messages wait; after it they go with the held ones.
         let held = self.state.limit.clone();
         if held
@@ -1370,6 +1377,44 @@ impl Manager {
             Some(model) if events_only && !review_due() => model.clone(),
             _ => self.model.clone(),
         }
+    }
+
+    /// A limit until `until_ms` past `tasks.agent.maxWaitMinutes` moves the manager to the
+    /// first available `tasks.manager.fallback` in a new conversation, whose first turn
+    /// answers the held messages `ids`. A short limit is waited out. Returns whether it moved.
+    /// ref: docs/tasks.md "Agents"
+    fn switch_agent(&mut self, until_ms: u64, ids: &[u64], events: bool) -> bool {
+        let now = now_unix_ms();
+        let adapter = self.current_adapter();
+        let settings = load_task_config(&self.main).unwrap_or_default();
+        if until_ms.saturating_sub(now) <= settings.max_wait_secs * 1000 {
+            return false;
+        }
+        let Some(next) = super::agent::fallback(&settings.manager_fallback, &adapter, now) else {
+            return false;
+        };
+        // ^ An older hold has no record: without one the next rotation would return at once.
+        let _ = store::mark_limited(&adapter, until_ms);
+        let reason = format!(
+            "switched to {}: {adapter} usage limit until {}",
+            next.name,
+            limit::resume_time(until_ms, now)
+        );
+        self.say(&reason);
+        self.state.limit = Some(LimitHold {
+            until_ms: now,
+            attempt: 0,
+            ids: ids.to_vec(),
+            events,
+            switched: true,
+        });
+        self.rotate(0, Some(reason));
+        self.state.agent = Some(ManagerAgent {
+            name: next.name,
+            adapter: next.adapter,
+            model: next.model,
+        });
+        true
     }
 
     /// The adapter the manager runs on now: a fallback's, else `tasks.manager.adapter`.
@@ -1638,36 +1683,10 @@ impl Manager {
             if let Err(error) = store::mark_limited(&adapter, until_ms) {
                 self.say(&format!("cannot record the usage limit: {error:#}"));
             }
-            // ^ A short limit is waited out in the same conversation; a long one moves the
-            // manager to a fallback at once. ref: docs/tasks.md "Agents"
-            let settings = load_task_config(&self.main).unwrap_or_default();
-            if until_ms.saturating_sub(now) > settings.max_wait_secs * 1000 {
-                if let Some(next) =
-                    super::agent::fallback(&settings.manager_fallback, &adapter, now)
-                {
-                    let reason = format!(
-                        "switched to {}: {adapter} usage limit until {}",
-                        next.name,
-                        limit::resume_time(until_ms, now)
-                    );
-                    self.say(&reason);
-                    self.state.limit = Some(LimitHold {
-                        until_ms: now,
-                        attempt: 0,
-                        ids: to,
-                        events: self.turn_events,
-                        switched: true,
-                    });
-                    self.rotate(0, Some(reason));
-                    self.state.agent = Some(ManagerAgent {
-                        name: next.name,
-                        adapter: next.adapter,
-                        model: next.model,
-                    });
-                    self.save();
-                    self.report(runtime::AgentState::Idle);
-                    return;
-                }
+            if self.switch_agent(until_ms, &to, self.turn_events) {
+                self.save();
+                self.report(runtime::AgentState::Idle);
+                return;
             }
             self.say(&limit::reason(&adapter, until_ms, now));
             self.log(ManagerEvent::Limit {
