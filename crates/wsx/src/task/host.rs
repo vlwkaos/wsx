@@ -447,8 +447,27 @@ impl Host {
             }
             // ^ A limit wait outlives its host: the restarted one continues at the same time.
             TaskState::Waiting if self.record.waits_on(WaitOn::Limit) => {
-                let until_ms = self.record.waiting.as_ref().and_then(|w| w.until_ms);
-                self.wait_for_limit(LIMIT_CONTINUE.into(), until_ms.unwrap_or_default());
+                let until_ms = self
+                    .record
+                    .waiting
+                    .as_ref()
+                    .and_then(|w| w.until_ms)
+                    .unwrap_or_default();
+                // ^ A long wait from an older host or from before a fallback was configured
+                // moves to the fallback now instead of waiting days. ref: docs/tasks.md "Agents"
+                let now = now_unix_ms();
+                let settings = load_task_config(&self.record.project_path).unwrap_or_default();
+                let next = (until_ms.saturating_sub(now) > settings.max_wait_secs * 1000)
+                    .then(|| super::agent::fallback(&settings.fallback, &self.record.adapter, now))
+                    .flatten();
+                match next {
+                    Some(next) => {
+                        let _ = store::mark_limited(&self.record.adapter, until_ms);
+                        self.turn_text = "Continue the task where it stopped.".into();
+                        self.switch_agent(next, until_ms, now);
+                    }
+                    None => self.wait_for_limit(LIMIT_CONTINUE.into(), until_ms),
+                }
             }
             state => {
                 self.set_state(state);
