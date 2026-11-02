@@ -30,8 +30,8 @@ use wsx_core::git::output_with_timeout_tail;
 use wsx_core::task::checks::{self, CheckItem, CheckState};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
 use wsx_core::task::manager::{
-    chat_window, last_digest_ms, ApprovalAction, ApprovalLine, ManagerEvent, ManagerRequest,
-    ManagerResponse, DIGEST_EVENT,
+    chat_window, ApprovalAction, ApprovalLine, Author, ManagerEntry, ManagerEvent, ManagerRequest,
+    ManagerResponse,
 };
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::roles;
@@ -51,6 +51,8 @@ use wsx_core::{ops, runtime};
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
 const DAY_MS: u64 = 24 * 3600 * 1000;
+/// The events message of a digest in the chat.
+const DIGEST_EVENT: &str = "daily digest";
 /// How long a digest waits for a manager turn to end, and how often it asks again.
 const DIGEST_TURN_WAIT: Duration = Duration::from_secs(30 * 60);
 const DIGEST_TURN_POLL: Duration = Duration::from_secs(5);
@@ -296,8 +298,6 @@ pub enum TaskCmd {
         /// Start here (unix seconds) instead of at the last digest, else 24 h back
         #[arg(long, value_name = "SECONDS")]
         since: Option<u64>,
-        #[arg(long)]
-        json: bool,
     },
     /// The project's scheduled routines: `wsx routine` (docs/tasks.md "Routines")
     Routine {
@@ -452,7 +452,6 @@ impl TaskCmd {
             | Self::Deploy { json, .. }
             | Self::Release { json, .. }
             | Self::Deployed { json, .. }
-            | Self::Digest { json, .. }
             | Self::Preview { json, .. } => *json,
             Self::Role { action } => match action {
                 RoleCmd::New { json, .. }
@@ -467,6 +466,7 @@ impl TaskCmd {
             Self::Ledger { .. } => true,
             Self::Routine { action, .. } => action.json(),
             Self::CheckRun { .. }
+            | Self::Digest { .. }
             | Self::Host { .. }
             | Self::ManagerHost { .. }
             | Self::PreviewHost { .. }
@@ -755,7 +755,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             json,
         ),
         TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
-        TaskCmd::Digest { project, since, .. } => digest(project.as_deref(), since),
+        TaskCmd::Digest { project, since } => digest(project.as_deref(), since),
         TaskCmd::Role { action } => role(action),
         TaskCmd::Ledger { project, .. } => ledger::ledger(project.as_deref()),
         TaskCmd::Routine { action, owner_said } => {
@@ -2148,7 +2148,19 @@ fn trial_command(dir: &TaskDir, end: bool, json: bool) -> Result<()> {
     report_response(dir, response?, json)
 }
 
-/// The last successful deploy and release and how many default-branch commits each lacks.
+/// When the newest digest in `log` was posted: the next one starts there. A run with nothing
+/// to say posts nothing, so the next one covers its time too.
+fn last_digest_ms(log: &[ManagerEntry]) -> Option<u64> {
+    log.iter().rev().find_map(|entry| match &entry.event {
+        ManagerEvent::Message {
+            from: Author::Events,
+            text,
+            ..
+        } if text == DIGEST_EVENT => Some(entry.unix_ms),
+        _ => None,
+    })
+}
+
 /// Post the project's digest. Each try reads the lines again and starts from the chat log, so
 /// a run that fails leaves its time to the next one. ref: docs/tasks.md "Routines"
 fn digest(project: Option<&str>, since: Option<u64>) -> Result<()> {
@@ -2188,6 +2200,7 @@ fn digest(project: Option<&str>, since: Option<u64>) -> Result<()> {
     }
 }
 
+/// The last successful deploy and release and how many default-branch commits each lacks.
 fn deployed(project: Option<&str>, json: bool) -> Result<()> {
     let (project_name, main) = project_entry(project)?;
     let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;

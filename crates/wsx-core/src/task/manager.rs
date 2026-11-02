@@ -219,22 +219,6 @@ impl ManagerEntry {
     }
 }
 
-/// The events message of a digest in the chat (`wsx task digest`).
-pub const DIGEST_EVENT: &str = "daily digest";
-
-/// When the newest digest in `log` was posted: the next one starts there. A run with nothing
-/// to say posts nothing, so the next one covers its time too.
-pub fn last_digest_ms(log: &[ManagerEntry]) -> Option<u64> {
-    log.iter().rev().find_map(|entry| match &entry.event {
-        ManagerEvent::Message {
-            from: Author::Events,
-            text,
-            ..
-        } if text == DIGEST_EVENT => Some(entry.unix_ms),
-        _ => None,
-    })
-}
-
 /// Most entries the chat shows at once.
 pub const CHAT_ENTRIES: usize = 200;
 
