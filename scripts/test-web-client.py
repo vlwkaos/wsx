@@ -3967,7 +3967,9 @@ merge_seconds = 3
         wait(lambda: 'routine loud succeeded' in turns(), 'the turn for a routine with output')
         ok('routines: empty stdout gives no event and no turn and stays in the ledger; output gives a turn')
         js('task', 'manager', '-p', 'ui')
-        ui_socket = state / 'wsx/tasks' / ('ui-' + hashlib.sha256(str(other).encode()).hexdigest()[:8]) / 'manager/manager.sock'
+        # ^ The name of a host's socket: socket_for in crates/wsx-core/src/task/store.rs.
+        logical = next((state / 'wsx/tasks').glob('ui-*/manager')) / 'manager.sock'
+        ui_socket = (tmp if len(str(tmp)) <= 64 else Path('/tmp')) / ('wsx-%d' % os.geteuid()) / ('m-%s.sock' % hashlib.sha256(str(logical).encode()).hexdigest()[:16])
         hidden_socket = ui_socket.with_name('aside.sock')
         add_routine('ui', 'digest', str(wsx), 'task', 'digest', '-p', 'ui')
         ui_socket.rename(hidden_socket)  # ^ As far as a client can tell, no host runs.
