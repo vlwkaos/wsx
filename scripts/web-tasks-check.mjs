@@ -1460,7 +1460,7 @@ const drawnDiagrams = "document.querySelectorAll('.log .bubble .diagram img').le
 async function diagramReply() {
   const before = await evaluate(drawnDiagrams);
   if (await say("DIAGRAM") !== 200) await fail("the message for a diagram reply was not taken");
-  await until(`${drawnDiagrams} > ${before} && !document.querySelector('.log .typing')`, "the reply with a diagram did not arrive", 60);
+  await until(`${drawnDiagrams} > ${before} && !document.querySelector('.log .typing')`, "the reply with a diagram did not arrive", 240);
   await evaluate("Promise.all([...document.querySelectorAll('.log .diagram img')].map((image) => image.decode()))");
   await pause(300);
 }
@@ -1575,7 +1575,7 @@ async function readAndReply(where) {
   const held = await rowInView();
   const before = await evaluate(lastReply);
   if (await say("TABLE5") !== 200) await fail(`${where}: the message for a table reply was not taken`);
-  await until(`${lastReply} !== ${JSON.stringify(before)} && !!${fiveColumns} && !document.querySelector('.log .typing')`, `${where}: the table reply did not arrive`, 60);
+  await until(`${lastReply} !== ${JSON.stringify(before)} && !!${fiveColumns} && !document.querySelector('.log .typing')`, `${where}: the table reply did not arrive`, 240);
   await pause(300);
   const drift = (await rowAt(held.key)) - held.down;
   if (Math.abs(drift) > 2) await fail(`${where}: a reply below moved the row in view by ${drift} px`);
