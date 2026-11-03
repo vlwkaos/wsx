@@ -28,7 +28,7 @@ const PARTS = [["build", "Build"], ["plan", "Plan"], ["context", "Context"], ["r
 const KINDS = [["input", "Input"], ["cache_read", "Cache read"], ["cache_write", "Cache write"], ["output", "Output"]];
 
 // A cost chart's and a token chart's own parts: what a day's bar splits into, its numbers and
-// how they read. `hit` is the cache hit rate, cache read / (input + cache read + cache write).
+// how they read. `extra` is a row's last cell: the cache hit rate, cache read / (input + cache read + cache write).
 const COST = { name: "cost", title: "Cost", label: "Cost per day", legend: "Parts of the cost in 7 days", parts: PARTS, format: usd,
   of: (day) => day.parts };
 const TOKENS = { name: "tokens", title: "Tokens", label: "Tokens per day", legend: "Kinds of token in 7 days", parts: KINDS, format: tokens,
