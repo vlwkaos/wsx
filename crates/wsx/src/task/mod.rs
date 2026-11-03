@@ -93,9 +93,14 @@ pub enum TaskCmd {
         /// A short title in plain words (at most 60 characters); default: the prompt's first line
         #[arg(long)]
         title: Option<String>,
-        /// The worker's model; default: tasks.agent.model (opus)
+        /// The worker's model; default: tasks.agent.model (opus), or tasks.agent.smallModel
+        /// (sonnet) with --size small
         #[arg(long, value_name = "NAME")]
         model: Option<String>,
+        /// small: a change you can state (what, where, how it proves itself) runs only the
+        /// build step on tasks.agent.smallModel; full (default): every step
+        #[arg(long, value_enum, default_value_t = Size::Full, conflicts_with = "skip")]
+        size: Size,
         /// Hold the task for the owner to try before it lands, and say why
         #[arg(long, value_name = "WHY")]
         hold: Option<String>,
@@ -561,6 +566,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             into,
             title,
             model,
+            size,
             hold,
             files,
             plan,
@@ -577,7 +583,11 @@ pub fn run(command: TaskCmd) -> Result<()> {
             hold,
             files,
             plan,
-            (!no_steps).then_some(skip),
+            match (no_steps, size) {
+                (true, _) => Steps::None,
+                (false, Size::Small) => Steps::Small,
+                (false, Size::Full) => Steps::Skip(skip),
+            },
             project.as_deref(),
             json,
         ),
@@ -1035,7 +1045,7 @@ fn new(
     hold: Option<String>,
     files: Vec<String>,
     plan: bool,
-    skip: Option<Vec<String>>,
+    steps: Steps,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
@@ -1048,7 +1058,7 @@ fn new(
         .transpose()?;
     let files = checked_files(&[], &files)?;
     let (dir, record, answered) = create(
-        prompt, from, into, title, model, None, hold, files, plan, skip, project,
+        prompt, from, into, title, model, None, hold, files, plan, steps, project,
     )?;
     let state = answered.unwrap_or(TaskState::Working);
     let id = dir.id;
@@ -1105,9 +1115,62 @@ fn without_steps(
     Ok(kept)
 }
 
+/// The fold of a step into its neighbour: its prompt joins that step's turn, not a turn of its
+/// own. ref: docs/tasks.md "Workflow"
+const FOLDED_CONTEXT: &str = "context";
+const FOLDED_MEMO: &str = "memo";
+
+/// `steps` with `context` and `memo` folded: a `context` prompt joins the first other step as
+/// optional text after the host's context block, a `memo` prompt joins the step before it.
+/// With no other step nothing stays: the host's block and the result's memo cover them.
+fn folded_steps(
+    steps: Vec<wsx_core::model::workspace::WorkflowStep>,
+) -> Vec<wsx_core::model::workspace::WorkflowStep> {
+    let mut kept: Vec<wsx_core::model::workspace::WorkflowStep> = Vec::new();
+    let mut context: Vec<String> = Vec::new();
+    for mut step in steps {
+        match step.name.as_str() {
+            FOLDED_CONTEXT => context.push(step.prompt),
+            FOLDED_MEMO => {
+                if let Some(last) = kept.last_mut() {
+                    last.prompt = format!("{}\n\nFor the memo: {}", last.prompt, step.prompt);
+                }
+            }
+            _ => {
+                if !context.is_empty() {
+                    step.prompt = format!(
+                        "{}\n\nIf the task context above is not enough: {}",
+                        step.prompt,
+                        context.join(" ")
+                    );
+                    context.clear();
+                }
+                kept.push(step);
+            }
+        }
+    }
+    kept
+}
+
+/// How `task new` picks the worker's steps.
+pub(crate) enum Steps {
+    /// One turn, without `tasks.workflow.steps`: the idle task.
+    None,
+    /// `tasks.workflow.steps` without these names.
+    Skip(Vec<String>),
+    /// `--size small`: only the `build` step, on `tasks.agent.smallModel`.
+    Small,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub(crate) enum Size {
+    Small,
+    Full,
+}
+
 /// Create a task and start its host; `fixes` names the "To check" item it fixes; with `plan`
-/// its first turn writes a plan; it runs `tasks.workflow.steps` without the `skip` names, or no
-/// steps when `skip` is none (docs/tasks.md "Workflow"). The state is none when the host
+/// its first turn writes a plan; `steps` picks its turns from `tasks.workflow.steps`, with
+/// `context` and `memo` folded (docs/tasks.md "Workflow"). The state is none when the host
 /// did not answer in time.
 #[allow(clippy::too_many_arguments)]
 fn create(
@@ -1120,7 +1183,7 @@ fn create(
     hold: Option<String>,
     files: Vec<String>,
     plan: bool,
-    skip: Option<Vec<String>>,
+    steps: Steps,
     project: Option<&str>,
 ) -> Result<(TaskDir, TaskRecord, Option<TaskState>)> {
     let (config, workspace) = load_full_workspace()?;
@@ -1131,9 +1194,22 @@ fn create(
     config
         .claude_config_dir(&project.path)
         .map_err(|error| anyhow::anyhow!("{error}; no task was created"))?;
-    let steps = match skip {
-        Some(skip) => without_steps(&settings.workflow.steps, &skip)?,
-        None => Vec::new(),
+    let model = match steps {
+        Steps::Small => model.or_else(|| Some(settings.small_model().to_string())),
+        _ => model,
+    };
+    let steps = match steps {
+        Steps::None => Vec::new(),
+        Steps::Skip(skip) => folded_steps(without_steps(&settings.workflow.steps, &skip)?),
+        // ^ Kept before the fold, so the build gets the context and memo words.
+        Steps::Small => folded_steps(
+            settings
+                .workflow
+                .steps
+                .into_iter()
+                .filter(|step| [FOLDED_CONTEXT, "build", FOLDED_MEMO].contains(&step.name.as_str()))
+                .collect(),
+        ),
     };
     let project_id = store::project_id(&project.name, &project.path);
     let parent = into
@@ -1386,7 +1462,7 @@ pub(crate) fn fail_check(
         None,
         Vec::new(),
         false,
-        Some(Vec::new()),
+        Steps::Skip(Vec::new()),
         Some(project),
     )?;
     checks::fail(project_id, id, note, dir.id).with_context(|| {

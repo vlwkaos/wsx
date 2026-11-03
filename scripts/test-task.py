@@ -715,6 +715,56 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', skipped, '--discard')
     assert 'has no such step (steps: plan, build)' in cli('task', 'new', '--skip', 'review', 'NOOP', ok=False).stderr
     assert '--skip leaves no step' in cli('task', 'new', '--skip', 'plan', '--skip', 'build', 'NOOP', ok=False).stderr
+    # A `context` step folds into the first other step and a `memo` step into the one before
+    # it: no turn of their own. The first turn opens with the host's task context: the files,
+    # the open tasks that share them and the manager's memo lines that name them.
+    owner_config.write_text('tasks:\n  workflow:\n    steps:\n'
+                            '      - name: context\n        prompt: CTX recall\n'
+                            '      - name: plan\n        prompt: PLAN only\n'
+                            '      - name: build\n        prompt: WORK s.txt\n'
+                            '      - name: memo\n        prompt: MEMO words\n')
+    sharing = js('task', 'new', '--files', 's.txt', '--title', 'Sharer', 'WAIT %s' % (work / 'release-13b'))
+    sharer = sharing['id']
+    manager_dir = Path(sharing['task_dir']).parent / 'manager'
+    had_manager = manager_dir.exists()
+    (manager_dir / 'notes').mkdir(parents=True, exist_ok=True)
+    memo_notes = manager_dir / 'notes' / 'context.md'
+    kept_notes = memo_notes.read_text() if memo_notes.exists() else None
+    memo_notes.write_text('- #3: s.txt holds the fixture flag\n- #4: other.rs is unrelated\n')
+    folded = js('task', 'new', '--files', 's.txt', 'NOOP')['id']
+    done = wait_state(folded, 'ready', 'failed')
+    assert done['state'] == 'ready', done
+    assert [step['name'] for step in done['record']['steps']] == ['plan', 'build'], done['record']
+    turns = [entry for entry in log(folded) if entry['kind'] == 'result']
+    assert len(turns) == 2, turns
+    first = turns[0]['summary']
+    assert 'Task context from the host:\nFiles: s.txt' in first, first
+    assert 'Open task #%s "Sharer" (working) shares: s.txt' % sharer in first, first
+    assert '- #3: s.txt holds the fixture flag' in first and 'other.rs' not in first, first
+    assert 'PLAN only\n\nIf the task context above is not enough: CTX recall' in first, first
+    assert 'WORK s.txt\n\nFor the memo: MEMO words' in turns[1]['summary'], turns[1]
+    js('task', 'close', folded, '--discard')
+    js('task', 'close', sharer, '--discard')
+    # `--size small` runs only the build step, with the folded words, on the small model;
+    # `--model` still wins, and `--skip` does not go with it.
+    small = js('task', 'new', '--size', 'small', 'NOOP')['id']
+    done = wait_state(small, 'ready', 'failed')
+    assert done['state'] == 'ready' and done['record']['model'] == 'sonnet', done
+    assert [step['name'] for step in done['record']['steps']] == ['build'], done['record']
+    turns = [entry for entry in log(small) if entry['kind'] == 'result']
+    assert len(turns) == 1 and 'If the task context above is not enough: CTX recall' in turns[0]['summary'], turns
+    assert 'For the memo: MEMO words' in turns[0]['summary'], turns
+    js('task', 'close', small, '--discard')
+    chosen = js('task', 'new', '--size', 'small', '--model', 'haiku', 'NOOP')['id']
+    assert show(chosen)['record']['model'] == 'haiku', show(chosen)
+    js('task', 'close', chosen, '--discard')
+    assert 'cannot be used with' in cli('task', 'new', '--size', 'small', '--skip', 'plan', 'NOOP', ok=False).stderr
+    if kept_notes is not None:
+        memo_notes.write_text(kept_notes)
+    elif had_manager:
+        memo_notes.unlink()
+    else:
+        shutil.rmtree(manager_dir)
     # 13r. Context rotation: a step that ends past tasks.agent.rotateTokens writes handoff notes
     # in its conversation; the next step runs in a fresh one that opens with the task's prompt,
     # those notes and the step.
@@ -1357,7 +1407,7 @@ def run(wsx, wsxd, work, owned):
                  'stands alone, since a worker cannot ask', 'in every task new', 'With `--plan` the worker',
                  'Before `wsx task new`, compare the request', 'Never ask the owner to wait',
                  'for lean code', 'never send a task back to rebase', 'trust them over the worker',
-                 'Check the fixture rule.', 'Size the task to the change', 'Only events that need you start a turn',
+                 'Check the fixture rule.', 'runs with `--size small`', 'Only events that need you start a turn',
                  'tell that worker to prove it', 'never skip or fail items', 'only when the owner\'s message of this turn says',
                  'A release refuses while items are open, unless the owner', '`wsx task trial <n>`',
                  '`--owner-said <id>`', 'never name a message that did not ask',

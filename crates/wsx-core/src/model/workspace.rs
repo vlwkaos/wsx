@@ -65,6 +65,9 @@ pub(crate) const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 20 * 60;
 pub struct TaskConfig {
     pub adapter: String,
     pub model: String,
+    /// `tasks.agent.smallModel`: the model of a `task new --size small` task; empty is
+    /// `sonnet` for the `claude` adapter, else `model`. ref: docs/tasks.md "Workflow"
+    pub small_model: String,
     /// `tasks.agent.fallback` and `tasks.manager.fallback`: global agent names, in order.
     /// ref: docs/tasks.md "Agents"
     pub fallback: Vec<String>,
@@ -176,6 +179,15 @@ pub struct TaskPreview {
 }
 
 impl TaskConfig {
+    /// The model of a `task new --size small` task (`tasks.agent.smallModel`).
+    pub fn small_model(&self) -> &str {
+        match (self.small_model.is_empty(), self.adapter.as_str()) {
+            (false, _) => &self.small_model,
+            (true, "claude") => "sonnet",
+            (true, _) => &self.model,
+        }
+    }
+
     /// The manager's name as the owner reads it: `tasks.manager.name`, else its project's
     /// name (docs/tasks.md "Config").
     pub fn manager_shown_name<'a>(&'a self, project: &'a str) -> &'a str {
@@ -188,6 +200,7 @@ impl Default for TaskConfig {
         Self {
             adapter: "claude".into(),
             model: "opus".into(),
+            small_model: String::new(),
             fallback: Vec::new(),
             manager_fallback: Vec::new(),
             // ^ Claude's session limit is 5 hours: it is waited out, a weekly one is not.

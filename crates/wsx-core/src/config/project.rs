@@ -209,6 +209,8 @@ struct TaskAgentFile {
     adapter: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(rename = "smallModel", skip_serializing_if = "Option::is_none")]
+    small_model: Option<String>,
     #[serde(rename = "rotateTokens", skip_serializing_if = "Option::is_none")]
     rotate_tokens: Option<u64>,
     #[serde(rename = "rotateIdleSeconds", skip_serializing_if = "Option::is_none")]
@@ -530,6 +532,9 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
         if let Some(model) = validate_word(agent.model, "tasks.agent.model")? {
             config.model = model;
+        }
+        if let Some(model) = validate_word(agent.small_model, "tasks.agent.smallModel")? {
+            config.small_model = model;
         }
         config.fallback = validate_fallback(agent.fallback, "tasks.agent.fallback")?;
         if let Some(minutes) = agent.max_wait_minutes {

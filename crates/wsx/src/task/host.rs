@@ -39,6 +39,8 @@ const PLAN_REQUEST: &str = "First write a short plan and stop: edit no file and 
 in this turn. Put the plan in your result's summary with status done: the goal in one line, the \
 files you expect to change, the approach, and how you will prove the result. The manager reads \
 it and answers with go or what to change.";
+/// At most this much of the manager's memo lines goes into a task's first turn.
+const MAX_TASK_CONTEXT_BYTES: usize = 4 * 1024;
 const HANDOFF_FILE: &str = "handoff.txt";
 const MAX_HANDOFF_BYTES: u64 = 4 * 1024 * 1024;
 /// Turns a failed check starts by itself before the task fails; an owner's message resets it.
@@ -444,6 +446,7 @@ impl Host {
             TaskState::Working if self.record.agent_session.is_none() => {
                 let prompt = self.dir.prompt()?.context("the task log has no prompt")?;
                 let mut text = vec![prompt];
+                text.extend(self.task_context());
                 text.extend(self.step_text());
                 if self.record.plan {
                     text.push(PLAN_REQUEST.into());
@@ -1380,6 +1383,74 @@ impl Host {
         text.push(waiting);
         text.extend(self.pending.drain(..));
         self.start_turn(&text.join("\n\n"), TurnTrigger::Rotation);
+    }
+
+    /// The host's task context for the first turn: the task's files, the open tasks that
+    /// share them and the manager's `context.md` lines that name them, so the worker needs no
+    /// turn of its own to load context. None when it has nothing. ref: docs/tasks.md "Workflow"
+    fn task_context(&self) -> Option<String> {
+        let mut out = Vec::new();
+        if !self.record.files.is_empty() {
+            out.push(format!("Files: {}", self.record.files.join(", ")));
+        }
+        if let Ok(tasks) = view::project_tasks(&self.record.project_id) {
+            let records: Vec<&TaskRecord> = tasks
+                .iter()
+                .filter_map(|(_, record)| record.as_ref().ok())
+                .collect();
+            for row in view::overlaps(&self.record, &records, true)
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let Some(other) = records.iter().find(|other| row["id"] == other.id) else {
+                    continue;
+                };
+                let paths: Vec<&str> = row["paths"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|path| path.as_str())
+                    .collect();
+                out.push(format!(
+                    "Open task #{} \"{}\" ({}) shares: {}",
+                    other.id,
+                    other.title.as_deref().unwrap_or(""),
+                    other.state.as_str(),
+                    paths.join(", ")
+                ));
+            }
+        }
+        let words = file_words(&self.record.files);
+        let notes = store::ManagerDir::existing(&self.record.project_id)
+            .ok()
+            .flatten()
+            .map(|dir| {
+                super::manager::read_note(
+                    &dir.path.join("notes").join(super::manager::CONTEXT_FILE),
+                )
+            })
+            .unwrap_or_default();
+        let mut room = MAX_TASK_CONTEXT_BYTES;
+        let mut lines = Vec::new();
+        // ^ Newest first: the host appends each landed task's memo.
+        for line in notes.lines().rev() {
+            if !words.iter().any(|word| line.contains(word.as_str())) {
+                continue;
+            }
+            if line.len() > room {
+                break;
+            }
+            room -= line.len();
+            lines.push(line);
+        }
+        if !lines.is_empty() {
+            out.push(format!(
+                "Project memos (manager context.md) about these files:\n{}",
+                lines.join("\n")
+            ));
+        }
+        (!out.is_empty()).then(|| format!("Task context from the host:\n{}", out.join("\n")))
     }
 
     /// The turn text of the current workflow step, when the task has steps.
@@ -2925,4 +2996,25 @@ fn check_retry_request(failed: &[&CheckResult], attempt: u32) -> String {
         ));
     }
     text
+}
+
+/// The words of `files` globs a memo line names: each glob's part before its first wildcard
+/// and its last literal path component, of at least 3 characters.
+fn file_words(files: &[String]) -> Vec<String> {
+    let mut words = Vec::new();
+    for glob in files {
+        let literal = &glob[..glob.find(['*', '?', '[', '{']).unwrap_or(glob.len())];
+        let last = glob
+            .rsplit('/')
+            .find(|part| !part.contains(['*', '?', '[', '{']));
+        for word in [Some(literal.trim_end_matches('/')), last]
+            .into_iter()
+            .flatten()
+        {
+            if word.len() >= 3 && !words.iter().any(|known| known == word) {
+                words.push(word.to_string());
+            }
+        }
+    }
+    words
 }
