@@ -1059,7 +1059,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 }
 .terminal-notice span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .terminal-notice button {
-  flex: 0 0 auto; height: var(--size-key); padding: 0 var(--space-3); border: 0; border-radius: var(--radius-control);
+  flex: 0 0 auto; height: var(--size-key); padding: 0 var(--space-3); border: 0; border-radius: var(--radius-key);
   background: var(--color-raised); color: var(--color-text); font-weight: var(--font-weight-medium); white-space: nowrap; cursor: pointer;
 }
 .terminal-stage { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; touch-action: none; }
