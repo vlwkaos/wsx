@@ -22,6 +22,7 @@
 - Web chat: from the `!` on, the whole input box takes the shell colour, not only a border after a command follows. The button reads Run and sends once a command follows. A quoted reply is never a shell line.
 
 - Tasks: a manager reply that asks the owner is set off by color, not a "?" icon: a thin accent border on its web bubble, the project's name in the accent on Home, and the reply's name and a left bar in the TUI chat. Screen readers still hear "Asks you".
+- Tasks: a manager reply that asks the owner is set off by color, not a "?" icon: a thin accent border on its web bubble, the project's name in the accent on Home, and a left bar on the reply's lines in the TUI chat. Screen readers still hear "Asks you".
 - Tasks: the manager's turn after a limit says "usage limit", not "session limit".
 - Tasks: Pi's missing credit, refused login and unknown model count as a limit of 6 hours. An agent's error is no chat reply any more: the chat shows why, and the turn tries again with a backoff, in a fresh conversation after the third try.
 - Tasks: a landing, a close, a wait on `limit` or `disk` and an automatic deploy no longer start a manager turn; they reach it with its next turn. wsx writes a finished task's memo into `manager/notes/context.md` itself. In the week of the audit such turns cost 13% of manager spend (`docs/design/manager-efficiency.md`).

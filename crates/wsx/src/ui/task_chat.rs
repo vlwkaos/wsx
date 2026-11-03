@@ -188,8 +188,7 @@ pub fn chat_lines(rows: &[Row], other: &str, width: usize) -> Vec<Line<'static>>
                     Who::Manager => (other.to_string(), theme::DONE),
                     Who::Peer(project) => (project.clone(), theme::IDLE),
                 };
-                // ^ A reply that asks is set off like a thin border: its name and a bar in the accent.
-                let color = if *asks { theme::ACCENT } else { color };
+                // ^ A reply that asks is set off like a thin border: a bar in the accent. Its name keeps the speaker's color, as the accent is the owner's.
                 let heading = vec![
                     Span::styled(name, Style::default().fg(color).bold()),
                     Span::styled(
