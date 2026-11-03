@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- Web: a task sheet's progress line shows the worker's whole last sentence when it holds a dot with no space after it, like `context.md` or `v1.2`. Before, it showed only the part after that dot.
 - A session whose worktree folder was removed outside wsx moves to its project's main checkout at the next synchronization, so a chat message reaches its agent instead of failing with "cannot resolve worktree".
 
 ### Changed
