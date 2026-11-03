@@ -1888,7 +1888,7 @@ def run(wsx, wsxd, work, owned):
     shots = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
         (r'\(m\)anager', b'm'),
-        (r'(?s)Manager demo +1 to check  1 approval\n.*▸ %s' % item['id'], b'i'),
+        (r'(?s)Manager demo[^\n]* +1 to check  1 approval\n.*▸ %s' % item['id'], b'i'),
         (r'Enter: send', b'hello from the tui'),
         (r'> hello from the tui', b'\r'),
         # ^ "Sent" comes before the next read draws the message: wait for both.
