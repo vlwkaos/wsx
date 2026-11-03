@@ -199,11 +199,10 @@ pub fn fallback_past_wait(
     until_ms: u64,
     now_ms: u64,
 ) -> Option<Choice> {
-    let span_ms = store::account_limit(account, now_ms)
-        .map_or(until_ms.saturating_sub(now_ms), |limit| {
-            limit.span_ms(now_ms)
-        });
-    (span_ms > max_wait_secs * 1000)
+    // ^ A record without its start (an older one) counts from now.
+    let since_ms =
+        store::account_limit(account, now_ms).map_or(now_ms, |limit| limit.since_ms.min(now_ms));
+    (until_ms.saturating_sub(since_ms) > max_wait_secs * 1000)
         .then(|| fallback(names, now_ms, false))
         .flatten()
 }
@@ -272,7 +271,7 @@ pub fn note_spend(adapter: &str, model: &str, micro_usd: u64, now_ms: u64) -> Op
     }
     let midnight = usage::local_midnight_ms(today + 26 * 3_600_000);
     match store::mark_limited(&account, midnight, now_ms, false) {
-        Ok(_) => Some(format!(
+        Ok(()) => Some(format!(
             "{account} spent {} of its {budget} USD for today: limited until midnight",
             usage::usd(spent)
         )),

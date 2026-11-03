@@ -312,14 +312,6 @@ pub struct AccountLimit {
     pub until_ms: u64,
 }
 
-impl AccountLimit {
-    /// How long the account refuses turns in all, from the first limit of the row; a record
-    /// without its start (an older one) counts from `now_ms`.
-    pub fn span_ms(&self, now_ms: u64) -> u64 {
-        self.until_ms.saturating_sub(self.since_ms.min(now_ms))
-    }
-}
-
 fn read_limit(account: &str) -> Option<AccountLimit> {
     let bytes = read_bounded_if_exists(&account_file(account, ".json").ok()?, 4096).ok()??;
     let record = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
@@ -330,15 +322,9 @@ fn read_limit(account: &str) -> Option<AccountLimit> {
     })
 }
 
-/// Record that `account` refuses turns until `until_ms`, as of `now_ms`, and return the
-/// record. A limit that `continues` the last one (a backoff with no reset time, or the same
+/// Record that `account` refuses turns until `until_ms`, as of `now_ms`. A limit that `continues` the last one (a backoff with no reset time, or the same
 /// wait again) keeps its start when it follows within the row gap.
-pub fn mark_limited(
-    account: &str,
-    until_ms: u64,
-    now_ms: u64,
-    continues: bool,
-) -> Result<AccountLimit> {
+pub fn mark_limited(account: &str, until_ms: u64, now_ms: u64, continues: bool) -> Result<()> {
     let path = account_file(account, ".json")?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
@@ -353,8 +339,7 @@ pub fn mark_limited(
         serde_json::json!({ "since_ms": since_ms, "until_ms": until_ms })
             .to_string()
             .as_bytes(),
-    )?;
-    Ok(AccountLimit { since_ms, until_ms })
+    )
 }
 
 /// `account`'s recorded limit, if it still holds at `now_ms`. An unreadable record counts as
