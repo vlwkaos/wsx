@@ -788,11 +788,16 @@ fn manager_name(scope: &Scope) -> String {
         .to_string()
 }
 
-/// The project page (docs/tasks.md "Project page"): its text and last change, or `null`s.
+/// The project overview (docs/tasks.md "Project overview"): its text cut to the cap, whether
+/// it was cut and its last change, or `null`s.
 pub fn page(scope: &Scope) -> Outcome<Value> {
-    let page = store::read_page(&scope.store).map_err(internal)?;
-    Ok(match page {
-        Some((text, unix_ms)) => json!({ "text": text, "unix_ms": unix_ms }),
+    let overview = store::read_overview(&scope.store).map_err(internal)?;
+    Ok(match overview {
+        Some((text, unix_ms)) => {
+            let (lines, chars) = store::overview_size(&text);
+            let (text, cut) = store::cut_overview(&text);
+            json!({ "text": text, "unix_ms": unix_ms, "cut": cut.then_some(json!({ "lines": lines, "chars": chars })) })
+        }
         None => json!({ "text": null, "unix_ms": null }),
     })
 }
@@ -1504,7 +1509,7 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
             };
             if path
                 .file_name()
-                .is_some_and(|name| name == store::PAGE_FILE)
+                .is_some_and(|name| name == store::OVERVIEW_FILE)
             {
                 crate::events::publish_json(app, "page", json!({ "project": scope.project }));
             } else if parent.file_name().is_some_and(|name| name == "manager") {

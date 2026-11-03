@@ -905,7 +905,7 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
     let mut files = vec![
         dir.join(APPROVALS_FILE),
         dir.join(MANAGER_DIR).join(MANAGER_LOG),
-        dir.join(PAGE_FILE),
+        dir.join(OVERVIEW_FILE),
         dir.join(super::checks::CHECKS_FILE),
         dir.join(TRIAL_FILE),
     ];
@@ -941,18 +941,52 @@ pub fn stamp(project_id: &str) -> Stamp {
         .collect()
 }
 
-pub const PAGE_FILE: &str = "page.md";
-pub const MAX_PAGE_BYTES: u64 = 256 * 1024;
+pub const OVERVIEW_FILE: &str = "overview.md";
+/// The overview's hard size: more is cut in the web view and sent back to the manager.
+pub const MAX_OVERVIEW_LINES: usize = 60;
+pub const MAX_OVERVIEW_CHARS: usize = 4000;
+pub const MAX_OVERVIEW_BYTES: u64 = 256 * 1024;
+/// The name before the rename; `migrate_page` moves it.
+const OLD_PAGE_FILE: &str = "page.md";
 
-/// `tasks/<project-id>/page.md`, the project's one-page picture that the manager edits.
-/// ref: docs/tasks.md "Project page"
-pub fn page_path(project_id: &str) -> Result<PathBuf> {
-    Ok(project_dir(project_id)?.join(PAGE_FILE))
+/// `tasks/<project-id>/overview.md`, the project's overview that the manager edits.
+/// ref: docs/tasks.md "Project overview"
+pub fn overview_path(project_id: &str) -> Result<PathBuf> {
+    Ok(project_dir(project_id)?.join(OVERVIEW_FILE))
 }
 
-/// Create the page with its sections when it is missing, owner-only; an existing page stays.
-pub fn ensure_page(project_id: &str, project: &str) -> Result<PathBuf> {
-    let path = ensure_project_dir(project_id)?.join(PAGE_FILE);
+/// A project that has `page.md` and no `overview.md` gets it renamed, once.
+fn migrate_page(dir: &Path) {
+    let overview = dir.join(OVERVIEW_FILE);
+    let old = dir.join(OLD_PAGE_FILE);
+    if fs::symlink_metadata(&overview).is_err() && old.is_file() {
+        let _ = fs::rename(old, overview);
+    }
+}
+
+/// Lines and characters of an overview text.
+pub fn overview_size(text: &str) -> (usize, usize) {
+    (text.lines().count(), text.chars().count())
+}
+
+/// Whether the text is over the cap, and its first 60 lines and 4,000 characters.
+pub fn cut_overview(text: &str) -> (String, bool) {
+    let (lines, chars) = overview_size(text);
+    if lines <= MAX_OVERVIEW_LINES && chars <= MAX_OVERVIEW_CHARS {
+        return (text.to_string(), false);
+    }
+    let kept: String = text
+        .split_inclusive('\n')
+        .take(MAX_OVERVIEW_LINES)
+        .collect();
+    (kept.chars().take(MAX_OVERVIEW_CHARS).collect(), true)
+}
+
+/// Create the overview with its sections when it is missing, owner-only; an existing one stays.
+pub fn ensure_overview(project_id: &str, project: &str) -> Result<PathBuf> {
+    let dir = ensure_project_dir(project_id)?;
+    migrate_page(&dir);
+    let path = dir.join(OVERVIEW_FILE);
     let skeleton = format!(
         "# {project}\n\n## Goal\n\n_Not written yet._\n\n## Tasks\n\n```mermaid\ngraph LR\n  start[No tasks yet]\n```\n\n## Decisions\n\n_None yet._\n\n## Open questions\n\n_None yet._\n"
     );
@@ -966,10 +1000,11 @@ pub fn ensure_page(project_id: &str, project: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// The page's text and when it last changed, or none when it is missing.
-pub fn read_page(project_id: &str) -> Result<Option<(String, u64)>> {
-    let path = page_path(project_id)?;
-    let Some(bytes) = read_bounded_if_exists(&path, MAX_PAGE_BYTES)? else {
+/// The overview's text and when it last changed, or none when it is missing.
+pub fn read_overview(project_id: &str) -> Result<Option<(String, u64)>> {
+    migrate_page(&project_dir(project_id)?);
+    let path = overview_path(project_id)?;
+    let Some(bytes) = read_bounded_if_exists(&path, MAX_OVERVIEW_BYTES)? else {
         return Ok(None);
     };
     let modified = fs::symlink_metadata(&path)?

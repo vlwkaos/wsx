@@ -3214,7 +3214,7 @@ def task_journey(args):
             # A deploy by hand answers that it started; its detached run records the result.
             assert js('task', 'deploy', '-p', 'ui')['started'] is True
             wait(lambda: js('task', 'deployed', '-p', 'ui')['deploy'].get('behind') == 0, 'the deploy of ui was recorded', timeout=60)
-            # plans' deploy fails with 60 lines: its project page folds their end.
+            # plans' deploy fails with 60 lines: its project overview folds their end.
             failed = subprocess.run([str(wsx), 'task', 'deploy', '-p', 'plans', '--json'], env=dict(env, WSX_FIXTURE_DEPLOY_FAIL='1'),
                                     cwd=project, capture_output=True, text=True, timeout=60)
             assert json.loads(failed.stdout)['started'] is True, (failed.stdout, failed.stderr)
@@ -3565,12 +3565,12 @@ merge_seconds = 3
         empty = steady(owner, 'GET', '/api/tasks/%d' % ids['calm'])[1]
         assert empty['needs'] == [] and empty['resolutions'] == [] and empty['last_reply'] is None and empty['last_unix_ms'] is None, empty
         ok('manager: say starts it, reply in the chat, approve runs once and records the outcome, deny with a note, since, resolutions, last reply')
-        # The project page: the manager host writes its sections once; a project without a
+        # The project overview: the manager host writes its sections once; a project without a
         # manager has none. A title: `--title` as given, else the first sentence of the
         # worker's summary, else the prompt's first line without a leading "Owner <word>:"
         # (docs/tasks.md "Store"; a task without a result is #6 of the browser fixture).
         page = steady(owner, 'GET', '/api/tasks/%d/page' % demo)[1]
-        assert page['text'].startswith('# demo\n\n## Goal') and '```mermaid' in page['text'] and page['unix_ms'] > 0, page
+        assert page['text'].startswith('# demo\n\n## Goal') and '```mermaid' in page['text'] and page['unix_ms'] > 0 and page['cut'] is None, page
         assert steady(owner, 'GET', '/api/tasks/%d/page' % ids['calm'])[1] == {'text': None, 'unix_ms': None}
         assert steady(viewer, 'GET', '/api/tasks/%d/page' % ids['ui'])[0] == 404
         for title, refusal in (('  ', 'the title is empty'), ('x' * 61, 'longer than 60 characters'), ('a\tb', 'control characters')):
@@ -3605,7 +3605,7 @@ merge_seconds = 3
         assert json.loads(record.read_text())['title'] == 'Owner asked: short words'
         logged = Path(js('task', 'show', bracketed, '-p', 'demo')['log']).read_text().splitlines()
         assert json.loads(logged[1])['text'].startswith('Owner report (UX failures: how a task asks):'), logged[1]
-        ok('project page: written by the manager host, none without a manager, 404 outside the grant; titles: --title, its refusals, "Owner <words>:" left out when shown and kept on disk, on the web the first sentence of the summary')
+        ok('project overview: written by the manager host, none without a manager, 404 outside the grant; titles: --title, its refusals, "Owner <words>:" left out when shown and kept on disk, on the web the first sentence of the summary')
 
         # --- To check (docs/tasks.md "To check"): pass one, fail one with a note (a linked fix
         # task starts), pass the rest; the owner's alone.

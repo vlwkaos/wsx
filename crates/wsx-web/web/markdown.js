@@ -16,7 +16,7 @@ const makeParser = () => {
   return made;
 };
 const parser = makeParser();
-// ^ Task text (reports, briefs, the manager chat, the project page) is prose a model wrote:
+// ^ Task text (reports, briefs, the manager chat, the project overview) is prose a model wrote:
 // a paragraph indented by four spaces stays a paragraph. Only a fence (```) is code there.
 const proseParser = makeParser().disable("code");
 

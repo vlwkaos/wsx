@@ -1289,6 +1289,9 @@ def run(wsx, wsxd, work, owned):
         return next((t for t in traces() if t.get('manager') and text in str(t.get('message', ''))), None)
 
     running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
+    # ^ A project with the old `page.md` and no overview gets it moved once, when the manager starts.
+    old_page = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md'
+    old_page.write_text('# demo\n\n## Goal\n\nmigrated\n')
     asked = js('task', 'say', 'STATUS')
     assert asked['ok'] and asked['id'] == 1, asked
     asked_reply = reply_to(asked['id'])
@@ -1300,7 +1303,8 @@ def run(wsx, wsxd, work, owned):
     assert summary.startswith('- open: ') and 'working; to check: ' in summary, summary
     assert '#%d working r' % running in summary.split('- open tasks:\n', 1)[1], summary
     assert '`wsx task ledger -p demo` for more' in launch['instructions'], launch['instructions']
-    page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md')
+    page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'overview.md')
+    assert not old_page.exists() and 'migrated' in Path(page).read_text(), old_page
     # ^ It uses the owner's skills (docs/tasks.md "Manager"); no tool list: nothing prompts.
     assert not {'--allowedTools', '--disallowedTools'} & set(launch['argv']), launch['argv']
     plugin = Path(launch['plugin_dir'])
@@ -1310,6 +1314,16 @@ def run(wsx, wsxd, work, owned):
     # ^ No prompts inside wsx's boundary (docs/tasks.md "Permissions").
     assert launch['mode'] == 'bypassPermissions' and 'permissions' not in launch['settings'], launch['settings']
     assert launch['model'] == 'fake-manager' and Path(page).read_text().startswith('# demo\n\n## Goal')
+    # ^ A manager turn that leaves the overview over the cap (60 lines, 4,000 characters) gets one
+    # follow-up turn that names the sizes; the second over-cap result gets no third
+    # (docs/tasks.md "Project overview").
+    long_said = js('task', 'say', 'OVERLONG 70')
+    wait(lambda: turn_with('The project overview is 70 lines / ') and reply_to(long_said['id']), 'the overview follow-up')
+    time.sleep(4)
+    follow = [t for t in traces() if t.get('manager') and 'The project overview is ' in str(t.get('message', ''))]
+    assert len(follow) == 1 and 'the cap is 60 / 4,000' in follow[0]['message'], follow
+    assert len(Path(page).read_text().splitlines()) == 70
+    Path(page).write_text('# demo\n\n## Goal\n\nshort\n')
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     assert launch['git_optional_locks'] == '0', launch
     # ^ README "Profiles": the manager and every worker so far run under demo's profile root.

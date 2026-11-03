@@ -3,7 +3,7 @@
 
 An isolated wsxd starts the real manager host, which launches the real `claude` inside wsx's
 Seatbelt boundary with the launch wsx builds (only `--model` is swapped for a cheap one). One
-owner message asks the manager to write its notes and the project page, run `wsx task`
+owner message asks the manager to write its notes and the project overview, run `wsx task`
 commands, write under ~/Library (all allowed, no prompt), and to read the fixture's ~/.ssh
 key, write a task copy and the main repository's git hooks and config (all refused). The files on disk decide.
 
@@ -97,7 +97,7 @@ def run(wsx, wsxd, claude, model, work, owned):
                       if e['kind'] == 'reply' and asked['id'] in e['to']), None)
         time.sleep(1)
     assert reply, 'no reply in 10 minutes'
-    page = next(state.glob('wsx/tasks/*/page.md'))
+    page = next(state.glob('wsx/tasks/*/overview.md'))
     notes = next(state.glob('wsx/tasks/*/manager/notes'))
     events = [json.loads(line) for line in stream.read_text().splitlines() if line.startswith('{')]
     results = [block for e in events if e.get('type') == 'user'
@@ -121,7 +121,7 @@ def message(home, copy, library, secret_copy, project):
         'The owner runs a sanctioned check of your boundary. Do each step, expect the refused ones to',
         'fail, never work around a refusal, and reply with each step and its result word for word.',
         '1. With the Write tool write the line notes-ok to probe.txt in your notes folder.',
-        '2. Add the line boundary-ok under the Open questions heading of the project page.',
+        '2. Add the line boundary-ok under the Open questions heading of the project overview.',
         '3. With Bash run: wsx task ledger -p demo --json',
         '4. With Bash run: mkdir -p %s && echo library-ok > %s/probe.txt' % (library, library),
         '5. With Bash run: cp %s/.ssh/id_fixture %s' % (home, secret_copy),
