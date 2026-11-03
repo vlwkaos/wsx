@@ -299,6 +299,35 @@ pub enum TaskCmd {
         #[arg(long, value_name = "SECONDS")]
         since: Option<u64>,
     },
+    /// Wake the manager once, `--in` a time or `--at` a local time, with `--why` as its event;
+    /// a new check-in replaces the last one (docs/tasks.md "Routines")
+    Checkin {
+        #[arg(short, long)]
+        project: Option<String>,
+        /// `40m`, `2h` or `1d`
+        #[arg(
+            long = "in",
+            value_name = "DURATION",
+            conflicts_with = "at",
+            required_unless_present = "at"
+        )]
+        after: Option<String>,
+        /// `HH:MM` or `YYYY-MM-DD HH:MM` local time
+        #[arg(long)]
+        at: Option<String>,
+        /// What to look at then; the event's text
+        #[arg(long)]
+        why: String,
+    },
+    /// Post stdin to the project's chat as wsx's message, with no manager turn; nothing when
+    /// it is empty. A routine pipes its report here (docs/tasks.md "Routines")
+    Post {
+        #[arg(short, long)]
+        project: Option<String>,
+        /// The chat's line above the text
+        #[arg(long, default_value = "routine")]
+        title: String,
+    },
     /// The project's scheduled routines: `wsx routine` (docs/tasks.md "Routines")
     Routine {
         #[command(subcommand)]
@@ -467,6 +496,8 @@ impl TaskCmd {
             Self::Routine { action, .. } => action.json(),
             Self::CheckRun { .. }
             | Self::Digest { .. }
+            | Self::Checkin { .. }
+            | Self::Post { .. }
             | Self::Host { .. }
             | Self::ManagerHost { .. }
             | Self::PreviewHost { .. }
@@ -756,6 +787,13 @@ pub fn run(command: TaskCmd) -> Result<()> {
         ),
         TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
         TaskCmd::Digest { project, since } => digest(project.as_deref(), since),
+        TaskCmd::Post { project, title } => post(project.as_deref(), &title),
+        TaskCmd::Checkin {
+            project,
+            after,
+            at,
+            why,
+        } => checkin(project.as_deref(), after.as_deref(), at.as_deref(), &why),
         TaskCmd::Role { action } => role(action),
         TaskCmd::Ledger { project, .. } => ledger::ledger(project.as_deref()),
         TaskCmd::Routine { action, owner_said } => {
@@ -2163,6 +2201,76 @@ fn last_digest_ms(log: &[ManagerEntry]) -> Option<u64> {
 
 /// Post the project's digest. Each try reads the lines again and starts from the chat log, so
 /// a run that fails leaves its time to the next one. ref: docs/tasks.md "Routines"
+/// The routine a check-in writes; one per project, so a manager cannot pile them up.
+const CHECKIN: &str = "checkin";
+/// The furthest ahead a check-in may be.
+const CHECKIN_MAX_SECS: i64 = 7 * 24 * 3600;
+const CHECKIN_WHY_CHARS: usize = 500;
+
+/// Write routine `checkin`: one run at the chosen minute whose argv wsx fixes (`printf` of
+/// `why`), so it needs no `--owner-said`; its output reaches the manager as the run's event.
+/// ref: docs/tasks.md "Routines"
+fn checkin(project: Option<&str>, after: Option<&str>, at: Option<&str>, why: &str) -> Result<()> {
+    use asched_core::routine::{ipc::Action, Routine, Trigger};
+    not_for_roles("a check-in")?;
+    let why = why.trim();
+    if why.is_empty() || why.chars().count() > CHECKIN_WHY_CHARS {
+        bail!("--why must say what to look at, in at most {CHECKIN_WHY_CHARS} characters");
+    }
+    let now = (now_unix_ms() / 1000) as i64;
+    let at_secs = match (after, at) {
+        (Some(after), _) => now + duration_secs(after)?,
+        (None, Some(at)) => {
+            wsx_core::task::ledger::local_minute(at, now).map_err(anyhow::Error::msg)? * 60
+        }
+        (None, None) => bail!("pass --in or --at"),
+    };
+    if at_secs <= now || at_secs - now > CHECKIN_MAX_SECS {
+        bail!("a check-in is between 1 minute and 7 days ahead");
+    }
+    // ^ The tick runs a minute that has begun: round up, so it never runs early.
+    let epoch_minute = (at_secs + 59) / 60;
+    let path = crate::cli::routine_project(project)?;
+    let (revision, routines) = crate::cli::fetch_routines(&path)?;
+    let routine = Routine {
+        name: CHECKIN.into(),
+        trigger: Trigger::At { epoch_minute },
+        command: vec!["printf".into(), "%s\\n".into(), why.into()],
+        prompt: String::new(),
+        enabled: true,
+    }
+    .validated()?;
+    let action = match routines.iter().any(|view| view.routine.name == CHECKIN) {
+        true => Action::Edit {
+            revision,
+            old_name: CHECKIN.into(),
+            routine,
+        },
+        false => Action::Add { revision, routine },
+    };
+    crate::cli::send_routine(&path, action)?;
+    println!(
+        "check-in {}",
+        wsx_core::task::ledger::trigger_text(&Trigger::At { epoch_minute })
+    );
+    Ok(())
+}
+
+/// `40m`, `2h`, `1d` in seconds.
+fn duration_secs(text: &str) -> Result<i64> {
+    let text = text.trim();
+    let unit = match text.chars().last() {
+        Some('m') => 60,
+        Some('h') => 3600,
+        Some('d') => 24 * 3600,
+        _ => bail!("--in takes minutes, hours or days: 40m, 2h, 1d"),
+    };
+    let count: i64 = text[..text.len() - 1]
+        .parse()
+        .with_context(|| format!("--in takes minutes, hours or days: {text}"))?;
+    Ok(count.saturating_mul(unit))
+}
+
 fn digest(project: Option<&str>, since: Option<u64>) -> Result<()> {
     let (name, main) = project_entry(project)?;
     let project_id = store::project_id(&name, &main);
@@ -2177,6 +2285,42 @@ fn digest(project: Option<&str>, since: Option<u64>) -> Result<()> {
         },
         |seconds| seconds.saturating_mul(1000),
     );
+    post_when_free(&project_id, &name, DIGEST_EVENT, || {
+        digest_lines(&project_id, after_ms)
+    })
+}
+
+/// The most of stdin `post` reads.
+const POST_BYTES: u64 = 16 * 1024;
+
+/// `wsx task post`: stdin's lines to the chat, as the digest posts its own.
+fn post(project: Option<&str>, title: &str) -> Result<()> {
+    use std::io::Read;
+    let (name, main) = project_entry(project)?;
+    let title = title.trim();
+    if title.is_empty() || title.contains('\n') {
+        bail!("--title must be one line");
+    }
+    let mut text = String::new();
+    std::io::stdin()
+        .take(POST_BYTES)
+        .read_to_string(&mut text)
+        .context("stdin must be UTF-8 text")?;
+    let lines: Vec<String> = text.trim().lines().map(str::to_string).collect();
+    post_when_free(&store::project_id(&name, &main), &name, title, || {
+        lines.clone()
+    })
+}
+
+/// Post `lines()` as wsx's `event` message to the chat, with no manager turn: none when it is
+/// empty. A turn that runs refuses it, so this tries again for up to 30 minutes, at once
+/// failing when the manager itself runs it inside that turn. ref: docs/tasks.md "Routines"
+fn post_when_free(
+    project_id: &str,
+    name: &str,
+    event: &str,
+    mut lines: impl FnMut() -> Vec<String>,
+) -> Result<()> {
     // ^ The manager's own command runs inside the turn it would wait for.
     let wait = match acting_as_manager() {
         true => Duration::ZERO,
@@ -2184,17 +2328,17 @@ fn digest(project: Option<&str>, since: Option<u64>) -> Result<()> {
     };
     let deadline = Instant::now() + wait;
     loop {
-        let lines = digest_lines(&project_id, after_ms);
+        let lines = lines();
         if lines.is_empty() {
             return Ok(());
         }
-        let response = owner::post(&project_id, DIGEST_EVENT.into(), lines.join("\n"))
+        let response = owner::post(project_id, event.into(), lines.join("\n"))
             .with_context(|| format!("the manager host of {name} is not running"))?;
         if response.ok {
             return Ok(());
         }
         if !response.busy || Instant::now() >= deadline {
-            bail!("the digest was not posted: {}", response.message);
+            bail!("the {event} was not posted: {}", response.message);
         }
         std::thread::sleep(DIGEST_TURN_POLL);
     }

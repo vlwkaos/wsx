@@ -641,6 +641,11 @@ fn view_with_runtime(
         (Trigger::Cron(expression), true) => CronSchedule::parse(expression)
             .ok()
             .and_then(|schedule| schedule.next_run_after(now_epoch())),
+        (Trigger::At { epoch_minute }, true) => runtime
+            .claims
+            .get(&routine.name)
+            .is_none_or(|claimed| claimed < epoch_minute)
+            .then_some(epoch_minute * 60),
         _ => None,
     };
     RoutineView {
@@ -911,17 +916,20 @@ fn tick(root: &Path, epoch_minute: i64, state: &Arc<DaemonState>) {
             if !routine.enabled {
                 continue;
             }
-            let Trigger::Cron(expression) = &routine.trigger else {
+            let due = match &routine.trigger {
+                Trigger::Cron(expression) => CronSchedule::parse(expression)
+                    .is_ok_and(|schedule| schedule.matches(local))
+                    .then_some(epoch_minute),
+                Trigger::At { epoch_minute: at } => (*at <= epoch_minute).then_some(*at),
+                Trigger::Event { .. } => None,
+            };
+            let Some(minute) = due else {
                 continue;
             };
-            let Ok(schedule) = CronSchedule::parse(expression) else {
-                continue;
-            };
-            if schedule.matches(local)
-                && !is_active(state, store.project(), &routine.name)
-                && store.claim(&routine.name, epoch_minute).unwrap_or(false)
+            if !is_active(state, store.project(), &routine.name)
+                && store.claim(&routine.name, minute).unwrap_or(false)
             {
-                let _ = spawn_run(store.clone(), routine.clone(), Some(epoch_minute), state);
+                let _ = spawn_run(store.clone(), routine.clone(), Some(minute), state);
             }
         }
     }
@@ -2232,6 +2240,50 @@ mod tests {
         )
         .is_ok());
         drain_workers(&state);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn at_routine_runs_once_at_or_after_its_minute_and_then_has_no_next_run() {
+        let (root, project, state) = fixture();
+        let store = RoutineStore::new(root.clone(), &project).unwrap();
+        let mut config = store.load().unwrap();
+        let routine = config
+            .routines
+            .iter_mut()
+            .find(|routine| routine.name == "one")
+            .unwrap();
+        routine.trigger = Trigger::At {
+            epoch_minute: 1_000_000,
+        };
+        routine.command = vec!["/bin/echo".into(), "check in".into()];
+        store.save(config, 1).unwrap();
+        let next_run = |state: &Arc<DaemonState>| {
+            let Response::Routines { routines, .. } =
+                process(&root, request(&project, Action::List), state).unwrap()
+            else {
+                panic!("expected routine list");
+            };
+            routines
+                .into_iter()
+                .find(|view| view.routine.name == "one")
+                .unwrap()
+                .next_run_epoch
+        };
+        assert_eq!(next_run(&state), Some(60_000_000));
+
+        tick(&root, 999_999, &state);
+        drain_workers(&state);
+        assert!(!store.load_runtime().unwrap().runs.contains_key("one"));
+        // ^ A machine asleep at the minute runs it at the next tick it sees.
+        tick(&root, 1_000_005, &state);
+        drain_workers(&state);
+        tick(&root, 1_000_006, &state);
+        drain_workers(&state);
+        let runtime = store.load_runtime().unwrap();
+        assert_eq!(runtime.runs["one"].len(), 1);
+        assert_eq!(runtime.claims["one"], 1_000_000);
+        assert_eq!(next_run(&state), None);
         let _ = fs::remove_dir_all(root);
     }
 

@@ -623,7 +623,7 @@ fn print_routine_list(
                 } else {
                     "idle"
                 },
-                terminal_safe(&format_trigger(&view.routine.trigger)),
+                terminal_safe(&view.routine.trigger.to_string()),
                 view.latest_run
                     .as_ref()
                     .map(|run| format!("{:?}", run.status))
@@ -658,7 +658,7 @@ fn print_response(response: Response, as_json: bool) -> Result<()> {
                     } else {
                         "idle"
                     },
-                    terminal_safe(&format_trigger(&view.routine.trigger)),
+                    terminal_safe(&view.routine.trigger.to_string()),
                     view.latest_run
                         .as_ref()
                         .map(|run| format!("{:?}", run.status))
@@ -671,7 +671,7 @@ fn print_response(response: Response, as_json: bool) -> Result<()> {
             "revision {revision}\nname: {}\nenabled: {}\ntrigger: {}\ncommand: {}\nprompt: {}",
             terminal_safe(&routine.routine.name),
             routine.routine.enabled,
-            terminal_safe(&format_trigger(&routine.routine.trigger)),
+            terminal_safe(&routine.routine.trigger.to_string()),
             format_argv(&routine.routine.command),
             terminal_safe(&routine.routine.prompt)
         ),
@@ -716,13 +716,6 @@ fn trigger_from_args(cron: Option<String>, event: Option<String>) -> Result<Trig
         (Some(expression), None) => Ok(Trigger::Cron(expression)),
         (None, Some(kind)) => Ok(Trigger::Event { kind }),
         _ => bail!("exactly one of --cron or --event is required"),
-    }
-}
-
-fn format_trigger(trigger: &Trigger) -> String {
-    match trigger {
-        Trigger::Cron(expression) => format!("cron:{expression}"),
-        Trigger::Event { kind } => format!("event:{kind}"),
     }
 }
 

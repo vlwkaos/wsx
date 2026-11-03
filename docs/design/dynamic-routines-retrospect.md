@@ -1,83 +1,64 @@
-# Dynamic routines and the retrospect
+# Dynamic routines, and the retrospect as one routine
 
-Status: design for owner msg 2085, 2026-11-04. Nothing built yet. Contracts: docs/tasks.md "Routines", "Manager", "Recap"; vendor/asched/PLAN-event-triggers.md.
+Status: built for owner msgs 2085 and 2091, 2026-11-04. Contracts: docs/tasks.md "Routines"; vendor/asched/PLAN-event-triggers.md.
 
-Assuming: Claude Code takes `--effort high` (not verified; `claude.rs` passes no effort today).
+Msg 2091: wsx builds nothing retrospect-specific. The product work is the general routine system. The retrospect is one routine entry in the repo, and it is the example that proves the features.
 
-## Recommended set
+## What a routine can do now
 
-| Choice | Pick | Why not more |
+| Need | Feature | Why this shape |
 |---|---|---|
-| Manager's own check-in | (a) one-shot `Trigger::At{epoch_minute}` in asched | it is a third trigger kind inside the one scheduler, not a second structure |
-| Project events | (b) wsx fires the existing asched `fire` with kinds wsx already sees | "after N", "only if" go in the routine's command; asched keeps no filter language (its v1 non-goal) |
-| Jitter | no | (a) lets the manager pick any minute already; random start times make runs and tests nondeterministic and add nothing the owner sees |
-| Retrospect | `wsx task retrospect`, replaces the daily `usage` routine | general for every project, posts without a manager turn |
+| Not only fixed times | `--at` one-shot trigger (`Trigger::At` in asched) | a third trigger kind in the one scheduler (owner decision 2026-10-31), no second structure |
+| React to the project | wsx fires `task.<state>`, `deploy.*`, `release.*`, `project.idle` through asched's existing `fire` | "after N" and filters stay in the routine's command; asched keeps no filter language |
+| The manager plans its next look | `wsx task checkin --in 40m --why ...` | wsx fixes the argv (`printf` of the why), so no `--owner-said`; one per project |
+| Tell the manager something | a run with stdout is an event with its output ends, also on success | before, a success said only "succeeded" |
+| Tell the owner, no turn | `wsx task post` (stdin to the chat, as the digest posts) | a routine pipes or calls it and prints nothing |
+| Run an agent with a prompt | already there: `--prompt` and `{prompt}` in the argv (asched), as the TUI's agent templates use | nothing new |
+| Jitter | not built | `--at` lets the manager pick any minute; random times make runs and tests nondeterministic |
 
 ```mermaid
 flowchart LR
-  M[manager turn] -->|routine checkin --in 40m --why ...| A[(asched At)]
-  H[manager host: task, deploy, idle events] -->|fire kind, event_id| A
-  A -->|run ends, stdout| E[manager event with output]
-  R[cron 06:00 or event task.landed] --> T[wsx task retrospect]
-  T -->|Post over manager.sock| C[owner chat, no turn]
+  M[manager turn] -->|wsx task checkin| A[(asched in wsxd)]
+  H[manager host: task, deploy, idle] -->|fire kind, id, payload| A
+  C[cron] --> A
+  A -->|run| R[routine argv]
+  R -->|stdout| E[manager event with output ends]
+  R -->|wsx task post| P[chat post, no turn]
 ```
 
-## (a) One-shot check-in
+## The retrospect, one routine
 
-- asched: `Trigger::At { epoch_minute }`. The minute tick runs it when `now >= at`, claims it like cron (`store.claim`), then sets `enabled: false`. A missed time (machine asleep) runs at the next tick. `list` shows it as `next_run`.
-- wsx: `wsx task routine checkin -p P (--in <30m|2h> | --at <HH:MM|RFC3339>) --why "<text>"`. It writes the one routine `checkin` (a new one replaces the old) with argv `printf %s <why>`. Bounds: 1 min (the tick) to 7 days.
-- No `--owner-said`: its argv is fixed by wsx and runs no command of the manager's choosing. `add` with any other argv keeps the rule.
-- Event: a successful run with stdout gets its output ends, like a failure does today (`routine_line`, manager.rs:2340): `routine checkin succeeded after 0 s; its output ends:\n    check whether #181's deploy fixed the login`. Today that text is dropped, so this change also helps every routine that prints.
-- The manager instructions get one line: when you wait for something with no event (an outside review, a time of day), set a check-in.
+`usage` (cron `0 6 * * *`) runs `scripts/retrospect.py <state dir> -p <project>`. It replaces the earlier `usage-report.py --days 7` argv and only reports: the owner rejected daily audit tasks.
 
-## (b) Event kinds wsx fires
+| Part | Code or model |
+|---|---|
+| Spend since the last retrospect, 3 costliest tasks | code (reuses `usage-report.py`'s log readers) |
+| Owner messages asking the same again: word 3-gram Jaccard >= 0.4, groups of 3 or more, paths, links and code removed | code |
+| Phrases the manager repeated: word 8-grams in 5 or more replies, merged per set of replies | code |
+| Reply + the owner's next message within 30 min (at most 40 pairs) | code |
+| Which of those the owner turned down (also implicitly), and up to 3 product changes | one `claude -p --model sonnet --effort high --json-schema` call, prompt `scripts/retrospect-prompt.md` |
 
-The manager host already makes each of these lines. It also calls `RoutineClient::fire` once, payload in `ASCHED_EVENT_PAYLOAD`:
+Repeats count over 7 days and are news when one is new. The script posts with `wsx task post --title retrospect`, writes the whole report to `<state dir>/retrospect/<unix ms>.md` (the newest 14 stay) and prints nothing. `--no-model` counts only.
 
-| Kind | event_id | Payload |
-|---|---|---|
-| `task.landed`, `task.failed`, `task.ready` | `<n>-r<rev>` | `{task, title, revision, landed_total}` |
-| `deploy.succeeded`, `deploy.failed`, `release.*` | `<kind>-<unix_ms>` | `{commit, exit}` |
-| `project.idle` | `idle-<idle_ms>` | `{quiet_minutes}`, at the recap look (no recap needed) |
+First real run on wsx's log (2026-11-04): 18 pairs, 4 turned down, $0.08. The changes it named included "a manager tool that quotes a worker's transcript lines for a claim".
 
-`NoMatch` costs one socket call. A busy routine drops the event (asched rule), so a command counts from the logs, never from event counts. Example: "after 5 lands" is `--event task.landed` plus `wsx task retrospect --every-lands 5`, which prints and posts nothing until 5 lands passed since its last post.
-
-## Retrospect
-
-`wsx task retrospect -p P [--since <unix s>]`, Rust in `crates/wsx/src/task/`, beside `digest`. It reads `manager/log.jsonl` (+`log.1`) and `usage.rs`. It starts at the last retrospect post, else 24 h back.
-
-| Part | Code or model | Rule |
-|---|---|---|
-| Cost | code | today and 7 days, workers and manager, 3 costliest tasks (`usage.rs` days) |
-| Owner asked again | code | owner messages with paths, URLs and code blocks removed; Unicode word 5-gram Jaccard >= 0.4 clusters of >= 3 messages |
-| Manager repeats | code | 8-word shingles in >= 5 replies of the window; top 3 with reply ids |
-| Rejection candidates | code | each (reply, next owner message within 30 min) pair; marks an explicit correction word, a repeat of the earlier ask, or a "do X instead" |
-| Implicit rejection, product changes | model, one call | sonnet, effort high, only the candidate pairs (each side cut to 600 chars, at most 40 pairs) plus the code counts; JSON schema answer `{pairs:[{id, rejected, what_owner_wanted}], changes:[<=3 {change, evidence_ids}]}` |
-
-Measured on wsx's own log (940 replies, 339 owner messages): 114 shingles occur in 5 or more replies, the top one ("bring back the old rule 2, go on the reply to message plan") in 15. A correction-word regex finds only 6 owner messages, so implicit rejection needs the model.
-
-What the owner sees, one Post (a reply with no usage, like the digest):
+What the owner sees:
 
 ```text
-Retrospect, 24 h: $18.40 (manager $3.10); costliest #181 $4.2, #179 $3.0, #183 $2.1
-You asked 3 times: "status of the web deploy" (m2011, m2040, m2079)
-I repeated 15 times: "bring back the old rule 2, go on the reply to message plan"
-You turned down 4 replies: r2031 (wanted a table, got prose), r2050 ...
-Product changes: 1. the manager quotes an earlier reply by id instead of retyping it (r1990 x15)
-2. a deploy status line in the overview answers "status of the deploy" (m2011 ...)
-Retrospect call: sonnet, $0.21
+Since 11-03 07:35: spend $10.90 (manager $10.90)
+You turned down 4 of 18 replies you answered: r2065 (wanted ...); r2074 (wanted ...); r2076 (wanted ...)
+Change 1: Usage report splits each turn's cost by what started it ... (2074, 2076)
+Change 2: A manager tool that quotes a worker's transcript lines for a claim ... (2076, 2078)
+Judged by sonnet (high): $0.08
+Detail: <state dir>/retrospect/1793745316931.md
 ```
 
-Full detail goes to `tasks/<id>/retrospect/<day>.md`; the post ends with that path. With no candidates it skips the model; with nothing to say it posts nothing. The daily `usage` routine becomes `--cron "0 6 * * *"` running `wsx task retrospect -p <project>`. `scripts/usage-report.py` stays the deeper audit tool.
+## Proof
 
-## Proof (real processes, no mocks)
-
-| Scenario | Script | Shows |
-|---|---|---|
-| `routine checkin --in 1m` on an isolated wsxd + asched | `scripts/test-task.py` | the run starts within the next minute, disables itself, the manager event carries the `--why` text |
-| check-in bounds and argv rule | same | `--in 0m` and `--in 8d` refused; `add` with another argv still needs `--owner-said` |
-| a land fires `task.landed` | same | a routine `--event task.landed` runs once per land; the same revision twice is `Deduplicated` |
-| retrospect on a staged `manager/log.jsonl` with known repeats and corrections | same, `--no-model` | the counts, ids and the posted lines match; no reply carries usage; a second run posts nothing |
-| model pass | one real run on wsx's own log (build step, here) | report file and the logged call usage; the owner judges whether the rejections ring true |
-
-asched gets its own contract tests for `At` (claim once, disable, missed time, config round trip).
+| Scenario | Where |
+|---|---|
+| `At` runs once at or after its minute, then has no next run | asched `daemon.rs` contract test |
+| `checkin --in 0m` and `--in 8d` are refused; `--in 1m` runs within 2 minutes; the event carries the why; then no next run | `scripts/test-task.py` |
+| A `--event task.closed` routine runs on a close and its `wsx task post` reaches the chat with no turn and no event | `scripts/test-task.py` |
+| The retrospect as a routine with `--no-model` posts the 3 repeated owner asks and its detail file, no event | `scripts/test-task.py` |
+| The model pass | one real run on a copy of wsx's log |

@@ -135,10 +135,7 @@ impl RoutineForm {
         let cursor = routine.name.len();
         Self {
             name: routine.name,
-            cron: match routine.trigger {
-                Trigger::Cron(cron) => cron,
-                Trigger::Event { kind } => format!("event:{kind}"),
-            },
+            cron: wsx_core::task::ledger::trigger_text(&routine.trigger),
             command_json,
             prompt: routine.prompt,
             field: 0,
@@ -211,13 +208,10 @@ impl RoutineForm {
     pub fn routine(&self) -> Result<Routine, String> {
         let command: Vec<String> = serde_json::from_str(&self.command_json)
             .map_err(|e| format!("command must be a JSON argv array: {e}"))?;
-        let trigger = self
-            .cron
-            .strip_prefix("event:")
-            .map(|kind| Trigger::Event {
-                kind: kind.to_string(),
-            })
-            .unwrap_or_else(|| Trigger::Cron(self.cron.clone()));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs() as i64);
+        let trigger = wsx_core::task::ledger::parse_trigger(&self.cron, now)?;
         Routine {
             name: self.name.clone(),
             trigger,

@@ -1670,6 +1670,28 @@ def run(wsx, wsxd, work, owned):
     assert len([e for e in manager_entries() if e['kind'] == 'rotated']) == rotations
     assert turn_with('WARM CHANGE')['message'].startswith('Your instructions changed'), turn_with('WARM CHANGE')
     (notes / 'decisions.md').write_text('- 2026-10-22 keep the store in sqlite\n')
+    # ^ Dynamic routines (docs/tasks.md "Routines"), after the handover above so it lists only
+    # nightly: a check-in needs no owner words, runs once at its minute and its output is the
+    # event; an event routine runs on the task change wsx fires, and `wsx task post` puts its
+    # output in the chat with no manager turn.
+    def posted(title):
+        entries = manager_entries()
+        return [reply for message, reply in zip(entries, entries[1:])
+                if message['kind'] == 'message' and message['from'] == 'events' and message['text'] == title
+                and reply['kind'] == 'reply' and 'usage' not in reply]
+    for early in ('0m', '8d'):
+        text = reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in %s --why "too soon"' % early)['id'])['text']
+        assert '-> 1 ' in text and 'between 1 minute and 7 days' in text, text
+    text = reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in 1m --why "look at the nightly failures"')['id'])['text']
+    assert '-> 0 check-in at:' in text, text
+    row = next(r for r in js('task', 'ledger')['routines'] if r['name'] == 'checkin')
+    assert row['trigger'].startswith('at:') and row['next_run_unix_ms'] > time.time() * 1000, row
+    wait(lambda: events_with('routine checkin succeeded after', 'its output ends:\n    look at the nightly failures'),
+         'the check-in event', 150)
+    row = next(r for r in js('task', 'ledger')['routines'] if r['name'] == 'checkin')
+    assert row['next_run_unix_ms'] is None and row['last']['status'] == 'succeeded', row
+    js('task', 'routine', 'add', 'closed', '-p', 'demo', '--event', 'task.closed', '--arg=sh', '--arg=-c',
+       '--arg=printf "%%s" "$ASCHED_EVENT_PAYLOAD" | %s task post -p demo --title closed' % wsx)
     # ^ Only a short reply to events is quiet: one with a table is a message (docs/tasks.md "Manager").
     tabled = js('task', 'new', 'NOOP TABLE')['id']
     wait_state(tabled, 'ready')
@@ -1677,6 +1699,22 @@ def run(wsx, wsxd, work, owned):
     raw_reply = next(e for e in manager_entries() if e['kind'] == 'reply' and e['id'] == table_reply['id'])
     assert 'Where things stand' in raw_reply['text'] and 'quiet' not in raw_reply and 'quiet' not in table_reply, raw_reply
     js('task', 'close', tabled)
+    closed = wait(lambda: posted('closed'), 'the closed event routine post', 60)[0]
+    assert json.loads(closed['text'])['task'] == tabled, closed
+    assert not events_with('routine closed'), 'a routine that prints nothing costs no turn'
+    # ^ The retrospect is one such routine: it posts counts of the chat above (the three
+    # `routine run nightly` asks) and prints nothing.
+    state_dir = manager_log.parent.parent
+    js('task', 'routine', 'add', 'usage', '-p', 'demo', '--cron', '0 6 * * *',
+       *('--arg=%s' % word for word in (sys.executable, '-B', ROOT / 'scripts' / 'retrospect.py', state_dir,
+                                        '-p', 'demo', '--no-model', '--wsx', wsx)))
+    js('task', 'routine', 'run', 'usage', '-p', 'demo')
+    report = wait(lambda: posted('retrospect'), 'the retrospect post', 60)[0]['text']
+    assert report.startswith('Since ') and 'You asked 3 times: "RUN wsx task routine run nightly -p demo --json"' in report, report
+    assert 'not judged (--no-model)' in report and Path(report.split('Detail: ')[1].strip()).is_file(), report
+    assert not events_with('routine usage'), 'the retrospect prints nothing'
+    for name in ('closed', 'usage', 'checkin'):
+        js('task', 'routine', 'delete', name, '-p', 'demo')
     # ^ A reply that ends with a question asks the owner and is never quiet, also to a turn of
     # only events; a reply that ends with a table, or a report, does not ask (docs/tasks.md "Manager").
     asking = js('task', 'new', 'NOOP ASK')['id']

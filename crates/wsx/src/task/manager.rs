@@ -10,7 +10,8 @@ use super::boundary::Boundary;
 use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME};
 use super::{broker, hosting, limit};
 use anyhow::{Context, Result};
-use asched_core::routine::{store::RoutineStore, RunRecord, RunStatus};
+use asched_core::routine::{store::RoutineStore, RoutineClient, RunRecord, RunStatus, Trigger};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,8 @@ use wsx_core::task::{
 use wsx_core::task::{owner, roles, usage};
 
 use wsx_core::task::owner::ACTOR_ENV;
+/// The longest a manager host waits for the scheduler to take an event.
+const FIRE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 /// Events within this long of each other, or during a turn, become one message.
 const EVENT_QUIET: Duration = Duration::from_secs(3);
@@ -307,7 +310,10 @@ fn instructions(
          to check on the release. `deploy` and `release` answer at once; the \
          result comes as an event. `wsx task routine` lists and runs the project's \
          routines (results as events and in the ledger's `routines`); add, edit and delete \
-         need `--owner-said`. When the owner wants to be sure of a change or to try it, start \
+         need `--owner-said`. When you wait for something no event reports (an outside \
+         review, a time of day), set `wsx task checkin -p <project> --in 40m --why \"<what to \
+         look at>\"` (or `--at HH:MM`): its why comes back as an event then, and a new \
+         check-in replaces the last. When the owner wants to be sure of a change or to try it, start \
          it with `wsx task new --hold \"<why>\"` (`wsx task hold <n> \"<why>\"` holds a \
          running one, `--off` releases it). \
          Long multi-step work goes into one task: each step is `wsx task new --into <n>`, \
@@ -808,6 +814,15 @@ impl Manager {
             self.observed_deploys_ms = record.unix_ms;
             // ^ Deploys and releases run detached for minutes: a success is news too, or a
             // manager that waits for one never hears that it may go on.
+            let outcome = match record.exit == Some(0) {
+                true => "succeeded",
+                false => "failed",
+            };
+            self.fire(
+                &format!("{}.{outcome}", ledger::kind_name(record.kind)),
+                format!("{}-{}", ledger::kind_name(record.kind), record.unix_ms),
+                json!({ "commit": record.commit, "exit": record.exit }),
+            );
             if record.exit == Some(0) {
                 self.pending_events.push(format!(
                     "{} of {:.12} succeeded after {} s",
@@ -992,6 +1007,34 @@ impl Manager {
                 summary,
             );
             self.task_event(&record, &open_roles, line);
+            let state = record.state.as_str();
+            self.fire(
+                &format!("task.{state}"),
+                format!("{}-r{}-{state}", record.id, record.revision),
+                json!({ "task": record.id, "title": title, "revision": record.revision, "state": state }),
+            );
+        }
+    }
+
+    /// Start the project's routines whose trigger is this event kind (docs/tasks.md
+    /// "Routines"). Only a project with such a routine asks the scheduler, so the others send
+    /// no request; a scheduler that does not answer drops the event, as a busy routine does.
+    fn fire(&self, kind: &str, event_id: String, payload: serde_json::Value) {
+        let Ok(root) = asched_core::RegistryStore::default_root() else {
+            return;
+        };
+        let wanted = RoutineStore::new(root.clone(), &self.main)
+            .and_then(|store| store.load())
+            .is_ok_and(|config| {
+                config.routines.iter().any(|routine| {
+                    routine.enabled
+                        && matches!(&routine.trigger, Trigger::Event { kind: wanted } if wanted == kind)
+                })
+            });
+        if wanted {
+            let _ = RoutineClient::new(root)
+                .with_request_timeout(FIRE_TIMEOUT)
+                .fire(&self.main, kind, payload, &event_id);
         }
     }
 
@@ -1240,6 +1283,12 @@ impl Manager {
         // ^ Once per quiet period: the next look waits a whole period.
         self.last_activity = Instant::now();
         self.start_idle();
+        let now = now_unix_ms();
+        self.fire(
+            "project.idle",
+            format!("idle-{now}"),
+            json!({ "unix_ms": now }),
+        );
         let since = self.state.recap_ms.unwrap_or(0);
         let log: Vec<_> = self
             .dir
@@ -2388,12 +2437,10 @@ fn stdout_empty(run: &RunRecord) -> bool {
     std::fs::metadata(&run.stdout_path).is_ok_and(|file| file.len() == 0)
 }
 
-/// A routine run that ended as an event line, a failure with the end of its output.
+/// A routine run that ended as an event line with the end of its output: what a check-in
+/// or any routine that prints wants the manager to read. ref: docs/tasks.md "Routines"
 fn routine_line(run: &RunRecord) -> String {
-    match run.status {
-        RunStatus::Succeeded => routine_result(run),
-        _ => format!("{}{}", routine_result(run), output_ends(&run.final_output)),
-    }
+    format!("{}{}", routine_result(run), output_ends(&run.final_output))
 }
 
 /// `routine <name> succeeded after 4 s`, `routine <name> failed (exit 3)`.
