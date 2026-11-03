@@ -298,10 +298,20 @@ pub fn trigger_text(trigger: &asched_core::routine::Trigger) -> String {
 /// The ledger lists at most this many routines.
 const ROUTINES: usize = 20;
 
+/// A full row's command keeps this many words, each cut to this many characters.
+const ARGV_WORDS: usize = 40;
+const ARGV_CHARS: usize = 200;
+
 /// The project's routines as wsxd's scheduler lists them, without starting it: name, trigger,
 /// next run and the last run; `{error}` when the scheduler does not answer and the project
 /// has routines. ref: docs/tasks.md "Routines"
 pub fn routines(main: &Path) -> Value {
+    routine_rows(main, ROUTINES, false)
+}
+
+/// `routines` for at most `limit` routines; `full` adds each row's `command` (clipped) and the
+/// last run's `finished_unix_ms`. The web client's Routines screen reads it that way.
+pub fn routine_rows(main: &Path, limit: usize, full: bool) -> Value {
     use asched_core::routine::ipc::{Action, Request, Response};
     use asched_core::routine::{store::RoutineStore, RoutineClient};
     let Ok(root) = asched_core::RegistryStore::default_root() else {
@@ -327,7 +337,7 @@ pub fn routines(main: &Path) -> Value {
     };
     let rows: Vec<Value> = views
         .iter()
-        .take(ROUTINES)
+        .take(limit)
         .map(|view| {
             let last = view.latest_run.as_ref().map(|run| {
                 json!({
@@ -337,14 +347,27 @@ pub fn routines(main: &Path) -> Value {
                     "duration_ms": run.finished_epoch.map(|end| (end - run.started_epoch) * 1000),
                 })
             });
-            json!({
+            let mut row = json!({
                 "name": view.routine.name,
                 "enabled": view.routine.enabled,
                 "trigger": trigger_text(&view.routine.trigger),
                 "next_run_unix_ms": view.next_run_epoch.map(|epoch| epoch * 1000),
                 "running": view.capabilities.can_cancel,
                 "last": last,
-            })
+            });
+            if full {
+                let words: Vec<String> = view
+                    .routine
+                    .command
+                    .iter()
+                    .take(ARGV_WORDS)
+                    .map(|word| word.chars().take(ARGV_CHARS).collect())
+                    .collect();
+                row["command"] = json!(words);
+                let finished = view.latest_run.as_ref().and_then(|run| run.finished_epoch);
+                row["last"]["finished_unix_ms"] = json!(finished.map(|epoch| epoch * 1000));
+            }
+            row
         })
         .collect();
     json!(rows)

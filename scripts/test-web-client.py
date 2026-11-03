@@ -3620,6 +3620,7 @@ merge_seconds = 3
             return steady(site, 'POST', '/api/tasks/%d/checks/%s/%s' % (demo, item, decision), body or {})
         assert decide('c1', 'pass', site=viewer)[0] == 403
         assert steady(viewer, 'GET', '/api/tasks/%d/checks' % ids['ui'])[0] == 404
+        assert steady(viewer, 'GET', '/api/tasks/%d/routines' % ids['ui'])[0] == 404
         assert decide('c1', 'maybe')[0] == 404 and decide('x1', 'pass')[0] == 404 and decide('all', 'fail')[0] == 404
         status, body = decide('c1', 'fail')
         assert status == 400 and body['error']['code'] == 'note_required', body
@@ -3728,6 +3729,12 @@ merge_seconds = 3
             os.environ['WSX_PUSH_FIXTURE'] = json.dumps({'endpoint': push_origin + '/push/browser',
                                                          'keys': {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}})
             Relay(ports['relay'], ports['owner'], work / 'relay')
+            # ^ Routines screen (docs/web-client-tasks.md "Routines"): one enabled that ran and succeeded, one disabled that failed.
+            for name, cron, code in (('nightly', '0 6 * * *', '0'), ('weekly', '0 6 * * 1', '1')):
+                js('task', 'routine', 'add', name, '-p', 'ui', '--cron', cron, '--arg=/bin/sh', '--arg=-c', '--arg=exit ' + code)
+                js('task', 'routine', 'run', name, '-p', 'ui')
+            wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger', '-p', 'ui')['routines']), 'the ui routines ran', 60)
+            js('task', 'routine', 'disable', 'weekly', '-p', 'ui')
             # ^ The page stages tasks in `plans` with the fixture's own wsx (scripts/web-tasks-check.mjs "Progress").
             (work / 'wsx-cli.json').write_text(json.dumps({'wsx': str(wsx), 'env': env, 'cwd': str(plans)}))
             result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,

@@ -13,6 +13,7 @@ import { readTaskAhead, TaskPage } from "./task.js";
 import { ProjectPage } from "./page.js";
 import { ChecksPage } from "./checks.js";
 import { UsagePage } from "./usage.js";
+import { RoutinesPage } from "./routines.js";
 
 // Motion only where the user allows it (the no-preference block of app.css); under reduce,
 // nothing moves and nothing waits for an animation to end.
@@ -704,6 +705,7 @@ function More({ project, roles }) {
       <a role="menuitem" href=${`#/p/${project.id}/page`}>Page</a>
       <a role="menuitem" href=${`#/p/${project.id}/sessions`}>Sessions</a>
       <a role="menuitem" href=${`#/p/${project.id}/usage`}>Usage</a>
+      <a role="menuitem" href=${`#/p/${project.id}/routines`}>Routines</a>
       ${files && html`<a role="menuitem" href=${`#/p/${project.id}/files`}>Files</a>`}
       ${roles?.length > 0 && html`
         <p class="more-heading" aria-hidden="true">Roles</p>
@@ -766,7 +768,7 @@ function Sheet({ label, fit = false, onClose, children }) {
 // reservoir, and with a task or the page in the route its sheet over the chat. With `role`, a
 // role's chat (#/p/<project>/r/<role>): the same bubbles without the manager's reservoir,
 // approvals and To check items (docs/web-client-tasks.md "Roles").
-export function Manager({ project: id, task, page, checks, usage, role = null }) {
+export function Manager({ project: id, task, page, checks, usage, routines, role = null }) {
   const store = useStore();
   const project = store.projects.find((candidate) => candidate.id === id);
   const overview = store.tasks[id];
@@ -925,6 +927,10 @@ export function Manager({ project: id, task, page, checks, usage, role = null })
       ${usage && html`
         <${Sheet} key="usage" label="Usage" fit onClose=${() => leaveFor(`#/p/${id}`)}>
           ${(grip) => html`<${UsagePage} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
+        </${Sheet}>`}
+      ${routines && html`
+        <${Sheet} key="routines" label="Routines" fit onClose=${() => leaveFor(`#/p/${id}`)}>
+          ${(grip) => html`<${RoutinesPage} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
         </${Sheet}>`}
     </div>`;
 }

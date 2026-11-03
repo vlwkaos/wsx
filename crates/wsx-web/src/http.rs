@@ -82,6 +82,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/tasks/{project}/mentions", get(tasks_mentions))
             .route("/api/tasks/{project}/brief", get(tasks_brief))
             .route("/api/tasks/{project}/page", get(tasks_page))
+            .route("/api/tasks/{project}/routines", get(tasks_routines))
             .route("/api/tasks/{project}/say", post(tasks_say))
             .route("/api/tasks/{project}/t/{task}", get(task_detail))
             .route("/api/tasks/{project}/t/{task}/{action}", post(task_act))
@@ -1044,6 +1045,15 @@ async fn tasks_page(
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
     with_scope(&app, project, crate::tasks::page).map(Json)
+}
+
+async fn tasks_routines(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(project): UrlPath<u64>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, false)?;
+    with_scope(&app, project, |scope| Ok(crate::tasks::routines(scope))).map(Json)
 }
 
 async fn task_detail(

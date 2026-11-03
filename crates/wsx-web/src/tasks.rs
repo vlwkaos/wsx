@@ -40,6 +40,8 @@ const MANAGER_TAIL_BYTES: u64 = 64 * 1024;
 const TIMELINE_ENTRIES: usize = 300;
 const MAX_REPORT_BYTES: u64 = 1024 * 1024;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+/// The Routines screen lists at most this many.
+const MAX_ROUTINES: usize = 100;
 /// The newest To check items the chat shows as bubbles.
 const CHAT_CHECKS: usize = 100;
 
@@ -793,6 +795,15 @@ pub fn page(scope: &Scope) -> Outcome<Value> {
         Some((text, unix_ms)) => json!({ "text": text, "unix_ms": unix_ms }),
         None => json!({ "text": null, "unix_ms": null }),
     })
+}
+
+/// The project's routines as wsxd's scheduler lists them, read only: `{routines}`, at most 100,
+/// or with `error` when the scheduler does not answer. ref: docs/web-client-tasks.md "Routines"
+pub fn routines(scope: &Scope) -> Value {
+    match ledger::routine_rows(&scope.path, MAX_ROUTINES, true) {
+        rows @ Value::Array(_) => json!({ "routines": rows }),
+        failed => json!({ "routines": [], "error": failed["error"] }),
+    }
 }
 
 /// What happened since `after` (ms): the tasks that started, landed, blocked, conflicted
