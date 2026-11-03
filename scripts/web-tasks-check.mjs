@@ -725,7 +725,7 @@ await managerWidth("the phone chat");
 // ^ The manager's agent in use sits by its name, from the chat's `manager.agent` (docs/web-client-tasks.md "Agent").
 const managerAgent = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((view) => view.manager.agent)`);
 if (managerAgent?.adapter !== "claude" || managerAgent.model !== "fake-manager" || managerAgent.fallback !== false) await fail(`the manager's agent field is ${JSON.stringify(managerAgent)}`);
-if ((await text(".bar-title .bar-model"))[0] !== managerAgent.model) await fail("the manager chat's top row does not name the model");
+if ((await text(".bar-title .bar-model"))[0] !== `${managerAgent.model} ${managerAgent.effort}`) await fail("the manager chat's top row does not name the model and effort");
 await shot("project", ".composer-send");
 // The chat opens at its newest message; scrolled up, it shows Jump to latest.
 for (let attempt = 0; attempt < 100 && !(await evaluate(atEnd)); attempt++) await pause(100);
@@ -916,7 +916,7 @@ if (!runningName.endsWith("#6, working")) await fail(`a working row's words are 
 const agentField = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((view) => view.tasks.find((task) => task.id === 6).agent)`);
 if (agentField?.adapter !== "claude" || !agentField.model || agentField.fallback !== false) await fail(`#6's agent field is ${JSON.stringify(agentField)}`);
 const runningContext = await evaluate(`${rowOf("#6")}.querySelector('.row-context').textContent`);
-if (!runningContext.endsWith(agentField.model) || /effort/i.test(runningContext)) await fail(`a working row's context reads ${runningContext}`);
+if (!agentField.effort || !runningContext.endsWith(`${agentField.model} ${agentField.effort}`)) await fail(`a working row's context reads ${runningContext}`);
 if (await count(".reservoir .facts-line")) await fail("the reservoir still shows the deploy facts");
 await shot("reservoir-open", ".composer-send");
 await resize([390, 420, 2]);

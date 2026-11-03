@@ -277,8 +277,14 @@ def main():
                          f"{statistics.median(calls):.0f}" if calls else "-",
                          write_share(ts)])
         table(title, ["", "turns", "cost $", "$/turn", "median ctx", "median min", "~calls/turn", "cache write share"], rows)
-    group(lambda t: t["step"], "Per worker step (as logged; on older lines replayed from task.json steps, "
-          "after = check retries, adds, conflicts)")
+    # ^ A step's cost is only the turns the step itself started: an owner message, restart,
+    # check-run answer, rotation or conflict that came while the record still named the step is
+    # listed by its trigger, not under the step (it was real work, not the step's).
+    def step_key(t):
+        own = t["trigger"] == "step" or not t["logged"] and t["trigger"].startswith("no event")
+        return t["step"] if own else f"[{t['trigger']} turns]"
+    group(step_key, "Per worker step (the turns each step started; [x turns] = turns started by x "
+          "during any step; older lines replay steps from task.json, after = check retries, adds, conflicts)")
     group(lambda t: (t["u"].get("model") or "unrecorded").replace("claude-", ""), "Per worker model")
     group(lambda t: t["trigger"], "What started each turn (logged `trigger`)", [t for t in all_turns if t["logged"]])
     group(lambda t: t["trigger"], "What started each `after` turn on older lines (latest event since the task's previous turn)",

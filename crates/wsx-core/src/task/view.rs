@@ -323,31 +323,44 @@ pub fn task_agent(dir: &TaskDir, record: &TaskRecord) -> Value {
         log.iter()
             .any(|entry| matches!(entry.event, LogEvent::AgentSwitch { .. }))
     });
-    json!({ "adapter": record.adapter, "model": record.model, "fallback": fallback })
+    json!({
+        "adapter": record.adapter, "model": record.model, "effort": record.effort,
+        "fallback": fallback,
+    })
 }
 
 /// The agent the manager's turns run on now: a fallback in its state, else `tasks.manager`.
 /// ref: docs/tasks.md "Agents"
 pub fn manager_agent(dir: &store::ManagerDir, settings: &TaskConfig) -> Value {
     match dir.read_state().ok().and_then(|state| state.agent) {
-        Some(agent) => json!({ "adapter": agent.adapter, "model": agent.model, "fallback": true }),
+        Some(agent) => json!({
+            "adapter": agent.adapter, "model": agent.model, "effort": settings.manager_effort,
+            "fallback": true,
+        }),
         None => json!({
-            "adapter": settings.manager_adapter, "model": settings.manager_model, "fallback": false,
+            "adapter": settings.manager_adapter, "model": settings.manager_model,
+            "effort": settings.manager_effort, "fallback": false,
         }),
     }
 }
 
-/// An `agent` field in few words: `sonnet`, `pi/qwen`, `fallback pi/qwen`. The web client
-/// writes the same (`agentWords` in `web/tasks.js`).
+/// An `agent` field in few words: `sonnet low`, `pi/qwen medium`, `fallback pi/qwen`. The
+/// web client writes the same (`agentWords` in `web/tasks.js`).
 pub fn agent_label(agent: &Value) -> Option<String> {
     let model = agent["model"].as_str().filter(|model| !model.is_empty())?;
     let fallback = agent["fallback"].as_bool().unwrap_or(false);
     let adapter = agent["adapter"].as_str().unwrap_or_default();
-    Some(match (fallback, adapter) {
+    let label = match (fallback, adapter) {
         (false, "claude") => model.to_string(),
         (false, _) => format!("{adapter}/{model}"),
         (true, _) => format!("fallback {adapter}/{model}"),
-    })
+    };
+    Some(
+        match agent["effort"].as_str().filter(|effort| !effort.is_empty()) {
+            Some(effort) => format!("{label} {effort}"),
+            None => label,
+        },
+    )
 }
 
 pub fn task_summary(dir: &TaskDir, record: &TaskRecord) -> Value {

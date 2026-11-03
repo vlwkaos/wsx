@@ -267,7 +267,7 @@ def main():
     session = options.get('--resume') or options.get('--session-id')
     trace({'launch': True, 'pid': os.getpid(), 'session': session, 'resume': '--resume' in options,
            'argv': sys.argv[1:], 'instructions': instructions,
-           'schema': '--json-schema' in options, 'model': options.get('--model'),
+           'schema': '--json-schema' in options, 'model': options.get('--model'), 'effort': options.get('--effort'),
            'schema_required': json.loads(options['--json-schema']).get('required') if '--json-schema' in options else None,
            'mode': options.get('--permission-mode'), 'settings': json.loads(options.get('--settings', '{}')),
            'wsx_env': sorted(name for name in os.environ if name.startswith('WSX_')),

@@ -1194,9 +1194,12 @@ fn create(
     config
         .claude_config_dir(&project.path)
         .map_err(|error| anyhow::anyhow!("{error}; no task was created"))?;
-    let model = match steps {
-        Steps::Small => model.or_else(|| Some(settings.small_model().to_string())),
-        _ => model,
+    let (model, effort) = match steps {
+        Steps::Small => (
+            model.or_else(|| Some(settings.small_model().to_string())),
+            wsx_core::model::workspace::SMALL_EFFORT.to_string(),
+        ),
+        _ => (model, settings.effort.clone()),
     };
     let steps = match steps {
         Steps::None => Vec::new(),
@@ -1277,6 +1280,7 @@ fn create(
         pane_id: None,
         adapter,
         model,
+        effort,
         checks: settings.checks,
         steps,
         step: 0,

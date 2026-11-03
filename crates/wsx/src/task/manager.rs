@@ -161,6 +161,8 @@ struct Manager {
     /// The model the running agent process uses now.
     agent_model: String,
     rotate_tokens: u64,
+    /// `tasks.manager.effort`, passed to every launch.
+    effort: String,
     state: ManagerState,
     events: Sender<Event>,
     agent: Option<Agent>,
@@ -411,6 +413,7 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         stand_in: None,
         stand_in_look: None,
         model: settings.manager_model,
+        effort: settings.manager_effort,
         event_model: settings.manager_event_model,
         agent_model: String::new(),
         rotate_tokens: settings.manager_rotate_tokens,
@@ -2162,6 +2165,7 @@ impl Manager {
             );
         }
         let mut launch = Launch::new(&self.main, boundary, &self.model, text);
+        launch.effort = self.effort.clone();
         launch.plugin_dirs = skills.into_iter().collect();
         // ^ The agent's `wsx task` commands go to this host (broker.rs), which runs them as
         // the manager actor; the actor mark stays for the approval rules.

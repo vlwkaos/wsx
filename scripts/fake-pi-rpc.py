@@ -38,7 +38,8 @@ def main():
     worker = 'You are a task worker' in instructions
     trace({'launch': True, 'session': session, 'model': option(argv, '--model'), 'cwd': os.getcwd(),
            'worker': worker, 'rpc': '--mode' in argv and option(argv, '--mode') == 'rpc',
-           'no_tools': '--no-tools' in argv, 'no_session': '--no-session' in argv})
+           'no_tools': '--no-tools' in argv, 'no_session': '--no-session' in argv,
+           'thinking': option(argv, '--thinking')})
     for line in sys.stdin:
         command = json.loads(line)
         if command.get('type') != 'prompt':
