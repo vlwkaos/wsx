@@ -340,12 +340,16 @@ pub fn routine_rows(main: &Path, limit: usize, full: bool) -> Value {
         .take(limit)
         .map(|view| {
             let last = view.latest_run.as_ref().map(|run| {
-                json!({
+                let mut last = json!({
                     "status": run.status,
                     "exit": run.exit_code,
                     "unix_ms": run.started_epoch * 1000,
                     "duration_ms": run.finished_epoch.map(|end| (end - run.started_epoch) * 1000),
-                })
+                });
+                if full {
+                    last["finished_unix_ms"] = json!(run.finished_epoch.map(|epoch| epoch * 1000));
+                }
+                last
             });
             let mut row = json!({
                 "name": view.routine.name,
@@ -364,8 +368,6 @@ pub fn routine_rows(main: &Path, limit: usize, full: bool) -> Value {
                     .map(|word| word.chars().take(ARGV_CHARS).collect())
                     .collect();
                 row["command"] = json!(words);
-                let finished = view.latest_run.as_ref().and_then(|run| run.finished_epoch);
-                row["last"]["finished_unix_ms"] = json!(finished.map(|epoch| epoch * 1000));
             }
             row
         })

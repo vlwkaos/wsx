@@ -7,7 +7,7 @@ import { SheetBar } from "./ui.js";
 const DAYS = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];
 
 // "0 6 * * *" is "daily 06:00", "0 6 * * 1" "Mondays 06:00"; any other cron stays as written.
-export function schedule(trigger) {
+function schedule(trigger) {
   const match = /^(\d{1,2}) (\d{1,2}) \* \* (\*|[0-7])$/.exec(trigger);
   if (!match || Number(match[1]) > 59 || Number(match[2]) > 23) return trigger;
   const time = `${match[2].padStart(2, "0")}:${match[1].padStart(2, "0")}`;
@@ -17,7 +17,7 @@ export function schedule(trigger) {
 const STATUS = { succeeded: "succeeded", failed: "failed", spawn_failed: "did not start", cancelled: "cancelled", interrupted: "interrupted", running: "running" };
 
 // "succeeded 2h ago", "failed (exit 1) 5h ago", "never run".
-export function lastRun(last, now) {
+function lastRun(last, now) {
   if (!last) return "never run";
   const what = STATUS[last.status] ?? last.status;
   const exit = last.status === "failed" && last.exit != null ? ` (exit ${last.exit})` : "";
