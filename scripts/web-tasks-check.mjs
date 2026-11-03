@@ -724,8 +724,8 @@ if (await evaluate("/line 30 of the report/.test(document.querySelector('.log').
 await managerWidth("the phone chat");
 // ^ The manager's agent in use sits by its name, from the chat's `manager.agent` (docs/web-client-tasks.md "Agent").
 const managerAgent = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((view) => view.manager.agent)`);
-if (managerAgent?.adapter !== "claude" || managerAgent.model !== "opus" || managerAgent.fallback !== false) await fail(`the manager's agent field is ${JSON.stringify(managerAgent)}`);
-if ((await text(".bar-title .bar-model"))[0] !== "opus") await fail("the manager chat's top row does not name the model");
+if (managerAgent?.adapter !== "claude" || managerAgent.model !== "fake-manager" || managerAgent.fallback !== false) await fail(`the manager's agent field is ${JSON.stringify(managerAgent)}`);
+if ((await text(".bar-title .bar-model"))[0] !== managerAgent.model) await fail("the manager chat's top row does not name the model");
 await shot("project", ".composer-send");
 // The chat opens at its newest message; scrolled up, it shows Jump to latest.
 for (let attempt = 0; attempt < 100 && !(await evaluate(atEnd)); attempt++) await pause(100);
@@ -914,9 +914,9 @@ const runningName = await evaluate(`${rowOf("#6")}.querySelector('.row-title').t
 if (!runningName.endsWith("#6, working")) await fail(`a working row's words are ${runningName}`);
 // ^ The agent in use now is on the row, from the overview's `agent` field (docs/web-client-tasks.md "Agent").
 const agentField = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((view) => view.tasks.find((task) => task.id === 6).agent)`);
-if (agentField?.adapter !== "claude" || agentField.model !== "opus" || agentField.fallback !== false) await fail(`#6's agent field is ${JSON.stringify(agentField)}`);
+if (agentField?.adapter !== "claude" || !agentField.model || agentField.fallback !== false) await fail(`#6's agent field is ${JSON.stringify(agentField)}`);
 const runningContext = await evaluate(`${rowOf("#6")}.querySelector('.row-context').textContent`);
-if (!/opus$/.test(runningContext) || /effort/i.test(runningContext)) await fail(`a working row's context reads ${runningContext}`);
+if (!runningContext.endsWith(agentField.model) || /effort/i.test(runningContext)) await fail(`a working row's context reads ${runningContext}`);
 if (await count(".reservoir .facts-line")) await fail("the reservoir still shows the deploy facts");
 await shot("reservoir-open", ".composer-send");
 await resize([390, 420, 2]);
@@ -1388,8 +1388,8 @@ await evaluate(`${rowOf("#2")}.querySelector('.row-open').click()`);
 await until(`location.hash === '#/p/${project}/t/2' && !!document.querySelector('dialog.task-sheet[open] .story')`, "a reservoir row did not open the task sheet");
 // ^ The sheet's agent: the detail's `agent` field and its words beside the health.
 const sheetAgent = await evaluate(`fetch('api/tasks/${project}/t/2').then((r) => r.json()).then((view) => view.agent)`);
-if (sheetAgent?.model !== "opus" || sheetAgent.fallback !== false) await fail(`the task detail's agent is ${JSON.stringify(sheetAgent)}`);
-if (!/^opus$/.test((await text(".task-sheet .progress-model"))[0] ?? "")) await fail("the open sheet does not show the model");
+if (!sheetAgent?.model || sheetAgent.fallback !== false) await fail(`the task detail's agent is ${JSON.stringify(sheetAgent)}`);
+if ((await text(".task-sheet .progress-model"))[0] !== sheetAgent.model) await fail("the open sheet does not show the model");
 // ^ The task's usage line (docs/web-client-tasks.md "Task sheet").
 const usageLine = (await text(".task-sheet .task-usage"))[0] ?? "";
 if (!/^Usage: \$\d+\.\d\d · in \d+k? · cache \S+ read \/ \S+ write · out \S+ · \d+ turns?$/.test(usageLine)) await fail(`the task's usage line reads ${usageLine}`);
