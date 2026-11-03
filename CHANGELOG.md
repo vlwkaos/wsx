@@ -5,11 +5,11 @@
 ### Added
 
 - Tasks: a Pi adapter (`tasks.agent.adapter: pi`, `tasks.manager.adapter: pi`). Pi runs headless over its RPC mode inside the same boundary, with only the project's own `AGENTS.md` and the lent skills; a Pi worker returns its result with `wsx task result -` ([docs/tasks.md](docs/tasks.md) "Pi adapter").
-- Tasks: fallback agents. The global `[[agents]]` registry names each agent's command, adapter, model, daily budget and whether it is a stand-in; `tasks.agent.fallback` and `tasks.manager.fallback` list them, best first. A limit that lifts within `tasks.agent.maxWaitMinutes` (default 300) is waited out; a longer one moves the agent to the first fallback. A limit belongs to an account, so a local model through Pi does not share one with a paid provider.
+- Tasks: fallback agents. The global `[[agents]]` registry names each agent's command, adapter, model, daily budget and whether it is a stand-in; `tasks.agent.fallback` and `tasks.manager.fallback` list them, best first. A limit that lifts within `tasks.agent.maxWaitMinutes` (default 300) is waited out; a longer one moves the agent to the first fallback. A limit belongs to an account, so a local model through Pi does not share one with a paid provider. A rate limit with no reset time is backed off, and backoffs in a row count as one limit, so one that keeps coming back also moves past `maxWaitMinutes`.
 - Tasks: the manager goes back to its own agent at the first turn after that agent's limit ends, in a fresh conversation that holds the unanswered messages. Before, it went back only at a rotation, so a manager with little to say stayed on the fallback.
 - Tasks: a worker waiting on a fallback goes back to its own agent as soon as that agent is free. Otherwise it stays on the fallback until the task closes.
 - Tasks: a stand-in. During a limit, an owner message gets a short reply from a `minimal` agent, typically a local model, with no tools. The chats tag it "Stand-in, not checked". The own agent still answers the message after the limit and is told what the stand-in said.
-- Tasks: a daily budget for a fallback (`budget_usd_per_day`, default 10 USD). Past it the agent counts as limited until midnight.
+- Tasks: a daily budget for a fallback (`budget_usd_per_day`, default 10 USD). It belongs to the account: the smallest budget of its agents holds for every model on it. Past it the account counts as limited until midnight.
 - Web: the Usage sheet opens with one row per day, each a stacked bar of the day's cost by workflow step and manager on one scale, with a legend. A tap shows the exact amounts.
 
 ### Fixed
