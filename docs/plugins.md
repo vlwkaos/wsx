@@ -60,3 +60,5 @@ The command writes one JSON payload to stdout:
 `empty` may replace rows with a short empty-state message. Tones are `normal`, `muted`, `accent`, `success`, `warning`, and `error`.
 
 WSX selects one eligible sidecar by descending priority and stable plugin ID. It owns width, truncation, semantic colors, PTY dimensions, cursor and mouse coordinates, and all input. Plugin output is size-, row-, text-, timeout-, and schema-bounded. Invalid output fails closed and does not replace the last valid view.
+
+Client plugins (a web view and a per-project store beside the sidecar) are designed in [design/client-plugins.md](design/client-plugins.md); not built yet.
