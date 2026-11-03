@@ -1057,13 +1057,16 @@ await until(answeredOpen, "no reply after the answer", 300);
 // ^ A reply that ends with a question carries "Asks you" in the accent, and the overview's
 // `asks` with it, until the owner writes after it (docs/web-client-tasks.md "Project screen").
 const asking = "[...document.querySelectorAll('.log .bubble[data-side=in]')].find((node) => node.textContent.includes('Should I land it now?'))";
-const askTags = "[...document.querySelectorAll('.log .bubble-tag')].filter((node) => node.getAttribute('aria-label') === 'Asks you')";
+const askTags = "[...document.querySelectorAll('.log .bubble[data-asks]')]";
 const overviewAsks = () => evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((view) => view.asks)`);
 await typeInto(".composer-field", "ASK");
 await click(".composer-send");
 await until(`!!${asking} && !document.querySelector('.log .typing')`, "no reply to the question", 300);
-const askBubble = await evaluate(`({ tags: ${askTags}.length, own: ${asking}.querySelector('.bubble-tag')?.getAttribute('aria-label'), tone: ${asking}.querySelector('.bubble-tag')?.dataset.tone })`);
-if (askBubble.tags !== 1 || askBubble.own !== "Asks you" || askBubble.tone !== "accent") await fail(`a reply that asks reads ${JSON.stringify(askBubble)}`);
+const askBubble = await evaluate(`({ tags: ${askTags}.length, own: ${asking}.dataset.asks, label: ${asking}.getAttribute('aria-label'), icon: !!${asking}.querySelector('.icon'),
+  border: getComputedStyle(${asking}.querySelector('.bubble-box')).borderTopColor, accent: getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim(),
+  normal: getComputedStyle(document.querySelector('.log .bubble[data-side=in]:not([data-asks]) .bubble-box')).borderTopColor })`);
+const accentColor = await evaluate("(() => { const s = document.createElement('i'); s.style.color = 'var(--color-accent)'; document.body.append(s); const c = getComputedStyle(s).color; s.remove(); return c; })()");
+if (askBubble.tags !== 1 || askBubble.own !== "" || !/Asks you/.test(askBubble.label) || askBubble.icon || askBubble.border !== accentColor || askBubble.normal === accentColor) await fail(`a reply that asks reads ${JSON.stringify(askBubble)}`);
 if ((await overviewAsks()) !== true) await fail("the overview does not say the manager asks");
 await entered();
 await shot("asks-you", ".composer-send");
@@ -1076,7 +1079,7 @@ await until(`(() => { const bubbles = [...document.querySelectorAll('.log .bubbl
 if ((await evaluate(`${askTags}.length`)) !== 1) await fail("a later report dropped the chat's Asks you");
 if ((await overviewAsks()) !== true) await fail("a later report dropped the overview's asks");
 const askingChat = await evaluate("location.hash");
-const homeAskRows = "[...document.querySelectorAll('.home-rows > .row')].filter((row) => row.querySelector('.row-asks')?.getAttribute('aria-label') === 'Asks you').map((row) => row.dataset.key).join()";
+const homeAskRows = "[...document.querySelectorAll('.home-rows > .row')].filter((row) => row.querySelector('.row-label[data-tone=accent]') && /Asks you/.test(row.querySelector('.row-label').textContent) && !row.querySelector('.row-asks, .row-label .icon')).map((row) => row.dataset.key).join()";
 await go("#/");
 await until(`${homeAskRows} === ${JSON.stringify(String(project))}`, "Asks you is not on the row of the project whose manager asks", 100);
 await entered();

@@ -107,8 +107,7 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 /* The work a session row is for: project › worktree, each with its own look; the session under it. */
 .row-work { display: flex; align-items: baseline; gap: var(--space-1); min-width: 0; }
 .row-work > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row-asks { flex: none; display: inline-flex; }
-.row-asks .icon, .bubble-tag .icon { width: var(--space-4); height: var(--space-4); display: block; }
+.bubble-tag .icon { width: var(--space-4); height: var(--space-4); display: block; }
 .row-project { flex: 0 1 auto; font-weight: var(--font-weight-medium); }
 .row-sep { flex: 0 0 auto; color: var(--color-faint); }
 .row-worktree { flex: 0 1 auto; }
@@ -671,6 +670,8 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
   background: var(--color-surface); border: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere;
 }
 .bubble[data-side="out"] .bubble-box { background: var(--color-raised); border-color: transparent; }
+/* A reply that asks the owner: the same box with an accent border (docs/web-client-tasks.md "Project screen"). */
+.bubble[data-asks] .bubble-box { border-color: var(--color-accent); }
 /* Each speaker's color on its name only, never on its box; the name stays (docs/web-themes.md). */
 [data-speaker="manager"] { --speaker: var(--color-text); }
 .bubble[data-peer="1"] { --speaker: var(--color-peer-1); }

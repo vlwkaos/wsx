@@ -188,25 +188,30 @@ pub fn chat_lines(rows: &[Row], other: &str, width: usize) -> Vec<Line<'static>>
                     Who::Manager => (other.to_string(), theme::DONE),
                     Who::Peer(project) => (project.clone(), theme::IDLE),
                 };
-                let mut heading = vec![
+                // ^ A reply that asks is set off like a thin border: its name and a bar in the accent.
+                let color = if *asks { theme::ACCENT } else { color };
+                let heading = vec![
                     Span::styled(name, Style::default().fg(color).bold()),
                     Span::styled(
                         format!("  {}", clock(*unix_ms)),
                         Style::default().fg(theme::TEXT_SUBTLE),
                     ),
                 ];
-                if *asks {
-                    heading.push(Span::styled(
-                        "  ?",
-                        Style::default().fg(theme::ACCENT),
-                    ));
-                }
                 lines.push(Line::from(heading));
                 for paragraph in text.lines() {
                     lines.extend(
                         wrap(paragraph, width.saturating_sub(2).max(1))
                             .into_iter()
-                            .map(|part| Line::raw(format!("  {part}"))),
+                            .map(|part| {
+                                if *asks {
+                                    Line::from(vec![
+                                        Span::styled("│ ", Style::default().fg(theme::ACCENT)),
+                                        Span::raw(part),
+                                    ])
+                                } else {
+                                    Line::raw(format!("  {part}"))
+                                }
+                            }),
                     );
                 }
             }

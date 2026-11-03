@@ -4,6 +4,8 @@
 
 ### Added
 
+- Tasks: a manager reply that asks the owner is set off by color, not a "?" icon: a thin accent border on its web bubble, the project's name in the accent on Home, and the reply's name and a left bar in the TUI chat. Screen readers still hear "Asks you".
+
 - Tasks: a Pi adapter (`tasks.agent.adapter: pi`, `tasks.manager.adapter: pi`). Pi runs headless over its RPC mode inside the same boundary, with only the project's own `AGENTS.md` and the lent skills; a Pi worker returns its result with `wsx task result -` ([docs/tasks.md](docs/tasks.md) "Pi adapter").
 - Tasks: fallback agents. The global `[[agents]]` registry names each agent's command, adapter, model, daily budget and whether it is a stand-in; `tasks.agent.fallback` and `tasks.manager.fallback` list them, best first. A limit that lifts within `tasks.agent.maxWaitMinutes` (default 300) is waited out; a longer one moves the agent to the first fallback. A limit belongs to an account, so a local model through Pi does not share one with a paid provider.
 - Tasks: the manager goes back to its own agent at the first turn after that agent's limit ends, in a fresh conversation that holds the unanswered messages. Before, it went back only at a rotation, so a manager with little to say stayed on the fallback.
