@@ -46,6 +46,17 @@ const CAPTURE_SWEEP: Duration = Duration::from_secs(60 * 60);
 const RECAP_REQUEST: &str = "The project has been quiet. Write the owner a short recap, at most 8 lines: \
 what landed and is live, what runs, and what waits for the owner and why. Read the ledger for it. Start no \
 task and change nothing. Name a task by its number and what it does.";
+/// ref: docs/tasks.md "Project overview"
+fn overview_too_long(lines: usize, chars: usize) -> String {
+    format!(
+        "The project overview is {lines} lines / {chars} characters; the cap is {} / {},{:03}. Cut it now: \
+keep the goal, open tasks as a mermaid graph, live plans in short and open questions. Finished work \
+and old decisions go out; decisions are already in decisions.md.",
+        store::MAX_OVERVIEW_LINES,
+        store::MAX_OVERVIEW_CHARS / 1000,
+        store::MAX_OVERVIEW_CHARS % 1000
+    )
+}
 const EVENT_TITLE_CHARS: usize = 80;
 /// The turn after a usage limit: the messages of the turn it ended got no answer yet.
 const LIMIT_CONTINUE: &str = "The usage limit has reset. Answer the messages before this one \
@@ -190,6 +201,8 @@ struct Manager {
     roles_swept: Option<Instant>,
     /// A role host that is closed or idle: it leaves.
     leaving: bool,
+    /// The host asked for a shorter overview since the last owner message or in-cap result.
+    overview_asked: bool,
 }
 
 /// The plugin that lends the manager the owner's skills, `manager/<this>/`.
@@ -206,7 +219,7 @@ const MAX_NOTES_READ: u64 = 256 * 1024;
 fn instructions(
     project: &str,
     notes: &Path,
-    page: &Path,
+    overview: &Path,
     skills: bool,
     workflow: &TaskWorkflow,
 ) -> String {
@@ -235,7 +248,7 @@ fn instructions(
          Start a request for work at once and say the plan in a few lines in the same reply \
          (goal, tasks, choices, what you leave out); ask first only when a choice the owner \
          has not made changes what the owner gets, or the work is large or costly to undo \
-         (then `--plan` or `--hold`). A longer plan goes on the project page with a mermaid \
+         (then `--plan` or `--hold`). A longer plan goes on the project overview with a mermaid \
          diagram, and the reply links it. Before `wsx task new`, compare the request with \
          the open tasks (titles and files): similar work or the same area goes to that task \
          with `wsx task add`; a new task only for separate work, run at once. Start one \
@@ -312,10 +325,10 @@ fn instructions(
          starts with that file and {context}, your lean project context. wsx adds each \
          finished task's memo to {context}; fix or merge a line there only when you see it is \
          wrong. Only events that need you start a turn; a landing, a close, a wait that ends \
-         by itself and an automatic deploy come along with your next turn. The project page {page} is the owner's one-page picture: the goal, \
-         the tasks as a mermaid graph, the plans, the decisions and the open questions. \
-         Update a section in place when it changes; never rewrite the file or create \
-         another page. \
+         by itself and an automatic deploy come along with your next turn. The project overview {overview} is the owner's one-screen picture, at most \
+         60 lines and 4,000 characters: the goal, open tasks as a mermaid graph, live plans in short, \
+         open questions. Finished work and old decisions go out (decisions are in {decisions}). \
+         Update a section in place; keep it under the cap; never create another overview. \
          You may read another project's `wsx task ledger -p \
          <project>` and message its manager with `wsx task say -p <project> --from-manager \
          \"<text>\"`; never create or change its tasks. A message headed 'Manager <project>' \
@@ -332,7 +345,7 @@ fn instructions(
         context = notes.join(CONTEXT_FILE).display(),
         decisions = notes.join(DECISIONS_FILE).display(),
         notes = notes.display(),
-        page = page.display()
+        overview = overview.display()
     )
 }
 
@@ -344,7 +357,7 @@ fn role_preamble(role: &str, project: &str, brief: &str) -> String {
          with the owner's brief below. The manager's instructions after it are yours, with these \
          differences. You hear the events only of the tasks you create, and act only on them; \
          you land only a child into its parent task. The manager keeps every other task, the \
-         recap, approvals, deploys, releases, routines and the project page. You never create a \
+         recap, approvals, deploys, releases, routines and the project overview. You never create a \
          role or change the project's config. Message the manager with `wsx task say \
          --from-role \"<text>\"`; a message headed 'Manager' or 'Role <name>' asks you \
          something: answer it once with `wsx task say --role <name> --from-role --reply \
@@ -404,6 +417,7 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         role_events: BTreeMap::new(),
         roles_swept: None,
         leaving: false,
+        overview_asked: false,
     };
     manager.restore()?;
     let requests = events.clone();
@@ -1184,6 +1198,7 @@ impl Manager {
             text: text.clone(),
         })?;
         self.last_activity = Instant::now();
+        self.overview_asked &= from != Author::Owner;
         self.enqueue(id, from, text);
         Ok(id)
     }
@@ -1993,14 +2008,20 @@ impl Manager {
         let exe = std::env::current_exe().context("cannot find the wsx binary")?;
         let notes = self.dir.notes()?;
         let broker_socket = self.dir.broker_path();
-        let page = store::ensure_page(&self.dir.project_id, &self.project)?;
-        let boundary = Boundary::manager(&self.main, &self.dir.path, &page)?;
+        let overview = store::ensure_overview(&self.dir.project_id, &self.project)?;
+        let boundary = Boundary::manager(&self.main, &self.dir.path, &overview)?;
         let root = config_root(&self.main)?;
         let skills = skills_plugin(&self.dir.path, root.as_deref())?;
         let workflow = load_task_config(&self.main)
             .map(|settings| settings.workflow)
             .unwrap_or_default();
-        let mut text = instructions(&self.project, &notes, &page, skills.is_some(), &workflow);
+        let mut text = instructions(
+            &self.project,
+            &notes,
+            &overview,
+            skills.is_some(),
+            &workflow,
+        );
         if let Some(role) = &self.dir.role {
             text = role_preamble(role, &self.project, &roles::brief(&self.dir)) + &text;
         }
@@ -2156,6 +2177,29 @@ impl Manager {
             self.rotate(context, None);
         }
         self.report(runtime::AgentState::Done);
+        self.check_overview();
+    }
+
+    /// The manager writes the overview with its own tools: after a turn, a file over the cap
+    /// gets one follow-up turn, and no second one until the owner writes again.
+    /// ref: docs/tasks.md "Project overview"
+    fn check_overview(&mut self) {
+        if self.dir.role.is_some() {
+            return;
+        }
+        let Ok(Some((text, _))) = store::read_overview(&self.dir.project_id) else {
+            return;
+        };
+        let (lines, chars) = store::overview_size(&text);
+        let over = lines > store::MAX_OVERVIEW_LINES || chars > store::MAX_OVERVIEW_CHARS;
+        if !over {
+            self.overview_asked = false;
+        } else if !self.overview_asked {
+            self.overview_asked = true;
+            if let Err(error) = self.accept(Author::Recap, overview_too_long(lines, chars)) {
+                self.say(&format!("cannot ask for a shorter overview: {error:#}"));
+            }
+        }
     }
 
     /// End the conversation; the next turn starts a fresh one with a short handover.

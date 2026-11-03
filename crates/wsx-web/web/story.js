@@ -23,8 +23,8 @@ function deployWords(status, kind, default_branch) {
 // ^ The facts read git in the main checkout, so task changes refresh them at most this often.
 const FACTS_EVERY_MS = 2000;
 
-// The deploy, the release and the main checkout in words, at the top of the project page
-// (docs/web-client-tasks.md "Project page"). Read when it opens and as tasks change.
+// The deploy, the release and the main checkout in words, at the top of the project overview
+// (docs/web-client-tasks.md "Project overview"). Read when it opens and as tasks change.
 export function ProjectFacts({ project, overview }) {
   const [ledger, setLedger] = useState(null);
   const timer = useRef(null);

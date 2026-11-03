@@ -144,7 +144,7 @@ export function markSeen(session) {
 // Routes: #/ (home: the projects with task_view, else the inbox), #/sessions (the inbox),
 // #/projects, #/settings, #/s/<id>/chat|terminal, #/p/<id> (the manager with task_view, else the
 // sessions), #/p/<id>/sessions, #/p/<id>/files, #/p/<id>/t/<task> (the manager with the task's sheet),
-// #/p/<id>/page (the manager with the project page's sheet), #/p/<id>/checks (with the To check list),
+// #/p/<id>/page (the manager with the project overview's sheet), #/p/<id>/checks (with the To check list),
 // #/p/<id>/usage (with the project's token use and cost), #/p/<id>/routines (with its routines),
 // #/p/<id>/r/<role> (a role's chat, docs/tasks.md "Roles").
 export function parseRoute(hash) {

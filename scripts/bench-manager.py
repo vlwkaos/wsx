@@ -82,7 +82,7 @@ def instructions(source, project, notes, page):
     # ^ The default workflow words (no review, the default batch) and the shared presentation rule.
     workflow = (ROOT / 'crates/wsx-core/src/model/workspace.rs').read_text()
     batch = re.search(r'batch:\s*"((?:[^"\\]|\\.)*)"', workflow, re.S).group(1)
-    values = {'project': project, 'notes': notes, 'page': page, 'skills': '', 'review': '',
+    values = {'project': project, 'notes': notes, 'overview': page, 'skills': '', 'review': '',
               'batch': unescape(batch),
               'presentation': (ROOT / 'crates/wsx-core/integrations/common/presentation.md').read_text().rstrip(),
               'context': notes + '/context.md', 'decisions': notes + '/decisions.md'}
@@ -268,7 +268,7 @@ def run_once(mode, number, out):
     project, copy, tip, state = fixture(base)
     notes = base / 'manager/notes'
     notes.mkdir(parents=True)
-    page = base / 'page.md'
+    page = base / 'overview.md'
     page.write_text('# bench\n\n## Goal\n\nA small greeting CLI.\n\n## Tasks\n\n#3 to #6 open.\n')
     bindir = base / 'bin'
     bindir.mkdir()

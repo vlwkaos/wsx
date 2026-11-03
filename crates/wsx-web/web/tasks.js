@@ -1,6 +1,6 @@
 // Manager mode on a project: the manager chat as messages with short task chips, what needs
 // the owner and what runs in one reservoir over the composer, the `#` task picker, and a
-// task's or the project page's sheet over the chat (docs/web-client-tasks.md). Fixed actions
+// task's or the project overview's sheet over the chat (docs/web-client-tasks.md). Fixed actions
 // go straight to wsx.
 import { api } from "./api.js";
 import { html, Icon, keepIn, readMap, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
@@ -10,7 +10,7 @@ import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release
 import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
 import { QuoteChip, useReply, withQuote } from "./reply.js";
 import { readTaskAhead, TaskPage } from "./task.js";
-import { ProjectPage } from "./page.js";
+import { ProjectOverview } from "./page.js";
 import { ChecksPage } from "./checks.js";
 import { UsagePage } from "./usage.js";
 import { RoutinesPage } from "./routines.js";
@@ -120,13 +120,13 @@ export const TaskTitle = ({ title, id, state }) => html`
   <span class="row-title"><span class="row-label">${title}</span><span class="task-number">#${id}</span>${state && html`<span class="visually-hidden">, ${state}</span>`}</span>`;
 
 // One text-to-nodes function per project, so the markdown of a message is parsed once:
-// `#n` becomes a chip, and "project page" a link to the page.
+// `#n` becomes a chip, and "project overview" a link to it.
 const chipWords = new Map();
 export function withChips(project) {
   if (!chipWords.has(project)) {
-    chipWords.set(project, (text) => text.split(/(#\d+\b|\bproject page\b)/i).map((part) =>
+    chipWords.set(project, (text) => text.split(/(#\d+\b|\bproject overview\b)/i).map((part) =>
       /^#\d+$/.test(part) ? html`<${TaskChip} project=${project} id=${Number(part.slice(1))} />`
-        : /^project page$/i.test(part) ? html`<a class="page-link" href=${`#/p/${project}/page`}>${part}</a>` : part));
+        : /^project overview$/i.test(part) ? html`<a class="page-link" href=${`#/p/${project}/page`}>${part}</a>` : part));
   }
   return chipWords.get(project);
 }
@@ -692,7 +692,7 @@ function SinceLine({ project, reply, sent }) {
     </div>`;
 }
 
-// The top row's ⋯: the project page, sessions and files.
+// The top row's ⋯: the project overview, sessions and files.
 // When this device last read each role's chat, by `<project>/<role>`: a contact with something
 // newer is unread.
 const ROLES_SEEN_KEY = "wsx-roles-seen";
@@ -702,7 +702,7 @@ function More({ project, roles }) {
   const seen = readMap(ROLES_SEEN_KEY);
   return html`
     <${MoreMenu}>
-      <a role="menuitem" href=${`#/p/${project.id}/page`}>Page</a>
+      <a role="menuitem" href=${`#/p/${project.id}/page`}>Overview</a>
       <a role="menuitem" href=${`#/p/${project.id}/sessions`}>Sessions</a>
       <a role="menuitem" href=${`#/p/${project.id}/usage`}>Usage</a>
       <a role="menuitem" href=${`#/p/${project.id}/routines`}>Routines</a>
@@ -720,7 +720,7 @@ function More({ project, roles }) {
     </${MoreMenu}>`;
 }
 
-// A task or the project page over the chat, about 85% of the height (a `fit` sheet only as
+// A task or the project overview over the chat, about 85% of the height (a `fit` sheet only as
 // high as its content): Back, Escape, a tap
 // beside it or a swipe down on its top closes it, and the chat under it keeps its scroll and
 // its draft. A fit sheet's top follows its height, so it opens once its content calls `ready`:
@@ -917,8 +917,8 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
           ${(grip) => html`<${TaskPage} key=${task} project=${id} task=${task} onClose=${() => leaveFor(`#/p/${id}`)} onMention=${mention} grip=${grip} />`}
         </${Sheet}>`}
       ${page && html`
-        <${Sheet} key="page" label="Project page" onClose=${() => leaveFor(`#/p/${id}`)}>
-          ${(grip) => html`<${ProjectPage} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
+        <${Sheet} key="page" label="Overview" onClose=${() => leaveFor(`#/p/${id}`)}>
+          ${(grip) => html`<${ProjectOverview} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
         </${Sheet}>`}
       ${checks && html`
         <${Sheet} key="checks" label="To check" fit onClose=${() => leaveFor(`#/p/${id}`)}>

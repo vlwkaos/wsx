@@ -47,7 +47,8 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   TABLE          answer with a wide markdown table that names #4 twice and #2
   TABLE5         answer "Five columns:" with a table of five columns and 20 rows, and 30 lines after it
   DIAGRAM        answer with a tall mermaid diagram, drawn after the bubble shows
-  PAGE <section> <words>  replace that section of the project page (its instructions name it)
+  PAGE <section> <words>  replace that section of the project overview (its instructions name it)
+  OVERLONG <n>   write an overview of n lines (over the cap when n > 60); the host's follow-up leaves it
   STATUS         answer from `wsx task ledger`
   NOTIFY         first end a 0-token turn with no result, as Claude's own turn for a notification
   SLOW           take about 3 s
@@ -193,7 +194,12 @@ def manager_turn(text, project, page):
         if line.startswith('PAGE '):
             _, section, words = line.split(' ', 2)
             edit_page(page, section, words)
-            replies.append('I updated the %s of the project page.' % section)
+            replies.append('I updated the %s of the project overview.' % section)
+    for line in text.splitlines():
+        if line.startswith('OVERLONG '):
+            with open(page, 'w') as out:
+                out.write('# overlong\n' + 'a line of the overview\n' * (int(line.split()[1]) - 1))
+            replies.append('I wrote a long overview.')
     # ^ This turn's own words, not the ledger summary's titles or a handover's earlier messages.
     asks = re.search(r'^(ASK\b|#\d+ ready r\d+: NOOP ASK\b)', text, re.M)
     if asks:
@@ -318,7 +324,7 @@ def main():
             text = text.split('\n\nLedger summary from wsx', 1)[0]
             # ^ A handover quotes earlier messages; only the messages after it are this turn's.
             answer = manager_turn(text.split('\n\n', 1)[1] if text.startswith('Handover') else text, project,
-                                  instructions.split('The project page ', 1)[1].split(' ', 1)[0])
+                                  instructions.split('The project overview ', 1)[1].split(' ', 1)[0])
             # ^ A line of its own: a handover quotes earlier messages as `Owner: BIG`.
             calls = [200000] if 'BIG' in text.splitlines() else [50000] * 4 if 'SUMMED' in text.splitlines() else [5000]
             for tokens in calls:

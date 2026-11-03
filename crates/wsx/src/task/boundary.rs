@@ -26,7 +26,7 @@ pub struct Boundary {
     /// Other tasks' copies `<parent>/<repo>-t<n>`, also those created after the launch.
     deny_copies: Option<(PathBuf, String)>,
     own: Vec<PathBuf>,
-    /// The project page and the temporary files an editor writes beside it.
+    /// The project overview and the temporary files an editor writes beside it.
     own_prefix: Vec<PathBuf>,
 }
 
@@ -51,13 +51,13 @@ impl Boundary {
         Ok(boundary)
     }
 
-    /// The manager: its folder and the project page.
+    /// The manager: its folder and the project overview.
     // ^ It may move the default branch: when a land refuses on the owner's uncommitted changes
     // in the main checkout, it commits them on main after the owner's yes (docs/tasks.md
     // "Manager"), which writes main's ref and reflog.
-    pub fn manager(main: &Path, own: &Path, page: &Path) -> Result<Self> {
+    pub fn manager(main: &Path, own: &Path, overview: &Path) -> Result<Self> {
         let mut boundary = Self::new(main, own)?;
-        boundary.own_prefix.push(real(page));
+        boundary.own_prefix.push(real(overview));
         Ok(boundary)
     }
 
