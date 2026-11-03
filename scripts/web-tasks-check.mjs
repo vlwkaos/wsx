@@ -1427,7 +1427,7 @@ await until(`location.hash === '#/p/${project}/t/2' && !!document.querySelector(
 // ^ The sheet's agent: the detail's `agent` field and its words beside the health.
 const sheetAgent = await evaluate(`fetch('api/tasks/${project}/t/2').then((r) => r.json()).then((view) => view.agent)`);
 if (!sheetAgent?.model || sheetAgent.fallback !== false) await fail(`the task detail's agent is ${JSON.stringify(sheetAgent)}`);
-if ((await text(".task-sheet .progress-model"))[0] !== sheetAgent.model) await fail("the open sheet does not show the model");
+if (!sheetAgent.effort || (await text(".task-sheet .progress-model"))[0] !== `${sheetAgent.model} ${sheetAgent.effort}`) await fail("the open sheet does not show the model and effort");
 // ^ The task's usage line (docs/web-client-tasks.md "Task sheet").
 const usageLine = (await text(".task-sheet .task-usage"))[0] ?? "";
 if (!/^Usage: \$\d+\.\d\d · in \d+k? · cache \S+ read \/ \S+ write · out \S+ · \d+ turns?$/.test(usageLine)) await fail(`the task's usage line reads ${usageLine}`);
