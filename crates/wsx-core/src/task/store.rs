@@ -300,26 +300,71 @@ pub fn add_spend(account: &str, day_ms: u64, micro_usd: u64) -> Result<u64> {
     Ok(spent)
 }
 
-/// Record that `account` refuses turns until `until_ms` (unix ms).
-pub fn mark_limited(account: &str, until_ms: u64) -> Result<()> {
+/// A backoff that starts within this time after the last limit ended continues its row: a
+/// limit with no reset time that keeps coming back becomes one long limit.
+/// ref: docs/tasks.md "Agents"
+const LIMIT_ROW_GAP_MS: u64 = 15 * 60_000;
+
+/// An account's limit on record: refused since `since_ms`, until `until_ms` (unix ms).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccountLimit {
+    pub since_ms: u64,
+    pub until_ms: u64,
+}
+
+impl AccountLimit {
+    /// How long the account refuses turns in all, from the first limit of the row.
+    pub fn span_ms(&self) -> u64 {
+        self.until_ms.saturating_sub(self.since_ms)
+    }
+}
+
+fn read_limit(account: &str) -> Option<AccountLimit> {
+    let bytes = read_bounded_if_exists(&account_file(account, ".json").ok()?, 4096).ok()??;
+    let record = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
+    let until_ms = record["until_ms"].as_u64()?;
+    Some(AccountLimit {
+        since_ms: record["since_ms"].as_u64().unwrap_or(until_ms),
+        until_ms,
+    })
+}
+
+/// Record that `account` refuses turns until `until_ms`, as of `now_ms`, and return the
+/// record. A limit that `continues` the last one (a backoff with no reset time, or the same
+/// wait again) keeps its start when it follows within the row gap.
+pub fn mark_limited(
+    account: &str,
+    until_ms: u64,
+    now_ms: u64,
+    continues: bool,
+) -> Result<AccountLimit> {
     let path = account_file(account, ".json")?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
+    let since_ms = continues
+        .then(|| read_limit(account))
+        .flatten()
+        .filter(|last| last.until_ms.saturating_add(LIMIT_ROW_GAP_MS) >= now_ms)
+        .map_or(now_ms, |last| last.since_ms.min(now_ms));
     write_atomic(
         &path,
-        serde_json::json!({ "until_ms": until_ms })
+        serde_json::json!({ "since_ms": since_ms, "until_ms": until_ms })
             .to_string()
             .as_bytes(),
-    )
+    )?;
+    Ok(AccountLimit { since_ms, until_ms })
 }
 
-/// When `account`'s recorded limit ends, if it is still ahead of `now_ms`. An unreadable
-/// record counts as none: the agent's own answer decides then.
+/// `account`'s recorded limit, if it still holds at `now_ms`. An unreadable record counts as
+/// none: the agent's own answer decides then.
+pub fn account_limit(account: &str, now_ms: u64) -> Option<AccountLimit> {
+    read_limit(account).filter(|limit| limit.until_ms > now_ms)
+}
+
+/// When `account`'s recorded limit ends, if it is still ahead of `now_ms`.
 pub fn limited_until(account: &str, now_ms: u64) -> Option<u64> {
-    let bytes = read_bounded_if_exists(&account_file(account, ".json").ok()?, 4096).ok()??;
-    let until = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?["until_ms"].as_u64()?;
-    (until > now_ms).then_some(until)
+    account_limit(account, now_ms).map(|limit| limit.until_ms)
 }
 
 /// One task's folder. Every path inside it is fixed; no caller-given name reaches the disk.

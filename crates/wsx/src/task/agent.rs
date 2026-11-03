@@ -189,9 +189,26 @@ pub fn fallback(names: &[String], now_ms: u64, minimal: bool) -> Option<Choice> 
     })
 }
 
+/// The first available of `names` when `account`'s limit until `until_ms` is past
+/// `maxWaitMinutes`, counted from the first limit of its row on record, so a backoff that keeps
+/// failing becomes long; a shorter one is waited out. ref: docs/tasks.md "Agents"
+pub fn fallback_past_wait(
+    names: &[String],
+    max_wait_secs: u64,
+    account: &str,
+    until_ms: u64,
+    now_ms: u64,
+) -> Option<Choice> {
+    let span_ms = store::account_limit(account, now_ms)
+        .map_or(until_ms.saturating_sub(now_ms), |limit| limit.span_ms());
+    (span_ms > max_wait_secs * 1000)
+        .then(|| fallback(names, now_ms, false))
+        .flatten()
+}
+
 /// Where a worker on (`adapter`, `model`) goes when its account refuses turns until `until_ms`:
-/// its own agent at once when that is free, else a fallback when the wait is past
-/// `maxWaitMinutes`, else nowhere: it waits. ref: docs/tasks.md "Agents"
+/// its own agent at once when that is free, else a fallback past `maxWaitMinutes`, else
+/// nowhere: it waits. ref: docs/tasks.md "Agents"
 pub fn worker_next(
     settings: &TaskConfig,
     adapter: &str,
@@ -200,16 +217,21 @@ pub fn worker_next(
     now_ms: u64,
 ) -> Option<Choice> {
     let own = account(&settings.adapter, &settings.model);
-    if account(adapter, model) != own && store::limited_until(&own, now_ms).is_none() {
+    let current = account(adapter, model);
+    if current != own && store::limited_until(&own, now_ms).is_none() {
         return Some(Choice {
             name: settings.adapter.clone(),
             adapter: settings.adapter.clone(),
             model: settings.model.clone(),
         });
     }
-    (until_ms.saturating_sub(now_ms) > settings.max_wait_secs * 1000)
-        .then(|| fallback(&settings.fallback, now_ms, false))
-        .flatten()
+    fallback_past_wait(
+        &settings.fallback,
+        settings.max_wait_secs,
+        &current,
+        until_ms,
+        now_ms,
+    )
 }
 
 /// The budget of an agent that has none set.
@@ -223,17 +245,19 @@ pub fn note_spend(adapter: &str, model: &str, micro_usd: u64, now_ms: u64) -> Op
         return None;
     }
     let account = account(adapter, model);
+    // ^ A budget belongs to the account: the smallest any of its agents sets.
     let budget = wsx_core::config::global::GlobalConfig::load()
         .ok()
         .and_then(|(config, _)| {
             config
                 .agents
                 .iter()
-                .find(|agent| {
-                    agent.adapter.as_deref() == Some(adapter)
-                        && agent.model.as_deref() == Some(model)
+                .filter(|agent| match (&agent.adapter, &agent.model) {
+                    (Some(adapter), Some(model)) => self::account(adapter, model) == account,
+                    _ => false,
                 })
-                .and_then(|agent| agent.budget_usd_per_day)
+                .filter_map(|agent| agent.budget_usd_per_day)
+                .min()
         })
         .unwrap_or(DEFAULT_BUDGET_USD_PER_DAY);
     let today = usage::local_midnight_ms(now_ms);
@@ -245,8 +269,8 @@ pub fn note_spend(adapter: &str, model: &str, micro_usd: u64, now_ms: u64) -> Op
         return None;
     }
     let midnight = usage::local_midnight_ms(today + 26 * 3_600_000);
-    match store::mark_limited(&account, midnight) {
-        Ok(()) => Some(format!(
+    match store::mark_limited(&account, midnight, now_ms, false) {
+        Ok(_) => Some(format!(
             "{account} spent {} of its {budget} USD for today: limited until midnight",
             usage::usd(spent)
         )),

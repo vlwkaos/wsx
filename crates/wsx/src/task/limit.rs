@@ -12,10 +12,15 @@ const MAX_AHEAD_MS: u64 = 8 * 24 * 3_600_000;
 /// When to resume after the `attempt`-th limit in a row (1 for the first), in unix ms.
 pub fn resume_at(resets_at: Option<u64>, attempt: u32, now_ms: u64) -> u64 {
     let backoff = (FIRST_BACKOFF_MS << attempt.saturating_sub(1).min(4)).min(MAX_BACKOFF_MS);
-    match resets_at.map(|secs| secs.saturating_mul(1000) + MARGIN_MS) {
-        Some(at) if at > now_ms && at <= now_ms + MAX_AHEAD_MS => at,
-        _ => now_ms + backoff,
-    }
+    known_reset(resets_at, now_ms).unwrap_or(now_ms + backoff)
+}
+
+/// The provider's reset `resets_at` (unix seconds) as the time to resume, when it is
+/// believable; without one the host backs off, and the backoffs in a row add up to one limit.
+pub fn known_reset(resets_at: Option<u64>, now_ms: u64) -> Option<u64> {
+    resets_at
+        .map(|secs| secs.saturating_mul(1000) + MARGIN_MS)
+        .filter(|at| *at > now_ms && *at <= now_ms + MAX_AHEAD_MS)
 }
 
 /// "claude usage limit; resumes at 00:10" for `adapter`, with the date when it is not
