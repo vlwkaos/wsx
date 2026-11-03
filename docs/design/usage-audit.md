@@ -112,67 +112,66 @@ The rule for code or judgment: a step the agents repeat with the same inputs and
 | manager: 192 notes reads and edits by python to fold memos | the host appends the memo line; the idle task deduplicates |
 | manager: 130 `task land` after a review with no findings | stays with the agent: the judgment is the review itself |
 
-## Findings (2026-11-03)
+## Audit 2026-11-04
 
-Assuming: the 10-31 limit is the 7-day one, and plan limits weigh tokens as the API prices them; the shares below use the report's weights (write 2x, read 0.1x base input). The owner's Claude use outside wsx is not in these logs.
+Replaces "Findings (2026-11-03)" (#169). Window: rolling 7 days, plus the tasks since #169 landed. Transcript evidence is in each task's `log.jsonl` and `~/.claude/projects/-Users-vlwkaos-ws-wsx-t<n>/`.
 
-**Answer.** The cache already hits: 98% of worker input tokens and 97% of manager input tokens are cache reads. What spends the plan is reads times context times calls, then output; cold writes are a quarter. A limit hit on 10-31 15:40 and held until 11-03 05:00 (manager `limit` entry; over 2 days, so assumed the 7-day one), so 11-01 and 11-02 have no tasks. Per landed task stayed at $4.2-4.6 since 10-21: the levers that shipped cut cold turns and big contexts, but most tasks still run opus with all 5 steps.
+**Answer.** Per landed task fell from $4.32 to $2.38 over 7 days and to $1.73 since 11-03. Most of the fall comes from the mix of tasks, not from the two changes: the expensive 10-28 tasks left the window, and 6 of the 10 tasks landed since 11-03 ran on sonnet. The two changes have not run yet: #176 still runs a `context` step, and only #174 ran build only. Since 11-03 the cost goes to the `context` step, to waiting for checks inside a turn, and to failed check runs that each wait 20-90 min in the queue.
 
-### Windows (`/usr/bin/python3 scripts/usage-report.py ~/.local/state/wsx/tasks/wsx-8cbe3f08 …`)
+### Evidence
 
-| window | tasks / landed | $/landed | worker $ / turns | manager $ / turns | ctx > 200k $ | idle > 1 h $ | rotations size / idle |
-|---|---|---|---|---|---|---|---|
-| owner baseline, 7 d to 10-31 | | 4.16 | 767 / 913 | 99 / 686 | 344 | 117 | |
-| same, rerun `--since 10-25 --until 10-31` | 128 / 119 | 4.21 | 778 / 927 | 101 / 696 | 347 | 119 | 19 / 4 |
-| prior, `--since 10-21 --until 10-27` | 89 / 82 | 4.59 | 672 / 644 | 70 / 512 | 327 | 146 | 2 / 0 |
-| last, `--days 7` (10-28..11-03) | 63 / 55 | 4.32 | 278 / 419 | 57 / 371 | 94 | 22 | 17 / 4 |
+```
+$ /usr/bin/python3 scripts/usage-report.py ~/.local/state/wsx/tasks/wsx-8cbe3f08 --days 7
+window 2026-10-29 .. now: tasks 50, landed 46, worker $183.32 in 330 turns, manager $46.71 in 269 turns
+per landed task: $2.38, 5.5 turns, 2.1 h wall, 50 min check wait, 0.3 send-backs, 1.6 failed check runs
+turns over 200k context: $49.22; turns after > 1 h idle (cold cache): $4.82
+$ ... --since 2026-11-03
+window 2026-11-03 .. now: tasks 12, landed 10, worker $19.60 in 79 turns, manager $8.23 in 34 turns
+per landed task: $1.73, 6.5 turns, 3.2 h wall, 181 min check wait, 0.2 send-backs, 1.6 failed check runs
+turns over 200k context: $0.00; turns after > 1 h idle (cold cache): $0.99
+```
 
-The rerun differs from the baseline by under 2%: results logged after 10-31 for tasks that started before it.
-
-### Where it goes (last window)
-
-| worker cost by | $ | share | note |
+| since 11-03 | $ | turns | where it went (log.jsonl `result`, `check_run`) |
 |---|---|---|---|
-| cache reads | 309 est. | 62% | 626M tokens, 2,322 main calls |
-| cache writes | 123 est. | 25% | 12.9M tokens; first turns 3.8M, rotations 1.1M, idle > 1 h 0.9M |
-| output | 67 est. | 13% | |
-| step `build` / `plan` / `context` / `memo` / `review` / after | 72 / 58 / 51 / 38 / 26 / 31 | | `context` writes 54%; `memo` counts the check answers after it |
-| opus / sonnet | 258 in 306 turns / 16 in 102 | | sonnet $0.16 a turn against $0.84 |
-| manager events / owner / other turns | 29 / 23 / 5 | | 152 of 232 event turns quiet |
+| step `context` (all tasks) | 7.68 of 19.60 | 14 | 48% cache write; in #173, recall returned `mode=none` and 4 unrelated vault hits |
+| #167 opus, 5 steps | 4.49 | 14 | $3.49 in the `context` step: 2 owner messages grew it to 141k, then 2 `restart` turns after a background `check-run` was killed at 30 min; 4 failed runs (test-task.py timeouts, 35-78 min queue each); 363 min check wait |
+| #175 sonnet, build+review | 2.22 | 3 | one build turn of 323 min and 87 calls: it polled with `until [ -s …web.out ]` (47 of 113 agent lines; about 43% of its cache reads, est.); 4 failed `web` runs, the first one a stale "Page" assert |
+| #172 sonnet, 3 steps | 1.92 | 16 | 7 `restart` + 3 `rotation` turns: a `web` check-run killed at the background limit, then idle > 1 h; 3 failed runs (stale menu assert, own probe 404) |
+| #173 opus, 5 steps | 2.91 | 10 | $1.68 in `context` (recall found nothing); 1 rotation, 1 conflict |
+| #174 sonnet, build only | 0.33 | 4 | the only build-only task: $0.33 / 4 turns against the $0.54 / 4 turns baseline |
 
-| cold start (no warm cache) | turns | $ | read share |
-|---|---|---|---|
-| worker first turn of a task | 62 | 40.20 | 92% |
-| worker after rotation | 21 | 14.93 | 94% |
-| worker after > 1 h idle, not rotated | 6 | 11.69 | 92% |
-| worker after a session limit | 3 | 6.59 | 81% |
-| manager after rotation (150k) | 19 | 6.69 | 77% |
-| manager fresh conversation (instruction digest, restart) | 3 | 2.81 | 9% |
+### Did the changes since #169 work?
 
-### Optimizations as designed
-
-| lever | works? | numbers |
+| change | applied? | verdict |
 |---|---|---|
-| `rotateTokens` 200k | partly | 17 size rotations, median 216k, max 418k at rotation. 64 turns still pass 200k ($94): 25 grew past it inside one turn ($61, mostly `build`), 39 started above it as check-run answers or result retries, which never rotate ($33) |
-| `rotateIdleSeconds` 3600 | yes | idle > 1 h cost $146 → $22; 4 rotations. Misses: 3 check-run answers after a check wait over 1 h (median wait 60 min) at ≥ 100k, 1 add below 100k |
-| `--skip` steps | rarely used | 18 of 63 tasks have fewer than 5 steps, 16 of them sonnet; 40 opus tasks kept all 5 (median $5.73, 7 turns) |
-| sonnet for stated changes | yes where used | sonnet 3 steps median $0.54, 4 turns; 5 steps $0.94. 21 of 63 tasks, 6% of worker cost |
-| quiet event turns (`event_wakes`) | not live in the window | landed on main 11-03 11:32 (b7299489); window shows 25 quiet `landed` turns ($1.92) and 50 quiet other ($4.13) |
-| empty-stdout routines | yes | 0 digest events; 2 `routine usage` events, which print a summary by design |
-| result retries | miss | 35 "no event" turns after the last step ($12.67); 33 logs of "ended its own turn with no result" |
+| #173: drop `context` and `memo` from the owner's `steps:` | no: the `wsx.config.yml` edit was left for the owner; #176 still runs context, plan, build, memo | cannot judge; 0 tasks |
+| #173: steps end background jobs before the result | yes, in `host.rs` `step_text` | 1 logged `result_retry` turn in 7 days ($0.08), against 35 "no event" turns after the last step in #169's window; keep it |
+| #169: sonnet build only for stated changes | 1 of 6 sonnet tasks (#174) | too few (1 of 8 needed) |
 
-### Top 5 changes, by tokens saved
+### Current practice (web, read 2026-11-04)
 
-| # | change | evidence | saves (est., per week at last window volume) | cache effect |
+| finding | source |
+|---|---|
+| Headless `-p` turns get a 1 h cache only on a subscription; with an API key they get 5 min (`CLAUDE_CODE_PROMPT_CACHE_TTL`). Each model has its own cache, so a model switch inside a session re-reads uncached | [Claude Code: prompt caching](https://code.claude.com/docs/en/prompt-caching.md) |
+| 1 h write 2x, 5 min write 1.25x, read 0.1x base input; on the 5.5 models a read costs 0.05x | [API: prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) |
+| Clearing stale tool results is the "lightest touch" compaction; subagents return 1-2k token summaries; notes outside the window survive a reset | [Effective context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) (2025-09-29) |
+| Context editing cut tokens 84% on a 100-turn eval | [Managing context](https://www.anthropic.com/news/context-management) (2025-10) |
+| Sonnet for most coding, Opus for architecture; filter test output with a hook; specific prompts avoid broad scans | [Manage costs](https://code.claude.com/docs/en/costs) |
+| Agents use about 4x the tokens of chat, multi-agent about 15x: use subagents only for parallel, high-value work | [Multi-agent research system](https://www.anthropic.com/engineering/built-multi-agent-research-system) (2025-06-13) |
+
+Report gap: `usage-report.py` weighs reads at 0.1x. On the 5.5 models a read costs 0.05x, so the report overstates the read share and understates the write share. The dollar totals come from the logs and are correct.
+
+### Proposals, ranked
+
+| # | change | cause and evidence | expected effect | measure after 8 landed tasks |
 |---|---|---|---|---|
-| 1 | Opus tasks drop `context` and `memo`: the host puts the seek packet for `--files` in the first prompt, the build result carries the memo | `context` $51 at 54% write, `memo` about $20 of its $38; 40 opus tasks run all 5 steps | $50-60 (18-22% of worker) | removes one cold turn per task; the first turn still writes, but once |
-| 2 | Sonnet with `--skip context,plan` as the manager's default when the prompt names files and the change | 40 opus 5-step tasks at median $5.73 against $0.54 | about $5 per moved task; 10 moved = $50 | sonnet has its own cache; no switch inside a task, so no extra writes |
-| 3 | Bound growth inside a `build` turn: wide reads go to a sonnet subagent, check output through `tail`, no whole-file reads | 25 turns grew past 200k inside the turn ($61); build 16 calls a turn at 119k | $20-30 | fewer reads per call; hit rate unchanged, read volume down |
-| 4 | Ask for the missing result inside the step prompt and find why a turn ends without one | 35 result-retry turns at 174k ($12.67); 33 no-result logs | about $12 | each retry reads the full context at 1-2 calls |
-| 5 | Measure `event_wakes` (live 11-03), then give `quiet ready` no turn of its own: batch it with the review | 152 quiet event turns, about $10; 25 quiet `ready` turns $4.26 | $8-12 manager | fewer manager calls; the 150k manager context is read less often |
+| 1 | Owner applies the #173 `steps:` edit: remove `context`; the last step's result carries the memo | `context` is 39% of worker cost since 11-03 ($7.68 of $19.60) and loads nothing from a worktree; #167 $3.49, #173 $1.68 | cost -$0.5 to -0.8 per opus task, one cold turn less; speed about -1 min; quality = (recall gave nothing) | per-step table: `context` turns = 0; opus 5-step median $5.73 → 4-step |
+| 2 | Waiting on a check costs no turn: step text says to start `wsx task check-run` in the background with the longest timeout and never poll; or the host answers the check as a `check_run` turn and the step ends after queueing | queue wait is 20-90 min, longer than the 30 min background default: #167 got 2 restarts, #172 got 7 restarts + 3 rotations, #175 polled for 323 min (est. $0.85); `restart` turns cost $14.67 in 47 turns over 7 days | cost about -$0.3 to -0.9 per task with a check-run; fewer restarts and rotations; quality = | `restart` trigger turns per task (47 in 7 days), polling lines in "Repeated agent commands", $ of turns over 60 min |
+| 3 | Before `check-run`, the build step searches the scenario scripts (`scripts/test-*.py`) for every UI string or label the diff renames, and fixes stale asserts | 11 failed runs in #167, #172, #175; at least 3 were stale asserts in the `web` scenario; each failure costs a 20-90 min queue plus a repair turn; 181 min check wait per task | failed check runs 1.6 → under 1 per task; wall time -40 to -80 min per failure avoided; quality + (fewer test-only fixes after the run) | failed check runs and check wait per landed task in the Summary |
 
-Rotating check-run answers and retries above 200k would not pay: they run 1-2 calls, and a rotation costs $0.71 a turn plus the handoff. Prove each change with the loop above: one `decisions.md` line, then compare after 8 landed tasks of that kind.
+Prove each with the loop above: one `decisions.md` line, then compare `--until` with `--since` the change date after 8 landed tasks of that kind.
 
-### Decisions (2026-11-03)
+### Decisions in force (2026-11-03)
 
-- Changes 1 and 4: the owner's steps become `plan, build, review`; `review` asks for the memo in the result. `context` loaded no project knowledge from a worktree (recall `mode=none`), so it goes with no replacement. The 33 "no result" logs were Claude's own turns for background-job notices after a result (25 model turns in 19 tasks; the host's result retry ran once), so each step's text asks to end background jobs first and the host logs a result that comes while one runs. Compare after 8 landed tasks: `$/landed` (4.32) and turns after the last step (35).
+- The owner's steps become `plan, build, review`, and the `review` result carries the memo. The `context` step goes with no replacement. This waits on the owner (proposal 1). Baseline: $4.32 per landed task, 35 turns after the last step.
+- A stated change runs on sonnet as build only. Opus runs only when the cause is unknown or the change needs design. Baseline: opus 5-step median $5.73 / 7 turns, sonnet $0.54 / 4 turns.
