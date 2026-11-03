@@ -2701,7 +2701,8 @@ def run(wsx, wsxd, work, owned):
     late_gate.touch()
     assert wait_state(late, 'ready', 'failed')['state'] == 'ready', log(late)
     assert kinds(late, 'result', 'check_run', 'checks') == ['result', 'check_run', 'result', 'checks'], log(late)
-    answers = [t['message'] for t in traces() if 'Your check-run ended. Its answer' in t.get('message', '')]
+    # ^ 32c's answer turn has the same words: only this task's late gate counts.
+    answers = [t['message'] for t in traces() if 'Your check-run ended. Its answer' in t.get('message', '') and str(late_gate) in t['message']]
     assert len(answers) == 1 and 'check 2 `while [ ! -e' in answers[0] and ': exit 0' in answers[0], answers
     js('task', 'close', late, '--discard')
     # 32u. A result that comes while the checks of an earlier one run (Claude's own turn for a
