@@ -1395,8 +1395,6 @@ impl Host {
         let total = self.record.steps.len();
         let index = self.record.step as usize;
         let step = self.record.steps.get(index)?;
-        // ^ A job that ends after the result wakes the worker for a turn that answers nothing
-        // new. ref: docs/tasks.md "Workflow"
         let end = match index + 1 == total {
             true => {
                 "This is the last step: finish the task and return your final result, with \
@@ -1408,9 +1406,11 @@ impl Host {
             }
         };
         self.say(&format!("step {} of {total}: {}", index + 1, step.name));
+        // ^ A job that ends after the result wakes the worker for a turn that answers nothing
+        // new. ref: docs/tasks.md "Workflow"
         Some(format!(
-            "Step {} of {total}, {}: {}\n{end} Before the result, wait for or stop \
-             (TaskStop) each background job you started.",
+            "Step {} of {total}, {}: {}\n{end} Before the result, wait for or stop each \
+             background job you started.",
             index + 1,
             step.name,
             step.prompt

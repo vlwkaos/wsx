@@ -698,7 +698,7 @@ def run(wsx, wsxd, work, owned):
     assert 'Step 2 of 2, build: WORK s.txt' in turns[1]['summary'], turns
     # ^ Each step asks to end its background jobs first; the last asks for the memo too, so
     # no step of its own writes it.
-    assert all('wait for or stop (TaskStop) each background job' in t['summary'] for t in turns), turns
+    assert all('wait for or stop each background job' in t['summary'] for t in turns), turns
     assert 'return your final result, with its memo' in turns[1]['summary'], turns
     # ^ A result while a job still runs is logged once: its notice wakes another turn.
     early = [e for e in log(stepped) if e['kind'] == 'agent' and 'the result came while 1 background job(s) run' in e['text']]
