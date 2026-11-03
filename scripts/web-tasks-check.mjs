@@ -1734,7 +1734,7 @@ await readAndReply("390 px");
 await go(page(2));
 await until("document.querySelectorAll('dialog.task-sheet[open] .task-fold').length >= 4", "the task sheet did not show the folded report");
 let told = await story();
-if (told.steps || told.summary !== "did: WORK a.txt HV" || told.next !== "Land it to put it on main.") await fail(`the top of a ready task reads ${JSON.stringify(told)}`);
+if (told.steps || !/^did: WORK a\.txt HV\s*Decided: fake choice \(fixture\)\.$/.test(told.summary) || told.next !== "Land it to put it on main.") await fail(`the top of a ready task reads ${JSON.stringify(told)}`);
 if (await sheetState() !== "ready to land") await fail(`a ready task's state reads ${await sheetState()}`);
 // ^ The top row reads the title first, then the number, small and muted.
 const sheetTitle = await evaluate("(() => { const title = document.querySelector('.task-sheet .bar .row-title'); return title && [title.firstElementChild.className, title.querySelector('.task-number').textContent]; })()");
@@ -1752,15 +1752,20 @@ await shot("task-sheet-take-over-1280", ".composer-send");
 await resize([390, 844, 2]);
 if (await evaluate("/\\br\\d+\\b/.test(document.querySelector('.task-sheet .bar').textContent + document.querySelector('.task-next').textContent)")) await fail("the sheet names a revision");
 await shot("task-sheet", ".composer-send");
-// Evidence opens to the checks and what the worker showed; More shows the decisions.
+// ^ The summary opens whole with the decisions; Less folds it to its first sentence, More opens it again.
+const decided = "/Decided: fake choice \\(fixture\\)\\./.test(document.querySelector('.story').textContent)";
+if (!(await evaluate(decided)) || (await text(".story .link-action")).join() !== "Less") await fail("the sheet does not open with the whole summary, its decisions and Less");
+await evaluate("document.querySelector('.story .link-action').click()");
+await until(`!(${decided}) && document.querySelector('.story .link-action')?.textContent === 'More'`, "Less did not fold the summary to its first sentence");
+await shot("task-sheet-folded", ".composer-send");
+await evaluate("document.querySelector('.story .link-action').click()");
+await until(decided, "More did not open the summary again");
+// Evidence opens to the checks and what the worker showed.
 await evaluate("document.querySelector('.task-details > .fold-head').click()");
 await evaluate("[...document.querySelectorAll('.task-fold > .fold-head')].find((node) => node.textContent.startsWith('Evidence')).click()");
 await until("/test ! -e broken\\.txt/.test(document.querySelector('.task-fold[open]')?.textContent ?? '') && /the fixture ran/.test(document.querySelector('.task-fold[open]').textContent)", "Evidence did not open to the checks and the worker's evidence");
-await evaluate("document.querySelector('.story .link-action').click()");
-await until("/Decided: fake choice \\(fixture\\)\\./.test(document.querySelector('.story').textContent)", "More did not show the decisions");
 await shot("task-sheet-open");
 await evaluate("document.querySelector('.task-details > .fold-head').click()");
-await evaluate("document.querySelector('.story .link-action').click()");
 await clickNext("Land");
 await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '') === 'done'", "#2 did not land", 300);
 told = await story();

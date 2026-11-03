@@ -158,11 +158,11 @@ function Progress({ detail, words }) {
     </div>`;
 }
 
-// The top of the task sheet: how an open task is doing, one sentence of what changed (More shows
-// the whole summary and what the worker decided), and what the owner should know next with the
-// task's actions beside it (docs/web-client-tasks.md "Task sheet").
+// The top of the task sheet: how an open task is doing, what changed (the whole summary and what
+// the worker decided, open from the start; Less folds it to one sentence), and what the owner
+// should know next with the task's actions beside it (docs/web-client-tasks.md "Task sheet").
 export function TaskStory({ detail, words, children }) {
-  const [more, setMore] = useState(false);
+  const [more, setMore] = useState(true);
   const summary = summaryIsCurrent(detail) ? (detail.result?.summary ?? "").trim() : "";
   const sentence = firstSentence(summary);
   const decisions = detail.result?.decisions ?? [];
