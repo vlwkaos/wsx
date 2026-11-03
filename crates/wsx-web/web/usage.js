@@ -24,50 +24,69 @@ const ROWS = [
 // The parts of a day's spend, in the order of their fixed colors (`usage.rs` PARTS).
 const PARTS = [["build", "Build"], ["plan", "Plan"], ["context", "Context"], ["review", "Review"], ["memo", "Memo"], ["other", "Other work"], ["manager", "Manager"]];
 
-const dayCost = (day) => Object.values(day.parts).reduce((sum, cost) => sum + cost, 0);
+// The kinds of token, in the order of their fixed colors (`app.css` .usage i[data-part]).
+const KINDS = [["input", "Input"], ["cache_read", "Cache read"], ["cache_write", "Cache write"], ["output", "Output"]];
 
-const partCost = (days, part) => days.reduce((sum, day) => sum + (day.parts[part] ?? 0), 0);
+// A cost chart's and a token chart's own parts: what a day's bar splits into, its numbers and
+// how they read. `hit` is the cache hit rate, cache read / (input + cache read + cache write).
+const COST = { name: "cost", title: "Cost", label: "Cost per day", legend: "Parts of the cost in 7 days", parts: PARTS, format: usd,
+  of: (day) => day.parts };
+const TOKENS = { name: "tokens", title: "Tokens", label: "Tokens per day", legend: "Kinds of token in 7 days", parts: KINDS, format: tokens,
+  of: (day) => { const u = day.usage ?? {}; return { input: u.input_tokens, cache_read: u.cache_read_tokens, cache_write: u.cache_creation_tokens, output: u.output_tokens }; },
+  extra: (amounts) => { const input = (amounts.input ?? 0) + (amounts.cache_read ?? 0) + (amounts.cache_write ?? 0); return input ? `${Math.round((100 * (amounts.cache_read ?? 0)) / input)}%` : "-"; } };
+
+const sum = (amounts) => Object.values(amounts).reduce((total, amount) => total + (amount ?? 0), 0);
+
+const partCost = (days, chart, part) => days.reduce((total, day) => total + (chart.of(day)[part] ?? 0), 0);
 
 // A row's bar: the parts in their fixed order, as wide as `share` of the track.
-const Bar = ({ parts, share }) => html`
+const Bar = ({ chart, parts, share }) => html`
   <span class="usage-track"><span class="usage-bar" style=${{ width: `${share}%` }}>
-    ${PARTS.filter(([part]) => parts[part]).map(([part, label]) => html`<i key=${part} data-part=${part} title=${`${label} ${usd(parts[part])}`} style=${{ flexGrow: parts[part] }}></i>`)}
+    ${chart.parts.filter(([part]) => parts[part]).map(([part, label]) => html`<i key=${part} data-part=${part} title=${`${label} ${chart.format(parts[part])}`} style=${{ flexGrow: parts[part] }}></i>`)}
   </span></span>`;
 
 // The 7 days at once, each part's amount and share in the legend, then one row per day, newest
 // first, on one scale. A tap on a day shows its exact amounts (docs/web-client-tasks.md "Usage").
-function DayRows({ days }) {
+// The token chart's rows end with the cache hit rate: a small kind is never narrower than 4 px.
+function DayRows({ days, chart }) {
   const [open, setOpen] = useState(null);
-  const most = Math.max(1, ...days.map(dayCost));
-  const parts = Object.fromEntries(PARTS.map(([part]) => [part, partCost(days, part)]));
-  const total = Object.values(parts).reduce((sum, cost) => sum + cost, 0);
+  const totals = days.map((day) => sum(chart.of(day)));
+  const most = Math.max(1, ...totals);
+  const parts = Object.fromEntries(chart.parts.map(([part]) => [part, partCost(days, chart, part)]));
+  const total = sum(parts);
+  const rate = (amounts) => chart.extra && html`<span class="usage-rate" title="Cache hit rate">${chart.extra(amounts)}</span>`;
   return html`
-    <div class="usage-total">
-      <span class="usage-date">7 days</span>
-      <${Bar} parts=${parts} share=${total ? 100 : 0} />
-      <span class="usage-cost">${usd(total)}</span>
-    </div>
-    <ul class="usage-legend" aria-label="Parts of the cost in 7 days">
-      ${PARTS.map(([part, label]) => html`<li key=${part}><i data-part=${part}></i><span class="usage-name">${label}</span><span class="usage-amount">${usd(parts[part])} ${total ? Math.round((100 * parts[part]) / total) : 0}%</span></li>`)}
-    </ul>
-    <ul class="usage-days" aria-label="Cost per day">
-      ${days.map((day) => {
-        const cost = dayCost(day);
-        const date = new Date(day.day_ms).toLocaleDateString(undefined, { weekday: "short", day: "numeric" });
-        return html`
-          <li key=${day.day_ms}>
-            <button type="button" class="usage-day" aria-expanded=${open === day.day_ms} disabled=${!cost} onClick=${() => setOpen(open === day.day_ms ? null : day.day_ms)}>
-              <span class="usage-date">${date}</span>
-              <${Bar} parts=${day.parts} share=${(100 * cost) / most} />
-              <span class="usage-cost">${usd(cost)}</span>
-            </button>
-            ${open === day.day_ms && html`
-              <dl class="usage-parts">
-                ${PARTS.filter(([part]) => day.parts[part]).map(([part, label]) => html`<div key=${part}><dt><i data-part=${part}></i>${label}</dt><dd>${usd(day.parts[part])}</dd></div>`)}
-              </dl>`}
-          </li>`;
-      })}
-    </ul>`;
+    <section class="usage-chart" data-chart=${chart.name} aria-label=${chart.title}>
+      <div class="usage-total">
+        <span class="usage-date">7 days</span>
+        <${Bar} chart=${chart} parts=${parts} share=${total ? 100 : 0} />
+        <span class="usage-cost">${chart.format(total)}</span>
+        ${rate(parts)}
+      </div>
+      <ul class="usage-legend" aria-label=${chart.legend}>
+        ${chart.parts.map(([part, label]) => html`<li key=${part}><i data-part=${part}></i><span class="usage-name">${label}</span><span class="usage-amount">${chart.format(parts[part])} ${total ? Math.round((100 * parts[part]) / total) : 0}%</span></li>`)}
+      </ul>
+      <ul class="usage-days" aria-label=${chart.label}>
+        ${days.map((day, index) => {
+          const amounts = chart.of(day);
+          const cost = totals[index];
+          const date = new Date(day.day_ms).toLocaleDateString(undefined, { weekday: "short", day: "numeric" });
+          return html`
+            <li key=${day.day_ms}>
+              <button type="button" class="usage-day" aria-expanded=${open === day.day_ms} disabled=${!cost} onClick=${() => setOpen(open === day.day_ms ? null : day.day_ms)}>
+                <span class="usage-date">${date}</span>
+                <${Bar} chart=${chart} parts=${amounts} share=${(100 * cost) / most} />
+                <span class="usage-cost">${chart.format(cost)}</span>
+                ${rate(amounts)}
+              </button>
+              ${open === day.day_ms && html`
+                <dl class="usage-parts">
+                  ${chart.parts.filter(([part]) => amounts[part]).map(([part, label]) => html`<div key=${part}><dt><i data-part=${part}></i>${label}</dt><dd>${chart.format(amounts[part])}</dd></div>`)}
+                </dl>`}
+            </li>`;
+        })}
+      </ul>
+    </section>`;
 }
 
 export function UsagePage({ project, onClose, grip }) {
@@ -79,7 +98,8 @@ export function UsagePage({ project, onClose, grip }) {
       <${SheetBar} grip=${grip} onClose=${onClose}><span class="bar-label">Usage</span></${SheetBar}>
       <div class="scroll usage">
         ${!cells ? html`<p class="empty">No usage yet.</p>` : html`
-          <${DayRows} days=${usage.days ?? []}/>
+          <${DayRows} days=${usage.days ?? []} chart=${COST}/>
+          <${DayRows} days=${usage.days ?? []} chart=${TOKENS}/>
           <details class="usage-tokens"><summary>Tokens</summary><div class="table-wrap">
             <table aria-label="Token use and cost">
               <thead>

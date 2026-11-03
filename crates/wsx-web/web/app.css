@@ -908,6 +908,15 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .usage i[data-part="memo"] { background: var(--color-series-5); }
 .usage i[data-part="other"] { background: var(--color-series-6); }
 .usage i[data-part="manager"] { background: var(--color-series-7); }
+/* The token kinds reuse the first four series colors; a day's bar keeps each kind 4 px wide at least. */
+.usage i[data-part="input"] { background: var(--color-series-1); }
+.usage i[data-part="cache_read"] { background: var(--color-series-2); }
+.usage i[data-part="cache_write"] { background: var(--color-series-3); }
+.usage i[data-part="output"] { background: var(--color-series-4); }
+.usage-chart[data-chart="tokens"] .usage-bar i { min-width: var(--space-1); }
+.usage-chart[data-chart="tokens"] :is(.usage-total, .usage-day) { grid-template-columns: calc(var(--space-4) * 4) minmax(0, 1fr) calc(var(--space-4) * 3) calc(var(--space-4) * 2.5); }
+.usage-rate { text-align: right; color: var(--color-muted); font-variant-numeric: tabular-nums; }
+.usage-chart + .usage-chart { margin-top: var(--space-2); }
 .usage-total { display: grid; grid-template-columns: calc(var(--space-4) * 4) minmax(0, 1fr) calc(var(--space-4) * 4.5); align-items: center; gap: var(--space-2); min-height: var(--size-control); font-weight: var(--font-weight-medium); }
 .usage-amount { color: var(--color-text); font-variant-numeric: tabular-nums; }
 .usage-tokens summary { color: var(--color-muted); min-height: var(--size-control); cursor: pointer; }

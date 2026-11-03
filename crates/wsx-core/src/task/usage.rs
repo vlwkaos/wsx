@@ -203,10 +203,12 @@ pub fn project(project_id: &str, now_ms: u64) -> Value {
     }
     let week = starts[DAYS - 1];
     let mut days = [[0u64; PARTS.len()]; DAYS];
+    let mut day_usage = [Usage::default(); DAYS];
     let mut add_days = |turns: &[Turn]| {
         for turn in turns.iter().filter(|turn| turn.unix_ms >= week) {
             if let Some(day) = starts.iter().position(|start| turn.unix_ms >= *start) {
                 days[day][turn.part] += turn.usage.cost_micro_usd;
+                day_usage[day].add(&turn.usage);
             }
         }
     };
@@ -227,15 +229,15 @@ pub fn project(project_id: &str, now_ms: u64) -> Value {
     add_days(&manager);
     let days: Vec<Value> = starts
         .iter()
-        .zip(days)
-        .map(|(start, costs)| {
+        .zip(days.into_iter().zip(day_usage))
+        .map(|(start, (costs, usage))| {
             let parts: serde_json::Map<String, Value> = PARTS
                 .iter()
                 .zip(costs)
                 .filter(|(_, cost)| *cost > 0)
                 .map(|(part, cost)| (part.to_string(), json!(cost)))
                 .collect();
-            json!({ "day_ms": start, "parts": parts })
+            json!({ "day_ms": start, "parts": parts, "usage": usage })
         })
         .collect();
     json!({

@@ -1165,7 +1165,7 @@ if (usageCost.length !== 4 || !usageCost.every((cell) => /^\$\d+\.\d\d$/.test(ce
   await fail(`the usage costs are ${usageCost}, the turns ${usageTurns}`);
 }
 // ^ One row per day, a stacked bar on one scale, a legend, and a tap shows the exact amounts.
-const usageDays = await evaluate(`[...document.querySelectorAll('.usage-days > li')].map((row) => ({
+const usageDays = await evaluate(`[...document.querySelectorAll('.usage-chart[data-chart=cost] .usage-days > li')].map((row) => ({
   cost: row.querySelector('.usage-cost').textContent,
   parts: [...row.querySelectorAll('.usage-bar i')].map((part) => part.dataset.part),
   width: row.querySelector('.usage-bar').getBoundingClientRect().width,
@@ -1174,13 +1174,32 @@ if (usageDays.length !== 7) await fail(`the usage has ${usageDays.length} day ro
 const usageToday = usageDays[0];
 if (!usageToday.parts.includes("manager") || !(usageToday.width > 0) || !/^\$\d+\.\d\d$/.test(usageToday.cost)) await fail(`today's usage row is ${JSON.stringify(usageToday)}`);
 if (usageDays.slice(1).some((day) => day.parts.length)) await fail(`a past day has spend: ${JSON.stringify(usageDays)}`);
-const usageLegend = await text(".usage-legend .usage-name");
-const usageWeek = await text(".usage-total .usage-cost");
-const usageAmounts = await text(".usage-legend .usage-amount");
+const usageLegend = await text("[data-chart=cost] .usage-legend .usage-name");
+const usageWeek = await text("[data-chart=cost] .usage-total .usage-cost");
+const usageAmounts = await text("[data-chart=cost] .usage-legend .usage-amount");
 if (!/^\$\d+\.\d\d$/.test(usageWeek[0]) || usageAmounts.length !== 7 || !usageAmounts.every((cell) => /^\$\d+\.\d\d \d+%$/.test(cell))) await fail(`the usage total is ${usageWeek}, the legend ${usageAmounts}`);
 if (usageLegend.join() !== "Build,Plan,Context,Review,Memo,Other work,Manager") await fail(`the usage legend is ${usageLegend}`);
-await evaluate(`document.querySelector('.usage-days > li:first-child .usage-day').click()`);
-await until(`document.querySelectorAll('.usage-days > li:first-child .usage-parts dd').length === ${usageToday.parts.length}`, "a tap on a day shows its amounts");
+await evaluate(`document.querySelector('[data-chart=cost] .usage-days > li:first-child .usage-day').click()`);
+await until(`document.querySelectorAll('[data-chart=cost] .usage-days > li:first-child .usage-parts dd').length === ${usageToday.parts.length}`, "a tap on a day shows its amounts");
+// ^ The token chart: the four kinds in the legend, today's bar split into the kinds it spent
+// (the fake manager's turns have input, cache read and output), and the cache hit rate per row.
+const tokenLegend = await text("[data-chart=tokens] .usage-legend .usage-name");
+if (tokenLegend.join() !== "Input,Cache read,Cache write,Output") await fail(`the token legend is ${tokenLegend}`);
+const tokenAmounts = await text("[data-chart=tokens] .usage-legend .usage-amount");
+if (tokenAmounts.length !== 4 || !tokenAmounts.every((cell) => /^\d+(\.\d)?[kM]? \d+%$/.test(cell))) await fail(`the token legend amounts are ${tokenAmounts}`);
+const tokenDays = await evaluate(`[...document.querySelectorAll('[data-chart=tokens] .usage-days > li')].map((row) => ({
+  total: row.querySelector('.usage-cost').textContent,
+  rate: row.querySelector('.usage-rate').textContent,
+  kinds: [...row.querySelectorAll('.usage-bar i')].map((kind) => kind.dataset.part),
+  narrow: [...row.querySelectorAll('.usage-bar i')].some((kind) => kind.getBoundingClientRect().width < 3),
+}))`);
+if (tokenDays.length !== 7 || !tokenDays[0].kinds.includes("input") || !tokenDays[0].kinds.includes("cache_read") || !tokenDays[0].kinds.includes("output")
+  || tokenDays[0].narrow || !/^\d+%$/.test(tokenDays[0].rate) || !/^\d+(\.\d)?[kM]?$/.test(tokenDays[0].total)) await fail(`today's token row is ${JSON.stringify(tokenDays[0])}`);
+if (tokenDays.slice(1).some((day) => day.kinds.length || day.rate !== "-")) await fail(`a past day has tokens: ${JSON.stringify(tokenDays)}`);
+const tokenWeek = await text("[data-chart=tokens] .usage-total .usage-rate");
+if (!/^\d+%$/.test(tokenWeek[0])) await fail(`the 7-day hit rate is ${tokenWeek}`);
+await evaluate(`document.querySelector('[data-chart=tokens] .usage-days > li:first-child .usage-day').click()`);
+await until(`document.querySelectorAll('[data-chart=tokens] .usage-days > li:first-child .usage-parts dd').length === ${tokenDays[0].kinds.length}`, "a tap on a token day shows its amounts");
 await shot("usage");
 const usageSize = size;
 await resize([1280, 800, 1]);
