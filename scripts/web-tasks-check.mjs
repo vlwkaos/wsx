@@ -1125,9 +1125,9 @@ if (!(await evaluate("window.answerLine.isConnected"))) await fail("a status lin
 await shot("reservoir-acted", ".composer-send");
 await closeReservoir();
 
-// --- The ⋯ menu: Page, Sessions and Usage (Roles are checked below); the worktree list hides task sessions.
+// --- The ⋯ menu: Overview, Sessions and Usage (Roles are checked below); the worktree list hides task sessions.
 await click(".more-button");
-if ((await text(".more-menu a:not(.role-contact)")).join() !== "Page,Sessions,Usage,Routines") await fail(`the ⋯ menu offers ${await text(".more-menu a:not(.role-contact)")}`);
+if ((await text(".more-menu a:not(.role-contact)")).join() !== "Overview,Sessions,Usage,Routines") await fail(`the ⋯ menu offers ${await text(".more-menu a:not(.role-contact)")}`);
 await shot("more-menu", ".composer-send");
 await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Sessions').click()");
 await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.worktree')`, "Sessions did not open the worktree list");
