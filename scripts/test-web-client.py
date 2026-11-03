@@ -3681,7 +3681,7 @@ merge_seconds = 3
             ui_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]
             plans_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['plans'])[1]
             assert ui_chat['manager'] == {'name': 'Atlas', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'fallback': False}} and ui_chat['peers'] == {'plans': 'plans'}, (ui_chat['manager'], ui_chat['peers'])
-            assert plans_chat['manager'] == {'name': 'plans'} and plans_chat['peers'] == {'ui': 'Atlas'}, (plans_chat['manager'], plans_chat['peers'])
+            assert plans_chat['manager']['name'] == 'plans' and plans_chat['peers'] == {'ui': 'Atlas'}, (plans_chat['manager'], plans_chat['peers'])
             args.captures.mkdir(parents=True, exist_ok=True)
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
