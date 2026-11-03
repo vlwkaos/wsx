@@ -200,7 +200,9 @@ pub fn fallback_past_wait(
     now_ms: u64,
 ) -> Option<Choice> {
     let span_ms = store::account_limit(account, now_ms)
-        .map_or(until_ms.saturating_sub(now_ms), |limit| limit.span_ms());
+        .map_or(until_ms.saturating_sub(now_ms), |limit| {
+            limit.span_ms(now_ms)
+        });
     (span_ms > max_wait_secs * 1000)
         .then(|| fallback(names, now_ms, false))
         .flatten()

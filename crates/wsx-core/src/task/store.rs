@@ -313,9 +313,10 @@ pub struct AccountLimit {
 }
 
 impl AccountLimit {
-    /// How long the account refuses turns in all, from the first limit of the row.
-    pub fn span_ms(&self) -> u64 {
-        self.until_ms.saturating_sub(self.since_ms)
+    /// How long the account refuses turns in all, from the first limit of the row; a record
+    /// without its start (an older one) counts from `now_ms`.
+    pub fn span_ms(&self, now_ms: u64) -> u64 {
+        self.until_ms.saturating_sub(self.since_ms.min(now_ms))
     }
 }
 
