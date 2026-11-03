@@ -3232,7 +3232,16 @@ def run(wsx, wsxd, work, owned):
     assert show(restarted)['record']['adapter'] == 'claude', show(restarted)['record']
     configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi]\n    maxWaitMinutes: 1\n'),
               'fallback after the limit')
-    cli('session', 'restart', 'task-%d' % restarted)
+    project_id = show(restarted)['record']['project_id']
+    os.kill(next(int(line.split()[0]) for line in leftovers('task host %s %d' % (project_id, restarted))
+                 if line.endswith('task host %s %d' % (project_id, restarted))), 9)
+    # ^ The pane counts as exited once the daemon sees the host gone.
+    def restart_host():
+        try:
+            return cli('session', 'restart', 'task-%d' % restarted)
+        except AssertionError:
+            return None
+    wait(restart_host, 'the host restarts')
     assert wait_state(restarted, 'ready', 'failed')['record']['adapter'] == 'pi', show(restarted)
     assert any(e['kind'] == 'agent_switch' for e in log(restarted)), log(restarted)
     for n in (switched, on_pi, restarted):
