@@ -115,7 +115,18 @@ struct CheckRun {
     /// The worker returned its result before the answer: the answer goes to it in one turn,
     /// and the checks after the result wait for that turn's result.
     result_waits: bool,
+    /// The run queued for the check slot, so its calls got `queued` at once: the answer goes
+    /// to the worker as a turn after its result, never to a client that waits.
+    queued: bool,
+    /// The answer of a queued run that ended before the result: the result gets it as a turn.
+    answer: Option<String>,
 }
+
+/// What a `check-run` that queues for the check slot answers at once: a background job of
+/// the agent dies long before a 20-90 min queue ends. ref: docs/tasks.md "Check-run"
+const CHECK_RUN_QUEUED: &str = "queued for the machine's check slot: its answer comes after your \
+result. Do not wait or poll for it: finish this step and return its result now. The host \
+sends you the answer as your next turn, in this step.\n";
 
 struct Host {
     dir: TaskDir,
@@ -390,17 +401,28 @@ impl Host {
                     }
                     self.log(LogEvent::CheckRun { results });
                     // ^ The worker finishes with the proof it asked for, then the checks run.
-                    if run.is_some_and(|run| run.result_waits) {
-                        self.say("check-run: its answer goes to the worker");
-                        self.pending.push_back(format!(
-                            "Your check-run ended after your result. Its answer:\n{}\nPut it \
-                             in your result's evidence (fix what fails in code you changed) \
-                             and return your result again.",
-                            response.stdout.trim_end()
-                        ));
-                        if !self.turn_active {
-                            self.deliver_pending(TurnTrigger::CheckRun);
+                    let answer = format!(
+                        "Your check-run ended. Its answer:\n{}\nPut it in your result's \
+                         evidence (fix what fails in code you changed) and return your \
+                         result again.",
+                        response.stdout.trim_end()
+                    );
+                    match run {
+                        Some(run) if run.result_waits || run.queued && !self.turn_active => {
+                            self.say("check-run: its answer goes to the worker");
+                            self.pending.push_back(answer);
+                            if !self.turn_active {
+                                self.deliver_pending(TurnTrigger::CheckRun);
+                            }
                         }
+                        // ^ The worker still works after `queued`: its result gets the answer.
+                        Some(run) if run.queued => {
+                            self.check_run = Some(CheckRun {
+                                answer: Some(answer),
+                                ..run
+                            });
+                        }
+                        _ => {}
                     }
                 }
                 Event::CheckQueued(reason) => self.check_queued(reason),
@@ -1124,6 +1146,13 @@ impl Host {
         // ^ A result before its own check-run's answer waits for it: no second run queues.
         // ref: docs/tasks.md "Checks, revisions and report"
         if let Some(run) = &mut self.check_run {
+            if let Some(answer) = run.answer.take() {
+                self.check_run = None;
+                self.say("check-run: its answer goes to the worker");
+                self.pending.push_back(answer);
+                self.deliver_pending(TurnTrigger::CheckRun);
+                return;
+            }
             run.result_waits = true;
             self.say("the result waits for its check-run");
             return;
@@ -1689,6 +1718,11 @@ impl Host {
         // ^ Never two runs in one working copy: the same checks join, other ones wait.
         let indexes: Vec<usize> = picked.iter().map(|(index, _)| *index).collect();
         if let Some(run) = &mut self.check_run {
+            // ^ A queued run answers only after the result, also when it already ended.
+            if run.queued && run.indexes == indexes {
+                let _ = reply.send(queued_response());
+                return;
+            }
             if run.indexes != indexes {
                 let numbers: Vec<String> =
                     run.indexes.iter().map(|i| (i + 1).to_string()).collect();
@@ -1715,6 +1749,8 @@ impl Host {
             indexes,
             replies: vec![reply],
             result_waits: false,
+            queued: false,
+            answer: None,
         });
         // ^ A run of checks that only format or compile is light: it takes no slot.
         let priority =
@@ -1873,6 +1909,17 @@ impl Host {
 
     /// The checks wait for the slot: the record shows it while the task works or checks.
     fn check_queued(&mut self, reason: String) {
+        // ^ A worker's check-run (never beside the checks after a result) answers at once.
+        if let Some(run) = self
+            .check_run
+            .as_mut()
+            .filter(|_| self.record.state != TaskState::Checking)
+        {
+            run.queued = true;
+            for reply in run.replies.drain(..) {
+                let _ = reply.send(queued_response());
+            }
+        }
         if self.record.state == TaskState::Waiting {
             return;
         }
@@ -2728,6 +2775,14 @@ fn check_run_response(
         stdout,
         stderr: String::new(),
         code: if passed { 0 } else { 1 },
+    }
+}
+
+fn queued_response() -> broker::Response {
+    broker::Response {
+        stdout: CHECK_RUN_QUEUED.into(),
+        stderr: String::new(),
+        code: 0,
     }
 }
 

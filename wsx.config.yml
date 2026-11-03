@@ -39,7 +39,8 @@ tasks:
       Follow CLAUDE.md and AGENTS.md. Keep the change lean: reuse what exists, remove what your
       change makes dead; prefer removing code to adding it. Before your result, run the
       scenario of each area you changed: `wsx task check-run web` for crates/wsx-web, `smoke`
-      for the daemon or terminal; fix what fails, also an assert your change made stale. Before
+      for the daemon or terminal. When it answers `queued`, return your result: its answer
+      comes as your next turn; then fix what fails, also an assert your change made stale. Before
       the first check-run, search scripts/test-*.py and scripts/*-check.mjs for each UI string,
       label, menu item or route the diff adds, renames or removes, and update those asserts. The
       `task` scenario (task code, scripts/test-task.py) runs on GitHub Actions, not here. After

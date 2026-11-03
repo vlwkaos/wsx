@@ -17,7 +17,7 @@ Each user message is a small script of words:
   CMDHV        return a Human Verify item that names a command
   BAREHV       return a Human Verify item about a page without a capture
   WAIT <file>  keep working until <file> exists, at most 10 minutes
-  CHECKRUN_AGAIN  start `wsx task check-run`, kill it after 1 s, run it again and trace that answer
+  CHECKRUN_AGAIN  start `wsx task check-run`, kill it after 1 s, run it again and trace that answer (`queued` while it waits)
   CHECKRUN_TWICE  run `wsx task check-run` twice on the same tree and trace both answers
   CHECKRUN_AFTER  after WORK's commit run `wsx task check-run` and trace its answer
   CHECKRUN_WITH <a,b>  run `wsx task check-run a b`, then a bare `wsx task check-run`, and trace both
