@@ -1098,6 +1098,17 @@ impl Host {
         let structured = turn
             .structured
             .and_then(|value| serde_json::from_value::<WorkerResult>(value).ok());
+        // ^ Each such job's notice later starts Claude's own turn: the log counts them.
+        // ref: docs/tasks.md "Claude adapter"
+        if structured.is_some() && turn.background > 0 {
+            self.log(LogEvent::Agent {
+                said: false,
+                text: format!(
+                    "the result came while {} background job(s) run",
+                    turn.background
+                ),
+            });
+        }
         // ^ A model turn that left out its result is asked for it once.
         if structured.is_none()
             && !turn.is_error
@@ -1384,8 +1395,13 @@ impl Host {
         let total = self.record.steps.len();
         let index = self.record.step as usize;
         let step = self.record.steps.get(index)?;
+        // ^ A job that ends after the result wakes the worker for a turn that answers nothing
+        // new. ref: docs/tasks.md "Workflow"
         let end = match index + 1 == total {
-            true => "This is the last step: finish the task and return your final result.",
+            true => {
+                "This is the last step: finish the task and return your final result, with \
+                 its memo."
+            }
             false => {
                 "Do only this step. When it is done, return status done with what it found \
                       or did; the next step follows."
@@ -1393,7 +1409,8 @@ impl Host {
         };
         self.say(&format!("step {} of {total}: {}", index + 1, step.name));
         Some(format!(
-            "Step {} of {total}, {}: {}\n{end}",
+            "Step {} of {total}, {}: {}\n{end} Before the result, wait for or stop \
+             (TaskStop) each background job you started.",
             index + 1,
             step.name,
             step.prompt
