@@ -1,5 +1,5 @@
 use super::*;
-use asched_core::routine::{Capabilities, Routine};
+use asched_core::routine::{Capabilities, Routine, Trigger};
 use crossterm::event::KeyEventKind;
 use ratatui::backend::TestBackend;
 use std::path::PathBuf;

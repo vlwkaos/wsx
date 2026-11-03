@@ -341,7 +341,7 @@ wsx task chat --role <name> -p <project> --json
 - Store: `tasks/<project-id>/roles/<name>/` holds what `manager/` holds (`log.jsonl`, `state.json`, `notes/`, `skills-plugin/`) and `brief.md`; `closed` marks a closed role. A name is a lowercase letter, then lowercase letters, digits or `-`, at most 24; `manager` is refused.
 - Host: `wsx task manager-host <project-id> --role <name>` in the session `task-<name>`. `say` starts it; it leaves 20 s after its last message or turn with an empty queue, so an idle role has no agent and no pane. Its instructions are the manager's after a preamble with the brief; a new brief changes the digest, so the next turn starts a fresh conversation. Rotation, handover and notes work as for the manager. Its agent runs as `WSX_TASK_ACTOR=role:<name>`.
 - Events: only the manager host watches the store. An event of a task that an open role created (`created_by: "role:<name>"`) goes to that role through `say` (from `events`), which starts its host; every other event, and one whose role is closed or whose host did not take it, goes to the manager. The recap, the idle task, approvals, deploys, routines and the project overview stay with the manager.
-- What a role may do: create tasks, and add, steer, stop, hold, close (not `--discard`) and land only the tasks it created, a land only of a child into its parent. `role new`, `role close`, `approve`, `deny`, `trial`, `deploy`, `release`, `close --discard` and routine add, edit, delete, enable and disable are refused to it. The manager and the owner act on every task.
+- What a role may do: create tasks, and add, steer, stop, hold, close (not `--discard`) and land only the tasks it created, a land only of a child into its parent. `role new`, `role close`, `approve`, `deny`, `trial`, `deploy`, `release`, `close --discard` and routine add, edit, delete, enable and disable and `checkin` are refused to it. The manager and the owner act on every task.
 - Talk: `wsx task say [--role <name>] --from-role "<text>"` from the manager or a role reaches another role, or the manager without `--role`; the message is `from: "role:<sender>"` (the manager is `manager`) and the sender's log gets `sent{to: "role:<name>"}`. `--reply` answers once, as between managers (see Managers talk).
 
 The guard is wsx's, not the prompt's:
@@ -397,7 +397,31 @@ This is a guard against the manager's mistakes, not a security boundary: the man
 
 A routine is `wsx routine` (README "Agent integrations and routines"): a cron or event trigger and an argv that the scheduler in wsxd runs in the main checkout, outside any task and boundary. `wsx task routine <list|show|add|edit|delete|enable|disable|run|cancel|logs|fire> -p <project> --json` is the same command for the manager, whose broker runs only `wsx task`. Run as the manager (`WSX_TASK_ACTOR=manager`), `add`, `edit` and `delete` need `--owner-said <id>`, an owner message of the running turn (see Approvals), and otherwise refuse with nothing run; the other actions need none. The scheduler that a manager's command starts runs its routines without `WSX_TASK_ACTOR`. The ledger lists them (see Ledger) without starting the scheduler. The manager host reads the scheduler's run records every second: a run that ended becomes an event, and a handover after a rotation lists the runs the manager may not have acted on (see Manager).
 
-A run that succeeds with empty stdout gives no event and no manager turn, for every routine; a failed run or a run with output stays an event, and the ledger shows each run. So a routine that has nothing for the manager prints nothing.
+A run that succeeds with empty stdout gives no event and no manager turn, for every routine; a failed run or a run with output stays an event with the last 10 lines of its output, and the ledger shows each run. So a routine that has nothing for the manager prints nothing.
+
+Triggers (`wsx task routine add|edit` take exactly one; the ledger's `trigger` shows it the same way):
+
+| Flag | Trigger text | Runs |
+|---|---|---|
+| `--cron "0 6 * * *"` | `0 6 * * *` | at each matching local minute |
+| `--event <kind>` | `event:<kind>` | when wsx fires that kind; a routine still running drops it |
+| `--at <HH:MM \| YYYY-MM-DD HH:MM>` | `at:2026-11-04 14:30` | once at that local minute, or at the first minute wsxd sees after it (asleep, stopped); then `next_run_unix_ms` is null. A time that has passed is refused |
+
+The manager host fires these kinds, each with `ASCHED_EVENT_PAYLOAD` (compact JSON) and an id the scheduler runs once (`vendor/asched/PLAN-event-triggers.md`). A project with no enabled routine of that kind sends no request:
+
+| Kind | When | Payload |
+|---|---|---|
+| `task.<state>` (`ready`, `failed`, `landed`, `closed`, `waiting`) | with the task's event line | `{task, title, revision, state}` |
+| `deploy.succeeded`, `deploy.failed`, `release.succeeded`, `release.failed` | a new deploy record | `{commit, exit}` |
+| `project.idle` | each quiet period's look (see Recap; none with `recapMinutes: 0`) | `{unix_ms}` |
+
+"After 5 lands" or "only on main" is the routine command's own check, from the logs: the scheduler has no filters and no counts.
+
+`wsx task checkin -p <project> (--in 40m|2h|1d | --at <time>) --why "<what to look at>"` writes the one routine `checkin`, `--at` the minute (1 minute to 7 days ahead, rounded up) with the argv `printf %s\n <why>`. wsx fixes the argv, so the manager needs no `--owner-said`; a role is refused. A new check-in replaces the last. The run's event is `routine checkin succeeded after 0 s; its output ends:` and the why.
+
+`wsx task post -p <project> [--title <line>]` posts stdin (at most 16 KiB) to the chat as the digest does: a `message{from: events, text: <title>}` and a reply with no usage, so no manager turn. Empty stdin posts nothing. A routine that reports to the owner pipes into it, or calls it, and prints nothing. The `--title` defaults to `routine`.
+
+wsx's own `usage` routine is the retrospect (docs/design/dynamic-routines-retrospect.md): `scripts/retrospect.py <state dir> -p <project>` posts the spend since its last post, what the owner asked 3 or more times, phrases the manager repeated in 5 or more replies, and, from one `claude -p --model sonnet --effort high` call (`scripts/retrospect-prompt.md`), which replies the owner turned down and up to 3 product changes. It writes the whole report to `<state dir>/retrospect/<unix ms>.md` (the newest 14 stay).
 
 A project gets a daily digest by having a routine that runs `wsx task digest`; no device has a digest switch:
 

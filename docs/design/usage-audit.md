@@ -80,8 +80,8 @@ The loop uses existing pieces only: a routine, the manager's `notes/decisions.md
 
 ```mermaid
 flowchart LR
-  R[routine: usage-report.py daily] -->|last 10 lines = Summary| E[manager event]
-  E --> M[manager compares with decisions.md baselines]
+  R[routine: retrospect.py daily] -->|chat post, no turn| E[owner reads it]
+  E -->|asks| M[manager compares with decisions.md baselines]
   M -->|finding| D{who acts}
   D -->|config or prompt| C[project task: wsx.config.yml / workflow words]
   D -->|product| P[wsx task: host code, script, check]
@@ -94,9 +94,9 @@ flowchart LR
 |---|---|---|
 | Measure each task | cost, turns, wall time to land, check wait, send-backs, failed checks, `limit`, context trail, per kind (area of the first path) | wsx (logs, report) |
 | Measure each manager turn | kind (owner, events, recap), cost, context, quiet | wsx |
-| Cadence | one routine: `wsx task routine add usage -p wsx --cron "0 6 * * *" --arg /usr/bin/python3 --arg scripts/usage-report.py --arg <state dir> --arg=--days --arg 7 --owner-said <id>`; the recap already reports cost since the last recap | project sets the schedule |
+| Cadence | one routine, the retrospect (docs/design/dynamic-routines-retrospect.md): `wsx task routine add usage -p wsx --cron "0 6 * * *" --arg /usr/bin/python3 --arg scripts/retrospect.py --arg <state dir> --arg=-p --arg wsx --owner-said <id>`; it posts to the chat and only reports (the owner rejected daily audit tasks) | project sets the schedule |
 | Daily digest | one routine per project running `wsx task digest` (docs/tasks.md "Routines"). The command posts to the chat itself and prints nothing, so it costs no manager turn: its text is fixed by its inputs (the rule below) | project sets the schedule; wsx writes the text |
-| Review | the routine's event wakes the manager; it reads only the Summary and the kind table, never the full output | wsx gives the event; the manager judges |
+| Review | the owner reads the retrospect's post; `usage-report.py` stays the tool for a deeper audit by hand | the owner |
 | Act | config or prompt change (model, steps, `--skip` per kind, `rotateTokens`, workflow words) goes through a project task; deterministic work goes through a wsx task; a manager habit goes into its notes | project for config, wsx for code |
 | Prove | each change is one `decisions.md` line: date, kind, baseline medians. After at least 8 landed tasks of that kind, it compares `--until <date>` with `--since <date>` | the manager |
 | Keep or roll back | keep it when $/task or turns fall and failed checks and send-backs do not rise; otherwise revert the commit through a task and note why | the manager; a revert is a normal task |

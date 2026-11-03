@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
-    use asched_core::routine::{ipc::Action, Routine, Trigger};
+    use asched_core::routine::{ipc::Action, Routine};
 
     let (project_arg, action, json) = match command {
         RoutineCmd::List { project, json } => (project, Action::List, json),
@@ -26,7 +26,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
         }
         RoutineCmd::Add {
             name,
-            cron,
+            trigger,
             command,
             prompt,
             project,
@@ -37,7 +37,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
             let revision = revision.unwrap_or(fetch_revision(&path)?);
             let routine = Routine {
                 name,
-                trigger: Trigger::Cron(cron),
+                trigger: trigger.trigger()?,
                 command,
                 prompt,
                 enabled: true,
@@ -51,7 +51,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
         RoutineCmd::Edit {
             name,
             new_name,
-            cron,
+            trigger,
             command,
             prompt,
             project,
@@ -67,7 +67,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("routine '{name}' not found"))?;
             let routine = Routine {
                 name: new_name.unwrap_or_else(|| name.clone()),
-                trigger: Trigger::Cron(cron),
+                trigger: trigger.trigger()?,
                 command,
                 prompt,
                 enabled,
@@ -178,7 +178,7 @@ pub(crate) fn registered_routine_paths() -> Result<Option<Vec<PathBuf>>> {
     ))
 }
 
-pub(super) fn routine_project(value: Option<&str>) -> Result<PathBuf> {
+pub(crate) fn routine_project(value: Option<&str>) -> Result<PathBuf> {
     let (config, warning) = GlobalConfig::load()?;
     if let Some(warning) = warning {
         eprintln!("warning: {warning}");
@@ -221,7 +221,7 @@ pub(super) fn routine_client() -> Result<asched_core::routine::RoutineClient> {
     Ok(asched_core::routine::RoutineClient::new(routine_root()?))
 }
 
-pub(super) fn fetch_routines(
+pub(crate) fn fetch_routines(
     project: &Path,
 ) -> Result<(u64, Vec<asched_core::routine::ipc::RoutineView>)> {
     match send_routine(project, asched_core::routine::ipc::Action::List)? {
@@ -341,4 +341,25 @@ pub(super) fn print_routine_response(
 
 pub(super) fn format_argv(argv: &[String]) -> String {
     serde_json::to_string(argv).unwrap_or_else(|_| "[]".into())
+}
+
+impl TriggerArgs {
+    /// The trigger the flags name; a time must be in the future.
+    pub(crate) fn trigger(self) -> Result<asched_core::routine::Trigger> {
+        use asched_core::routine::Trigger;
+        let now = wsx_core::task::now_unix_ms() as i64 / 1000;
+        Ok(match (self.cron, self.event, self.at) {
+            (Some(cron), _, _) => Trigger::Cron(cron),
+            (_, Some(kind), _) => Trigger::Event { kind },
+            (_, _, Some(at)) => {
+                let epoch_minute =
+                    wsx_core::task::ledger::local_minute(&at, now).map_err(anyhow::Error::msg)?;
+                if epoch_minute * 60 <= now {
+                    bail!("--at {at} has passed");
+                }
+                Trigger::At { epoch_minute }
+            }
+            (None, None, None) => bail!("one of --cron, --event or --at is required"),
+        })
+    }
 }

@@ -1,7 +1,7 @@
 // Right preview pane — git info, session capture, project summary
 
 use crate::session_state::{self, AppSessionState};
-use asched_core::routine::{ipc::RoutineView, Trigger};
+use asched_core::routine::ipc::RoutineView;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
@@ -567,7 +567,7 @@ pub fn render_routines_preview(frame: &mut Frame, area: Rect, project: &Project)
                 ),
                 Span::raw(format!(
                     "  {}  last: {last}",
-                    routine_trigger_label(&view.routine.trigger)
+                    wsx_core::task::ledger::trigger_text(&view.routine.trigger)
                 )),
             ])
         })
@@ -609,7 +609,7 @@ pub fn render_routine_preview(
         ]),
         Line::from(vec![
             Span::styled("Trigger: ", label),
-            Span::raw(routine_trigger_label(&view.routine.trigger)),
+            Span::raw(wsx_core::task::ledger::trigger_text(&view.routine.trigger)),
         ]),
         Line::from(vec![Span::styled("Next:    ", label), Span::raw(next)]),
         Line::from(vec![
@@ -704,13 +704,6 @@ pub fn render_routine_preview(
             .wrap(Wrap { trim: false }),
         area,
     );
-}
-
-fn routine_trigger_label(trigger: &Trigger) -> String {
-    match trigger {
-        Trigger::Cron(cron) => cron.clone(),
-        Trigger::Event { kind } => format!("event:{kind}"),
-    }
 }
 
 fn format_epoch(epoch: i64) -> String {

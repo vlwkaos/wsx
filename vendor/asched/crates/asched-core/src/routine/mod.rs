@@ -24,7 +24,7 @@ pub const TRANSACTION_VERSION: u32 = 1;
 /// Current project-config version. Retained as a source-compatibility alias.
 pub const SCHEMA_VERSION: u32 = PROJECT_CONFIG_VERSION;
 // ^ Protocol 4 separates the wsxd-hosted scheduler from legacy standalone asched daemons.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 pub const MAX_RUNS: usize = 20;
 pub const MAX_EVENT_PAYLOAD_BYTES: usize = 64 * 1024;
 pub const MAX_EVENT_RECEIPTS: usize = 4_096;
@@ -33,7 +33,24 @@ pub const MAX_EVENT_RECEIPTS: usize = 4_096;
 #[serde(rename_all = "snake_case")]
 pub enum Trigger {
     Cron(String),
-    Event { kind: String },
+    Event {
+        kind: String,
+    },
+    /// One run at this local-clock-independent epoch minute; a missed minute runs at the next
+    /// tick. The claim of that minute keeps it from running twice.
+    At {
+        epoch_minute: i64,
+    },
+}
+
+impl std::fmt::Display for Trigger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cron(expression) => write!(f, "cron:{expression}"),
+            Self::Event { kind } => write!(f, "event:{kind}"),
+            Self::At { epoch_minute } => write!(f, "at:{epoch_minute}"),
+        }
+    }
 }
 
 impl Trigger {
@@ -42,6 +59,13 @@ impl Trigger {
             Self::Cron(expression) => {
                 *expression = expression.trim().to_string();
                 CronSchedule::parse(expression)?;
+            }
+            Self::At { epoch_minute } => {
+                if *epoch_minute <= 0 {
+                    return Err(RoutineError::Validation(
+                        "at must be a positive epoch minute".into(),
+                    ));
+                }
             }
             Self::Event { kind } => {
                 *kind = kind.trim().to_string();

@@ -69,7 +69,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // (docs/terminal-raw-stream.md "Input").
 // Revision 39 moves the sessions of a worktree whose folder is gone to their project's main
 // checkout at the next synchronization, so their chat and new panes resolve again.
-pub const DAEMON_REVISION: u32 = 39;
+// Revision 40 runs a routine with an `at` trigger once at its minute, also a missed one
+// (docs/tasks.md "Routines").
+pub const DAEMON_REVISION: u32 = 40;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 

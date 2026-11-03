@@ -6,7 +6,6 @@ mod theme;
 use crate::service::{registry, send_tui_action, send_tui_observation, terminal_safe};
 use anyhow::Result;
 use asched_core::routine::ipc::{Action, Response, RoutineView};
-use asched_core::routine::Trigger;
 use asched_core::Project;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -453,10 +452,7 @@ fn routine_details(project: &Project, revision: u64, view: &RoutineView) -> Vec<
         Line::raw(format!("project   {}", terminal_safe(&project.name))),
         Line::raw(format!(
             "trigger   {}",
-            terminal_safe(&match &view.routine.trigger {
-                Trigger::Cron(expression) => format!("cron:{expression}"),
-                Trigger::Event { kind } => format!("event:{kind}"),
-            })
+            terminal_safe(&view.routine.trigger.to_string())
         )),
         Line::raw(format!("enabled   {}", view.routine.enabled)),
         Line::raw(format!("revision  {revision}")),
