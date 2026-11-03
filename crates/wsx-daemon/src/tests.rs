@@ -1835,7 +1835,10 @@ fn a_session_on_a_removed_worktree_moves_to_the_main_checkout() {
     let (main, copy) = (root.join("p"), root.join("p-copy"));
     fs::create_dir_all(&main).unwrap();
     fs::create_dir_all(&copy).unwrap();
-    let (main, copy) = (fs::canonicalize(&main).unwrap(), fs::canonicalize(&copy).unwrap());
+    let (main, copy) = (
+        fs::canonicalize(&main).unwrap(),
+        fs::canonicalize(&copy).unwrap(),
+    );
     let mut persisted = agent_test_persisted();
     persisted.projects[0].path = main.clone();
     persisted.worktrees[0].path = main.clone();
@@ -1857,7 +1860,10 @@ fn a_session_on_a_removed_worktree_moves_to_the_main_checkout() {
                 name: "p".into(),
                 worktrees: listed
                     .into_iter()
-                    .map(|path| WorktreeSpec { path, branch: "b".into() })
+                    .map(|path| WorktreeSpec {
+                        path,
+                        branch: "b".into(),
+                    })
                     .collect(),
             }],
         )
@@ -1865,12 +1871,19 @@ fn a_session_on_a_removed_worktree_moves_to_the_main_checkout() {
     };
     // ^ A folder that still exists but is no longer listed keeps its session where it is.
     sync(vec![main.clone()]);
-    assert_eq!(lock(&daemon.state).persisted.sessions[0].worktree_id, WorktreeId(6));
+    assert_eq!(
+        lock(&daemon.state).persisted.sessions[0].worktree_id,
+        WorktreeId(6)
+    );
     fs::remove_dir(&copy).unwrap();
     sync(vec![main.clone(), copy.clone()]);
     let state = lock(&daemon.state);
     assert_eq!(state.persisted.sessions[0].worktree_id, WorktreeId(2));
-    assert!(state.persisted.worktrees.iter().all(|worktree| worktree.path != copy));
+    assert!(state
+        .persisted
+        .worktrees
+        .iter()
+        .all(|worktree| worktree.path != copy));
     drop(state);
     let _ = fs::remove_file(path);
     fs::remove_dir_all(root).unwrap();

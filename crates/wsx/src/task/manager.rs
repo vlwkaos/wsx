@@ -20,7 +20,8 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::TaskWorkflow;
 use wsx_core::runtime;
 use wsx_core::task::manager::{
-    asks_owner, decided_request, event_wakes, instructions_digest, pending_approvals, quiet_reply, ApprovalLine,
+    asks_owner, decided_request, event_wakes, instructions_digest, pending_approvals, quiet_reply,
+    ApprovalLine,
 };
 use wsx_core::task::manager::{
     Author, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
@@ -1259,7 +1260,10 @@ impl Manager {
             .state
             .idle_ms
             .is_some_and(|ms| now_unix_ms().saturating_sub(ms) < IDLE_EVERY_MS);
-        if recent || prompt.is_empty() || open || notes.is_none_or(|ms| ms <= self.state.idle_ms.unwrap_or(0))
+        if recent
+            || prompt.is_empty()
+            || open
+            || notes.is_none_or(|ms| ms <= self.state.idle_ms.unwrap_or(0))
         {
             return;
         }
