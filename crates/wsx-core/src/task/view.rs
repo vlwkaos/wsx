@@ -2,7 +2,8 @@
 //! ref: docs/tasks.md "Ledger", docs/web-client-tasks.md
 
 use super::store::{self, TaskDir, RESULT_FILE};
-use super::{DeployKind, TaskRecord, TaskState};
+use super::{DeployKind, LogEvent, TaskRecord, TaskState};
+use crate::model::workspace::TaskConfig;
 use anyhow::Result;
 use serde_json::{json, Value};
 
@@ -312,6 +313,41 @@ fn owner_lead(line: &str) -> Option<(&str, &str)> {
 fn bracketed(lead: &str) -> Option<&str> {
     let inner = lead[lead.find('(')? + 1..].strip_suffix(')')?.trim();
     (!inner.is_empty()).then_some(inner)
+}
+
+/// The agent a task runs on now, not the configured one: its record follows a switch to a
+/// fallback, which the log tells. No effort: wsx sets none and no stream reports one.
+/// ref: docs/tasks.md "Agents"
+pub fn task_agent(dir: &TaskDir, record: &TaskRecord) -> Value {
+    let fallback = dir.read_log().is_ok_and(|log| {
+        log.iter()
+            .any(|entry| matches!(entry.event, LogEvent::AgentSwitch { .. }))
+    });
+    json!({ "adapter": record.adapter, "model": record.model, "fallback": fallback })
+}
+
+/// The agent the manager's turns run on now: a fallback in its state, else `tasks.manager`.
+/// ref: docs/tasks.md "Agents"
+pub fn manager_agent(dir: &store::ManagerDir, settings: &TaskConfig) -> Value {
+    match dir.read_state().ok().and_then(|state| state.agent) {
+        Some(agent) => json!({ "adapter": agent.adapter, "model": agent.model, "fallback": true }),
+        None => json!({
+            "adapter": settings.manager_adapter, "model": settings.manager_model, "fallback": false,
+        }),
+    }
+}
+
+/// An `agent` field in few words: `sonnet`, `pi/qwen`, `fallback pi/qwen`. The web client
+/// writes the same (`agentWords` in `web/tasks.js`).
+pub fn agent_label(agent: &Value) -> Option<String> {
+    let model = agent["model"].as_str().filter(|model| !model.is_empty())?;
+    let fallback = agent["fallback"].as_bool().unwrap_or(false);
+    let adapter = agent["adapter"].as_str().unwrap_or_default();
+    Some(match (fallback, adapter) {
+        (false, "claude") => model.to_string(),
+        (false, _) => format!("{adapter}/{model}"),
+        (true, _) => format!("fallback {adapter}/{model}"),
+    })
 }
 
 pub fn task_summary(dir: &TaskDir, record: &TaskRecord) -> Value {

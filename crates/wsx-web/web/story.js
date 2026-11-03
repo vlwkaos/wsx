@@ -4,7 +4,7 @@
 import { api } from "./api.js";
 import { ago, firstSentence, html, Icon, lastSentence, short, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
-import { running, taskHealth } from "./tasks.js";
+import { agentWords, running, taskHealth } from "./tasks.js";
 
 const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 // `refs/heads/main` reads as `main`, `refs/remotes/origin/main` as `origin/main`.
@@ -144,6 +144,7 @@ function Progress({ detail, words }) {
       <p class="progress-head">
         <span class="mark" data-tone=${health[1]} data-running=${running(detail) && working && !stuck ? "" : null} aria-hidden="true"></span>
         <span class="progress-health" data-tone=${health[1]}>${health[0]}</span>
+        ${agentWords(detail.agent) && html`<span class="progress-model" title="Model">${agentWords(detail.agent)}</span>`}
         ${!ended && last > 0 && html`<span class="progress-age">${ago(Date.now() - last)}</span>`}
       </p>
       ${steps.length > 0 && html`

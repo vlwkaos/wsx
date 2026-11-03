@@ -2,7 +2,7 @@
 //! client's project brief. ref: docs/tasks.md "Ledger"
 
 use super::view::{
-    attention, check_outcomes, clip, overlaps, project_tasks, read_result, task_summary,
+    attention, check_outcomes, clip, overlaps, project_tasks, read_result, task_agent, task_summary,
 };
 use super::{checks, copy, store, usage, DeployKind, DeployRecord, TaskRecord, TaskState};
 use crate::config::project::load_task_config;
@@ -59,6 +59,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
             "title": title,
             "state": record.state,
             "revision": record.revision,
+            "agent": task_agent(dir, record),
             "overlaps": overlaps(record, &records, false),
             "human_verify": result.as_ref().map_or(0, |r| r["result"]["human_verify"].as_array().map_or(0, Vec::len)),
             "summary": result.as_ref().and_then(|r| r["result"]["summary"].as_str()).map(|s| clip(s, SUMMARY_CHARS)),

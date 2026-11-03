@@ -96,6 +96,10 @@ Text on the sheet, in the chat bubbles and on the project page is markdown read 
 
 An action's outcome is a notice; a failure is shown at the bottom of the sheet. The sheet reads again on a `task` event for it and when the project's approvals change.
 
+## Agent
+
+The agent in use now, as `agent: {adapter, model, fallback}` (docs/tasks.md "Agents"): on each open task of `GET /api/tasks/<project>` (`null` once closed), on `GET /api/tasks/<project>/t/<n>`, and as `manager.agent` of `GET /api/tasks/<project>/chat` (the manager's chat only, not a role's). `fallback` is true while a fallback agent runs. The words are `agentWords` in `web/tasks.js`: `sonnet`, `pi/qwen`, `fallback pi/qwen`. They show after the state on a Running row, beside the health on an open task's sheet (the top bar of a closed one), and muted beside the manager's name in the chat's top row (hidden while it types or is not running, so the narrow bar keeps two lines). No effort is shown: wsx sets none and no stream reports one.
+
 # All sessions
 
 With `task_view` the inbox is `#/sessions`, the Sessions tab, titled *Sessions*, and lists no task workers or manager. The Projects screen (no tab with `task_view`) lists every project; its list adds "N need you" after a project's session count, and a project opens its worktrees.

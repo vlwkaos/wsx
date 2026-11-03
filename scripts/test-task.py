@@ -819,6 +819,8 @@ def run(wsx, wsxd, work, owned):
     assert ledger_rows[d3]['overlaps'] == [{'id': n, 'count': 1, 'complete': True, 'declared': True}
                                            for n in (x1, y1, x2)], ledger_rows[d3]
     assert {'id': d3, 'count': 1, 'complete': True, 'declared': True} in ledger_rows[x1]['overlaps']
+    # The ledger names the agent in use now (docs/tasks.md "Agents"); no effort.
+    assert ledger_rows[d3]['agent'] == {'adapter': 'claude', 'model': ledger_rows[d3]['agent']['model'], 'fallback': False}, ledger_rows[d3]
     last = max(row['id'] for row in js('task', 'list', '--all')['tasks'])
     for bad in ('/abs/*.rs', '../x', 'a/../b', 'x' * 257, '[', ''):
         refused = cli('task', 'new', 'WORK no.txt', '--files', bad, ok=False)

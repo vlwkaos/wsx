@@ -322,6 +322,9 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
             Span::styled(state.clone(), Style::default().fg(state_color(&state))),
         ]),
     ];
+    if let Some(agent) = wsx_core::task::view::agent_label(&task["agent"]) {
+        lines.push(Line::from(vec![label("Agent"), Span::raw(agent)]));
+    }
     if let Some(spent) = Usage::deserialize(&task["usage"])
         .ok()
         .filter(|usage| usage.turns > 0)
