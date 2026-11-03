@@ -17,7 +17,7 @@ use wsx_core::task::{
     checks::{self, CheckItem, CheckState},
     manager::{
         activity, chat_window, pending_approvals, says_nothing, Author, ManagerEvent,
-        ManagerRequest, ManagerResponse,
+        ManagerRequest, ManagerResponse, CHAT_ENTRIES,
     },
     owner,
     store::{self, ManagerDir, Stamp},
@@ -66,11 +66,12 @@ impl Item {
     }
 }
 
-/// Where keys go: the chat, the message line, a fail's note, or a y/N question.
+/// Where keys go: the chat, the message line, the find line, a fail's note, or a y/N question.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Focus {
     Chat,
     Compose,
+    Find,
     Fail(String),
     Confirm {
         id: String,
@@ -89,6 +90,8 @@ struct View {
 
 /// A check's answer: the host's status, and the store read again when a stamp changed.
 struct Read {
+    /// Whether the view holds the whole log (`ManagerChat::whole`) or its newest part.
+    whole: bool,
     status: Option<ManagerResponse>,
     view: Option<(Stamp, Result<View, String>)>,
 }
@@ -117,6 +120,17 @@ pub struct ManagerChat {
     pub focus: Focus,
     pub composer: InputState,
     pub note: InputState,
+    /// What `/` finds in the conversation, case-insensitive; empty when no find is on.
+    pub find: InputState,
+    /// The current match, counted from the oldest; a new query starts at the newest.
+    pub found: usize,
+    /// The chat's width and height in the last frame: a key finds matches as they are drawn.
+    pub area: Cell<(usize, u16)>,
+    /// ^ The whole log, not its newest `CHAT_ENTRIES`, once a find opened: a find reaches
+    /// every message (docs/tasks.md "TUI").
+    whole: bool,
+    /// The current match is still to be scrolled to: the whole log was not read yet.
+    reveal_due: bool,
     /// What runs now ("Sending", "Failing c3"), until its answer comes.
     pub acting: Option<String>,
     stamp: Option<Stamp>,
@@ -151,6 +165,11 @@ impl ManagerChat {
             focus: Focus::Chat,
             composer: InputState::new("> "),
             note: InputState::new(""),
+            find: InputState::new("/"),
+            found: 0,
+            area: Cell::new((0, 0)),
+            whole: false,
+            reveal_due: false,
             acting: None,
             stamp: None,
             pending: None,
@@ -164,6 +183,7 @@ impl ManagerChat {
     fn check(&mut self) {
         let (tx, rx) = mpsc::sync_channel(1);
         let (store, last, role) = (self.store.clone(), self.stamp.clone(), self.role.clone());
+        let whole = self.whole;
         let main = self.main.clone();
         self.pending = Some(rx);
         self.last_check = Instant::now();
@@ -181,10 +201,15 @@ impl ManagerChat {
             });
             let now = store::stamp(&store);
             let view = (last.as_ref() != Some(&now)).then(|| {
-                let view = read(&store, &main, dir.as_ref()).map_err(|error| format!("{error:#}"));
+                let view =
+                    read(&store, &main, dir.as_ref(), whole).map_err(|error| format!("{error:#}"));
                 (now, view)
             });
-            let _ = tx.send(Read { status, view });
+            let _ = tx.send(Read {
+                whole,
+                status,
+                view,
+            });
         });
     }
 
@@ -245,9 +270,13 @@ impl ManagerChat {
                     .unwrap_or(self.selected)
                     .min(self.items.len().saturating_sub(1));
                 self.rows = view.rows;
+                if self.reveal_due {
+                    self.reveal();
+                }
                 self.activity = view.activity;
                 self.agent = view.agent;
-                self.stamp = Some(stamp);
+                // ^ A read started before the find opened has the newest part only: read again.
+                self.stamp = (read.whole == self.whole).then_some(stamp);
                 self.loaded = true;
                 self.error = None;
                 changed = true;
@@ -398,12 +427,13 @@ impl ManagerChat {
 
 /// The conversation as rows, the open items then the waiting approvals, and the manager's
 /// last step. No manager folder yet is an empty chat.
-fn read(store: &str, main: &Path, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
+fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyhow::Result<View> {
     let log = match dir {
         Some(dir) => dir.read_log()?,
         None => Vec::new(),
     };
-    let (entries, _) = chat_window(&log, None);
+    let limit = if whole { usize::MAX } else { CHAT_ENTRIES };
+    let (entries, _) = chat_window(&log, None, limit);
     let mut rows = Vec::new();
     for entry in entries {
         let said = |who, text: &str| Row::Said {
@@ -534,6 +564,17 @@ impl ManagerChat {
                     dispatch_text_edit(&mut self.composer, action);
                 }
             },
+            Focus::Find => match action {
+                Action::Select => self.focus = Focus::Chat,
+                Action::InputEscape => self.close_find(),
+                _ => {
+                    if dispatch_text_edit(&mut self.find, action) {
+                        // ^ Each edit starts again at the newest match.
+                        self.found = usize::MAX;
+                        self.reveal();
+                    }
+                }
+            },
             Focus::Fail(id) => match action {
                 Action::Select => self.fail_check(id),
                 Action::InputEscape => self.focus = Focus::Chat,
@@ -552,8 +593,15 @@ impl ManagerChat {
 
     fn chat_key(&mut self, action: &Action) -> bool {
         let selected = self.selected_item().cloned();
+        let finding = !self.find.value().is_empty();
         match (action, selected) {
+            // ^ Esc clears a find first; the next Esc leaves the chat.
+            (Action::InputEscape, _) if finding => self.close_find(),
             (Action::InputEscape, _) => return false,
+            (Action::InputChar('/'), _) => self.open_find(),
+            // ^ While a find is on, n and N move between matches, before an approval's n.
+            (Action::InputChar('n'), _) if finding => self.step(-1),
+            (Action::InputChar('N'), _) if finding => self.step(1),
             (Action::InputChar('k') | Action::NavigateUp, _) => self.scroll_by(1),
             (Action::InputChar('j') | Action::NavigateDown, _) => self.scroll_by(-1),
             (Action::InputChar('G'), _) => self.scroll = 0,
@@ -576,5 +624,58 @@ impl ManagerChat {
             _ => {}
         }
         true
+    }
+
+    fn open_find(&mut self) {
+        self.focus = Focus::Find;
+        if !self.whole {
+            self.whole = true;
+            // ^ Read again at once, now the whole log.
+            self.stamp = None;
+            self.last_check = Instant::now()
+                .checked_sub(CHECK_INTERVAL)
+                .unwrap_or(self.last_check);
+        }
+    }
+
+    fn close_find(&mut self) {
+        self.find = InputState::new("/");
+        self.reveal_due = false;
+        self.focus = Focus::Chat;
+    }
+
+    /// The matches of the find as the last frame drew the chat: (line, byte range).
+    pub fn matches(&self) -> Vec<(usize, std::ops::Range<usize>)> {
+        let (width, _) = self.area.get();
+        let lines = crate::ui::task_chat::chat_lines(&self.rows, self.who(), width);
+        crate::ui::task_chat::find_in(&lines, self.find.value())
+    }
+
+    /// Move `delta` matches, newer for +1, wrapping, and show the match.
+    fn step(&mut self, delta: isize) {
+        let count = self.matches().len();
+        if count > 0 {
+            let at = self.found.min(count - 1) as isize;
+            self.found = (at + delta).rem_euclid(count as isize) as usize;
+        }
+        self.reveal();
+    }
+
+    /// Scroll so the current match sits mid-chat; `found` past the end means the newest.
+    fn reveal(&mut self) {
+        let matches = self.matches();
+        let Some(last) = matches.len().checked_sub(1) else {
+            self.reveal_due = !self.find.value().is_empty();
+            return;
+        };
+        self.reveal_due = false;
+        self.found = self.found.min(last);
+        let (width, height) = self.area.get();
+        let total = crate::ui::task_chat::chat_lines(&self.rows, self.who(), width).len();
+        let line = matches[self.found].0;
+        // ^ `scroll` counts lines up from the newest: the line's distance from the end, less half the chat.
+        let below = total.saturating_sub(line + 1);
+        let scroll = below.saturating_sub(usize::from(height) / 2);
+        self.scroll = scroll.min(total.saturating_sub(usize::from(height))) as u16;
     }
 }

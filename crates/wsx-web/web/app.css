@@ -232,6 +232,16 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
   /* The end of the conversation stands well clear of the composer; the jump button fits in the gap. */
   padding-bottom: calc(var(--space-4) * 4);
 }
+/* Hook: .find — the find bar over a chat's log (find.js). Every match is marked, the current
+   one filled; the underline keeps them apart without the color. */
+.find {
+  flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-1);
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--column-inset); border-bottom: var(--border-width) solid var(--color-hairline);
+}
+.find-field { flex: 1; min-width: 0; }
+.find-count { flex: 0 0 auto; min-width: 4ch; text-align: right; font-size: var(--font-size-sm); color: var(--color-muted); font-variant-numeric: tabular-nums; }
+::highlight(find) { background-color: color-mix(in srgb, var(--color-attention) 30%, transparent); text-decoration: underline; }
+::highlight(find-current) { background-color: var(--color-attention); color: var(--color-bg); text-decoration: underline; }
 /* A long log shows its newest rows; this shows more above (useRecent in chat.js). */
 .log-earlier { align-self: center; }
 .log:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }

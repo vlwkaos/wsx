@@ -31,7 +31,7 @@ use wsx_core::task::checks::{self, CheckItem, CheckState};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
 use wsx_core::task::manager::{
     chat_window, ApprovalAction, ApprovalLine, Author, ManagerEntry, ManagerEvent, ManagerRequest,
-    ManagerResponse,
+    ManagerResponse, CHAT_ENTRIES,
 };
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::roles;
@@ -2569,7 +2569,7 @@ fn chat(project: Option<&str>, role: Option<&str>, after: Option<u64>, json: boo
             .with_context(|| format!("the project has no role {role}"))?,
     };
     let log = dir.read_log()?;
-    let (entries, skipped) = chat_window(&log, after);
+    let (entries, skipped) = chat_window(&log, after, CHAT_ENTRIES);
     if json {
         return print_json(&json!({ "entries": entries, "skipped": skipped }));
     }

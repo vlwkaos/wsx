@@ -20,7 +20,7 @@ use wsx_core::task::{
     self, call_host_waiting, call_socket, checks, copy, ledger,
     manager::{
         activity, chat_window, decided_request, pending_approvals, ApprovalLine, Author,
-        ManagerEvent, ManagerRequest, ManagerResponse,
+        ManagerEvent, ManagerRequest, ManagerResponse, CHAT_ENTRIES,
     },
     owner, stall,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
@@ -642,11 +642,14 @@ fn timeline(log: &[task::LogEntry]) -> Value {
 /// The manager conversation, or the role `role`'s, after message `after`, and whether it
 /// runs or thinks; the manager's also lists the project's roles as contacts.
 /// `scopes`: the granted projects, whose managers' names a peer bubble may show.
+/// `all`: every entry, not the newest `CHAT_ENTRIES`, for a find over the whole history
+/// (docs/web-client-chat.md "Find").
 pub fn chat(
     scope: &Scope,
     scopes: &[Scope],
     role: Option<&str>,
     after: Option<u64>,
+    all: bool,
     media: &crate::media::Media,
 ) -> Outcome<Value> {
     // ^ The name the owner reads (docs/tasks.md "Config"); the role stays `manager` inside.
@@ -674,7 +677,7 @@ pub fn chat(
     }
     let log = dir.read_log().map_err(internal)?;
     let activity = activity(&log).map(str::to_string);
-    let (entries, skipped) = chat_window(&log, after);
+    let (entries, skipped) = chat_window(&log, after, if all { usize::MAX } else { CHAT_ENTRIES });
     let entries: Vec<Value> = entries
         .into_iter()
         .map(|entry| {
