@@ -11,7 +11,7 @@
 - Tasks: a worker waiting on a fallback goes back to its own agent as soon as that agent is free. Otherwise it stays on the fallback until the task closes.
 - Tasks: a stand-in. During a limit, an owner message gets a short reply from a `minimal` agent, typically a local model, with no tools. The chats tag it "Stand-in, not checked". The own agent still answers the message after the limit and is told what the stand-in said.
 - Tasks: a daily budget for a fallback (`budget_usd_per_day`, default 10 USD). It belongs to the account: the smallest budget of its agents holds for every model on it. Past it the account counts as limited until midnight.
-- Web: the Usage sheet opens with one row per day, each a stacked bar of the day's cost by workflow step and manager on one scale, with a legend. A tap shows the exact amounts.
+- Web: the Usage sheet opens with one row per day, each a stacked bar of the day's cost by workflow step and manager on one scale, with a legend. A tap shows the exact amounts. A Tokens tab switches the same rows to tokens by kind (input, cache read, cache write, output), each row ending with its total and cache hit rate.
 
 ### Fixed
 
