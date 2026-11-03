@@ -2606,7 +2606,8 @@ await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ men
 if (await count(".role-contact .news-mark")) await fail("a role read on this device still shows unread");
 await key("Escape", 27);
 
-const defects = problems.filter((problem) => !/status of 401/.test(problem));
+// ^ The 401s are expected, and so is the 404 of the Routines block's probe of a project outside the grant.
+const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/status of 404.*\/api\/tasks\/999999\/routines/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
 // ^ Last: its 35 messages keep the manager busy for a while.
