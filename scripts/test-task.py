@@ -2542,23 +2542,32 @@ def run(wsx, wsxd, work, owned):
     assert again['state'] == 'ready', again
     for n in pair:
         js('task', 'close', n, '--discard')
-    # A worker's check-run waits for the slot with no client timeout; a client that gave up and
-    # asks again joins the run it left, so the checks run once, never beside each other.
+    # A worker's check-run that must wait for the slot answers `queued` at once, also to a
+    # client that asks again, so no turn waits or polls (docs/tasks.md "Check-run"): the step
+    # ends with its result, the answer comes as one `check_run` turn of that step, and the next
+    # step follows. The checks run once, never beside each other.
     spans.unlink()
     release.unlink()
+    configure(LAND_CONFIG.replace('"test ! -e broken.txt"', '"%s %s 60"' % (sys.executable, slot_check))
+              + '  workflow:\n    steps:\n      - {name: build, prompt: build it}\n'
+              '      - {name: review, prompt: look}\n', 'slot checks in steps')
     holder = js('task', 'new', 'WORK slot5.txt')['id']
     wait(lambda: copy_name(holder) in slot_marks(), 'the holder runs its checks', 30)
     again = js('task', 'new', 'CHECKRUN_AGAIN WORK slot6.txt')['id']
     wait(lambda: [e for e in log(again) if e['kind'] == 'check_queued'], 'the check-run queued', 30)
-    # ^ The first client is killed 1 s after it started, while its run waits.
-    time.sleep(2)
+    code, said = wait(lambda: next((t for t in traces() if 'check_run_again' in t), None),
+                      'the queued answer', 30)['check_run_again']
+    assert code == 0 and "queued for the machine's check slot" in said, said
+    # ^ The step's result comes while the run still waits: it waits too, the step stays.
+    wait(lambda: kinds(again, 'result'), 'the step result before the answer', 30)
+    assert show(again)['record']['step'] == 0 and not kinds(again, 'check_run'), log(again)
     release.touch()
-    assert wait_state(again, 'ready', 'failed')['state'] == 'ready'
-    code, said = next(t for t in traces() if 'check_run_again' in t)['check_run_again']
-    assert code == 0 and ': exit 0' in said, said
-    assert kinds(again, 'check_run') == ['check_run'], log(again)
-    # ^ A run that ended before the result starts no turn of its own.
-    assert kinds(again, 'result') == ['result'], log(again)
+    assert wait_state(again, 'ready', 'failed')['state'] == 'ready', log(again)
+    assert kinds(again, 'result', 'check_run', 'checks') == ['result', 'check_run', 'result', 'result', 'checks'], log(again)
+    turns = [(e['step'], e['trigger']) for e in log(again) if e['kind'] == 'result']
+    assert turns == [('build', 'step'), ('build', 'check_run'), ('review', 'step')], turns
+    answers = [t['message'] for t in traces() if t.get('message', '').startswith('Your check-run ended. Its answer:')]
+    assert len(answers) == 1 and ': exit 0' in answers[0], answers
     # ^ One start for the check-run and one for the checks after the result.
     starts = [line for line in spans.read_text().splitlines() if line.startswith(copy_name(again) + ' start')]
     assert len(starts) == 2, spans.read_text()
@@ -2692,7 +2701,7 @@ def run(wsx, wsxd, work, owned):
     late_gate.touch()
     assert wait_state(late, 'ready', 'failed')['state'] == 'ready', log(late)
     assert kinds(late, 'result', 'check_run', 'checks') == ['result', 'check_run', 'result', 'checks'], log(late)
-    answers = [t['message'] for t in traces() if 'Your check-run ended after your result' in t.get('message', '')]
+    answers = [t['message'] for t in traces() if 'Your check-run ended. Its answer' in t.get('message', '')]
     assert len(answers) == 1 and 'check 2 `while [ ! -e' in answers[0] and ': exit 0' in answers[0], answers
     js('task', 'close', late, '--discard')
     # 32u. A result that comes while the checks of an earlier one run (Claude's own turn for a
