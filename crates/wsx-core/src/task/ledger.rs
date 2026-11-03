@@ -347,9 +347,11 @@ pub fn local_minute(text: &str, now_secs: i64) -> Result<i64, String> {
             (number(year)? - 1900, number(month)? - 1, number(day)?);
     }
     (tm.tm_hour, tm.tm_min, tm.tm_sec, tm.tm_isdst) = (hour, minute, 0, -1);
+    let day = (tm.tm_year, tm.tm_mon, tm.tm_mday);
     // SAFETY: tm is a valid, filled struct.
     let mut secs = unsafe { libc::mktime(&mut tm) };
-    if secs == -1 {
+    // ^ mktime moves a day that does not exist (02-31) into the next month: refuse it.
+    if secs == -1 || (tm.tm_year, tm.tm_mon, tm.tm_mday) != day {
         return Err(wrong());
     }
     if date.is_none() && secs <= now_secs {

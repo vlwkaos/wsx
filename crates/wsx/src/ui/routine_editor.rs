@@ -208,9 +208,7 @@ impl RoutineForm {
     pub fn routine(&self) -> Result<Routine, String> {
         let command: Vec<String> = serde_json::from_str(&self.command_json)
             .map_err(|e| format!("command must be a JSON argv array: {e}"))?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs() as i64);
+        let now = (wsx_core::task::now_unix_ms() / 1000) as i64;
         let trigger = wsx_core::task::ledger::parse_trigger(&self.cron, now)?;
         Routine {
             name: self.name.clone(),

@@ -28,7 +28,7 @@ flowchart LR
 
 ## The retrospect, one routine
 
-`usage` (cron `0 6 * * *`) runs `scripts/retrospect.py <state dir> -p <project>`. It replaces the earlier `usage-report.py --days 7` argv and only reports: the owner rejected daily audit tasks.
+The owner renamed routine `usage` to `retrospect` (msg 2095; same cron `0 6 * * *`). Its argv becomes `scripts/retrospect.py <state dir> -p <project>`, in place of the earlier `usage-report.py --days 7`. It and only reports: the owner rejected daily audit tasks.
 
 | Part | Code or model |
 |---|---|
@@ -52,6 +52,15 @@ Change 2: A manager tool that quotes a worker's transcript lines for a claim ...
 Judged by sonnet (high): $0.08
 Detail: <state dir>/retrospect/1793745316931.md
 ```
+
+## How a routine result is stored, shown and remembered (msg 2095)
+
+| Result | Stored | Shown to the owner | In the manager's context |
+|---|---|---|---|
+| Run end | asched run record and stdout file | the ledger's `routines`, the routine preview | an event line at once: status and the last 10 output lines (also on success); in the handover by `handover_routines` |
+| `wsx task post` (and the digest) | `manager/log.jsonl`: `message{from: events, text: <title>}` and a reply with no usage | the chat, with no turn | built: the handover lists it as `Posted: <text>`, not as the manager's `You:`. Not built: delivery at the next turn |
+
+Next-turn delivery, the design: the manager host keeps the posts since the last turn (title and the first 300 characters each, the newest 3, held in `state.json` so a restart keeps them). The next turn that runs anyway opens with `Shown to the owner since your last turn: <title>: <text>` and clears them. A post starts no turn, so it costs no turn; it costs only those input tokens. The handover covers a rotation, since it reads the log.
 
 ## Proof
 
