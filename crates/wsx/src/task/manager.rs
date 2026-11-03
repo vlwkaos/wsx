@@ -2534,6 +2534,11 @@ fn recent_exchanges(log: &[ManagerEntry]) -> Vec<String> {
                 provisional: Some(name),
                 ..
             } => Some(format!("Stand-in {name}: {}", one_line(text))),
+            // ^ Only a post (`wsx task post`, the digest) is a reply with no usage: the owner
+            // saw it, the manager did not write it.
+            ManagerEvent::Reply {
+                text, usage: None, ..
+            } => Some(format!("Posted: {}", one_line(text))),
             ManagerEvent::Reply { text, .. } => Some(format!("You: {}", one_line(text))),
             _ => None,
         })

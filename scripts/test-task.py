@@ -1705,15 +1705,15 @@ def run(wsx, wsxd, work, owned):
     # ^ The retrospect is one such routine: it posts counts of the chat above (the three
     # `routine run nightly` asks) and prints nothing.
     state_dir = manager_log.parent.parent
-    js('task', 'routine', 'add', 'usage', '-p', 'demo', '--cron', '0 6 * * *',
+    js('task', 'routine', 'add', 'retrospect', '-p', 'demo', '--cron', '0 6 * * *',
        *('--arg=%s' % word for word in (sys.executable, '-B', ROOT / 'scripts' / 'retrospect.py', state_dir,
                                         '-p', 'demo', '--no-model', '--wsx', wsx)))
-    js('task', 'routine', 'run', 'usage', '-p', 'demo')
+    js('task', 'routine', 'run', 'retrospect', '-p', 'demo')
     report = wait(lambda: posted('retrospect'), 'the retrospect post', 60)[0]['text']
     assert report.startswith('Since ') and 'You asked 3 times: "RUN wsx task routine run nightly -p demo --json"' in report, report
     assert 'not judged (--no-model)' in report and Path(report.split('Detail: ')[1].strip()).is_file(), report
-    assert not events_with('routine usage'), 'the retrospect prints nothing'
-    for name in ('closed', 'usage', 'checkin'):
+    assert not events_with('routine retrospect'), 'the retrospect prints nothing'
+    for name in ('closed', 'retrospect', 'checkin'):
         js('task', 'routine', 'delete', name, '-p', 'demo')
     # ^ A reply that ends with a question asks the owner and is never quiet, also to a turn of
     # only events; a reply that ends with a table, or a report, does not ask (docs/tasks.md "Manager").

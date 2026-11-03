@@ -2199,8 +2199,6 @@ fn last_digest_ms(log: &[ManagerEntry]) -> Option<u64> {
     })
 }
 
-/// Post the project's digest. Each try reads the lines again and starts from the chat log, so
-/// a run that fails leaves its time to the next one. ref: docs/tasks.md "Routines"
 /// The routine a check-in writes; one per project, so a manager cannot pile them up.
 const CHECKIN: &str = "checkin";
 /// The furthest ahead a check-in may be.
@@ -2271,6 +2269,8 @@ fn duration_secs(text: &str) -> Result<i64> {
     Ok(count.saturating_mul(unit))
 }
 
+/// Post the project's digest. Each try reads the lines again and starts from the chat log, so
+/// a run that fails leaves its time to the next one. ref: docs/tasks.md "Routines"
 fn digest(project: Option<&str>, since: Option<u64>) -> Result<()> {
     let (name, main) = project_entry(project)?;
     let project_id = store::project_id(&name, &main);
@@ -2301,11 +2301,13 @@ fn post(project: Option<&str>, title: &str) -> Result<()> {
     if title.is_empty() || title.contains('\n') {
         bail!("--title must be one line");
     }
-    let mut text = String::new();
+    let mut bytes = Vec::new();
     std::io::stdin()
         .take(POST_BYTES)
-        .read_to_string(&mut text)
-        .context("stdin must be UTF-8 text")?;
+        .read_to_end(&mut bytes)
+        .context("cannot read stdin")?;
+    // ^ The cut at POST_BYTES may split a character.
+    let text = String::from_utf8_lossy(&bytes);
     let lines: Vec<String> = text.trim().lines().map(str::to_string).collect();
     post_when_free(&store::project_id(&name, &main), &name, title, || {
         lines.clone()
