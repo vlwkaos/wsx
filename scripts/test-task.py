@@ -3224,7 +3224,18 @@ def run(wsx, wsxd, work, owned):
     on_pi = js('task', 'new', 'WORK fb.txt')['id']
     assert wait_state(on_pi, 'ready', 'failed')['record']['adapter'] == 'pi', show(on_pi)
     assert not any(e['kind'] == 'agent_switch' for e in log(on_pi)), log(on_pi)
-    for n in (switched, on_pi):
+    # ^ A host restarted in a wait that is now past maxWaitMinutes, here since the fallback came
+    # after the limit, moves to the fallback at once.
+    configure(FALLBACK_CONFIG, 'no fallback yet')
+    restarted = js('task', 'new', 'LIMIT 600 WORK fc.txt')['id']
+    wait(lambda: show(restarted)['state'] == 'waiting', 'the worker waits on its own agent')
+    assert show(restarted)['record']['adapter'] == 'claude', show(restarted)['record']
+    configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi]\n    maxWaitMinutes: 1\n'),
+              'fallback after the limit')
+    cli('session', 'restart', 'task-%d' % restarted)
+    assert wait_state(restarted, 'ready', 'failed')['record']['adapter'] == 'pi', show(restarted)
+    assert any(e['kind'] == 'agent_switch' for e in log(restarted)), log(restarted)
+    for n in (switched, on_pi, restarted):
         js('task', 'close', n, '--discard')
     limit_file.unlink()
     configure(CONFIG, 'no fallback')
@@ -3239,6 +3250,11 @@ def run(wsx, wsxd, work, owned):
                        'model = "local/stand-in"\nminimal = true\n')
         registry.write('[[agents]]\nname = "fake-paid"\ncommand = ["pi"]\nadapter = "pi"\n'
                        'model = "paid/model"\nbudget_usd_per_day = 1\n')
+        # ^ Another model on the paid account sets no budget: the account's budget still holds.
+        registry.write('[[agents]]\nname = "fake-paid-other"\ncommand = ["pi"]\nadapter = "pi"\n'
+                       'model = "paid/other"\n')
+        registry.write('[[agents]]\nname = "fake-pi2"\ncommand = ["pi"]\nadapter = "pi"\n'
+                       'model = "other/pi-model"\n')
     with_fallback = lambda names: FALLBACK_CONFIG.replace(
         '  checks:\n', '  manager: { fallback: [%s] }\n  checks:\n' % names).replace(
         '    model: fake-model\n', '    model: fake-model\n    maxWaitMinutes: 1\n')
@@ -3265,9 +3281,17 @@ def run(wsx, wsxd, work, owned):
     refusal = work / 'credit-refusal.txt'
     refusal.write_text('400 {"type":"error","error":{"type":"invalid_request_error","message":'
                        '"Your credit balance is too low to access the Anthropic API."}}\n')
+    # A manager already held at a long limit moves when a fallback comes.
+    configure(with_fallback('fake-local'), 'no fallback for the manager yet')
     limit_for(600)
+    held = js('task', 'say', 'STATUS held')
+    wait(lambda: any(e['kind'] == 'reply' and e.get('provisional') and held['id'] in e['to'] for e in chat()),
+         'the stand-in answers the held message')
+    configure(with_fallback('fake-local, fake-pi'), 'manager fallback')
     on_fallback = js('task', 'say', 'STATUS on the fallback')
     assert reply_to(on_fallback['id'])['text'].startswith('pi answers: '), chat()[-3:]
+    assert any(e['kind'] == 'reply' and not e.get('provisional') and held['id'] in e['to']
+               and e['text'].startswith('pi answers: ') for e in chat()), chat()[-4:]
     manager_state = lambda: json.loads((manager_log.parent / 'state.json').read_text())
     assert manager_state()['agent']['name'] == 'fake-pi', manager_state()
     no_credit = js('task', 'say', 'PIERROR %s STATUS without credit' % refusal)
@@ -3284,7 +3308,7 @@ def run(wsx, wsxd, work, owned):
     assert home_turn and not home_turn.get('adapter') and 'STATUS without credit' in home_turn['message'], home_turn
     pi_limit.unlink()
     # ^ A daily budget: past it the account counts as limited until midnight and is left alone.
-    configure(with_fallback('fake-paid'), 'budget')
+    configure(with_fallback('fake-paid-other'), 'budget')
     limit_for(600)
     paid = js('task', 'say', 'PICOST 2 STATUS paid')
     assert reply_to(paid['id'])['text'].startswith('pi answers: '), chat()[-3:]
@@ -3308,7 +3332,22 @@ def run(wsx, wsxd, work, owned):
     assert show(away)['record']['adapter'] == 'claude', show(away)['record']
     assert next(e for e in log(away) if e['kind'] == 'agent_switch')['to'].startswith('claude '), log(away)
     js('task', 'close', away, '--discard')
-    for name in ('pi-fake.json', 'pi-paid.json'):
+    # ^ A rate limit has no reset time and is backed off. Backoffs in a row on the account add up
+    # from the first: past maxWaitMinutes the worker moves on to the next fallback.
+    configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi, fake-pi2]\n    maxWaitMinutes: 60\n'),
+              'long rate limit')
+    limit_for(7200)
+    rate = work / 'rate-refusal.txt'
+    rate.write_text('429 Too Many Requests: rate limit exceeded\n')
+    since = int((time.time() - 7200) * 1000)
+    pi_limit.write_text(json.dumps({'since_ms': since, 'until_ms': int(time.time() * 1000) - 1000}))
+    moved = js('task', 'new', 'PIERROR %s WORK rate.txt' % rate)['id']
+    switch = wait(lambda: next((e for e in log(moved) if e['kind'] == 'agent_switch'), None), 'the long rate limit moves the worker')
+    assert switch['to'].startswith('fake-pi2 '), log(moved)
+    assert json.loads(pi_limit.read_text())['since_ms'] == since, pi_limit.read_text()
+    js('task', 'close', moved, '--discard')
+    limit_file.unlink()
+    for name in ('pi-fake.json', 'pi-paid.json', 'pi-other.json'):
         (agents / name).unlink(missing_ok=True)
     configure(CONFIG, 'no fallback')
 

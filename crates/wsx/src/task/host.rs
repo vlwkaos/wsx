@@ -458,21 +458,12 @@ impl Host {
                 // ^ A long wait from an older host or from before a fallback was configured
                 // moves to the fallback now instead of waiting days. ref: docs/tasks.md "Agents"
                 let now = now_unix_ms();
-                let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-                let next = super::agent::worker_next(
-                    &settings,
-                    &self.record.adapter,
-                    &self.record.model,
-                    until_ms,
-                    now,
-                );
-                match next {
-                    Some(next) => {
-                        let _ = store::mark_limited(&self.account(), until_ms);
-                        self.turn_text = "Continue the task where it stopped.".into();
-                        self.switch_agent(next, until_ms, now);
-                    }
-                    None => self.wait_for_limit(LIMIT_CONTINUE.into(), until_ms),
+                let account = self.account();
+                if self.move_after_limit(Some("Continue the task where it stopped."), until_ms, now)
+                {
+                    let _ = store::mark_limited(&account, until_ms, now, true);
+                } else {
+                    self.wait_for_limit(LIMIT_CONTINUE.into(), until_ms);
                 }
             }
             state => {
@@ -906,23 +897,10 @@ impl Host {
             .then(|| store::limited_until(&self.account(), now))
             .flatten();
         if let Some(until_ms) = limited {
-            let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-            match super::agent::worker_next(
-                &settings,
-                &self.record.adapter,
-                &self.record.model,
-                until_ms,
-                now,
-            ) {
-                Some(next) => {
-                    self.turn_text = text.to_string();
-                    self.switch_agent(next, until_ms, now);
-                }
-                None => {
-                    self.limit_slot = None;
-                    self.log(LogEvent::LimitWait { until_ms });
-                    self.wait_for_limit(text.to_string(), until_ms);
-                }
+            if !self.move_after_limit(Some(text), until_ms, now) {
+                self.limit_slot = None;
+                self.log(LogEvent::LimitWait { until_ms });
+                self.wait_for_limit(text.to_string(), until_ms);
             }
             return Ok(());
         }
@@ -1056,20 +1034,11 @@ impl Host {
             self.limit_attempt += 1;
             let now = now_unix_ms();
             let until_ms = limit::resume_at(limit.resets_at, self.limit_attempt, now);
-            if let Err(error) = store::mark_limited(&self.account(), until_ms) {
+            let backoff = limit::known_reset(limit.resets_at, now).is_none();
+            if let Err(error) = store::mark_limited(&self.account(), until_ms, now, backoff) {
                 self.say(&format!("cannot record the usage limit: {error:#}"));
             }
-            // ^ One conversation is worth more than a switch: a limit that lifts within
-            // `maxWaitMinutes` is waited out. ref: docs/tasks.md "Agents"
-            let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-            if let Some(next) = super::agent::worker_next(
-                &settings,
-                &self.record.adapter,
-                &self.record.model,
-                until_ms,
-                now,
-            ) {
-                self.switch_agent(next, until_ms, now);
+            if self.move_after_limit(None, until_ms, now) {
                 return;
             }
             let mut text = vec![LIMIT_CONTINUE.to_string()];
@@ -1482,6 +1451,28 @@ impl Host {
         self.wait(WaitOn::Limit, reason);
     }
 
+    /// After a limit on this task's account until `until_ms`, move to the agent
+    /// `worker_next` names, continuing `unfinished` (else the current turn), and say whether it
+    /// moved; else the caller waits. One conversation is worth more than a switch: a limit
+    /// within `maxWaitMinutes` is waited out. ref: docs/tasks.md "Agents"
+    fn move_after_limit(&mut self, unfinished: Option<&str>, until_ms: u64, now: u64) -> bool {
+        let settings = load_task_config(&self.record.project_path).unwrap_or_default();
+        let Some(next) = super::agent::worker_next(
+            &settings,
+            &self.record.adapter,
+            &self.record.model,
+            until_ms,
+            now,
+        ) else {
+            return false;
+        };
+        if let Some(text) = unfinished {
+            self.turn_text = text.to_string();
+        }
+        self.switch_agent(next, until_ms, now);
+        true
+    }
+
     /// The account this task's turns run on.
     fn account(&self) -> String {
         super::agent::account(&self.record.adapter, &self.record.model)
@@ -1493,23 +1484,11 @@ impl Host {
     fn resume_after_limit(&mut self) {
         let now = now_unix_ms();
         // ^ On a fallback, a wait ends as soon as the task's own agent is free.
-        if let Some(until_ms) = self.limit_wait.as_ref().map(|wait| wait.until_ms) {
-            let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-            let own = super::agent::account(&settings.adapter, &settings.model);
-            if self.account() != own && store::limited_until(&own, now).is_none() {
-                if let Some(next) = super::agent::worker_next(
-                    &settings,
-                    &self.record.adapter,
-                    &self.record.model,
-                    until_ms,
-                    now,
-                ) {
-                    let wait = self.limit_wait.take().expect("checked above");
-                    self.turn_text = wait.text;
-                    self.switch_agent(next, until_ms, now);
-                    return;
-                }
+        if let Some(wait) = self.limit_wait.take() {
+            if self.move_after_limit(Some(&wait.text), wait.until_ms, now) {
+                return;
             }
+            self.limit_wait = Some(wait);
         }
         let Some(wait) = self.limit_wait.as_mut().filter(|wait| wait.next_ms <= now) else {
             return;

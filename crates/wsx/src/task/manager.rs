@@ -1575,10 +1575,13 @@ impl Manager {
     fn switch_agent(&mut self, until_ms: u64, ids: &[u64], events: bool) -> bool {
         let now = now_unix_ms();
         let settings = load_task_config(&self.main).unwrap_or_default();
-        if until_ms.saturating_sub(now) <= settings.max_wait_secs * 1000 {
-            return false;
-        }
-        let Some(next) = agent::fallback(&settings.manager_fallback, now, false) else {
+        let Some(next) = agent::fallback_past_wait(
+            &settings.manager_fallback,
+            settings.max_wait_secs,
+            &self.current_account(),
+            until_ms,
+            now,
+        ) else {
             return false;
         };
         let reason = format!(
@@ -1703,7 +1706,7 @@ impl Manager {
             }
             Err(error) => {
                 self.say(&format!("cannot start {}: {error:#}", agent.name));
-                let _ = store::mark_limited(&account, now + STAND_IN_RETRY_MS);
+                let _ = store::mark_limited(&account, now + STAND_IN_RETRY_MS, now, false);
             }
         }
     }
@@ -1750,7 +1753,7 @@ impl Manager {
             None => {
                 self.say(&format!("{name} could not stand in"));
                 let account = agent::account(&stand_in.adapter, &stand_in.model);
-                let _ = store::mark_limited(&account, now + STAND_IN_RETRY_MS);
+                let _ = store::mark_limited(&account, now + STAND_IN_RETRY_MS, now, false);
             }
         }
     }
@@ -2074,7 +2077,9 @@ impl Manager {
         if let Some(reached) = &result.limit {
             let attempt = self.state.limit.as_ref().map_or(0, |hold| hold.attempt) + 1;
             let until_ms = limit::resume_at(reached.resets_at, attempt, now);
-            if let Err(error) = store::mark_limited(&agent::account(&adapter, &model), until_ms) {
+            let backoff = limit::known_reset(reached.resets_at, now).is_none();
+            let account = agent::account(&adapter, &model);
+            if let Err(error) = store::mark_limited(&account, until_ms, now, backoff) {
                 self.say(&format!("cannot record the usage limit: {error:#}"));
             }
             if self.switch_agent(until_ms, &to, self.turn_events) {
