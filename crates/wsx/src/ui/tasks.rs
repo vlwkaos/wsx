@@ -33,7 +33,11 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
     }
     // ^ A short window keeps its height for the tasks. ref: docs/tasks.md "TUI"
     if area.height >= USAGE_ROWS_HEIGHT && list.detail_task().is_none() {
-        lines.extend(list.ledger.as_ref().map_or(Vec::new(), |ledger| usage_rows(ledger, width)));
+        lines.extend(
+            list.ledger
+                .as_ref()
+                .map_or(Vec::new(), |ledger| usage_rows(ledger, width)),
+        );
     }
     if let Some(error) = &list.error {
         lines.push(Line::styled(
@@ -227,9 +231,8 @@ fn usage_rows(ledger: &Value, width: usize) -> Vec<Line<'static>> {
         return Vec::new();
     };
     let cost_of = |day: &Value, part: &str| day["parts"][part].as_u64().unwrap_or(0);
-    let total = |day: &Value| -> u64 {
-        USAGE_PARTS.iter().map(|(part, _)| cost_of(day, part)).sum()
-    };
+    let total =
+        |day: &Value| -> u64 { USAGE_PARTS.iter().map(|(part, _)| cost_of(day, part)).sum() };
     let most = days.iter().map(total).max().unwrap_or(0).max(1);
     let track = width.saturating_sub(17).max(1);
     // ^ Only the words that fit: a wrapped legend would push the tasks down.

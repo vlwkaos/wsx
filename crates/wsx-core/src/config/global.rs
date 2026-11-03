@@ -375,7 +375,10 @@ fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
         }) {
             return Err(format!("agent {}: model is invalid", agent.name));
         }
-        if agent.budget_usd_per_day.is_some_and(|usd| usd == 0 || usd > 10_000) {
+        if agent
+            .budget_usd_per_day
+            .is_some_and(|usd| usd == 0 || usd > 10_000)
+        {
             return Err(format!(
                 "agent {}: budget_usd_per_day must be 1..=10000",
                 agent.name

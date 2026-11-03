@@ -197,7 +197,9 @@ pub fn project(project_id: &str, now_ms: u64) -> Value {
     let today = local_midnight_ms(now_ms);
     let mut starts = vec![today];
     for _ in 1..DAYS {
-        starts.push(local_midnight_ms(starts[starts.len() - 1].saturating_sub(1)));
+        starts.push(local_midnight_ms(
+            starts[starts.len() - 1].saturating_sub(1),
+        ));
     }
     let week = starts[DAYS - 1];
     let mut days = [[0u64; PARTS.len()]; DAYS];

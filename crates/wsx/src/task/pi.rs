@@ -201,7 +201,10 @@ fn pi_args(launch: &Launch, session: &str) -> Vec<std::ffi::OsString> {
         return args;
     }
     args.extend(["--session-id".into(), session.into()]);
-    args.extend(["--append-system-prompt".into(), (&launch.instructions).into()]);
+    args.extend([
+        "--append-system-prompt".into(),
+        (&launch.instructions).into(),
+    ]);
     for name in ["AGENTS.md", "CLAUDE.md"] {
         let file = launch.cwd.join(name);
         if file.is_file() {

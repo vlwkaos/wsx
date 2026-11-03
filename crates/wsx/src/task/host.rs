@@ -459,8 +459,13 @@ impl Host {
                 // moves to the fallback now instead of waiting days. ref: docs/tasks.md "Agents"
                 let now = now_unix_ms();
                 let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-                let next =
-                    super::agent::worker_next(&settings, &self.record.adapter, &self.record.model, until_ms, now);
+                let next = super::agent::worker_next(
+                    &settings,
+                    &self.record.adapter,
+                    &self.record.model,
+                    until_ms,
+                    now,
+                );
                 match next {
                     Some(next) => {
                         let _ = store::mark_limited(&self.account(), until_ms);
@@ -902,7 +907,13 @@ impl Host {
             .flatten();
         if let Some(until_ms) = limited {
             let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-            match super::agent::worker_next(&settings, &self.record.adapter, &self.record.model, until_ms, now) {
+            match super::agent::worker_next(
+                &settings,
+                &self.record.adapter,
+                &self.record.model,
+                until_ms,
+                now,
+            ) {
                 Some(next) => {
                     self.turn_text = text.to_string();
                     self.switch_agent(next, until_ms, now);
@@ -1051,9 +1062,13 @@ impl Host {
             // ^ One conversation is worth more than a switch: a limit that lifts within
             // `maxWaitMinutes` is waited out. ref: docs/tasks.md "Agents"
             let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-            if let Some(next) =
-                super::agent::worker_next(&settings, &self.record.adapter, &self.record.model, until_ms, now)
-            {
+            if let Some(next) = super::agent::worker_next(
+                &settings,
+                &self.record.adapter,
+                &self.record.model,
+                until_ms,
+                now,
+            ) {
                 self.switch_agent(next, until_ms, now);
                 return;
             }
@@ -1464,11 +1479,14 @@ impl Host {
         if let Some(until_ms) = self.limit_wait.as_ref().map(|wait| wait.until_ms) {
             let settings = load_task_config(&self.record.project_path).unwrap_or_default();
             let own = super::agent::account(&settings.adapter, &settings.model);
-            if self.account() != own && store::limited_until(&own, now).is_none()
-            {
-                if let Some(next) =
-                    super::agent::worker_next(&settings, &self.record.adapter, &self.record.model, until_ms, now)
-                {
+            if self.account() != own && store::limited_until(&own, now).is_none() {
+                if let Some(next) = super::agent::worker_next(
+                    &settings,
+                    &self.record.adapter,
+                    &self.record.model,
+                    until_ms,
+                    now,
+                ) {
                     let wait = self.limit_wait.take().expect("checked above");
                     self.turn_text = wait.text;
                     self.switch_agent(next, until_ms, now);
