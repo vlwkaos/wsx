@@ -1177,6 +1177,9 @@ if (usageCost.length !== 4 || !usageCost.every((cell) => /^\$\d+\.\d\d$/.test(ce
   await fail(`the usage costs are ${usageCost}, the turns ${usageTurns}`);
 }
 // ^ One row per day, a stacked bar on one scale, a legend, and a tap shows the exact amounts.
+// ^ One chart at a time, so each day shows once: Cost first, the Tokens tab switches it.
+const usageTabs = await evaluate(`[...document.querySelectorAll('.usage-view [role=tab]')].map((tab) => tab.textContent + ':' + tab.getAttribute('aria-selected'))`);
+if (usageTabs.join() !== "Cost:true,Tokens:false" || await evaluate(`document.querySelectorAll('.usage-chart').length`) !== 1) await fail(`the usage tabs are ${usageTabs}`);
 const usageDays = await evaluate(`[...document.querySelectorAll('.usage-chart[data-chart=cost] .usage-days > li')].map((row) => ({
   cost: row.querySelector('.usage-cost').textContent,
   parts: [...row.querySelectorAll('.usage-bar i')].map((part) => part.dataset.part),
@@ -1195,6 +1198,8 @@ await evaluate(`document.querySelector('[data-chart=cost] .usage-days > li:first
 await until(`document.querySelectorAll('[data-chart=cost] .usage-days > li:first-child .usage-parts dd').length === ${usageToday.parts.length}`, "a tap on a day shows its amounts");
 // ^ The token chart: the four kinds in the legend, today's bar split into the kinds it spent
 // (the fake manager's turns have input, cache read and output), and the cache hit rate per row.
+await evaluate("[...document.querySelectorAll('.usage-view [role=tab]')].find((tab) => tab.textContent === 'Tokens').click()");
+await until(`!!document.querySelector('[data-chart=tokens]') && document.querySelectorAll('.usage-chart').length === 1`, "the Tokens tab did not switch the chart");
 const tokenLegend = await text("[data-chart=tokens] .usage-legend .usage-name");
 if (tokenLegend.join() !== "Input,Cache read,Cache write,Output") await fail(`the token legend is ${tokenLegend}`);
 const tokenAmounts = await text("[data-chart=tokens] .usage-legend .usage-amount");

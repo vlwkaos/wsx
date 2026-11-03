@@ -46,7 +46,7 @@ const Bar = ({ chart, parts, share }) => html`
   </span></span>`;
 
 // The 7 days at once, each part's amount and share in the legend, then one row per day, newest
-// first, on one scale. A tap on a day shows its exact amounts (docs/web-client-tasks.md "Usage").
+// first, on one scale. A tab picks the cost or the token chart, so each day shows once. A tap on a day shows its exact amounts (docs/web-client-tasks.md "Usage").
 // The token chart's rows end with the cache hit rate: a small kind is never narrower than 4 px.
 function DayRows({ days, chart }) {
   const [open, setOpen] = useState(null);
@@ -92,14 +92,17 @@ function DayRows({ days, chart }) {
 export function UsagePage({ project, onClose, grip }) {
   const usage = useStore().tasks[project]?.usage;
   useEffect(() => { grip.ready(); }, []);
+  const [chart, setChart] = useState(COST);
   const cells = usage && [usage.today.workers, usage.today.manager, usage.week.workers, usage.week.manager];
   return html`
     <div class="page task-page">
       <${SheetBar} grip=${grip} onClose=${onClose}><span class="bar-label">Usage</span></${SheetBar}>
       <div class="scroll usage">
         ${!cells ? html`<p class="empty">No usage yet.</p>` : html`
-          <${DayRows} days=${usage.days ?? []} chart=${COST}/>
-          <${DayRows} days=${usage.days ?? []} chart=${TOKENS}/>
+          <div class="usage-view" role="tablist" aria-label="Chart">
+            ${[COST, TOKENS].map((each) => html`<button key=${each.name} type="button" role="tab" aria-selected=${chart === each} onClick=${() => setChart(each)}>${each.title}</button>`)}
+          </div>
+          <${DayRows} key=${chart.name} days=${usage.days ?? []} chart=${chart}/>
           <details class="usage-tokens"><summary>Tokens</summary><div class="table-wrap">
             <table aria-label="Token use and cost">
               <thead>

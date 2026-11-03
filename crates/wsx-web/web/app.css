@@ -917,7 +917,10 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .usage-chart[data-chart="tokens"] .usage-bar i { min-width: var(--space-1); }
 .usage-chart[data-chart="tokens"] :is(.usage-total, .usage-day) { grid-template-columns: calc(var(--space-4) * 4) minmax(0, 1fr) calc(var(--space-4) * 3) calc(var(--space-4) * 2.5); }
 .usage-rate { text-align: right; color: var(--color-muted); font-variant-numeric: tabular-nums; }
-.usage-chart + .usage-chart { margin-top: var(--space-2); }
+/* The Cost / Tokens tabs over the one chart (usage.js). */
+.usage-view { display: flex; gap: var(--space-1); margin-bottom: var(--space-2); }
+.usage-view button { min-height: var(--size-control); padding: 0 var(--space-3); border: 0; border-radius: var(--radius-control); background: none; color: var(--color-muted); font: inherit; cursor: pointer; }
+.usage-view button[aria-selected="true"] { background: var(--color-raised); color: var(--color-text); font-weight: var(--font-weight-medium); }
 .usage-total { display: grid; grid-template-columns: calc(var(--space-4) * 4) minmax(0, 1fr) calc(var(--space-4) * 4.5); align-items: center; gap: var(--space-2); min-height: var(--size-control); font-weight: var(--font-weight-medium); }
 .usage-amount { color: var(--color-text); font-variant-numeric: tabular-nums; }
 .usage-tokens summary { color: var(--color-muted); min-height: var(--size-control); cursor: pointer; }
@@ -1056,7 +1059,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 }
 .terminal-notice span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .terminal-notice button {
-  flex: 0 0 auto; height: var(--size-key); padding: 0 var(--space-3); border: 0; border-radius: var(--radius-key);
+  flex: 0 0 auto; height: var(--size-key); padding: 0 var(--space-3); border: 0; border-radius: var(--radius-control);
   background: var(--color-raised); color: var(--color-text); font-weight: var(--font-weight-medium); white-space: nowrap; cursor: pointer;
 }
 .terminal-stage { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; touch-action: none; }
