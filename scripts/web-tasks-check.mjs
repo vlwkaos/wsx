@@ -2101,7 +2101,7 @@ const afterPass = await evaluate(chatPlace);
 const samePlace = afterPass.keys.startsWith(beforePass.keys) && afterPass.at === beforePass.at && !afterPass.fresh
   && (afterPass.keys !== beforePass.keys || afterPass.jump === beforePass.jump);
 if (!samePlace) await fail(`a passed item's bubble moved or counts as new: ${JSON.stringify({ beforePass, afterPass })}`);
-await until("/1 to check/.test(document.querySelector('.reservoir-words')?.textContent ?? '')", "Pass in the bubble did not drop the To check count", 60);
+await until("/(^|[^0-9])1 to check/.test(document.querySelector('.reservoir')?.textContent ?? '')", "Pass in the bubble did not drop the To check count", 60);
 await go(`#/p/${project}/checks`);
 await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 1", "the item passed in the chat stayed in the list", 60);
 // ^ Skip closes an item without a verdict and no task (docs/tasks.md "To check"). Its bubble shows
