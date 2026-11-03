@@ -4,6 +4,7 @@ import { api, resolve } from "./api.js";
 import { bytes, elapsed, html, Icon, keepIn, readMap, useCoalescedLoad, useEffect, useExit, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, shows, stateOf, state, touch, useEventLoad } from "./store.js";
 import { Markdown } from "./markdown.js";
+import { FindBar } from "./find.js";
 import { QuoteChip, Quoted, quoteOf, useReply, withQuote } from "./reply.js";
 
 // Unsent text, attachments, files that still upload and the message that is not in the
@@ -537,7 +538,11 @@ function Question({ session, question, onAnswered }) {
 // with a button that shows as many more above (docs/web-client.md "Screens").
 const RECENT_ROWS = 60;
 // `name` is the log's: another log starts again from its newest rows. `keyOf` names a row.
-export function useRecent(name, rows, first, keyOf = (row) => row.key) {
+// `all`: every row, as a find over the whole conversation needs (find.js). ^ At once: the
+// wsx manager's 1,864 rows (2,272 entries) render in 0.4 s, 1.4 s at Chrome's 4x CPU throttle.
+// content-visibility saved nothing there, and steps of RECENT_ROWS took 9.8 s: each step renders
+// every row again (2026-11-04, docs/web-client-chat.md "Find").
+export function useRecent(name, rows, first, { keyOf = (row) => row.key, all = false } = {}) {
   const [shown, setShown] = useState({ name, count: RECENT_ROWS });
   // ^ The top row shown: rows that arrive later extend the end, so no row above the reader
   // goes (docs/web-client.md "Screens").
@@ -554,7 +559,7 @@ export function useRecent(name, rows, first, keyOf = (row) => row.key) {
   const count = shown.name === name ? shown.count : RECENT_ROWS;
   const from = first ? Math.min(rows.indexOf(first), rows.length - count) : rows.length - count;
   const kept = top.current?.name === name ? rows.findIndex((row) => keyOf(row) === top.current.key) : -1;
-  const start = Math.max(0, kept >= 0 ? Math.min(from, kept) : from);
+  const start = all ? 0 : Math.max(0, kept >= 0 ? Math.min(from, kept) : from);
   top.current = { name, key: rows[start] && keyOf(rows[start]) };
   const more = (event) => {
     const log = event.currentTarget.closest(".log");
@@ -577,7 +582,8 @@ export const JumpButton = ({ unread, leaving = false, onClick }) => html`
   <button class="jump" type="button" data-leaving=${leaving ? "" : null} tabIndex=${leaving ? -1 : null} onClick=${onClick}>
     <${Icon} name="down" />${unread ? `${unread} new` : "Jump to latest"}</button>`;
 
-export function Chat({ session, onModel }) {
+// `finding`: the find bar is open (session.js has its button); `onFindClose` closes it.
+export function Chat({ session, onModel, finding = false, onFindClose }) {
   const id = session.id;
   const [data, setData] = useState(null);
   // ^ The model of the newest reply, or of a switch the person made, for the top row.
@@ -665,7 +671,7 @@ export function Chat({ session, onModel }) {
   const blocked = status.key === "blocked";
   const lastUserBlock = list.findLast?.((block) => block.kind === "user");
   const firstNew = since == null ? null : list.find((block) => block.kind === "assistant" && block.at_unix_ms > since);
-  const [recent, earlier] = useRecent(`session-${id}`, list, firstNew, (block) => block.id);
+  const [recent, earlier] = useRecent(`session-${id}`, list, firstNew, { keyOf: (block) => block.id, all: finding });
   const terminalLink = shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`;
   // A hold the chat cannot name: the server sends the rows above the agent's editor, closed
   // until asked for (docs/web-client-chat.md "Timeline").
@@ -679,6 +685,7 @@ export function Chat({ session, onModel }) {
 
   return html`
     <div class="chat">
+      ${finding && html`<${FindBar} log=${log} onClose=${onFindClose} />`}
       <div class="log-wrap">
       <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation" tabindex="0" ...${gestures}>
         ${data?.truncated && html`<p class="note">Older messages are not shown.</p>`}

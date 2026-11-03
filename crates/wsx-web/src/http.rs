@@ -1013,6 +1013,8 @@ struct AfterQuery {
     after: Option<u64>,
     /// A role's chat instead of the manager's (docs/tasks.md "Roles").
     role: Option<String>,
+    /// The whole chat, for a find (docs/web-client-chat.md "Find").
+    all: Option<bool>,
 }
 
 async fn tasks_chat(
@@ -1033,6 +1035,7 @@ async fn tasks_chat(
             &scopes,
             query.role.as_deref(),
             query.after,
+            query.all.unwrap_or(false),
             &app.media,
         )
         .map(Json)

@@ -147,8 +147,10 @@ function folded(rows) {
 }
 
 // A folded run: one tap shows its rows under it, rendered by `render`, another folds them.
-export function Fold({ row, render }) {
-  const [open, setOpen] = useState(false);
+// `all`: open while a find runs, so its rows are searched (find.js).
+export function Fold({ row, render, all = false }) {
+  const [opened, setOpen] = useState(false);
+  const open = opened || all;
   return html`
     <div class="fold" data-key=${row.key} data-at=${row.at}>
       <button class="fold-toggle" type="button" aria-expanded=${open} onClick=${() => setOpen(!open)}>

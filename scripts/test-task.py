@@ -987,7 +987,7 @@ def run(wsx, wsxd, work, owned):
         (captures / ('manager-%d.ans' % cols)).write_bytes(frames[2])
         # ^ The whole footer fits at both widths, `(S)hell` in its place.
         assert re.search(r'(?m)^ TASKS +\(j/k\)move +\(enter\)detail +\(m\)anager +\(S\)hell +Esc: close ', hinted[1]), hinted[1]
-        assert re.search(r'(?m)^ MANAGER +\(i\)message +\(S\)hell +Esc: back +\(j/k\)scroll ', hinted[2]), hinted[2]
+        assert re.search(r'(?m)^ MANAGER +\(i\)message +\(/\)find +\(S\)hell +Esc: back +\(j/k\)scroll ', hinted[2]), hinted[2]
     # ^ Open tasks of earlier steps sort above a working one (task_list.rs `rows`): move to
     # its row, and its detail shows it is the one.
     rank = {'waiting': 0, 'failed': 1, 'ready': 2, 'checking': 3}
@@ -2004,6 +2004,30 @@ def run(wsx, wsxd, work, owned):
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'(?m)^ You +\d\d:\d\d$', b'\x1b'),
         (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], cols=80)[2]
     assert re.search(r'(?m)^ You +\d\d:\d\d$', narrow) and 'hello from the tui' in narrow, narrow
+    # `/` finds in the chat (docs/tasks.md "TUI"): "quasar" is only in the 1st and 4th of 210 older
+    # turns, past the newest 200 entries, so the find reads the whole log. It starts at the newer
+    # match; `n` goes to the older one, `N` back, `Esc` clears. The older log goes after.
+    old_log = manager_log.with_name('log.1.jsonl')
+    assert not old_log.exists()
+    long_ago = int(time.time() * 1000) - 86_400_000
+    old_log.write_text(''.join(json.dumps(entry) + '\n' for n in range(210) for entry in (
+        {'kind': 'message', 'id': 90001 + 2 * n, 'from': 'owner', 'unix_ms': long_ago + n * 20_000,
+         'text': 'Where did the Quasar notes go?' if n == 0 else 'Older question %d.' % n},
+        {'kind': 'delivered', 'ids': [90001 + 2 * n], 'unix_ms': long_ago + n * 20_000 + 1},
+        {'kind': 'reply', 'id': 90002 + 2 * n, 'to': [90001 + 2 * n], 'unix_ms': long_ago + n * 20_000 + 2000,
+         'text': 'The quasar notes are in docs.' if n == 3 else 'Older answer %d.' % n})))
+    found = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'\(/\)find', b'/'),
+        (r'Enter: keep', b'QUASAR'),
+        (r'(?m)^ /QUASAR 2/2', b'\r'),
+        (r'\(n\)previous', b'n'),
+        (r'(?m)^ /QUASAR 1/2', b'N'),
+        (r'(?m)^ /QUASAR 2/2', b'\x1b'),
+        (r'\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+    old_log.unlink()
+    assert 'The quasar notes are in docs.' in found[4], found[4]
+    assert 'Where did the Quasar notes go?' in found[6], found[6]
+    assert '/QUASAR' not in found[8] and 'press i to write' in found[8], found[8]
     js('task', 'close', asks, '--discard')
 
     # 23. wsx's boundary (docs/tasks.md "Permissions"): one Seatbelt profile per role over the

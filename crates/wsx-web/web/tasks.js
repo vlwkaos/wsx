@@ -8,6 +8,7 @@ import { can, leaveFor, shows, state, touch, update, useEventLoad, useStore } fr
 import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
 import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
+import { FindBar, FindButton } from "./find.js";
 import { QuoteChip, useReply, withQuote } from "./reply.js";
 import { readTaskAhead, TaskPage } from "./task.js";
 import { ProjectOverview } from "./page.js";
@@ -824,20 +825,36 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
   };
   const shown = useRef([]);
   const cut = useRef(false);
+  // ^ A find reads the whole conversation once, not its newest 400 entries; it stays
+  // whole after the find closes (docs/web-client-chat.md "Find").
+  const [finding, setFinding] = useState(false);
+  const whole = useRef(null);
 
   // Reads after the last entry it has; one read at a time, one more after a change during it.
   const load = useCoalescedLoad(async (current) => {
-    const last = shown.current.findLast((entry) => entry.id != null)?.id;
-    const next = await api(`api/tasks/${id}/chat`, { query: { ...(last != null && { after: last }), ...(role && { role }) } });
+    const all = whole.current === false;
+    const last = all ? null : shown.current.findLast((entry) => entry.id != null)?.id;
+    const next = await api(`api/tasks/${id}/chat`, { query: { ...(last != null && { after: last }), ...(all && { all: true }), ...(role && { role }) } });
     if (!current()) return;
+    if (all) {
+      whole.current = true;
+      cut.current = false;
+      shown.current = next.entries;
+      setChat(next);
+      setFailure("");
+      return;
+    }
     if (role) keepIn(ROLES_SEEN_KEY, `${id}/${role}`, Date.now());
     // ^ A rotation or a stop has no id, so every read after the last id returns it again
     // until the next message: it joins once.
     const known = (entry) => entry.id == null
       && shown.current.some((seen) => seen.id == null && seen.kind === entry.kind && seen.unix_ms === entry.unix_ms);
-    const all = [...shown.current, ...next.entries.filter((entry) => !known(entry))];
-    if (next.skipped || all.length > 400) cut.current = true;
-    shown.current = all.slice(-400);
+    const joined = [...shown.current, ...next.entries.filter((entry) => !known(entry))];
+    if (whole.current) shown.current = joined;
+    else {
+      if (next.skipped || joined.length > 400) cut.current = true;
+      shown.current = joined.slice(-400);
+    }
     setChat({ ...next, entries: shown.current });
     setFailure("");
   }, (error) => setFailure(error.message), [id]);
@@ -874,7 +891,16 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
     rows.push({ kind: "bubble", key: "sending", author: "owner", at: Date.now(), first: !grouped, last: true, pending: true, entry: { text: sent.text } });
   }
   const firstNew = since == null ? null : rows.find((row) => row.kind === "bubble" && row.author !== "owner" && !row.pending && row.at > since);
-  const [recent, earlier] = useRecent(place, rows, firstNew);
+  const [recent, earlier] = useRecent(place, rows, firstNew, { all: finding });
+  const find = () => {
+    if (finding) return setFinding(false);
+    setFinding(true);
+    // ^ false: asked, not read yet (`load` reads the whole chat once).
+    if (whole.current == null) {
+      whole.current = false;
+      load();
+    }
+  };
   const typing = Boolean(chat?.busy);
   // ^ The typing bubble fades out as the reply replaces it.
   const typingShown = useAfter(typing, LEAVE_MS) || typing;
@@ -897,7 +923,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
   const show = (row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${fresh.current.has(row.key)} />`
     : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} text=${row.text} fresh=${fresh.current.has(row.key)} />`
     : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} name=${names.manager} fresh=${fresh.current.has(row.key)} />`
-    : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} />`
+    : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} all=${finding} />`
     : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${fresh.current.has(row.key)} onMention=${mention} />`
     : html`<${Note} key=${row.key} entry=${row.entry} />`;
   return html`
@@ -911,9 +937,13 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
             ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`
             : managerWord}</span>`}
         </div>
-        ${!role && html`<div class="bar-tools"><${ProjectShell} project=${project} /><${More} project=${project} roles=${chat?.roles} /></div>`}
+        <div class="bar-tools">
+          <${FindButton} open=${finding} onClick=${find} />
+          ${!role && html`<${ProjectShell} project=${project} /><${More} project=${project} roles=${chat?.roles} />`}
+        </div>
       </header>
       <div class="chat">
+        ${finding && html`<${FindBar} log=${log} loading=${whole.current !== true} onClose=${() => setFinding(false)} />`}
         ${!role && html`<${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "bubble" && row.author !== "owner")?.at} sent=${sent} />`}
         <div class="log-wrap">
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label=${`Conversation with ${role ?? "the manager"}`} tabindex="0" ...${gestures}>

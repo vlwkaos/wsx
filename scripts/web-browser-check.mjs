@@ -436,6 +436,17 @@ async function chats() {
   await shot("chat-long-scrolled");
   await evaluate("document.querySelector('.jump').click()");
   await until("!document.querySelector('.jump') && (() => { const log = document.querySelector('.log'); return log.scrollHeight - log.scrollTop - log.clientHeight < 2; })()", "Jump to latest did not go to the end");
+  // Find (docs/web-client-chat.md "Find"): the header's icon; the first question is above the 60
+  // rows shown, so the find shows every row. Case-insensitive, one match, scrolled into view; Esc closes.
+  await evaluate("document.querySelector('.bar button[aria-label=\"Find in chat\"]').click()");
+  await until("document.activeElement === document.querySelector('.find-field')", "the session's find bar did not open");
+  await evaluate(`(() => { const field = document.querySelector('.find-field'); field.value = 'question 1:'; field.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await until("document.querySelector('.find-count').textContent === '1/1'", "the session's find did not count 1/1");
+  const sessionFind = await evaluate(`(() => { const range = [...CSS.highlights.get('find-current')][0]; const box = range.startContainer.parentElement.getBoundingClientRect();
+    const log = document.querySelector('.log').getBoundingClientRect(); return { text: range.toString(), shown: box.top >= log.top && box.bottom <= log.bottom, earlier: !!document.querySelector('.log-earlier') }; })()`);
+  if (sessionFind.text !== "Question 1:" || !sessionFind.shown || sessionFind.earlier) await fail(`the session's find reads ${JSON.stringify(sessionFind)}`);
+  await key("Escape", 27);
+  await until("!document.querySelector('.find') && !CSS.highlights.has('find')", "Esc did not close the session's find");
   // A disclosure lists each step with its state word; a failed call says so.
   await evaluate("[...document.querySelectorAll('details.steps')].forEach((node) => { node.open = true; })");
   if (!(await count(".step-state[data-tone=danger]")) || !(await count(".step-title"))) await fail("an opened steps line does not list its steps, or a failed call is not marked");

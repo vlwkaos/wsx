@@ -2220,6 +2220,32 @@ await evaluate(`${foldRow}.scrollIntoView({ block: 'start' })`);
 await shot("fold-open");
 await evaluate(`${foldRow}.querySelector('.fold-toggle').click()`);
 await until(`${foldRow}.querySelector('.fold-toggle').getAttribute('aria-expanded') === 'false' && !${foldRow}.querySelector('.status-line')`, "a second tap did not fold the run");
+// --- Find (docs/web-client-chat.md "Find"): the header's icon opens the bar and loads the whole
+// chat; "quasar" is only in plans' 1st and 4th older turns, past the newest 400 entries
+// (test-web-client.py). It starts at the newer match; Previous goes to the older one, Next back.
+const findButton = "document.querySelector('.bar-tools button[aria-label=\"Find in chat\"]')";
+if (await evaluate(`!${findButton} || !!${findButton}.textContent.trim()`)) await fail("the header has no icon-only Find button");
+if (await evaluate("[...document.querySelectorAll('.log .bubble')].some((node) => /quasar/i.test(node.textContent))")) await fail("the oldest turns show before a find");
+await evaluate(`${findButton}.click()`);
+await until("document.activeElement === document.querySelector('.find-field')", "the find bar did not open with its field focused");
+await typeInto(".find-field", "QUASAR");
+const found = () => evaluate(`(() => { const current = CSS.highlights.get('find-current'); const range = current && [...current][0];
+  const node = range?.startContainer.parentElement; const log = document.querySelector('.log').getBoundingClientRect(); const box = node?.getBoundingClientRect();
+  return { count: document.querySelector('.find-count').textContent, marks: CSS.highlights.get('find')?.size ?? 0, text: range?.toString(),
+    bubble: node?.closest('.bubble')?.textContent ?? '', shown: !!box && box.top >= log.top && box.bottom <= log.bottom }; })()`);
+await until("document.querySelector('.find-count').textContent === '2/2'", "the find did not count 2/2 over the whole chat", 30);
+let seen = await found();
+if (seen.marks !== 2 || seen.text !== "quasar" || !/notes are in docs/.test(seen.bubble) || !seen.shown) await fail(`the newest match reads ${JSON.stringify(seen)}`);
+await shot("find");
+await evaluate("document.querySelector('.find button[aria-label=\"Previous match\"]').click()");
+await until("document.querySelector('.find-count').textContent === '1/2'", "Previous did not move to the older match");
+seen = await found();
+if (seen.text !== "Quasar" || !/Where did the Quasar notes go/.test(seen.bubble) || !seen.shown) await fail(`the older match reads ${JSON.stringify(seen)}`);
+await evaluate("document.querySelector('.find button[aria-label=\"Next match\"]').click()");
+await until("document.querySelector('.find-count').textContent === '2/2'", "Next did not move back to the newer match");
+await evaluate("document.querySelector('.find-field').focus()");
+await key("Escape", 27);
+await until("!document.querySelector('.find') && !CSS.highlights.has('find') && !CSS.highlights.has('find-current')", "Esc did not close the find and clear its marks");
 await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
 await openReservoir();
 await until(`!!${rowOf("#1")}`, "the waiting task has no reservoir row");

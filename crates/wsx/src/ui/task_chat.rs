@@ -5,11 +5,12 @@ use crate::task_chat::{Focus, Item, ManagerChat, Row, Who};
 use ratatui::{
     layout::Rect,
     prelude::Stylize,
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph},
     Frame,
 };
+use std::ops::Range;
 
 /// Below this width a To check row drops where to look.
 const WHERE_MIN_WIDTH: usize = 100;
@@ -31,7 +32,18 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
     let room = inner.height.saturating_sub(top.len() as u16 + 1);
     let items_height = (items.len() as u16).min(room / 3);
     let chat_height = room - items_height;
-    let lines = chat_lines(&chat.rows, chat.who(), width);
+    chat.area.set((width, chat_height));
+    let mut lines = chat_lines(&chat.rows, chat.who(), width);
+    let matches = find_in(&lines, chat.find.value());
+    // ^ Every match reversed, the current one also in a color (docs/tasks.md "TUI").
+    let current = chat.found.min(matches.len().saturating_sub(1));
+    for (index, (line, range)) in matches.into_iter().enumerate() {
+        let mut style = Style::default().add_modifier(Modifier::REVERSED);
+        if index == current {
+            style = style.fg(theme::IDLE).bold();
+        }
+        lines[line] = mark(std::mem::take(&mut lines[line]), range, style);
+    }
     let max_scroll = (lines.len() as u16).saturating_sub(chat_height);
     chat.max_scroll.set(max_scroll);
     let scroll = chat.scroll.min(max_scroll);
@@ -76,11 +88,20 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
 pub fn hints(chat: &ManagerChat) -> Vec<String> {
     match &chat.focus {
         Focus::Compose => vec!["Enter: send".into(), "Esc: done".into()],
+        Focus::Find => vec!["Enter: keep".into(), "Esc: clear".into()],
         Focus::Fail(_) => vec!["Enter: fail it".into(), "Esc: cancel".into()],
         Focus::Confirm { .. } => vec!["(y)es".into(), "(n)o".into()],
         Focus::Chat => {
             // ^ The footer drops hints from the end: scrolling goes first, then back.
-            let mut hints = vec!["(i)message".into()];
+            if !chat.find.value().is_empty() {
+                return vec![
+                    "(n)previous".into(),
+                    "(N)next".into(),
+                    "Esc: clear".into(),
+                    "(/)find".into(),
+                ];
+            }
+            let mut hints = vec!["(i)message".into(), "(/)find".into()];
             match chat.selected_item() {
                 Some(Item::Check(_)) => {
                     hints.extend(["(p)ass".into(), "(s)kip".into(), "(f)ail".into()])
@@ -234,6 +255,73 @@ pub fn chat_lines(rows: &[Row], other: &str, width: usize) -> Vec<Line<'static>>
     lines
 }
 
+/// Where `query` shows in `lines`, case-insensitive: each match's line and byte range in
+/// the line's text, oldest first. An empty query finds nothing.
+pub fn find_in(lines: &[Line], query: &str) -> Vec<(usize, Range<usize>)> {
+    let query = query.to_lowercase();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        // ^ A lower-case letter can take other bytes than its capital: map each byte of the
+        // lower-case text back to the byte of its character in the line.
+        let (mut lower, mut at) = (String::new(), Vec::new());
+        for (byte, char) in text.char_indices() {
+            for low in char.to_lowercase() {
+                at.extend(std::iter::repeat_n(byte, low.len_utf8()));
+                lower.push(low);
+            }
+        }
+        at.push(text.len());
+        let mut from = 0;
+        while let Some(start) = lower[from..].find(&query) {
+            let (start, end) = (from + start, from + start + query.len());
+            // ^ The end is the next character's start, so a matched character stays whole.
+            let stop = at[end..].iter().find(|&&byte| byte > at[end - 1]).copied();
+            found.push((index, at[start]..stop.unwrap_or(text.len())));
+            from = end;
+        }
+    }
+    found
+}
+
+/// `line` with the bytes `range` of its text in `style` over their own.
+fn mark(line: Line<'static>, range: Range<usize>, style: Style) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut offset = 0;
+    for span in line.spans {
+        let (start, end) = (offset, offset + span.content.len());
+        offset = end;
+        let (from, to) = (range.start.clamp(start, end), range.end.clamp(start, end));
+        if from == to {
+            spans.push(span);
+            continue;
+        }
+        let text = span.content.as_ref();
+        for (part, lit) in [
+            (&text[..from - start], false),
+            (&text[from - start..to - start], true),
+            (&text[to - start..], false),
+        ] {
+            if !part.is_empty() {
+                let own = if lit {
+                    span.style.patch(style)
+                } else {
+                    span.style
+                };
+                spans.push(Span::styled(part.to_string(), own));
+            }
+        }
+    }
+    Line { spans, ..line }
+}
+
 /// `text` broken at spaces into lines of at most `width` cells; a longer word is split.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let cells = |text: &str| Line::from(text).width();
@@ -352,8 +440,37 @@ fn composer(chat: &ManagerChat, width: usize) -> (Line<'static>, Option<u16>) {
         let shown = before + &state.buffer[state.cursor..];
         (Line::raw(truncate_to_width(&shown, width)), Some(column))
     };
+    // ^ The find's count after its text: `2/5`, from the oldest match (docs/tasks.md "TUI").
+    let count = || {
+        let found = chat.matches().len();
+        match found {
+            0 => " 0/0".to_string(),
+            _ => format!(" {}/{found}", chat.found.min(found - 1) + 1),
+        }
+    };
     match &chat.focus {
         Focus::Compose => typed(&chat.composer),
+        Focus::Find => {
+            let (line, cursor) = typed(&chat.find);
+            let mut spans = line.spans;
+            if !chat.find.value().is_empty() {
+                spans.push(Span::styled(
+                    count(),
+                    Style::default().fg(theme::TEXT_MUTED),
+                ));
+            }
+            (Line::from(spans), cursor)
+        }
+        Focus::Chat if !chat.find.value().is_empty() => (
+            Line::from(vec![
+                Span::raw(truncate_to_width(
+                    &format!("/{}", chat.find.value()),
+                    width / 2,
+                )),
+                Span::styled(count(), Style::default().fg(theme::TEXT_MUTED)),
+            ]),
+            None,
+        ),
         Focus::Fail(_) => typed(&chat.note),
         Focus::Confirm { label, approve, .. } => {
             let words = if *approve {

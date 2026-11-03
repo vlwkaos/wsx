@@ -229,9 +229,14 @@ impl ManagerEntry {
 pub const CHAT_ENTRIES: usize = 200;
 
 /// The chat after message `after` (all of it when `after` is none or unknown): messages,
-/// replies, rotations and stops, the newest `CHAT_ENTRIES` of them, and how many older ones
-/// were left out. `Delivered` and `Agent` entries are not conversation.
-pub fn chat_window(log: &[ManagerEntry], after: Option<u64>) -> (Vec<&ManagerEntry>, usize) {
+/// replies, rotations and stops, the newest `limit` of them (`CHAT_ENTRIES` for a view, no
+/// cap for a find over the whole history), and how many older ones were left out.
+/// `Delivered` and `Agent` entries are not conversation.
+pub fn chat_window(
+    log: &[ManagerEntry],
+    after: Option<u64>,
+    limit: usize,
+) -> (Vec<&ManagerEntry>, usize) {
     let start = after
         .and_then(|after| log.iter().position(|entry| entry.id() == Some(after)))
         .map_or(0, |index| index + 1);
@@ -244,7 +249,7 @@ pub fn chat_window(log: &[ManagerEntry], after: Option<u64>) -> (Vec<&ManagerEnt
             )
         })
         .collect();
-    let skipped = entries.len().saturating_sub(CHAT_ENTRIES);
+    let skipped = entries.len().saturating_sub(limit);
     entries.drain(..skipped);
     (entries, skipped)
 }
