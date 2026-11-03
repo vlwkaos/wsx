@@ -156,6 +156,8 @@ struct TaskManagerFile {
     model: Option<String>,
     #[serde(rename = "eventModel", skip_serializing_if = "Option::is_none")]
     event_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
     #[serde(rename = "rotateTokens", skip_serializing_if = "Option::is_none")]
     rotate_tokens: Option<u64>,
     #[serde(rename = "recapMinutes", skip_serializing_if = "Option::is_none")]
@@ -211,6 +213,8 @@ struct TaskAgentFile {
     model: Option<String>,
     #[serde(rename = "smallModel", skip_serializing_if = "Option::is_none")]
     small_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
     #[serde(rename = "rotateTokens", skip_serializing_if = "Option::is_none")]
     rotate_tokens: Option<u64>,
     #[serde(rename = "rotateIdleSeconds", skip_serializing_if = "Option::is_none")]
@@ -536,6 +540,9 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         if let Some(model) = validate_word(agent.small_model, "tasks.agent.smallModel")? {
             config.small_model = model;
         }
+        if let Some(effort) = validate_effort(agent.effort, "tasks.agent.effort")? {
+            config.effort = effort;
+        }
         config.fallback = validate_fallback(agent.fallback, "tasks.agent.fallback")?;
         if let Some(minutes) = agent.max_wait_minutes {
             if minutes > 8 * 24 * 60 {
@@ -674,6 +681,9 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         config.manager_fallback = validate_fallback(manager.fallback, "tasks.manager.fallback")?;
         if let Some(model) = validate_word(manager.model, "tasks.manager.model")? {
             config.manager_model = model;
+        }
+        if let Some(effort) = validate_effort(manager.effort, "tasks.manager.effort")? {
+            config.manager_effort = effort;
         }
         if let Some(model) = validate_word(manager.event_model, "tasks.manager.eventModel")? {
             config.manager_event_model = (model != "off").then_some(model);
@@ -857,6 +867,16 @@ fn validate_optional_text(
 }
 
 /// `validate_optional_text` for one word, such as a model name.
+fn validate_effort(value: Option<String>, field: &str) -> Result<Option<String>, String> {
+    use crate::model::workspace::EFFORTS;
+    match value {
+        Some(effort) if !EFFORTS.contains(&effort.as_str()) => {
+            Err(format!("{field} must be one of: {}", EFFORTS.join(", ")))
+        }
+        effort => Ok(effort),
+    }
+}
+
 fn validate_word(value: Option<String>, field: &str) -> Result<Option<String>, String> {
     let value = validate_optional_text(value, field, MAX_TASK_WORD_BYTES)?;
     if value

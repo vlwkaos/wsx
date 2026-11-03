@@ -308,10 +308,10 @@ export function taskHealth(task) {
   return [workingWords({ ...task, step: null }) || "working", tone];
 }
 
-// The agent in use now, in few words: "sonnet", "pi/qwen", "fallback pi/qwen". Never an effort:
-// wsx sets none and no stream reports one (docs/web-client-tasks.md "Agent").
+// The agent in use now, in few words: "sonnet low", "pi/qwen medium", "fallback pi/qwen": the
+// effort wsx passes follows the model (docs/web-client-tasks.md "Agent"; view.rs `agent_label`).
 export const agentWords = (agent) => !agent?.model ? ""
-  : `${agent.fallback ? "fallback " : ""}${agent.adapter === "claude" && !agent.fallback ? "" : `${agent.adapter}/`}${agent.model}`;
+  : `${agent.fallback ? "fallback " : ""}${agent.adapter === "claude" && !agent.fallback ? "" : `${agent.adapter}/`}${agent.model}${agent.effort ? ` ${agent.effort}` : ""}`;
 
 // A working task in the reservoir: its pulsing dot, title and number.
 const RunningRow = ({ project, task, leaving }) => html`

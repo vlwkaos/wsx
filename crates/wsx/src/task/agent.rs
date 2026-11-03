@@ -63,6 +63,8 @@ impl TurnResult {
 pub struct Launch {
     pub cwd: PathBuf,
     pub model: String,
+    /// Claude's `--effort`, Pi's `--thinking`; empty passes none. ref: docs/tasks.md "Agents"
+    pub effort: String,
     /// The role's OS boundary over the whole agent process tree; the agent itself prompts
     /// for nothing.
     pub boundary: Boundary,
@@ -84,6 +86,7 @@ impl Launch {
         Self {
             cwd: cwd.to_path_buf(),
             model: model.to_string(),
+            effort: String::new(),
             boundary,
             schema: None,
             instructions,

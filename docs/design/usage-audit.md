@@ -116,7 +116,7 @@ The rule for code or judgment: a step the agents repeat with the same inputs and
 
 Replaces "Findings (2026-11-03)" (#169). Window: rolling 7 days, plus the tasks since #169 landed. Transcript evidence is in each task's `log.jsonl` and `~/.claude/projects/-Users-vlwkaos-ws-wsx-t<n>/`.
 
-**Answer.** Per landed task fell from $4.32 to $2.38 over 7 days and to $1.73 since 11-03. Most of the fall comes from the mix of tasks, not from the two changes: the expensive 10-28 tasks left the window, and 6 of the 10 tasks landed since 11-03 ran on sonnet. The two changes have not run yet: #176 still runs a `context` step, and only #174 ran build only. Since 11-03 the cost goes to the `context` step, to waiting for checks inside a turn, and to failed check runs that each wait 20-90 min in the queue.
+**Answer.** Per landed task fell from $4.32 to $2.38 over 7 days and to $1.73 since 11-03. Most of the fall comes from the mix of tasks, not from the two changes: the expensive 10-28 tasks left the window, and 6 of the 10 tasks landed since 11-03 ran on sonnet. The two changes have not run yet: #176 still runs a `context` step, and only #174 ran build only. Since 11-03 the cost goes to turns started by owner messages, restarts and check-run answers, to waiting for checks inside a turn, and to failed check runs that each wait 20-90 min in the queue. (Corrected 11-04, #182: an earlier version put 39% on the `context` step; see the step row below.)
 
 ### Evidence
 
@@ -133,11 +133,11 @@ turns over 200k context: $0.00; turns after > 1 h idle (cold cache): $0.99
 
 | since 11-03 | $ | turns | where it went (log.jsonl `result`, `check_run`) |
 |---|---|---|---|
-| step `context` (all tasks) | 7.68 of 19.60 | 14 | 48% cache write; in #173, recall returned `mode=none` and 4 unrelated vault hits |
-| #167 opus, 5 steps | 4.49 | 14 | $3.49 in the `context` step: 2 owner messages grew it to 141k, then 2 `restart` turns after a background `check-run` was killed at 30 min; 4 failed runs (test-task.py timeouts, 35-78 min queue each); 363 min check wait |
+| step `context` (all tasks) | 3.06 of 19.60 | 5 | only the turns the step started (trigger `step`): $0.47-0.79 each, mostly the first-turn cache write any first step pays. The other $4.62 in 9 turns are `message`, `restart`, `check_run` and `rotation` turns that came while the record still named `context` (#167 $2.98, #173 $0.95, #170 $0.68); `usage-report.py` now lists them by trigger. In #173, recall returned `mode=none` and 4 unrelated vault hits |
+| #167 opus, 5 steps | 4.49 | 14 | $3.71 while the step was `context`, of which $0.73 is its own turn: 2 owner messages grew it to 141k, then 2 `restart` turns after a background `check-run` was killed at 30 min; 4 failed runs (test-task.py timeouts, 35-78 min queue each); 363 min check wait |
 | #175 sonnet, build+review | 2.22 | 3 | one build turn of 323 min and 87 calls: it polled with `until [ -s …web.out ]` (47 of 113 agent lines; about 43% of its cache reads, est.); 4 failed `web` runs, the first one a stale "Page" assert |
 | #172 sonnet, 3 steps | 1.92 | 16 | 7 `restart` + 3 `rotation` turns: a `web` check-run killed at the background limit, then idle > 1 h; 3 failed runs (stale menu assert, own probe 404) |
-| #173 opus, 5 steps | 2.91 | 10 | $1.68 in `context` (recall found nothing); 1 rotation, 1 conflict |
+| #173 opus, 5 steps | 2.91 | 10 | $1.74 while the step was `context`, of which $0.79 is its own turn (recall found nothing); 1 rotation, 1 conflict |
 | #174 sonnet, build only | 0.33 | 4 | the only build-only task: $0.33 / 4 turns against the $0.54 / 4 turns baseline |
 
 ### Did the changes since #169 work?
@@ -165,7 +165,7 @@ Report gap: `usage-report.py` weighs reads at 0.1x. On the 5.5 models a read cos
 
 | # | change | cause and evidence | expected effect | measure after 8 landed tasks |
 |---|---|---|---|---|
-| 1 | Owner applies the #173 `steps:` edit: remove `context`; the last step's result carries the memo | `context` is 39% of worker cost since 11-03 ($7.68 of $19.60) and loads nothing from a worktree; #167 $3.49, #173 $1.68 | cost -$0.5 to -0.8 per opus task, one cold turn less; speed about -1 min; quality = (recall gave nothing) | per-step table: `context` turns = 0; opus 5-step median $5.73 → 4-step |
+| 1 | Owner applies the #173 `steps:` edit: remove `context`; the last step's result carries the memo | the `context` step's own turns are 16% of worker cost since 11-03 ($3.06 of $19.60, 5 turns) and load nothing from a worktree | small: about one first turn's recall work per task, since the first real step then pays the first-turn cache write; one turn less; speed about -1 min; quality = (recall gave nothing) | per-step table: `context` turns = 0; opus 5-step median $5.73 → 4-step |
 | 2 | Waiting on a check costs no turn: step text says to start `wsx task check-run` in the background with the longest timeout and never poll; or the host answers the check as a `check_run` turn and the step ends after queueing | queue wait is 20-90 min, longer than the 30 min background default: #167 got 2 restarts, #172 got 7 restarts + 3 rotations, #175 polled for 323 min (est. $0.85); `restart` turns cost $14.67 in 47 turns over 7 days | cost about -$0.3 to -0.9 per task with a check-run; fewer restarts and rotations; quality = | `restart` trigger turns per task (47 in 7 days), polling lines in "Repeated agent commands", $ of turns over 60 min |
 | 3 | Before `check-run`, the build step searches the scenario scripts (`scripts/test-*.py`) for every UI string or label the diff renames, and fixes stale asserts | 11 failed runs in #167, #172, #175; at least 3 were stale asserts in the `web` scenario; each failure costs a 20-90 min queue plus a repair turn; 181 min check wait per task | failed check runs 1.6 → under 1 per task; wall time -40 to -80 min per failure avoided; quality + (fewer test-only fixes after the run) | failed check runs and check wait per landed task in the Summary |
 
@@ -175,4 +175,4 @@ Prove each with the loop above: one `decisions.md` line, then compare `--until` 
 
 - The owner's steps become `plan, build, review`, and the `review` result carries the memo. The `context` step goes with no replacement. This waits on the owner (proposal 1). Baseline: $4.32 per landed task, 35 turns after the last step.
 - A stated change runs on sonnet as build only. Opus runs only when the cause is unknown or the change needs design. Baseline: opus 5-step median $5.73 / 7 turns, sonnet $0.54 / 4 turns.
-- 2026-11-04 (#182): the lean flow is wsx's own behavior for every project and manager, not an edit to one config. A `context` step folds into the first other step after the host's task context block; a `memo` step folds into the step before it; `task new --size small` runs the build only on `tasks.agent.smallModel` (sonnet). Measure after 8 landed tasks against $2.38 per landed task, 5.5 turns (`usage-report.py --since` the land date): `context` turns = 0, small tasks near $0.33-0.54.
+- 2026-11-04 (#182): the lean flow is wsx's own behavior for every project and manager, not an edit to one config. A `context` step folds into the first other step after the host's task context block; a `memo` step folds into the step before it; `task new --size small` runs the build only on `tasks.agent.smallModel` (sonnet). Measure after 8 landed tasks against $2.38 per landed task, 5.5 turns (`usage-report.py --since` the land date): `context` turns = 0, small tasks near $0.33-0.54. The saving from folding `context` is small, about one first turn's recall work: its own turns cost $0.47-0.79, mostly the first-turn cache write, which the first real step now pays.

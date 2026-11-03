@@ -145,6 +145,7 @@ impl Launch {
             ));
         }
         let mut launch = Self::new(&record.working_copy, boundary, &record.model, instructions);
+        launch.effort = record.effort.clone();
         launch.plugin_dirs = skills.into_iter().collect();
         launch.schema = structured.then(worker_result_schema);
         launch.env = record
@@ -452,6 +453,9 @@ fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::Os
     ]
     .map(Into::into)
     .to_vec();
+    if !launch.effort.is_empty() {
+        args.extend(["--effort".into(), (&launch.effort).into()]);
+    }
     if let Some(schema) = &launch.schema {
         args.extend(["--json-schema".into(), schema.to_string().into()]);
     }

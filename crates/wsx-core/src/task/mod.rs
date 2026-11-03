@@ -173,6 +173,10 @@ pub struct TaskRecord {
     pub pane_id: Option<u64>,
     pub adapter: String,
     pub model: String,
+    /// The effort every launch of this task passes; empty on a record from before it.
+    /// ref: docs/tasks.md "Agents"
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub effort: String,
     pub checks: Vec<String>,
     /// `tasks.workflow.steps` as they were when the task was created, and the index of the
     /// step the worker is on. ref: docs/tasks.md "Workflow"

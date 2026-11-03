@@ -68,6 +68,11 @@ pub struct TaskConfig {
     /// `tasks.agent.smallModel`: the model of a `task new --size small` task; empty is
     /// `sonnet` for the `claude` adapter, else `model`. ref: docs/tasks.md "Workflow"
     pub small_model: String,
+    /// `tasks.agent.effort` and `tasks.manager.effort`: passed to every launch as Claude's
+    /// `--effort` or Pi's `--thinking`. Default `medium`, both agents' own default today.
+    /// ref: docs/tasks.md "Agents"
+    pub effort: String,
+    pub manager_effort: String,
     /// `tasks.agent.fallback` and `tasks.manager.fallback`: global agent names, in order.
     /// ref: docs/tasks.md "Agents"
     pub fallback: Vec<String>,
@@ -178,6 +183,11 @@ pub struct TaskPreview {
     pub local: bool,
 }
 
+/// The effort levels both Claude Code (`--effort`) and Pi (`--thinking`) take.
+pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+/// The effort of a `task new --size small` task.
+pub const SMALL_EFFORT: &str = "low";
+
 impl TaskConfig {
     /// The model of a `task new --size small` task (`tasks.agent.smallModel`).
     pub fn small_model(&self) -> &str {
@@ -201,6 +211,8 @@ impl Default for TaskConfig {
             adapter: "claude".into(),
             model: "opus".into(),
             small_model: String::new(),
+            effort: "medium".into(),
+            manager_effort: "medium".into(),
             fallback: Vec::new(),
             manager_fallback: Vec::new(),
             // ^ Claude's session limit is 5 hours: it is waited out, a weekly one is not.

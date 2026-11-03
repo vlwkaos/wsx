@@ -201,6 +201,9 @@ fn pi_args(launch: &Launch, session: &str) -> Vec<std::ffi::OsString> {
         return args;
     }
     args.extend(["--session-id".into(), session.into()]);
+    if !launch.effort.is_empty() {
+        args.extend(["--thinking".into(), (&launch.effort).into()]);
+    }
     args.extend([
         "--append-system-prompt".into(),
         (&launch.instructions).into(),
