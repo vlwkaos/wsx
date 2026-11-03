@@ -1153,7 +1153,7 @@ fn folded_steps(
 }
 
 /// How `task new` picks the worker's steps.
-pub(crate) enum Steps {
+enum Steps {
     /// One turn, without `tasks.workflow.steps`: the idle task.
     None,
     /// `tasks.workflow.steps` without these names.
