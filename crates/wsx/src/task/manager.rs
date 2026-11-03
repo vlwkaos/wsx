@@ -210,7 +210,7 @@ struct Manager {
 
 /// The plugin that lends the manager the owner's skills, `manager/<this>/`.
 /// The manager's lean project context in its notes folder. ref: docs/tasks.md "Memo"
-const CONTEXT_FILE: &str = "context.md";
+pub(super) const CONTEXT_FILE: &str = "context.md";
 /// The owner's decisions, one line each, appended by the manager as they are made.
 const DECISIONS_FILE: &str = "decisions.md";
 /// The most of both files a fresh conversation's first message carries.
@@ -280,12 +280,10 @@ fn instructions(
          most 60 characters, never starting with 'Owner'; pass one `--files` per path or \
          glob it will change, in every task new (`wsx task add <n> --files <glob> \
          \"<why>\"` adds more). The prompt stands alone, since a worker cannot ask: the goal, \
-         the owner's decisions, the scope, the files and how it proves the result. Size the task to the change. A change you can state (what \
-         changes, where, and how it proves itself) runs with `--model sonnet` and `--skip` for \
-         each step of `tasks.workflow.steps` but the build, also when its prompt only names \
-         the area; a look of your own is optional. Only an unknown cause, a change to a \
-         module's design or work that is costly to undo keeps the default model and every \
-         step. A broad hunt (find all bugs) is first one read-only audit task per area, then one \
+         the owner's decisions, the scope, the files and how it proves the result. A change you \
+         can state (what changes, where, and how it proves itself) runs with `--size small`, \
+         also when its prompt only names the area; only an unknown cause, a change to a \
+         module's design or work that is costly to undo runs without it. A broad hunt (find all bugs) is first one read-only audit task per area, then one \
          task per fix. With \
          `--plan` the worker writes a short plan and the task waits on `plan`; read it with \
          `wsx task show <n> --json` and continue with `wsx task add <n> \"go\"` or what to \
@@ -2740,7 +2738,7 @@ fn new_task(exe: &Path, project: &str, prompt: &str) -> Result<u32, String> {
 
 /// The end of a notes file, at most `MAX_NOTES_READ` bytes: the newest lines are last.
 /// A link, a missing file or text that is not UTF-8 reads as empty.
-fn read_note(path: &Path) -> String {
+pub(super) fn read_note(path: &Path) -> String {
     use std::io::{Read, Seek, SeekFrom};
     use std::os::unix::fs::OpenOptionsExt;
     let Ok(mut file) = std::fs::OpenOptions::new()
