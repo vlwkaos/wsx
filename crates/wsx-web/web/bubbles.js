@@ -177,8 +177,8 @@ export function Bubble({ project, row, words, names, fresh }) {
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
   const id = `bubble-${row.key}`;
   const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${names.peers[row.to]}` : row.tag;
-  // ^ In a chat's small space a mark is an icon; its words are its name and tooltip.
-  const mark = row.entry.provisional ? ["unchecked", "Stand-in, not checked"] : row.asks ? ["ask", "Asks you"] : null;
+  // ^ In a chat's small space the stand-in mark is an icon; an asking reply is set off by its border, and its words are in the aria-label.
+  const mark = row.entry.provisional ? ["unchecked", "Stand-in, not checked"] : null;
   let body;
   if (out) {
     body = html`<div class="bubble-body" id=${id}><${Quoted} text=${row.entry.text} words=${words} /></div><${Attachments} files=${row.entry.attachments} />`;
@@ -191,9 +191,10 @@ export function Bubble({ project, row, words, names, fresh }) {
       data-peer=${peer == null ? null : peerColor(peer)} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}
       data-at=${row.pending ? null : row.at} data-key=${row.key} data-in=${out || row.pending ? null : ""}
       data-quote=${quoteOf(row.entry.text) || null}
-      data-pending=${row.pending ? "" : null} aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}`}>
+      data-pending=${row.pending ? "" : null} data-asks=${row.asks ? "" : null}
+      aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}${row.asks ? ", Asks you" : ""}`}>
       ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${authorName(row.author, names)}</p>`}
-      <div class="bubble-box">${mark && html`<p class="bubble-tag" role="img" aria-label=${mark[1]} title=${mark[1]} data-tone=${row.asks ? "accent" : null}><${Icon} name=${mark[0]} /></p>`}${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
+      <div class="bubble-box">${mark && html`<p class="bubble-tag" role="img" aria-label=${mark[1]} title=${mark[1]}><${Icon} name=${mark[0]} /></p>`}${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
       ${row.last && html`<p class="bubble-time" aria-hidden="true">${row.pending ? "Sending…" : clock(row.at)}</p>`}
     </article>`;
 }

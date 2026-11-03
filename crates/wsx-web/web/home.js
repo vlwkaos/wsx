@@ -109,8 +109,7 @@ export function Home({ rail }) {
               <a class="row-link home-row" href=${`#/p/${row.project.id}`} aria-current=${rail && Number(open) === row.project.id ? "page" : null}>
                 <span class="row-main">
                   <span class="row-work">
-                    ${news ? html`<span class="news-mark" role="img" aria-label="New message"></span>` : null}<span class="row-label">${row.project.name}</span>
-                    ${row.overview?.asks ? html`<span class="row-asks" role="img" aria-label="Asks you" title="Asks you" data-tone="accent"><${Icon} name="ask" /></span>` : null}
+                    ${news ? html`<span class="news-mark" role="img" aria-label="New message"></span>` : null}<span class="row-label" data-tone=${row.overview?.asks ? "accent" : null}>${row.project.name}${row.overview?.asks ? html`<span class="visually-hidden">, Asks you</span>` : null}</span>
                     ${count ? html`<span class="count" key=${count} data-tone="attention" aria-label=${`${count} ${count === 1 ? "needs" : "need"} you`}>${count}</span>` : null}
                   </span>
                   <span class="row-context" key=${status.text} data-tone=${status.tone ?? null} data-loading=${status.loading ? "" : null}>
