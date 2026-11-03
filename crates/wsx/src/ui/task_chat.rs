@@ -197,7 +197,7 @@ pub fn chat_lines(rows: &[Row], other: &str, width: usize) -> Vec<Line<'static>>
                 ];
                 if *asks {
                     heading.push(Span::styled(
-                        "  Asks you",
+                        "  ?",
                         Style::default().fg(theme::ACCENT),
                     ));
                 }

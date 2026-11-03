@@ -1,7 +1,7 @@
 // The manager chat as messages: one bubble per owner message and manager reply, each with its
 // author and time, task changes as muted lines, one each, and the manager's replies to them as
 // lines under its name (docs/web-client-tasks.md "Project screen").
-import { clock, firstSentence, html, useState } from "./lib.js";
+import { clock, firstSentence, html, Icon, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { Quoted, quoteOf } from "./reply.js";
@@ -176,7 +176,9 @@ export function Bubble({ project, row, words, names, fresh }) {
   const out = row.author === "owner";
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
   const id = `bubble-${row.key}`;
-  const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${names.peers[row.to]}` : row.asks ? "Asks you" : row.tag;
+  const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${names.peers[row.to]}` : row.tag;
+  // ^ In a chat's small space a mark is an icon; its words are its name and tooltip.
+  const mark = row.entry.provisional ? ["unchecked", "Stand-in, not checked"] : row.asks ? ["ask", "Asks you"] : null;
   let body;
   if (out) {
     body = html`<div class="bubble-body" id=${id}><${Quoted} text=${row.entry.text} words=${words} /></div><${Attachments} files=${row.entry.attachments} />`;
@@ -191,7 +193,7 @@ export function Bubble({ project, row, words, names, fresh }) {
       data-quote=${quoteOf(row.entry.text) || null}
       data-pending=${row.pending ? "" : null} aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}`}>
       ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${authorName(row.author, names)}</p>`}
-      <div class="bubble-box">${tag && html`<p class="bubble-tag" data-tone=${row.asks ? "accent" : null}>${tag}</p>`}${body}</div>
+      <div class="bubble-box">${mark && html`<p class="bubble-tag" role="img" aria-label=${mark[1]} title=${mark[1]} data-tone=${row.asks ? "accent" : null}><${Icon} name=${mark[0]} /></p>`}${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
       ${row.last && html`<p class="bubble-time" aria-hidden="true">${row.pending ? "Sending…" : clock(row.at)}</p>`}
     </article>`;
 }

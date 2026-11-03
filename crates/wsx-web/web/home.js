@@ -1,6 +1,6 @@
 // Home with task_view: one row per granted project, what needs the owner first
 // (docs/web-client-tasks.md "Home"). A row opens the project's manager chat.
-import { ago, html, Loading, READ_EVENT, readUpTo, useEffect, useFlip, useNow, useRef, useState } from "./lib.js";
+import { ago, html, Icon, Loading, READ_EVENT, readUpTo, useEffect, useFlip, useNow, useRef, useState } from "./lib.js";
 import { isAgent, listedSessions, stateOf, useStore } from "./store.js";
 import { needTone, needWords } from "./tasks.js";
 import { Dots } from "./bubbles.js";
@@ -110,7 +110,7 @@ export function Home({ rail }) {
                 <span class="row-main">
                   <span class="row-work">
                     ${news ? html`<span class="news-mark" role="img" aria-label="New message"></span>` : null}<span class="row-label">${row.project.name}</span>
-                    ${row.overview?.asks ? html`<span class="row-asks" data-tone="accent">Asks you</span>` : null}
+                    ${row.overview?.asks ? html`<span class="row-asks" role="img" aria-label="Asks you" title="Asks you" data-tone="accent"><${Icon} name="ask" /></span>` : null}
                     ${count ? html`<span class="count" key=${count} data-tone="attention" aria-label=${`${count} ${count === 1 ? "needs" : "need"} you`}>${count}</span>` : null}
                   </span>
                   <span class="row-context" key=${status.text} data-tone=${status.tone ?? null} data-loading=${status.loading ? "" : null}>

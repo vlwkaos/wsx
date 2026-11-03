@@ -325,6 +325,14 @@ pub struct AgentEntry {
     /// The model a task host asks for; None: the task config's model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// What a fallback agent other than Claude may spend in a day, in USD; default 10. Past it
+    /// the agent counts as limited until midnight. ref: docs/tasks.md "Agents"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_usd_per_day: Option<u32>,
+    /// A stand-in with no tools: it answers the owner while no agent can, and those replies
+    /// count as provisional. Needs the `pi` adapter. ref: docs/tasks.md "Agents"
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub minimal: bool,
 }
 
 fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
@@ -366,6 +374,15 @@ fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
             model.is_empty() || model.len() > 256 || model.chars().any(char::is_control)
         }) {
             return Err(format!("agent {}: model is invalid", agent.name));
+        }
+        if agent.budget_usd_per_day.is_some_and(|usd| usd == 0 || usd > 10_000) {
+            return Err(format!(
+                "agent {}: budget_usd_per_day must be 1..=10000",
+                agent.name
+            ));
+        }
+        if agent.minimal && agent.adapter.as_deref() != Some("pi") {
+            return Err(format!("agent {}: minimal needs adapter pi", agent.name));
         }
     }
     Ok(())

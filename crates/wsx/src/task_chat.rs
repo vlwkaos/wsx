@@ -441,10 +441,18 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
             ManagerEvent::Reply {
                 text, quiet: true, ..
             } => rows.push(Row::Line(text.trim().to_string())),
-            ManagerEvent::Reply { text, asks, .. } => rows.push(Row::Said {
+            ManagerEvent::Reply {
+                text,
+                asks,
+                provisional,
+                ..
+            } => rows.push(Row::Said {
                 who: Who::Manager,
                 unix_ms: entry.unix_ms,
-                text: text.trim().to_string(),
+                text: match provisional {
+                    Some(name) => format!("Stand-in {name}, not checked: {}", text.trim()),
+                    None => text.trim().to_string(),
+                },
                 asks: *asks,
             }),
             // ^ An empty `sent` (older hosts logged one without --json) shows nothing.

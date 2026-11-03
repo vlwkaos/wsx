@@ -5,7 +5,7 @@
 //! runs a role: its brief, its own folder and only its tasks' events, and it leaves once idle.
 //! ref: docs/tasks.md "Manager", "Roles"
 
-use super::agent::{new_session_id, Agent, AgentLine, Launch, TurnResult};
+use super::agent::{self, new_session_id, Agent, AgentLine, Launch, TurnResult};
 use super::boundary::Boundary;
 use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME};
 use super::{broker, hosting, limit};
@@ -20,7 +20,7 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::TaskWorkflow;
 use wsx_core::runtime;
 use wsx_core::task::manager::{
-    asks_owner, decided_request, instructions_digest, pending_approvals, quiet_reply, ApprovalLine,
+    asks_owner, decided_request, event_wakes, instructions_digest, pending_approvals, quiet_reply, ApprovalLine,
 };
 use wsx_core::task::manager::{
     Author, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
@@ -49,9 +49,26 @@ const EVENT_TITLE_CHARS: usize = 80;
 /// The turn after a usage limit: the messages of the turn it ended got no answer yet.
 const LIMIT_CONTINUE: &str = "The usage limit has reset. Answer the messages before this one \
 that got no reply yet, then any below.";
-/// The first turn on a fallback agent: the limit ended the earlier conversation's turn.
-const SWITCH_CONTINUE: &str = "The earlier conversation's agent reached its usage limit before \
-it answered these messages; you continue on another agent. Answer them, then any below.";
+/// The first turn on another agent: the limit ended the earlier conversation's turn.
+const SWITCH_CONTINUE: &str = "The earlier conversation's agent stopped at a usage limit or an \
+error before it answered these messages; you continue in a new conversation. Answer them, then \
+any below.";
+/// What a stand-in is told. ref: docs/tasks.md "Agents"
+const STAND_IN: &str = "You stand in for a project's manager for a short while, because its agent \
+is at its usage limit. You have no tools: you cannot read files, start tasks or change anything. \
+Answer the owner from the notes, the last exchanges and the ledger below, in a few short lines. \
+Say what you do not know. Promise nothing. The manager's agent reads your reply and answers the \
+owner itself when it returns; say so only if the owner asked for work.";
+/// A stand-in that has not answered by then has failed; a failed one is left alone this long.
+const STAND_IN_TIMEOUT: Duration = Duration::from_secs(180);
+const STAND_IN_RETRY_MS: u64 = 5 * 60_000;
+const STAND_IN_LOOK: Duration = Duration::from_secs(10);
+/// Agent errors in a row after which the conversation itself may be the cause.
+const ERROR_ROTATE_ATTEMPTS: u32 = 3;
+/// The longest `manager/notes/context.md` gets from memos.
+const MAX_CONTEXT_LINES: usize = 60;
+/// An idle task runs at most this often.
+const IDLE_EVERY_MS: u64 = 24 * 3_600_000;
 /// The title of the task `tasks.workflow.idle` starts.
 const IDLE_TITLE: &str = "Consolidate project knowledge";
 /// A role's host leaves after this long with no message and no turn; `say` starts it again.
@@ -117,6 +134,12 @@ struct Manager {
     main: PathBuf,
     /// `tasks.manager.adapter`: the headless adapter the manager runs on.
     adapter: String,
+    /// `tasks.deploy.auto`. ref: `event_wakes`
+    deploy_auto: bool,
+    /// A stand-in's call runs: which agent and when it began.
+    stand_in: Option<(agent::Choice, Instant)>,
+    /// A hold runs for hours: looking for a stand-in reads config and log, so not every tick.
+    stand_in_look: Option<Instant>,
     model: String,
     /// `tasks.manager.eventModel`: the model of a turn with only events and no review due.
     event_model: Option<String>,
@@ -219,12 +242,12 @@ fn instructions(
          most 60 characters, never starting with 'Owner'; pass one `--files` per path or \
          glob it will change, in every task new (`wsx task add <n> --files <glob> \
          \"<why>\"` adds more). The prompt stands alone, since a worker cannot ask: the goal, \
-         the owner's decisions, the scope, the files and how it proves the result. When you have read the code and can state the goal exactly, \
-         and the prompt carries the files, what they do now, the change and its proof, run \
-         it with `--model sonnet` and `--skip` for each step of `tasks.workflow.steps` your \
-         prompt already did (context, plan). Work that needs deep exploration, an unknown \
-         cause or a change to a module's design keeps the default model and every step. A \
-         broad hunt (find all bugs) is first one read-only audit task per area, then one \
+         the owner's decisions, the scope, the files and how it proves the result. Size the task to the change. A change you can state (what \
+         changes, where, and how it proves itself) runs with `--model sonnet` and `--skip` for \
+         each step of `tasks.workflow.steps` but the build, also when its prompt only names \
+         the area; a look of your own is optional. Only an unknown cause, a change to a \
+         module's design or work that is costly to undo keeps the default model and every \
+         step. A broad hunt (find all bugs) is first one read-only audit task per area, then one \
          task per fix. With \
          `--plan` the worker writes a short plan and the task waits on `plan`; read it with \
          `wsx task show <n> --json` and continue with `wsx task add <n> \"go\"` or what to \
@@ -249,11 +272,7 @@ fn instructions(
          to check on the release. `deploy` and `release` answer at once; the \
          result comes as an event. `wsx task routine` lists and runs the project's \
          routines (results as events and in the ledger's `routines`); add, edit and delete \
-         need `--owner-said`. When the last task of a request \
-         lands and no open task \
-         changes the same files, start one housekeeping task over the files those tasks changed, with this \
-         prompt and the task numbers: {batch} \
-         When the owner wants to be sure of a change or to try it, start \
+         need `--owner-said`. When the owner wants to be sure of a change or to try it, start \
          it with `wsx task new --hold \"<why>\"` (`wsx task hold <n> \"<why>\"` holds a \
          running one, `--off` releases it). \
          Long multi-step work goes into one task: each step is `wsx task new --into <n>`, \
@@ -289,11 +308,10 @@ fn instructions(
          subagents that fit; check rather than guess. \
          When the owner decides a rule, a preference or a choice, append one line \
          `- <YYYY-MM-DD> <decision>` to {decisions} at once. Every new conversation of yours \
-         starts with that file and {context}, your lean project context. The event of a \
-         task that lands or closes carries its worker's 'memo:': fold it into {context} \
-         (merge duplicates, drop the stale, at most 60 lines). When a message opens with \
-         'Handover' (a new conversation), first fold the memos of the ledger's recent tasks \
-         the same way. The project page {page} is the owner's one-page picture: the goal, \
+         starts with that file and {context}, your lean project context. wsx adds each \
+         finished task's memo to {context}; fix or merge a line there only when you see it is \
+         wrong. Only events that need you start a turn; a landing, a close, a wait that ends \
+         by itself and an automatic deploy come along with your next turn. The project page {page} is the owner's one-page picture: the goal, \
          the tasks as a mermaid graph, the plans, the decisions and the open questions. \
          Update a section in place when it changes; never rewrite the file or create \
          another page. \
@@ -309,7 +327,6 @@ fn instructions(
             true => String::new(),
             false => format!("{} ", workflow.review),
         },
-        batch = workflow.batch,
         presentation = wsx_core::integration::PRESENTATION.trim_end(),
         context = notes.join(CONTEXT_FILE).display(),
         decisions = notes.join(DECISIONS_FILE).display(),
@@ -351,6 +368,9 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         project,
         main,
         adapter: settings.manager_adapter,
+        deploy_auto: settings.deploy_auto,
+        stand_in: None,
+        stand_in_look: None,
         model: settings.manager_model,
         event_model: settings.manager_event_model,
         agent_model: String::new(),
@@ -463,6 +483,14 @@ impl Manager {
                 }
                 Event::Agent(..) => {}
                 // ^ A role hears only what the manager host sends it.
+                Event::Tick
+                    if self
+                        .stand_in
+                        .as_ref()
+                        .is_some_and(|(_, began)| began.elapsed() >= STAND_IN_TIMEOUT) =>
+                {
+                    self.stand_in_done(None)
+                }
                 Event::Tick if self.dir.role.is_some() => self.leave_when_done(),
                 Event::Tick => {
                     self.watch_tasks();
@@ -859,7 +887,9 @@ impl Manager {
                     let memo = result["result"]["memo"].as_str().unwrap_or_default();
                     let memo = memo.split_whitespace().collect::<Vec<_>>().join(" ");
                     if !memo.is_empty() {
-                        summary.push_str(&format!("; memo: {}", clip(&memo, ledger::MEMO_CHARS)));
+                        let memo = clip(&memo, ledger::MEMO_CHARS);
+                        self.fold_memo(record.id, &memo);
+                        summary.push_str(&format!("; memo: {memo}"));
                     }
                 }
                 // ^ A landing adds its Human Verify items to the project's To check list.
@@ -882,6 +912,32 @@ impl Manager {
                 summary,
             );
             self.task_event(&record, &open_roles, line);
+        }
+    }
+
+    /// Add a finished task's memo to `notes/context.md` as one line, unless it is there. Past
+    /// `MAX_CONTEXT_LINES` the oldest memo lines go; the manager's own lines stay.
+    /// ref: docs/tasks.md "Memo"
+    fn fold_memo(&self, task: u32, memo: &str) {
+        let Ok(notes) = self.dir.notes() else {
+            return;
+        };
+        let path = notes.join(CONTEXT_FILE);
+        let text = read_note(&path);
+        let mut lines: Vec<&str> = text.lines().collect();
+        if lines.iter().any(|line| line.contains(memo)) {
+            return;
+        }
+        let added = format!("- #{task}: {memo}");
+        lines.push(&added);
+        while lines.len() > MAX_CONTEXT_LINES {
+            let Some(oldest) = lines.iter().position(|line| line.starts_with("- #")) else {
+                break;
+            };
+            lines.remove(oldest);
+        }
+        if let Err(error) = store::write_note(&path, &(lines.join("\n") + "\n")) {
+            self.say(&format!("cannot add the memo: {error:#}"));
         }
     }
 
@@ -985,7 +1041,7 @@ impl Manager {
     fn leave_when_done(&mut self) {
         let closed = !roles::is_open(&self.dir);
         let idle = self.turn.is_none()
-            && self.queue.is_empty()
+            && !self.work_waiting()
             && self.state.limit.is_none()
             && self.last_activity.elapsed() >= ROLE_LINGER;
         if closed || idle {
@@ -1093,7 +1149,7 @@ impl Manager {
     fn ask_recap(&mut self) {
         let due = self.recap_quiet.is_some_and(|quiet| {
             self.turn.is_none()
-                && self.queue.is_empty()
+                && !self.work_waiting()
                 && self.pending_events.is_empty()
                 && self.last_activity.elapsed() >= quiet
         });
@@ -1199,7 +1255,11 @@ impl Manager {
                 .is_ok_and(|record| record.state.is_open())
         });
         let notes = newest_ms(&self.main.join("knowledge/sessions").join(&self.project));
-        if prompt.is_empty() || open || notes.is_none_or(|ms| ms <= self.state.idle_ms.unwrap_or(0))
+        let recent = self
+            .state
+            .idle_ms
+            .is_some_and(|ms| now_unix_ms().saturating_sub(ms) < IDLE_EVERY_MS);
+        if recent || prompt.is_empty() || open || notes.is_none_or(|ms| ms <= self.state.idle_ms.unwrap_or(0))
         {
             return;
         }
@@ -1236,20 +1296,36 @@ impl Manager {
 
     /// Start a turn with every waiting owner message, or else with the waiting events.
     fn next_turn(&mut self) {
-        // ^ A hold from before a fallback was configured, or from an older wsx, still moves:
-        // a manager waiting days for a weekly limit switches on its next tick.
-        if let Some(hold) = self.state.limit.clone().filter(|hold| !hold.switched) {
-            if self.switch_agent(hold.until_ms, &hold.ids, hold.events) {
+        self.choose_agent();
+        // ^ During a limit the messages wait, also when another host met it or a budget is
+        // spent; after it they go with the held ones.
+        let now = now_unix_ms();
+        let waits_until = self
+            .state
+            .limit
+            .as_ref()
+            .map(|hold| hold.until_ms)
+            .filter(|until| now < *until)
+            .or_else(|| store::limited_until(&self.current_account(), now));
+        if let Some(until_ms) = waits_until {
+            if self.state.limit.is_none() && self.work_waiting() {
+                self.log(ManagerEvent::Limit {
+                    until: Some(limit::resume_time(until_ms, now)),
+                });
+                self.state.limit = Some(LimitHold {
+                    until_ms,
+                    attempt: 0,
+                    ids: Vec::new(),
+                    events: true,
+                    switched: false,
+                });
                 self.save();
             }
+            self.stand_in();
+            return;
         }
-        // ^ During a usage limit the messages wait; after it they go with the held ones.
         let held = self.state.limit.clone();
-        if held
-            .as_ref()
-            .is_some_and(|hold| now_unix_ms() < hold.until_ms)
-            || (held.is_none() && self.queue.is_empty())
-        {
+        if held.is_none() && !self.work_waiting() {
             return;
         }
         // ^ A replaced binary: exec it before this turn. The messages stay logged and not
@@ -1261,10 +1337,22 @@ impl Manager {
         }
         let first = self
             .queue
-            .front()
+            .iter()
+            .find(|(_, author, text)| self.wakes(author, text))
+            .or(self.queue.front())
             .map_or(Author::Owner, |(_, author, _)| author.clone());
         let mut ids = Vec::new();
         let mut text = String::new();
+        // ^ Events that need no judgment go along with a turn that runs anyway, after its
+        // own messages.
+        let mut along = Vec::new();
+        if first != Author::Events {
+            while let Some(at) = self.queue.iter().position(|(_, author, text)| {
+                *author == Author::Events && !self.wakes(author, text)
+            }) {
+                along.push(self.queue.remove(at).expect("position is in the queue"));
+            }
+        }
         while self
             .queue
             .front()
@@ -1315,6 +1403,10 @@ impl Manager {
             text.push_str(&format!("{heading} (message {id}):\n{body}\n\n"));
             ids.push(id);
         }
+        for (id, _, body) in along {
+            text.push_str(&format!("Events (message {id}):\n{body}\n\n"));
+            ids.push(id);
+        }
         // ^ The limit preface is no owner message: a held turn is events-only when its
         // held and its new messages all are. Another manager's or a role's reply is used, not
         // answered: like events. ref: docs/tasks.md "Manager"
@@ -1330,6 +1422,8 @@ impl Manager {
                 )
             };
         match &held {
+            // ^ A wait no turn met: no message waits for an answer.
+            Some(hold) if hold.ids.is_empty() => {}
             Some(hold) if hold.switched => {
                 text = format!(
                     "{SWITCH_CONTINUE}\n\n{}{text}",
@@ -1338,6 +1432,9 @@ impl Manager {
             }
             Some(_) => text = format!("{LIMIT_CONTINUE}\n\n{text}"),
             None => {}
+        }
+        if std::mem::take(&mut self.state.provisional) {
+            text = self.provisional_note() + &text;
         }
         if let Err(error) = self.send_turn(text.trim_end(), events_only) {
             self.say(&format!("cannot start the manager agent: {error:#}"));
@@ -1379,25 +1476,67 @@ impl Manager {
         }
     }
 
+    /// Whether a queued message starts a turn. ref: `event_wakes`
+    fn wakes(&self, author: &Author, text: &str) -> bool {
+        *author != Author::Events || text.lines().any(|line| event_wakes(line, self.deploy_auto))
+    }
+
+    fn work_waiting(&self) -> bool {
+        self.queue
+            .iter()
+            .any(|(_, author, text)| self.wakes(author, text))
+    }
+
+    /// Before every turn, the best agent that can take it: back on the own agent as soon as
+    /// its limit is over, in a fresh conversation; down to a fallback only past
+    /// `maxWaitMinutes` and only when a turn waits. ref: docs/tasks.md "Agents"
+    fn choose_agent(&mut self) {
+        let now = now_unix_ms();
+        let own = agent::account(&self.adapter, &self.model);
+        if self.state.agent.is_some() && store::limited_until(&own, now).is_none() {
+            let reason = format!("back on {}", self.adapter);
+            self.say(&reason);
+            let held = self.state.limit.take();
+            self.rotate(0, Some(reason));
+            self.state.agent = None;
+            self.state.limit = held.map(|hold| LimitHold {
+                until_ms: now,
+                attempt: 0,
+                switched: true,
+                ..hold
+            });
+            self.save();
+            return;
+        }
+        let held = self.state.limit.clone();
+        if held.is_none() && !self.work_waiting() {
+            return;
+        }
+        if let Some(until_ms) = store::limited_until(&self.current_account(), now) {
+            let (ids, events) = held.map_or((Vec::new(), true), |hold| (hold.ids, hold.events));
+            if self.switch_agent(until_ms, &ids, events) {
+                self.save();
+            }
+        }
+    }
+
     /// A limit until `until_ms` past `tasks.agent.maxWaitMinutes` moves the manager to the
     /// first available `tasks.manager.fallback` in a new conversation, whose first turn
     /// answers the held messages `ids`. A short limit is waited out. Returns whether it moved.
     /// ref: docs/tasks.md "Agents"
     fn switch_agent(&mut self, until_ms: u64, ids: &[u64], events: bool) -> bool {
         let now = now_unix_ms();
-        let adapter = self.current_adapter();
         let settings = load_task_config(&self.main).unwrap_or_default();
         if until_ms.saturating_sub(now) <= settings.max_wait_secs * 1000 {
             return false;
         }
-        let Some(next) = super::agent::fallback(&settings.manager_fallback, &adapter, now) else {
+        let Some(next) = agent::fallback(&settings.manager_fallback, now, false) else {
             return false;
         };
-        // ^ An older hold has no record: without one the next rotation would return at once.
-        let _ = store::mark_limited(&adapter, until_ms);
         let reason = format!(
-            "switched to {}: {adapter} usage limit until {}",
+            "switched to {}: {} usage limit until {}",
             next.name,
+            self.current_adapter(),
             limit::resume_time(until_ms, now)
         );
         self.say(&reason);
@@ -1415,6 +1554,199 @@ impl Manager {
             model: next.model,
         });
         true
+    }
+
+    /// During a hold, an owner message with no answer yet gets one from a `minimal` agent, one
+    /// call with no tools. The message stays due: the own agent answers it after the hold and
+    /// is told of this reply. ref: docs/tasks.md "Agents"
+    fn stand_in(&mut self) {
+        let done = self.state.provisional_to;
+        let queued: Vec<u64> = self
+            .queue
+            .iter()
+            .filter(|(id, author, _)| *author == Author::Owner && *id > done)
+            .map(|(id, ..)| *id)
+            .collect();
+        // ^ A hold of only events owes the owner nothing, and this runs on every tick.
+        let held: Vec<u64> = self
+            .state
+            .limit
+            .as_ref()
+            .filter(|hold| !hold.events)
+            .map_or(Vec::new(), |hold| {
+                hold.ids.iter().copied().filter(|id| *id > done).collect()
+            });
+        if queued.is_empty() && held.is_empty() {
+            return;
+        }
+        if self
+            .stand_in_look
+            .is_some_and(|look| look.elapsed() < STAND_IN_LOOK)
+        {
+            return;
+        }
+        self.stand_in_look = Some(Instant::now());
+        let now = now_unix_ms();
+        let settings = load_task_config(&self.main).unwrap_or_default();
+        let Some(agent) = agent::fallback(&settings.manager_fallback, now, true) else {
+            return;
+        };
+        let account = agent::account(&agent.adapter, &agent.model);
+        let log = self.dir.read_log().unwrap_or_default();
+        let (mut asked, mut text) = (Vec::new(), String::new());
+        for entry in &log {
+            if let ManagerEvent::Message {
+                id,
+                from: Author::Owner,
+                text: said,
+            } = &entry.event
+            {
+                if queued.contains(id) || held.contains(id) {
+                    asked.push(*id);
+                    text.push_str(&format!("Owner:\n{said}\n\n"));
+                }
+            }
+        }
+        if asked.is_empty() {
+            return;
+        }
+        let recent = recent_exchanges(&log);
+        // ^ The manager's own next summary must still name what changed since its last turn.
+        let seen = self.state.turn_seen.clone();
+        let ledger = self.ledger_summary();
+        self.state.turn_seen = seen;
+        let prompt = format!(
+            "{}The last exchanges:\n{}\n\n{ledger}\n\n{text}",
+            self.notes_preamble(),
+            recent.join("\n")
+        );
+        // ^ The held conversation stays resumable: its process has nothing to do now.
+        if let Some(agent) = self.agent.take() {
+            agent.stop();
+        }
+        self.generation += 1;
+        let generation = self.generation;
+        let started = self.launch().and_then(|launch| {
+            let launch = Launch {
+                model: agent.model.clone(),
+                instructions: STAND_IN.into(),
+                plugin_dirs: Vec::new(),
+                minimal: true,
+                ..launch
+            };
+            let mut spawned = Agent::spawn(
+                &agent.adapter,
+                &launch,
+                &new_session_id()?,
+                false,
+                0,
+                self.events.clone(),
+                move |line| Event::Agent(generation, line),
+            )?;
+            spawned.send(prompt.trim_end())?;
+            Ok(spawned)
+        });
+        match started {
+            Ok(spawned) => {
+                self.agent = Some(spawned);
+                self.stand_in = Some((agent, Instant::now()));
+                self.turn = Some(asked);
+                self.turn_events = false;
+            }
+            Err(error) => {
+                self.say(&format!("cannot start {}: {error:#}", agent.name));
+                let _ = store::mark_limited(&account, now + STAND_IN_RETRY_MS);
+            }
+        }
+    }
+
+    /// A stand-in's call ended, or `result` is none: it died or took too long.
+    fn stand_in_done(&mut self, result: Option<TurnResult>) {
+        let Some((stand_in, _)) = self.stand_in.take() else {
+            return;
+        };
+        // ^ A late line of the stopped process is not a turn of the manager's.
+        self.generation += 1;
+        if let Some(agent) = self.agent.take() {
+            agent.stop();
+        }
+        let to = self.turn.take().unwrap_or_default();
+        let now = now_unix_ms();
+        let name = stand_in.name;
+        match result.filter(|result| !result.is_error && !result.text.trim().is_empty()) {
+            Some(result) => {
+                if let Some(message) = agent::note_spend(
+                    &stand_in.adapter,
+                    &stand_in.model,
+                    result.usage.cost_micro_usd,
+                    now,
+                ) {
+                    self.say(&message);
+                }
+                let id = self.next_id();
+                self.say(&format!("{name} stood in: reply {id}"));
+                let answered = to.iter().copied().max().unwrap_or(0);
+                self.log(ManagerEvent::Reply {
+                    id,
+                    to,
+                    text: result.text,
+                    usage: Some(result.usage),
+                    quiet: false,
+                    asks: false,
+                    provisional: Some(name),
+                });
+                self.state.provisional_to = answered;
+                self.state.provisional = true;
+                self.save();
+            }
+            None => {
+                self.say(&format!("{name} could not stand in"));
+                let account = agent::account(&stand_in.adapter, &stand_in.model);
+                let _ = store::mark_limited(&account, now + STAND_IN_RETRY_MS);
+            }
+        }
+    }
+
+    /// What the own agent must know of the replies a stand-in gave since its last turn.
+    fn provisional_note(&self) -> String {
+        let log = self.dir.read_log().unwrap_or_default();
+        let mut replies: Vec<String> = log
+            .iter()
+            .rev()
+            .filter_map(|entry| match &entry.event {
+                ManagerEvent::Reply {
+                    to,
+                    text,
+                    provisional,
+                    ..
+                } => Some((to, text, provisional)),
+                _ => None,
+            })
+            .map_while(|(to, text, provisional)| {
+                let to: Vec<String> = to.iter().map(u64::to_string).collect();
+                Some(format!(
+                    "{} to message {}: {}",
+                    provisional.as_ref()?,
+                    to.join(", "),
+                    one_line(text)
+                ))
+            })
+            .collect();
+        replies.reverse();
+        format!(
+            "While you were away, a stand-in model with no tools answered these. Its words are \
+             not yours and may be wrong: check them, say so in your reply where they were wrong, \
+             and do not repeat what was right.\n{}\n\n",
+            replies.join("\n")
+        )
+    }
+
+    /// The account the manager's turns run on now.
+    fn current_account(&self) -> String {
+        match &self.state.agent {
+            Some(agent) => agent::account(&agent.adapter, &agent.model),
+            None => agent::account(&self.adapter, &self.model),
+        }
     }
 
     /// The adapter the manager runs on now: a fallback's, else `tasks.manager.adapter`.
@@ -1645,6 +1977,13 @@ impl Manager {
 
     fn on_agent(&mut self, line: Option<AgentLine>) {
         match line {
+            // ^ A stand-in's call is no conversation of the manager's.
+            Some(AgentLine::Init(_)) if self.stand_in.is_some() => {}
+            Some(AgentLine::Progress { .. }) if self.stand_in.is_some() => {}
+            Some(AgentLine::Result(result)) if self.stand_in.is_some() => {
+                self.stand_in_done(Some(*result))
+            }
+            None if self.stand_in.is_some() => self.stand_in_done(None),
             Some(AgentLine::Init(session)) => {
                 if self.state.agent_session.as_deref() != Some(&session) {
                     self.state.agent_session = Some(session);
@@ -1673,14 +2012,21 @@ impl Manager {
             return;
         }
         let to = self.turn.take().unwrap_or_default();
+        let (adapter, model) = match &self.state.agent {
+            Some(agent) => (agent.adapter.clone(), agent.model.clone()),
+            None => (self.adapter.clone(), self.model.clone()),
+        };
+        let now = now_unix_ms();
+        if let Some(message) = agent::note_spend(&adapter, &model, result.usage.cost_micro_usd, now)
+        {
+            self.say(&message);
+        }
         // ^ A usage limit is no reply: its messages are answered once it resets.
         // ref: docs/tasks.md "Manager"
         if let Some(reached) = &result.limit {
             let attempt = self.state.limit.as_ref().map_or(0, |hold| hold.attempt) + 1;
-            let now = now_unix_ms();
             let until_ms = limit::resume_at(reached.resets_at, attempt, now);
-            let adapter = self.current_adapter();
-            if let Err(error) = store::mark_limited(&adapter, until_ms) {
+            if let Err(error) = store::mark_limited(&agent::account(&adapter, &model), until_ms) {
                 self.say(&format!("cannot record the usage limit: {error:#}"));
             }
             if self.switch_agent(until_ms, &to, self.turn_events) {
@@ -1703,6 +2049,35 @@ impl Manager {
             self.report(runtime::AgentState::Idle);
             return;
         }
+        // ^ An agent's error is no reply either: the owner sees why, and the turn tries again
+        // with a backoff. A conversation that keeps failing may be the cause: a fresh one
+        // follows. ref: docs/tasks.md "Manager"
+        if result.is_error && result.subtype != "aborted" {
+            let attempt = self.state.limit.as_ref().map_or(0, |hold| hold.attempt) + 1;
+            let until_ms = limit::resume_at(None, attempt, now);
+            let reason = clip(result.text.lines().next().unwrap_or_default(), 200);
+            self.say(&format!("agent error, attempt {attempt}: {reason}"));
+            self.log(ManagerEvent::Stopped {
+                reason: reason.clone(),
+            });
+            self.log(ManagerEvent::Limit {
+                until: Some(limit::resume_time(until_ms, now)),
+            });
+            let rotate = attempt == ERROR_ROTATE_ATTEMPTS;
+            if rotate {
+                self.rotate(0, Some(reason));
+            }
+            self.state.limit = Some(LimitHold {
+                until_ms,
+                attempt,
+                ids: to,
+                events: self.turn_events,
+                switched: rotate || self.state.limit.as_ref().is_some_and(|hold| hold.switched),
+            });
+            self.save();
+            self.report(runtime::AgentState::Error);
+            return;
+        }
         self.state.limit = None;
         let id = self.next_id();
         // ^ The last model call's context: the summed usage counts it once per call.
@@ -1722,6 +2097,7 @@ impl Manager {
             usage: Some(result.usage),
             quiet,
             asks,
+            provisional: None,
         });
         if context > self.rotate_tokens {
             self.rotate(context, None);
@@ -1739,13 +2115,6 @@ impl Manager {
         self.state.instructions = None;
         self.state.turn_seen = None;
         self.state.handover = true;
-        // ^ A new conversation starts anyway: back on the own agent once its limit is over.
-        if self.state.agent.is_some()
-            && store::limited_until(&self.adapter, now_unix_ms()).is_none()
-        {
-            self.state.agent = None;
-            self.say(&format!("back on {}", self.adapter));
-        }
         self.save();
         self.log(ManagerEvent::Rotated { tokens, reason });
     }
@@ -1800,21 +2169,7 @@ impl Manager {
     /// The last exchanges of the log, so a fresh conversation knows what was just said.
     fn handover(&self) -> String {
         let log = self.dir.read_log().unwrap_or_default();
-        let mut lines: Vec<String> = log
-            .iter()
-            .rev()
-            .filter_map(|entry| match &entry.event {
-                ManagerEvent::Message {
-                    from: Author::Owner,
-                    text,
-                    ..
-                } => Some(format!("Owner: {}", one_line(text))),
-                ManagerEvent::Reply { text, .. } => Some(format!("You: {}", one_line(text))),
-                _ => None,
-            })
-            .take(HANDOVER_ENTRIES)
-            .collect();
-        lines.reverse();
+        let lines = recent_exchanges(&log);
         // ^ A routine's result may not have been acted on before the rotation.
         let replied = log
             .iter()
@@ -1830,10 +2185,9 @@ impl Manager {
                 routines.join("\n")
             ),
         };
-        // ^ Always sent after a rotation: it is the manager's cue to fold the memos.
         format!(
-            "Handover (this is a new conversation; fold the ledger's memos into your context \
-             first; the last exchanges before it, read the ledger for the state):\n{}\n{routines}\n",
+            "Handover (this is a new conversation; the last exchanges before it, read the \
+             ledger for the state):\n{}\n{routines}\n",
             lines.join("\n")
         )
     }
@@ -1959,6 +2313,31 @@ fn handover_routines(mut runs: Vec<RunRecord>, replied: i64) -> Vec<String> {
             ));
         }
     }
+    lines
+}
+
+/// The last owner messages and replies, oldest first, each on one line.
+fn recent_exchanges(log: &[ManagerEntry]) -> Vec<String> {
+    let mut lines: Vec<String> = log
+        .iter()
+        .rev()
+        .filter_map(|entry| match &entry.event {
+            ManagerEvent::Message {
+                from: Author::Owner,
+                text,
+                ..
+            } => Some(format!("Owner: {}", one_line(text))),
+            ManagerEvent::Reply {
+                text,
+                provisional: Some(name),
+                ..
+            } => Some(format!("Stand-in {name}: {}", one_line(text))),
+            ManagerEvent::Reply { text, .. } => Some(format!("You: {}", one_line(text))),
+            _ => None,
+        })
+        .take(HANDOVER_ENTRIES)
+        .collect();
+    lines.reverse();
     lines
 }
 

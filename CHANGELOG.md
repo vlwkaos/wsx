@@ -5,11 +5,26 @@
 ### Added
 
 - Tasks: a Pi adapter (`tasks.agent.adapter: pi`, `tasks.manager.adapter: pi`). Pi runs headless over its RPC mode inside the same boundary, with only the project's own `AGENTS.md` and the lent skills; a Pi worker returns its result with `wsx task result -` ([docs/tasks.md](docs/tasks.md) "Pi adapter").
-- Tasks: fallback agents. The global `[[agents]]` registry names each agent's command, adapter and model; `tasks.agent.fallback` and `tasks.manager.fallback` list them in order. A usage limit that lifts within `tasks.agent.maxWaitMinutes` (default 300) is still waited out in the same conversation. A longer one, such as a weekly limit, moves a worker to the first available fallback for the rest of its task and the manager until its next rotation after the limit, each in a new conversation that opens with the unfinished turn. Limits are recorded for the machine, so a new task starts on a fallback while its agent is limited ([docs/tasks.md](docs/tasks.md) "Agents").
+- Tasks: fallback agents. The global `[[agents]]` registry names each agent's command, adapter, model, daily budget and whether it is a stand-in; `tasks.agent.fallback` and `tasks.manager.fallback` list them, best first. A limit that lifts within `tasks.agent.maxWaitMinutes` (default 300) is waited out; a longer one moves the agent to the first fallback. A limit belongs to an account, so a local model through Pi does not share one with a paid provider.
+- Tasks: the manager goes back to its own agent at the first turn after that agent's limit ends, in a fresh conversation that holds the unanswered messages. Before, it went back only at a rotation, so a manager with little to say stayed on the fallback.
+- Tasks: a worker waiting on a fallback goes back to its own agent as soon as that agent is free. Otherwise it stays on the fallback until the task closes.
+- Tasks: a stand-in. During a limit, an owner message gets a short reply from a `minimal` agent, typically a local model, with no tools. The chats tag it "Stand-in, not checked". The own agent still answers the message after the limit and is told what the stand-in said.
+- Tasks: a daily budget for a fallback (`budget_usd_per_day`, default 10 USD). Past it the agent counts as limited until midnight.
+- Web: the Usage sheet opens with one row per day, each a stacked bar of the day's cost by workflow step and manager on one scale, with a legend. A tap shows the exact amounts.
+
+### Fixed
+
+- A session whose worktree folder was removed outside wsx moves to its project's main checkout at the next synchronization, so a chat message reaches its agent instead of failing with "cannot resolve worktree".
 
 ### Changed
 
 - Tasks: the manager's turn after a limit says "usage limit", not "session limit".
+- Tasks: Pi's missing credit, refused login and unknown model count as a limit of 6 hours. An agent's error is no chat reply any more: the chat shows why, and the turn tries again with a backoff, in a fresh conversation after the third try.
+- Tasks: a landing, a close, a wait on `limit` or `disk` and an automatic deploy no longer start a manager turn; they reach it with its next turn. wsx writes a finished task's memo into `manager/notes/context.md` itself. In the week of the audit such turns cost 13% of manager spend (`docs/design/manager-efficiency.md`).
+- Tasks: the manager's rules make Sonnet with only the build step the default for a change it can state, and there is no housekeeping task after each request; `tasks.workflow.batch` is gone. The idle task runs at most once a day.
+- Tasks: `usage.week` starts at the local midnight 6 days back, so it matches the 7 day rows, not 7 times 24 hours back.
+- Tasks: the worker's rules ask for few model calls: reads together in one message, a subagent for a wide search, no polling.
+- Tasks: Pi runs with `PI_CACHE_RETENTION=long`, so a wait of up to an hour does not write the whole context again.
 
 ## [0.43.0] - 2026-10-31
 

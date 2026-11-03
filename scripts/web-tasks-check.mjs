@@ -1057,12 +1057,12 @@ await until(answeredOpen, "no reply after the answer", 300);
 // ^ A reply that ends with a question carries "Asks you" in the accent, and the overview's
 // `asks` with it, until the owner writes after it (docs/web-client-tasks.md "Project screen").
 const asking = "[...document.querySelectorAll('.log .bubble[data-side=in]')].find((node) => node.textContent.includes('Should I land it now?'))";
-const askTags = "[...document.querySelectorAll('.log .bubble-tag')].filter((node) => node.textContent === 'Asks you')";
+const askTags = "[...document.querySelectorAll('.log .bubble-tag')].filter((node) => node.getAttribute('aria-label') === 'Asks you')";
 const overviewAsks = () => evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((view) => view.asks)`);
 await typeInto(".composer-field", "ASK");
 await click(".composer-send");
 await until(`!!${asking} && !document.querySelector('.log .typing')`, "no reply to the question", 300);
-const askBubble = await evaluate(`({ tags: ${askTags}.length, own: ${asking}.querySelector('.bubble-tag')?.textContent, tone: ${asking}.querySelector('.bubble-tag')?.dataset.tone })`);
+const askBubble = await evaluate(`({ tags: ${askTags}.length, own: ${asking}.querySelector('.bubble-tag')?.getAttribute('aria-label'), tone: ${asking}.querySelector('.bubble-tag')?.dataset.tone })`);
 if (askBubble.tags !== 1 || askBubble.own !== "Asks you" || askBubble.tone !== "accent") await fail(`a reply that asks reads ${JSON.stringify(askBubble)}`);
 if ((await overviewAsks()) !== true) await fail("the overview does not say the manager asks");
 await entered();
@@ -1076,7 +1076,7 @@ await until(`(() => { const bubbles = [...document.querySelectorAll('.log .bubbl
 if ((await evaluate(`${askTags}.length`)) !== 1) await fail("a later report dropped the chat's Asks you");
 if ((await overviewAsks()) !== true) await fail("a later report dropped the overview's asks");
 const askingChat = await evaluate("location.hash");
-const homeAskRows = "[...document.querySelectorAll('.home-rows > .row')].filter((row) => row.querySelector('.row-asks')?.textContent === 'Asks you').map((row) => row.dataset.key).join()";
+const homeAskRows = "[...document.querySelectorAll('.home-rows > .row')].filter((row) => row.querySelector('.row-asks')?.getAttribute('aria-label') === 'Asks you').map((row) => row.dataset.key).join()";
 await go("#/");
 await until(`${homeAskRows} === ${JSON.stringify(String(project))}`, "Asks you is not on the row of the project whose manager asks", 100);
 await entered();
@@ -1150,6 +1150,7 @@ await closeSheet("the page", chat);
 await click(".more-button");
 await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Usage').click()");
 await until(`location.hash === '#/p/${project}/usage' && !!document.querySelector('dialog.task-sheet[open] .usage table')`, "Usage did not open the usage sheet");
+await evaluate(`document.querySelector('.usage-tokens').open = true`);
 const usageRows = await text(".usage tbody th");
 if (usageRows.join() !== "Cost,Input,Cache read,Cache write,Output,Turns") await fail(`the usage rows are ${usageRows}`);
 const usageCost = await text(".usage tbody tr:first-child td");
@@ -1160,6 +1161,23 @@ if (usageCost.length !== 4 || !usageCost.every((cell) => /^\$\d+\.\d\d$/.test(ce
   || usageTurns.length !== 4 || !(Number(usageTurns[2]) > 0) || !(Number(usageTurns[3]) > 0)) {
   await fail(`the usage costs are ${usageCost}, the turns ${usageTurns}`);
 }
+// ^ One row per day, a stacked bar on one scale, a legend, and a tap shows the exact amounts.
+const usageDays = await evaluate(`[...document.querySelectorAll('.usage-days > li')].map((row) => ({
+  cost: row.querySelector('.usage-cost').textContent,
+  parts: [...row.querySelectorAll('.usage-bar i')].map((part) => part.dataset.part),
+  width: row.querySelector('.usage-bar').getBoundingClientRect().width,
+}))`);
+if (usageDays.length !== 7) await fail(`the usage has ${usageDays.length} day rows`);
+const usageToday = usageDays[0];
+if (!usageToday.parts.includes("manager") || !(usageToday.width > 0) || !/^\$\d+\.\d\d$/.test(usageToday.cost)) await fail(`today's usage row is ${JSON.stringify(usageToday)}`);
+if (usageDays.slice(1).some((day) => day.parts.length)) await fail(`a past day has spend: ${JSON.stringify(usageDays)}`);
+const usageLegend = await text(".usage-legend .usage-name");
+const usageWeek = await text(".usage-total .usage-cost");
+const usageAmounts = await text(".usage-legend .usage-amount");
+if (!/^\$\d+\.\d\d$/.test(usageWeek[0]) || usageAmounts.length !== 7 || !usageAmounts.every((cell) => /^\$\d+\.\d\d \d+%$/.test(cell))) await fail(`the usage total is ${usageWeek}, the legend ${usageAmounts}`);
+if (usageLegend.join() !== "Build,Plan,Context,Review,Memo,Other work,Manager") await fail(`the usage legend is ${usageLegend}`);
+await evaluate(`document.querySelector('.usage-days > li:first-child .usage-day').click()`);
+await until(`document.querySelectorAll('.usage-days > li:first-child .usage-parts dd').length === ${usageToday.parts.length}`, "a tap on a day shows its amounts");
 await shot("usage");
 const usageSize = size;
 await resize([1280, 800, 1]);

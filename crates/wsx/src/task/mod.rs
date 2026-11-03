@@ -1126,8 +1126,9 @@ fn create(
     let now = now_unix_ms();
     // ^ New work starts on an available agent: a task never begins on one whose usage limit
     // is on record. `--model` names the configured agent's model. ref: docs/tasks.md "Agents"
-    let (adapter, model) = match store::limited_until(&settings.adapter, now)
-        .and_then(|_| agent::fallback(&settings.fallback, &settings.adapter, now))
+    let own = agent::account(&settings.adapter, &settings.model);
+    let (adapter, model) = match store::limited_until(&own, now)
+        .and_then(|_| agent::fallback(&settings.fallback, now, false))
     {
         Some(next) => (next.adapter, next.model),
         None => (settings.adapter, model.unwrap_or(settings.model)),

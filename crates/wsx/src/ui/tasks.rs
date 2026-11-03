@@ -31,6 +31,10 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
     if let Some(spent) = list.ledger.as_ref().and_then(project_usage) {
         lines.push(muted(&truncate_to_width(&spent, width)));
     }
+    // ^ A short window keeps its height for the tasks. ref: docs/tasks.md "TUI"
+    if area.height >= USAGE_ROWS_HEIGHT && list.detail_task().is_none() {
+        lines.extend(list.ledger.as_ref().map_or(Vec::new(), |ledger| usage_rows(ledger, width)));
+    }
     if let Some(error) = &list.error {
         lines.push(Line::styled(
             truncate_to_width(&format!("Could not read tasks: {error}"), width),
@@ -202,6 +206,72 @@ fn task_lines(
         lines.push(line);
     }
     (lines, selected_line)
+}
+
+/// The window height from which the task list also shows the spend per day.
+const USAGE_ROWS_HEIGHT: u16 = 30;
+/// The parts of a day's spend, as `usage.rs` names them, with a fixed color each.
+const USAGE_PARTS: [(&str, ratatui::style::Color); 7] = [
+    ("build", theme::ACCENT),
+    ("plan", theme::WARNING),
+    ("context", theme::DONE),
+    ("review", theme::IDLE),
+    ("memo", theme::BLOCKED),
+    ("other", theme::SUCCESS),
+    ("manager", theme::TEXT_MUTED),
+];
+
+/// A legend, then one row per day, newest first: its date, a stacked bar on one scale, its cost.
+fn usage_rows(ledger: &Value, width: usize) -> Vec<Line<'static>> {
+    let Some(days) = ledger["usage"]["days"].as_array() else {
+        return Vec::new();
+    };
+    let cost_of = |day: &Value, part: &str| day["parts"][part].as_u64().unwrap_or(0);
+    let total = |day: &Value| -> u64 {
+        USAGE_PARTS.iter().map(|(part, _)| cost_of(day, part)).sum()
+    };
+    let most = days.iter().map(total).max().unwrap_or(0).max(1);
+    let track = width.saturating_sub(17).max(1);
+    // ^ Only the words that fit: a wrapped legend would push the tasks down.
+    let mut room = width;
+    let legend: Vec<Span> = USAGE_PARTS
+        .iter()
+        .map_while(|(part, color)| {
+            let text = format!("■ {part} ");
+            room = room.checked_sub(text.chars().count())?;
+            Some(Span::styled(text, Style::default().fg(*color)))
+        })
+        .collect();
+    let mut lines = vec![Line::from(legend)];
+    for day in days {
+        let date = crate::task::limit::local_time(day["day_ms"].as_u64().unwrap_or(0) / 1000)
+            .map_or_else(String::new, |tm| {
+                let name = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+                format!("{} {:>2}", name[tm.tm_wday as usize % 7], tm.tm_mday)
+            });
+        let mut spans = vec![Span::styled(
+            format!("{date:<7}"),
+            Style::default().fg(theme::TEXT_SUBTLE),
+        )];
+        let mut used = 0;
+        for (part, color) in USAGE_PARTS {
+            let cost = cost_of(day, part);
+            if cost > 0 {
+                let cells = ((cost as usize * track) / most as usize)
+                    .max(1)
+                    .min(track - used);
+                used += cells;
+                spans.push(Span::styled("█".repeat(cells), Style::default().fg(color)));
+            }
+        }
+        spans.push(Span::raw(" ".repeat(track.saturating_sub(used) + 1)));
+        spans.push(Span::styled(
+            format!("{:>9}", usage::usd(total(day))),
+            Style::default().fg(theme::TEXT_MUTED),
+        ));
+        lines.push(Line::from(spans));
+    }
+    lines
 }
 
 /// The ledger's project spend: "Today $3.42 (manager $0.80) · 7 days $21.10 (manager $4.02)".

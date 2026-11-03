@@ -181,11 +181,24 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
         ),
         false => String::new(),
     };
+    // ^ 42% of worker spend is reads, one call at a time, each paying for the whole context
+    // again (docs/design/manager-efficiency.md). Only Claude has subagents here.
+    let search = match record.adapter.as_str() {
+        "claude" => {
+            "A search across many files goes to a subagent (the Agent tool, type Explore, \
+             `model: sonnet`), and only its findings come back to you. "
+        }
+        _ => "",
+    };
     format!(
         "You are a task worker in a separate working copy on branch {}. \
          Nobody reads your terminal: work without asking questions. \
          Build what the prompt asks and commit your changes with git before you finish. \
          Build and test what you change. {skills}{build} \
+         Every model call reads your whole context again, so use few calls: put the searches \
+         and reads you already know you need in one message, not one after another, and read \
+         line ranges, not whole files. {search}Never poll: a background job tells you when it \
+         ends. \
          Prove what you can: each check a command, a test or a capture shows goes to \
          `evidence` with that command or the capture's path. Anything a test, an assert or a \
          capture can show is yours to prove, also a state you must stage in a fixture (a \
