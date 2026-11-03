@@ -8,6 +8,8 @@ export const html = htm.bind(h);
 export { render, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState };
 
 const ICONS = {
+  ask: "M10 17.5a7.5 7.5 0 1 0 0-15 7.5 7.5 0 0 0 0 15ZM7.8 7.8a2.2 2.2 0 1 1 3.4 1.9c-.8.5-1.2 1-1.2 1.8M10 14.2h.01",
+  unchecked: "M10 3 18 17H2ZM10 8.5v3.5M10 14.5h.01",
   back: "M12.5 4.5 7 10l5.5 5.5",
   chevron: "M7.5 4.5 13 10l-5.5 5.5",
   attach: "M14.5 9.5 9 15a3 3 0 0 1-4.2-4.2l6-6a2 2 0 0 1 2.8 2.8l-5.7 5.7a1 1 0 0 1-1.4-1.4L11 7.4",

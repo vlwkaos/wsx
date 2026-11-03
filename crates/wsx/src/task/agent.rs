@@ -11,7 +11,8 @@ use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
-use wsx_core::task::TurnUsage;
+use wsx_core::model::workspace::TaskConfig;
+use wsx_core::task::{store, usage, TurnUsage};
 
 pub enum AgentLine {
     /// The conversation ID the agent runs under.
@@ -74,6 +75,8 @@ pub struct Launch {
     pub path_prefix: Option<PathBuf>,
     /// `--plugin-dir`: the manager's plugin of the owner's skills.
     pub plugin_dirs: Vec<PathBuf>,
+    /// A stand-in's one call: no tools and no stored conversation.
+    pub minimal: bool,
 }
 
 impl Launch {
@@ -87,6 +90,7 @@ impl Launch {
             env: Vec::new(),
             path_prefix: None,
             plugin_dirs: Vec::new(),
+            minimal: false,
         }
     }
 }
@@ -150,19 +154,32 @@ pub struct Choice {
     pub model: String,
 }
 
-/// The first of `names` (the global `[[agents]]`) with a headless adapter and a model,
-/// another adapter than `current`'s, and no usage limit on record. A name the registry does
-/// not hold is skipped. ref: docs/tasks.md "Agents"
-pub fn fallback(names: &[String], current: &str, now_ms: u64) -> Option<Choice> {
+/// Whose limit and credit a turn runs on: Claude's account, or a Pi provider's
+/// (`anthropic/claude-opus-5-5` is `pi-anthropic`). Agents on one account share a limit; a local
+/// model through Pi does not share one with a paid provider. ref: docs/tasks.md "Agents"
+pub fn account(adapter: &str, model: &str) -> String {
+    match model.split_once('/') {
+        Some((provider, _)) if adapter != "claude" => format!("{adapter}-{provider}"),
+        _ => adapter.to_string(),
+    }
+}
+
+/// The first of `names` (the global `[[agents]]`) with a headless adapter and a model, and no
+/// limit on record on its account. `minimal` picks among the stand-ins, else among the others.
+/// A name the registry does not hold is skipped. ref: docs/tasks.md "Agents"
+pub fn fallback(names: &[String], now_ms: u64, minimal: bool) -> Option<Choice> {
     if names.is_empty() {
         return None;
     }
     let (config, _) = wsx_core::config::global::GlobalConfig::load().ok()?;
     names.iter().find_map(|name| {
         let entry = config.agents.iter().find(|agent| &agent.name == name)?;
-        let adapter = entry.adapter.clone().filter(|adapter| adapter != current)?;
+        if entry.minimal != minimal {
+            return None;
+        }
+        let adapter = entry.adapter.clone()?;
         let model = entry.model.clone()?;
-        wsx_core::task::store::limited_until(&adapter, now_ms)
+        store::limited_until(&account(&adapter, &model), now_ms)
             .is_none()
             .then(|| Choice {
                 name: name.clone(),
@@ -170,6 +187,71 @@ pub fn fallback(names: &[String], current: &str, now_ms: u64) -> Option<Choice> 
                 model,
             })
     })
+}
+
+/// Where a worker on (`adapter`, `model`) goes when its account refuses turns until `until_ms`:
+/// its own agent at once when that is free, else a fallback when the wait is past
+/// `maxWaitMinutes`, else nowhere: it waits. ref: docs/tasks.md "Agents"
+pub fn worker_next(
+    settings: &TaskConfig,
+    adapter: &str,
+    model: &str,
+    until_ms: u64,
+    now_ms: u64,
+) -> Option<Choice> {
+    let own = account(&settings.adapter, &settings.model);
+    if account(adapter, model) != own && store::limited_until(&own, now_ms).is_none() {
+        return Some(Choice {
+            name: settings.adapter.clone(),
+            adapter: settings.adapter.clone(),
+            model: settings.model.clone(),
+        });
+    }
+    (until_ms.saturating_sub(now_ms) > settings.max_wait_secs * 1000)
+        .then(|| fallback(&settings.fallback, now_ms, false))
+        .flatten()
+}
+
+/// The budget of an agent that has none set.
+const DEFAULT_BUDGET_USD_PER_DAY: u32 = 10;
+
+/// Count a turn's cost on its account. Past the day's budget the account counts as limited
+/// until midnight, and the message says so. Claude's plan has no such bill, and a local model
+/// costs nothing. ref: docs/tasks.md "Agents"
+pub fn note_spend(adapter: &str, model: &str, micro_usd: u64, now_ms: u64) -> Option<String> {
+    if adapter == "claude" || micro_usd == 0 {
+        return None;
+    }
+    let account = account(adapter, model);
+    let budget = wsx_core::config::global::GlobalConfig::load()
+        .ok()
+        .and_then(|(config, _)| {
+            config
+                .agents
+                .iter()
+                .find(|agent| {
+                    agent.adapter.as_deref() == Some(adapter)
+                        && agent.model.as_deref() == Some(model)
+                })
+                .and_then(|agent| agent.budget_usd_per_day)
+        })
+        .unwrap_or(DEFAULT_BUDGET_USD_PER_DAY);
+    let today = usage::local_midnight_ms(now_ms);
+    let spent = match store::add_spend(&account, today, micro_usd) {
+        Ok(spent) => spent,
+        Err(error) => return Some(format!("cannot record the spend: {error:#}")),
+    };
+    if spent < u64::from(budget) * 1_000_000 {
+        return None;
+    }
+    let midnight = usage::local_midnight_ms(today + 26 * 3_600_000);
+    match store::mark_limited(&account, midnight) {
+        Ok(()) => Some(format!(
+            "{account} spent {} of its {budget} USD for today: limited until midnight",
+            usage::usd(spent)
+        )),
+        Err(error) => Some(format!("cannot record the budget: {error:#}")),
+    }
 }
 
 /// A random version 4 UUID for a new conversation.

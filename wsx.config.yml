@@ -41,8 +41,8 @@ tasks:
       scenario of each area you changed: `wsx task check-run web` for crates/wsx-web, `smoke`
       for the daemon or terminal; fix what fails, also an assert your change made stale. The
       `task` scenario (task code, scripts/test-task.py) runs on GitHub Actions, not here. After
-      a rebase or a conflict fix run no check-run: the host's checks follow. The memo step saves durable
-      lessons into knowledge/sessions/; never commit knowledge/: it is git-ignored.
+      a rebase or a conflict fix run no check-run: the host's checks follow. Never commit knowledge/: it is
+      git-ignored.
     # ^ When session notes are newer than the last idle task, the manager host starts one task
     # with this prompt.
     idle: >-

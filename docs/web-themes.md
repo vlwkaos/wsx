@@ -9,11 +9,11 @@ theme = "/abs/path/to/my-theme"   # a theme directory, or the path of a theme .t
 
 ## Tokens
 
-`crates/wsx-web/web/themes/default/theme.toml` is the complete list: 64 tokens, 16 of them the terminal palette. A theme must define every token, directly or through `extends`. A token becomes the CSS variable `--<token>`.
+`crates/wsx-web/web/themes/default/theme.toml` is the complete list: 71 tokens, 16 of them the terminal palette. A theme must define every token, directly or through `extends`. A token becomes the CSS variable `--<token>`.
 
 | Group | Tokens | Value |
 |---|---|---|
-| Color roles | `color-bg` `color-surface` `color-raised` `color-hairline` `color-text` `color-muted` `color-faint` `color-accent` `color-accent-text` `color-attention` `color-danger` `color-overlay` `color-peer-1` … `color-peer-4` | `#rgb`, `#rrggbb` or `#rrggbbaa` |
+| Color roles | `color-bg` `color-surface` `color-raised` `color-hairline` `color-text` `color-muted` `color-faint` `color-accent` `color-accent-text` `color-attention` `color-danger` `color-overlay` `color-series-1` … `color-series-7` `color-peer-1` … `color-peer-4` | `#rgb`, `#rrggbb` or `#rrggbbaa` |
 | Terminal palette | `color-ansi-0` … `color-ansi-15` (ANSI 0-7, then bright) | same |
 | Type families | `font-body` `font-mono` `font-terminal` | family list: letters, digits, space, `,` `'` `-` `_` |
 | Type scale | `font-size-md` `font-size-sm` `font-size-label` `font-size-title`, `font-size-field` (text fields on a touch device; keep it at 16px or more, or iOS zooms the page on focus) | length |

@@ -110,6 +110,11 @@ pub enum ManagerEvent {
         /// until the owner writes after it (docs/tasks.md "Manager").
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         asks: bool,
+        /// A `minimal` agent wrote this while the manager's agent could not: the agent's name.
+        /// The manager's agent still answers `to` itself and is told of this reply
+        /// (docs/tasks.md "Agents").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provisional: Option<String>,
     },
     /// This manager's message to another project's manager (`say --from-manager`).
     Sent {
@@ -162,6 +167,25 @@ pub fn quiet_reply(text: &str) -> bool {
 /// no chat shows it (docs/tasks.md "Manager").
 pub fn says_nothing(text: &str) -> bool {
     matches!(text.trim(), "" | "-")
+}
+
+/// Whether an event line needs the manager's judgment now. The others (a landing, a close, a
+/// wait that ends by itself, an automatic deploy that worked) go along with its next turn, so
+/// they cost no turn. `deploy_auto`: `tasks.deploy.auto`; a deploy the manager started may be
+/// what it waits for. ref: docs/tasks.md "Manager"
+pub fn event_wakes(line: &str, deploy_auto: bool) -> bool {
+    let task = line.strip_prefix('#').and_then(|rest| {
+        let (id, rest) = rest.split_once(' ')?;
+        id.bytes().all(|byte| byte.is_ascii_digit()).then_some(rest)
+    });
+    match task {
+        Some(rest) if rest.starts_with("landed ") || rest.starts_with("closed ") => false,
+        Some(rest) if rest.starts_with("waiting ") => {
+            !(rest.contains("; waits on limit:") || rest.contains("; waits on disk:"))
+        }
+        Some(_) => true,
+        None => !(deploy_auto && line.starts_with("deploy of ") && line.contains(" succeeded")),
+    }
 }
 
 /// Whether a reply asks the owner: its last line ends with a question mark. A reply that ends with
@@ -252,8 +276,8 @@ impl Seen {
 pub struct ManagerState {
     /// The conversation the next turn resumes; none after a rotation.
     pub agent_session: Option<String>,
-    /// A fallback agent in use; none: `tasks.manager.adapter` and `model`. It ends at the next
-    /// rotation after the own agent's limit, never inside a conversation.
+    /// A fallback agent in use; none: `tasks.manager.adapter` and `model`. The turn after the
+    /// own agent's limit ends starts a fresh conversation on the own agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<ManagerAgent>,
     pub next_id: u64,
@@ -295,6 +319,16 @@ pub struct ManagerState {
     /// The agent's usage limit: the messages of the turn it ended, answered once it resumes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<LimitHold>,
+    /// The newest owner message a `minimal` agent has answered.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub provisional_to: u64,
+    /// A provisional reply the manager's agent has not been told of yet.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub provisional: bool,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// A manager turn the usage limit ended. ref: docs/tasks.md "Manager"

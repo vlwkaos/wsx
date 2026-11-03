@@ -51,13 +51,29 @@ impl Usage {
     }
 
     /// The turns of `turns` at or after `since` (unix ms).
-    pub fn since(turns: &[(u64, Usage)], since: u64) -> Usage {
+    pub fn since(turns: &[Turn], since: u64) -> Usage {
         let mut sum = Usage::default();
-        for (_, usage) in turns.iter().filter(|(unix_ms, _)| *unix_ms >= since) {
-            sum.add(usage);
+        for turn in turns.iter().filter(|turn| turn.unix_ms >= since) {
+            sum.add(&turn.usage);
         }
         sum
     }
+}
+
+/// What a project's spend is split into per day: the usual workflow steps, any other worker
+/// turn, and the manager. The web client gives each one fixed color. ref: docs/tasks.md "Usage"
+const PARTS: [&str; 7] = [
+    "build", "plan", "context", "review", "memo", "other", "manager",
+];
+const PART_OTHER: usize = 5;
+const PART_MANAGER: usize = 6;
+
+/// One model turn: when, of which part, and what it cost.
+#[derive(Debug, Clone, Copy)]
+pub struct Turn {
+    pub unix_ms: u64,
+    part: usize,
+    pub usage: Usage,
 }
 
 /// "$3.42".
@@ -78,10 +94,10 @@ pub fn tokens(count: u64) -> String {
 /// 94f0b26) has it 0 and `cost_micro_usd` holding the session's running total, so its
 /// turn's part is the difference from the previous such line, as `scripts/usage-report.py`
 /// counts it.
-fn turns<'a>(lines: impl Iterator<Item = (u64, Option<&'a TurnUsage>)>) -> Vec<(u64, Usage)> {
+fn turns<'a>(lines: impl Iterator<Item = (u64, usize, Option<&'a TurnUsage>)>) -> Vec<Turn> {
     let mut running = 0;
     lines
-        .map(|(unix_ms, usage)| {
+        .map(|(unix_ms, part, usage)| {
             let legacy = usage.is_some_and(|usage| usage.session_cost_micro_usd == 0);
             let usage = usage.cloned().unwrap_or_default();
             let mut cost = usage.cost_micro_usd;
@@ -89,27 +105,30 @@ fn turns<'a>(lines: impl Iterator<Item = (u64, Option<&'a TurnUsage>)>) -> Vec<(
                 cost = cost.checked_sub(running).unwrap_or(cost);
                 running = usage.cost_micro_usd;
             }
-            let turn = Usage {
-                cost_micro_usd: cost,
-                input_tokens: usage.input_tokens,
-                cache_read_tokens: usage.cache_read_tokens,
-                cache_creation_tokens: usage.cache_creation_tokens,
-                output_tokens: usage.output_tokens,
-                turns: 1,
-            };
-            (unix_ms, turn)
+            Turn {
+                unix_ms,
+                part,
+                usage: Usage {
+                    cost_micro_usd: cost,
+                    input_tokens: usage.input_tokens,
+                    cache_read_tokens: usage.cache_read_tokens,
+                    cache_creation_tokens: usage.cache_creation_tokens,
+                    output_tokens: usage.output_tokens,
+                    turns: 1,
+                },
+            }
         })
         .collect()
 }
 
 type Stamp = Vec<Option<(u64, SystemTime)>>;
-type Turns = Arc<Vec<(u64, Usage)>>;
+type Turns = Arc<Vec<Turn>>;
 
 /// ^ Each log's turns, read again only when one of its files changed size or mtime: the web
 /// server and the TUI ask for them on every poll.
 static CACHE: Mutex<Option<HashMap<PathBuf, (Stamp, Turns)>>> = Mutex::new(None);
 
-fn cached(files: &[PathBuf], read: impl FnOnce() -> Vec<(u64, Usage)>) -> Turns {
+fn cached(files: &[PathBuf], read: impl FnOnce() -> Vec<Turn>) -> Turns {
     let stamp: Stamp = files
         .iter()
         .map(|path| {
@@ -137,7 +156,13 @@ pub fn task_turns(dir: &TaskDir) -> Turns {
     cached(&[dir.file(store::LOG_FILE)], || {
         let log = dir.read_log().unwrap_or_default();
         turns(log.iter().filter_map(|entry| match &entry.event {
-            LogEvent::Result { usage, .. } => Some((entry.unix_ms, usage.as_ref())),
+            LogEvent::Result { usage, step, .. } => {
+                let part = step
+                    .as_deref()
+                    .and_then(|step| PARTS[..PART_OTHER].iter().position(|part| *part == step))
+                    .unwrap_or(PART_OTHER);
+                Some((entry.unix_ms, part, usage.as_ref()))
+            }
             _ => None,
         }))
     })
@@ -155,22 +180,39 @@ pub fn manager_turns(dir: &ManagerDir) -> Turns {
     })
 }
 
-pub fn manager_log_turns(log: &[ManagerEntry]) -> Vec<(u64, Usage)> {
+pub fn manager_log_turns(log: &[ManagerEntry]) -> Vec<Turn> {
     turns(log.iter().filter_map(|entry| match &entry.event {
-        ManagerEvent::Reply { usage, .. } => Some((entry.unix_ms, usage.as_ref())),
+        ManagerEvent::Reply { usage, .. } => Some((entry.unix_ms, PART_MANAGER, usage.as_ref())),
         _ => None,
     }))
 }
 
-/// The project's spend today (since local midnight) and in the last 7 days, workers and
-/// manager apart. A task not updated in the 7 days had no turn in them and is not read.
+/// How many days the project's usage covers, today included.
+const DAYS: usize = 7;
+
+/// The project's spend today (since local midnight) and in the last 7 days from a local
+/// midnight, workers and manager apart, and per day (newest first) by `PARTS`. A task not
+/// updated in those days had no turn in them and is not read.
 pub fn project(project_id: &str, now_ms: u64) -> Value {
     let today = local_midnight_ms(now_ms);
-    let week = now_ms.saturating_sub(7 * DAY_MS);
+    let mut starts = vec![today];
+    for _ in 1..DAYS {
+        starts.push(local_midnight_ms(starts[starts.len() - 1].saturating_sub(1)));
+    }
+    let week = starts[DAYS - 1];
+    let mut days = [[0u64; PARTS.len()]; DAYS];
+    let mut add_days = |turns: &[Turn]| {
+        for turn in turns.iter().filter(|turn| turn.unix_ms >= week) {
+            if let Some(day) = starts.iter().position(|start| turn.unix_ms >= *start) {
+                days[day][turn.part] += turn.usage.cost_micro_usd;
+            }
+        }
+    };
     let (mut workers_today, mut workers_week) = (Usage::default(), Usage::default());
     for (dir, record) in project_tasks(project_id).unwrap_or_default() {
         if record.is_ok_and(|record| record.updated_unix_ms >= week) {
             let turns = task_turns(&dir);
+            add_days(&turns);
             workers_today.add(&Usage::since(&turns, today));
             workers_week.add(&Usage::since(&turns, week));
         }
@@ -180,14 +222,29 @@ pub fn project(project_id: &str, now_ms: u64) -> Value {
         .flatten()
         .map(|dir| manager_turns(&dir))
         .unwrap_or_default();
+    add_days(&manager);
+    let days: Vec<Value> = starts
+        .iter()
+        .zip(days)
+        .map(|(start, costs)| {
+            let parts: serde_json::Map<String, Value> = PARTS
+                .iter()
+                .zip(costs)
+                .filter(|(_, cost)| *cost > 0)
+                .map(|(part, cost)| (part.to_string(), json!(cost)))
+                .collect();
+            json!({ "day_ms": start, "parts": parts })
+        })
+        .collect();
     json!({
         "today": { "workers": workers_today, "manager": Usage::since(&manager, today) },
         "week": { "workers": workers_week, "manager": Usage::since(&manager, week) },
+        "days": days,
     })
 }
 
 /// The start of `now_ms`'s day in this machine's zone; 24 hours back when that cannot be told.
-fn local_midnight_ms(now_ms: u64) -> u64 {
+pub fn local_midnight_ms(now_ms: u64) -> u64 {
     let fallback = now_ms.saturating_sub(DAY_MS);
     let Ok(secs) = libc::time_t::try_from(now_ms / 1000) else {
         return fallback;

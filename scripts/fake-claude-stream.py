@@ -177,7 +177,9 @@ def manager_turn(text, project, page):
     if 'LONG' in text.split():
         time.sleep(25)
     if '\nSCRIPT\n' in '\n' + text:
-        done = subprocess.run(('\n' + text).split('\nSCRIPT\n', 1)[1], shell=True, capture_output=True, text=True)
+        # ^ Events that come along with the turn follow the owner's message: they are no script.
+        script = ('\n' + text).split('\nSCRIPT\n', 1)[1].split('\n\nEvents (message ', 1)[0]
+        done = subprocess.run(script, shell=True, capture_output=True, text=True)
         return 'script -> %d %s' % (done.returncode, (done.stdout + done.stderr).strip()[:600])
     said = next((line.split('(message ', 1)[1].split(')', 1)[0] for line in text.splitlines()
                  if line.startswith('Owner (message ')), '0')

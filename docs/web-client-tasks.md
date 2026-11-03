@@ -63,7 +63,7 @@ A role ([tasks.md](tasks.md) "Roles") is a contact of its project. The `⋯` men
 
 # Usage
 
-`#/p/<project>/usage` opens a sheet as high as its table (`usage.js`) over the chat: the overview's `usage` ([tasks.md](tasks.md) "Usage"), with cost, input, cache read, cache write, output and turns as rows and Today and 7 days, each Workers and Manager, as columns.
+`#/p/<project>/usage` opens a sheet (`usage.js`) over the chat from the overview's `usage` ([tasks.md](tasks.md) "Usage"). It opens with a row for the 7 days at once: a stacked bar and the total. The bar's parts have fixed colors with a legend under it that gives each part's amount and share: Build, Plan, Context, Review, Memo, Other work (any other worker turn, such as a check-run's answer) and Manager. Then one row per day, newest first, each a bar on one scale for all the days and its amount. A tap on a day shows its exact amounts under it; a day with no cost is muted and takes no tap. "Tokens" opens the table of cost, input, cache read, cache write, output and turns as rows and Today and 7 days, each Workers and Manager, as columns.
 
 # Task sheet
 

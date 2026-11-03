@@ -124,8 +124,6 @@ struct TaskWorkflowFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     review: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    batch: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     idle: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     steps: Option<Vec<crate::model::workspace::WorkflowStep>>,
@@ -577,7 +575,6 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         };
         text(workflow.build, "build", &mut config.workflow.build)?;
         text(workflow.review, "review", &mut config.workflow.review)?;
-        text(workflow.batch, "batch", &mut config.workflow.batch)?;
         text(workflow.idle, "idle", &mut config.workflow.idle)?;
         if let Some(steps) = workflow.steps {
             config.workflow.steps = validate_steps(steps)?;

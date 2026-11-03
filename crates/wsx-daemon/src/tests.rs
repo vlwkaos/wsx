@@ -1827,6 +1827,56 @@ fn synchronization_save_failure_publishes_no_state_or_event() {
 }
 
 #[test]
+fn a_session_on_a_removed_worktree_moves_to_the_main_checkout() {
+    // ^ A worktree removed outside wsx left its session on a folder that is gone, and a chat
+    // to it failed with "cannot resolve worktree".
+    let root = std::env::temp_dir().join(format!("wsx-gone-wt-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let (main, copy) = (root.join("p"), root.join("p-copy"));
+    fs::create_dir_all(&main).unwrap();
+    fs::create_dir_all(&copy).unwrap();
+    let (main, copy) = (fs::canonicalize(&main).unwrap(), fs::canonicalize(&copy).unwrap());
+    let mut persisted = agent_test_persisted();
+    persisted.projects[0].path = main.clone();
+    persisted.worktrees[0].path = main.clone();
+    persisted.worktrees.push(Worktree {
+        id: WorktreeId(6),
+        project_id: ProjectId(1),
+        path: copy.clone(),
+        branch: "copy".into(),
+        revision: 7,
+    });
+    persisted.next_id = 7;
+    persisted.sessions[0].worktree_id = WorktreeId(6);
+    let (daemon, path) = agent_test_daemon(persisted);
+    let sync = |listed: Vec<PathBuf>| {
+        synchronize_projects(
+            &daemon,
+            vec![ProjectSpec {
+                path: main.clone(),
+                name: "p".into(),
+                worktrees: listed
+                    .into_iter()
+                    .map(|path| WorktreeSpec { path, branch: "b".into() })
+                    .collect(),
+            }],
+        )
+        .unwrap()
+    };
+    // ^ A folder that still exists but is no longer listed keeps its session where it is.
+    sync(vec![main.clone()]);
+    assert_eq!(lock(&daemon.state).persisted.sessions[0].worktree_id, WorktreeId(6));
+    fs::remove_dir(&copy).unwrap();
+    sync(vec![main.clone(), copy.clone()]);
+    let state = lock(&daemon.state);
+    assert_eq!(state.persisted.sessions[0].worktree_id, WorktreeId(2));
+    assert!(state.persisted.worktrees.iter().all(|worktree| worktree.path != copy));
+    drop(state);
+    let _ = fs::remove_file(path);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn create_save_failure_publishes_no_session_or_event() {
     let (daemon, path) = agent_test_daemon(agent_test_persisted());
     fs::create_dir(&path).unwrap();

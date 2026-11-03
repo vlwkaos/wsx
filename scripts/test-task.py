@@ -354,7 +354,12 @@ def run(wsx, wsxd, work, owned):
     # ^ An unchanged tracked file keeps its clone's mtime, so cargo reuses the warm build.
     os.utime(project / 'README', (1_600_000_000, 1_600_000_000))
 
+    # ^ Once a second project is registered, a task command must name its project.
+    named_project = []
+
     def cli(*argv, ok=True, stdin=None):
+        if named_project and argv[0] == 'task' and '-p' not in argv:
+            argv = (*argv, '-p', named_project[0])
         result = subprocess.run([str(wsx), *map(str, argv)], cwd=project, env=env, input=stdin,
                                 capture_output=True, text=True, timeout=60)
         if ok:
@@ -1255,7 +1260,7 @@ def run(wsx, wsxd, work, owned):
               + '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, '
                 'rotateTokens: 100000 }\n'
               + '  skills: owner\n  workflow:\n    build: "Run the fixture rule."\n'
-                '    review: "Check the fixture rule."\n    batch: "Fold the fixture tasks."\n', 'manager config')
+                '    review: "Check the fixture rule."\n', 'manager config')
     # ^ The owner's skills folder: the manager gets it as the `owner` plugin. It is the one of
     # demo's profile (README "Profiles"), not ~/.claude.
     owner_skills = profile_root / 'skills'
@@ -1311,7 +1316,7 @@ def run(wsx, wsxd, work, owned):
                  'stands alone, since a worker cannot ask', 'in every task new', 'With `--plan` the worker',
                  'Before `wsx task new`, compare the request', 'Never ask the owner to wait',
                  'for lean code', 'never send a task back to rebase', 'trust them over the worker',
-                 'Check the fixture rule.', 'start one housekeeping task', 'Fold the fixture tasks.',
+                 'Check the fixture rule.', 'Size the task to the change', 'Only events that need you start a turn',
                  'tell that worker to prove it', 'never skip or fail items', 'only when the owner\'s message of this turn says',
                  'A release refuses while items are open, unless the owner', '`wsx task trial <n>`',
                  '`--owner-said <id>`', 'never name a message that did not ask',
@@ -1319,8 +1324,8 @@ def run(wsx, wsxd, work, owned):
                  'Nothing asks you for permission', 'read-only git in Bash', '`wsx task new --into <n>`',
                  'only after the owner says yes, commit', 'also in a pipe or with a heredoc',
                  'the Skill tool as `owner:<name>`', 'check rather than guess',
-                 '/manager/notes/decisions.md', '/manager/notes/context.md', "worker's 'memo:'",
-                 "'Handover'", 'Update a section in place',
+                 '/manager/notes/decisions.md', '/manager/notes/context.md', "wsx adds each finished task's memo",
+                 'Update a section in place',
                  '--from-manager --reply', 'use it and do not answer it', "'@<project>'"):
         assert rule in launch['instructions'], rule
     # ^ Only `role new` takes a brief (docs/tasks.md "Roles").
@@ -1595,7 +1600,6 @@ def run(wsx, wsxd, work, owned):
     opened = turn_with('STATUS after the change')['message']
     # ^ The notes come first, then the handover.
     assert opened.startswith("The owner's decisions") and '\n\nHandover (this is a new conversation' in opened and 'You: noted events' in opened, opened
-    assert "fold the ledger's memos into your context first" in opened, opened
     # ^ The three failures before the rotation are one line: the newest and how many.
     routines = opened.split('\nRoutine results (')[1].split('\n\n')[0].split('\n')[1:]
     assert routines == ['routine nightly failed (exit 3); 3 failures, never succeeded'], opened
@@ -1666,6 +1670,23 @@ def run(wsx, wsxd, work, owned):
     for i, n in enumerate(memo_tasks):
         wait(lambda: events_with('#%d closed r1' % n, 'memo: lesson %d kept' % i), 'memo of t%d in its event' % n)
     assert len(js('task', 'ledger')['recent']) == 10
+    # ^ wsx writes the memos into the manager's notes, once each, and no turn runs for a close: the
+    # events go along with the next turn (docs/tasks.md "Memo", "Manager").
+    context = (notes / 'context.md').read_text()
+    for i, n in enumerate(memo_tasks):
+        assert context.count('lesson %d kept' % i) == 1 and '- #%d: ' % n in context, context
+    # ^ One close alone, after the turns above have ended, is the case that costs no turn.
+    lone = js('task', 'new', 'WORK lone.txt')['id']
+    assert wait_state(lone, 'ready', 'failed')['state'] == 'ready'
+    reply_to(wait(lambda: events_with('#%d ready r1' % lone), 'the ready event')[0]['id'])
+    time.sleep(5)
+    js('task', 'close', lone, '--discard')
+    last_close = wait(lambda: events_with('#%d closed r1' % lone), 'the lone close event')[0]
+    time.sleep(5)
+    assert not any(e['kind'] == 'reply' and last_close['id'] in e['to'] for e in chat()), chat()[-2:]
+    along = js('task', 'say', 'STATUS after the closes')
+    assert last_close['id'] in reply_to(along['id'])['to'], chat()[-2:]
+    assert 'closed r1' in turn_with('STATUS after the closes')['message']
 
     # 22. Approvals: what the manager may not do alone becomes a request the owner decides.
     mark('22')
@@ -3166,13 +3187,16 @@ def run(wsx, wsxd, work, owned):
     assert len(idle_tasks()) == 1 and len(other_tasks()) == 2, other_tasks()
     # 36. Fallback agent (docs/tasks.md "Agents"): a usage limit that lifts after
     mark('36')
+    named_project.append('demo')
+    # ^ These tasks write other files; CONFIG's check wants a.txt, which main need not hold.
+    FALLBACK_CONFIG = CONFIG.replace('    - "test -f a.txt"\n', '')
     # maxWaitMinutes moves the worker to the first fallback of the registry, a Pi RPC agent,
     # in a new conversation with the unfinished turn; it reports through `wsx task result -`
     # and the task stays there. The limit is on record for the machine, so the next task
     # starts on the fallback. A short limit is still waited out (part 27).
     with open(config_dir / 'config-v2.toml', 'a') as registry:
         registry.write('[[agents]]\nname = "fake-pi"\ncommand = ["pi"]\nadapter = "pi"\nmodel = "fake/pi-model"\n')
-    configure(CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi]\n    maxWaitMinutes: 1\n'),
+    configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi]\n    maxWaitMinutes: 1\n'),
               'fallback agent')
     switched = js('task', 'new', 'LIMIT 600 WORK fa.txt')['id']
     shown = wait_state(switched, 'ready', 'failed')
@@ -3194,6 +3218,89 @@ def run(wsx, wsxd, work, owned):
     for n in (switched, on_pi):
         js('task', 'close', n, '--discard')
     limit_file.unlink()
+    configure(CONFIG, 'no fallback')
+
+    # 37. The manager's agent choice (docs/tasks.md "Agents"): a stand-in during a short limit, a
+    # fallback's credit running out, the return to the own agent at the next turn and a budget.
+    mark('37')
+    agents = state / 'wsx/tasks/agents'
+    limit_for = lambda seconds: limit_file.write_text(json.dumps({'until_ms': int((time.time() + seconds) * 1000)}))
+    with open(config_dir / 'config-v2.toml', 'a') as registry:
+        registry.write('[[agents]]\nname = "fake-local"\ncommand = ["pi"]\nadapter = "pi"\n'
+                       'model = "local/stand-in"\nminimal = true\n')
+        registry.write('[[agents]]\nname = "fake-paid"\ncommand = ["pi"]\nadapter = "pi"\n'
+                       'model = "paid/model"\nbudget_usd_per_day = 1\n')
+    with_fallback = lambda names: FALLBACK_CONFIG.replace(
+        '  checks:\n', '  manager: { fallback: [%s] }\n  checks:\n' % names).replace(
+        '    model: fake-model\n', '    model: fake-model\n    maxWaitMinutes: 1\n')
+    # ^ A short limit is waited out, and the owner still gets words from the stand-in. The message
+    # stays due: the own agent answers it after the limit and hears of the stand-in's reply.
+    configure(with_fallback('fake-local, fake-pi'), 'stand-in')
+    limit_for(15)
+    asked = js('task', 'say', 'STATUS during the limit')
+    stood_in = wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and e.get('provisional') == 'fake-local'
+                                  and asked['id'] in e['to']), None), 'the stand-in reply')
+    assert stood_in['text'].startswith('pi answers: '), stood_in
+    call = next(t for t in reversed(traces()) if t.get('adapter') == 'pi' and t.get('launch'))
+    assert call['no_tools'] and call['no_session'] and call['session'] is None and call['model'] == 'local/stand-in', call
+    assert not any(t.get('adapter') == 'pi' and t.get('session') and 'STATUS during' in str(t.get('message')) for t in traces())
+    answer = wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and not e.get('provisional')
+                                and asked['id'] in e['to']), None), 'the own agent answers after the limit', 60)
+    assert answer['text'].startswith('open: ') and answer['unix_ms'] > stood_in['unix_ms'], answer
+    told = turn_with('a stand-in model with no tools answered these')
+    assert told and 'fake-local to message %d: pi answers' % asked['id'] in told['message'], told
+    assert not told.get('adapter')
+    # ^ Past maxWaitMinutes the manager moves to the first fallback that is no stand-in. When
+    # that one's credit is out, the refusal is no chat reply. The turn after the own agent's
+    # limit ends goes back to it, in a fresh conversation that holds the message.
+    refusal = work / 'credit-refusal.txt'
+    refusal.write_text('400 {"type":"error","error":{"type":"invalid_request_error","message":'
+                       '"Your credit balance is too low to access the Anthropic API."}}\n')
+    limit_for(600)
+    on_fallback = js('task', 'say', 'STATUS on the fallback')
+    assert reply_to(on_fallback['id'])['text'].startswith('pi answers: '), chat()[-3:]
+    manager_state = lambda: json.loads((manager_log.parent / 'state.json').read_text())
+    assert manager_state()['agent']['name'] == 'fake-pi', manager_state()
+    no_credit = js('task', 'say', 'PIERROR %s STATUS without credit' % refusal)
+    pi_limit = agents / 'pi-fake.json'
+    wait(lambda: pi_limit.exists(), 'the fallback counted as limited')
+    assert json.loads(pi_limit.read_text())['until_ms'] > (time.time() + 5 * 3600) * 1000, pi_limit.read_text()
+    assert not any(e['kind'] == 'reply' and 'credit balance' in e['text'] for e in chat()), chat()[-3:]
+    limit_file.unlink()
+    home = reply_to(no_credit['id'])
+    assert home['text'].startswith('open: '), home
+    assert 'agent' not in manager_state(), manager_state()
+    assert any(e['kind'] == 'rotated' and e.get('reason') == 'back on claude' for e in chat()), chat()[-5:]
+    home_turn = turn_with('PIERROR %s' % refusal)
+    assert home_turn and not home_turn.get('adapter') and 'STATUS without credit' in home_turn['message'], home_turn
+    pi_limit.unlink()
+    # ^ A daily budget: past it the account counts as limited until midnight and is left alone.
+    configure(with_fallback('fake-paid'), 'budget')
+    limit_for(600)
+    paid = js('task', 'say', 'PICOST 2 STATUS paid')
+    assert reply_to(paid['id'])['text'].startswith('pi answers: '), chat()[-3:]
+    wait(lambda: (agents / 'pi-paid.json').exists(), 'the budget was spent')
+    assert json.loads((agents / 'pi-paid.spend.json').read_text())['micro_usd'] == 2_000_000
+    assert json.loads((agents / 'pi-paid.json').read_text())['until_ms'] > time.time() * 1000
+    after_budget = js('task', 'say', 'STATUS after the budget')
+    time.sleep(3)
+    assert not any(e['kind'] == 'reply' and after_budget['id'] in e['to'] for e in chat()), chat()[-3:]
+    limit_file.unlink()
+    assert reply_to(after_budget['id'])['text'].startswith('open: '), chat()[-3:]
+    # ^ A worker has no fallback by default and waits; on a fallback whose credit is out, it goes
+    # home as soon as its own agent is free.
+    configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi]\n    maxWaitMinutes: 1\n'),
+              'worker fallback')
+    limit_for(600)
+    away = js('task', 'new', 'PIERROR %s WORK home.txt' % refusal)['id']
+    wait(lambda: show(away)['state'] == 'waiting' and show(away)['record']['adapter'] == 'pi', 'the worker waits on the fallback')
+    limit_file.unlink()
+    assert wait_state(away, 'ready', 'failed')['state'] == 'ready', show(away)
+    assert show(away)['record']['adapter'] == 'claude', show(away)['record']
+    assert next(e for e in log(away) if e['kind'] == 'agent_switch')['to'].startswith('claude '), log(away)
+    js('task', 'close', away, '--discard')
+    for name in ('pi-fake.json', 'pi-paid.json'):
+        (agents / name).unlink(missing_ok=True)
     configure(CONFIG, 'no fallback')
 
 if __name__ == '__main__':

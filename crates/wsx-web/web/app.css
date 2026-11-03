@@ -107,7 +107,8 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 /* The work a session row is for: project › worktree, each with its own look; the session under it. */
 .row-work { display: flex; align-items: baseline; gap: var(--space-1); min-width: 0; }
 .row-work > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row-asks { flex: none; font-size: var(--font-size-sm); }
+.row-asks { flex: none; display: inline-flex; }
+.row-asks .icon, .bubble-tag .icon { width: var(--space-4); height: var(--space-4); display: block; }
 .row-project { flex: 0 1 auto; font-weight: var(--font-weight-medium); }
 .row-sep { flex: 0 0 auto; color: var(--color-faint); }
 .row-worktree { flex: 0 1 auto; }
@@ -893,6 +894,37 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 /* One task's token use and cost (usage.js), and the project's in the Usage sheet. */
 .task-usage { padding-inline: var(--space-4); font-variant-numeric: tabular-nums; }
 .usage { padding: var(--space-3) var(--space-4) var(--space-4); }
+/* A project's cost per day: one stacked bar per row, one scale (usage.js). Fixed gaps of 2 px keep
+   neighbor colors apart. */
+.usage i[data-part="build"] { background: var(--color-series-1); }
+.usage i[data-part="plan"] { background: var(--color-series-2); }
+.usage i[data-part="context"] { background: var(--color-series-3); }
+.usage i[data-part="review"] { background: var(--color-series-4); }
+.usage i[data-part="memo"] { background: var(--color-series-5); }
+.usage i[data-part="other"] { background: var(--color-series-6); }
+.usage i[data-part="manager"] { background: var(--color-series-7); }
+.usage-total { display: grid; grid-template-columns: calc(var(--space-4) * 4) minmax(0, 1fr) calc(var(--space-4) * 4.5); align-items: center; gap: var(--space-2); min-height: var(--size-control); font-weight: var(--font-weight-medium); }
+.usage-amount { color: var(--color-text); font-variant-numeric: tabular-nums; }
+.usage-tokens summary { color: var(--color-muted); min-height: var(--size-control); cursor: pointer; }
+.usage-legend { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin: 0 0 var(--space-3); padding: 0; list-style: none; color: var(--color-muted); font-size: var(--font-size-sm); }
+.usage-legend li, .usage-parts dt { display: flex; align-items: center; gap: var(--space-1); }
+.usage-legend i, .usage-parts dt i { width: var(--space-3); height: var(--space-3); border-radius: calc(var(--space-1) / 2); flex: none; }
+.usage-days { margin: 0 0 var(--space-4); padding: 0; list-style: none; }
+.usage-day { display: grid; grid-template-columns: calc(var(--space-4) * 4) minmax(0, 1fr) calc(var(--space-4) * 4.5); align-items: center; gap: var(--space-2); width: 100%; min-height: var(--size-control); padding: 0; border: 0; background: none; color: var(--color-text); font: inherit; text-align: left; cursor: pointer; }
+.usage-day:disabled { color: var(--color-faint); cursor: default; opacity: 1; }
+.usage-date { color: var(--color-muted); white-space: nowrap; }
+.usage-day:disabled .usage-date { color: inherit; }
+.usage-track { display: block; min-width: 0; }
+.usage-bar { display: flex; gap: calc(var(--space-1) / 2); height: var(--space-3); min-width: calc(var(--space-1) / 2); }
+.usage-bar i { flex: 1 1 0; min-width: var(--border-width); }
+.usage-bar i:first-child { border-radius: var(--space-1) 0 0 var(--space-1); }
+.usage-bar i:last-child { border-radius: 0 var(--space-1) var(--space-1) 0; }
+.usage-bar i:only-child { border-radius: var(--space-1); }
+.usage-day:not(:disabled) .usage-cost { font-weight: var(--font-weight-medium); }
+.usage-cost { text-align: right; font-variant-numeric: tabular-nums; }
+.usage-parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(calc(var(--space-4) * 9), 1fr)); gap: var(--space-1) var(--space-4); margin: 0 0 var(--space-3); padding-left: calc(calc(var(--space-4) * 4) + var(--space-2)); font-size: var(--font-size-sm); }
+.usage-parts > div { display: flex; justify-content: space-between; gap: var(--space-2); }
+.usage-parts dd { margin: 0; font-variant-numeric: tabular-nums; }
 .timeline-more { grid-column: 2; color: var(--color-muted); overflow-wrap: anywhere; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 /* The messages to the worker, as bubbles. */
 .task-talk { padding: var(--space-4) var(--space-4) 0; display: flex; flex-direction: column; gap: var(--space-3); }

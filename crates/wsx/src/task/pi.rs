@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wsx_core::task::view::clip;
 use wsx_core::task::TurnUsage;
 
@@ -77,6 +77,9 @@ impl PiAgent {
             command.env(name, value);
         }
         command.env("GIT_EDITOR", "true");
+        // ^ A worker's check or a manager's quiet hour outlasts Pi's default 5-minute cache, and
+        // then the whole context is written again. ref: docs/design/manager-efficiency.md
+        command.env("PI_CACHE_RETENTION", "long");
         let mut child = command
             .current_dir(&launch.cwd)
             .stdin(Stdio::piped())
@@ -173,13 +176,12 @@ impl PiAgent {
 
 /// Headless and reproducible: no extensions, MCP, themes or templates of the owner's
 /// interactive Pi, and no global `AGENTS.md`. The project's own `AGENTS.md` is appended, as
-/// Claude reads only project settings. Skills: only the lent ones.
+/// Claude reads only project settings. Skills: only the lent ones. A stand-in's one call has
+/// no tools, no stored conversation and only its own words.
 fn pi_args(launch: &Launch, session: &str) -> Vec<std::ffi::OsString> {
     let mut args: Vec<std::ffi::OsString> = [
         "--mode",
         "rpc",
-        "--session-id",
-        session,
         "--model",
         &launch.model,
         "--no-extensions",
@@ -189,11 +191,17 @@ fn pi_args(launch: &Launch, session: &str) -> Vec<std::ffi::OsString> {
         "--no-context-files",
         "--no-skills",
         "--no-approve",
-        "--append-system-prompt",
-        &launch.instructions,
     ]
     .map(Into::into)
     .to_vec();
+    // ^ A small model read Pi's coding prompt and said it could only work with files.
+    if launch.minimal {
+        args.extend(["--no-session", "--no-tools", "--thinking", "off"].map(Into::into));
+        args.extend(["--system-prompt".into(), (&launch.instructions).into()]);
+        return args;
+    }
+    args.extend(["--session-id".into(), session.into()]);
+    args.extend(["--append-system-prompt".into(), (&launch.instructions).into()]);
     for name in ["AGENTS.md", "CLAUDE.md"] {
         let file = launch.cwd.join(name);
         if file.is_file() {
@@ -334,7 +342,7 @@ impl Run {
                 (_, true) => "error".into(),
                 _ => "success".into(),
             },
-            limit: (failed && is_usage_limit(&run.error)).then_some(UsageLimit { resets_at: None }),
+            limit: failed.then(|| refusal(&run.error)).flatten(),
             text: if failed { run.error } else { run.text },
             structured: None,
             denials: Vec::new(),
@@ -344,20 +352,48 @@ impl Run {
     }
 }
 
-/// A provider's refusal for a limit, after Pi's own retries: the host waits or switches
-/// agents. Pi reports no reset time, so the host backs off. ref: docs/tasks.md "Usage limit"
-fn is_usage_limit(error: &str) -> bool {
+/// How long an account without credit, without a valid login or without the model counts as
+/// limited: nothing tells when the owner fixes it, so a later turn tries again.
+const UNAVAILABLE_SECS: u64 = 6 * 3600;
+
+/// A provider's refusal after Pi's own retries, which the host waits out or moves away from.
+/// A rate limit or an unreachable server backs off; missing credit, a refused login and an
+/// unknown model will not pass soon. ref: docs/tasks.md "Pi adapter"
+fn refusal(error: &str) -> Option<UsageLimit> {
     let error = error.to_ascii_lowercase();
-    [
+    let says = |words: &[&str]| words.iter().any(|word| error.contains(word));
+    if says(&[
+        "credit balance",
+        "insufficient credit",
+        "insufficient_quota",
+        "billing",
+        "authentication",
+        "invalid x-api-key",
+        "no api key",
+        "permission_error",
+        "not_found_error",
+        "model_not_found",
+        "model not found",
+        "unknown model",
+    ]) || error.starts_with("401")
+        || error.starts_with("403")
+    {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        return Some(UsageLimit {
+            resets_at: Some(now + UNAVAILABLE_SECS),
+        });
+    }
+    says(&[
         "429",
         "rate limit",
         "rate_limit",
         "usage limit",
         "quota",
-        "insufficient credit",
-    ]
-    .iter()
-    .any(|word| error.contains(word))
+        "econnrefused",
+        "fetch failed",
+        "connection error",
+    ])
+    .then_some(UsageLimit { resets_at: None })
 }
 
 fn key_argument(input: &Value) -> Option<String> {

@@ -90,6 +90,8 @@ struct BackgroundWait {
 const LIMIT_CONTINUE: &str = "The usage limit has reset. Continue the task where it stopped.";
 /// How often a resumable task behind another in the limit queue looks again.
 const LIMIT_POLL_MS: u64 = 2_000;
+/// How often a wait on a fallback looks for the task's own agent coming free.
+const HOME_POLL_MS: u64 = 10_000;
 /// How often a task that waits for disk looks again.
 const DISK_POLL: Duration = Duration::from_secs(30);
 /// How long a task resumed from a disk wait holds the disk slot, so the next one sees the
@@ -457,12 +459,11 @@ impl Host {
                 // moves to the fallback now instead of waiting days. ref: docs/tasks.md "Agents"
                 let now = now_unix_ms();
                 let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-                let next = (until_ms.saturating_sub(now) > settings.max_wait_secs * 1000)
-                    .then(|| super::agent::fallback(&settings.fallback, &self.record.adapter, now))
-                    .flatten();
+                let next =
+                    super::agent::worker_next(&settings, &self.record.adapter, &self.record.model, until_ms, now);
                 match next {
                     Some(next) => {
-                        let _ = store::mark_limited(&self.record.adapter, until_ms);
+                        let _ = store::mark_limited(&self.account(), until_ms);
                         self.turn_text = "Continue the task where it stopped.".into();
                         self.switch_agent(next, until_ms, now);
                     }
@@ -892,6 +893,28 @@ impl Host {
             wait.text = format!("{}\n\n{text}", wait.text);
             return Ok(());
         }
+        // ^ A fallback's limit another host met, or its spent budget: no paid call to learn it.
+        // On Claude the refusal costs nothing and the limit queue orders the resumes.
+        // ref: docs/tasks.md "Agents"
+        let now = now_unix_ms();
+        let limited = (self.record.adapter != "claude")
+            .then(|| store::limited_until(&self.account(), now))
+            .flatten();
+        if let Some(until_ms) = limited {
+            let settings = load_task_config(&self.record.project_path).unwrap_or_default();
+            match super::agent::worker_next(&settings, &self.record.adapter, &self.record.model, until_ms, now) {
+                Some(next) => {
+                    self.turn_text = text.to_string();
+                    self.switch_agent(next, until_ms, now);
+                }
+                None => {
+                    self.limit_slot = None;
+                    self.log(LogEvent::LimitWait { until_ms });
+                    self.wait_for_limit(text.to_string(), until_ms);
+                }
+            }
+            return Ok(());
+        }
         // ^ A message during a disk wait joins the held turn, or follows the held checks: it
         // never starts a turn of its own, which would skip the disk queue and drop the held
         // prompt. ref: docs/tasks.md "Free disk"
@@ -1022,19 +1045,17 @@ impl Host {
             self.limit_attempt += 1;
             let now = now_unix_ms();
             let until_ms = limit::resume_at(limit.resets_at, self.limit_attempt, now);
-            if let Err(error) = store::mark_limited(&self.record.adapter, until_ms) {
+            if let Err(error) = store::mark_limited(&self.account(), until_ms) {
                 self.say(&format!("cannot record the usage limit: {error:#}"));
             }
             // ^ One conversation is worth more than a switch: a limit that lifts within
             // `maxWaitMinutes` is waited out. ref: docs/tasks.md "Agents"
             let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-            if until_ms.saturating_sub(now) > settings.max_wait_secs * 1000 {
-                if let Some(next) =
-                    super::agent::fallback(&settings.fallback, &self.record.adapter, now)
-                {
-                    self.switch_agent(next, until_ms, now);
-                    return;
-                }
+            if let Some(next) =
+                super::agent::worker_next(&settings, &self.record.adapter, &self.record.model, until_ms, now)
+            {
+                self.switch_agent(next, until_ms, now);
+                return;
             }
             let mut text = vec![LIMIT_CONTINUE.to_string()];
             text.extend(self.pending.drain(..));
@@ -1043,6 +1064,14 @@ impl Host {
             return;
         }
         self.limit_attempt = 0;
+        if let Some(message) = super::agent::note_spend(
+            &self.record.adapter,
+            &self.record.model,
+            turn.usage.cost_micro_usd,
+            now_unix_ms(),
+        ) {
+            self.say(&message);
+        }
         if let Some((waiting, idle)) = self.rotating.take() {
             self.log(LogEvent::Agent {
                 said: false,
@@ -1406,14 +1435,24 @@ impl Host {
 
     /// Hold the turn `text` until `until_ms`, in the machine's limit queue.
     fn wait_for_limit(&mut self, text: String, until_ms: u64) {
+        // ^ A wait on a fallback also looks for the task's own agent coming free.
+        let next_ms = match self.record.adapter.as_str() {
+            "claude" => until_ms,
+            _ => until_ms.min(now_unix_ms() + HOME_POLL_MS),
+        };
         self.limit_wait = Some(LimitWait {
             text,
             until_ms,
-            next_ms: until_ms,
+            next_ms,
         });
         let reason = limit::reason(&self.record.adapter, until_ms, now_unix_ms());
         self.say(&reason);
         self.wait(WaitOn::Limit, reason);
+    }
+
+    /// The account this task's turns run on.
+    fn account(&self) -> String {
+        super::agent::account(&self.record.adapter, &self.record.model)
     }
 
     /// Continue after a usage limit. Tasks resume one at a time, oldest wait first: each
@@ -1421,9 +1460,29 @@ impl Host {
     /// only one. ref: docs/tasks.md "Claude adapter"
     fn resume_after_limit(&mut self) {
         let now = now_unix_ms();
+        // ^ On a fallback, a wait ends as soon as the task's own agent is free.
+        if let Some(until_ms) = self.limit_wait.as_ref().map(|wait| wait.until_ms) {
+            let settings = load_task_config(&self.record.project_path).unwrap_or_default();
+            let own = super::agent::account(&settings.adapter, &settings.model);
+            if self.account() != own && store::limited_until(&own, now).is_none()
+            {
+                if let Some(next) =
+                    super::agent::worker_next(&settings, &self.record.adapter, &self.record.model, until_ms, now)
+                {
+                    let wait = self.limit_wait.take().expect("checked above");
+                    self.turn_text = wait.text;
+                    self.switch_agent(next, until_ms, now);
+                    return;
+                }
+            }
+        }
         let Some(wait) = self.limit_wait.as_mut().filter(|wait| wait.next_ms <= now) else {
             return;
         };
+        if now < wait.until_ms {
+            wait.next_ms = wait.until_ms.min(now + HOME_POLL_MS);
+            return;
+        }
         if let Some(queue) = &self.limit_queue {
             let label = format!("{} t{}", self.record.project, self.record.id);
             match queue.try_take(&label) {

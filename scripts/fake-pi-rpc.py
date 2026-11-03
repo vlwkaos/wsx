@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Model-free stand-in for `pi --mode rpc`, used by test-task.py as a fallback agent.
 
-Each `prompt` command is one run. A worker (its instructions name a task worker) does
+Each `prompt` command is one run. `PIERROR <file>` ends the run as a provider's refusal, with the
+words of <file> as the error; `PICOST <usd>` reports that cost for the run. A worker (its instructions name a task worker) does
 `WORK <file>` (writes and commits it) and sends its result to `wsx task result -`, as the
 Pi adapter's instructions ask; a manager answers "pi answers: <first line>". The run then
 streams Pi's own events: agent_start, an assistant message_end with usage, agent_settled.
@@ -36,7 +37,8 @@ def main():
     instructions = ' '.join(value for flag, value in zip(argv, argv[1:]) if flag == '--append-system-prompt')
     worker = 'You are a task worker' in instructions
     trace({'launch': True, 'session': session, 'model': option(argv, '--model'), 'cwd': os.getcwd(),
-           'worker': worker, 'rpc': '--mode' in argv and option(argv, '--mode') == 'rpc'})
+           'worker': worker, 'rpc': '--mode' in argv and option(argv, '--mode') == 'rpc',
+           'no_tools': '--no-tools' in argv, 'no_session': '--no-session' in argv})
     for line in sys.stdin:
         command = json.loads(line)
         if command.get('type') != 'prompt':
@@ -48,6 +50,20 @@ def main():
               'data': {'disposition': 'started'}})
         emit({'type': 'agent_start'})
         words = text.split()
+        # ^ A handover quotes earlier messages: only this message's own words steer the fake.
+        own = text.rsplit('Owner (message', 1)[-1].split()
+        if 'PIERROR' in own:
+            with open(own[own.index('PIERROR') + 1]) as refusal:
+                error = refusal.read().strip()
+            emit({'type': 'message_end', 'message': {
+                'role': 'assistant', 'model': option(argv, '--model') or 'fake', 'stopReason': 'error',
+                'errorMessage': error, 'content': [],
+                'usage': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'totalTokens': 0,
+                          'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'total': 0}}}})
+            emit({'type': 'agent_end', 'messages': [], 'willRetry': False})
+            emit({'type': 'agent_settled', 'aborted': False})
+            continue
+        cost = float(own[own.index('PICOST') + 1]) if 'PICOST' in own else 0.001
         if worker:
             if 'WORK' in words:
                 name = words[words.index('WORK') + 1]
@@ -68,7 +84,7 @@ def main():
             'role': 'assistant', 'model': option(argv, '--model') or 'fake', 'stopReason': 'stop',
             'content': [{'type': 'text', 'text': answer}],
             'usage': {'input': 100, 'output': 10, 'cacheRead': 0, 'cacheWrite': 0, 'totalTokens': 110,
-                      'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'total': 0.001}}}})
+                      'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'total': cost}}}})
         emit({'type': 'agent_end', 'messages': [], 'willRetry': False})
         emit({'type': 'agent_settled', 'aborted': False})
 

@@ -136,8 +136,6 @@ pub struct TaskWorkflow {
     pub build: String,
     /// Added to the manager's review of a ready task.
     pub review: String,
-    /// The housekeeping task's prompt after a request's tasks land.
-    pub batch: String,
     /// The prompt of the task the manager host starts when session notes are newer than the
     /// last one; empty is off.
     pub idle: String,
@@ -160,11 +158,6 @@ impl Default for TaskWorkflow {
                     dead, and simplify the diff before you finish."
                 .into(),
             review: String::new(),
-            batch:
-                "Consolidate the code these tasks changed: merge duplicates, remove dead \
-                    code and layers that do nothing, keep behavior and public interfaces the \
-                    same, and lower the net line count. The checks prove the behavior is unchanged."
-                    .into(),
             idle: String::new(),
             steps: Vec::new(),
         }

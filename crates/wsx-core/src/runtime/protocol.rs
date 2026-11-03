@@ -67,7 +67,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Revision 38 bounds a terminal input write to 1 s when the program stops reading its input,
 // and writes the end of a terminal stream without holding daemon state
 // (docs/terminal-raw-stream.md "Input").
-pub const DAEMON_REVISION: u32 = 38;
+// Revision 39 moves the sessions of a worktree whose folder is gone to their project's main
+// checkout at the next synchronization, so their chat and new panes resolve again.
+pub const DAEMON_REVISION: u32 = 39;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 

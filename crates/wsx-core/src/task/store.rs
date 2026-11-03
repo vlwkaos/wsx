@@ -257,18 +257,52 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     .with_context(|| format!("cannot write {}", path.display()))
 }
 
-/// `tasks/agents/<adapter>.json`: until when the adapter's provider refuses turns for its
-/// usage limit, shared by every host on this machine. ref: docs/tasks.md "Agents"
-fn limit_file(adapter: &str) -> Result<PathBuf> {
-    if !crate::config::global::TASK_ADAPTERS.contains(&adapter) {
-        bail!("no task adapter {adapter}");
-    }
-    Ok(tasks_root().join("agents").join(format!("{adapter}.json")))
+/// Replace a note of the manager's notes folder.
+pub fn write_note(path: &Path, text: &str) -> Result<()> {
+    write_atomic(path, text.as_bytes())
 }
 
-/// Record that `adapter` is at its usage limit until `until_ms` (unix ms).
-pub fn mark_limited(adapter: &str, until_ms: u64) -> Result<()> {
-    let path = limit_file(adapter)?;
+/// `tasks/agents/<account><suffix>`, one account's file (`claude`, `pi-anthropic`), shared by
+/// every host on this machine. ref: docs/tasks.md "Agents"
+fn account_file(account: &str, suffix: &str) -> Result<PathBuf> {
+    if account.is_empty()
+        || !account
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        bail!("no account {account}");
+    }
+    Ok(tasks_root()
+        .join("agents")
+        .join(format!("{account}{suffix}")))
+}
+
+/// Add a turn's cost to `account`'s spend of the day that starts at `day_ms`, and return that
+/// day's total. One file per account holds only the current day. Two hosts writing at once can
+/// lose one turn's cost, which a daily budget can bear. ref: docs/tasks.md "Agents"
+pub fn add_spend(account: &str, day_ms: u64, micro_usd: u64) -> Result<u64> {
+    let path = account_file(account, ".spend.json")?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    let spent = read_bounded_if_exists(&path, 4096)?
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .filter(|record| record["day_ms"].as_u64() == Some(day_ms))
+        .and_then(|record| record["micro_usd"].as_u64())
+        .unwrap_or(0)
+        .saturating_add(micro_usd);
+    write_atomic(
+        &path,
+        serde_json::json!({ "day_ms": day_ms, "micro_usd": spent })
+            .to_string()
+            .as_bytes(),
+    )?;
+    Ok(spent)
+}
+
+/// Record that `account` refuses turns until `until_ms` (unix ms).
+pub fn mark_limited(account: &str, until_ms: u64) -> Result<()> {
+    let path = account_file(account, ".json")?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
@@ -280,10 +314,10 @@ pub fn mark_limited(adapter: &str, until_ms: u64) -> Result<()> {
     )
 }
 
-/// When `adapter`'s recorded usage limit ends, if it is still ahead of `now_ms`. An
-/// unreadable record counts as none: the agent's own answer decides then.
-pub fn limited_until(adapter: &str, now_ms: u64) -> Option<u64> {
-    let bytes = read_bounded_if_exists(&limit_file(adapter).ok()?, 4096).ok()??;
+/// When `account`'s recorded limit ends, if it is still ahead of `now_ms`. An unreadable
+/// record counts as none: the agent's own answer decides then.
+pub fn limited_until(account: &str, now_ms: u64) -> Option<u64> {
+    let bytes = read_bounded_if_exists(&account_file(account, ".json").ok()?, 4096).ok()??;
     let until = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?["until_ms"].as_u64()?;
     (until > now_ms).then_some(until)
 }
