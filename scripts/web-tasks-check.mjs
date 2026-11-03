@@ -2657,13 +2657,13 @@ const reviewed = await evaluate(`(() => { const row = [...document.querySelector
   return { running: row.querySelector('.mark').hasAttribute('data-running'), needs: !!document.querySelector('.reservoir-list[aria-label="Needs you"]')?.contains(row) } })()`);
 if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${JSON.stringify(reviewed)}`);
 // --- An overview over the cap: the sheet cuts it to 60 lines and 4,000 characters and says so.
-// ^ Last, since the manager answers and the host sends a follow-up: those replies move the chat's unread counts.
-await go(chat);
-await until("!!document.querySelector('.composer-field')", "the chat did not open for the over-cap message");
-await typeInto(".composer-field", "OVERLONG 70");
-await click(".composer-send");
-await until("document.querySelector('.composer-field').value === ''", "the OVERLONG message was not sent");
-await go(`#/p/${project}/page`);
+// ^ The file is written in `plans`' task folder, where no manager runs: the page only reads it.
+{
+  const cli = JSON.parse(fs.readFileSync(wsxCli));
+  const shown = JSON.parse(execFileSync(cli.wsx, ["task", "show", "1", "--json", "-p", "plans"], { env: cli.env, cwd: cli.cwd, stdio: "pipe" }));
+  fs.writeFileSync(path.join(path.dirname(path.dirname(shown.log)), "overview.md"), "# plans\n" + "a line of the overview\n".repeat(69));
+}
+await go(`#/p/${plansArg}/page`);
 await until("!!document.querySelector('dialog.task-sheet[open] .project-page .over-limit')", "the over-cap overview shows no note", 60);
 const cut = await evaluate("({ lines: (document.querySelector('.project-page .task-body').textContent.match(/a line of the overview/g) ?? []).length, note: document.querySelector('.over-limit').textContent })");
 if (cut.lines > 59 || !/Over the size limit/.test(cut.note)) await fail(`the over-cap overview is not cut: ${JSON.stringify(cut)}`);
