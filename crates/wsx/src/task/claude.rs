@@ -198,7 +198,8 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
          Every model call reads your whole context again, so use few calls: put the searches \
          and reads you already know you need in one message, not one after another, and read \
          line ranges, not whole files. {search}Never poll: a background job tells you when it \
-         ends. \
+         ends. Wait for or stop each background job before your result: one that ends after \
+         it starts another turn. \
          Prove what you can: each check a command, a test or a capture shows goes to \
          `evidence` with that command or the capture's path. Anything a test, an assert or a \
          capture can show is yours to prove, also a state you must stage in a fixture (a \

@@ -172,3 +172,7 @@ The rerun differs from the baseline by under 2%: results logged after 10-31 for 
 | 5 | Measure `event_wakes` (live 11-03), then give `quiet ready` no turn of its own: batch it with the review | 152 quiet event turns, about $10; 25 quiet `ready` turns $4.26 | $8-12 manager | fewer manager calls; the 150k manager context is read less often |
 
 Rotating check-run answers and retries above 200k would not pay: they run 1-2 calls, and a rotation costs $0.71 a turn plus the handoff. Prove each change with the loop above: one `decisions.md` line, then compare after 8 landed tasks of that kind.
+
+### Decisions (2026-11-03)
+
+- Changes 1 and 4: the owner's steps become `plan, build, review`; `review` asks for the memo in the result. `context` loaded no project knowledge from a worktree (recall `mode=none`), so it goes with no replacement. The 33 "no result" logs were Claude's own turns for background-job notices after a result (25 model turns in 19 tasks; the host's result retry ran once), so each step's text asks to end background jobs first and the host logs a result that comes while one runs. Compare after 8 landed tasks: `$/landed` (4.32) and turns after the last step (35).

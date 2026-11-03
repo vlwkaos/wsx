@@ -22,6 +22,7 @@ Each user message is a small script of words:
   CHECKRUN_AFTER  after WORK's commit run `wsx task check-run` and trace its answer
   CHECKRUN_WITH <a,b>  run `wsx task check-run a b`, then a bare `wsx task check-run`, and trace both
   CHECKRUN_LATE <a>  start `wsx task check-run a` in the background and finish before its answer
+  BGRESULT     return the result while a background job still runs
   REPEAT       return the result again 1 s later, as Claude's own turn for a background notice
   LIMIT <s>    (once per process) end the turn as Claude's usage limit does, resetting in <s> s;
                the next message continues this one (also for the manager); with
@@ -502,6 +503,9 @@ def main():
                     'id': 'msg_big', 'model': model, 'content': [],
                     'usage': {'input_tokens': 10, 'cache_read_input_tokens': 399990, 'output_tokens': 5}}})
         summary = 'did: ' + text + (' | steers: ' + '; '.join(steers) if steers else '')
+        if 'BGRESULT' in words:
+            emit({'type': 'system', 'subtype': 'background_tasks_changed', 'session_id': session,
+                  'tasks': [{'task_id': 'bg1', 'task_type': 'local_bash', 'description': 'check-run wait'}]})
         for repeat in range(2 if 'REPEAT' in words else 1):
             time.sleep(repeat)
             emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': summary,
@@ -512,6 +516,9 @@ def main():
                                         'human_verify': verify,
                                         'left_open': ['nothing real'], 'notes': '',
                                         'memo': rest_of_line(text, 'MEMO') if 'MEMO' in words else ''}})
+        if 'BGRESULT' in words:
+            # ^ The job ends after the result; this fixture starts no turn for its notice.
+            emit({'type': 'system', 'subtype': 'background_tasks_changed', 'session_id': session, 'tasks': []})
 
 
 def usage_limit(session, seconds):
