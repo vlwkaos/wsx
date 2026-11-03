@@ -1,7 +1,7 @@
 // The project's To check list: what only a person can check of the landed tasks, passed or
 // failed at the owner's own time (docs/tasks.md "To check", docs/web-client-tasks.md "To check").
 import { api } from "./api.js";
-import { html, Icon, Loading, useCoalescedLoad, useEffect, useRef, useState } from "./lib.js";
+import { html, Icon, Loading, useCoalescedLoad, useEffect, useState } from "./lib.js";
 import { can, useStore } from "./store.js";
 import { loadTasks, TaskChip } from "./tasks.js";
 import { SheetBar } from "./ui.js";
@@ -44,22 +44,22 @@ function Place({ where }) {
 // One item: the task chip with what the task did as its title, then the check, where to look,
 // its capture and when it passes as labeled lines. Try, Fail, Skip and Pass are icons in one place on
 // every item: the bottom right on a phone, a column right of the words on a wide screen.
-// Fail opens a required note sent with Send; × again or Escape closes it. The note goes to the
-// task that fixes it. `revision` is the task's current one: an item of an older revision names its own.
+// Fail puts the item into the manager's composer (`onMention`, as the Fail of tasks.js `NeedRow`
+// does); the item stays open and the manager starts the fix. Pass and Skip show their result at once.
+// `revision` is the task's current one: an item of an older revision names its own.
 // `tag`: an `li` in the list, a `div` in its chat bubble (bubbles.js `CheckBubble`).
-export function CheckRow({ project, item, revision, onChanged, tag = "li" }) {
-  const [failing, setFailing] = useState(false);
+export function CheckRow({ project, item: listed, revision, onChanged, onMention, tag = "li" }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const note = useRef();
-  const toggle = useRef();
-  useEffect(() => { if (failing) note.current.focus(); }, [failing]);
-  const decide = async (decision, body = {}) => {
+  // ^ The decision answers with the item's new state; a chat bubble has no list to read again.
+  const [decided, setDecided] = useState(null);
+  const item = decided?.id === listed.id && listed.state === "open" ? decided : listed;
+  const decide = async (decision) => {
     setBusy(true);
     setError("");
     try {
-      await api(`api/tasks/${project}/checks/${item.id}/${decision}`, { method: "POST", json: body });
-      setFailing(false);
+      const answer = await api(`api/tasks/${project}/checks/${item.id}/${decision}`, { method: "POST", json: {} });
+      setDecided({ ...item, ...answer.changed?.find((changed) => changed.id === item.id), state: decision === "pass" ? "passed" : "skipped" });
       loadTasks(project);
       onChanged?.();
     } catch (failure) {
@@ -67,18 +67,10 @@ export function CheckRow({ project, item, revision, onChanged, tag = "li" }) {
     }
     setBusy(false);
   };
+  // ^ The dialog closes in the tap, as the Answer of task.js does, so the composer can take the focus.
   const fail = (event) => {
-    event.preventDefault();
-    const text = note.current.value.trim();
-    if (text) decide("fail", { note: text });
-  };
-  // ^ Escape closes the note, not the sheet around it (tasks.js `Sheet` closes on the dialog's cancel).
-  const escape = (event) => {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    event.stopPropagation();
-    setFailing(false);
-    toggle.current.focus();
+    event.currentTarget.closest("dialog")?.close();
+    onMention(item.task, `To check ${item.id} failed: `);
   };
   const acting = can("task_act") && item.state === "open";
   const older = revision != null && item.revision !== revision ? ` (r${item.revision})` : "";
@@ -111,27 +103,20 @@ export function CheckRow({ project, item, revision, onChanged, tag = "li" }) {
         ${acting && html`
           <span class="check-acts">
             <${TryButton} project=${project} task=${item.task} icon />
-            <button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy} ref=${toggle}
-              title=${failing ? "Close the note" : "Fail"} aria-expanded=${failing}
-              aria-label=${`${failing ? "Do not fail" : "Fail"}: ${item.check}`} onClick=${() => setFailing(!failing)}><${Icon} name="fail" /></button>
-            <button class="icon-button check-act" type="button" disabled=${busy} title="Skip"
-              aria-label=${`Skip: ${item.check}`} onClick=${() => decide("skip")}><${Icon} name="skip" /></button>
-            <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Pass"
-              aria-label=${`Pass: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
+            ${onMention && html`<button class="icon-button check-act" type="button" data-tone="danger" disabled=${busy}
+              title="Fail: tell the manager" aria-label=${`Fail: tell the manager what is wrong with: ${item.check}`} onClick=${fail}><${Icon} name="fail" /></button>`}
+            <button class="icon-button check-act" type="button" disabled=${busy} title="Not checking: close it without a verdict"
+              aria-label=${`Skip, not checking: close it without a verdict: ${item.check}`} onClick=${() => decide("skip")}><${Icon} name="skip" /></button>
+            <button class="icon-button check-act" type="button" data-tone="accent" disabled=${busy} title="Works: close this check"
+              aria-label=${`Pass, works: close this check: ${item.check}`} onClick=${() => decide("pass")}><${Icon} name="pass" /></button>
           </span>`}
       </div>
-      ${failing && html`
-        <form class="need-form check-form" onSubmit=${fail}>
-          <input class="input" ref=${note} type="text" autocomplete="off" disabled=${busy} required onKeyDown=${escape}
-            aria-label=${`What is wrong with: ${item.check}`} placeholder="What is wrong (a task fixes it)" />
-          <button class="button" type="submit" disabled=${busy}>Send</button>
-        </form>`}
       ${error && html`<p class="error need-error" role="alert">${error}</p>`}
     </${tag}>`;
 }
 
 // Every open item of the project in its sheet, oldest first, with All passed in the top bar.
-export function ChecksPage({ project, onClose, grip }) {
+export function ChecksPage({ project, onClose, onMention, grip }) {
   const store = useStore();
   const [items, setItems] = useState(null);
   const [failure, setFailure] = useState("");
@@ -176,7 +161,7 @@ export function ChecksPage({ project, onClose, grip }) {
           : !items.length ? html`<p class="empty">Nothing to check.</p>`
           : html`
             <ul class="check-list" aria-label="Items to check">
-              ${items.map((item) => html`<${CheckRow} key=${item.id} project=${project} item=${item} onChanged=${read} />`)}
+              ${items.map((item) => html`<${CheckRow} key=${item.id} project=${project} item=${item} onChanged=${read} onMention=${onMention && ((task, words) => { onClose(); onMention(task, words); })} />`)}
             </ul>`}
       </div>
     </div>`;

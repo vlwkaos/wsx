@@ -197,7 +197,7 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
   const lastResult = !summaryIsCurrent(detail) && detail.result?.summary?.trim();
   const checkRows = html`
     <ul class="check-list">${detail.to_check.map((item) => html`
-      <${CheckRow} key=${item.id} project=${project} item=${item} revision=${detail.revision} onChanged=${load} />`)}
+      <${CheckRow} key=${item.id} project=${project} item=${item} revision=${detail.revision} onChanged=${load} onMention=${(n, words) => { onMention(n, words); onClose(); }} />`)}
     </ul>`;
   return html`
     <div class="page task-page">

@@ -793,9 +793,11 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
   const [gestures, menu] = useReply((line) => { setReply(line); field.current?.focus(); });
   // ^ A task's Answer: the composer takes the mention as typed text, so its own input handler
   // keeps the draft (docs/web-client-tasks.md "Project screen").
-  const mention = (n) => {
+  const mention = (n, words = "") => {
     const node = field.current;
-    const [text, caret] = withMention(node.value, n);
+    const [mentioned, at] = withMention(node.value, n);
+    const text = mentioned.slice(0, at) + words + mentioned.slice(at);
+    const caret = at + words.length;
     node.focus({ preventScroll: true });
     node.value = text;
     node.setSelectionRange(caret, caret);
@@ -873,11 +875,11 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
   const stopped = chat && !chat.running && entries.at(-1)?.kind === "stopped";
   // ^ The manager's state only when it matters: typing or stopped (docs/web-client-tasks.md "Project screen").
   const managerWord = typing ? "typing" : stopped ? "stopped" : "";
-  const show = (row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${fresh.current.has(row.key)} />`
-    : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} text=${row.text} fresh=${fresh.current.has(row.key)} />`
-    : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} name=${names.manager} fresh=${fresh.current.has(row.key)} />`
+  const show = (row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${fresh.current.has(row.key)} onMention=${mention} />`
+    : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} text=${row.text} fresh=${fresh.current.has(row.key)} onMention=${mention} />`
+    : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} name=${names.manager} fresh=${fresh.current.has(row.key)} onMention=${mention} />`
     : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} />`
-    : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${fresh.current.has(row.key)} />`
+    : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${fresh.current.has(row.key)} onMention=${mention} />`
     : html`<${Note} key=${row.key} entry=${row.entry} />`;
   return html`
     <div class="page manager">
@@ -922,7 +924,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
         </${Sheet}>`}
       ${checks && html`
         <${Sheet} key="checks" label="To check" fit onClose=${() => leaveFor(`#/p/${id}`)}>
-          ${(grip) => html`<${ChecksPage} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
+          ${(grip) => html`<${ChecksPage} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} onMention=${mention} grip=${grip} />`}
         </${Sheet}>`}
       ${usage && html`
         <${Sheet} key="usage" label="Usage" fit onClose=${() => leaveFor(`#/p/${id}`)}>
