@@ -36,6 +36,7 @@ export function RoutinesPage({ project, onClose, grip }) {
     setList(value);
     setFailure("");
   }, (error) => setFailure(error.message), [project]);
+  useEffect(() => { read(); }, [project]);
   useEffect(() => { if (list || failure) grip.ready(); }, [Boolean(list), failure]);
   const rows = list?.routines ?? [];
   return html`
