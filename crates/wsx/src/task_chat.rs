@@ -7,10 +7,11 @@ use crate::{
 };
 use std::{
     cell::Cell,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc,
     time::{Duration, Instant},
 };
+use wsx_core::config::project::load_task_config;
 use wsx_core::task::{
     call_socket,
     checks::{self, CheckItem, CheckState},
@@ -20,6 +21,7 @@ use wsx_core::task::{
     },
     owner,
     store::{self, ManagerDir, Stamp},
+    view,
 };
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(1);
@@ -81,6 +83,8 @@ struct View {
     rows: Vec<Row>,
     items: Vec<Item>,
     activity: Option<String>,
+    /// The manager's agent in use, as `view::agent_label` writes it; none for a role.
+    agent: Option<String>,
 }
 
 /// A check's answer: the host's status, and the store read again when a stamp changed.
@@ -102,6 +106,7 @@ pub struct ManagerChat {
     pub running: bool,
     pub busy: bool,
     pub activity: Option<String>,
+    pub agent: Option<String>,
     pub error: Option<String>,
     /// What the last message or decision answered; a failure stays until the next one.
     pub notice: Option<(String, bool)>,
@@ -138,6 +143,7 @@ impl ManagerChat {
             running: false,
             busy: false,
             activity: None,
+            agent: None,
             error: None,
             notice: None,
             scroll: 0,
@@ -158,6 +164,7 @@ impl ManagerChat {
     fn check(&mut self) {
         let (tx, rx) = mpsc::sync_channel(1);
         let (store, last, role) = (self.store.clone(), self.stamp.clone(), self.role.clone());
+        let main = self.main.clone();
         self.pending = Some(rx);
         self.last_check = Instant::now();
         std::thread::spawn(move || {
@@ -174,7 +181,7 @@ impl ManagerChat {
             });
             let now = store::stamp(&store);
             let view = (last.as_ref() != Some(&now)).then(|| {
-                let view = read(&store, dir.as_ref()).map_err(|error| format!("{error:#}"));
+                let view = read(&store, &main, dir.as_ref()).map_err(|error| format!("{error:#}"));
                 (now, view)
             });
             let _ = tx.send(Read { status, view });
@@ -239,6 +246,7 @@ impl ManagerChat {
                     .min(self.items.len().saturating_sub(1));
                 self.rows = view.rows;
                 self.activity = view.activity;
+                self.agent = view.agent;
                 self.stamp = Some(stamp);
                 self.loaded = true;
                 self.error = None;
@@ -390,7 +398,7 @@ impl ManagerChat {
 
 /// The conversation as rows, the open items then the waiting approvals, and the manager's
 /// last step. No manager folder yet is an empty chat.
-fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
+fn read(store: &str, main: &Path, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
     let log = match dir {
         Some(dir) => dir.read_log()?,
         None => Vec::new(),
@@ -478,6 +486,7 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
             rows,
             items: Vec::new(),
             activity: activity(&log).map(str::to_string),
+            agent: None,
         });
     }
     let mut items: Vec<Item> = checks::open_items(store)?
@@ -497,6 +506,11 @@ fn read(store: &str, dir: Option<&ManagerDir>) -> anyhow::Result<View> {
         rows,
         items,
         activity: activity(&log).map(str::to_string),
+        // ^ A fallback's while one runs (docs/tasks.md "Agents").
+        agent: dir.and_then(|dir| {
+            let settings = load_task_config(main).unwrap_or_default();
+            view::agent_label(&view::manager_agent(dir, &settings))
+        }),
     })
 }
 

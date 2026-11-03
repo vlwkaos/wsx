@@ -307,13 +307,18 @@ export function taskHealth(task) {
   return [workingWords({ ...task, step: null }) || "working", tone];
 }
 
+// The agent in use now, in few words: "sonnet", "pi/qwen", "fallback pi/qwen". Never an effort:
+// wsx sets none and no stream reports one (docs/web-client-tasks.md "Agent").
+export const agentWords = (agent) => !agent?.model ? ""
+  : `${agent.fallback ? "fallback " : ""}${agent.adapter === "claude" && !agent.fallback ? "" : `${agent.adapter}/`}${agent.model}`;
+
 // A working task in the reservoir: its pulsing dot, title and number.
 const RunningRow = ({ project, task, leaving }) => html`
   <li class="need" data-leaving=${leaving ? "" : null} inert=${Boolean(leaving)}>
     <div class="row-link">
       <${StateMark} task=${task} />
       <a class="row-main row-open" href=${taskLink(project, task.id)}><${TaskTitle} title=${task.title} id=${task.id} state=${taskStage(task)[0]} />
-        ${workingWords(task) && html`<span class="row-context">${workingWords(task)}</span>`}</a>
+        ${(workingWords(task) || agentWords(task.agent)) && html`<span class="row-context">${[workingWords(task), agentWords(task.agent)].filter(Boolean).join(" · ")}</span>`}</a>
     </div>
   </li>`;
 
@@ -878,6 +883,7 @@ export function Manager({ project: id, task, page, checks, usage, role = null })
         <${Back} fallback=${role ? `#/p/${id}` : "#/"} />
         <div class="bar-title">
           <span class="bar-label">${role ?? project.name}</span>
+          ${!role && !managerWord && chat?.manager.agent && html`<span class="bar-model" title="Model">${agentWords(chat.manager.agent)}</span>`}
           ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing
             ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`
             : managerWord}</span>`}

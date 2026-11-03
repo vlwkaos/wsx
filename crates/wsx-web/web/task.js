@@ -5,7 +5,7 @@ import { api } from "./api.js";
 import { clock, html, Icon, Loading, short, useCoalescedLoad, useEffect, useState } from "./lib.js";
 import { can, useEventLoad, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
-import { act, taskStage, TaskChip, TaskTitle, withChips } from "./tasks.js";
+import { act, agentWords, taskStage, TaskChip, TaskTitle, withChips } from "./tasks.js";
 import { Bubble } from "./bubbles.js";
 import { SheetBar } from "./ui.js";
 import { summaryIsCurrent, TaskStory } from "./story.js";
@@ -144,6 +144,7 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
     <${SheetBar} grip=${grip} onClose=${onClose}>
       ${detail?.title ? html`<${TaskTitle} title=${detail.title} id=${task} />` : html`<span class="bar-label">#${task}</span>`}
       ${detail && !detail.progress && html`<span class="bar-state" data-tone=${taskStage(detail)[1]}>${taskStage(detail)[0]}</span>`}
+      ${detail && !detail.progress && agentWords(detail.agent) && html`<span class="bar-model" title="Model">${agentWords(detail.agent)}</span>`}
     </${SheetBar}>`;
   if (!detail) return html`<div class="page">${top}${failure ? html`<p class="error empty">${failure}</p>` : html`<${Loading} />`}</div>`;
 

@@ -116,8 +116,13 @@ fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
         ),
     };
     let who = truncate_to_width(chat.who(), width / 2);
+    // ^ The agent in use now, after the project (docs/tasks.md "Agents").
+    let agent = chat
+        .agent
+        .as_ref()
+        .map_or(String::new(), |agent| format!(" · {agent}"));
     let project = truncate_to_width(
-        &format!(" {}", chat.project),
+        &format!(" {}{agent}", chat.project),
         width.saturating_sub(Line::from(who.as_str()).width() + counts.len() + 2),
     );
     let used =

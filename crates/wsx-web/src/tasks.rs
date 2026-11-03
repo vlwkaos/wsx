@@ -145,6 +145,7 @@ pub fn overview(scope: &Scope) -> Value {
                 "hold": record.hold,
                 "step": step_label(record),
                 "conflict": record.state == TaskState::Working && view::resolving_conflict(dir),
+                "agent": record.state.is_open().then(|| view::task_agent(dir, record)),
             }),
         ));
         let result = matches!(
@@ -490,6 +491,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     };
     summary["progress"] = progress(&dir, &record, &log);
     let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
+    summary["agent"] = view::task_agent(&dir, &record);
     summary["stage"] = json!(stage(&record, land_auto));
     summary["conflict"] =
         json!(record.state == TaskState::Working && view::resolving_conflict(&dir));
@@ -646,7 +648,7 @@ pub fn chat(
     media: &crate::media::Media,
 ) -> Outcome<Value> {
     // ^ The name the owner reads (docs/tasks.md "Config"); the role stays `manager` inside.
-    let manager = json!({ "name": role.map_or_else(|| manager_name(scope), str::to_string) });
+    let mut manager = json!({ "name": role.map_or_else(|| manager_name(scope), str::to_string) });
     let roles = match role {
         Some(_) => Value::Null,
         None => json!(role_contacts(scope)),
@@ -663,6 +665,11 @@ pub fn chat(
             json!({ "entries": [], "skipped": 0, "running": false, "busy": false, "manager": manager, "peers": {}, "roles": roles }),
         );
     };
+    // ^ The agent in use now, a fallback's while one runs; a role's has none shown.
+    if role.is_none() {
+        manager["agent"] =
+            view::manager_agent(&dir, &load_task_config(&scope.path).unwrap_or_default());
+    }
     let log = dir.read_log().map_err(internal)?;
     let activity = activity(&log).map(str::to_string);
     let (entries, skipped) = chat_window(&log, after);
