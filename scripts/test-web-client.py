@@ -3729,12 +3729,13 @@ merge_seconds = 3
             os.environ['WSX_PUSH_FIXTURE'] = json.dumps({'endpoint': push_origin + '/push/browser',
                                                          'keys': {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}})
             Relay(ports['relay'], ports['owner'], work / 'relay')
-            # ^ Routines screen (docs/web-client-tasks.md "Routines"): one enabled that ran and succeeded, one disabled that failed.
+            # ^ Routines screen (docs/web-client-tasks.md "Routines"): one enabled that ran and succeeded, one disabled that failed, one that never ran.
             for name, cron, code in (('nightly', '0 6 * * *', '0'), ('weekly', '0 6 * * 1', '1')):
                 js('task', 'routine', 'add', name, '-p', 'ui', '--cron', cron, '--arg=/bin/sh', '--arg=-c', '--arg=exit ' + code)
                 js('task', 'routine', 'run', name, '-p', 'ui')
-            wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger', '-p', 'ui')['routines']), 'the ui routines ran', 60)
+            wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger', '-p', 'ui')['routines'] if r['name'] != 'idle'), 'the ui routines ran', 60)
             js('task', 'routine', 'disable', 'weekly', '-p', 'ui')
+            js('task', 'routine', 'add', 'idle', '-p', 'ui', '--cron', '0 7 * * *', '--arg=/bin/true')  # never run
             # ^ The page stages tasks in `plans` with the fixture's own wsx (scripts/web-tasks-check.mjs "Progress").
             (work / 'wsx-cli.json').write_text(json.dumps({'wsx': str(wsx), 'env': env, 'cwd': str(plans)}))
             result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,
