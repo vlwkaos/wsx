@@ -343,12 +343,15 @@ function Composer({ session, working, reply, onReply, onSent }) {
   // ^ A listed command at the start of the field shows as one token in the accent colour
   // (an overlay behind the transparent field); the text the agent gets is unchanged.
   const token = tokenOf(listing, draft.text);
-  // ^ A `!` line runs in Claude's shell mode, by the server's rule (src/commands.rs
-  // `is_shell_line`): the composer shows it and the button says Run.
+  // ^ A `!` line runs in the session's worktree and its output goes to the agent, by the
+  // server's rule (src/shell.rs `command`). The composer turns to the shell colour from the
+  // `!` on; the button says Run and sends only once the line holds a command.
   const typed = draft.text.trim();
-  const shell = session.agent?.provider === "claude" && !draft.attachments.length && !/[\n\t]/.test(typed)
-    && /^!\s*\S/.test(typed) && new TextEncoder().encode(typed).length <= 256;
-  const sendWord = shell ? "Run" : working ? "Queue" : "Send";
+  // A quote goes before the text, so a quoted line is a message.
+  const shellMode = can("terminal_input") && !draft.attachments.length && !reply && !/[\n\r]/.test(typed)
+    && typed.startsWith("!");
+  const shell = shellMode && /^!\s*\S/.test(typed) && new TextEncoder().encode(typed).length <= 1024;
+  const sendWord = shellMode ? "Run" : working ? "Queue" : "Send";
   const listOpen = Boolean(matches) && ready;
   useEffect(() => {
     if (!ready || !can("chat_send") || !draft.text.startsWith("/") || listing) return undefined;
@@ -383,7 +386,7 @@ function Composer({ session, working, reply, onReply, onSent }) {
 
   const send = async () => {
     const body = field.current.value.trim();
-    if (busy || !ready || draft.uploads.length || (!body && !draft.attachments.length)) return;
+    if (busy || !ready || draft.uploads.length || (!body && !draft.attachments.length) || shellMode && !shell) return;
     setBusy(true);
     setError("");
     try {
@@ -443,7 +446,7 @@ function Composer({ session, working, reply, onReply, onSent }) {
     send();
   };
   return html`
-    <div class="composer" data-shell=${shell ? "" : null}>
+    <div class="composer" data-shell=${shellMode ? "" : null}>
       <${FileChips} files=${draft}
         onRemove=${(item) => { draft.attachments = draft.attachments.filter((other) => other !== item); keepDraft(session.id); renew((count) => count + 1); }} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
@@ -461,8 +464,8 @@ function Composer({ session, working, reply, onReply, onSent }) {
           onInput=${() => { changed(field.current.value); grow(field.current); }} onKeyDown=${keydown}
           onPaste=${pasteFiles(upload)} onFocus=${isolate} onBlur=${release}></textarea>
         </div>
-        <button class="button button-primary composer-send" type="button" aria-label=${shell ? "Run in the shell" : sendWord}
-          disabled=${busy || !ready || draft.uploads.length > 0} onClick=${send}>
+        <button class="button button-primary composer-send" type="button" aria-label=${shellMode ? "Run in the shell" : sendWord}
+          disabled=${busy || !ready || draft.uploads.length > 0 || shellMode && !shell} onClick=${send}>
           <span class="send-mark" aria-hidden="true"><${Icon} name="send" /></span><span class="send-text">${sendWord}</span>
         </button>
       </div>

@@ -12,10 +12,10 @@ use crate::{
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 use wsx_core::{
     integration::memory::{Item, ItemKind, Reader, ToolStatus},
@@ -256,6 +256,8 @@ pub struct Chat {
     delivering: Mutex<()>,
     /// Sessions whose agent this server started again for a message, and since when.
     resuming: Mutex<HashMap<u64, u64>>,
+    /// Sessions with a `!` command from the chat running: one at a time per session.
+    shells: Mutex<HashSet<u64>>,
 }
 
 impl Chat {
@@ -264,6 +266,7 @@ impl Chat {
             produced: Mutex::new(HashMap::new()),
             delivering: Mutex::new(()),
             resuming: Mutex::new(HashMap::new()),
+            shells: Mutex::new(HashSet::new()),
         }
     }
 
@@ -508,26 +511,27 @@ impl Chat {
     /// agent did not take it (docs/web-client-chat.md "Queue and Stop").
     pub fn submit(
         &self,
-        app: &App,
+        app: &Arc<App>,
         session: u64,
         text: &str,
         attachments: &[String],
     ) -> Outcome<Value> {
         let (client, site, media) = (&app.client, &app.site, &app.media);
         prompt_of(site, media, text, attachments)?;
+        let shell = crate::shell::command(text).filter(|_| attachments.is_empty());
+        if shell.is_some() && !site.allows(Capability::TerminalInput) {
+            return Err(Fault::forbidden("running a command from the chat"));
+        }
         let snapshot = snapshot(client)?;
         let target = target(&snapshot, &site.access, session)?;
         match attached_agent(&target) {
             Err(fault) if fault.1 == "no_agent" => self.resume(app, &snapshot, &target)?,
             attached => drop(attached?),
         }
-        let queued = app.queue.push(session, text, attachments).ok_or_else(|| {
-            Fault::new(
-                409,
-                "queue_full",
-                "five messages already wait for this agent; remove one first",
-            )
-        })?;
+        if let Some(command) = shell {
+            return self.run_shell(app, session, target.worktree, command);
+        }
+        let queued = self.enqueue(app, session, text, attachments)?;
         self.deliver_queued(app, &target);
         crate::events::history_changed(app, session);
         let now = app
@@ -547,6 +551,66 @@ impl Chat {
             "queued": queued_view(&now, media),
             "exchange": exchange.as_ref().map(exchange_view),
         }))
+    }
+
+    fn enqueue(
+        &self,
+        app: &App,
+        session: u64,
+        text: &str,
+        attachments: &[String],
+    ) -> Outcome<crate::queue::Queued> {
+        app.queue.push(session, text, attachments).ok_or_else(|| {
+            Fault::new(
+                409,
+                "queue_full",
+                "five messages already wait for this agent; remove one first",
+            )
+        })
+    }
+
+    /// Run a `!` line in the session's worktree; when it ends, its output goes to the agent
+    /// as the person's next message (docs/web-client-chat.md "Shell lines"). Answers at once:
+    /// the chat shows a notice now and the message when the command ends.
+    fn run_shell(&self, app: &Arc<App>, session: u64, dir: &Path, command: &str) -> Outcome<Value> {
+        if !crate::locked(&self.shells).insert(session) {
+            return Err(Fault::new(
+                409,
+                "shell_busy",
+                "a command from the chat already runs in this session",
+            ));
+        }
+        app.queue.notice(session, format!("Running `{command}`"));
+        crate::events::history_changed(app, session);
+        let answer = json!({ "shell": { "command": command, "running": true } });
+        let (app, dir, command) = (Arc::clone(app), dir.to_owned(), command.to_owned());
+        std::thread::spawn(move || {
+            let text = match crate::shell::run(&command, &dir) {
+                Ok(ran) => crate::shell::message(&command, &dir, &ran),
+                Err(error) => format!(
+                    "I tried to run this in the shell in {}, but it did not start: {error}\n\n$ {command}",
+                    dir.display()
+                ),
+            };
+            crate::locked(&app.chat.shells).remove(&session);
+            app.chat.relay(&app, session, &command, &text);
+        });
+        Ok(answer)
+    }
+
+    /// Queue a finished command's message and deliver it when the agent can take it.
+    fn relay(&self, app: &App, session: u64, command: &str, text: &str) {
+        if let Err(fault) = self.enqueue(app, session, text, &[]) {
+            app.queue.notice(
+                session,
+                format!("The output of `{command}` was not sent: {}", fault.2),
+            );
+        } else if let Ok(snapshot) = snapshot(&app.client) {
+            if let Ok(target) = target(&snapshot, &app.site.access, session) {
+                self.deliver_queued(app, &target);
+            }
+        }
+        crate::events::history_changed(app, session);
     }
 
     /// Answer the dialog of a blocked agent with one key or one line of text.
@@ -916,17 +980,11 @@ impl Chat {
         let agent = attached_agent(&target)?;
         // ^ docs/web-client-chat.md "Commands": a message that is one of the agent's commands
         // is typed as written, because an agent runs a command only at the start of its input.
-        // A `!` line is Claude's shell mode, which also starts only at the start of the input.
-        let shell =
-            attachments.is_empty() && crate::commands::is_shell_line(&agent.provider, &prompt);
-        let command = shell
-            || attachments.is_empty()
-                && prompt.starts_with('/')
-                && crate::commands::list(&agent.provider, target.worktree, &target.project.path)
-                    .has_command(&prompt);
-        if command && !snapshot.capabilities.exchange_command
-            || shell && !snapshot.capabilities.exchange_shell
-        {
+        let command = attachments.is_empty()
+            && prompt.starts_with('/')
+            && crate::commands::list(&agent.provider, target.worktree, &target.project.path)
+                .has_command(&prompt);
+        if command && !snapshot.capabilities.exchange_command {
             return Err(Fault::new(
                 409,
                 "daemon_upgrade_required",

@@ -14,6 +14,7 @@ mod push;
 mod question;
 mod queue;
 mod sandbox;
+mod shell;
 mod site;
 mod tasks;
 mod terminal;

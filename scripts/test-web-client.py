@@ -172,13 +172,6 @@ def turn(text):
   trace.with_suffix('.dropped').touch(); taken = None; return
  if 'drop me always' in text:
   taken = None; return
- # Claude Code 2.1.304's shell mode, as a real transcript holds `! echo pasted-bang-ok` (2026-10-21):
- # the line without its `!`, then the output, then a reply of the model.
- if provider == 'claude' and text.startswith('!'):
-  record('user', '<bash-input>'+text[1:]+'</bash-input>')
-  record('user', '<bash-stdout>SHELL-OUTPUT</bash-stdout><bash-stderr></bash-stderr>')
-  report('working'); time.sleep(0.2)
-  record('assistant', 'the shell line ran'); report('done'); return
  # The person's prompt as Claude Code 2.1.300 marks it; other turns keep the older record without the field.
  # Claude Code 2.1.300 can save a pasted prompt inside a pasted_content wrapper (real transcript, 2026-10-20).
  saved = '\n\n<pasted_content id="4666">\n'+text+'\n</pasted_content id="4666">\n' if provider == 'claude' and 'follow up' in text else text
@@ -1636,16 +1629,24 @@ capabilities = ["terminal_view"]
             # Sent at once or queued behind the previous turn: either way it arrives with the exchange line.
             assert received.startswith('[wsx exchange ') and received.endswith(']\n' + text), received
             settle('commands')
-        # A `!` line is Claude's shell mode: typed as written, and shown as written, without its output.
+        # A `!` line runs in the session's worktree; the command and its output go to the agent as the
+        # next message, and a second `!` waits until the first ends.
+        # Only a site with terminal input runs one; the others are refused before anything runs.
+        status, denied = root.request('POST', '/api/chat/%d/send' % commands_session, {'text': '! true'})
+        assert status == 403 and denied['error']['code'] == 'capability_denied', denied
         before = len(traces('commands'))
-        status, sent = root.request('POST', '/api/chat/%d/send' % commands_session, {'text': '! git status'})
-        assert status == 200, sent
-        assert wait(lambda: len(traces('commands')) > before and traces('commands')[-1], 'shell line delivery') == '! git status'
+        status, sent = owner.request('POST', '/api/chat/%d/send' % commands_session,
+                                     {'text': "! sleep 1; printf 'SHELL-%s\\n' OUT; pwd; exit 3"})
+        assert status == 200 and sent['shell']['running'] and 'queued' not in sent, sent
+        status, busy = owner.request('POST', '/api/chat/%d/send' % commands_session, {'text': '! true'})
+        assert status == 409 and busy['error']['code'] == 'shell_busy', busy
+        received = wait(lambda: len(traces('commands')) > before and traces('commands')[-1], 'shell output delivery')
+        assert received.startswith('[wsx exchange ') and '\n$ sleep 1; printf' in received, received
+        assert '\nSHELL-OUT\n' in received and 'exit 3 after ' in received, received
+        assert os.path.realpath(third_root) in received or str(third_root) in received, received
         settle('commands')
-        shown = wait(lambda: (lambda items: items if items and items[-1].get('text') == 'the shell line ran' else None)(
-            steady(root, 'GET', '/api/chat/%d/timeline' % commands_session)[1]['items']), 'shell line timeline')
-        assert [item['text'] for item in shown[-2:]] == ['! git status', 'the shell line ran'], shown[-3:]
-        assert 'SHELL-OUTPUT' not in json.dumps(shown) and 'bash-input' not in json.dumps(shown), shown[-3:]
+        shown = steady(owner, 'GET', '/api/chat/%d/timeline' % commands_session)[1]['items']
+        assert any('Running `sleep 1;' in (item.get('text') or '') for item in shown), shown[-4:]
         # `!` alone or a shell line with a second line is a message.
         for text in ('!', '!ls\npwd'):
             before = len(traces('commands'))
@@ -1657,7 +1658,7 @@ capabilities = ["terminal_view"]
         session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == commands_session)
         assert call('session_close', {'session_id': commands_session, 'expected_revision': session['revision']})['type'] == 'ack'
         shutil.rmtree(third_root / '.claude')
-        ok('commands: built-ins, project, user and plugin skills with one-line descriptions, a malformed file skipped, no file body; /compact and a `!` shell line typed as written, other text keeps the exchange line')
+        ok('commands: built-ins, project, user and plugin skills with one-line descriptions, a malformed file skipped, no file body; /compact typed as written, a `!` line run by the server with its output sent, other text keeps the exchange line')
 
         # --- Compaction: the summary is one item where the conversation was compacted, without Claude's fixed words.
         for provider, expected in (('claude', ['summary', 'user', 'assistant']),

@@ -18,6 +18,9 @@
 
 ### Changed
 
+- Web chat: a `! command` line runs in the session's worktree on the server, for every agent, and the command with its exit status and output (the last 16 KiB) goes to the agent as your next message. Before, it was typed into Claude's own `!` mode and worked only for Claude. A command is stopped after 120 s; one runs per session at a time; only a site with terminal input may run one.
+- Web chat: from the `!` on, the whole input box takes the shell colour, not only a border after a command follows. The button reads Run and sends once a command follows. A quoted reply is never a shell line.
+
 - Tasks: the manager's turn after a limit says "usage limit", not "session limit".
 - Tasks: Pi's missing credit, refused login and unknown model count as a limit of 6 hours. An agent's error is no chat reply any more: the chat shows why, and the turn tries again with a backoff, in a fresh conversation after the third try.
 - Tasks: a landing, a close, a wait on `limit` or `disk` and an automatic deploy no longer start a manager turn; they reach it with its next turn. wsx writes a finished task's memo into `manager/notes/context.md` itself. In the week of the audit such turns cost 13% of manager spend (`docs/design/manager-efficiency.md`).
