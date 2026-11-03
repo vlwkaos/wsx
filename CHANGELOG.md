@@ -19,6 +19,7 @@
 
 ### Changed
 
+- Tasks: each workflow step asks the worker to wait for or stop its background jobs before its result, and the last step asks for the result's memo. A job that ended after the result woke the worker for another full turn; the host now logs a result that comes while one runs. A workflow needs no separate memo step ([docs/tasks.md](docs/tasks.md) "Workflow").
 - Web chat: a `! command` line runs in the session's worktree on the server, for every agent, and the command with its exit status and output (the last 16 KiB) goes to the agent as your next message. Before, it was typed into Claude's own `!` mode and worked only for Claude. A command is stopped after 120 s; one runs per session at a time; only a site with terminal input may run one.
 - Web chat: from the `!` on, the whole input box takes the shell colour, not only a border after a command follows. The button reads Run and sends once a command follows. A quoted reply is never a shell line.
 
