@@ -32,11 +32,11 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
         lines.push(muted(&truncate_to_width(&spent, width)));
     }
     // ^ A short window keeps its height for the tasks. ref: docs/tasks.md "TUI"
-    if area.height >= USAGE_ROWS_HEIGHT && list.detail_task().is_none() {
+    if shows_days(list, area.height) {
         lines.extend(
             list.ledger
                 .as_ref()
-                .map_or(Vec::new(), |ledger| usage_rows(ledger, width)),
+                .map_or(Vec::new(), |ledger| usage_rows(ledger, width, list.tokens)),
         );
     }
     if let Some(error) = &list.error {
@@ -214,37 +214,90 @@ fn task_lines(
 
 /// The window height from which the task list also shows the spend per day.
 const USAGE_ROWS_HEIGHT: u16 = 30;
-/// The parts of a day's spend, as `usage.rs` names them, with a fixed color each.
-const USAGE_PARTS: [(&str, ratatui::style::Color); 7] = [
-    ("build", theme::ACCENT),
-    ("plan", theme::WARNING),
-    ("context", theme::DONE),
-    ("review", theme::IDLE),
-    ("memo", theme::BLOCKED),
-    ("other", theme::SUCCESS),
-    ("manager", theme::TEXT_MUTED),
-];
 
-/// A legend, then one row per day, newest first: its date, a stacked bar on one scale, its cost.
-fn usage_rows(ledger: &Value, width: usize) -> Vec<Line<'static>> {
+/// True when the list, in a content area `height` rows high, shows the day rows: the
+/// footer offers `u` only then.
+pub fn shows_days(list: &TaskList, height: u16) -> bool {
+    height >= USAGE_ROWS_HEIGHT
+        && list.detail_task().is_none()
+        && list
+            .ledger
+            .as_ref()
+            .is_some_and(|ledger| ledger["usage"]["days"].is_array())
+}
+
+/// One kind of a day's amount: its legend word, its key in the ledger's day (`parts` for
+/// cost, `usage` for tokens) and its fixed color.
+type Kind = (&'static str, &'static str, ratatui::style::Color);
+
+/// The parts of a day's spend, as `usage.rs` names them.
+const USAGE_PARTS: [Kind; 7] = [
+    ("build", "build", theme::ACCENT),
+    ("plan", "plan", theme::WARNING),
+    ("context", "context", theme::DONE),
+    ("review", "review", theme::IDLE),
+    ("memo", "memo", theme::BLOCKED),
+    ("other", "other", theme::SUCCESS),
+    ("manager", "manager", theme::TEXT_MUTED),
+];
+/// The kinds of token of a day, as the web's Tokens chart (`usage.js` KINDS) takes them.
+const USAGE_TOKENS: [Kind; 4] = [
+    ("input", "input_tokens", theme::ACCENT),
+    ("cache read", "cache_read_tokens", theme::WARNING),
+    ("cache write", "cache_creation_tokens", theme::DONE),
+    ("output", "output_tokens", theme::IDLE),
+];
+/// The width of a day row's date, its amount and, for tokens, the cache hit rate.
+const DATE_WIDTH: usize = 7;
+const AMOUNT_WIDTH: usize = 9;
+const RATE_WIDTH: usize = 5;
+
+/// A legend, then one row per day, newest first: its date, a stacked bar on one scale, its
+/// cost; with `tokens` its kinds of token, their sum and the cache hit rate (cache read /
+/// (input + cache read + cache write)), as the web's Usage sheet shows them.
+fn usage_rows(ledger: &Value, width: usize, tokens: bool) -> Vec<Line<'static>> {
     let Some(days) = ledger["usage"]["days"].as_array() else {
         return Vec::new();
     };
-    let cost_of = |day: &Value, part: &str| day["parts"][part].as_u64().unwrap_or(0);
-    let total =
-        |day: &Value| -> u64 { USAGE_PARTS.iter().map(|(part, _)| cost_of(day, part)).sum() };
+    let kinds: &[Kind] = if tokens { &USAGE_TOKENS } else { &USAGE_PARTS };
+    let group = if tokens { "usage" } else { "parts" };
+    let amount_of = |day: &Value, key: &str| day[group][key].as_u64().unwrap_or(0);
+    let total = |day: &Value| -> u64 { kinds.iter().map(|(_, key, _)| amount_of(day, key)).sum() };
+    let format = |amount: u64| {
+        if tokens {
+            usage::tokens(amount)
+        } else {
+            usage::usd(amount)
+        }
+    };
+    let hit_rate = |day: &Value| {
+        let [input, read, write] = [0, 1, 2].map(|kind| amount_of(day, USAGE_TOKENS[kind].1));
+        match input + read + write {
+            0 => "-".to_string(),
+            all => format!("{}%", (100.0 * read as f64 / all as f64).round()),
+        }
+    };
     let most = days.iter().map(total).max().unwrap_or(0).max(1);
-    let track = width.saturating_sub(17).max(1);
+    let rate_width = if tokens { RATE_WIDTH } else { 0 };
+    let track = width
+        .saturating_sub(DATE_WIDTH + AMOUNT_WIDTH + rate_width + 1)
+        .max(1);
     // ^ Only the words that fit: a wrapped legend would push the tasks down.
     let mut room = width;
-    let legend: Vec<Span> = USAGE_PARTS
+    let mut legend: Vec<Span> = kinds
         .iter()
-        .map_while(|(part, color)| {
-            let text = format!("■ {part} ");
+        .map_while(|(word, _, color)| {
+            let text = format!("■ {word} ");
             room = room.checked_sub(text.chars().count())?;
             Some(Span::styled(text, Style::default().fg(*color)))
         })
         .collect();
+    if tokens && room >= "hit rate".len() {
+        legend.push(Span::styled(
+            "hit rate",
+            Style::default().fg(theme::TEXT_MUTED),
+        ));
+    }
     let mut lines = vec![Line::from(legend)];
     for day in days {
         let date = crate::task::limit::local_time(day["day_ms"].as_u64().unwrap_or(0) / 1000)
@@ -253,25 +306,26 @@ fn usage_rows(ledger: &Value, width: usize) -> Vec<Line<'static>> {
                 format!("{} {:>2}", name[tm.tm_wday as usize % 7], tm.tm_mday)
             });
         let mut spans = vec![Span::styled(
-            format!("{date:<7}"),
+            format!("{date:<DATE_WIDTH$}"),
             Style::default().fg(theme::TEXT_SUBTLE),
         )];
         let mut used = 0;
-        for (part, color) in USAGE_PARTS {
-            let cost = cost_of(day, part);
-            if cost > 0 {
-                let cells = ((cost as usize * track) / most as usize)
+        for (_, key, color) in kinds {
+            let amount = amount_of(day, key);
+            if amount > 0 {
+                let cells = ((amount as usize * track) / most as usize)
                     .max(1)
                     .min(track - used);
                 used += cells;
-                spans.push(Span::styled("█".repeat(cells), Style::default().fg(color)));
+                spans.push(Span::styled("█".repeat(cells), Style::default().fg(*color)));
             }
         }
         spans.push(Span::raw(" ".repeat(track.saturating_sub(used) + 1)));
-        spans.push(Span::styled(
-            format!("{:>9}", usage::usd(total(day))),
-            Style::default().fg(theme::TEXT_MUTED),
-        ));
+        let mut amount = format!("{:>AMOUNT_WIDTH$}", format(total(day)));
+        if tokens {
+            amount += &format!("{:>RATE_WIDTH$}", hit_rate(day));
+        }
+        spans.push(Span::styled(amount, Style::default().fg(theme::TEXT_MUTED)));
         lines.push(Line::from(spans));
     }
     lines
@@ -329,7 +383,16 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
         .ok()
         .filter(|usage| usage.turns > 0)
     {
-        lines.push(Line::from(vec![label("Usage"), Span::raw(spent.line())]));
+        let mut line = spent.line();
+        // ^ The keep-warm turns that the turn count holds. ref: docs/tasks.md "Context rotation"
+        if spent.pings > 0 {
+            line += &format!(
+                " · {} ping{}",
+                spent.pings,
+                if spent.pings == 1 { "" } else { "s" }
+            );
+        }
+        lines.push(Line::from(vec![label("Usage"), Span::raw(line)]));
     }
     let waiting = waits(task);
     if !waiting.is_empty() {

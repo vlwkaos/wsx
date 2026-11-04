@@ -24,6 +24,8 @@ pub struct Usage {
     pub cache_creation_tokens: u64,
     pub output_tokens: u64,
     pub turns: u64,
+    /// Of `turns`, the keep-warm pings (docs/tasks.md "Context rotation").
+    pub pings: u64,
 }
 
 impl Usage {
@@ -34,6 +36,7 @@ impl Usage {
         self.cache_creation_tokens += other.cache_creation_tokens;
         self.output_tokens += other.output_tokens;
         self.turns += other.turns;
+        self.pings += other.pings;
     }
 
     /// "$3.42 · in 12k · cache 1.2M read / 80k write · out 9k · 14 turns".
@@ -94,10 +97,10 @@ pub fn tokens(count: u64) -> String {
 /// 94f0b26) has it 0 and `cost_micro_usd` holding the session's running total, so its
 /// turn's part is the difference from the previous such line, as `scripts/usage-report.py`
 /// counts it.
-fn turns<'a>(lines: impl Iterator<Item = (u64, usize, Option<&'a TurnUsage>)>) -> Vec<Turn> {
+fn turns<'a>(lines: impl Iterator<Item = (u64, usize, Option<&'a TurnUsage>, bool)>) -> Vec<Turn> {
     let mut running = 0;
     lines
-        .map(|(unix_ms, part, usage)| {
+        .map(|(unix_ms, part, usage, ping)| {
             let legacy = usage.is_some_and(|usage| usage.session_cost_micro_usd == 0);
             let usage = usage.cloned().unwrap_or_default();
             let mut cost = usage.cost_micro_usd;
@@ -115,6 +118,7 @@ fn turns<'a>(lines: impl Iterator<Item = (u64, usize, Option<&'a TurnUsage>)>) -
                     cache_creation_tokens: usage.cache_creation_tokens,
                     output_tokens: usage.output_tokens,
                     turns: 1,
+                    pings: u64::from(ping),
                 },
             }
         })
@@ -161,10 +165,10 @@ pub fn task_turns(dir: &TaskDir) -> Turns {
                     .as_deref()
                     .and_then(|step| PARTS[..PART_OTHER].iter().position(|part| *part == step))
                     .unwrap_or(PART_OTHER);
-                Some((entry.unix_ms, part, usage.as_ref()))
+                Some((entry.unix_ms, part, usage.as_ref(), false))
             }
             // ^ A keep-warm ping is no step's work. ref: docs/tasks.md "Context rotation"
-            LogEvent::Ping { usage } => Some((entry.unix_ms, PART_OTHER, usage.as_ref())),
+            LogEvent::Ping { usage } => Some((entry.unix_ms, PART_OTHER, usage.as_ref(), true)),
             _ => None,
         }))
     })
@@ -184,9 +188,10 @@ pub fn manager_turns(dir: &ManagerDir) -> Turns {
 
 pub fn manager_log_turns(log: &[ManagerEntry]) -> Vec<Turn> {
     turns(log.iter().filter_map(|entry| match &entry.event {
-        ManagerEvent::Reply { usage, .. } | ManagerEvent::Ping { usage } => {
-            Some((entry.unix_ms, PART_MANAGER, usage.as_ref()))
+        ManagerEvent::Reply { usage, .. } => {
+            Some((entry.unix_ms, PART_MANAGER, usage.as_ref(), false))
         }
+        ManagerEvent::Ping { usage } => Some((entry.unix_ms, PART_MANAGER, usage.as_ref(), true)),
         _ => None,
     }))
 }

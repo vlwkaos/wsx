@@ -57,6 +57,8 @@ pub struct TaskList {
     /// The task whose detail shows, by number, and its scroll.
     pub detail: Option<u64>,
     pub scroll: u16,
+    /// The day rows show tokens, not cost (`u`).
+    pub tokens: bool,
     /// The project's manager chat, opened over the list with `m`.
     pub chat: Option<Box<crate::task_chat::ManagerChat>>,
     stamp: Option<Stamp>,
@@ -77,6 +79,7 @@ impl TaskList {
             selected: 0,
             detail: None,
             scroll: 0,
+            tokens: false,
             chat: None,
             stamp: None,
             pending: None,
