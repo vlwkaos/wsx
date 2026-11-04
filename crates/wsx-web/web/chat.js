@@ -545,8 +545,8 @@ const RECENT_ROWS = 60;
 export function useRecent(name, rows, first, { keyOf = (row) => row.key, all = false } = {}) {
   const [shown, setShown] = useState({ name, count: RECENT_ROWS });
   // ^ The top row shown: rows that arrive later extend the end, so no row above the reader
-  // goes (docs/web-client.md "Screens").
-  // ^ The rows go in above the reader; the log keeps the row they read in place (useFollowEnd).
+  // goes (docs/web-client.md "Screens"). Rows that "Show earlier" adds go in above the reader;
+  // useFollowEnd keeps the row they read in place.
   const top = useRef(null);
   const count = shown.name === name ? shown.count : RECENT_ROWS;
   const from = first ? Math.min(rows.indexOf(first), rows.length - count) : rows.length - count;
