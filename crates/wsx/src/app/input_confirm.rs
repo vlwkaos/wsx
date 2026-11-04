@@ -114,7 +114,8 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn confirm_action(&mut self) -> Result<()> {
+    /// `halt`: also close the sessions of the project being unregistered (`H` in its question).
+    pub(super) fn confirm_action(&mut self, halt: bool) -> Result<()> {
         if self.is_busy() {
             self.set_status("Operation in progress");
             return Ok(());
@@ -123,7 +124,7 @@ impl App {
         if let Mode::Confirm { pending, .. } = mode {
             match pending {
                 PendingAction::DeleteProject { project_idx } => {
-                    self.do_delete_project(project_idx)?;
+                    self.do_delete_project(project_idx, halt)?;
                 }
                 PendingAction::DeleteSession {
                     project_idx,

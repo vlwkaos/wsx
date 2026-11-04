@@ -501,6 +501,9 @@ fn translate_key(key: KeyEvent) -> Action {
         }
         (KeyModifiers::NONE, KeyCode::Char('?')) => Action::Help,
         (KeyModifiers::NONE, KeyCode::Char('y')) => Action::ConfirmYes,
+        (KeyModifiers::SHIFT, KeyCode::Char('H')) | (KeyModifiers::NONE, KeyCode::Char('H')) => {
+            Action::ConfirmHalt
+        }
         (KeyModifiers::NONE, KeyCode::Char('n')) => Action::NextAttention,
         (KeyModifiers::SHIFT, KeyCode::Char('N')) | (KeyModifiers::NONE, KeyCode::Char('N')) => {
             Action::PrevAttention

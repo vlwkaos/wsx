@@ -62,7 +62,7 @@ impl App {
         Ok(Some(session_id))
     }
 
-    pub(super) fn do_delete_project(&mut self, pi: usize) -> Result<()> {
+    pub(super) fn do_delete_project(&mut self, pi: usize, halt: bool) -> Result<()> {
         let Some((name, path)) = self
             .workspace
             .projects
@@ -72,12 +72,22 @@ impl App {
             self.set_status("Project is no longer available");
             return Ok(());
         };
+        // ^ The same close the web's Remove runs with its halt choice; hidden task sessions too.
+        let halted = if halt {
+            ops::halt_project_sessions(&self.runtime_client, &path)?
+        } else {
+            0
+        };
         self.workspace.projects.remove(pi);
         self.rebuild_flat();
         ops::unregister_project(&path, &mut self.config);
         self.config.save()?;
         self.clamp_selected();
-        self.set_status(format!("Unregistered: {}", name));
+        self.set_status(if halt {
+            format!("Unregistered: {name}, halted {halted} sessions")
+        } else {
+            format!("Unregistered: {}", name)
+        });
         Ok(())
     }
 

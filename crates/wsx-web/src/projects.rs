@@ -58,16 +58,23 @@ pub fn add(app: &App, path: &str) -> Outcome<Value> {
     Ok(json!({ "added": project.name }))
 }
 
-/// Only unregisters, as the TUI's `d` does: no session, task, worktree, branch or file is
-/// closed or deleted, and nothing refuses it. wsxd keeps the project while a session stands on
-/// it, so `chat::projects` lists from the config and the row leaves Home at once.
-pub fn remove(app: &App, id: u64) -> Outcome<Value> {
+/// Only unregisters, as the TUI's `d` does: no task, worktree, branch or file is closed or
+/// deleted, and nothing refuses it. Sessions stay unless `halt`, which closes them first with
+/// `ops::halt_project_sessions`, as the TUI's confirmation does. wsxd keeps the project while a
+/// session stands on it, so `chat::projects` lists from the config and the row leaves Home at once.
+pub fn remove(app: &App, id: u64, halt: bool) -> Outcome<Value> {
     gate(app)?;
     let snapshot = chat::snapshot(&app.client)?;
     let project = chat::project(&snapshot, &app.site.access, id)?;
+    let halted = if halt {
+        ops::halt_project_sessions(&app.client, &project.path)
+            .map_err(|error| Fault::new(500, "halt_failed", format!("{error:#}")))?
+    } else {
+        0
+    };
     let _one = crate::locked(&CONFIG);
     let mut config = config()?;
     ops::unregister_project(&project.path, &mut config);
     save_and_sync(app, &config)?;
-    Ok(json!({ "removed": id }))
+    Ok(json!({ "removed": id, "halted": halted }))
 }

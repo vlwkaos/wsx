@@ -657,7 +657,19 @@ impl App {
 
     pub(super) fn dispatch_confirm(&mut self, action: Action, _terminal: &mut Tui) -> Result<()> {
         match action {
-            Action::ConfirmYes | Action::Select => self.confirm_action()?,
+            Action::ConfirmYes | Action::Select => self.confirm_action(false)?,
+            // ^ `H` only means something where the question offers it: removing a project.
+            Action::ConfirmHalt
+                if matches!(
+                    self.mode,
+                    Mode::Confirm {
+                        pending: PendingAction::DeleteProject { .. },
+                        ..
+                    }
+                ) =>
+            {
+                self.confirm_action(true)?
+            }
             Action::NextAttention | Action::InputEscape | Action::Quit => {
                 let (group_selection, dismissed_integrations) = match &self.mode {
                     Mode::Confirm {

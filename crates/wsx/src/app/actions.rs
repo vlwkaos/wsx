@@ -571,7 +571,9 @@ impl App {
             Selection::Project(pi) => {
                 let name = self.workspace.projects[pi].name.clone();
                 self.mode = Mode::Confirm {
-                    message: format!("Unregister project '{}'? (files not deleted)", name),
+                    message: format!(
+                        "Unregister project '{name}'? Files and sessions stay.\ny: unregister   H: unregister and halt all its sessions"
+                    ),
                     pending: PendingAction::DeleteProject { project_idx: pi },
                 };
             }

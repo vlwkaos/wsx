@@ -22,6 +22,7 @@ pub enum Action {
     Refresh,
     Help,
     ConfirmYes,
+    ConfirmHalt,
     NextAttention,
     PrevAttention,
     DismissAttention,

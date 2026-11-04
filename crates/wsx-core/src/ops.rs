@@ -809,6 +809,31 @@ pub fn kill_session(client: &Client, session_id: SessionId) -> Result<()> {
     })?)
 }
 
+/// Closes every session on the project's worktrees through `kill_session`, the hidden
+/// `task-manager` and task sessions too. A project wsxd does not know has none. Returns how
+/// many it closed. ref: docs/web-client.md "Projects"
+pub fn halt_project_sessions(client: &Client, project: &Path) -> Result<usize> {
+    let snapshot = runtime_snapshot(client)?;
+    let Some(project) = snapshot.projects.iter().find(|item| item.path == project) else {
+        return Ok(0);
+    };
+    let sessions: Vec<SessionId> = snapshot
+        .sessions
+        .iter()
+        .filter(|session| {
+            snapshot
+                .worktrees
+                .iter()
+                .any(|tree| tree.id == session.worktree_id && tree.project_id == project.id)
+        })
+        .map(|session| session.id)
+        .collect();
+    for id in &sessions {
+        kill_session(client, *id)?;
+    }
+    Ok(sessions.len())
+}
+
 /// Restart one exited pane with its own saved command.
 /// ^ [[Session Model]] Only an exited pane is restartable, so this never interrupts live work.
 pub fn restart_session(client: &Client, pane_id: PaneId) -> Result<u64> {

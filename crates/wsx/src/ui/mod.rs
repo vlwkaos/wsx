@@ -970,7 +970,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  u             Create routine",
         "  m             Move project (reorder list)",
         "  g             Assign project group",
-        "  d             Unregister project",
+        "  d             Unregister project (H: also halt its sessions)",
         "  e             View/edit wsx.config.yml",
         "  t             Tasks (Enter: detail, m: chat, S: shell)",
         "",
