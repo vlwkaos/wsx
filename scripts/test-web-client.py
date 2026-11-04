@@ -3959,8 +3959,8 @@ merge_seconds = 3
         def row_of(name, routine):
             return next(row for row in js('task', 'ledger', '-p', name)['routines'] if row['name'] == routine)
 
-        def add_routine(name, routine, *command):
-            js('task', 'routine', 'add', routine, '-p', name, '--cron', '0 3 1 1 *', *('--arg=' + word for word in command))
+        def add_routine(name, routine, *command, flags=()):
+            js('task', 'routine', 'add', routine, '-p', name, '--cron', '0 3 1 1 *', *flags, *('--arg=' + word for word in command))
 
         def ran(name, routine):
             """Run a routine and wait for its end; the ledger counts in seconds."""
@@ -4015,9 +4015,10 @@ merge_seconds = 3
         ok('a digest waits for the running turn and starts at the last digest')
 
         # Every routine: a success with empty stdout gives the manager no event and no turn, the
-        # ledger still shows it; one with output does; a digest with no host fails and is told.
+        # ledger still shows it; one with output and --no-post does (without it the output posts to
+        # the chat, no turn); a digest with no host fails and is told.
         add_routine('demo', 'silent', '/bin/sh', '-c', 'exit 0')
-        add_routine('demo', 'loud', '/bin/sh', '-c', 'echo hello')
+        add_routine('demo', 'loud', '/bin/sh', '-c', 'echo hello', flags=('--no-post',))
         assert ran('demo', 'silent')['status'] == 'succeeded'
         time.sleep(4)
         assert 'routine silent' not in turns() and row_of('demo', 'silent')['last']['exit'] == 0
