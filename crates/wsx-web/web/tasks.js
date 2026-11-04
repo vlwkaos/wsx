@@ -807,7 +807,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
   const [failure, setFailure] = useState("");
   const [sent, setSent] = useState(null);
   const place = role ? `project-${id}-r-${role}` : `project-${id}`;
-  const { log, node: logNode, away, unread, since, scrolled, toEnd } = useFollowEnd(place, ready);
+  const { log, node: logNode, away, unread, since, scrolled, toEnd, reveal } = useFollowEnd(place, ready);
   const field = useRef();
   const [reply, setReply] = useState(null);
   const [gestures, menu] = useReply((line) => { setReply(line); field.current?.focus(); });
@@ -943,7 +943,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
         </div>
       </header>
       <div class="chat">
-        ${finding && html`<${FindBar} log=${logNode} loading=${whole.current !== true} onClose=${() => setFinding(false)} />`}
+        ${finding && html`<${FindBar} log=${logNode} reveal=${reveal} loading=${whole.current !== true} onClose=${() => setFinding(false)} />`}
         ${!role && html`<${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "bubble" && row.author !== "owner")?.at} sent=${sent} />`}
         <div class="log-wrap">
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label=${`Conversation with ${role ?? "the manager"}`} tabindex="0" ...${gestures}>

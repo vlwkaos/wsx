@@ -591,7 +591,7 @@ export function Chat({ session, onModel, finding = false, onFindClose }) {
   const [failure, setFailure] = useState("");
   // New items keep the reader at the end only when the reader is at the end; the chat opens
   // at its first unread reply, else where the reader left it.
-  const { log, node: logNode, away, unread, since, scrolled, toEnd } = useFollowEnd(`session-${id}`, Boolean(data));
+  const { log, node: logNode, away, unread, since, scrolled, toEnd, reveal } = useFollowEnd(`session-${id}`, Boolean(data));
   const [jump, leaving] = useExit(away);
   // The timeline the page shows.
   const shown = useRef(null);
@@ -685,7 +685,7 @@ export function Chat({ session, onModel, finding = false, onFindClose }) {
 
   return html`
     <div class="chat">
-      ${finding && html`<${FindBar} log=${logNode} onClose=${onFindClose} />`}
+      ${finding && html`<${FindBar} log=${logNode} reveal=${reveal} onClose=${onFindClose} />`}
       <div class="log-wrap">
       <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label="Conversation" tabindex="0" ...${gestures}>
         ${data?.truncated && html`<p class="note">Older messages are not shown.</p>`}
