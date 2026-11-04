@@ -1848,11 +1848,13 @@ def run(wsx, wsxd, work, owned):
     # ^ The config named no manager model since the restart: the manager defaults to opus.
     assert fresh['model'] == 'opus', fresh
     # ^ Claude's own turn for a notification is no reply (docs/tasks.md "Claude adapter").
+    # ^ The continuity part above restarted the manager since `fresh`: compare with its newest launch.
+    running = [t for t in traces() if t.get('launch') and t.get('manager')][-1]
     resumed = js('task', 'say', 'NOTIFY STATUS again')
     assert reply_to(resumed['id'])['text'], chat()[-3:]
     assert not any(e['kind'] == 'reply' and not e['text'] for e in chat())
-    assert not any(t.get('launch') and t.get('manager') and t['session'] != fresh['session']
-                   for t in traces()[traces().index(fresh) + 1:]), 'same launch keeps its conversation'
+    assert not any(t.get('launch') and t.get('manager') and t['session'] != running['session']
+                   for t in traces()[traces().index(running) + 1:]), 'same launch keeps its conversation'
     assert not turn_with('STATUS again')['message'].startswith('Handover')
     # ^ A usage limit is no reply: the message waits and is answered after the reset.
     limited = js('task', 'say', 'LIMIT 1 STATUS limited')
