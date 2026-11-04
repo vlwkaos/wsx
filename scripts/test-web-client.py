@@ -3336,7 +3336,7 @@ def task_journey(args):
             'viewer': (json.dumps([str(project)]), '"task_view", "push"'),
             'plain': (json.dumps([str(other)]), '"chat_send", "push"'),
             # ^ Adds and removes projects (docs/web-client.md "Projects"): every project and a terminal that takes input.
-            'admin': ('"all"', '"task_view", "terminal_view", "terminal_input"'),
+            'admin': ('"all"', '"task_view", "terminal_view", "terminal_input", "push"'),
         }
         panels = {'admin': '"chat", "terminal"'}
         files, sites, servers = {}, {}, {}
