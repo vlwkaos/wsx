@@ -8,7 +8,7 @@ use super::agent::{new_session_id, Agent, AgentLine, Launch, TurnResult};
 use super::broker;
 use super::hosting;
 use super::limit;
-use super::slot::{self, Priority};
+use super::slot::{self, Lane, Priority};
 use super::trial;
 use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, VecDeque};
@@ -1746,9 +1746,14 @@ impl Host {
             queued: false,
             answer: None,
         });
-        // ^ A run of checks that only format or compile is light: it takes no slot.
+        // ^ A run of checks that only format or compile is light: it takes no slot. One that
+        // names a scenario takes the scenarios lane, else the checks lane.
+        let lane = match picked.iter().any(|(index, _)| *index >= checks) {
+            true => Lane::Scenarios,
+            false => Lane::Checks,
+        };
         let priority =
-            (!to_run.iter().all(|(_, command)| light(command))).then_some(Priority::Normal);
+            (!to_run.iter().all(|(_, command)| light(command))).then_some((lane, Priority::Normal));
         let events = self.events.clone();
         self.spawn_checks(priority, "check-run", to_run.clone(), move |results| {
             let ran: BTreeMap<usize, CheckResult> = to_run
@@ -1835,8 +1840,8 @@ impl Host {
         self.set_state(TaskState::Checking);
         self.gate = Some((head(&self.record.working_copy), false));
         let priority = match self.after_rebase {
-            Some(AfterRebase::Land { .. }) => Priority::Land,
-            _ => Priority::Normal,
+            Some(AfterRebase::Land { .. }) => (Lane::Checks, Priority::Land),
+            _ => (Lane::Checks, Priority::Normal),
         };
         let events = self.events.clone();
         let checks: Vec<(usize, String)> = self.record.checks.iter().cloned().enumerate().collect();
@@ -1854,12 +1859,12 @@ impl Host {
         });
     }
 
-    /// Run `checks` in a thread, holding the machine's check slot unless `priority` is
+    /// Run `checks` in a thread, holding a machine check slot (lane and priority) unless `priority` is
     /// `None`; each check's timeout counts from the slot. Check `n`'s whole output goes to
     /// `<kind>-<n>.log` in the task folder. ref: docs/tasks.md "Checks, revisions and report"
     fn spawn_checks(
         &self,
-        priority: Option<Priority>,
+        priority: Option<(Lane, Priority)>,
         kind: &str,
         checks: Vec<(usize, String)>,
         done: impl FnOnce(Vec<CheckResult>) + Send + 'static,
@@ -1877,8 +1882,8 @@ impl Host {
         std::thread::spawn(move || {
             let results = {
                 let queued = std::time::Instant::now();
-                let _slot = priority.and_then(|priority| {
-                    let taken = slot::take(priority, &label, |reason| {
+                let _slot = priority.and_then(|(lane, priority)| {
+                    let taken = slot::take(lane, priority, &label, |reason| {
                         let _ = events.send(Event::CheckQueued(reason));
                     });
                     let error = taken.as_ref().err().map(ToString::to_string);

@@ -291,7 +291,7 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, leaving 
 // workflow step it is on (docs/tasks.md "Workflow").
 const workingWords = (task) => task.state === "ready" ? "waiting for the manager's review" : task.waiting?.on === "plan" ? "plan waiting for the manager"
   : task.conflict ? "resolving a conflict" : task.waiting?.on === "hand" ? "by hand"
-  : task.waiting?.on === "check_slot" ? "waiting for a check slot" : task.state === "checking" ? "running checks" : task.step ?? "";
+  : task.waiting?.on === "check_slot" ? `waiting for the ${/scenarios slot/.test(task.waiting.reason) ? "scenarios" : "checks"} slot` : task.state === "checking" ? "running checks" : task.step ?? "";
 
 // How an open task is doing, in one or a few words from wsx's facts (docs/web-client-tasks.md
 // "Task sheet"). [words, tone].
