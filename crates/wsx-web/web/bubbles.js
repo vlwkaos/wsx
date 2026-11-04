@@ -236,8 +236,8 @@ export function CheckBubble({ project, row, names, fresh, onMention }) {
 
 // The manager writes: three dots, still where the user asked for less motion.
 export const Dots = () => html`<span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span>`;
-export const Typing = ({ name, leaving }) => html`
-  <article class="bubble" data-side="in" data-speaker="manager" data-first="" data-last="" role="status" data-leaving=${leaving ? "" : null}>
+export const Typing = ({ name }) => html`
+  <article class="bubble" data-side="in" data-speaker="manager" data-first="" data-last="" role="status">
     <p class="bubble-author" aria-hidden="true">${name}</p>
     <div class="bubble-box typing"><span class="visually-hidden">${name} is typing</span><${Dots} /></div>
   </article>`;
