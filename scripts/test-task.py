@@ -735,9 +735,9 @@ def run(wsx, wsxd, work, owned):
     done = wait_state(folded, 'ready', 'failed')
     assert done['state'] == 'ready', done
     assert [step['name'] for step in done['record']['steps']] == ['plan', 'build'], done['record']
-    assert done['record']['effort'] == 'medium', done
-    assert {r['id']: r for r in js('task', 'ledger')['open']}[folded]['agent']['effort'] == 'medium'
-    assert [t for t in traces() if t.get('launch')][-1]['effort'] == 'medium', traces()[-1]
+    assert done['record']['effort'] == 'high', done
+    assert {r['id']: r for r in js('task', 'ledger')['open']}[folded]['agent']['effort'] == 'high'
+    assert [t for t in traces() if t.get('launch')][-1]['effort'] == 'high', traces()[-1]
     turns = [entry for entry in log(folded) if entry['kind'] == 'result']
     assert len(turns) == 2, turns
     first = turns[0]['summary']
@@ -755,9 +755,9 @@ def run(wsx, wsxd, work, owned):
     assert done['state'] == 'ready' and done['record']['model'] == 'sonnet', done
     assert [step['name'] for step in done['record']['steps']] == ['build'], done['record']
     # ^ The effort goes with the size: on the record, in the launch argv and in the view.
-    assert done['record']['effort'] == 'low', done
-    assert {r['id']: r for r in js('task', 'ledger')['open']}[small]['agent']['effort'] == 'low'
-    assert [t for t in traces() if t.get('launch')][-1]['effort'] == 'low', traces()[-1]
+    assert done['record']['effort'] == 'high', done
+    assert {r['id']: r for r in js('task', 'ledger')['open']}[small]['agent']['effort'] == 'high'
+    assert [t for t in traces() if t.get('launch')][-1]['effort'] == 'high', traces()[-1]
     turns = [entry for entry in log(small) if entry['kind'] == 'result']
     assert len(turns) == 1 and 'If the task context above is not enough: CTX recall' in turns[0]['summary'], turns
     assert 'For the memo: MEMO words' in turns[0]['summary'], turns
@@ -877,7 +877,7 @@ def run(wsx, wsxd, work, owned):
                                            for n in (x1, y1, x2)], ledger_rows[d3]
     assert {'id': d3, 'count': 1, 'complete': True, 'declared': True} in ledger_rows[x1]['overlaps']
     # The ledger names the agent in use now (docs/tasks.md "Agents"); no effort.
-    assert ledger_rows[d3]['agent'] == {'adapter': 'claude', 'model': ledger_rows[d3]['agent']['model'], 'effort': 'medium', 'fallback': False}, ledger_rows[d3]
+    assert ledger_rows[d3]['agent'] == {'adapter': 'claude', 'model': ledger_rows[d3]['agent']['model'], 'effort': 'high', 'fallback': False}, ledger_rows[d3]
     last = max(row['id'] for row in js('task', 'list', '--all')['tasks'])
     for bad in ('/abs/*.rs', '../x', 'a/../b', 'x' * 257, '[', ''):
         refused = cli('task', 'new', 'WORK no.txt', '--files', bad, ok=False)
@@ -1963,7 +1963,7 @@ def run(wsx, wsxd, work, owned):
     shots = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
         (r'\(m\)anager', b'm'),
-        (r'(?s)Manager demo · opus medium +1 to check  1 approval\n.*▸ %s' % item['id'], b'i'),
+        (r'(?s)Manager demo · opus high +1 to check  1 approval\n.*▸ %s' % item['id'], b'i'),
         (r'Enter: send', b'hello from the tui'),
         (r'> hello from the tui', b'\r'),
         # ^ "Sent" comes before the next read draws the message: wait for both.
@@ -3454,7 +3454,7 @@ def run(wsx, wsxd, work, owned):
     assert 'could write no handoff notes' in pi_turns[0]['message'], pi_turns[0]
     assert any(t.get('adapter') == 'pi' and t.get('reported') == 0 for t in traces()), 'the result was not kept'
     # ^ The task's effort goes on the fallback's launch as Pi's --thinking.
-    assert any(t.get('launch') and t.get('thinking') == 'medium' for t in traces() if t.get('worker')), 'no --thinking on the pi launch'
+    assert any(t.get('launch') and t.get('thinking') == 'high' for t in traces() if t.get('worker')), 'no --thinking on the pi launch'
     limit_file = state / 'wsx/tasks/agents/claude.json'
     assert json.loads(limit_file.read_text())['until_ms'] > time.time() * 1000 + 500_000, limit_file.read_text()
     on_pi = js('task', 'new', 'WORK fb.txt')['id']

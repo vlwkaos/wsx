@@ -344,7 +344,7 @@ pub fn manager_agent(dir: &store::ManagerDir, settings: &TaskConfig) -> Value {
     }
 }
 
-/// An `agent` field in few words: `sonnet low`, `pi/qwen medium`, `fallback pi/qwen`. The
+/// An `agent` field in few words: `sonnet high`, `pi/qwen high`, `fallback pi/qwen`. The
 /// web client writes the same (`agentWords` in `web/tasks.js`).
 pub fn agent_label(agent: &Value) -> Option<String> {
     let model = agent["model"].as_str().filter(|model| !model.is_empty())?;
