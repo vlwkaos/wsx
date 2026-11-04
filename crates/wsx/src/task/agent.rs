@@ -58,6 +58,22 @@ pub struct UsageLimit {
     pub resets_at: Option<u64>,
 }
 
+/// The words of a turn: every text block the agent said, in order, joined with a blank line.
+/// A block of `-` or nothing is dropped, so a turn that says only `-` has no words and stays
+/// quiet. With no block seen, the stream's own `fallback` (Claude's `result`) is the text.
+/// ref: docs/tasks.md "Manager"
+pub fn turn_text(blocks: &[String], fallback: String) -> String {
+    if blocks.is_empty() {
+        return fallback;
+    }
+    let said: Vec<&str> = blocks
+        .iter()
+        .map(|block| block.trim())
+        .filter(|block| !wsx_core::task::manager::says_nothing(block))
+        .collect();
+    said.join("\n\n")
+}
+
 impl TurnResult {
     /// No result and no model call: the agent's own turn for a background-task notification
     /// (a job that ended or was killed, also on a resume), which answers no message.

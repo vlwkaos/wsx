@@ -27,6 +27,8 @@
 ### Fixed
 
 - Security: tokio 1.47.5 to 1.51.6 (RUSTSEC-2026-0386), rustls 0.23.46, rustls-webpki 0.103.16 and webpki-roots 1.0.10. Left open: lru 0.12.5 and paste 1.0.15 come from ratatui 0.29, and crypto-bigint 0.5.5 comes from p256 0.13.2 (RUSTSEC-2026-0387); none can take its fix without a parent upgrade.
+- Tasks: a manager reply that answers in a text block, then calls tools, then closes in another text block now shows every block, in order. Before, the chat logged only the closing one, so the answer was missing. A block of `-` next to words is dropped, and a turn whose only text is `-` stays quiet ([docs/tasks.md](docs/tasks.md) "Reply text").
+- Security: tokio 1.47.5 to 1.51.6 (RUSTSEC-2026-0386), rustls 0.23.46, rustls-webpki 0.103.16 and webpki-roots 1.0.10; the vendored asched libc pin moves to 0.2.190 because tokio 1.51.6 needs mio 1.2. Left open: lru 0.12.5 and paste 1.0.15 come from ratatui 0.29, and crypto-bigint 0.5.5 comes from p256 0.13.2 (RUSTSEC-2026-0387); none can take its fix without a parent upgrade.
 - Web: a task sheet's progress line shows the worker's whole last sentence when it holds a dot with no space after it, like `context.md` or `v1.2`. Before, it showed only the part after that dot.
 - A session whose worktree folder was removed outside wsx moves to its project's main checkout at the next synchronization, so a chat message reaches its agent instead of failing with "cannot resolve worktree".
 

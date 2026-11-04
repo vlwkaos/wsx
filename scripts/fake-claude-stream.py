@@ -50,6 +50,8 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   PAGE <section> <words>  replace that section of the project overview (its instructions name it)
   OVERLONG <n>   write an overview of n lines (over the cap when n > 60); the host's follow-up leaves it
   STATUS         answer from `wsx task ledger`
+  BLOCKS <a>|<b>|...  (a line) say each part as its own assistant line, a part `TOOL` as a tool call;
+                 the result holds only the last text, as Claude's does
   NOTIFY         first end a 0-token turn with no result, as Claude's own turn for a notification
   SLOW           take about 3 s
   LONG           take about 25 s
@@ -331,6 +333,14 @@ def main():
                 emit({'type': 'assistant', 'parent_tool_use_id': None, 'message': {
                     'model': model, 'content': [],
                     'usage': {'input_tokens': 10, 'cache_read_input_tokens': tokens - 10, 'output_tokens': 5}}})
+            for line in text.splitlines():
+                if line.startswith('BLOCKS '):
+                    parts = line[7:].split('|')
+                    for part in parts:
+                        block = {'type': 'tool_use', 'id': 'tool-1', 'name': 'Bash', 'input': {'command': 'true'}} \
+                            if part == 'TOOL' else {'type': 'text', 'text': part}
+                        emit({'type': 'assistant', 'parent_tool_use_id': None, 'message': {'content': [block]}})
+                    answer = next((part for part in reversed(parts) if part != 'TOOL'), '')
             # ^ A subagent's call is another context: it never counts as the conversation's.
             emit({'type': 'assistant', 'parent_tool_use_id': 'sub', 'message': {
                 'model': model, 'content': [], 'usage': {'input_tokens': 900000}}})

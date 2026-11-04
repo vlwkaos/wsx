@@ -1,7 +1,7 @@
 //! Pi adapter: one `pi --mode rpc` process, JSONL commands on stdin, session events on stdout.
 //! ref: docs/tasks.md "Pi adapter"; Pi docs rpc.md, rpc-commands.md, json.md
 
-use super::agent::{AgentLine, Launch, TurnResult, UsageLimit};
+use super::agent::{turn_text, AgentLine, Launch, TurnResult, UsageLimit};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -249,8 +249,8 @@ struct Run {
     cost_base: u64,
     started: Option<Instant>,
     usage: TurnUsage,
-    /// The last assistant message: its text, stop reason and error.
-    text: String,
+    /// The run's assistant text blocks in order; the last message's stop reason and error.
+    said: Vec<String>,
     stop: String,
     error: String,
 }
@@ -317,15 +317,17 @@ impl Run {
         if let Some(model) = message.get("model").and_then(Value::as_str) {
             usage.model = model.to_string();
         }
-        self.text = message
-            .get("content")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|item| item["type"] == "text")
-            .filter_map(|item| item["text"].as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
+        self.said.extend(
+            message
+                .get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|item| item["type"] == "text")
+                .filter_map(|item| item["text"].as_str())
+                .filter(|text| !text.trim().is_empty())
+                .map(str::to_string),
+        );
         self.stop = message["stopReason"].as_str().unwrap_or_default().into();
         self.error = message["errorMessage"].as_str().unwrap_or_default().into();
     }
@@ -349,7 +351,11 @@ impl Run {
                 _ => "success".into(),
             },
             limit: failed.then(|| refusal(&run.error)).flatten(),
-            text: if failed { run.error } else { run.text },
+            text: if failed {
+                run.error
+            } else {
+                turn_text(&run.said, String::new())
+            },
             structured: None,
             denials: Vec::new(),
             usage,
