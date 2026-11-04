@@ -14,6 +14,8 @@ pub mod manager;
 mod pi;
 mod preview;
 mod slot;
+#[cfg(test)]
+mod stream_tests;
 mod trial;
 
 use crate::cli::{

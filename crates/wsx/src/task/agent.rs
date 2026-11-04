@@ -8,7 +8,7 @@ use super::claude::ClaudeAgent;
 use super::pi::PiAgent;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use wsx_core::model::workspace::TaskConfig;
@@ -306,6 +306,57 @@ pub fn note_spend(adapter: &str, model: &str, micro_usd: u64, now_ms: u64) -> Op
             usage::usd(spent)
         )),
         Err(error) => Some(format!("cannot record the budget: {error:#}")),
+    }
+}
+
+/// Longest stdout line the host reads; a longer one (a huge tool result) is skipped.
+const MAX_LINE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Hand each JSON line of an agent's stdout to `each` (false stops), to the end of the stream.
+/// A line over `MAX_LINE_BYTES` is dropped in buffer-sized steps, never held; a line that is
+/// no JSON is skipped.
+pub(super) fn read_json_lines(stdout: impl Read, mut each: impl FnMut(Value) -> bool) {
+    let mut reader = BufReader::new(stdout);
+    loop {
+        let mut line = Vec::new();
+        match (&mut reader)
+            .take(MAX_LINE_BYTES)
+            .read_until(b'\n', &mut line)
+        {
+            Ok(0) | Err(_) => return,
+            Ok(_) if !line.ends_with(b"\n") && line.len() as u64 >= MAX_LINE_BYTES => {
+                if !matches!(skip_line(&mut reader), Ok(true)) {
+                    return;
+                }
+            }
+            Ok(_) => {
+                if let Ok(value) = serde_json::from_slice::<Value>(&line) {
+                    if !each(value) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Drop the rest of an oversized line one buffer at a time. Returns false at end of input.
+fn skip_line(reader: &mut impl BufRead) -> std::io::Result<bool> {
+    loop {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            return Ok(false);
+        }
+        match buffer.iter().position(|byte| *byte == b'\n') {
+            Some(end) => {
+                reader.consume(end + 1);
+                return Ok(true);
+            }
+            None => {
+                let length = buffer.len();
+                reader.consume(length);
+            }
+        }
     }
 }
 

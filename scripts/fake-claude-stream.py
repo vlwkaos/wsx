@@ -80,9 +80,93 @@ def trace(record):
         out.write(json.dumps(record) + '\n')
 
 
+SESSION = MODEL = None
+LINES = 0
+SPENT = 0.0  # ^ The process's running `total_cost_usd`: every result carries it.
+# ^ The fields the real CLI writes on every line, as recorded in
+# crates/wsx/tests/fixtures/agent-streams/claude (docs/tasks.md "Agent stream recordings"). A line
+# a scenario builds keeps its own values; `emit` fills in the rest, and
+# crates/wsx/tests/agent_stream_fakes.rs fails when a fake drifts from the recordings.
+CALL_USAGE = {'input_tokens': 0, 'cache_creation_input_tokens': 0, 'cache_read_input_tokens': 0,
+              'cache_creation': {'ephemeral_5m_input_tokens': 0, 'ephemeral_1h_input_tokens': 0},
+              'output_tokens': 0, 'service_tier': 'standard', 'inference_geo': 'global', 'speed': 'standard'}
+RESULT_USAGE = {**CALL_USAGE, 'output_tokens_details': {'thinking_tokens': 0},
+                'server_tool_use': {'web_search_requests': 0, 'web_fetch_requests': 0},
+                'iterations': [], 'fallback_credit': None}
+INIT = {'cwd': '/work', 'tools': [], 'mcp_servers': [], 'model': 'fake', 'permissionMode': 'bypassPermissions',
+        'slash_commands': [], 'terminal_slash_commands': [], 'apiKeySource': 'none', 'claude_code_version': '0',
+        'output_style': 'default', 'agents': [], 'skills': [], 'plugins': [], 'capabilities': [],
+        'analytics_disabled': False, 'product_feedback_disabled': False, 'memory_paths': {},
+        'original_cwd': '/work', 'additional_directories': [], 'messaging_socket_path': '/tmp/cc-socks/1.sock',
+        'fast_mode_state': 'off', 'fast_mode_disabled_reason': 'sdk_opt_in_required',
+        'per_turn_effort_active': True, 'ultrathink_available': False, 'view_mode': 'default'}
+RESULT = {'duration_api_ms': 0, 'stop_reason': 'end_turn', 'modelUsage': {},
+          'terminal_reason': 'completed', 'fast_mode_state': 'off', 'fast_mode_disabled_reason': 'sdk_opt_in_required',
+          'subagent_stats': {}, 'safety_stops': 0, 'num_turns': 1, 'api_error_status': None, 'ttft_ms': 0,
+          'duration_ms': 0, 'ttft_stream_ms': 0, 'time_to_request_ms': 0, 'first_content_frame_ms': 0,
+          'queued_turn_count': 0, 'result_index': 0, 'model_usage_since_last_result': {}}
+
+
+def filled(value, defaults):
+    return {**defaults, **value}
+
+
+def shaped(value):
+    """`value` as the real CLI writes its line: the same fields, the scenario's values kept."""
+    global LINES
+    LINES += 1
+    kind = value.get('type')
+    value = dict(value)
+    if kind in ('system', 'assistant', 'user', 'result', 'rate_limit_event'):
+        value.setdefault('session_id', SESSION)
+        value.setdefault('uuid', '00000000-0000-4000-8000-%012d' % LINES)
+    if kind == 'system' and value.get('subtype') == 'init':
+        value = filled(value, INIT)
+    elif kind in ('assistant', 'user'):
+        value.setdefault('parent_tool_use_id', None)
+        value.setdefault('timestamp', '2026-01-01T00:00:00.000Z')
+        message = dict(value['message'])
+        if kind == 'assistant':
+            value.setdefault('request_id', 'req_fake')
+            message = filled(message, {'model': MODEL or 'fake', 'id': 'msg_fake_%d' % LINES, 'type': 'message',
+                                       'role': 'assistant', 'container': None, 'stop_reason': None,
+                                       'stop_sequence': None, 'stop_details': None, 'input_transformations': [],
+                                       'diagnostics': None, 'context_management': None})
+            message['usage'] = filled(message.get('usage', {}), CALL_USAGE)
+            blocks = message['content'] = [dict(block) for block in message['content']]
+            for block in blocks:
+                if block['type'] == 'tool_use':
+                    block.setdefault('caller', {'type': 'direct'})
+                    value.setdefault('wire_tool_inputs', {})[block.get('id', 'toolu_fake')] = block['input']
+                if block['type'] == 'thinking':
+                    block.setdefault('signature', '')
+                    value.setdefault('thinking_duration_ms', 0)
+                    value.setdefault('thinking_display', 'updates')
+        else:
+            value.setdefault('tool_use_result', {'stdout': '', 'stderr': '', 'interrupted': False})
+            value.setdefault('tool_result_meta', [])
+        value['message'] = message
+    elif kind == 'result':
+        value = filled(value, RESULT)
+        value.setdefault('total_cost_usd', round(SPENT, 6))
+        value['usage'] = filled(value.get('usage', {}), RESULT_USAGE)
+    elif kind == 'rate_limit_event':
+        value.setdefault('rate_limit_info', {})
+    return value
+
+
 def emit(value):
-    sys.stdout.write(json.dumps(value) + '\n')
+    sys.stdout.write(json.dumps(shaped(value)) + '\n')
     sys.stdout.flush()
+
+
+def model_call(model, usage, parent=None, call=None):
+    """One model call's line with only its usage: a thinking block, which no reader shows."""
+    line = {'type': 'assistant', 'parent_tool_use_id': parent, 'message': {
+        'model': model, 'content': [{'type': 'thinking', 'thinking': ''}], 'usage': usage}}
+    if call:
+        line['message']['id'] = call
+    emit(line)
 
 
 def parse_args(argv):
@@ -261,6 +345,7 @@ def interactive(options):
 
 
 def main():
+    global SESSION, MODEL, SPENT
     options = parse_args(sys.argv[1:])
     if '-p' not in options:
         return interactive(options)
@@ -281,12 +366,14 @@ def main():
            'claude_config_dir': os.environ.get('CLAUDE_CONFIG_DIR'),
            'cwd': os.getcwd()})
     signal.signal(signal.SIGINT, lambda *_: (trace({'interrupted': True}), sys.exit(130)))
+    SESSION, MODEL = session, options.get('--model')
     emit({'type': 'system', 'subtype': 'init', 'session_id': session})
     stdin = sys.stdin.buffer
     # ^ A resumed session restores its earlier spend into total_cost_usd, as Claude Code does.
     spent_file = TRACE + '.spent'
     spending = lambda: json.load(open(spent_file)) if os.path.exists(spent_file) else {}
     model, spent = options.get('--model'), spending().get(session, 0.0) if '--resume' in options else 0.0
+    SPENT = spent
     no_result = 0
     limited, limit_hit, event_limits = None, False, set()
     while True:
@@ -295,7 +382,7 @@ def main():
             return
         request = json.loads(line)
         if request.get('type') == 'control_request':
-            model = request['request']['model']
+            model = MODEL = request['request']['model']
             trace({'set_model': model, 'session': session})
             emit({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': request['request_id']}})
             continue
@@ -330,25 +417,28 @@ def main():
             # ^ A line of its own: a handover quotes earlier messages as `Owner: BIG`.
             calls = [200000] if 'BIG' in text.splitlines() else [50000] * 4 if 'SUMMED' in text.splitlines() else [5000]
             for tokens in calls:
-                emit({'type': 'assistant', 'parent_tool_use_id': None, 'message': {
-                    'model': model, 'content': [],
-                    'usage': {'input_tokens': 10, 'cache_read_input_tokens': tokens - 10, 'output_tokens': 5}}})
+                model_call(model, {'input_tokens': 10, 'cache_read_input_tokens': tokens - 10, 'output_tokens': 5})
             for line in text.splitlines():
                 if line.startswith('BLOCKS '):
                     parts = line[7:].split('|')
                     for part in parts:
                         block = {'type': 'tool_use', 'id': 'tool-1', 'name': 'Bash', 'input': {'command': 'true'}} \
                             if part == 'TOOL' else {'type': 'text', 'text': part}
-                        emit({'type': 'assistant', 'parent_tool_use_id': None, 'message': {'content': [block]}})
+                        # ^ Each line carries its call's usage, as the real CLI's do.
+                        emit({'type': 'assistant', 'parent_tool_use_id': None, 'message': {
+                            'model': model, 'content': [block],
+                            'usage': {'input_tokens': 10, 'cache_read_input_tokens': calls[-1] - 10, 'output_tokens': 5}}})
+                        if part == 'TOOL':
+                            tool_result('tool-1', 'ok', False)
                     answer = next((part for part in reversed(parts) if part != 'TOOL'), '')
             # ^ A subagent's call is another context: it never counts as the conversation's.
-            emit({'type': 'assistant', 'parent_tool_use_id': 'sub', 'message': {
-                'model': model, 'content': [], 'usage': {'input_tokens': 900000}}})
+            model_call(model, {'input_tokens': 900000}, parent='sub')
             if 'NOTIFY' in text.split():
                 emit({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': '',
                       'session_id': session, 'permission_denials': [],
                       'usage': {'input_tokens': 0, 'output_tokens': 0}})
             spent += 0.001
+            SPENT = spent
             saved = spending() | {session: spent}
             with open(spent_file, 'w') as out:
                 json.dump(saved, out)
@@ -515,9 +605,8 @@ def main():
         if 'BIG' in words:
             # ^ Claude writes one line per content block of a call, each with the call's id.
             for _ in range(2):
-                emit({'type': 'assistant', 'parent_tool_use_id': None, 'message': {
-                    'id': 'msg_big', 'model': model, 'content': [],
-                    'usage': {'input_tokens': 10, 'cache_read_input_tokens': 399990, 'output_tokens': 5}}})
+                model_call(model, {'input_tokens': 10, 'cache_read_input_tokens': 399990, 'output_tokens': 5},
+                           call='msg_big')
         summary = 'did: ' + text + (' | steers: ' + '; '.join(steers) if steers else '')
         if 'BGRESULT' in words:
             emit({'type': 'system', 'subtype': 'background_tasks_changed', 'session_id': session,

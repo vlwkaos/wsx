@@ -107,11 +107,20 @@ A task host and a manager host drive one headless agent through an adapter (`cra
 
 `pi --mode rpc --session-id <id> --model <model> --no-extensions --no-mcp --no-prompt-templates --no-themes --no-context-files --no-skills --no-approve --append-system-prompt <rules> [--append-system-prompt <project AGENTS.md or CLAUDE.md>] [--skill <owner skills>]` (`crates/wsx/src/task/pi.rs`, Pi docs `rpc.md`). The owner's interactive Pi setup (extensions, global `AGENTS.md`, discovered skills) is left out; the project's own context file and the lent skills come in, as Claude's project settings do. `--session-id` opens the conversation or creates it, so the host's ID is the conversation.
 
-- A message is an RPC `prompt` with `streamingBehavior: steer`; one run, `agent_start` to `agent_settled`, is one turn. Its text is the last assistant message's. Usage sums the run's assistant messages (`input`, `output`, `cacheRead`, `cacheWrite`, `cost.total`); the context is the last message's input and cache tokens.
+- A message is an RPC `prompt` with `streamingBehavior: steer`; one run, `agent_start` to `agent_settled`, is one turn. Its text is every assistant message's text, joined as in the Claude adapter's Reply text. Usage sums the run's assistant messages (`input`, `output`, `cacheRead`, `cacheWrite`, `cost.total`); the context is the last message's input and cache tokens.
 - The worker's result comes through `wsx task result -` (Agents); the instructions carry the schema.
 - A run that ends in an error whose words name missing credit or billing, a refused login or an unknown model counts as a limit of 6 hours, after Pi's own retries: nothing tells when the owner fixes it. One that names a 429, a rate limit, a usage limit, a quota or an unreachable server is a limit with no reset time: the host backs off (Claude adapter "Usage limit") or switches (Agents). Another error ends the turn as an error result.
 - A stand-in's call (Agents) adds `--no-session --no-tools --thinking off` and `--system-prompt` with its own words, in place of `--session-id`, Pi's coding prompt, the project's context file and the lent skills.
 - `set_model` takes `provider/id`. Stop sends `abort`, closes stdin and kills after 5 s.
+
+## Agent stream recordings
+
+The adapters read a stream that the CLIs may change, so the tests judge them against recordings of the real CLIs, not against a fake's idea of the stream. `crates/wsx/tests/fixtures/agent-streams/<claude|pi>/<scenario>.jsonl` holds one scrubbed turn each (plain text; text, a tool, more text; quiet `-`; a Claude subagent; a structured worker result; an error), with the CLI version in the folder's `README.md`. Pi has no subagent.
+
+- `crates/wsx/src/task/stream_tests.rs` runs each recording through the adapter's own read loop (`read_stream`) and asserts the `TurnResult`: reply text, quiet, usage, error, limit.
+- `crates/wsx/tests/agent_stream_fakes.rs` runs `scripts/fake-claude-stream.py` and `scripts/fake-pi-rpc.py` and fails when a fake's line kind is unrecorded, has a field or type the recording lacks, or leaves out a field every recorded line of that kind has.
+- Refresh when a CLI changes its stream, or before trusting a new CLI version: `python3 -B scripts/record-agent-streams.py [claude|pi] [scenario ...]` (a few turns on the smallest model; it needs both CLIs logged in). It scrubs ids, paths and rate-limit numbers and rewrites the `README.md` with the new versions. Then `cargo nextest run -p wsx stream`: fix the asserts that name the changed values and the adapter if it misreads the new stream, then make the fakes' defaults (`shaped` in each fake) match until `agent_stream_fakes` passes. Review `git diff` of the recordings for anything personal before the commit.
+- A new field in a task's wire use (a new event the adapter reads) needs a scenario in the script's tables first, so a fake cannot pass on a shape nobody recorded.
 
 ## Permissions
 
