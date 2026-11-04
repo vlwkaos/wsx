@@ -127,6 +127,12 @@ pub enum ManagerEvent {
     Agent {
         text: String,
     },
+    /// A ping turn kept the prompt cache warm while a task works: no reply, not in the chat.
+    /// ref: docs/tasks.md "Manager"
+    Ping {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TurnUsage>,
+    },
     /// The context passed `rotateTokens`, or the launch changed (`reason`): the next turn
     /// starts a fresh conversation.
     Rotated {

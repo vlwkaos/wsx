@@ -64,6 +64,8 @@ const MIN_ROTATE_TOKENS: u64 = 1_000;
 const MAX_RECAP_MINUTES: u64 = 1_440;
 const MAX_ROTATE_TOKENS: u64 = 2_000_000;
 const MAX_ROTATE_IDLE_SECS: u64 = 24 * 60 * 60;
+/// A ping later than Claude's 1-hour prompt cache keeps nothing warm.
+const MAX_KEEP_WARM_SECS: u64 = 3_599;
 use super::global::TASK_ADAPTERS;
 const PROJECT_CONFIG_TEMPLATE: &str = "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\ngit:\n  subtrees: []\nworktree:\n  branchPrefix:\n  # defaultSession:\n  #   enabled: true\n  #   command:\n";
 
@@ -222,6 +224,8 @@ struct TaskAgentFile {
     rotate_tokens: Option<u64>,
     #[serde(rename = "rotateIdleSeconds", skip_serializing_if = "Option::is_none")]
     rotate_idle_seconds: Option<u64>,
+    #[serde(rename = "keepWarmSeconds", skip_serializing_if = "Option::is_none")]
+    keep_warm_seconds: Option<u64>,
     /// As the manager's `fallback`, for workers.
     #[serde(skip_serializing_if = "Option::is_none")]
     fallback: Option<Vec<String>>,
@@ -568,6 +572,14 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
                 ));
             }
             config.rotate_idle_seconds = seconds;
+        }
+        if let Some(seconds) = agent.keep_warm_seconds {
+            if seconds > MAX_KEEP_WARM_SECS {
+                return Err(format!(
+                    "tasks.agent.keepWarmSeconds must be 0..={MAX_KEEP_WARM_SECS}"
+                ));
+            }
+            config.keep_warm_seconds = seconds;
         }
     }
     config.owner_skills = match file.skills.as_deref() {

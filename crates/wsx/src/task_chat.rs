@@ -477,7 +477,9 @@ fn read(store: &str, main: &Path, dir: Option<&ManagerDir>) -> anyhow::Result<Vi
                 "Manager paused: usage limit, resumes at {until}"
             ))),
             ManagerEvent::Limit { until: None } => rows.push(Row::Line("Manager resumed".into())),
-            ManagerEvent::Delivered { .. } | ManagerEvent::Agent { .. } => {}
+            ManagerEvent::Delivered { .. }
+            | ManagerEvent::Agent { .. }
+            | ManagerEvent::Ping { .. } => {}
         }
     }
     // ^ To check items and approvals are the manager's (docs/tasks.md "Roles").

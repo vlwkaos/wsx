@@ -14,6 +14,15 @@ use std::sync::mpsc::Sender;
 use wsx_core::model::workspace::TaskConfig;
 use wsx_core::task::{store, usage, TurnUsage};
 
+/// Ping turns in a row, without a real turn between: three keep a conversation warm for
+/// about 3 h 40 min and cost far less than the one rewrite they save.
+/// ref: docs/tasks.md "Context rotation"
+pub const KEEP_WARM_PINGS: u32 = 3;
+/// The ping turn's message: the agent answers it with one word.
+pub const KEEP_WARM_TEXT: &str = "wsx keep-alive: the host is waiting and keeps this \
+conversation's cache warm. Answer with the one word ok. Use no tool and return no result; \
+nothing about the task changes.";
+
 pub enum AgentLine {
     /// The conversation ID the agent runs under.
     Init(String),

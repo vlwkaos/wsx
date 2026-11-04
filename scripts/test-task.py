@@ -3317,6 +3317,51 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', idler, '--discard')
     configure(LAND_CONFIG, 'no idle rotation')
 
+    # 32s. Keep-warm pings (docs/tasks.md "Context rotation", "Manager"): a worker that waits on
+    mark('32s')
+    # its checks gets a no-op turn tasks.agent.keepWarmSeconds after its last answer, at most 3 in
+    # a row; it logs `ping`, is no result and starts no step. None while the account's usage limit
+    # holds. The manager pings while a task checks, and a ping is never a reply.
+    configure(LAND_CONFIG.replace('test ! -e broken.txt', 'sleep 11') + '  agent: { keepWarmSeconds: 2 }\n',
+              'keep warm')
+    pings = lambda n: [e for e in log(n) if e['kind'] == 'ping']
+    keep_alive = lambda: [t for t in traces() if str(t.get('message', '')).startswith('wsx keep-alive')]
+    replies_before = len([e for e in manager_entries() if e['kind'] == 'reply'])
+    js('task', 'say', 'STATUS before the pings')
+    wait(lambda: len([e for e in manager_entries() if e['kind'] == 'reply']) > replies_before, 'manager reply')
+    held = js('task', 'new', 'LIMIT 25 NOOP')['id']
+    wait(lambda: show(held)['record'].get('waiting', {}).get('on') == 'limit', 'the limit wait')
+    # ^ The account is limited while this task checks: no ping, though it waits on the checks.
+    cold = js('task', 'new', 'NOOP')['id']
+    assert wait_state(cold, 'ready', 'failed')['state'] == 'ready', show(cold)['result']
+    assert not pings(cold), log(cold)
+    done = wait(lambda: (current := show(held))['state'] in ('ready', 'failed') and current, 'held ready', 90)
+    assert done['state'] == 'ready', done['result']
+    # ^ After the reset its checks wait 11 s: pings at about 2, 4 and 6 s, then the cap holds.
+    assert kinds(held, 'limit_wait', 'result', 'ping') == ['limit_wait', 'result', 'ping', 'ping', 'ping'], log(held)
+    assert all(e['usage']['output_tokens'] > 0 for e in pings(held)), pings(held)
+    results = [e for e in log(held) if e['kind'] == 'result']
+    assert len(results) == 1 and results[0]['trigger'] == 'limit', results
+    session = show(held)['record']['agent_session']
+    assert len([t for t in keep_alive() if t['session'] == session]) == 3, keep_alive()
+    report = subprocess.run([sys.executable, '-B', str(ROOT / 'scripts' / 'usage-report.py'),
+                             str(Path(show(held)['log']).parent.parent), '--task', str(held)],
+                            capture_output=True, text=True, check=True).stdout
+    assert len(re.findall(r'\| ping +\| ping ', report)) == 3, report[-600:]
+    entries = manager_entries()
+    mpings = [e for e in entries if e['kind'] == 'ping']
+    assert mpings and all(e['usage']['output_tokens'] > 0 for e in mpings), entries[-12:]
+    assert [t for t in keep_alive() if t.get('manager')], keep_alive()
+    # ^ At most 3 pings between two real turns; a ping never logs a reply or a delivery.
+    run = 0
+    for e in entries:
+        run = run + 1 if e['kind'] == 'ping' else 0 if e['kind'] == 'delivered' else run
+        assert run <= 3, entries[-20:]
+    assert all(e['to'] for e in entries if e['kind'] == 'reply'), entries[-12:]
+    for n in (held, cold):
+        js('task', 'close', n, '--discard')
+    configure(LAND_CONFIG, 'no keep-warm pings')
+
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     mark('33')
     # ledger and messages its manager, which answers once; nothing else crosses projects.

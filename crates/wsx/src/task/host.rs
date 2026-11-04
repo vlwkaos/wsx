@@ -4,7 +4,9 @@
 //! One main loop owns the task files. The socket thread and the agent reader
 //! send to it over one channel; it answers each request after acting on it.
 
-use super::agent::{new_session_id, Agent, AgentLine, Launch, TurnResult};
+use super::agent::{
+    new_session_id, Agent, AgentLine, Launch, TurnResult, KEEP_WARM_PINGS, KEEP_WARM_TEXT,
+};
 use super::broker;
 use super::hosting;
 use super::limit;
@@ -191,6 +193,10 @@ struct Host {
     trigger: TurnTrigger,
     /// When the agent last answered (unix ms), from the log when the host starts.
     answered_ms: u64,
+    /// Ping turns since the last real turn, and what starts once the running ping ends.
+    /// ref: docs/tasks.md "Context rotation"
+    pings: u32,
+    after_ping: Option<TurnTrigger>,
     started: Instant,
 }
 
@@ -240,6 +246,8 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         rotating: None,
         trigger: TurnTrigger::Step,
         answered_ms: 0,
+        pings: 0,
+        after_ping: None,
         started: Instant::now(),
     };
     (host.context_tokens, host.answered_ms) = host.last_context();
@@ -344,11 +352,15 @@ impl Host {
                 .as_ref()
                 .filter(|wait| wait.turn.is_some())
                 .map(|wait| wait.deadline.saturating_duration_since(Instant::now()));
+            let ping_due = self
+                .ping_due()
+                .map(|due| Duration::from_millis(due.saturating_sub(now_unix_ms())));
             let event = match disk_due
                 .into_iter()
                 .chain(limit_due)
                 .chain(background_due)
                 .chain(settle_due)
+                .chain(ping_due)
                 .min()
             {
                 None => receiver.recv().ok(),
@@ -362,6 +374,8 @@ impl Host {
                             self.resume_after_disk();
                         } else if background_due == Some(due) {
                             self.background_timed_out();
+                        } else if ping_due == Some(due) {
+                            self.ping();
                         } else {
                             self.resume_after_limit();
                         }
@@ -906,6 +920,12 @@ impl Host {
     }
 
     fn try_start_turn(&mut self, text: &str, trigger: TurnTrigger) -> Result<()> {
+        // ^ A turn that comes during a ping starts once the ping's answer is in.
+        if self.pinging() {
+            self.pending.push_back(text.to_string());
+            self.after_ping.get_or_insert(trigger);
+            return Ok(());
+        }
         // ^ A message during a usage limit joins the turn that continues after it.
         if let Some(wait) = &mut self.limit_wait {
             wait.text = format!("{}\n\n{text}", wait.text);
@@ -967,6 +987,17 @@ impl Host {
             }
             None => text,
         };
+        self.send_to_agent(text)?;
+        self.turn_text = text.to_string();
+        self.turn_active = true;
+        self.trigger = trigger;
+        self.pings = 0;
+        self.set_state(TaskState::Working);
+        Ok(())
+    }
+
+    /// Starts the agent when it does not run, and sends it one turn's message.
+    fn send_to_agent(&mut self, text: &str) -> Result<()> {
         if self.agent.is_none() {
             let (session, resume) = match &self.record.agent_session {
                 Some(session) => (session.clone(), true),
@@ -988,12 +1019,104 @@ impl Host {
         self.agent
             .as_mut()
             .context("the agent is not running")?
-            .send(text)?;
-        self.turn_text = text.to_string();
-        self.turn_active = true;
-        self.trigger = trigger;
-        self.set_state(TaskState::Working);
-        Ok(())
+            .send(text)
+    }
+
+    fn pinging(&self) -> bool {
+        self.turn_active && self.trigger == TurnTrigger::Ping
+    }
+
+    /// When the next ping is due (unix ms): the worker waits on the checks or on a queued
+    /// check-run, its last answer is younger than Claude's 1-hour prompt cache, and fewer than
+    /// `KEEP_WARM_PINGS` came since its last turn. Never in a usage limit, a disk wait, by
+    /// hand, or when the next turn rotates by size anyway. ref: docs/tasks.md "Context rotation"
+    fn ping_due(&self) -> Option<u64> {
+        let waits = self.record.state == TaskState::Checking
+            || self.check_run.as_ref().is_some_and(|run| run.queued);
+        // ^ Claude's cache lives 1 hour; Pi's default lives 5 minutes, which no ping keeps.
+        if !waits
+            || self.record.adapter != "claude"
+            || self.turn_active
+            || self.pings >= KEEP_WARM_PINGS
+            || self.answered_ms == 0
+            || self.record.agent_session.is_none()
+            || self.limit_wait.is_some()
+            || self.disk_wait.is_some()
+            || self.rotating.is_some()
+            || self.reexec
+            || self.record.waits_on(WaitOn::Hand)
+        {
+            return None;
+        }
+        let config = load_task_config(&self.record.project_path).unwrap_or_default();
+        let now = now_unix_ms();
+        let cold = now.saturating_sub(self.answered_ms) >= 3_600_000;
+        if config.keep_warm_seconds == 0
+            || cold
+            || self.context_tokens >= config.rotate_tokens
+            || store::limited_until(&self.account(), now).is_some()
+        {
+            return None;
+        }
+        Some(self.answered_ms + config.keep_warm_seconds * 1000)
+    }
+
+    /// One no-op turn that keeps the prompt cache warm: no step, no result, no checks.
+    fn ping(&mut self) {
+        if self.ping_due().is_none_or(|due| due > now_unix_ms()) {
+            return;
+        }
+        // ^ Counted before the send: a failed send never loops.
+        self.pings += 1;
+        match self.send_to_agent(KEEP_WARM_TEXT) {
+            Ok(()) => {
+                self.turn_active = true;
+                self.trigger = TurnTrigger::Ping;
+                self.say(&format!(
+                    "ping {} of {KEEP_WARM_PINGS}: keeps the prompt cache warm",
+                    self.pings
+                ));
+            }
+            Err(error) => self.say(&format!("cannot ping the agent: {error:#}")),
+        }
+    }
+
+    /// A ping's answer: logged as `ping`, then the turn that came meanwhile starts.
+    fn on_ping(&mut self, turn: TurnResult) {
+        self.turn_active = false;
+        let now = now_unix_ms();
+        if turn.usage.context_tokens > 0 {
+            self.context_tokens = turn.usage.context_tokens;
+        }
+        // ^ No wait of its own: the next real turn meets the limit and waits as usual.
+        if let Some(limit) = &turn.limit {
+            let until_ms = limit::resume_at(limit.resets_at, 1, now);
+            let backoff = limit::known_reset(limit.resets_at, now).is_none();
+            let _ = store::mark_limited(&self.account(), until_ms, now, backoff);
+        } else {
+            // ^ The cache is warm again: the idle rotation counts from here.
+            self.answered_ms = now;
+        }
+        if let Some(message) = super::agent::note_spend(
+            &self.record.adapter,
+            &self.record.model,
+            turn.usage.cost_micro_usd,
+            now,
+        ) {
+            self.say(&message);
+        }
+        self.log(LogEvent::Ping {
+            usage: Some(turn.usage),
+        });
+        self.after_ping_ends();
+    }
+
+    /// What came during a ping starts now; a message held for the checks keeps waiting.
+    fn after_ping_ends(&mut self) {
+        let after = self.after_ping.take();
+        if after.is_some() || self.record.state != TaskState::Checking {
+            self.deliver_pending(after.unwrap_or(TurnTrigger::Message));
+        }
     }
 
     fn on_agent(&mut self, line: Option<AgentLine>) {
@@ -1008,7 +1131,10 @@ impl Host {
                 // ^ The agent answers again: the next task in the limit queue may try.
                 self.limit_slot = None;
                 self.say(&text);
-                self.log(LogEvent::Agent { text, said });
+                // ^ A ping's one word is no progress of the task.
+                if !self.pinging() {
+                    self.log(LogEvent::Agent { text, said });
+                }
             }
             Some(AgentLine::Result(mut result)) => {
                 if result.structured.is_none() {
@@ -1020,7 +1146,11 @@ impl Host {
                 self.agent = None;
                 // ^ A handoff turn that never ended leaves no notes: no later result is one.
                 self.rotating = None;
-                if self.turn_active && !self.stop_requested {
+                // ^ A ping lost with its process costs the task nothing: the next turn resumes.
+                if self.pinging() {
+                    self.turn_active = false;
+                    self.after_ping_ends();
+                } else if self.turn_active && !self.stop_requested {
                     self.turn_active = false;
                     self.log(LogEvent::Stopped {
                         reason: "the agent process ended during a turn".into(),
@@ -1038,6 +1168,9 @@ impl Host {
                 text: "claude ended its own turn with no result: ignored".into(),
             });
             return;
+        }
+        if self.pinging() {
+            return self.on_ping(turn);
         }
         // ^ A result is the agent answering again, also one that waits for background jobs.
         self.limit_slot = None;
@@ -1999,6 +2132,8 @@ impl Host {
         self.pending.push_back(answer);
         if !self.turn_active {
             self.deliver_pending(TurnTrigger::CheckRun);
+        } else if self.pinging() {
+            self.after_ping.get_or_insert(TurnTrigger::CheckRun);
         }
     }
 
@@ -2214,7 +2349,9 @@ impl Host {
             _ => None,
         });
         let answered = self.dir.last_entry(|entry| match entry.event {
-            LogEvent::Result { .. } | LogEvent::LimitWait { .. } => Some(entry.unix_ms),
+            LogEvent::Result { .. } | LogEvent::LimitWait { .. } | LogEvent::Ping { .. } => {
+                Some(entry.unix_ms)
+            }
             _ => None,
         });
         (
