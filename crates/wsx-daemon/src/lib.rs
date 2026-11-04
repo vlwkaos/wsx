@@ -453,22 +453,7 @@ fn secure_parent(path: &Path) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    if !parent.exists() {
-        fs::create_dir_all(parent)?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-    }
-    let metadata = fs::symlink_metadata(parent)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_dir()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "unsafe wsx state directory",
-        ));
-    }
-    Ok(())
+    wsx_core::fs_util::private_dir(parent)
 }
 fn prepare_socket(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {

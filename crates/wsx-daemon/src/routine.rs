@@ -4,10 +4,13 @@
 //! ref: docs/tasks.md "Routines"
 
 use super::*;
+use crate::server::try_lock_file;
+use std::collections::BTreeSet;
 use std::io::Seek;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
+use wsx_core::fs_util::private_dir;
 use wsx_core::routine::{
     cron::{CronSchedule, LocalTime},
     store::{self, ProjectRoutines},
@@ -34,6 +37,10 @@ struct Scheduler {
     owned: Mutex<Option<fs::File>>,
     owned_changed: Condvar,
     stopping: AtomicBool,
+    /// Why the store could not be set up; the scheduler then waits for a restart.
+    failed: Mutex<Option<String>>,
+    /// Projects with a running run, the ones `reconcile` reads.
+    active: Mutex<BTreeSet<PathBuf>>,
     /// Run supervisors this process started, reaped once they end.
     children: Mutex<Vec<Child>>,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
@@ -49,6 +56,8 @@ pub(crate) fn start(socket: &Path) {
         owned: Mutex::new(None),
         owned_changed: Condvar::new(),
         stopping: AtomicBool::new(false),
+        failed: Mutex::new(None),
+        active: Mutex::new(BTreeSet::new()),
         children: Mutex::new(Vec::new()),
         thread: Mutex::new(None),
     });
@@ -72,7 +81,7 @@ pub(crate) fn stop(cancel_runs: bool) {
             let names: Vec<String> = data.runs.keys().cloned().collect();
             let changed = names.iter().filter(|name| cancel(&mut data, name)).count();
             if changed > 0 {
-                let _ = store::save(&scheduler.root, &data);
+                save_or_report(&scheduler.root, &data);
             }
         }
     }
@@ -102,11 +111,16 @@ impl Scheduler {
     fn run(&self, asched: Option<PathBuf>) {
         let mut last_minute = None;
         while !self.stopping.load(Ordering::Acquire) {
-            if lock(&self.owned).is_none() {
+            if lock(&self.owned).is_none() && lock(&self.failed).is_none() {
                 match self.take_ownership(asched.as_deref()) {
                     Ok(true) => self.owned_changed.notify_all(),
                     Ok(false) => {}
-                    Err(error) => eprintln!("wsxd routines: {error}"),
+                    // ^ No retry each second: requests name the error until a restart.
+                    Err(error) => {
+                        eprintln!("wsxd routines: {error}");
+                        *lock(&self.failed) = Some(error.to_string());
+                        self.owned_changed.notify_all();
+                    }
                 }
             }
             if lock(&self.owned).is_some() {
@@ -127,17 +141,19 @@ impl Scheduler {
     }
 
     fn take_ownership(&self, asched: Option<&Path>) -> io::Result<bool> {
-        store::private_dir(self.root.parent().unwrap_or(Path::new("/")))?;
+        private_dir(self.root.parent().unwrap_or(Path::new("/")))?;
         let lock_path = self.root.with_file_name("routines.lock");
-        let Some(file) = try_flock(&lock_path)? else {
+        let Some(file) = try_lock_file(&lock_path)? else {
             return Ok(false);
         };
         if !self.root.exists() {
             match asched.filter(|root| root.join("projects").is_dir()) {
-                Some(asched) => import_asched(asched, &self.root)?,
-                None => store::private_dir(&self.root)?,
+                Some(asched) => import_asched(asched, &self.root, &self.stopping)?,
+                None => private_dir(&self.root)?,
             }
         }
+        let running = |data: &ProjectRoutines| has_running(data).then(|| data.project_path.clone());
+        *lock(&self.active) = self.projects().iter().filter_map(running).collect();
         *lock(&self.owned) = Some(file);
         Ok(true)
     }
@@ -146,10 +162,15 @@ impl Scheduler {
         let deadline = Instant::now() + OWNERSHIP_WAIT;
         let mut owned = lock(&self.owned);
         while owned.is_none() {
+            if let Some(error) = lock(&self.failed).as_deref() {
+                return Err(unavailable(format!(
+                    "the routine store could not be set up: {error}; fix it and run `wsx daemon restart`"
+                )));
+            }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() || self.stopping.load(Ordering::Acquire) {
                 return Err(unavailable(
-                    "the routine scheduler waits for the previous one to stop",
+                    "the routine scheduler waits for the previous wsxd to stop",
                 ));
             }
             owned = self
@@ -258,8 +279,7 @@ impl Scheduler {
                 if data.running(&name).is_some() {
                     return Err(already_running(&name));
                 }
-                self.start_run(data, &routine, RunCause::Manual, None);
-                store::save(root, data)?;
+                self.start_run(data, &routine, RunCause::Manual, None)?;
                 Ok(Response::Ok { revision: None })
             }
             Action::Cancel { name } => {
@@ -308,21 +328,21 @@ impl Scheduler {
                     });
                 }
                 data.add_receipt(&kind, &event_id);
-                let routines = matching
-                    .into_iter()
-                    .map(|routine| {
-                        let name = routine.name.clone();
-                        if data.running(&name).is_some() {
-                            return RoutineFire::AlreadyRunning { name };
-                        }
-                        let cause = RunCause::Event {
-                            kind: kind.clone(),
-                            event_id: event_id.clone(),
-                        };
-                        self.start_run(data, &routine, cause, Some(payload.clone()));
-                        RoutineFire::Started { name }
-                    })
-                    .collect();
+                let mut routines = Vec::new();
+                for routine in matching {
+                    let name = routine.name.clone();
+                    if data.running(&name).is_some() {
+                        routines.push(RoutineFire::AlreadyRunning { name });
+                        continue;
+                    }
+                    let cause = RunCause::Event {
+                        kind: kind.clone(),
+                        event_id: event_id.clone(),
+                    };
+                    self.start_run(data, &routine, cause, Some(payload.clone()))?;
+                    routines.push(RoutineFire::Started { name });
+                }
+                // ^ The receipt is kept also when every routine was already running.
                 store::save(root, data)?;
                 Ok(Response::Fire {
                     outcome: FireOutcome::Handled { routines },
@@ -349,7 +369,6 @@ impl Scheduler {
         let _owned = lock(&self.owned);
         let local = LocalTime::at(minute * 60);
         for mut data in self.projects() {
-            let mut started = false;
             for routine in data.routines.clone() {
                 let due = match &routine.trigger {
                     _ if !routine.enabled => None,
@@ -374,11 +393,10 @@ impl Scheduler {
                 let cause = RunCause::Cron {
                     scheduled_epoch_minute: due,
                 };
-                self.start_run(&mut data, &routine, cause, None);
-                started = true;
-            }
-            if started {
-                let _ = store::save(&self.root, &data);
+                if let Err(error) = self.start_run(&mut data, &routine, cause, None) {
+                    eprintln!("wsxd routines: {}: {error}", data.project_path.display());
+                    break;
+                }
             }
         }
     }
@@ -388,7 +406,15 @@ impl Scheduler {
     fn reconcile(&self) {
         lock(&self.children).retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_)) | Err(_)));
         let _owned = lock(&self.owned);
-        for mut data in self.projects() {
+        let active: Vec<PathBuf> = lock(&self.active).iter().cloned().collect();
+        for project in active {
+            let mut data = match store::load(&self.root, &project) {
+                Ok(data) => data,
+                Err(error) => {
+                    eprintln!("wsxd routines: {error}");
+                    continue;
+                }
+            };
             let mut changed = false;
             for run in data.runs.values_mut().flatten() {
                 if run.status != RunStatus::Running {
@@ -416,19 +442,24 @@ impl Scheduler {
                 changed = true;
             }
             if changed {
-                let _ = store::save(&self.root, &data);
+                save_or_report(&self.root, &data);
+            }
+            if !has_running(&data) {
+                lock(&self.active).remove(&project);
             }
         }
     }
 
-    /// Start `routine`'s supervisor and add its run record; the caller saves `data`.
+    /// Store `routine`'s running record with `data` (its claim or receipt too), then start its
+    /// supervisor: a wsxd that ends between them leaves an interrupted record, never a run
+    /// with none.
     fn start_run(
         &self,
         data: &mut ProjectRoutines,
         routine: &Routine,
         cause: RunCause,
         payload: Option<String>,
-    ) {
+    ) -> Result<(), RoutineError> {
         let started = now_epoch();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -436,7 +467,7 @@ impl Scheduler {
             .as_nanos();
         let id = format!("{started}-{nanos}");
         let dir = store::run_dir(&self.root, &data.project_path, &id);
-        let mut record = RunRecord {
+        let record = RunRecord {
             id,
             routine: routine.name.clone(),
             started_epoch: started,
@@ -450,18 +481,33 @@ impl Scheduler {
             stdout_path: dir.join("stdout.log"),
             stderr_path: dir.join("stderr.log"),
         };
+        let runs = data.runs.entry(routine.name.clone()).or_default();
+        runs.push(record);
+        let excess = runs.len().saturating_sub(MAX_RUNS);
+        let old: Vec<RunRecord> = runs.drain(..excess).collect();
+        store::save(&self.root, data)?;
+        for old in old {
+            remove_run_dir(&self.root, &data.project_path, &old);
+        }
         let (argv, input) = expanded_argv(routine);
         let spec = RunSpec {
             argv,
             input,
             payload,
-            dir: dir.clone(),
+            dir,
         };
-        match spawn_supervisor(&data.project_path, &spec) {
+        let spawned = spawn_supervisor(&data.project_path, &spec);
+        let record = data
+            .runs
+            .get_mut(&routine.name)
+            .and_then(|runs| runs.last_mut())
+            .expect("the record was added above");
+        match spawned {
             Ok(child) => {
                 record.pid = Some(child.id() as i32);
                 record.process_start = process_start(child.id() as i32);
                 lock(&self.children).push(child);
+                lock(&self.active).insert(data.project_path.clone());
             }
             Err(error) => {
                 record.status = RunStatus::SpawnFailed;
@@ -469,12 +515,7 @@ impl Scheduler {
                 record.final_output = format!("could not start the run: {error}");
             }
         }
-        let runs = data.runs.entry(routine.name.clone()).or_default();
-        runs.push(record);
-        let excess = runs.len().saturating_sub(MAX_RUNS);
-        for old in runs.drain(..excess).collect::<Vec<_>>() {
-            remove_run_dir(&self.root, &data.project_path, &old);
-        }
+        store::save(&self.root, data)
     }
 }
 
@@ -533,10 +574,12 @@ fn cancel(data: &mut ProjectRoutines, name: &str) -> bool {
     run.status = RunStatus::Cancelled;
     run.finished_epoch = Some(now_epoch());
     let dir = run.stdout_path.parent().unwrap_or(Path::new("/"));
-    // ^ Before its command started, the supervisor is the only process to stop.
-    if !kill_group(&dir.join("pid")) && supervisor_alive(run) {
+    // ^ The supervisor's group first: its command stays in that group until it has written
+    // `pid`, and only then moves to its own group, which `pid` names.
+    if supervisor_alive(run) {
         terminate_group(run.pid.unwrap_or_default());
     }
+    kill_group(&dir.join("pid"));
     run.pid = None;
     run.process_start = None;
     true
@@ -551,6 +594,19 @@ fn remove_run_dir(root: &Path, project: &Path, run: &RunRecord) {
 /// ^ Only a run id wsx or asched made (`<secs>-<nanos>`) names a folder, never a stored path.
 fn is_run_id(id: &str) -> bool {
     !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit() || byte == b'-')
+}
+
+fn has_running(data: &ProjectRoutines) -> bool {
+    data.runs
+        .values()
+        .flatten()
+        .any(|run| run.status == RunStatus::Running)
+}
+
+fn save_or_report(root: &Path, data: &ProjectRoutines) {
+    if let Err(error) = store::save(root, data) {
+        eprintln!("wsxd routines: {}: {error}", data.project_path.display());
+    }
 }
 
 fn supervisor_alive(run: &RunRecord) -> bool {
@@ -592,6 +648,8 @@ fn terminate_group(pgid: i32) {
     for signal in [libc::SIGTERM, libc::SIGKILL] {
         unsafe { libc::kill(-pgid, signal) };
         for _ in 0..20 {
+            // ^ A supervisor is wsxd's child: reap it, else its zombie keeps the group.
+            unsafe { libc::waitpid(-pgid, std::ptr::null_mut(), libc::WNOHANG) };
             if !group_exists(pgid) {
                 return;
             }
@@ -602,47 +660,9 @@ fn terminate_group(pgid: i32) {
 
 /// The process's start time, which tells it from a later process with its pid.
 fn process_start(pid: i32) -> Option<String> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
-        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
-        // ^ proc_pidinfo writes at most `size` bytes into this proc_bsdinfo.
-        let read = unsafe {
-            libc::proc_pidinfo(
-                pid,
-                libc::PROC_PIDTBSDINFO,
-                0,
-                info.as_mut_ptr().cast(),
-                size,
-            )
-        };
-        if read != size {
-            return None;
-        }
-        let info = unsafe { info.assume_init() };
-        Some(format!(
-            "{}:{}",
-            info.pbi_start_tvsec, info.pbi_start_tvusec
-        ))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let after_name = stat.rsplit_once(") ")?.1;
-        after_name.split_whitespace().nth(19).map(str::to_string)
-    }
-}
-
-fn try_flock(path: &Path) -> io::Result<Option<fs::File>> {
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(path)?;
-    let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
-    Ok(locked.then_some(file))
+    wsx_core::runtime::process_identity(pid)
+        .ok()
+        .map(|(_, started)| started.to_string())
 }
 
 fn now_epoch() -> i64 {
@@ -652,7 +672,7 @@ fn now_epoch() -> i64 {
         .as_secs() as i64
 }
 
-fn unavailable(message: &str) -> RoutineError {
+fn unavailable(message: impl Into<String>) -> RoutineError {
     RoutineError::new(RoutineErrorKind::Unavailable, message)
 }
 
@@ -699,7 +719,7 @@ fn read_result(dir: &Path) -> Option<RunResult> {
 }
 
 fn spawn_supervisor(project: &Path, spec: &RunSpec) -> io::Result<Child> {
-    store::private_dir(&spec.dir)?;
+    private_dir(&spec.dir)?;
     let mut child = Command::new(std::env::current_exe()?)
         .arg(wsx_core::runtime::ROUTINE_RUN_ARG)
         .current_dir(project)
@@ -749,13 +769,33 @@ pub fn run_routine_run(mut arguments: impl Iterator<Item = OsString>) -> io::Res
         ));
     };
     let (stdout_file, mut stderr_file) = (create(&stdout_path)?, create(&stderr_path)?);
+    let pid_path = spec.dir.join("pid");
     let mut command = Command::new(program);
     command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
+        .stderr(Stdio::piped());
+    // ^ The command names itself in `pid` while still in the supervisor's group, then takes its
+    // own group, so a cancel at any moment reaches it (see `cancel`). The supervisor has no
+    // other thread yet, so this child may allocate.
+    unsafe {
+        command.pre_exec(move || {
+            let pid = libc::getpid();
+            let token = process_start(pid).unwrap_or_default();
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&pid_path)?
+                .write_all(format!("{pid} {token}").as_bytes())?;
+            match libc::setpgid(0, 0) {
+                0 => Ok(()),
+                _ => Err(io::Error::last_os_error()),
+            }
+        });
+    }
     if let Some(payload) = &spec.payload {
         command.env(EVENT_PAYLOAD_ENV, payload);
     }
@@ -782,12 +822,6 @@ pub fn run_routine_run(mut arguments: impl Iterator<Item = OsString>) -> io::Res
         }
     };
     let pid = child.id() as i32;
-    let token = process_start(pid).unwrap_or_default();
-    wsx_core::fs_util::write_atomic(
-        &spec.dir.join("pid"),
-        format!("{pid} {token}").as_bytes(),
-        wsx_core::fs_util::AtomicWrite::replace().mode(0o600),
-    )?;
     let drain = |source: Box<dyn Read + Send>, target: fs::File| {
         thread::spawn(move || copy_bounded(source, target))
     };
@@ -878,20 +912,25 @@ struct AschedRuntime {
 
 /// Copy asched's routines, claims, runs and their output into `root`, after asking a still
 /// running asched daemon to stop. A run asched had running is recorded as interrupted by the
-/// upgrade. asched's files stay as they are. `root` appears whole or not at all.
-fn import_asched(asched: &Path, root: &Path) -> io::Result<()> {
-    let read_toml = |path: &Path| -> io::Result<Option<String>> {
-        match fs::read_to_string(path) {
-            Ok(text) => Ok(Some(text)),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
+/// upgrade. An entry that cannot be read is left out with a warning; asched's files stay as
+/// they are. `root` appears whole or not at all.
+fn import_asched(asched: &Path, root: &Path, stopping: &AtomicBool) -> io::Result<()> {
+    let warn = |what: &dyn std::fmt::Display| eprintln!("wsxd routines: import skips {what}");
+    let read_toml = |path: &Path| -> Result<Option<String>, String> {
+        let bytes =
+            store::read_bounded(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        bytes
+            .map(|bytes| {
+                String::from_utf8(bytes).map_err(|error| format!("{}: {error}", path.display()))
+            })
+            .transpose()
     };
-    let runtime_of = |key: &str| -> io::Result<AschedRuntime> {
+    let runtime_of = |key: &str| -> Result<AschedRuntime, String> {
         let path = asched.join("runtime").join(format!("{key}.toml"));
         match read_toml(&path)? {
-            Some(text) => toml::from_str(&text)
-                .map_err(|error| io::Error::other(format!("{}: {error}", path.display()))),
+            Some(text) => {
+                toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))
+            }
             None => Ok(AschedRuntime::default()),
         }
     };
@@ -908,25 +947,38 @@ fn import_asched(asched: &Path, root: &Path) -> io::Result<()> {
     // ^ asched's stop cancels its running runs: note them first, to say why they ended.
     let mut in_flight = HashSet::new();
     for key in &keys {
-        for run in runtime_of(key)?.runs.into_values().flatten() {
+        for run in runtime_of(key)
+            .unwrap_or_default()
+            .runs
+            .into_values()
+            .flatten()
+        {
             if run.status == RunStatus::Running {
                 in_flight.insert(run.id);
             }
         }
     }
-    retire_asched(asched)?;
+    retire_asched(asched, stopping)?;
     let staging = root.with_file_name(format!("routines.import-{}", std::process::id()));
     let _ = fs::remove_dir_all(&staging);
     let imported = (|| {
-        store::private_dir(&staging.join("projects"))?;
+        private_dir(&staging.join("projects"))?;
         for key in &keys {
             let path = asched.join("projects").join(format!("{key}.toml"));
-            let Some(text) = read_toml(&path)? else {
-                continue;
+            let project: AschedProject = match read_toml(&path).and_then(|text| {
+                toml::from_str(&text.unwrap_or_default())
+                    .map_err(|error| format!("{}: {error}", path.display()))
+            }) {
+                Ok(project) => project,
+                Err(error) => {
+                    warn(&error);
+                    continue;
+                }
             };
-            let project: AschedProject = toml::from_str(&text)
-                .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-            let runtime = runtime_of(key)?;
+            let runtime = runtime_of(key).unwrap_or_else(|error| {
+                warn(&format!("the run history in {error}"));
+                AschedRuntime::default()
+            });
             let mut runs = runtime.runs;
             runs.values_mut()
                 .for_each(|runs| runs.retain(|run| is_run_id(&run.id)));
@@ -943,15 +995,17 @@ fn import_asched(asched: &Path, root: &Path) -> io::Result<()> {
                 run.process_start = None;
                 let dir = store::run_dir(root, &project.project_path, &run.id);
                 let staged = store::run_dir(&staging, &project.project_path, &run.id);
-                store::private_dir(&staged)?;
+                private_dir(&staged)?;
                 for (old, name) in [
                     (&mut run.stdout_path, "stdout.log"),
                     (&mut run.stderr_path, "stderr.log"),
                 ] {
-                    match fs::copy(&*old, staged.join(name)) {
-                        Ok(_) => {}
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                        Err(error) => return Err(error),
+                    // ^ Only a regular file: a stored path never makes wsxd read a link or a device.
+                    let regular = fs::symlink_metadata(&*old).is_ok_and(|meta| meta.is_file());
+                    if regular {
+                        if let Err(error) = fs::copy(&*old, staged.join(name)) {
+                            warn(&format!("{}: {error}", old.display()));
+                        }
                     }
                     *old = dir.join(name);
                 }
@@ -975,10 +1029,11 @@ fn import_asched(asched: &Path, root: &Path) -> io::Result<()> {
 }
 
 /// Ask asched's daemon (`wsxd __wsx_routine_daemon` before revision 41) to stop, and wait
-/// until its lock is free.
-fn retire_asched(asched: &Path) -> io::Result<()> {
+/// until its lock is free. One that does not stop in 30 s gets a warning: its routines are
+/// imported anyway and may run twice until it ends.
+fn retire_asched(asched: &Path, stopping: &AtomicBool) -> io::Result<()> {
     let lock_path = asched.join("daemon-v1.lock");
-    if !lock_path.exists() || try_flock(&lock_path)?.is_some() {
+    if !lock_path.exists() || try_lock_file(&lock_path)?.is_some() {
         return Ok(());
     }
     let mut protocol = 5;
@@ -1008,16 +1063,17 @@ fn retire_asched(asched: &Path) -> io::Result<()> {
     }
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        if try_flock(&lock_path)?.is_some() {
+        if stopping.load(Ordering::Acquire) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "wsxd stops"));
+        }
+        if try_lock_file(&lock_path)?.is_some() {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(200));
     }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        format!(
-            "asched's routine daemon at {} did not stop",
-            asched.display()
-        ),
-    ))
+    eprintln!(
+        "wsxd routines: asched's daemon at {} did not stop; stop it, or its routines run twice",
+        asched.display()
+    );
+    Ok(())
 }

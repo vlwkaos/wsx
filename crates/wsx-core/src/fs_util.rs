@@ -4,7 +4,7 @@
 use std::{
     fs,
     io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -138,6 +138,27 @@ fn create_temporary(
         }
     }
     Err(last)
+}
+
+/// Create `dir` and its missing parents owner-only, then confirm `dir` is a directory, not a
+/// symlink, owned by the effective user with no group or other permission bits.
+pub fn private_dir(dir: &Path) -> io::Result<()> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    let metadata = fs::symlink_metadata(dir)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("unsafe wsx state directory {}", dir.display()),
+        ));
+    }
+    Ok(())
 }
 
 /// Text of a small file that only this user may read or write: a regular file, not a

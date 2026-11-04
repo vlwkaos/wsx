@@ -809,7 +809,7 @@ fn peer_pid(stream: &UnixStream) -> io::Result<libc::pid_t> {
 
 /// The effective UID of `pid` and its start time in Unix milliseconds.
 #[cfg(target_os = "macos")]
-fn process_identity(pid: libc::pid_t) -> io::Result<(libc::uid_t, u128)> {
+pub fn process_identity(pid: libc::pid_t) -> io::Result<(libc::uid_t, u128)> {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
     // ^ proc_pidinfo writes at most `size` bytes into this proc_bsdinfo.
@@ -857,7 +857,7 @@ fn peer_pid(stream: &UnixStream) -> io::Result<libc::pid_t> {
 /// The effective UID of `pid` and its start time in Unix milliseconds: proc(5) `stat` field 22
 /// counts clock ticks since `btime`.
 #[cfg(target_os = "linux")]
-fn process_identity(pid: libc::pid_t) -> io::Result<(libc::uid_t, u128)> {
+pub fn process_identity(pid: libc::pid_t) -> io::Result<(libc::uid_t, u128)> {
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "unreadable /proc entry");
     let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
     let uid = fs::metadata(format!("/proc/{pid}"))?.uid();
@@ -888,7 +888,7 @@ fn peer_pid(_stream: &UnixStream) -> io::Result<libc::pid_t> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn process_identity(_pid: libc::pid_t) -> io::Result<(libc::uid_t, u128)> {
+pub fn process_identity(_pid: libc::pid_t) -> io::Result<(libc::uid_t, u128)> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "this system does not report a process start time",

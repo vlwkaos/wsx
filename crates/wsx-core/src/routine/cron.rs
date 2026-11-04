@@ -57,13 +57,23 @@ impl CronSchedule {
         if day_of_week.allowed[7] {
             day_of_week.allowed[0] = true;
         }
-        Ok(Self {
+        let schedule = Self {
             minute: parse_field(minute, 0, 59)?,
             hour: parse_field(hour, 0, 23)?,
             day_of_month: parse_field(day_of_month, 1, 31)?,
             month: parse_field(month, 1, 12)?,
             day_of_week,
-        })
+        };
+        // ^ Only a day of month alone can name no real date, like February 30.
+        const LONGEST: [usize; 13] = [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        let some_date = (1..=12).any(|month| {
+            schedule.month.allowed[month]
+                && (1..=LONGEST[month]).any(|day| schedule.day_of_month.allowed[day])
+        });
+        if schedule.day_of_month.restricted && !schedule.day_of_week.restricted && !some_date {
+            return Err(invalid(format!("cron '{input}' names no date that exists")));
+        }
+        Ok(schedule)
     }
 
     pub fn matches(&self, t: LocalTime) -> bool {
