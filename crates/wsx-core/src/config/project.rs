@@ -717,7 +717,7 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
                     "tasks.manager.rotateTokens must be {MIN_ROTATE_TOKENS}..={MAX_ROTATE_TOKENS}"
                 ));
             }
-            config.manager_rotate_tokens = tokens;
+            config.manager_rotate_tokens = Some(tokens);
         }
         if let Some(minutes) = manager.recap_minutes {
             if !(0.0..=MAX_RECAP_MINUTES as f64).contains(&minutes) {

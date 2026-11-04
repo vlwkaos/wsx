@@ -56,6 +56,7 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   SLOW           take about 3 s
   LONG           take about 25 s
   BIG            a last model call of 200k tokens, so the host rotates the conversation
+  CTX <n>        (a line) a last model call of n tokens, as BIG with a size of the test's choice
   SUMMED         four model calls of 50k each: the result's usage sums 200k, the context is 50k
 Each manager turn's message ends with the host's ledger summary, cut off before the words
 are read. Its cost grows by 0.001 USD a turn (`total_cost_usd` is the session's, restored on
@@ -415,7 +416,8 @@ def main():
             answer = manager_turn(text.split('\n\n', 1)[1] if text.startswith('Handover') else text, project,
                                   instructions.split('The project overview ', 1)[1].split(' ', 1)[0])
             # ^ A line of its own: a handover quotes earlier messages as `Owner: BIG`.
-            calls = [200000] if 'BIG' in text.splitlines() else [50000] * 4 if 'SUMMED' in text.splitlines() else [5000]
+            sized = [int(line[4:]) for line in text.splitlines() if line.startswith('CTX ')]
+            calls = sized[-1:] or ([200000] if 'BIG' in text.splitlines() else [50000] * 4 if 'SUMMED' in text.splitlines() else [5000])
             for tokens in calls:
                 model_call(model, {'input_tokens': 10, 'cache_read_input_tokens': tokens - 10, 'output_tokens': 5})
             for line in text.splitlines():
