@@ -2523,7 +2523,8 @@ capabilities = ["terminal_view"]
         shell = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == opened['session_id'])
         checkout = next(w for w in call('snapshot')['data']['worktrees'] if w['id'] == shell['worktree_id'])
         assert shell['label'] == 'shell' and os.path.realpath(checkout['path']) == os.path.realpath(work / 'project2'), (shell, checkout)
-        typing = Terminal(work_site, opened['session_id'])
+        # ^ The browser case above left this shell's terminal held by its page; take it over.
+        typing = Terminal(work_site, opened['session_id'], '&takeover=true')
         typing.control('replay')
         typing.send(b'exit\r')
         wait(lambda: next(p for p in call('snapshot')['data']['panes'] if p['session_id'] == opened['session_id'])['exited'], 'the shell exits')
