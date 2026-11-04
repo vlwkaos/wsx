@@ -1765,10 +1765,10 @@ def run(wsx, wsxd, work, owned):
     # event; an event routine runs on the task change wsx fires, and `wsx task post` puts its
     # output in the chat with no manager turn.
     def posted(title):
+        # ^ A post logs its message, then `delivered`, then the reply: match the reply by `to`.
         entries = manager_entries()
-        return [reply for message, reply in zip(entries, entries[1:])
-                if message['kind'] == 'message' and message['from'] == 'events' and message['text'] == title
-                and reply['kind'] == 'reply' and 'usage' not in reply]
+        ids = {e['id'] for e in entries if e['kind'] == 'message' and e['from'] == 'events' and e['text'] == title}
+        return [e for e in entries if e['kind'] == 'reply' and 'usage' not in e and ids & set(e['to'])]
     for early in ('0m', '8d'):
         text = reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in %s --why "too soon"' % early)['id'])['text']
         assert '-> 1 ' in text and 'between 1 minute and 7 days' in text, text
