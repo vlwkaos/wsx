@@ -309,9 +309,9 @@ def main():
             limited = text
             usage_limit(session, seconds)
             continue
-        elif 'LIMIT' in text.split() and not limit_hit:
+        elif 'LIMIT' in own_words(text, project).split() and not limit_hit:
             limit_hit, limited = True, text
-            words = text.split()
+            words = own_words(text, project).split()
             if 'CHECKRUN_LATE' in words:
                 # ^ A background check-run that ends during the limit wait.
                 subprocess.Popen(['wsx', 'task', 'check-run', words[words.index('CHECKRUN_LATE') + 1]],
@@ -525,6 +525,15 @@ def main():
         if 'BGRESULT' in words:
             # ^ The job ends after the result; this fixture starts no turn for its notice.
             emit({'type': 'system', 'subtype': 'background_tasks_changed', 'session_id': session, 'tasks': []})
+
+
+def own_words(text, project):
+    """A manager turn's own words: its event lines (`#12 ready r1: <title>`) and the ledger summary
+    name tasks, and a task's title (`LIMIT 600 WORK x`) is not the owner's trigger."""
+    if project is None:
+        return text
+    text = text.split('\n\nLedger summary from wsx', 1)[0]
+    return '\n'.join(line for line in text.split('\n') if not re.match(r'#\d+ ', line))
 
 
 def usage_limit(session, seconds):
