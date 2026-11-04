@@ -166,12 +166,25 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
     viewport.dispatchEvent(new Event("resize"));
     viewport.dispatchEvent(new Event("scroll"));
   })()`);
-  // Reads `expression` in the page at the start of each frame, so each reading is what the frame
-  // before showed, until `watched()` returns the readings. The steps between may take any time.
+  // Reads `expression` in the page once in each frame, as it is painted, until `watched()` returns
+  // the readings. The steps between may take any time.
+  // ^ Read in a resize observer made after the page's own, so after the page's corrections in that
+  // frame: a reading at requestAnimationFrame comes before them and sees a place never painted.
   const watch = (expression) => evaluate(`(() => {
     const seen = window.wsxFrames = [];
-    const read = () => { if (window.wsxFrames !== seen) return; seen.push(${expression}); requestAnimationFrame(read); };
-    requestAnimationFrame(read);
+    const sentinel = document.body.appendChild(document.createElement("div"));
+    sentinel.style.cssText = "position: fixed; top: 0; left: 0; height: 1px; width: 1px; visibility: hidden; pointer-events: none";
+    const sizes = new ResizeObserver(() => {
+      if (window.wsxFrames !== seen) return;
+      seen.push(${expression});
+    });
+    const next = () => {
+      if (window.wsxFrames !== seen) { sizes.disconnect(); sentinel.remove(); return; }
+      sentinel.style.width = sentinel.style.width === "1px" ? "2px" : "1px";
+      requestAnimationFrame(next);
+    };
+    sizes.observe(sentinel);
+    requestAnimationFrame(next);
   })()`);
   const watched = () => evaluate("(() => { const seen = window.wsxFrames ?? []; window.wsxFrames = null; return seen; })()");
   return {
