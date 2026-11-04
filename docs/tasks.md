@@ -300,6 +300,7 @@ When it would pass 16 KiB, the memos are left out first, then the least urgent o
 - `i` or `Enter` writes on the last line; `Enter` sends it as `wsx task say` does (the manager starts when it is not running), `Esc` leaves the line with its draft. A message that was not sent comes back to the line, and a failure stays above the chat until the next action. `Esc` goes back to the list.
 - `/` finds text in the chat, case-insensitive, on the last line with its count (`2/5`, from the oldest match). It reads the whole log from then on, not the newest 200 entries, so a find reaches every message. Each match is reversed, the current one also in yellow and scrolled to the middle. A find starts at the newest match; `Enter` keeps it and gives the keys back to the chat, where `n` goes to the older match and `N` to the newer one (before an approval's `n`), and `Esc` clears it. The next `Esc` leaves the chat.
 - The chat reads the log, the items and the approvals again when a store file changed, and asks the manager host for its status every second, off the UI thread like the list; messages and decisions run off it too, one at a time.
+- In the Workspace tree a project's name is bold text, in the accent while its manager's last reply asks the owner and no owner message came after it (`wsx_core::task::manager::tail_asks`, the rule of the web's Home row; `crates/wsx/src/ui/workspace_tree.rs`). The TUI reads each project's manager log tail every 2 s off the UI thread. A project without a manager log never asks.
 
 ## Manager
 

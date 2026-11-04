@@ -205,6 +205,24 @@ pub fn asks_owner(text: &str) -> bool {
             .ends_with(['?', '？'])
 }
 
+/// Whether the manager's last reply asks the owner and no owner message came after it, a later
+/// report or not: the web's Home row and the TUI's Workspace row show it in the accent.
+/// ref: docs/tasks.md "Manager"
+pub fn tail_asks(entries: &[ManagerEntry]) -> bool {
+    entries
+        .iter()
+        .rev()
+        .find_map(|entry| match entry.event {
+            ManagerEvent::Message {
+                from: Author::Owner,
+                ..
+            } => Some(false),
+            ManagerEvent::Reply { asks: true, .. } => Some(true),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
 impl ManagerEntry {
     /// An entry as read from the log: a reply stored as quiet before the length rule keeps its
     /// flag only when it is short, and one that `says_nothing` is quiet.

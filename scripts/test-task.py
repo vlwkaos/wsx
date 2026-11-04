@@ -157,13 +157,15 @@ def slowest(count=8):
     return sorted(spans, key=lambda span: -span[1])[:count]
 
 
-def screen(output, cols, rows=40, styled=False):
+def screen(output, cols, rows=40, styled=False, colors=False):
     """The screen `output` leaves: the cursor moves, clears and prints the TUI writes, without
     styles. ratatui writes only the cells that changed, so the raw text alone can split words.
-    With `styled`, a list of rows of `(char, bold, background)` cells instead."""
+    With `styled`, a list of rows of `(char, bold, background)` cells instead; with `colors`,
+    of `(char, (r, g, b) or None)`, the true-colour foreground."""
     grid = [[' '] * cols for _ in range(rows)]
-    styles = [[(False, False)] * cols for _ in range(rows)]
+    styles = [[(False, False, None)] * cols for _ in range(rows)]
     bold = background = False
+    fg = None
     row = col = 0
     tokens = re.finditer(r'\x1b\[([0-9;?<>=]*)([ -/]*[@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b.|(.)',
                          output.decode('utf-8', 'replace'), re.S)
@@ -177,6 +179,11 @@ def screen(output, cols, rows=40, styled=False):
                 code = codes[index]
                 if code == 0:
                     bold = background = False
+                    fg = None
+                elif code == 39:
+                    fg = None
+                elif code == 38 and codes[index + 1:index + 2] == [2] and index + 4 < len(codes):
+                    fg = tuple(codes[index + 2:index + 5])
                 elif code == 1:
                     bold = True
                 elif code == 22:
@@ -202,10 +209,12 @@ def screen(output, cols, rows=40, styled=False):
             row = min(row + 1, rows - 1)
         elif char is not None and char.isprintable() and 0 <= row < rows and col < cols:
             grid[row][col] = char
-            styles[row][col] = (bold, background)
+            styles[row][col] = (bold, background, fg)
             col += 2 if unicodedata.east_asian_width(char) in 'WF' else 1
+    if colors:
+        return [[(c, s[2]) for c, s in zip(line, style)] for line, style in zip(grid, styles)]
     if styled:
-        return [[(c, *s) for c, s in zip(line, style)] for line, style in zip(grid, styles)]
+        return [[(c, *s[:2]) for c, s in zip(line, style)] for line, style in zip(grid, styles)]
     return '\n'.join(''.join(line).rstrip() for line in grid)
 
 
@@ -2096,6 +2105,31 @@ def run(wsx, wsxd, work, owned):
     assert 'The quasar notes are in docs.' in found[4], found[4]
     assert 'Where did the Quasar notes go?' in found[6], found[6]
     assert '/QUASAR' not in found[8] and 'press i to write' in found[8], found[8]
+    # The Workspace row of a project shows its name in the accent while the manager's last reply
+    # asks the owner, and stops when the owner writes after it (docs/tasks.md "TUI"). One TUI run
+    # sees both changes live: "ASK" makes the fake manager reply with a question.
+    reply_to(js('task', 'say', 'ASK')['id'])
+    accent, plain = (102, 153, 255), (224, 229, 237)
+    seen_names = []
+
+    def name_color(output):
+        """The foreground of `demo` in the project row, once the Workspace is drawn."""
+        for line in screen(output, 120, colors=True):
+            text = ''.join(c for c, _ in line)
+            hit = re.search(r'[▼▶] demo', text)
+            if hit:
+                return line[hit.end() - 4][1]
+
+    def row_colors(output, write, idle):
+        color = name_color(output) if idle else None
+        if color == accent and not seen_names:
+            seen_names.append(color)
+            reply_to(js('task', 'say', 'hello again')['id'])
+        elif color == plain and seen_names:
+            seen_names.append(color)
+        return len(seen_names) == 2
+    tui_run(wsx, env, project, row_colors, seconds=40)
+    assert seen_names == [accent, plain], 'the project row did not show ask, then answer: %s' % seen_names
     js('task', 'close', asks, '--discard')
 
     # 23. wsx's boundary (docs/tasks.md "Permissions"): one Seatbelt profile per role over the
