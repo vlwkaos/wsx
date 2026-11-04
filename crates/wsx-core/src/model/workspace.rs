@@ -87,6 +87,10 @@ pub struct TaskConfig {
     /// its context is at least half of `rotate_tokens`: the prompt cache is gone, so a resume
     /// writes the whole context again (`tasks.agent.rotateIdleSeconds`, 0 = never).
     pub rotate_idle_seconds: u64,
+    /// Seconds after the last answer at which a worker or the manager that waits on
+    /// something the host knows gets a ping turn that keeps its prompt cache warm
+    /// (`tasks.agent.keepWarmSeconds`, 0 = never). ref: docs/tasks.md "Context rotation"
+    pub keep_warm_seconds: u64,
     /// `tasks.skills: owner` lends workers the owner's skills, as the manager has them.
     pub owner_skills: bool,
     /// `tasks.skillsOnly`: the only skills a worker gets (the manager keeps all); empty = all.
@@ -222,6 +226,7 @@ impl Default for TaskConfig {
             max_wait_secs: 5 * 3_600,
             rotate_tokens: 200_000,
             rotate_idle_seconds: 3_600,
+            keep_warm_seconds: 3_300,
             owner_skills: false,
             skills_only: Vec::new(),
             workflow: TaskWorkflow::default(),

@@ -111,6 +111,15 @@ def task_turns(task, events):
             rot_next = True
         elif kind in ("check_run", "check_retry", "conflict", "checks") or kind == "message" and e.get("mode") != "prompt":
             trigger = e.get("mode") or kind
+        elif kind == "ping":
+            # ^ a no-op turn that kept the cache warm during a wait: no step, no result
+            u = e.get("usage") or {}
+            start = e["unix_ms"] - u.get("duration_ms", 0)
+            turns.append({"ms": e["unix_ms"], "step": "ping", "u": u, "status": None,
+                          "after_rotation": False, "after_limit": False,
+                          "gap": start - last_end if last_end is not None else None,
+                          "logged": True, "trigger": "ping"})
+            last_end = e["unix_ms"]
         elif kind == "result":
             u = e.get("usage") or {}
             # ^ a session-limit answer: its cost is the work the limit cut off; the next turn
@@ -175,11 +184,11 @@ def manager_turns(events):
     origin = {e["id"]: e.get("from", "?") for e in events if e.get("kind") == "message" and "id" in e}
     out = []
     for e in events:
-        if e.get("kind") != "reply" or not e.get("usage"):
+        if e.get("kind") not in ("reply", "ping") or not e.get("usage"):
             continue
         froms = {origin.get(i, "?") for i in e.get("to") or []}
-        kind = "owner" if "owner" in froms else "recap" if "recap" in froms else \
-            "events" if froms == {"events"} else "other"
+        kind = "ping" if e["kind"] == "ping" else "owner" if "owner" in froms else \
+            "recap" if "recap" in froms else "events" if froms == {"events"} else "other"
         out.append({"ms": e["unix_ms"], "kind": kind, "u": e["usage"], "quiet": e.get("quiet", False)})
     return out
 

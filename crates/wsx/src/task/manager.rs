@@ -5,7 +5,9 @@
 //! runs a role: its brief, its own folder and only its tasks' events, and it leaves once idle.
 //! ref: docs/tasks.md "Manager", "Roles"
 
-use super::agent::{self, new_session_id, Agent, AgentLine, Launch, TurnResult};
+use super::agent::{
+    self, new_session_id, Agent, AgentLine, Launch, TurnResult, KEEP_WARM_PINGS, KEEP_WARM_TEXT,
+};
 use super::boundary::Boundary;
 use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME};
 use super::{broker, hosting, limit};
@@ -208,6 +210,10 @@ struct Manager {
     leaving: bool,
     /// The host asked for a shorter overview since the last owner message or in-cap result.
     overview_asked: bool,
+    /// Ping turns since the last real turn, and whether the running turn is one.
+    /// ref: docs/tasks.md "Manager"
+    pings: u32,
+    pinging: bool,
 }
 
 /// The plugin that lends the manager the owner's skills, `manager/<this>/`.
@@ -446,6 +452,8 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         roles_swept: None,
         leaving: false,
         overview_asked: false,
+        pings: 0,
+        pinging: false,
     };
     manager.restore()?;
     let requests = events.clone();
@@ -541,6 +549,7 @@ impl Manager {
                     self.ask_recap();
                     self.sweep_captures();
                     self.close_idle_roles();
+                    self.ping();
                 }
                 Event::IdleStarted(began, Ok(id)) => {
                     self.say(&format!("started idle task #{id}"));
@@ -563,7 +572,7 @@ impl Manager {
             if self.turn.is_none() {
                 self.flush_events();
                 self.next_turn();
-            } else {
+            } else if !self.pinging {
                 self.last_activity = Instant::now();
             }
             if self.reexec {
@@ -2048,7 +2057,90 @@ impl Manager {
         })
     }
 
+    /// One no-op turn that keeps Claude's prompt cache warm while a task works or checks: its
+    /// event wakes the manager later. Only the own Claude agent, idle for `keepWarmSeconds`
+    /// and under the cache's hour, at most `KEEP_WARM_PINGS` since the last real turn, never
+    /// in a usage limit. ref: docs/tasks.md "Manager"
+    fn ping(&mut self) {
+        let now = now_unix_ms();
+        let idle = now.saturating_sub(self.state.last_reply_ms);
+        if self.dir.role.is_some()
+            || self.turn.is_some()
+            || self.agent.is_none()
+            || self.stand_in.is_some()
+            || self.state.agent.is_some()
+            || self.adapter != "claude"
+            || self.state.limit.is_some()
+            || self.pings >= KEEP_WARM_PINGS
+            || self.state.agent_session.is_none()
+            || self.state.last_reply_ms == 0
+            || idle >= IDLE_ROTATE_MS
+            || self.state.context_tokens > self.rotate_tokens
+        {
+            return;
+        }
+        let seconds = load_task_config(&self.main)
+            .unwrap_or_default()
+            .keep_warm_seconds;
+        if seconds == 0 || idle < seconds * 1000 {
+            return;
+        }
+        let working = project_tasks(&self.dir.project_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, record)| record.ok())
+            .any(|record| matches!(record.state, TaskState::Working | TaskState::Checking));
+        if !working || store::limited_until(&self.current_account(), now).is_some() {
+            return;
+        }
+        // ^ Counted before the send: a failed send never loops.
+        self.pings += 1;
+        let sent = self
+            .agent
+            .as_mut()
+            .map_or(Ok(()), |agent| agent.send(KEEP_WARM_TEXT));
+        match sent {
+            Ok(()) => {
+                self.turn = Some(Vec::new());
+                self.pinging = true;
+                self.say(&format!(
+                    "ping {} of {KEEP_WARM_PINGS}: keeps the prompt cache warm",
+                    self.pings
+                ));
+            }
+            Err(error) => self.say(&format!("cannot ping the agent: {error:#}")),
+        }
+    }
+
+    /// A ping's answer: logged as `ping`, never as a reply, so the chat does not show it.
+    fn on_ping(&mut self, result: TurnResult) {
+        self.turn = None;
+        let now = now_unix_ms();
+        if let Some(reached) = &result.limit {
+            let until_ms = limit::resume_at(reached.resets_at, 1, now);
+            let backoff = limit::known_reset(reached.resets_at, now).is_none();
+            let _ = store::mark_limited(&self.current_account(), until_ms, now, backoff);
+        } else {
+            // ^ The cache is warm again: the idle rotation counts from here.
+            self.state.last_reply_ms = now;
+        }
+        if result.usage.context_tokens > 0 {
+            self.state.context_tokens = result.usage.context_tokens;
+        }
+        self.state.session_cost_micro_usd = result.usage.session_cost_micro_usd;
+        if let Some(message) =
+            agent::note_spend(&self.adapter, &self.model, result.usage.cost_micro_usd, now)
+        {
+            self.say(&message);
+        }
+        self.save();
+        self.log(ManagerEvent::Ping {
+            usage: Some(result.usage),
+        });
+    }
+
     fn send_turn(&mut self, text: &str, events_only: bool) -> Result<()> {
+        self.pings = 0;
         let mut text = text.to_string();
         let model = self.turn_model(events_only);
         // ^ Claude's prompt cache lives 1 hour: a large conversation resumed later writes its
@@ -2195,6 +2287,7 @@ impl Manager {
                     self.save();
                 }
             }
+            Some(AgentLine::Progress { .. }) if self.pinging => {}
             Some(AgentLine::Progress { text, .. }) => {
                 self.say(&text);
                 self.log(ManagerEvent::Agent { text });
@@ -2202,7 +2295,10 @@ impl Manager {
             Some(AgentLine::Result(result)) => self.on_result(*result),
             None => {
                 self.agent = None;
-                if self.turn.take().is_some() {
+                // ^ A lost ping is no stopped turn: the next turn resumes the conversation.
+                if std::mem::take(&mut self.pinging) {
+                    self.turn = None;
+                } else if self.turn.take().is_some() {
                     self.log(ManagerEvent::Stopped {
                         reason: "the manager agent ended during a turn".into(),
                     });
@@ -2215,6 +2311,9 @@ impl Manager {
     fn on_result(&mut self, result: TurnResult) {
         if result.answers_nothing() {
             return;
+        }
+        if std::mem::take(&mut self.pinging) {
+            return self.on_ping(result);
         }
         let to = self.turn.take().unwrap_or_default();
         let (adapter, model) = match &self.state.agent {

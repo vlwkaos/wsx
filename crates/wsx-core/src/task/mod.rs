@@ -350,6 +350,12 @@ pub enum LogEvent {
         to: String,
         reason: String,
     },
+    /// A ping turn (`TurnTrigger::Ping`) kept the prompt cache warm during a wait: no result,
+    /// no step. ref: docs/tasks.md "Context rotation"
+    Ping {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TurnUsage>,
+    },
     /// The agent's usage limit ended a turn: it continues at `until_ms` (unix ms).
     LimitWait {
         until_ms: u64,
@@ -425,6 +431,8 @@ pub enum TurnTrigger {
     Disk,
     /// The turn a host handed over when it exec'd a replaced binary.
     Restart,
+    /// A no-op turn that keeps the prompt cache warm while the host waits; logged as `ping`.
+    Ping,
 }
 
 fn is_zero(value: &u32) -> bool {
