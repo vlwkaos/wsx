@@ -36,8 +36,8 @@ export function FindBar({ log, loading, onClose }) {
   const [query, setQuery] = useState("");
   // ^ The current match from the oldest; null starts at the newest.
   const [at, setAt] = useState(null);
-  const [count, setCount] = useState(0);
-  const ranges = useRef([]);
+  const [ranges, setRanges] = useState([]);
+  const count = ranges.length;
   const field = useRef(null);
   const before = useRef(null);
   const current = at == null ? count - 1 : Math.min(at, count - 1);
@@ -60,9 +60,9 @@ export function FindBar({ log, loading, onClose }) {
     let frame = 0;
     const mark = () => {
       frame = 0;
-      ranges.current = query ? find(node, query) : [];
-      setCount(ranges.current.length);
-      marks?.set("find", new Highlight(...ranges.current));
+      const found = query ? find(node, query) : [];
+      setRanges(found);
+      marks?.set("find", new Highlight(...found));
     };
     mark();
     const observer = new MutationObserver(() => { frame ||= requestAnimationFrame(mark); });
@@ -70,15 +70,17 @@ export function FindBar({ log, loading, onClose }) {
     return () => { observer.disconnect(); cancelAnimationFrame(frame); };
   }, [query, log.current]);
 
-  // The current match: its own mark, and scrolled to the middle of the log.
-  useEffect(() => {
-    const range = ranges.current[current];
-    if (!range) {
-      marks?.delete("find-current");
-      return;
-    }
-    marks?.set("find-current", new Highlight(range));
-    range.startContainer.parentElement.scrollIntoView({ block: "center" });
+  // The current match has its own mark, set in the same frame as the count and again on
+  // each re-mark, because a re-render can replace the text node of the old range.
+  useLayoutEffect(() => {
+    const range = ranges[current];
+    if (range) marks?.set("find-current", new Highlight(range));
+    else marks?.delete("find-current");
+  }, [ranges, current]);
+  // ^ It scrolls to the middle of the log only when the reader moves or the query changes,
+  // not when rows arrive.
+  useLayoutEffect(() => {
+    ranges[current]?.startContainer.parentElement?.scrollIntoView({ block: "center" });
   }, [current, count, query]);
 
   // ^ Not while rows still go in above: the count from the oldest would move under the reader.
