@@ -3863,6 +3863,11 @@ def run(wsx, wsxd, work, owned):
                and e['text'].startswith('pi answers: ') for e in chat()), chat()[-4:]
     manager_state = lambda: json.loads((manager_log.parent / 'state.json').read_text())
     assert manager_state()['agent']['name'] == 'fake-pi', manager_state()
+    # ^ The size limit follows the adapter that runs now (docs/tasks.md "Manager"): unset, the
+    # Pi fallback rotates at 150000, where the own Claude agent keeps its conversation to 400000.
+    big_fallback = js('task', 'say', 'PICTX 200000 STATUS big on the fallback')
+    reply_to(big_fallback['id'])
+    wait(lambda: any(e['kind'] == 'rotated' and e['tokens'] == 200000 for e in manager_entries()), 'the fallback rotated at 200000')
     no_credit = js('task', 'say', 'PIERROR %s STATUS without credit' % refusal)
     pi_limit = agents / 'pi-fake.json'
     wait(lambda: pi_limit.exists(), 'the fallback counted as limited')
