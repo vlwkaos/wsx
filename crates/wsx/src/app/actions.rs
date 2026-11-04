@@ -1203,6 +1203,28 @@ impl App {
         entered
     }
 
+    /// Enter the session a chat link names (docs/tasks.md "Session news"), as `S` enters a
+    /// shell: leaving it goes back to the chat. A session that is gone says so.
+    pub(super) fn action_open_session(
+        &mut self,
+        id: runtime::SessionId,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        let listed = self
+            .workspace
+            .projects
+            .iter()
+            .flat_map(|project| &project.worktrees)
+            .flat_map(|worktree| &worktree.sessions)
+            .any(|session| session.session_id == id);
+        if !listed {
+            self.set_status(format!("Session {}: gone", id.0));
+            return Ok(());
+        }
+        self.pending_shell = Some((id, Instant::now()));
+        self.open_pending_shell(terminal)
+    }
+
     /// `S` in the Tasks view (docs/tasks.md "TUI"): the project's shell in its main checkout,
     /// or a shell in the task's working copy: one open there is entered, else one is created
     /// as `s` creates an empty session. Unlike `wsx task hand`, the worker keeps running.

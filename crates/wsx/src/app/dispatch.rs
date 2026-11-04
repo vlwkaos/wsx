@@ -137,7 +137,12 @@ impl App {
                 if !chat.key(&action) {
                     list.chat = None;
                 }
+                // ^ A session link (Enter on it) is entered as `S` enters a shell.
+                let session = list.chat.as_mut().and_then(|chat| chat.session.take());
                 self.needs_redraw = true;
+                if let Some(id) = session {
+                    return self.action_open_session(runtime::SessionId(id), terminal);
+                }
                 return Ok(());
             }
             match (action, list.detail.is_some()) {
