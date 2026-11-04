@@ -2707,6 +2707,13 @@ def run(wsx, wsxd, work, owned):
     worker_launch = [t for t in traces() if t.get('launch') and not t.get('manager')][-1]
     assert '2. `probe` (`echo scenario-ran' in worker_launch['instructions'], worker_launch['instructions']
     js('task', 'close', scenario, '--discard')
+    # ^ A `ci:` scenario is refused at once with where it runs, and takes no slot.
+    configure(LAND_CONFIG + '  scenarios:\n    remote: "ci: GitHub Actions job remote-job"\n', 'a ci scenario')
+    remote = js('task', 'new', 'CHECKRUN_WITH remote WORK remote.txt')['id']
+    assert wait_state(remote, 'ready', 'failed')['state'] == 'ready'
+    refused = next(t for t in traces() if 'check_run_with' in t and 'remote' in t['check_run_with'][0][1])['check_run_with'][0]
+    assert refused[0] != 0 and 'the `remote` scenario runs on CI, not here: GitHub Actions job remote-job' in refused[1], refused
+    js('task', 'close', remote, '--discard')
     # 32t. A result that comes before its own check-run's answer waits for it: the worker gets
     # the answer in one turn, and only its next result runs the checks.
     mark('32t')
