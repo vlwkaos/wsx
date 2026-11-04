@@ -164,7 +164,7 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
                     "(i)message".into(),
                 ];
             }
-            let mut hints = vec!["(i)message".into(), "(/)find".into(), "(o)verview".into()];
+            let mut hints = vec!["(i)message".into(), "(/)find".into()];
             if !links(&chat.rows).is_empty() {
                 hints.push("([/])link".into());
             }
@@ -180,7 +180,13 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
             if chat.items.len() > 1 {
                 hints.push("(tab)next".into());
             }
-            hints.extend(["(S)hell".into(), "Esc: back".into(), "(j/k)scroll".into()]);
+            // ^ The overview goes last: an 80-column footer drops it before Esc and scroll.
+            hints.extend([
+                "(S)hell".into(),
+                "Esc: back".into(),
+                "(j/k)scroll".into(),
+                "(o)verview".into(),
+            ]);
             hints
         }
     }
