@@ -1713,6 +1713,7 @@ impl Host {
         // ref: docs/tasks.md "Scenarios"
         if let Some((index, text)) = picked
             .iter()
+            .filter(|(index, _)| *index >= checks)
             .find_map(|(index, command)| Some((*index, command.strip_prefix("ci:")?.trim())))
         {
             let name = scenarios
