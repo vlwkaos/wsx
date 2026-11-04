@@ -6,6 +6,7 @@
 
 use super::agent::{
     new_session_id, Agent, AgentLine, Launch, TurnResult, KEEP_WARM_PINGS, KEEP_WARM_TEXT,
+    PROMPT_CACHE_MS,
 };
 use super::broker;
 use super::hosting;
@@ -1050,7 +1051,7 @@ impl Host {
         }
         let config = load_task_config(&self.record.project_path).unwrap_or_default();
         let now = now_unix_ms();
-        let cold = now.saturating_sub(self.answered_ms) >= 3_600_000;
+        let cold = now.saturating_sub(self.answered_ms) >= PROMPT_CACHE_MS;
         if config.keep_warm_seconds == 0
             || cold
             || self.context_tokens >= config.rotate_tokens
@@ -1088,12 +1089,9 @@ impl Host {
         if turn.usage.context_tokens > 0 {
             self.context_tokens = turn.usage.context_tokens;
         }
-        // ^ No wait of its own: the next real turn meets the limit and waits as usual.
-        if let Some(limit) = &turn.limit {
-            let until_ms = limit::resume_at(limit.resets_at, 1, now);
-            let backoff = limit::known_reset(limit.resets_at, now).is_none();
-            let _ = store::mark_limited(&self.account(), until_ms, now, backoff);
-        } else {
+        // ^ A limit is no answer, and the ping waits for nothing: Claude's refusal costs
+        // nothing, and the next real turn meets the limit and waits as usual.
+        if turn.limit.is_none() {
             // ^ The cache is warm again: the idle rotation counts from here.
             self.answered_ms = now;
         }

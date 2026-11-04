@@ -18,6 +18,8 @@ use wsx_core::task::{store, usage, TurnUsage};
 /// about 3 h 40 min and cost far less than the one rewrite they save.
 /// ref: docs/tasks.md "Context rotation"
 pub const KEEP_WARM_PINGS: u32 = 3;
+/// How long Claude's prompt cache lives: a ping after that writes everything again.
+pub const PROMPT_CACHE_MS: u64 = 3_600_000;
 /// The ping turn's message: the agent answers it with one word.
 pub const KEEP_WARM_TEXT: &str = "wsx keep-alive: the host is waiting and keeps this \
 conversation's cache warm. Answer with the one word ok. Use no tool and return no result; \

@@ -7,6 +7,7 @@
 
 use super::agent::{
     self, new_session_id, Agent, AgentLine, Launch, TurnResult, KEEP_WARM_PINGS, KEEP_WARM_TEXT,
+    PROMPT_CACHE_MS,
 };
 use super::boundary::Boundary;
 use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME};
@@ -2074,7 +2075,7 @@ impl Manager {
             || self.pings >= KEEP_WARM_PINGS
             || self.state.agent_session.is_none()
             || self.state.last_reply_ms == 0
-            || idle >= IDLE_ROTATE_MS
+            || idle >= PROMPT_CACHE_MS
             || self.state.context_tokens > self.rotate_tokens
         {
             return;
@@ -2116,11 +2117,8 @@ impl Manager {
     fn on_ping(&mut self, result: TurnResult) {
         self.turn = None;
         let now = now_unix_ms();
-        if let Some(reached) = &result.limit {
-            let until_ms = limit::resume_at(reached.resets_at, 1, now);
-            let backoff = limit::known_reset(reached.resets_at, now).is_none();
-            let _ = store::mark_limited(&self.current_account(), until_ms, now, backoff);
-        } else {
+        // ^ A limit is no answer; the next real turn meets it and waits as usual.
+        if result.limit.is_none() {
             // ^ The cache is warm again: the idle rotation counts from here.
             self.state.last_reply_ms = now;
         }
