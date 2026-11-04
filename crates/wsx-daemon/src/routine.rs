@@ -69,11 +69,8 @@ pub(crate) fn stop(cancel_runs: bool) {
     let owned = lock(&scheduler.owned);
     if cancel_runs && owned.is_some() {
         for mut data in scheduler.projects() {
-            let running: Vec<String> = data.runs.keys().cloned().collect();
-            let changed = running
-                .iter()
-                .filter(|name| cancel(&mut data, name))
-                .count();
+            let names: Vec<String> = data.runs.keys().cloned().collect();
+            let changed = names.iter().filter(|name| cancel(&mut data, name)).count();
             if changed > 0 {
                 let _ = store::save(&scheduler.root, &data);
             }
@@ -163,8 +160,7 @@ impl Scheduler {
         }
         let project = store::canonical_project(project)?;
         let mut data = store::load(&self.root, &project)?;
-        let response = self.process(&mut data, action)?;
-        Ok(response)
+        self.process(&mut data, action)
     }
 
     fn process(
@@ -221,7 +217,11 @@ impl Scheduler {
             } => {
                 let routine = routine.validated()?;
                 check_revision(data, revision)?;
-                find(data, &old_name)?;
+                let index = data
+                    .routines
+                    .iter()
+                    .position(|r| r.name == old_name)
+                    .ok_or_else(|| not_found(format!("routine '{old_name}' not found")))?;
                 let renamed = routine.name != old_name;
                 if renamed && data.running(&old_name).is_some() {
                     return Err(already_running(&old_name));
@@ -239,8 +239,7 @@ impl Scheduler {
                         data.claims.insert(routine.name.clone(), claim);
                     }
                 }
-                let index = data.routines.iter().position(|r| r.name == old_name);
-                data.routines[index.expect("found above")] = routine;
+                data.routines[index] = routine;
                 changed(data)
             }
             Action::Delete { revision, name } => {
@@ -544,15 +543,14 @@ fn cancel(data: &mut ProjectRoutines, name: &str) -> bool {
 }
 
 fn remove_run_dir(root: &Path, project: &Path, run: &RunRecord) {
-    // ^ Only a run id wsx made names a folder to remove, never a stored path.
-    if !run.id.is_empty()
-        && run
-            .id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'-')
-    {
+    if is_run_id(&run.id) {
         let _ = fs::remove_dir_all(store::run_dir(root, project, &run.id));
     }
+}
+
+/// ^ Only a run id wsx or asched made (`<secs>-<nanos>`) names a folder, never a stored path.
+fn is_run_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit() || byte == b'-')
 }
 
 fn supervisor_alive(run: &RunRecord) -> bool {
@@ -744,10 +742,16 @@ pub fn run_routine_run(mut arguments: impl Iterator<Item = OsString>) -> io::Res
             .mode(0o600)
             .open(path)
     };
+    let Some((program, args)) = spec.argv.split_first() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a routine run needs a command",
+        ));
+    };
     let (stdout_file, mut stderr_file) = (create(&stdout_path)?, create(&stderr_path)?);
-    let mut command = Command::new(&spec.argv[0]);
+    let mut command = Command::new(program);
     command
-        .args(&spec.argv[1..])
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -772,7 +776,7 @@ pub fn run_routine_run(mut arguments: impl Iterator<Item = OsString>) -> io::Res
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            let message = format!("{}: {error}", spec.argv[0]);
+            let message = format!("{program}: {error}");
             stderr_file.write_all(message.as_bytes())?;
             return finish(None, true, message);
         }
@@ -924,6 +928,8 @@ fn import_asched(asched: &Path, root: &Path) -> io::Result<()> {
                 .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
             let runtime = runtime_of(key)?;
             let mut runs = runtime.runs;
+            runs.values_mut()
+                .for_each(|runs| runs.retain(|run| is_run_id(&run.id)));
             for run in runs.values_mut().flatten() {
                 if run.status == RunStatus::Running || in_flight.contains(&run.id) {
                     run.status = RunStatus::Interrupted;
