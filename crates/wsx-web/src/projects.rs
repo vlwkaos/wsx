@@ -9,11 +9,7 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::sync::Mutex;
-use wsx_core::{
-    config::global::GlobalConfig,
-    ops,
-    task::{store, view},
-};
+use wsx_core::{config::global::GlobalConfig, ops};
 
 /// Load, change and save of the config run one at a time: two calls would lose one change.
 static CONFIG: Mutex<()> = Mutex::new(());
@@ -62,49 +58,15 @@ pub fn add(app: &App, path: &str) -> Outcome<Value> {
     Ok(json!({ "added": project.name }))
 }
 
+/// Only unregisters, as the TUI's `d` does: no session, task, worktree, branch or file is
+/// closed or deleted, and nothing refuses it. wsxd keeps the project while a session stands on
+/// it, so `chat::projects` lists from the config and the row leaves Home at once.
 pub fn remove(app: &App, id: u64) -> Outcome<Value> {
     gate(app)?;
     let snapshot = chat::snapshot(&app.client)?;
     let project = chat::project(&snapshot, &app.site.access, id)?;
-    let open_tasks = view::project_tasks(&store::project_id(&project.name, &project.path))
-        .unwrap_or_default()
-        .iter()
-        .any(|(_, record)| record.as_ref().is_ok_and(|record| record.state.is_open()));
-    if open_tasks {
-        return Err(Fault::new(
-            409,
-            "project_busy",
-            format!("{} has open tasks", project.name),
-        ));
-    }
-    // ^ wsxd keeps a project while a session stands on one of its worktrees, so the row would
-    // stay. The TUI hides this by listing from the config; closing a session is the owner's call.
-    let sessions = snapshot.sessions.iter().any(|session| {
-        snapshot
-            .worktrees
-            .iter()
-            .any(|worktree| worktree.id == session.worktree_id && worktree.project_id == project.id)
-    });
-    if sessions {
-        return Err(Fault::new(
-            409,
-            "project_busy",
-            format!("{} has open sessions", project.name),
-        ));
-    }
     let _one = crate::locked(&CONFIG);
     let mut config = config()?;
-    if !config
-        .projects
-        .iter()
-        .any(|entry| entry.path == project.path)
-    {
-        return Err(Fault::new(
-            409,
-            "project_refused",
-            format!("{} is not in the wsx config", project.name),
-        ));
-    }
     ops::unregister_project(&project.path, &mut config);
     save_and_sync(app, &config)?;
     Ok(json!({ "removed": id }))

@@ -56,20 +56,20 @@ await evaluate(`${rowOf(name)}.querySelector('.row-remove').click()`);
 await until(`!${rowOf(name)}`, "the removed project stayed on Home", 100);
 if (!fs.existsSync(path.join(repo, ".git"))) await fail("Remove deleted the project's folder");
 
-// A project with an open task: the refusal is a toast, the row stays.
+// A project with an open task goes the same way: Remove only unregisters.
 await slide(busy);
 await evaluate(`${rowOf(busy)}.querySelector('.row-remove').click()`);
-await until(`document.querySelector('.notices')?.textContent.includes(${JSON.stringify(`${busy} has open tasks`)})`, "no refusal for a project with open tasks");
-if (!(await evaluate(`!!${rowOf(busy)}`))) await fail("a refused project left Home");
-await capture("390x844-remove-refused");
+await until(`!${rowOf(busy)}`, "a project with an open task stayed on Home", 100);
+if (await evaluate("!!document.querySelector('.notices')?.textContent.includes('open tasks')")) await fail("Remove still refuses a project with open tasks");
+await capture("390x844-remove-open-task");
 
 await viewport(1280, 800, 1);
 await pause(300);
 if (!(await evaluate("!!document.querySelector('.rail [aria-label=\"Add project\"]')"))) await fail("the rail shows no + at 1280 px");
 await capture("1280x800-home");
-// ^ The refusals are the point: 401 before pairing, 409 for the missing path and the open task.
-const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/status of 409 .*\/api\/projects(\/\d+)?$/.test(problem));
+// ^ The refusals are the point: 401 before pairing, 409 for the missing path.
+const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/status of 409 .*\/api\/projects$/.test(problem));
 if (defects.length) await fail(`page problems: ${defects.join("; ")}`);
-console.log("projects page: + and Remove only on the managing site, a refusal stays in the sheet, add and remove take effect, an open task refuses a remove");
+console.log("projects page: + and Remove only on the managing site, a refusal stays in the sheet, add and remove take effect, a project with an open task is removed too");
 await cleanup();
 process.exit(0);
