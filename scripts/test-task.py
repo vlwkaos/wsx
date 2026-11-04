@@ -3608,7 +3608,10 @@ def run(wsx, wsxd, work, owned):
     assert not any(t.get('adapter') == 'pi' and t.get('session') and 'STATUS during' in str(t.get('message')) for t in traces())
     answer = wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and not e.get('provisional')
                                 and asked['id'] in e['to']), None), 'the own agent answers after the limit', 60)
-    assert answer['text'].startswith('open: ') and answer['unix_ms'] > stood_in['unix_ms'], answer
+    assert answer['text'].startswith('open: ') and answer['unix_ms'] > stood_in['unix_ms'], (
+        answer, json.loads((manager_log.parent / 'state.json').read_text()),
+        [(e['kind'], e.get('id'), e.get('to'), e.get('text', '')[:60], e.get('provisional')) for e in manager_entries()[-12:]],
+        [(t.get('adapter'), t.get('model'), t.get('session'), t.get('resume')) for t in traces() if t.get('launch') and t.get('manager')][-4:])
     told = turn_with('a stand-in model with no tools answered these')
     assert told and 'fake-local to message %d: pi answers' % asked['id'] in told['message'], told
     assert not told.get('adapter')
