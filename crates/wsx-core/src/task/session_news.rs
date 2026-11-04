@@ -77,19 +77,23 @@ pub fn attention(snapshot: &Snapshot, main: &Path) -> Vec<SessionNews> {
     found
 }
 
-/// The news not yet posted, and the map to keep: `seen` for the sessions in need now. A
-/// session that left a state and entered it again has a new marker.
+/// The news not yet posted, and the map to keep: the sessions in need now by marker. A session
+/// that left a state and entered it again has a new marker. With no `seen` (the host's first
+/// look) nothing is news: what is in need then is the baseline.
 pub fn unposted(
     found: Vec<SessionNews>,
-    seen: &BTreeMap<u64, String>,
+    seen: Option<&BTreeMap<u64, String>>,
 ) -> (Vec<SessionNews>, BTreeMap<u64, String>) {
     let keep = found
         .iter()
         .map(|n| (n.session, n.marker.clone()))
         .collect();
-    let fresh = found
-        .into_iter()
-        .filter(|n| seen.get(&n.session) != Some(&n.marker))
-        .collect();
+    let fresh = match seen {
+        None => Vec::new(),
+        Some(seen) => found
+            .into_iter()
+            .filter(|n| seen.get(&n.session) != Some(&n.marker))
+            .collect(),
+    };
     (fresh, keep)
 }
