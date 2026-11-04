@@ -901,9 +901,9 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
       load();
     }
   };
+  // ^ The typing bubble leaves in the commit that brings the reply: a bubble that stayed to fade
+  // out would move the reply down when it went.
   const typing = Boolean(chat?.busy);
-  // ^ The typing bubble fades out as the reply replaces it.
-  const typingShown = useAfter(typing, LEAVE_MS) || typing;
   // ^ Rows that arrive after the first read slide in; the ones of the first read, and the
   // message this device just sent, do not.
   const known = useRef(null);
@@ -960,7 +960,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
               : "No messages yet. Ask the manager for a task or a status; it answers from the ledger."}</p>` : null}
             ${earlier}
             ${withNewLine(recent, firstNew, show)}
-            ${typingShown && html`<${Typing} name=${names.manager} leaving=${!typing} />`}
+            ${typing && html`<${Typing} name=${names.manager} />`}
           </div>
           ${away && html`<${JumpButton} unread=${unread} onClick=${toEnd} />`}
         </div>

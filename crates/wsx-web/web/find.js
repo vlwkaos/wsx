@@ -59,11 +59,18 @@ export function FindBar({ log, reveal, loading, onClose }) {
     const node = log.current;
     if (!node) return undefined;
     let frame = 0;
+    // ^ A query scrolls to its newest match once, as soon as there is one: rows that arrive
+    // later do not move the reader.
+    let shown = false;
     const mark = () => {
       frame = 0;
       const found = query ? find(node, query) : [];
       setRanges(found);
       marks?.set("find", new Highlight(...found));
+      if (!shown && found.length) {
+        shown = true;
+        reveal(found.at(-1).startContainer.parentElement);
+      }
     };
     mark();
     const observer = new MutationObserver(() => { frame ||= requestAnimationFrame(mark); });
@@ -78,11 +85,10 @@ export function FindBar({ log, reveal, loading, onClose }) {
     if (range) marks?.set("find-current", new Highlight(range));
     else marks?.delete("find-current");
   }, [ranges, current]);
-  // ^ It scrolls to the middle of the log only when the reader moves or the query changes,
-  // not when rows arrive.
+  // ^ A step to another match scrolls to it, in the middle of the log.
   useLayoutEffect(() => {
-    reveal(ranges[current]?.startContainer.parentElement);
-  }, [current, count, query]);
+    if (at != null) reveal(ranges[current]?.startContainer.parentElement);
+  }, [at]);
 
   // ^ Not while rows still go in above: the count from the oldest would move under the reader.
   const step = (delta) => count && !loading && setAt((current + delta + count) % count);

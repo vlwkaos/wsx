@@ -219,7 +219,10 @@ export function useFollowEnd(name, ready) {
   const [unread, setUnread] = useState(0);
   // ^ Layout positions, not getBoundingClientRect: a row's entry animation moves it with a
   // transform, which must not count as a move. `.log` is positioned, so offsetTop is in the log.
-  const onScreen = (row) => node.current.getBoundingClientRect().top + row.offsetTop - node.current.scrollTop;
+  // ^ The log's top is taken from the page's top: while a field takes typing the page follows the
+  // visual viewport down the layout viewport (main.js), which does not move it on the screen.
+  const onScreen = (row) => node.current.getBoundingClientRect().top - document.body.getBoundingClientRect().top
+    + row.offsetTop - node.current.scrollTop;
   const incoming = () => [...node.current.children].filter((row) => row.dataset.in != null && row.dataset.at);
   // ^ A message counts as read once its end was on a visible screen.
   const seen = () => {

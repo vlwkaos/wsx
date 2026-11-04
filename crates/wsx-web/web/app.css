@@ -441,7 +441,7 @@ div.steps .steps-summary { cursor: default; }
   .reservoir-reveal { animation: reveal var(--motion-duration) var(--motion-easing); }
   .reservoir-reveal[data-closing] { animation-direction: reverse; animation-fill-mode: forwards; }
   .reservoir .need { animation: slide-up var(--motion-duration) var(--motion-easing); }
-  .reservoir .need[data-leaving], .bubble[data-leaving] { animation: row-out calc(var(--motion-duration) * 1.25) var(--motion-easing) forwards; }
+  .reservoir .need[data-leaving] { animation: row-out calc(var(--motion-duration) * 1.25) var(--motion-easing) forwards; }
   .bubble[data-fresh], .status-line[data-fresh], .reply-line[data-fresh] { animation: slide-up calc(var(--motion-duration) * 1.5) var(--motion-easing); }
   .since { animation: since-in var(--motion-duration) var(--motion-easing); }
   .task-sheet[open] { animation: sheet-in calc(var(--motion-duration) * 2) var(--motion-easing); }

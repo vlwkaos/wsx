@@ -546,26 +546,14 @@ export function useRecent(name, rows, first, { keyOf = (row) => row.key, all = f
   const [shown, setShown] = useState({ name, count: RECENT_ROWS });
   // ^ The top row shown: rows that arrive later extend the end, so no row above the reader
   // goes (docs/web-client.md "Screens").
+  // ^ The rows go in above the reader; the log keeps the row they read in place (useFollowEnd).
   const top = useRef(null);
-  // ^ The rows go in above the reader: their distance from the log's end stays, so the row
-  // they read stays where it is on the screen.
-  const held = useRef(null);
-  useLayoutEffect(() => {
-    if (!held.current) return;
-    const { log, fromEnd } = held.current;
-    held.current = null;
-    log.scrollTop = log.scrollHeight - fromEnd;
-  });
   const count = shown.name === name ? shown.count : RECENT_ROWS;
   const from = first ? Math.min(rows.indexOf(first), rows.length - count) : rows.length - count;
   const kept = top.current?.name === name ? rows.findIndex((row) => keyOf(row) === top.current.key) : -1;
   const start = all ? 0 : Math.max(0, kept >= 0 ? Math.min(from, kept) : from);
   top.current = { name, key: rows[start] && keyOf(rows[start]) };
-  const more = (event) => {
-    const log = event.currentTarget.closest(".log");
-    held.current = { log, fromEnd: log.scrollHeight - log.scrollTop };
-    setShown({ name, count: rows.length - start + RECENT_ROWS });
-  };
+  const more = () => setShown({ name, count: rows.length - start + RECENT_ROWS });
   const earlier = start > 0 && html`
     <button class="link-action log-earlier" type="button" onClick=${more}>Show ${Math.min(start, RECENT_ROWS)} earlier</button>`;
   return [rows.slice(start), earlier];
