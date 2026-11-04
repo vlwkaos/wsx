@@ -1,7 +1,7 @@
 //! Claude worker adapter: one `claude -p` process with stream JSON on stdin and stdout.
 //! ref: docs/tasks.md "Claude adapter"; knowledge "Headless Worker Transport"
 
-use super::agent::{AgentLine, Launch, TurnResult, UsageLimit};
+use super::agent::{turn_text, AgentLine, Launch, TurnResult, UsageLimit};
 use super::boundary::Boundary;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -536,6 +536,8 @@ struct Turns {
     /// The live background jobs of the last `background_tasks_changed`, its `ambient` ones
     /// (Claude's own) left out. None are announced at startup, so a process starts at 0.
     background: usize,
+    /// The turn's main-conversation text blocks so far, in order: `result` holds the last one.
+    said: Vec<String>,
 }
 
 impl Turns {
@@ -543,10 +545,7 @@ impl Turns {
     /// subagent's (`parent_tool_use_id` set) is another context. Claude writes one line per
     /// content block, each with its call's message id: a line without one is its own call.
     fn note_call(&mut self, value: &Value) {
-        if value
-            .get("parent_tool_use_id")
-            .is_some_and(|parent| !parent.is_null())
-        {
+        if is_subagent(value) {
             return;
         }
         let id = value
@@ -575,6 +574,12 @@ impl Turns {
             self.resets_at = Some(at);
         }
     }
+}
+
+fn is_subagent(value: &Value) -> bool {
+    value
+        .get("parent_tool_use_id")
+        .is_some_and(|parent| !parent.is_null())
 }
 
 /// Input, cache read and cache write tokens of one `usage` object.
@@ -614,9 +619,20 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
             if value["api_error"] == "usage_limit_reached" {
                 return None;
             }
-            value
-                .pointer("/message/content")?
-                .as_array()?
+            let content = value.pointer("/message/content")?.as_array()?;
+            // ^ An API error's words are the result's reason, not a reply; a subagent's are no
+            // reply of this conversation.
+            if !is_subagent(value) && !value["isApiErrorMessage"].as_bool().unwrap_or(false) {
+                turns.said.extend(
+                    content
+                        .iter()
+                        .filter(|item| item["type"] == "text")
+                        .filter_map(|item| item["text"].as_str())
+                        .filter(|text| !text.trim().is_empty())
+                        .map(str::to_string),
+                );
+            }
+            content
                 .iter()
                 .rev()
                 .find_map(progress_text)
@@ -634,25 +650,35 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
                 said: false,
             })
         }
-        "result" => Some(AgentLine::Result(Box::new(TurnResult {
-            limit: usage_limit(value, turns.resets_at.take()),
-            background: turns.background,
-            is_error: value
+        "result" => {
+            let is_error = value
                 .get("is_error")
                 .and_then(Value::as_bool)
-                .unwrap_or(true),
-            subtype: str_field(value, "subtype"),
-            text: str_field(value, "result"),
-            structured: value.get("structured_output").cloned(),
-            denials: value
-                .get("permission_denials")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .map(denial_text)
-                .collect(),
-            usage: turn_usage(value, turns),
-        }))),
+                .unwrap_or(true);
+            let said = std::mem::take(&mut turns.said);
+            // ^ An error's `result` is its reason, whatever was said before it.
+            let text = if is_error {
+                str_field(value, "result")
+            } else {
+                turn_text(&said, str_field(value, "result"))
+            };
+            Some(AgentLine::Result(Box::new(TurnResult {
+                limit: usage_limit(value, turns.resets_at.take()),
+                background: turns.background,
+                is_error,
+                subtype: str_field(value, "subtype"),
+                text,
+                structured: value.get("structured_output").cloned(),
+                denials: value
+                    .get("permission_denials")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(denial_text)
+                    .collect(),
+                usage: turn_usage(value, turns),
+            })))
+        }
         _ => None,
     }
 }

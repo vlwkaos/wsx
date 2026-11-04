@@ -1935,6 +1935,17 @@ def run(wsx, wsxd, work, owned):
         assert dash['text'] == '-' and dash.get('quiet') is True, dash
         assert owner_says is None or owner_id in dash['to'], dash
         js('task', 'close', title, '--discard')
+    # ^ The reply is every text block of the turn, in order, joined with a blank line: Claude's
+    # `result` holds only the last (docs/tasks.md "Manager"). A `-` block next to words is dropped,
+    # and a turn whose only block is `-` is quiet.
+    spoken = js('task', 'say', 'BLOCKS First, the answer.|TOOL|Then, the closing note.')
+    spoken_reply = reply_to(spoken['id'])
+    assert spoken_reply['text'] == 'First, the answer.\n\nThen, the closing note.', spoken_reply
+    mixed = js('task', 'say', 'BLOCKS -|TOOL|Only this stays.')
+    assert reply_to(mixed['id'])['text'] == 'Only this stays.', chat()[-2:]
+    silent = js('task', 'say', 'BLOCKS -|TOOL|-')
+    silent_reply = reply_to(silent['id'])
+    assert silent_reply['text'].strip() in ('', '-'), silent_reply
     for n in (first, second, unseen):
         js('task', 'close', n, '--discard')
     # 21b. Memo (docs/tasks.md "Memo"): each task that leaves brings its worker's memo to the
