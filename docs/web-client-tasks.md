@@ -103,7 +103,7 @@ An action's outcome is a notice; a failure is shown at the bottom of the sheet. 
 
 ## Agent
 
-The agent in use now, as `agent: {adapter, model, effort, fallback}` (docs/tasks.md "Agents"): on each open task of `GET /api/tasks/<project>` (`null` once closed), on `GET /api/tasks/<project>/t/<n>`, and as `manager.agent` of `GET /api/tasks/<project>/chat` (the manager's chat only, not a role's). `fallback` is true while a fallback agent runs. The words are `agentWords` in `web/tasks.js`: `sonnet low`, `pi/qwen medium`, `fallback pi/qwen medium` (the effort wsx passes, empty on a task from before it). They show after the state on a Running row, beside the health on an open task's sheet (the top bar of a closed one), and muted beside the manager's name in the chat's top row (hidden while it types or is not running, so the narrow bar keeps two lines).
+The agent in use now, as `agent: {adapter, model, effort, fallback}` (docs/tasks.md "Agents"): on each open task of `GET /api/tasks/<project>` (`null` once closed), on `GET /api/tasks/<project>/t/<n>`, and as `manager.agent` of `GET /api/tasks/<project>/chat` (the manager's chat only, not a role's). `fallback` is true while a fallback agent runs. The words are `agentWords` in `web/tasks.js`: `sonnet high`, `pi/qwen high`, `fallback pi/qwen high` (the effort wsx passes, empty on a task from before it). They show after the state on a Running row, beside the health on an open task's sheet (the top bar of a closed one), and muted beside the manager's name in the chat's top row (hidden while it types or is not running, so the narrow bar keeps two lines).
 
 # All sessions
 

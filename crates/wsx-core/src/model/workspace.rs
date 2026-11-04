@@ -69,7 +69,8 @@ pub struct TaskConfig {
     /// `sonnet` for the `claude` adapter, else `model`. ref: docs/tasks.md "Workflow"
     pub small_model: String,
     /// `tasks.agent.effort` and `tasks.manager.effort`: passed to every launch as Claude's
-    /// `--effort` or Pi's `--thinking`. Default `medium`, both agents' own default today.
+    /// `--effort` or Pi's `--thinking`. Default `high` on every model; `medium` only by an
+    /// explicit setting, for opus workers.
     /// ref: docs/tasks.md "Agents"
     pub effort: String,
     pub manager_effort: String,
@@ -185,8 +186,8 @@ pub struct TaskPreview {
 
 /// The effort levels both Claude Code (`--effort`) and Pi (`--thinking`) take.
 pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
-/// The effort of a `task new --size small` task.
-pub const SMALL_EFFORT: &str = "low";
+/// The effort of a `task new --size small` task: high on every model, never lower.
+pub const SMALL_EFFORT: &str = "high";
 
 impl TaskConfig {
     /// The model of a `task new --size small` task (`tasks.agent.smallModel`).
@@ -211,8 +212,8 @@ impl Default for TaskConfig {
             adapter: "claude".into(),
             model: "opus".into(),
             small_model: String::new(),
-            effort: "medium".into(),
-            manager_effort: "medium".into(),
+            effort: "high".into(),
+            manager_effort: "high".into(),
             fallback: Vec::new(),
             manager_fallback: Vec::new(),
             // ^ Claude's session limit is 5 hours: it is waited out, a weekly one is not.

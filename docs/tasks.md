@@ -75,7 +75,7 @@ A host follows a deploy of wsx. It records the identity (device, inode, size, mo
 
 ## Agents
 
-A task host and a manager host drive one headless agent through an adapter (`crates/wsx/src/task/agent.rs`): `claude` (Claude adapter) or `pi` (Pi adapter). `tasks.agent.adapter` and `tasks.manager.adapter` pick it. `tasks.agent.effort` and `tasks.manager.effort` (`low`, `medium`, `high`, `xhigh`, `max`; default `medium`, what Claude's `opus` and `sonnet` 5.5 models and Pi's `defaultThinkingLevel` use without it) go on every launch as Claude's `--effort` or Pi's `--thinking`, also a fallback agent's; a task keeps its own as `effort` on the record (`low` with `task new --size small`), and the views show it after the model. The hosts never read an adapter's stream: each maps it to the same turn results, usage and usage limit.
+A task host and a manager host drive one headless agent through an adapter (`crates/wsx/src/task/agent.rs`): `claude` (Claude adapter) or `pi` (Pi adapter). `tasks.agent.adapter` and `tasks.manager.adapter` pick it. `tasks.agent.effort` and `tasks.manager.effort` (`low`, `medium`, `high`, `xhigh`, `max`; default `high` on every model, also `sonnet` and `--size small`; set `medium` only for an `opus` worker) go on every launch as Claude's `--effort` or Pi's `--thinking`, also a fallback agent's; a task keeps its own as `effort` on the record (`high` with `task new --size small`, whatever `tasks.agent.effort` says), and the views show it after the model. The hosts never read an adapter's stream: each maps it to the same turn results, usage and usage limit.
 
 - Registry: the global `config-v2.toml` names the agents the owner uses, each `[[agents]]` with `name`, `command` (a session's command line), and for tasks `adapter`, `model`, `budget_usd_per_day` and `minimal`. `tasks.agent.fallback` and `tasks.manager.fallback` list up to 4 of those names, best first; a project that names none uses the owner's `~/.config/wsx/wsx.config.yml` lists. Workers need none: without one they wait and resume by themselves.
 - A limit belongs to an account: `claude`, or `<adapter>-<provider>` for a model written `provider/id` (`pi-anthropic`). Every limit an agent reports is kept for the machine in `tasks/agents/<account>.json` (`since_ms`, `until_ms`), so all hosts see it: a manager or a worker on a fallback makes no call to learn it again. A limit with no reset time (a backoff) that comes within 15 minutes of the last one's end keeps its `since_ms`: the backoffs in a row are one limit, as long as from `since_ms` to `until_ms`.
@@ -154,7 +154,7 @@ tasks:
 
 - The first turn opens, after the prompt, with the host's task context: the task's `--files`, the open tasks that share them (as in Store "overlaps") and the lines of the manager's `notes/context.md` (see Memo) that name a glob's literal part or its last literal path component, newest first, at most 4 KiB. With none of these it is left out.
 - At `task new` a step named `context` is not a turn: its prompt joins the next other step as "If the task context above is not enough: <prompt>", so the worker loads more only when the block does not cover the task. A step named `memo` is not a turn either: its prompt joins the step before it as "For the memo: <prompt>", and the last step's result carries the memo as always. The record keeps the folded steps; with no other step it keeps none and the task is one turn. The saving is about one first turn's recall work, not the turn's whole cost: the first-turn cache write moves to the first real step (docs/design/usage-audit.md "Audit 2026-11-04").
-- `task new --size small` is for a change the manager can state (what changes, where, how it proves itself): only the `build` step (with the folded words; no step when there is none) on `tasks.agent.smallModel` with effort `low`. `--model` still wins; `--skip` does not go with it. The default `--size full` runs every step on `tasks.agent.model`.
+- `task new --size small` is for a change the manager can state (what changes, where, how it proves itself): only the `build` step (with the folded words; no step when there is none) on `tasks.agent.smallModel` with effort `high`. `--model` still wins; `--skip` does not go with it. The default `--size full` runs every step on `tasks.agent.model`.
 
 - Defaults name no skill. `build`: keep the change lean, reuse what exists, remove what the change makes dead, and simplify the diff before finishing. `review`: nothing beyond the fixed review (the owner's words, no copy of an existing helper, no dead code, nothing unasked).
 - With `skills: owner` the task host writes the skills plugin into the task folder (`<n>/skills-plugin/`, as the manager's) and passes `--plugin-dir`; the worker gets `Skill` and is told to look at the skills and follow any whose description fits the work. With no skills folder there is no plugin.
@@ -469,7 +469,7 @@ Deploys and releases of a project run one at a time under `tasks/<project-id>/de
 
 ```yaml
 tasks:
-  agent: { adapter: claude, model: opus, smallModel: sonnet, effort: medium, rotateTokens: 200000, rotateIdleSeconds: 3600, fallback: [], maxWaitMinutes: 300 }
+  agent: { adapter: claude, model: opus, smallModel: sonnet, effort: high, rotateTokens: 200000, rotateIdleSeconds: 3600, fallback: [], maxWaitMinutes: 300 }
   skills: none                                                   # owner: lend workers the owner's skills (see Workflow)
   workflow: { build: "...", review: "...", idle: "" }   # see Workflow
   checks: ["cargo fmt --check"]
@@ -480,7 +480,7 @@ tasks:
   deploy: { command: "sh deploy.sh", approve: false, public: false, auto: true }
   release: { command: "sh release.sh", approve: true }
   preview: { command: "npm run serve -- --port $PORT", ready: /health, ports: 9100-9199 }
-  manager: { name: Atlas, adapter: claude, model: opus, effort: medium, eventModel: off, rotateTokens: 150000, recapMinutes: 0, fallback: [] }   # eventModel: a model or off
+  manager: { name: Atlas, adapter: claude, model: opus, effort: high, eventModel: off, rotateTokens: 150000, recapMinutes: 0, fallback: [] }   # eventModel: a model or off
   roles: { max: 2, closeDays: 14 }                               # see Roles
 ```
 

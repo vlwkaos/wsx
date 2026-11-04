@@ -308,7 +308,7 @@ export function taskHealth(task) {
   return [workingWords({ ...task, step: null }) || "working", tone];
 }
 
-// The agent in use now, in few words: "sonnet low", "pi/qwen medium", "fallback pi/qwen": the
+// The agent in use now, in few words: "sonnet high", "pi/qwen high", "fallback pi/qwen": the
 // effort wsx passes follows the model (docs/web-client-tasks.md "Agent"; view.rs `agent_label`).
 export const agentWords = (agent) => !agent?.model ? ""
   : `${agent.fallback ? "fallback " : ""}${agent.adapter === "claude" && !agent.fallback ? "" : `${agent.adapter}/`}${agent.model}${agent.effort ? ` ${agent.effort}` : ""}`;
