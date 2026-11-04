@@ -4115,8 +4115,12 @@ merge_seconds = 3
         assert steady(admin, 'POST', '/api/projects', {'path': '~/tilde-repo'})[1] == {'added': 'tilde-repo'}
         wait(lambda: 'tilde-repo' in listed() and board('tilde-repo'), 'the page lists both added projects')
         # ^ A project with an open task is refused; one with a session too, until its session closes.
-        busy = steady(admin, 'DELETE', '/api/projects/%d' % demo, None)
-        assert busy[0] == 409 and busy[1]['error']['message'] == 'demo has open tasks', busy
+        # The earlier steps landed and closed some tasks: take a project that still has an open one.
+        open_id = next(item['project'] for item in steady(admin, 'GET', '/api/tasks')[1]
+                       if any(row['stage'] in ('working', 'needs_you') for row in item['tasks']))
+        open_name = next(name for name, number in listed().items() if number == open_id)
+        busy = steady(admin, 'DELETE', '/api/projects/%d' % open_id, None)
+        assert busy[0] == 409 and busy[1]['error']['message'] == open_name + ' has open tasks', busy
         snapshot = wsxd_client.call(path, 'snapshot', None, timeout=30)['data']
         tree = next(item['id'] for item in snapshot['worktrees'] if item['project_id'] == listed()['tilde-repo'])
         session = wsxd_client.call(path, 'session_create', {'worktree_id': tree, 'label': 'shell', 'command': ['/bin/sh'], 'rows': 12, 'cols': 80}, timeout=30)['data']
@@ -4129,13 +4133,13 @@ merge_seconds = 3
             assert gone[0] == 200, gone
             wait(lambda: name not in listed(), name + ' left wsxd')
             assert (folder / '.git').is_dir() and str(folder) not in (config / 'config-v2.toml').read_text()
-        assert steady(admin, 'DELETE', '/api/projects/%d' % demo, None)[0] == 409 and steady(admin, 'DELETE', '/api/projects/999999', None)[0] == 404
+        assert steady(admin, 'DELETE', '/api/projects/%d' % open_id, None)[0] == 409 and steady(admin, 'DELETE', '/api/projects/999999', None)[0] == 404
         ok('projects: add by path and by ~/, refusals (not a repo, missing, relative, duplicate), open tasks and sessions answer 409, remove keeps the folder, sites without the grant answer 403')
         if args.browser:
             repo(work / 'browser-add')
             checked = check(work, [node, str(ROOT / 'scripts/web-projects-check.mjs'), admin.origin + '/', cli('web', 'pair', '--site', files['admin']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                    viewer.origin + '/', cli('web', 'pair', '--site', files['viewer']).stdout.splitlines()[0].rsplit(' ', 1)[1],
-                                   str(args.captures), str(work / 'browser-add'), 'demo'], timeout=240)
+                                   str(args.captures), str(work / 'browser-add'), open_name], timeout=240)
             assert checked.returncode == 0, checked.stdout + checked.stderr
             ok('real browser, ' + checked.stdout.strip().splitlines()[-1])
         success = True
