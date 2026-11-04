@@ -155,8 +155,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
     app.is_mobile = app.force_mobile || area.width < 60;
     let is_mobile = app.is_mobile;
-    let status = status_bar_view(app);
     let layout = FrameLayout::new(area);
+    let status = status_bar_view(app, layout.content.height);
     let main_area = layout.content;
     app.group_header_area = layout.header;
     render_workspace_header(frame, layout.header, app);
@@ -579,7 +579,7 @@ struct StatusReleaseView {
     wake_mode: bool,
 }
 
-fn status_bar_view(app: &App) -> StatusBarView {
+fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
     let (mode, badge, hints) = match &app.mode {
         Mode::Workspace => {
             let mut hints = match app.current_selection() {
@@ -715,20 +715,22 @@ fn status_bar_view(app: &App) -> StatusBarView {
             theme::ModeBadge::Info,
             vec!["(j/k)scroll".into(), "(S)hell".into(), "Esc: back".into()],
         ),
-        Mode::Tasks { list } => (
-            "TASKS",
-            theme::ModeBadge::Info,
-            vec![
-                "(j/k)move".into(),
+        Mode::Tasks { list } => {
+            let mut hints = vec![
+                "(j/k)move".to_string(),
                 match list.selected_role() {
                     Some(_) => "(enter)chat".into(),
                     None => "(enter)detail".into(),
                 },
                 "(m)anager".into(),
-                "(S)hell".into(),
-                "Esc: close".into(),
-            ],
-        ),
+            ];
+            hints.extend(["(S)hell".into(), "Esc: close".into()]);
+            // ^ Last, so a narrow footer drops it first; only while the day rows show.
+            if tasks::shows_days(list, content_height) {
+                hints.push("(u)sage".into());
+            }
+            ("TASKS", theme::ModeBadge::Info, hints)
+        }
     };
     // ^ Global quit hints stay right-aligned; single-key labels complete the word after the key.
     let global_hints = match &app.mode {

@@ -941,6 +941,7 @@ def run(wsx, wsxd, work, owned):
     assert re.search(r'Waits +owner: ' + re.escape(reason[:30]), asked), asked
     assert re.search(r'Checks +0 passed, 1 failed', checked) and re.search(r'failed +test ! -e broken.txt', checked), checked
     assert 'Summary' in checked and 'TASK ' in checked, checked
+    assert 'ping' not in checked, checked
     assert 'TASKS' not in shots[-1], shots[-1]
     narrow = tui_screens(wsx, env, project, [(r'WORKSPACE', b't'), (r'Recent', b'')], cols=40)[1]
     for title, word in (('NEEDS WebSearch', 'waiting'), ('WORK broken.txt', 'failed'), ('WORK memo.txt', 'closed')):
@@ -979,8 +980,10 @@ def run(wsx, wsxd, work, owned):
             (r'MANAGER', b'')], cols=cols, raw=frames)
         (captures / ('tasks-%d.ans' % cols)).write_bytes(frames[1])
         (captures / ('manager-%d.ans' % cols)).write_bytes(frames[2])
-        # ^ The whole footer fits at both widths, `(S)hell` in its place.
+        # ^ The footer keeps `(S)hell` and `Esc: close` at both widths.
         assert re.search(r'(?m)^ TASKS +\(j/k\)move +\(enter\)detail +\(m\)anager +\(S\)hell +Esc: close ', hinted[1]), hinted[1]
+        # ^ `(u)sage` is the last hint: it fits at 120 columns and goes first at 80.
+        assert bool(re.search(r'Esc: close +\(u\)sage', hinted[1])) == (cols == 120), hinted[1]
         assert re.search(r'(?m)^ MANAGER +\(i\)message +\(/\)find +\(S\)hell +Esc: back +\(j/k\)scroll ', hinted[2]), hinted[2]
     # ^ Open tasks of earlier steps sort above a working one (task_list.rs `rows`): move to
     # its row, and its detail shows it is the one.
@@ -3485,6 +3488,40 @@ def run(wsx, wsxd, work, owned):
         run = run + 1 if e['kind'] == 'ping' else 0 if e['kind'] == 'delivered' else run
         assert run <= 3, entries[-20:]
     assert all(e['to'] for e in entries if e['kind'] == 'reply'), entries[-12:]
+    # ^ The TUI (docs/tasks.md "TUI"): `u` flips the day rows from cost to tokens with each day's
+    # cache hit rate, from the ledger's `usage.days[].usage`; the task's Usage line counts its pings.
+    ledger = js('task', 'ledger')
+    short = lambda n: str(n) if n < 1000 else '%dk' % (n // 1000) if n < 10 ** 6 else '%.1fM' % (n / 1e6)
+
+    def today(ledger):
+        """The first day's expected cost row end, token sum and cache hit rate."""
+        day = ledger['usage']['days'][0]
+        spent = day['usage']
+        kinds = [spent[k] for k in ('input_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'output_tokens')]
+        assert spent['cache_read_tokens'] > 0 and spent['pings'] >= 3, spent
+        rate = '%d%%' % int(100 * spent['cache_read_tokens'] / sum(kinds[:3]) + 0.5)
+        return day, '$%.2f' % (sum(day['parts'].values()) / 1e6), [short(sum(kinds)), rate]
+    day = today(ledger)[0]
+    stamp = time.localtime(day['day_ms'] / 1000)
+    label = r'^ %s +%d ' % (time.strftime('%a', stamp), stamp.tm_mday)
+    rank = {'waiting': 0, 'failed': 1, 'ready': 2, 'checking': 3}
+    ordered = sorted(ledger['open'], key=lambda task: rank.get(task['state'], 4))
+    to_held = b'j' * [task['id'] for task in ordered].index(held) + b'\r'
+    pinged = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'),
+        (r'(?s)■ build.*\(u\)sage', b'u'),
+        (r'■ cache read', to_held),
+        (r'Usage ', b'')])
+    costs, tokens, detail = pinged[1:]
+    # ^ A manager ping can land between the reads: the TUI shows the ledger as it was before or
+    # after the TUI ran, so the row must equal one of the two.
+    before, after = today(ledger), today(js('task', 'ledger'))
+    cost_day = next(line for line in costs.splitlines() if re.search(label, line))
+    assert re.search(r'■ build.*■ manager', costs) and cost_day.rstrip().endswith((before[1], after[1])), costs
+    token_day = next(line for line in tokens.splitlines() if re.search(label, line))
+    assert re.search(r'■ input +■ cache read +■ cache write +■ output +hit rate', tokens) and '■ build' not in tokens, tokens
+    assert token_day.split()[-2:] in (before[2], after[2]) and '█' in token_day, (token_day, before, after)
+    assert re.search(r'Usage +.* · 3 pings$', detail, re.M), detail
     for n in (held, cold):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'no keep-warm pings')

@@ -254,6 +254,7 @@ fn usage_sums_a_tasks_turns_and_older_running_totals() {
     }
     drop(log);
     let shown = fixture.json(&["task", "show", "1", "--json"])["usage"].clone();
+    assert_eq!(shown["pings"].as_u64(), Some(0), "{shown}");
     let sum = |key: &str, extra: u64| first[key].as_u64().unwrap() + extra;
     assert_eq!(
         shown["cost_micro_usd"].as_u64(),
@@ -281,6 +282,22 @@ fn usage_sums_a_tasks_turns_and_older_running_totals() {
         "{shown}"
     );
     assert_eq!(shown["turns"].as_u64(), Some(sum("turns", 3)), "{shown}");
+    // ^ Two keep-warm pings: turns of the task, counted apart (the TUI's Usage line).
+    let mut log = fs::OpenOptions::new()
+        .append(true)
+        .open(task["log"].as_str().expect("log path"))
+        .expect("open the task log");
+    for unix_ms in [4, 5] {
+        writeln!(
+            log,
+            r#"{{"unix_ms":{unix_ms},"kind":"ping","usage":{{"duration_ms":1,"input_tokens":1,"output_tokens":1,"cache_read_tokens":10,"cache_creation_tokens":0,"cost_micro_usd":10,"session_cost_micro_usd":10,"context_tokens":0}}}}"#
+        )
+        .expect("append a ping");
+    }
+    drop(log);
+    let shown = fixture.json(&["task", "show", "1", "--json"])["usage"].clone();
+    assert_eq!(shown["pings"].as_u64(), Some(2), "{shown}");
+    assert_eq!(shown["turns"].as_u64(), Some(sum("turns", 5)), "{shown}");
 
     let ledger = fixture.json(&["task", "ledger", "--json"]);
     let row = ledger["open"]
