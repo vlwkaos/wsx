@@ -2453,7 +2453,7 @@ const renderCost = async (label) => {
   await evaluate(`(async () => { window.wsxRenders = 0; performance.clearResourceTimings();
     const { events } = await import(${moduleUrl("store.js")});
     events.dispatchEvent(new CustomEvent('manager', { detail: {} }));
-    for (let n = 0; n < 500 && !performance.getEntriesByType('resource').some((entry) => /\/chat(\?|$)/.test(entry.name)); n++) await new Promise((done) => setTimeout(done, 20));
+    for (let n = 0; n < 500 && !performance.getEntriesByType('resource').some((entry) => /\\/chat(\\?|$)/.test(entry.name)); n++) await new Promise((done) => setTimeout(done, 20));
     await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))); })()`);
   const ms = Math.round(((await busy()) - start) * 1000);
   await send("Emulation.setCPUThrottlingRate", { rate: 1 });
