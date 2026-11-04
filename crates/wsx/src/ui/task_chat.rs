@@ -95,8 +95,8 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
             // ^ The footer drops hints from the end: scrolling goes first, then back.
             if !chat.find.value().is_empty() {
                 return vec![
-                    "(n)previous".into(),
-                    "(N)next".into(),
+                    "n: older".into(),
+                    "N: newer".into(),
                     "Esc: clear".into(),
                     "(/)find".into(),
                 ];
