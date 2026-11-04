@@ -2716,7 +2716,8 @@ fn link_path(path: &str) -> String {
         .collect()
 }
 
-/// `routine <name> succeeded after 4 s`, `routine <name> failed (exit 3)`.
+/// `routine <name> succeeded after 4 s`, `routine <name> failed (exit 3)`, `routine <name> found
+/// something (exit 1)`.
 fn routine_result(run: &RunRecord) -> String {
     let end = run.finished_epoch.unwrap_or_default();
     match &run.status {
@@ -2729,6 +2730,7 @@ fn routine_result(run: &RunRecord) -> String {
             "routine {} {} ({})",
             run.routine,
             match status {
+                RunStatus::Findings => "found something",
                 RunStatus::SpawnFailed => "could not start",
                 RunStatus::Cancelled => "was cancelled",
                 RunStatus::Interrupted => "was interrupted",
@@ -2756,9 +2758,7 @@ fn handover_routines(mut runs: Vec<RunRecord>, replied: i64) -> Vec<String> {
     for name in names.into_iter().rev() {
         let mine: Vec<&RunRecord> = runs.iter().filter(|run| run.routine == name).collect();
         let Some(newest) = mine.last() else { continue };
-        let success = mine
-            .iter()
-            .rposition(|run| run.status == RunStatus::Succeeded);
+        let success = mine.iter().rposition(|run| run.status.completed());
         let failed = mine.len() - success.map_or(0, |at| at + 1);
         let plural = if failed == 1 { "" } else { "s" };
         lines.push(match success {
@@ -2778,10 +2778,7 @@ fn handover_routines(mut runs: Vec<RunRecord>, replied: i64) -> Vec<String> {
             .filter(|run| run.finished_epoch.is_some_and(|end| end > replied))
             .collect();
         if after.len() > 1 {
-            let failed = after
-                .iter()
-                .filter(|run| run.status != RunStatus::Succeeded)
-                .count();
+            let failed = after.iter().filter(|run| !run.status.completed()).count();
             lines.push(format!(
                 "routine {name} ran {} times since your last reply, {failed} of them without success",
                 after.len()

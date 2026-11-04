@@ -516,6 +516,10 @@ pub enum RoutineCmd {
         /// Post no run to the project's chat (docs/tasks.md "Routines")
         #[arg(long)]
         no_post: bool,
+        /// Non-zero exit codes (comma list, 1 to 255) that mean the run found something: status
+        /// `findings`, not `failed` (docs/tasks.md "Routines")
+        #[arg(long, value_delimiter = ',', value_parser = clap::value_parser!(u8).range(1..))]
+        findings_exit: Vec<u8>,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -536,6 +540,10 @@ pub enum RoutineCmd {
         /// Post no run to the project's chat (docs/tasks.md "Routines")
         #[arg(long)]
         no_post: bool,
+        /// Non-zero exit codes (comma list, 1 to 255) that mean the run found something: status
+        /// `findings`, not `failed` (docs/tasks.md "Routines")
+        #[arg(long, value_delimiter = ',', value_parser = clap::value_parser!(u8).range(1..))]
+        findings_exit: Vec<u8>,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]

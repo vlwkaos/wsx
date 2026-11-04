@@ -1868,6 +1868,30 @@ def run(wsx, wsxd, work, owned):
     assert len(posted('routine board')) == 1 and not events_with('routine board succeeded'), 'one post, no event'
     assert not posted('routine hushed') and not posted('routine silent') and not events_with('routine silent'), \
         'a --no-post routine and an empty success post nothing'
+    # ^ --findings-exit 1,2 (docs/tasks.md "Routines"): exit 1 is `findings`, shown as attention in
+    # a post and an event; exit 3 stays `failed`; exit 0 `succeeded`. All three print one line.
+    for name, code in (('found', 1), ('broke', 3), ('clean', 0)):
+        js('task', 'routine', 'add', name, '-p', 'demo', '--cron', '0 5 * * *', '--findings-exit', '1,2',
+           '--arg=sh', '--arg=-c', '--arg=echo %s output; exit %d' % (name, code))
+    rows = {r['name']: r for r in js('task', 'ledger')['routines']}
+    assert rows['found']['findings_exit'] == [1, 2] and 'findings_exit' not in rows['board'], rows
+    for name in ('found', 'broke', 'clean'):
+        js('task', 'routine', 'run', name, '-p', 'demo')
+    wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger')['routines']
+                     if r['name'] in ('found', 'broke', 'clean')), 'the three exit routines ran', 60)
+    last = {r['name']: r['last'] for r in js('task', 'ledger')['routines'] if r['name'] in ('found', 'broke', 'clean')}
+    assert [(n, last[n]['status'], last[n]['exit']) for n in ('found', 'broke', 'clean')] == [
+        ('found', 'findings', 1), ('broke', 'failed', 3), ('clean', 'succeeded', 0)], last
+    post = wait(lambda: posted('routine found'), 'the findings routine post', 60)[0]['text']
+    assert post.startswith('found something (exit 1)') and 'found output' in post, post
+    wait(lambda: events_with('routine found found something (exit 1); its output ends:\n    found output'),
+         'the findings event', 60)
+    wait(lambda: events_with('routine broke failed (exit 3); its output ends:\n    broke output'), 'the failed event', 60)
+    assert posted('routine broke')[0]['text'].startswith('failed (exit 3)')
+    assert not events_with('routine found failed') and not events_with('routine clean found something')
+    for bad in ('0', '256', '1,x'):
+        cli('task', 'routine', 'add', 'bad', '-p', 'demo', '--cron', '0 5 * * *', '--findings-exit', bad,
+            '--arg=true', ok=False)
     # ^ The TUI chat shows a link's words and opens it (docs/tasks.md "TUI"): `S` makes sure the
     # project shell lives; a post links to it as the session news does. `[` selects the newest
     # link, Enter enters that session and the workspace key comes back to the chat; two `[` reach
@@ -1898,7 +1922,7 @@ def run(wsx, wsxd, work, owned):
     assert re.search(r'38;2;184;140;240[;0-9]*m\u2502', frames[2].decode('utf-8', 'replace')), 'a wsx post has no secondary bar'
     board.unlink()
     board.parent.rmdir()
-    for name in ('closed', 'retrospect', 'checkin', 'board', 'hushed', 'silent'):
+    for name in ('closed', 'retrospect', 'checkin', 'board', 'hushed', 'silent', 'found', 'broke', 'clean'):
         js('task', 'routine', 'delete', name, '-p', 'demo')
     # ^ Session news (docs/tasks.md "Session news"): a project agent session that enters exited,
     # error or blocked is one post with no turn, naming it; a session of a task is no news. A pane

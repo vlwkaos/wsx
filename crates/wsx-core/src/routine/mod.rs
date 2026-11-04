@@ -68,6 +68,10 @@ pub struct Routine {
     /// Whether the manager posts a run's end to the project's chat. Stored only when off.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub post: bool,
+    /// Non-zero exit codes that mean the run completed and found something: such a run is
+    /// `Findings`, not `Failed`. Stored only when set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings_exit: Vec<u8>,
 }
 
 const fn yes() -> bool {
@@ -95,6 +99,13 @@ impl Routine {
                 "command must contain nonempty argv items",
             ));
         }
+        if self.findings_exit.contains(&0) {
+            return Err(RoutineError::validation(
+                "findings exit codes are 1 to 255, not 0",
+            ));
+        }
+        self.findings_exit.sort_unstable();
+        self.findings_exit.dedup();
         if self.command.iter().filter(|arg| *arg == "{prompt}").count() > 1 {
             return Err(RoutineError::validation(
                 "command may contain at most one exact {prompt} argument",
@@ -109,11 +120,21 @@ impl Routine {
 pub enum RunStatus {
     Running,
     Succeeded,
+    /// The command exited with one of the routine's `findings_exit` codes: it completed and
+    /// found something.
+    Findings,
     Failed,
     SpawnFailed,
     Cancelled,
     /// The run's process ended without its result: a crash, or the upgrade from asched.
     Interrupted,
+}
+
+impl RunStatus {
+    /// The run went to its end: a success, or one that found something.
+    pub fn completed(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Findings)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

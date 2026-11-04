@@ -430,6 +430,9 @@ pub fn routine_rows(main: &Path, limit: usize, full: bool) -> Value {
                 "running": view.running,
                 "last": last,
             });
+            if !view.routine.findings_exit.is_empty() {
+                row["findings_exit"] = json!(view.routine.findings_exit);
+            }
             if full {
                 let words: Vec<String> = view
                     .routine

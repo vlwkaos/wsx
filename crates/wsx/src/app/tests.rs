@@ -519,6 +519,7 @@ fn routine_view(name: &str) -> wsx_core::routine::RoutineView {
             command: vec!["echo".into(), "{prompt}".into()],
             prompt: "hello".into(),
             enabled: true,
+            findings_exit: Vec::new(),
         },
         running: false,
         next_run_epoch: None,

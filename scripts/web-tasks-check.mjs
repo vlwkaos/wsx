@@ -1230,7 +1230,7 @@ await resize(usageSize);
 await closeSheet("the usage sheet", chat);
 
 // --- Routines: the ⋯ menu's read-only list of the project's routines (docs/web-client-tasks.md
-// "Routines"): `nightly` is on and succeeded, `weekly` is off and failed.
+// "Routines"): `nightly` is on and succeeded, `weekly` is off and failed, `scan` is off and found something (exit 1, a findings code).
 {
   const api = (id) => evaluate(`fetch('api/tasks/${id}/routines').then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }))`);
   const unknown = await api(999999);
@@ -1240,15 +1240,17 @@ await closeSheet("the usage sheet", chat);
   if (served.status !== 200 || !byName.nightly || !byName.weekly || byName.nightly.enabled !== true || byName.weekly.enabled !== false
     || byName.nightly.trigger !== "0 6 * * *" || byName.weekly.trigger !== "0 6 * * 1" || byName.weekly.last?.exit !== 1
     || byName.nightly.post !== true || byName.weekly.post !== false
+    || byName.scan?.last?.status !== "findings" || byName.scan.last.exit !== 1 || byName.scan.findings_exit?.join() !== "1" || byName.weekly.findings_exit
     || byName.nightly.last?.status !== "succeeded" || !(byName.nightly.last.finished_unix_ms > 0) || !(byName.nightly.next_run_unix_ms > Date.now())
     || byName.nightly.command.join(" ") !== "/bin/sh -c exit 0") await fail(`the routines route answered ${JSON.stringify(served)}`);
   await click(".more-button");
   await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Routines').click()");
   await until(`location.hash === '#/p/${project}/routines' && !!document.querySelector('dialog.task-sheet[open] .routine-list')`, "Routines did not open the routines sheet");
   const rows = await evaluate(`[...document.querySelectorAll('.routine')].map((row) => ({ name: row.querySelector('.routine-name').textContent, state: row.querySelector('.routine-state').textContent,
-    when: row.querySelector('.routine-when').textContent, last: row.querySelector('.routine-last').textContent, next: row.querySelector('.routine-next').textContent }))`);
+    when: row.querySelector('.routine-when').textContent, last: row.querySelector('.routine-last').textContent, next: row.querySelector('.routine-next').textContent,
+    tone: row.querySelector('.routine-last').dataset.found !== undefined ? 'found' : row.querySelector('.routine-last').dataset.failed !== undefined ? 'failed' : null }))`);
   const by = Object.fromEntries(rows.map((row) => [row.name, row]));
-  if (rows.length !== 3 || by.idle?.last !== "never run" || by.nightly?.state !== "On" || by.weekly?.state !== "Off" || by.nightly.when !== "daily 06:00" || by.weekly.when !== "Mondays 06:00, no chat post"
+  if (rows.length !== 4 || by.scan?.state !== "Off" || !/^found something \(exit 1\)/.test(by.scan.last) || by.scan.tone !== "found" || by.weekly?.tone !== "failed" || by.nightly?.tone || by.idle?.last !== "never run" || by.nightly?.state !== "On" || by.weekly?.state !== "Off" || by.nightly.when !== "daily 06:00" || by.weekly.when !== "Mondays 06:00, no chat post"
     || !/^succeeded( now|\b.* ago)$/.test(by.nightly.last) || !/^failed \(exit 1\)/.test(by.weekly.last) || !/^next /.test(by.nightly.next)) await fail(`the routine rows are ${JSON.stringify(rows)}`);
   await click(".routine");
   await until("document.querySelector('.routine-argv')?.textContent === '/bin/sh -c exit 0'", "a tap on a routine did not show its command");
@@ -1302,10 +1304,20 @@ await closeSheet("the usage sheet", chat);
     await click('.manager a.icon-button[href$="/page"]');
     await until(`location.hash === '#/p/${project}/page' && !!document.querySelector('dialog.task-sheet[open] .project-page h1')`, "a tap on the Overview button did not open the overview");
     await closeSheet("the overview sheet", chat);
+    // A run that found something is attention, not danger.
+    routine("disable", "weekly");
+    routine("enable", "scan");
+    await reload(`!!document.querySelector('a.icon-button[href$="/routines"]')`);
+    item = await chip();
+    if (!/^Routines: scan .* found something$/.test(item.text) || item.tone !== "attention" || item.color !== (await evaluate(`(() => { const probe = Object.assign(document.createElement('i'), {}); probe.style.color = 'var(--color-attention)'; document.body.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; })()`))) {
+      await fail(`the Routines button of a run that found something is ${JSON.stringify(item)}`);
+    }
+    await shot("routine-item-found");
   } finally {
     routine("enable", "nightly");
     routine("enable", "idle");
     routine("disable", "weekly");
+    routine("disable", "scan");
   }
 
   // The header at the bottom: the chat's bar sits between the log and the composer, the other
