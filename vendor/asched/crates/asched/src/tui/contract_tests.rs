@@ -21,6 +21,7 @@ fn routine_view(enabled: bool, running: bool, can_toggle: bool) -> RoutineView {
             command: vec!["echo".into(), "hello world".into()],
             prompt: "prompt text".into(),
             enabled,
+            post: true,
         },
         capabilities,
         next_run_epoch: Some(123),

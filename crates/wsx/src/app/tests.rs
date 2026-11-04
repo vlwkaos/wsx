@@ -509,6 +509,7 @@ fn integration_metadata(
 fn routine_view(name: &str) -> asched_core::routine::ipc::RoutineView {
     asched_core::routine::ipc::RoutineView {
         routine: asched_core::routine::Routine {
+            post: true,
             name: name.into(),
             trigger: asched_core::routine::Trigger::Cron("0 9 * * *".into()),
             command: vec!["echo".into(), "{prompt}".into()],

@@ -1347,6 +1347,7 @@ mod tests {
 
     fn slow(name: &str) -> Routine {
         Routine {
+            post: true,
             name: name.into(),
             trigger: Trigger::Cron("0 0 1 1 *".into()),
             command: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()],
@@ -1377,6 +1378,7 @@ mod tests {
                     revision: 0,
                     project_path: project.clone(),
                     routines: vec![Routine {
+                        post: true,
                         name: "event-one".into(),
                         trigger: Trigger::Event {
                             kind: "test.changed".into(),
@@ -2982,6 +2984,7 @@ mod tests {
                 Action::Add {
                     revision,
                     routine: Routine {
+                        post: true,
                         name: "quick".into(),
                         trigger: Trigger::Cron("0 0 1 1 *".into()),
                         command: vec!["/bin/echo".into(), "done".into()],

@@ -83,7 +83,7 @@ const Tabs = ({ current, rail }) => html`
 
 function Screen({ route }) {
   if (route.screen === "session") return html`<${Session} key=${route.id} id=${route.id} tab=${route.tab} />`;
-  if (route.screen === "files") return html`<${Files} key=${route.id} project=${route.id} />`;
+  if (route.screen === "files") return html`<${Files} key=${`${route.id}:${route.file ?? ""}`} project=${route.id} file=${route.file} />`;
   // ^ The chat and the chat with a task's sheet are one Manager, so opening and closing the
   // sheet keeps the conversation, its scroll and the composer's draft.
   if (route.screen === "project" || route.screen === "task") {

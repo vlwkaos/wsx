@@ -44,7 +44,7 @@ function FileView({ project, path, text, source }) {
     <div class="file-source" hidden=${!source}><${Editor} project=${project} path=${path} text=${text} onSaved=${setSaved} /></div>`;
 }
 
-export function Files({ project }) {
+export function Files({ project, file: linked }) {
   const store = useStore();
   const [path, setPath] = useState("");
   const [view, setView] = useState(null);
@@ -64,7 +64,7 @@ export function Files({ project }) {
       setView({ error: failure.message });
     }
   };
-  useEffect(() => { open("", false); }, [project]);
+  useEffect(() => { open(linked ?? "", Boolean(linked)); }, [project]);
 
   const parts = path ? path.split("/") : [];
   let body = html`<${Loading} />`;

@@ -513,6 +513,9 @@ pub enum RoutineCmd {
         command: Vec<String>,
         #[arg(long, default_value = "")]
         prompt: String,
+        /// Post no run to the project's chat (docs/tasks.md "Routines")
+        #[arg(long)]
+        no_post: bool,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]
@@ -530,6 +533,9 @@ pub enum RoutineCmd {
         command: Vec<String>,
         #[arg(long, default_value = "")]
         prompt: String,
+        /// Post no run to the project's chat (docs/tasks.md "Routines")
+        #[arg(long)]
+        no_post: bool,
         #[arg(short, long)]
         project: Option<String>,
         #[arg(long)]

@@ -737,6 +737,7 @@ mod tests {
     #[test]
     fn exact_prompt_is_replaced_otherwise_stdin_is_used() {
         let replaced = Routine {
+            post: true,
             name: "x".into(),
             trigger: Trigger::Cron("* * * * *".into()),
             command: vec!["echo".into(), "{prompt}".into()],
@@ -881,6 +882,7 @@ mod tests {
             fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
         let store = RoutineStore::new(root.clone(), &project).unwrap();
         let routine = Routine {
+            post: true,
             name: "empty".into(),
             trigger: Trigger::Cron("* * * * *".into()),
             command: Vec::new(),
@@ -909,6 +911,7 @@ mod tests {
             fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
         let store = RoutineStore::new(root.clone(), &project).unwrap();
         let routine = Routine {
+            post: true,
             name: "descendant".into(),
             trigger: Trigger::Cron("* * * * *".into()),
             command: vec![
@@ -981,6 +984,7 @@ mod tests {
             fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
         let store = RoutineStore::new(root.clone(), &project).unwrap();
         let routine = Routine {
+            post: true,
             name: "broken-stdin".into(),
             trigger: Trigger::Cron("* * * * *".into()),
             command: vec![

@@ -3730,8 +3730,10 @@ merge_seconds = 3
                                                          'keys': {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}})
             Relay(ports['relay'], ports['owner'], work / 'relay')
             # ^ Routines screen (docs/web-client-tasks.md "Routines"): one enabled that ran and succeeded, one disabled that failed, one that never ran.
+            # ^ weekly posts nothing to the chat (`--no-post`): the rows show it.
             for name, cron, code in (('nightly', '0 6 * * *', '0'), ('weekly', '0 6 * * 1', '1')):
-                js('task', 'routine', 'add', name, '-p', 'ui', '--cron', cron, '--arg=/bin/sh', '--arg=-c', '--arg=exit ' + code)
+                js('task', 'routine', 'add', name, '-p', 'ui', '--cron', cron, '--arg=/bin/sh', '--arg=-c', '--arg=exit ' + code,
+                   *(['--no-post'] if name == 'weekly' else []))
                 js('task', 'routine', 'run', name, '-p', 'ui')
             wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger', '-p', 'ui')['routines'] if r['name'] != 'idle'), 'the ui routines ran', 60)
             js('task', 'routine', 'disable', 'weekly', '-p', 'ui')

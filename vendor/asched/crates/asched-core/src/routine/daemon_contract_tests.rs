@@ -36,6 +36,7 @@ impl Drop for TestDir {
 
 fn routine(name: &str) -> super::super::Routine {
     super::super::Routine {
+        post: true,
         name: name.into(),
         trigger: Trigger::Cron("0 0 1 1 *".into()),
         command: vec!["/bin/echo".into(), "ok".into()],
@@ -168,6 +169,7 @@ fn given_admitted_tick_after_registry_snapshot_when_project_is_removed_then_remo
                 revision: 0,
                 project_path: project.clone(),
                 routines: vec![super::super::Routine {
+                    post: true,
                     name: "once".into(),
                     trigger: Trigger::Cron("* * * * *".into()),
                     command: vec!["/bin/true".into()],

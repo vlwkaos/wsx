@@ -737,6 +737,9 @@ async function others() {
   await steadyOnFocus("textarea.code", "the file editor");
   await sound("files");
   await shot("files", ".files .button-primary");
+  // ^ `#/p/<project>/files/<path>`, the address of a routine post's file link, opens that file.
+  await evaluate("location.hash = location.hash.replace(/\\/files.*$/, '/files/README.md')");
+  await until("/\\/files\\/README\\.md$/.test(location.hash) && document.querySelector('.file-markdown h1')?.textContent === 'design'", "a file link did not open the file");
   await go("#/settings");
   await until("!!document.querySelector('input[name=scheme]')", "settings did not open");
   await sound("settings");

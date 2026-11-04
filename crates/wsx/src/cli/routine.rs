@@ -29,6 +29,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
             trigger,
             command,
             prompt,
+            no_post,
             project,
             revision,
             json,
@@ -41,6 +42,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
                 command,
                 prompt,
                 enabled: true,
+                post: !no_post,
             }
             .validated()?;
             return print_routine_response(
@@ -54,6 +56,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
             trigger,
             command,
             prompt,
+            no_post,
             project,
             revision,
             json,
@@ -71,6 +74,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
                 command,
                 prompt,
                 enabled,
+                post: !no_post,
             }
             .validated()?;
             return print_routine_response(

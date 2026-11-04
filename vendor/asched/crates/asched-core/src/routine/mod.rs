@@ -99,10 +99,18 @@ pub struct Routine {
     pub prompt: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Whether the host that runs it posts a run's end to its owner (wsx: the project's chat).
+    /// Stored only when off.
+    #[serde(default = "default_enabled", skip_serializing_if = "is_true")]
+    pub post: bool,
 }
 
 const fn default_enabled() -> bool {
     true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 impl<'de> Deserialize<'de> for Routine {
@@ -121,6 +129,8 @@ impl<'de> Deserialize<'de> for Routine {
             prompt: String,
             #[serde(default = "default_enabled")]
             enabled: bool,
+            #[serde(default = "default_enabled")]
+            post: bool,
         }
         let stored = StoredRoutine::deserialize(deserializer)?;
         let trigger = match (stored.trigger, stored.cron) {
@@ -139,6 +149,7 @@ impl<'de> Deserialize<'de> for Routine {
             command: stored.command,
             prompt: stored.prompt,
             enabled: stored.enabled,
+            post: stored.post,
         })
     }
 }
@@ -353,6 +364,7 @@ enabled = true
         assert_eq!(cron.trigger, Trigger::Cron("0 9 * * *".into()));
 
         let event = Routine {
+            post: true,
             name: "event".into(),
             trigger: Trigger::Event {
                 kind: "filesystem.changed".into(),
@@ -371,6 +383,7 @@ enabled = true
     fn routine_validation_rejects_ambiguous_boundaries() {
         for routine in [
             Routine {
+                post: true,
                 name: " ".into(),
                 trigger: Trigger::Cron("* * * * *".into()),
                 command: vec!["x".into()],
@@ -378,6 +391,7 @@ enabled = true
                 enabled: true,
             },
             Routine {
+                post: true,
                 name: "x".into(),
                 trigger: Trigger::Cron("60 * * * *".into()),
                 command: vec!["x".into()],
@@ -385,6 +399,7 @@ enabled = true
                 enabled: true,
             },
             Routine {
+                post: true,
                 name: "x".into(),
                 trigger: Trigger::Cron("* * * * *".into()),
                 command: vec![],
@@ -392,6 +407,7 @@ enabled = true
                 enabled: true,
             },
             Routine {
+                post: true,
                 name: "x".into(),
                 trigger: Trigger::Cron("* * * * *".into()),
                 command: vec!["{prompt}".into(), "{prompt}".into()],
@@ -425,6 +441,7 @@ enabled = true
         .all(|name| {
             matches!(
                 (Routine {
+                    post: true,
                     name: name.into(),
                     trigger: Trigger::Cron("* * * * *".into()),
                     command: vec!["/bin/true".into()],

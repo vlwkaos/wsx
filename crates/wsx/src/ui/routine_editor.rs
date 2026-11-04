@@ -106,6 +106,7 @@ impl RoutinePreset {
         .map(str::to_string)
         .collect();
         let mut form = RoutineForm::from_routine(Routine {
+            post: true,
             name: String::new(),
             trigger: Trigger::Cron("0 9 * * *".into()),
             command,
@@ -127,6 +128,7 @@ pub struct RoutineForm {
     pub cursor: usize,
     pub integration_target: Option<wsx_core::integration::IntegrationTarget>,
     enabled: bool,
+    post: bool,
 }
 
 impl RoutineForm {
@@ -142,6 +144,7 @@ impl RoutineForm {
             cursor,
             integration_target: None,
             enabled: routine.enabled,
+            post: routine.post,
         }
     }
 
@@ -216,6 +219,7 @@ impl RoutineForm {
             command,
             prompt: self.prompt.clone(),
             enabled: self.enabled,
+            post: self.post,
         }
         .validated()
         .map_err(|e| e.to_string())
@@ -391,6 +395,7 @@ mod tests {
     #[test]
     fn disabled_routine_form_round_trip_preserves_disabled_state() {
         let mut form = RoutineForm::from_routine(Routine {
+            post: true,
             name: "daily".into(),
             trigger: Trigger::Cron("0 9 * * *".into()),
             command: vec!["echo".into()],
@@ -407,6 +412,7 @@ mod tests {
     #[test]
     fn event_trigger_round_trip_preserves_provider_neutral_kind() {
         let form = RoutineForm::from_routine(Routine {
+            post: true,
             name: "changed".into(),
             trigger: Trigger::Event {
                 kind: "filesystem.changed".into(),
