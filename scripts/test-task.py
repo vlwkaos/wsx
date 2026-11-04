@@ -2169,7 +2169,7 @@ def run(wsx, wsxd, work, owned):
                           + ''.join('Open question %d.\n' % n for n in range(1, 61)))
     seen = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
-        (r'(?m)^ TASKS +\(j/k\)move.*Esc: close +\(o\)verview', b'o'),
+        (r'(?m)^ TASKS +\(j/k\)move.*Esc: close +(?:\(u\)sage +)?\(o\)verview', b'o'),
         (r'(?m)^ OVERVIEW +\(j/k\)scroll +Esc: back', b'jjjjj'),
         (r'(?m)^ Overview demo +6-\d+/\d+$', b'\x1b[6~\x1b[6~\x1b[6~'),
         (r'Open question 60\.', b'\x1b'),
