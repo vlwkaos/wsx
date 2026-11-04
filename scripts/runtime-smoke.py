@@ -1880,6 +1880,93 @@ finally:
     tui.terminate()
     tui.wait(timeout=5)
     os.close(tui_master)
+
+# `d` on a project asks; `y` only unregisters it (its sessions keep running), `H` also halts all
+# its sessions, the hidden `task-manager` one included (docs/web-client.md "Projects").
+removal = {name: WORK / name for name in ("halt-me", "keep-me")}
+for name, folder in removal.items():
+    folder.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(folder)], check=True, env=env)
+with (CONFIG_DIR / "config-v2.toml").open("a") as config_file:
+    for name, folder in removal.items():
+        config_file.write(f"[[projects]]\nname = \"{name}\"\npath = {json.dumps(str(folder))}\n")
+remove_master, remove_slave = os.openpty()
+fcntl.ioctl(remove_slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+remove_tui = subprocess.Popen([str(WSX)], cwd=PROJECT, env={k: v for k, v in env.items() if k != "WSX_PANE_ID"},
+                              stdin=remove_slave, stdout=remove_slave, stderr=remove_slave, close_fds=True)
+os.close(remove_slave)
+remove_screen = bytearray()
+
+
+def read_remove_tui():
+    try:
+        while chunk := os.read(remove_master, 65536):
+            remove_screen.extend(chunk)
+    except OSError:
+        pass
+
+
+threading.Thread(target=read_remove_tui, daemon=True).start()
+
+
+def project_sessions(name):
+    snapshot = call("snapshot")["data"]
+    project = next((item for item in snapshot["projects"] if item["name"] == name), None)
+    trees = {item["id"] for item in snapshot["worktrees"] if project and item["project_id"] == project["id"]}
+    return [item["label"] for item in snapshot["sessions"] if item["worktree_id"] in trees]
+
+
+def remove_from_tui(name, key):
+    # ^ `[` goes up to the first project, then each `]` down one; `d` asks about the project under
+    # the cursor, and Esc leaves the others alone.
+    os.write(remove_master, b"[" * 6)
+    time.sleep(0.5)
+    for _ in range(5):
+        mark = len(remove_screen)
+        os.write(remove_master, b"d")
+        try:
+            wait_for(lambda: b"Unregister project '" in remove_screen[mark:], "no project question", seconds=2)
+            if f"Unregister project '{name}'".encode() in remove_screen[mark:]:
+                assert b"unregister and halt all its sessions" in remove_screen[mark:], bytes(remove_screen[mark:][-400:])
+                os.write(remove_master, key)
+                return
+        except AssertionError as failure:
+            if "no project question" not in str(failure):
+                raise
+        os.write(remove_master, b"\x1b")
+        time.sleep(0.3)
+        os.write(remove_master, b"]")
+        time.sleep(0.3)
+    raise AssertionError(f"the TUI never asked about {name}: {bytes(remove_screen[-600:])}")
+
+
+def config_names():
+    return re.findall(r'name = "([^"]+)"', (CONFIG_DIR / "config-v2.toml").read_text())
+
+
+try:
+    wait_for(lambda: {"halt-me", "keep-me"} <= {item["name"] for item in call("snapshot")["data"]["projects"]},
+             "the TUI did not give wsxd the added projects")
+    for name in removal:
+        tree = next(item["id"] for item in call("snapshot")["data"]["worktrees"] if item["path"] == str(removal[name].resolve()))
+        for label in ("shell", "task-manager"):
+            created = call("session_create", {"worktree_id": tree, "label": label, "command": ["/bin/sh"], "rows": 24, "cols": 80})
+            assert created["type"] == "created", created
+        assert sorted(project_sessions(name)) == ["shell", "task-manager"], project_sessions(name)
+    wait_for(lambda: b"halt-me" in remove_screen, "the TUI did not list halt-me")
+    remove_from_tui("halt-me", b"H")
+    wait_for(lambda: "halt-me" not in config_names(), "H did not unregister halt-me")
+    wait_for(lambda: project_sessions("halt-me") == [], "H did not halt the sessions of halt-me")
+    assert sorted(project_sessions("keep-me")) == ["shell", "task-manager"], "H halted another project's sessions"
+    remove_from_tui("keep-me", b"y")
+    wait_for(lambda: "keep-me" not in config_names(), "y did not unregister keep-me")
+    time.sleep(2)
+    assert sorted(project_sessions("keep-me")) == ["shell", "task-manager"], "y halted the sessions of keep-me"
+    assert (removal["halt-me"] / ".git").is_dir() and (removal["keep-me"] / ".git").is_dir()
+finally:
+    remove_tui.terminate()
+    remove_tui.wait(timeout=5)
+    os.close(remove_master)
 shutdown(cursor_daemon)
 
 # docs/daemon-live-upgrade.md: an install replaces wsx and wsxd under a running daemon with

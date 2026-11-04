@@ -5,7 +5,7 @@ import { api } from "./api.js";
 import { isAgent, listedSessions, stateOf, useStore } from "./store.js";
 import { needTone, needWords } from "./tasks.js";
 import { Dots } from "./bubbles.js";
-import { slid, toast } from "./ui.js";
+import { slid } from "./ui.js";
 
 // The order of need kinds, most urgent first, as the server ranks them.
 const URGENCY = { waiting: 0, failed: 1, approval: 2, land: 3 };
@@ -121,13 +121,43 @@ function AddProject({ onClose }) {
     </dialog>`;
 }
 
-// Unregisters the project from wsx only; its folder, worktrees and branches stay.
-async function removeProject(project) {
-  try {
-    await api(`api/projects/${project.id}`, { method: "DELETE" });
-  } catch (failure) {
-    toast(failure.message, { failure: true });
-  }
+// ^ The confirmation of Remove: it unregisters the project from wsx only (its folder, worktrees,
+// branches and running sessions stay), or, if ticked, also halts all its sessions, the hidden
+// task ones too, as the TUI's `d` asks (docs/web-client.md "Projects"). A failure stays in the sheet.
+function RemoveProject({ project, onClose }) {
+  const dialog = useRef();
+  const [halt, setHalt] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => dialog.current.showModal(), []);
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api(`api/projects/${project.id}${halt ? "?halt=true" : ""}`, { method: "DELETE" });
+      dialog.current.close();
+    } catch (failure) {
+      setError(failure.message);
+      setBusy(false);
+    }
+  };
+  return html`
+    <dialog class="sheet" ref=${dialog} aria-labelledby="remove-project-title" onClose=${onClose}>
+      <form onSubmit=${submit}>
+        <h2 class="sheet-title" id="remove-project-title">Remove ${project.name}?</h2>
+        <p class="muted">The folder, worktrees, branches and tasks stay.</p>
+        <label class="option">
+          <input type="checkbox" name="halt" checked=${halt} onChange=${(event) => setHalt(event.target.checked)} />
+          Also halt all its sessions (agents, shells and task sessions)
+        </label>
+        <p class="error" role="alert">${error}</p>
+        <div class="actions sheet-actions">
+          <button class="button" type="button" onClick=${() => dialog.current.close()}>Cancel</button>
+          <button class="button button-primary" type="submit" disabled=${busy}>Remove</button>
+        </div>
+      </form>
+    </dialog>`;
 }
 
 export function Home({ rail }) {
@@ -145,6 +175,7 @@ export function Home({ rail }) {
   const list = useRef();
   useFlip(list);
   const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState(null);
   const manage = store.site.manage_projects;
   let body;
   if (!store.daemon) body = html`<p class="empty">wsx is not running on the host.</p>`;
@@ -178,7 +209,7 @@ export function Home({ rail }) {
                   ${last ? html`<span class="time">${ago(now - last)}</span>` : null}
                 </span>
               </a>
-              ${manage && html`<button class="row-remove" type="button" onClick=${() => removeProject(row.project)}
+              ${manage && html`<button class="row-remove" type="button" onClick=${() => setRemoving(row.project)}
                 aria-label=${`Remove project ${row.project.name}`} title="Remove"><${Icon} name="fail" /></button>`}
             </li>`;
         })}
@@ -192,6 +223,7 @@ export function Home({ rail }) {
           ${manage && html`<button class="icon-button new-project" type="button" onClick=${() => setAdding(true)} aria-label="Add project" title="Add project"><${Icon} name="plus" /></button>`}
         </div>`}
       ${adding && html`<${AddProject} onClose=${() => setAdding(false)} />`}
+      ${removing && html`<${RemoveProject} project=${removing} onClose=${() => setRemoving(null)} />`}
       <div class="scroll">
         ${body}
       </div>

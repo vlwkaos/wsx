@@ -4157,7 +4157,7 @@ merge_seconds = 3
         assert 'tilde-repo' in names and open_name in names, names
         number = listed()['tilde-repo']
         gone = steady(admin, 'DELETE', '/api/projects/%d' % number, None)
-        assert gone[0] == 200 and gone[1] == {'removed': number}, gone
+        assert gone[0] == 200 and gone[1] == {'removed': number, 'halted': 0}, gone
         events.expect('workspace', lambda data: 'tilde-repo' not in [item['name'] for item in data['projects']], timeout=20)
         assert number not in [row['project'] for row in steady(admin, 'GET', '/api/tasks')[1]]
         # ^ wsxd keeps tilde-repo while its sessions stand on it; they keep running, the page lists neither.
@@ -4166,13 +4166,20 @@ merge_seconds = 3
         for session in sessions:
             revision = next(item['revision'] for item in wsxd_client.call(path, 'snapshot', None, timeout=30)['data']['sessions'] if item['id'] == session['id'])
             wsxd_client.call(path, 'session_close', {'session_id': session['id'], 'expected_revision': revision}, timeout=30)
-        gone = steady(admin, 'DELETE', '/api/projects/%d' % listed()['fresh'], None)
-        assert gone[0] == 200, gone
+        # ^ The other choice: `?halt=true` closes the project's sessions, the hidden task-manager one too.
+        fresh_tree = next(item['id'] for item in wsxd_client.call(path, 'snapshot', None, timeout=30)['data']['worktrees'] if item['project_id'] == listed()['fresh'])
+        halted = [wsxd_client.call(path, 'session_create', {'worktree_id': fresh_tree, 'label': label, 'command': ['/bin/sh'], 'rows': 12, 'cols': 80}, timeout=30)['data']['id']
+                  for label in ('shell', 'task-manager')]
+        fresh_id = listed()['fresh']
+        gone = steady(admin, 'DELETE', '/api/projects/%d?halt=true' % fresh_id, None)
+        assert gone[0] == 200 and gone[1] == {'removed': fresh_id, 'halted': 2}, gone
+        left = [item['id'] for item in wsxd_client.call(path, 'snapshot', None, timeout=30)['data']['sessions']]
+        assert not set(halted) & set(left), (halted, left)
         wait(lambda: 'fresh' not in listed(), 'fresh left wsxd')
         wait(lambda: 'tilde-repo' not in listed(), 'tilde-repo left wsxd with its last session')
         assert (fresh / '.git').is_dir() and str(fresh) not in (config / 'config-v2.toml').read_text()
         assert steady(admin, 'DELETE', '/api/projects/999999', None)[0] == 404
-        ok('projects: add by path and by ~/, refusals (not a repo, missing, relative, duplicate), remove only unregisters (a session and a hidden task-manager session do not refuse it and keep running), remove keeps the folder, sites without the grant answer 403')
+        ok('projects: add by path and by ~/, refusals (not a repo, missing, relative, duplicate), remove only unregisters (a session and a hidden task-manager session do not refuse it and keep running; ?halt=true closes them), remove keeps the folder, sites without the grant answer 403')
         if args.browser:
             repo(work / 'browser-add')
             checked = check(work, [node, str(ROOT / 'scripts/web-projects-check.mjs'), admin.origin + '/', cli('web', 'pair', '--site', files['admin']).stdout.splitlines()[0].rsplit(' ', 1)[1],
@@ -4182,7 +4189,7 @@ merge_seconds = 3
             ok('real browser, ' + checked.stdout.strip().splitlines()[-1])
         else:
             gone = steady(admin, 'DELETE', '/api/projects/%d' % open_id, None)
-            assert gone[0] == 200 and gone[1] == {'removed': open_id}, gone
+            assert gone[0] == 200 and gone[1] == {'removed': open_id, 'halted': 0}, gone
         # ^ The project with an open task: removed (by the browser or just above), off Home, its tasks untouched.
         Events(admin).expect('workspace', lambda data: open_name not in [item['name'] for item in data['projects']], timeout=20)
         assert open_id not in [row['project'] for row in steady(admin, 'GET', '/api/tasks')[1]]

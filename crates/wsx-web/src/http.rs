@@ -827,13 +827,22 @@ async fn project_add(
     blocking(|| crate::projects::add(&app, &input.path).map(Json))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoveQuery {
+    /// Close the project's sessions too (`?halt=true`); by default they keep running.
+    #[serde(default)]
+    halt: bool,
+}
+
 /// Unregisters a project from wsx only; its folder, worktrees and branches stay.
 async fn project_remove(
     State(app): State<Shared>,
     Paired(_): Paired,
     UrlPath(project): UrlPath<u64>,
+    Query(query): Query<RemoveQuery>,
 ) -> Outcome<Json<Value>> {
-    blocking(|| crate::projects::remove(&app, project).map(Json))
+    blocking(|| crate::projects::remove(&app, project, query.halt).map(Json))
 }
 
 /// The project's shell in its main checkout, the one the TUI's `S` opens: the live one, else a
