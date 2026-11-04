@@ -2509,6 +2509,7 @@ capabilities = ["terminal_view"]
         # once it exited.
         project_shell = '/api/projects/%d/shell' % projects['project2']
         if args.browser:
+            args.captures.mkdir(parents=True, exist_ok=True)
             result = check(work, [node, str(ROOT / 'scripts/web-browser-check.mjs'), 'shell', work_site.origin + '/',
                                   cli('web', 'pair', '--site', files['work']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                   str(args.captures), '', str(projects['project2'])], timeout=120)
