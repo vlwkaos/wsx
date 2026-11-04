@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
-use wsx_core::model::workspace::TaskWorkflow;
+use wsx_core::model::workspace::{manager_rotate_limit, TaskWorkflow};
 use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::runtime;
 use wsx_core::task::manager::{
@@ -165,7 +165,8 @@ struct Manager {
     event_model: Option<String>,
     /// The model the running agent process uses now.
     agent_model: String,
-    rotate_tokens: u64,
+    /// `tasks.manager.rotateTokens` when set; `rotate_limit` is the size that counts.
+    rotate_tokens: Option<u64>,
     /// `tasks.manager.effort`, passed to every launch.
     effort: String,
     state: ManagerState,
@@ -1971,6 +1972,12 @@ impl Manager {
             .map_or_else(|| self.adapter.clone(), |agent| agent.adapter.clone())
     }
 
+    /// The context size past which the next turn starts a fresh conversation, for the adapter
+    /// that runs now (a fallback's, not only `tasks.manager.adapter`).
+    fn rotate_limit(&self) -> u64 {
+        manager_rotate_limit(self.rotate_tokens, &self.current_adapter())
+    }
+
     /// The held turn of a switch in full: a new conversation never saw its messages.
     fn held_messages(&self, ids: &[u64]) -> String {
         let log = self.dir.read_log().unwrap_or_default();
@@ -2109,7 +2116,7 @@ impl Manager {
             || self.state.agent_session.is_none()
             || self.state.last_reply_ms == 0
             || idle >= PROMPT_CACHE_MS
-            || self.state.context_tokens > self.rotate_tokens
+            || self.state.context_tokens > self.rotate_limit()
         {
             return;
         }
@@ -2438,7 +2445,7 @@ impl Manager {
             asks,
             provisional: None,
         });
-        if context > self.rotate_tokens {
+        if context > self.rotate_limit() {
             self.rotate(context, None);
         }
         self.report(runtime::AgentState::Done);

@@ -2,7 +2,7 @@
 """Model-free stand-in for `pi --mode rpc`, used by test-task.py as a fallback agent.
 
 Each `prompt` command is one run. `PIERROR <file>` ends the run as a provider's refusal, with the
-words of <file> as the error; `PICOST <usd>` reports that cost for the run. A worker (its instructions name a task worker) does
+words of <file> as the error; `PICOST <usd>` reports that cost for the run; `PICTX <n>` reports a context of n tokens. A worker (its instructions name a task worker) does
 `WORK <file>` (writes and commits it) and sends its result to `wsx task result -`, as the
 Pi adapter's instructions ask; a manager answers "pi answers: <first line>". The run then
 streams Pi's own events: agent_start, an assistant message_end with usage, agent_settled.
@@ -89,6 +89,7 @@ def main():
             emit({'type': 'agent_settled', 'aborted': False})
             continue
         cost = float(own[own.index('PICOST') + 1]) if 'PICOST' in own else 0.001
+        context = int(own[own.index('PICTX') + 1]) if 'PICTX' in own else 100
         if worker:
             if 'WORK' in words:
                 name = words[words.index('WORK') + 1]
@@ -108,7 +109,7 @@ def main():
         emit({'type': 'message_end', 'message': {
             'role': 'assistant', 'model': option(argv, '--model') or 'fake', 'stopReason': 'stop',
             'content': [{'type': 'text', 'text': answer}],
-            'usage': {'input': 100, 'output': 10, 'cacheRead': 0, 'cacheWrite': 0, 'totalTokens': 110,
+            'usage': {'input': context, 'output': 10, 'cacheRead': 0, 'cacheWrite': 0, 'totalTokens': context + 10,
                       'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'total': cost}}}})
         emit({'type': 'agent_end', 'messages': [], 'willRetry': False})
         emit({'type': 'agent_settled', 'aborted': False})

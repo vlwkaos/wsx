@@ -1757,6 +1757,47 @@ def run(wsx, wsxd, work, owned):
     assert len([e for e in manager_entries() if e['kind'] == 'rotated']) == rotations
     assert turn_with('WARM CHANGE')['message'].startswith('Your instructions changed'), turn_with('WARM CHANGE')
     (notes / 'decisions.md').write_text('- 2026-10-22 keep the store in sqlite\n')
+    # ^ The size limit by adapter (docs/tasks.md "Manager"): with no tasks.manager.rotateTokens a
+    # manager on Claude keeps its conversation to 400000, one on Pi to 150000; a set value wins.
+    # The config is read at the host's start, so each case stops the manager first.
+    def rotated_entries():
+        return [e for e in manager_entries() if e['kind'] == 'rotated']
+
+    def rotates_at(manager_line, adapter, below, above, tokens_of_above):
+        stop_manager()
+        configure(limit_config.replace(manager_line_now, manager_line), 'manager limit ' + adapter)
+        # ^ A first turn takes whatever a changed adapter or instructions rotate.
+        reply_to(js('task', 'say', 'STATUS start on ' + adapter)['id'])
+        before = len(rotated_entries())
+        # ^ A second turn after the first shows the conversation went on: a rotation is logged
+        # right after the reply that crosses the limit.
+        for context in below:
+            reply_to(js('task', 'say', '%s %d' % (ctx_word[adapter], context))['id'])
+            reply_to(js('task', 'say', 'STATUS after %d' % context)['id'])
+            assert len(rotated_entries()) == before, (adapter, context, rotated_entries()[before:])
+        reply_to(js('task', 'say', '%s %d' % (ctx_word[adapter], above))['id'])
+        wait(lambda: len(rotated_entries()) == before + 1, '%s rotated at %d' % (adapter, above))
+        assert rotated_entries()[-1]['tokens'] == tokens_of_above, rotated_entries()[-1]
+
+    ctx_word = {'claude': 'CTX', 'pi': 'PICTX'}
+    limit_config = (project / 'wsx.config.yml').read_text()
+    manager_line_now = next(line for line in limit_config.splitlines() if line.startswith('  manager:'))
+    assert 'rotateTokens: 100000' in manager_line_now, manager_line_now
+    plain = manager_line_now.replace(', rotateTokens: 100000', '')
+    # ^ Claude, not set: 200000 is past 150000 and under 400000, so no rotation; 450000 rotates.
+    rotates_at(plain, 'claude', [200000], 450000, 450000)
+    # ^ Claude, set to 100000: it rotates at 200000.
+    rotates_at(manager_line_now, 'claude', [], 200000, 200000)
+    # ^ Pi, not set: 120000 stays, 200000 rotates (the 150000 limit).
+    pi_plain = plain.replace('{ ', '{ adapter: pi, model: fake/pi-model, ', 1).replace('eventModel: fake-events', 'eventModel: off')
+    rotates_at(pi_plain, 'pi', [120000], 200000, 200000)
+    # ^ Pi, set to 250000: 200000 stays.
+    pi_set = pi_plain.replace(' }', ', rotateTokens: 250000 }', 1)
+    rotates_at(pi_set, 'pi', [200000], 300000, 300000)
+    # ^ Back on Claude with the fixture's config for the parts below.
+    stop_manager()
+    configure(limit_config, 'manager limit restored')
+    reply_to(js('task', 'say', 'STATUS back on claude')['id'])
     # ^ Dynamic routines (docs/tasks.md "Routines"), after the handover above so it lists only
     # nightly: a check-in needs no owner words, runs once at its minute and its output is the
     # event; an event routine runs on the task change wsx fires, and `wsx task post` puts its

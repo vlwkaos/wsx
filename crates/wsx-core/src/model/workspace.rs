@@ -132,8 +132,9 @@ pub struct TaskConfig {
     /// The model of a turn with only wsx's events and no review due; `None` (`off`) keeps
     /// `manager_model`. ref: docs/tasks.md "Manager"
     pub manager_event_model: Option<String>,
-    /// Context size after which the manager's next turn starts a fresh conversation.
-    pub manager_rotate_tokens: u64,
+    /// `tasks.manager.rotateTokens` when the owner set it; else `None`, and
+    /// `manager_rotate_limit` decides by adapter.
+    pub manager_rotate_tokens: Option<u64>,
     /// Quiet seconds after which the manager writes the owner a recap; 0 is off. The config
     /// says minutes (`recapMinutes`, a fraction allowed). ref: docs/tasks.md "Recap"
     pub manager_recap_secs: u64,
@@ -195,6 +196,17 @@ pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// The effort of a `task new --size small` task: high on every model, never lower.
 pub const SMALL_EFFORT: &str = "high";
 
+/// Context size after which a manager's next turn starts a fresh conversation, the one rule:
+/// the owner's `rotateTokens` wins; else 400000 for Claude (its 1M window, so a conversation
+/// is kept longer) and 150000 for any other adapter. ref: docs/tasks.md "Manager"
+pub fn manager_rotate_limit(explicit: Option<u64>, adapter: &str) -> u64 {
+    explicit.unwrap_or(if adapter == "claude" {
+        400_000
+    } else {
+        150_000
+    })
+}
+
 impl TaskConfig {
     /// The model of a `task new --size small` task (`tasks.agent.smallModel`).
     pub fn small_model(&self) -> &str {
@@ -250,7 +262,7 @@ impl Default for TaskConfig {
             // ^ Off: a switch writes the conversation into the other model's cache, which cost
             // more than the turn saved (scripts/bench-manager.py, docs/tasks.md "Manager").
             manager_event_model: None,
-            manager_rotate_tokens: 150_000,
+            manager_rotate_tokens: None,
             manager_recap_secs: 0,
             roles_max: 2,
             // ^ A role is for work over weeks, and its parent task may wait on the owner for
