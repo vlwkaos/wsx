@@ -299,6 +299,11 @@ pub struct ManagerState {
     /// Claude keeps a conversation's first system prompt also on resume, so other
     /// instructions start a new conversation; settings, tools and model apply at every start.
     pub instructions: Option<String>,
+    /// The last main-conversation context size and when the agent last answered: an idle large
+    /// conversation rotates, a warm small one takes changed instructions as a message.
+    /// ref: docs/tasks.md "Manager"
+    pub context_tokens: u64,
+    pub last_reply_ms: u64,
     /// A rotation happened: the next fresh conversation opens with the last exchanges.
     pub handover: bool,
     /// The tasks as the last turn's ledger summary showed them; none in a fresh conversation.

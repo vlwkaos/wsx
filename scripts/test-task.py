@@ -1627,6 +1627,49 @@ def run(wsx, wsxd, work, owned):
     routines = opened.split('\nRoutine results (')[1].split('\n\n')[0].split('\n')[1:]
     assert routines == ['routine nightly failed (exit 3); 3 failures, never succeeded'], opened
     assert 'keep the store in sqlite' in opened and 'SECRET-OUTSIDE' not in opened, opened
+
+    # Continuity (docs/tasks.md "Manager"): notes share their budget, idle large conversations
+    # rotate, and a warm small one takes changed instructions as a message.
+    def stop_manager():
+        sock = js('task', 'manager')['socket']
+        cli('session', 'delete', 'task-manager', '-p', 'demo')
+        wait(lambda: not Path(sock).exists() or subprocess.run(['nc', '-zU', sock]).returncode != 0, 'manager down')
+
+    def edit_state(**fields):
+        stop_manager()
+        data = json.loads(state_file.read_text())
+        data.update(fields)
+        state_file.write_text(json.dumps(data))
+
+    # ^ A decisions.md of 12 KiB leaves context.md its half: its first lines and newest memos.
+    (notes / 'context.md').unlink(missing_ok=True)
+    (notes / 'context.md').write_text('PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
+    (notes / 'decisions.md').write_text(''.join('- decision %03d %s\n' % (n, 'x' * 50) for n in range(200)))
+    edit_state(instructions=None)
+    notes_message = js('task', 'say', 'NOTES BUDGET')
+    reply_to(notes_message['id'])
+    opened = turn_with('NOTES BUDGET')['message']
+    head = opened.split('\n\nHandover')[0]
+    assert 'PROJECT-SECTION line' in head and '- #30: memo 30' in head and '- decision 199' in head, head
+    assert '- decision 000' not in head and len(head.encode()) < 8 * 1024 + 300, len(head)
+    # ^ Idle past 60 min with a context over 60k: a fresh conversation, with the reason logged.
+    edit_state(last_reply_ms=int((time.time() - 7200) * 1000), context_tokens=70000)
+    idle_message = js('task', 'say', 'IDLE LARGE')
+    reply_to(idle_message['id'])
+    rotated = [e for e in manager_entries() if e['kind'] == 'rotated']
+    assert rotated[-1].get('reason') == 'idle over 60 min with 70k context', rotated
+    idle_launch = [t for t in traces() if t.get('launch') and t.get('manager')][-1]
+    assert not idle_launch['resume'] and 'Handover' in turn_with('IDLE LARGE')['message']
+    # ^ Warm and small, with other instructions: the same conversation, the new ones as a message.
+    rotations = len([e for e in manager_entries() if e['kind'] == 'rotated'])
+    edit_state(instructions='stale-digest')
+    warm_message = js('task', 'say', 'WARM CHANGE')
+    reply_to(warm_message['id'])
+    warm_launch = [t for t in traces() if t.get('launch') and t.get('manager')][-1]
+    assert warm_launch['resume'], warm_launch
+    assert len([e for e in manager_entries() if e['kind'] == 'rotated']) == rotations
+    assert turn_with('WARM CHANGE')['message'].startswith('Your instructions changed'), turn_with('WARM CHANGE')
+    (notes / 'decisions.md').write_text('- 2026-10-22 keep the store in sqlite\n')
     # ^ Only a short reply to events is quiet: one with a table is a message (docs/tasks.md "Manager").
     tabled = js('task', 'new', 'NOOP TABLE')['id']
     wait_state(tabled, 'ready')
