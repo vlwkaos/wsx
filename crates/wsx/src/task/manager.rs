@@ -49,9 +49,9 @@ const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 /// Events within this long of each other, or during a turn, become one message.
 const EVENT_QUIET: Duration = Duration::from_secs(3);
 /// How often the host removes the captures of long-decided "To check" items.
+const CAPTURE_SWEEP: Duration = Duration::from_secs(60 * 60);
 /// How often the host looks at wsxd for sessions that need the owner.
 const SESSION_LOOK: Duration = Duration::from_secs(2);
-const CAPTURE_SWEEP: Duration = Duration::from_secs(60 * 60);
 /// What wsx asks after a quiet period. The reply is the recap the owner reads.
 const RECAP_REQUEST: &str = "The project has been quiet. Write the owner a short recap, at most 8 lines: \
 what landed and is live, what runs, and what waits for the owner and why. Read the ledger for it. Start no \
