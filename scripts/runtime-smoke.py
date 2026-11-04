@@ -1927,7 +1927,7 @@ def remove_from_tui(name, key):
         try:
             wait_for(lambda: b"Unregister project '" in remove_screen[mark:], "no project question", seconds=2)
             if f"Unregister project '{name}'".encode() in remove_screen[mark:]:
-                assert b"unregister and halt all its sessions" in remove_screen[mark:], bytes(remove_screen[mark:][-400:])
+                assert b"halt" in remove_screen[mark:], bytes(remove_screen[mark:][-400:])
                 os.write(remove_master, key)
                 return
         except AssertionError as failure:

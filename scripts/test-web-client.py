@@ -3021,7 +3021,8 @@ capabilities = ["terminal_view"]
 # ^ Ready tasks land by hand here, so the fixture keeps tasks that wait at ready; test-task.py
 # covers the default auto land.
 # ^ `minFreeGb: 0`: tasks must not wait on this machine's free disk. `approve: true` keeps
-# the manager's land an approval request for the journey.
+# the manager's land an approval request for the journey. `rotateTokens`: the manager's BIG (200k)
+# must pass its limit, which is 400000 on Claude when unset (docs/tasks.md "Manager").
 LONG_NAME = 'notes-about-jumping-between-projects-from-the-keyboard-and-back.txt'
 TASK_CONFIG = '''tasks:
   minFreeGb: 0
@@ -3030,7 +3031,7 @@ TASK_CONFIG = '''tasks:
     model: fake-model
   checks:
     - "test ! -e broken.txt"
-  manager: { model: fake-manager }
+  manager: { model: fake-manager, rotateTokens: 100000 }
   deploy: { command: 'test -z "$WSX_FIXTURE_DEPLOY_FAIL" || { seq -f "deploy step %g" 60; exit 3; }' }
   preview:
     command: 'exec python3 -m http.server "$PORT" --bind 127.0.0.1'
@@ -3130,7 +3131,7 @@ def task_journey(args):
                     assert os.path.realpath(top) == os.path.realpath(folder), ('fixture git escaped', folder, top)
                     # ^ ui's manager has a name (docs/tasks.md "Config"); the others read as their project.
                     (folder / 'wsx.config.yml').write_text(
-                        TASK_CONFIG.replace('{ model: fake-manager }', '{ name: Atlas, model: fake-manager }') if folder == other
+                        TASK_CONFIG.replace('{ model: fake-manager,', '{ name: Atlas, model: fake-manager,') if folder == other
                         else TASK_CONFIG)
                     (folder / 'README').write_text('fixture\n')
                 subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', *argv],

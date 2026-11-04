@@ -572,7 +572,7 @@ impl App {
                 let name = self.workspace.projects[pi].name.clone();
                 self.mode = Mode::Confirm {
                     message: format!(
-                        "Unregister project '{name}'? Files and sessions stay.\ny: unregister   H: unregister and halt all its sessions"
+                        "Unregister project '{name}'?\nFiles stay and sessions keep running.\ny: unregister\nH: unregister and halt all its sessions"
                     ),
                     pending: PendingAction::DeleteProject { project_idx: pi },
                 };

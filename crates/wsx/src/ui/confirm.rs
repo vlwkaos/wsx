@@ -8,7 +8,14 @@ use ratatui::{
 
 pub fn render_confirm(frame: &mut Frame, area: Rect, message: &str) {
     let width = 60_u16.min(area.width);
-    let popup = popup_upper(area, width, 6);
+    // ^ Each line of the message wraps at the popup's inner width: the box grows with it, so a
+    // narrow area never cuts the question off.
+    let inner = width.saturating_sub(2).max(1) as usize;
+    let lines: usize = message
+        .lines()
+        .map(|line| line.chars().count().div_ceil(inner).max(1))
+        .sum();
+    let popup = popup_upper(area, width, (lines as u16 + 2).max(6).min(area.height));
 
     frame.render_widget(Clear, popup);
 
