@@ -195,9 +195,6 @@ struct Manager {
     /// The stall each task shows now, and since when: it is reported after `stall::GRACE`.
     stall_suspects: BTreeMap<u32, (String, Instant)>,
     stalls_swept: Option<Instant>,
-    /// The project's agent sessions already posted, by attention marker; none until a first
-    /// look at wsxd sets the baseline. ref: docs/tasks.md "Session news"
-    observed_sessions: Option<BTreeMap<u64, String>>,
     sessions_looked: Option<Instant>,
     /// Event lines not yet logged as a message, and when the last one came.
     pending_events: Vec<String>,
@@ -448,7 +445,6 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         observed_stalls: BTreeMap::new(),
         stall_suspects: BTreeMap::new(),
         stalls_swept: None,
-        observed_sessions: None,
         sessions_looked: None,
         pending_events: Vec::new(),
         last_event: None,
@@ -706,7 +702,6 @@ impl Manager {
                 self.observed = seen;
                 self.observed_decisions = self.state.decisions_seen;
                 self.observed_stalls = self.state.stalls.clone();
-                self.observed_sessions = self.state.sessions_seen.clone();
                 self.observed_deploys_ms = self
                     .state
                     .deploys_seen_ms
@@ -964,29 +959,14 @@ impl Manager {
             return;
         };
         let found = session_news::attention(&snapshot, &self.main);
-        let Some(seen) = self.observed_sessions.take() else {
-            let baseline = found
-                .iter()
-                .map(|n| (n.session, n.marker.clone()))
-                .collect();
-            self.set_sessions_seen(baseline);
-            return;
-        };
-        let (fresh, keep) = session_news::unposted(found, &seen);
+        let (fresh, keep) = session_news::unposted(found, self.state.sessions_seen.as_ref());
         for news in fresh {
             self.post(news.event, news.text);
         }
-        if keep != seen {
-            self.set_sessions_seen(keep);
-        } else {
-            self.observed_sessions = Some(seen);
+        if self.state.sessions_seen.as_ref() != Some(&keep) {
+            self.state.sessions_seen = Some(keep);
+            self.save();
         }
-    }
-
-    fn set_sessions_seen(&mut self, seen: BTreeMap<u64, String>) {
-        self.state.sessions_seen = Some(seen.clone());
-        self.observed_sessions = Some(seen);
-        self.save();
     }
 
     /// Remove the capture files of items decided more than 7 days ago, at the start and hourly.
