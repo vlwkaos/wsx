@@ -2097,7 +2097,7 @@ def run(wsx, wsxd, work, owned):
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'\(/\)find', b'/'),
         (r'Enter: keep', b'QUASAR'),
         (r'(?m)^ /QUASAR 2/2', b'\r'),
-        (r'\(n\)previous', b'n'),
+        (r'n: older', b'n'),
         (r'(?m)^ /QUASAR 1/2', b'N'),
         (r'(?m)^ /QUASAR 2/2', b'\x1b'),
         (r'\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
