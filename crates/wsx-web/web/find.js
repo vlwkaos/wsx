@@ -31,8 +31,9 @@ function find(log, query) {
   return ranges;
 }
 
-// `log`: the conversation's node. `loading`: the whole history is not in yet.
-export function FindBar({ log, loading, onClose }) {
+// `log`: the conversation's node. `reveal`: scrolls a node of it into view (lib.js
+// `useFollowEnd`). `loading`: the whole history is not in yet.
+export function FindBar({ log, reveal, loading, onClose }) {
   const [query, setQuery] = useState("");
   // ^ The current match from the oldest; null starts at the newest.
   const [at, setAt] = useState(null);
@@ -80,7 +81,7 @@ export function FindBar({ log, loading, onClose }) {
   // ^ It scrolls to the middle of the log only when the reader moves or the query changes,
   // not when rows arrive.
   useLayoutEffect(() => {
-    ranges[current]?.startContainer.parentElement?.scrollIntoView({ block: "center" });
+    reveal(ranges[current]?.startContainer.parentElement);
   }, [current, count, query]);
 
   // ^ Not while rows still go in above: the count from the oldest would move under the reader.

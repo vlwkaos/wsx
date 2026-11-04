@@ -329,6 +329,17 @@ export function useFollowEnd(name, ready) {
     watchers.current = [sizes, rows];
   }, []);
   const toEnd = () => { restore.current = null; atEnd.current = true; setAway(false); settle(); };
+  // ^ A move the page makes for the reader (a find's current match): the log leaves the end
+  // and keeps the new place, so a later settle does not take it back.
+  const reveal = (row) => {
+    const element = node.current;
+    if (!element || !row) return;
+    restore.current = null;
+    row.scrollIntoView({ block: "center" });
+    atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+    setAway(!atEnd.current);
+    mark();
+  };
   useLayoutEffect(settle);
   // ^ Kept when the chat closes or the page goes to the background (a phone may drop it then);
   // a page that shows again counts what is on screen as read.
@@ -345,7 +356,7 @@ export function useFollowEnd(name, ready) {
       keep();
     };
   }, []);
-  return { log, node, away, unread, since: opened?.read ?? null, scrolled, toEnd };
+  return { log, node, away, unread, since: opened?.read ?? null, scrolled, toEnd, reveal };
 }
 
 // Motion that script drives (a list that reorders, a view that leaves) reads the same tokens
