@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
-    use asched_core::routine::{ipc::Action, Routine};
+    use wsx_core::routine::{Action, Routine};
 
     let (project_arg, action, json) = match command {
         RoutineCmd::List { project, json } => (project, Action::List, json),
@@ -16,13 +16,20 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
                 .into_iter()
                 .find(|view| view.routine.name == name)
                 .ok_or_else(|| anyhow::anyhow!("routine '{name}' not found"))?;
-            return print_routine_response(
-                asched_core::routine::ipc::Response::Routine {
-                    revision,
-                    routine: Box::new(routine),
-                },
-                json,
+            if json {
+                return print_json(
+                    &serde_json::json!({ "revision": revision, "routine": routine }),
+                );
+            }
+            println!(
+                "revision {revision}\nname: {}\nenabled: {}\ntrigger: {}\ncommand: {}\nprompt: {}",
+                routine.routine.name,
+                routine.routine.enabled,
+                wsx_core::task::ledger::trigger_text(&routine.routine.trigger),
+                format_argv(&routine.routine.command),
+                routine.routine.prompt
             );
+            return Ok(());
         }
         RoutineCmd::Add {
             name,
@@ -147,7 +154,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
                     event_id,
                 },
             )?;
-            let asched_core::routine::ipc::Response::Fire { outcome } = response else {
+            let wsx_core::routine::Response::Fire { outcome } = response else {
                 bail!("routine daemon returned an unexpected fire response")
             };
             if json {
@@ -160,26 +167,6 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
     };
     let path = routine_project(project_arg.as_deref())?;
     print_routine_response(send_routine(&path, action)?, json)
-}
-
-pub(super) fn routine_root() -> Result<PathBuf> {
-    Ok(asched_core::registry::RegistryStore::default_root()?)
-}
-
-/// The projects the scheduler runs routines for; `None` without a registry: every project.
-pub(crate) fn registered_routine_paths() -> Result<Option<Vec<PathBuf>>> {
-    let store = asched_core::registry::RegistryStore::new(routine_root()?);
-    if !store.path().exists() {
-        return Ok(None);
-    }
-    Ok(Some(
-        store
-            .load()?
-            .projects
-            .into_iter()
-            .map(|project| project.working_dir)
-            .collect(),
-    ))
 }
 
 pub(crate) fn routine_project(value: Option<&str>) -> Result<PathBuf> {
@@ -214,24 +201,17 @@ pub(crate) fn routine_project(value: Option<&str>) -> Result<PathBuf> {
 
 pub(crate) fn send_routine(
     project: &Path,
-    action: asched_core::routine::ipc::Action,
-) -> Result<asched_core::routine::ipc::Response> {
-    let request = asched_core::routine::ipc::Request::new(project.to_path_buf(), action);
-    // ^ wsxd hosts the asched-core scheduler while this client retains its socket protocol.
-    Ok(routine_client()?.request_with_start(&request, runtime::routine_daemon_command())?)
+    action: wsx_core::routine::Action,
+) -> Result<wsx_core::routine::Response> {
+    // ^ wsxd runs the scheduler: start it, or upgrade one older than the scheduler.
+    let client = runtime::Client::local();
+    runtime::ensure_available(&client)?;
+    Ok(wsx_core::routine::request(&client, project, action)?)
 }
 
-pub(super) fn routine_client() -> Result<asched_core::routine::RoutineClient> {
-    Ok(asched_core::routine::RoutineClient::new(routine_root()?))
-}
-
-pub(crate) fn fetch_routines(
-    project: &Path,
-) -> Result<(u64, Vec<asched_core::routine::ipc::RoutineView>)> {
-    match send_routine(project, asched_core::routine::ipc::Action::List)? {
-        asched_core::routine::ipc::Response::Routines { revision, routines } => {
-            Ok((revision, routines))
-        }
+pub(crate) fn fetch_routines(project: &Path) -> Result<(u64, Vec<wsx_core::routine::RoutineView>)> {
+    match send_routine(project, wsx_core::routine::Action::List)? {
+        wsx_core::routine::Response::Routines { revision, routines } => Ok((revision, routines)),
         other => bail!("routine daemon returned unexpected response: {other:?}"),
     }
 }
@@ -258,7 +238,7 @@ pub(super) fn set_routine_enabled(
     print_routine_response(
         send_routine(
             &path,
-            asched_core::routine::ipc::Action::Edit {
+            wsx_core::routine::Action::Edit {
                 revision: revision.unwrap_or(current_revision),
                 old_name: name.to_string(),
                 routine,
@@ -268,8 +248,8 @@ pub(super) fn set_routine_enabled(
     )
 }
 
-pub(super) fn print_fire_outcome(outcome: &asched_core::routine::FireOutcome) {
-    use asched_core::routine::{FireOutcome, RoutineFire};
+pub(super) fn print_fire_outcome(outcome: &wsx_core::routine::FireOutcome) {
+    use wsx_core::routine::{FireOutcome, RoutineFire};
     match outcome {
         FireOutcome::Deduplicated => println!("deduplicated"),
         FireOutcome::NoMatch => println!("no matching routines"),
@@ -287,10 +267,10 @@ pub(super) fn print_fire_outcome(outcome: &asched_core::routine::FireOutcome) {
 }
 
 pub(super) fn print_routine_response(
-    response: asched_core::routine::ipc::Response,
+    response: wsx_core::routine::Response,
     json: bool,
 ) -> Result<()> {
-    use asched_core::routine::ipc::Response;
+    use wsx_core::routine::Response;
     if json {
         print_json(&response)?;
         return Ok(());
@@ -312,14 +292,6 @@ pub(super) fn print_routine_response(
                 );
             }
         }
-        Response::Routine { revision, routine } => println!(
-            "revision {revision}\nname: {}\nenabled: {}\ntrigger: {}\ncommand: {}\nprompt: {}",
-            routine.routine.name,
-            routine.routine.enabled,
-            wsx_core::task::ledger::trigger_text(&routine.routine.trigger),
-            format_argv(&routine.routine.command),
-            routine.routine.prompt
-        ),
         Response::Runs { runs } => {
             for run in runs {
                 println!(
@@ -331,14 +303,11 @@ pub(super) fn print_routine_response(
             }
         }
         Response::Fire { outcome } => print_fire_outcome(&outcome),
-        Response::Daemon { protocol, pid } => {
-            println!("asched daemon pid={pid} protocol={protocol}")
-        }
         Response::Ok { revision } => match revision {
             Some(revision) => println!("ok revision={revision}"),
             None => println!("ok"),
         },
-        Response::Error { kind, message } => bail!("{kind}: {message}"),
+        Response::Error(error) => bail!("{error}"),
     }
     Ok(())
 }
@@ -349,8 +318,8 @@ pub(super) fn format_argv(argv: &[String]) -> String {
 
 impl TriggerArgs {
     /// The trigger the flags name; a time must be in the future.
-    pub(crate) fn trigger(self) -> Result<asched_core::routine::Trigger> {
-        use asched_core::routine::Trigger;
+    pub(crate) fn trigger(self) -> Result<wsx_core::routine::Trigger> {
+        use wsx_core::routine::Trigger;
         let now = wsx_core::task::now_unix_ms() as i64 / 1000;
         Ok(match (self.cron, self.event, self.at) {
             (Some(cron), _, _) => Trigger::Cron(cron),

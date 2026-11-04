@@ -579,7 +579,7 @@ impl App {
             Selection::Routine(pi, ri) => {
                 let view = &self.workspace.projects[pi].routines[ri];
                 self.mode = Mode::Confirm {
-                    message: if view.capabilities.can_cancel {
+                    message: if view.running {
                         format!(
                             "Cancel active run and delete routine '{}' ?",
                             view.routine.name
@@ -845,19 +845,15 @@ impl App {
     pub(super) fn action_edit(&mut self) -> Result<()> {
         if let Selection::Routine(pi, ri) = self.current_selection() {
             let view = self.workspace.projects[pi].routines[ri].clone();
-            if !view.capabilities.can_edit {
-                self.set_status("Routine cannot be edited in its current state");
-                return Ok(());
-            }
             let mut form = RoutineForm::from_routine(view.routine);
-            if !view.capabilities.can_rename {
+            if view.running {
                 form.field = 1;
                 form.cursor = form.cron.len();
             }
             self.mode = Mode::RoutineEditor {
                 project_idx: pi,
                 original_name: Some(form.name.clone()),
-                can_rename: view.capabilities.can_rename,
+                can_rename: !view.running,
                 form,
             };
             return Ok(());

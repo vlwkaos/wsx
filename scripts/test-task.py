@@ -128,25 +128,6 @@ PROBE_EXPECTED = {'read_ssh': False, 'write_ssh': False, 'write_state': False, '
                   'write_library': True, 'move_main': False, 'listen': True, 'pty': True}
 
 
-# ^ The scheduler's protocol, read from its source so a bump does not stale this scenario.
-SCHED_PROTOCOL = int(re.search(r'pub const PROTOCOL_VERSION: u32 = (\d+);',
-                               (ROOT / 'vendor/asched/crates/asched-core/src/routine/mod.rs').read_text()).group(1))
-
-
-def stop_scheduler(home):
-    """Shut down the routine scheduler that wsxd hosts for an isolated home, when one runs."""
-    request = {'protocol': SCHED_PROTOCOL, 'project': '', 'action': {'action': 'shutdown'}}
-    try:
-        with socket.socket(socket.AF_UNIX) as connection:
-            connection.settimeout(5)
-            connection.connect(str(home / 'Library/Application Support/asched/daemon-v1.sock'))
-            connection.sendall((json.dumps(request) + '\n').encode())
-            connection.shutdown(socket.SHUT_WR)
-            connection.recv(4096)
-    except OSError:
-        pass
-
-
 def tui_text(wsx, env, cwd, until, seconds=15):
     """The TUI's output as text without escapes, read until `until` (a regex) matches."""
     text = ''
@@ -276,7 +257,6 @@ def main():
         if 'env' in owned:
             subprocess.run([str(wsx), 'daemon', 'stop', '--force'], env=owned['env'],
                            capture_output=True, timeout=20)
-            stop_scheduler(Path(owned['env']['HOME']))
         if not args.keep:
             shutil.rmtree(work, ignore_errors=True)
 
@@ -1786,7 +1766,7 @@ def run(wsx, wsxd, work, owned):
     row = next(r for r in js('task', 'ledger')['routines'] if r['name'] == 'checkin')
     assert row['next_run_unix_ms'] is None and row['last']['status'] == 'succeeded', row
     js('task', 'routine', 'add', 'closed', '-p', 'demo', '--event', 'task.closed', '--arg=sh', '--arg=-c',
-       '--arg=printf "%%s" "$ASCHED_EVENT_PAYLOAD" | %s task post -p demo --title closed' % wsx)
+       '--arg=printf "%%s" "$WSX_EVENT_PAYLOAD" | %s task post -p demo --title closed' % wsx)
     # ^ Only a short reply to events is quiet: one with a table is a message (docs/tasks.md "Manager").
     tabled = js('task', 'new', 'NOOP TABLE')['id']
     wait_state(tabled, 'ready')
@@ -2131,7 +2111,7 @@ def run(wsx, wsxd, work, owned):
                           'write_main_lock': str(common / 'refs/heads/main.lock'),
                           'write_main_reflog': str(common / 'logs/refs/heads/main'),
                           'write_hooks': str(common / 'hooks/pre-commit'), 'write_config': str(common / 'config'),
-                          'write_routines': str(home / 'Library/Application Support/asched/projects/probe.toml'),
+                          'write_routines': str(work / 'routines/projects/probe.json'),
                           'write_own_copy': str(base / ('project-t%d' % n) / 'probe.txt'),
                           'write_task_folder': str(store_dir / str(n) / 'probe.txt'),
                           'write_tmpdir': str(tmp / 'probe.txt'), 'write_cargo': str(home / '.cargo/registry/probe.txt'),

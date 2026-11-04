@@ -637,18 +637,7 @@ fn status_bar_view(app: &App) -> StatusBarView {
                     "(d)close",
                 ],
                 Selection::RoutinesHeader(_) => vec!["(u)new", "(?)help"],
-                Selection::Routine(project_idx, routine_idx) => {
-                    let view = &app.workspace.projects[project_idx].routines[routine_idx];
-                    let mut hints = Vec::new();
-                    if view.capabilities.can_edit {
-                        hints.push("(e)dit");
-                    }
-                    if view.capabilities.can_delete {
-                        hints.push("(d)elete");
-                    }
-                    hints.push("(?)help");
-                    hints
-                }
+                Selection::Routine(..) => vec!["(e)dit", "(d)elete", "(?)help"],
                 Selection::None => vec!["(p)add project", "(?)help"],
             }
             .into_iter()

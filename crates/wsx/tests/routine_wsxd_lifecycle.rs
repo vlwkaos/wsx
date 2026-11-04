@@ -1,24 +1,14 @@
-//! End-to-end coverage for wsx's shipped routine scheduler integration.
-//!
-//! This deliberately drives the public CLI and the public asched-core boundary;
-//! it does not use wsx implementation APIs.
+//! Routines end to end through the shipped binaries: `wsx routine` against the wsxd it starts,
+//! a run that outlives a live handoff, and the one-time import of a real asched store
+//! (`tests/fixtures/asched-store`, written by asched 0.2.0's daemon). ref: docs/tasks.md "Routines"
 
-use asched_core::{
-    registry::{Project, RegistryStore},
-    routine::{
-        ipc::{Action, Request, Response},
-        RoutineClient,
-    },
-};
+use serde_json::Value;
 use std::{
-    env, fs,
+    fs,
     io::{BufRead, BufReader, Write},
     os::{
         fd::AsRawFd,
-        unix::{
-            fs::OpenOptionsExt,
-            net::{UnixListener, UnixStream},
-        },
+        unix::{fs::PermissionsExt, net::UnixListener},
     },
     path::{Path, PathBuf},
     process::{Command, Output},
@@ -28,415 +18,352 @@ use std::{
 };
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
-const POLL_TIMEOUT: Duration = Duration::from_secs(10);
-const POLL_INTERVAL: Duration = Duration::from_millis(25);
-// ^ Runs start only by hand: a schedule that came due mid-test would start the same routine
-// and refuse `routine run` as already running. February 31 parses and never comes.
+const POLL_TIMEOUT: Duration = Duration::from_secs(20);
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+// ^ Runs start only by hand: February 31 parses and never comes.
 const NEVER_DUE: &str = "0 0 31 2 *";
 
-struct IsolatedInstall {
+struct Install {
     root: PathBuf,
     project: PathBuf,
-    scheduler_root: PathBuf,
-    wsx: PathBuf,
+    asched: PathBuf,
 }
 
-impl IsolatedInstall {
+impl Install {
     fn new() -> Self {
-        // Socket paths under this root must stay below macOS SUN_LEN, so drop the `..` parts.
+        // ^ Socket paths under this root stay below macOS SUN_LEN, so drop the `..` parts.
         let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .canonicalize()
-            .expect("resolve the repository root");
+            .unwrap();
         let root = repository.join("target").join(format!(
             "routine-it-{}-{}",
             std::process::id(),
             NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
         ));
-        let project = root.join("project");
-        let scheduler_root = root.join("a");
-        let empty_path = root.join("no-asched-on-path");
-        let wsx = PathBuf::from(env!("CARGO_BIN_EXE_wsx"));
-        // Cargo exposes sibling package binaries in configurations that build them
-        // as test artifacts. A normal installed layout has wsxd beside wsx, which
-        // is also the layout wsx must support.
-        let wsxd = option_env!("CARGO_BIN_EXE_wsxd")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                wsx.parent()
-                    .expect("wsx has a parent directory")
-                    .join("wsxd")
-            });
-        assert!(
-            wsx.is_file(),
-            "Cargo did not provide a wsx binary: {}",
-            wsx.display()
-        );
+        let wsxd = Path::new(env!("CARGO_BIN_EXE_wsx")).with_file_name("wsxd");
         assert!(
             wsxd.is_file(),
-            "missing adjacent wsxd binary: {}; build both companions with cargo build --locked -p wsx -p wsx-daemon before filtered package tests",
-            wsxd.display()
+            "build wsxd beside wsx first: cargo build -p wsx -p wsx-daemon"
         );
-        // ^ Validate companions before allocating a fixture that cannot be cleaned by Drop.
-        fs::create_dir_all(&project).expect("create isolated project directory");
-        fs::create_dir_all(&empty_path).expect("create isolated PATH directory");
-        fs::create_dir_all(root.join("home")).expect("create isolated HOME");
-
-        RegistryStore::new(scheduler_root.clone())
-            .add(
-                0,
-                Project {
-                    name: "project".into(),
-                    working_dir: project.clone(),
-                },
-            )
-            .expect("register the isolated project through the public registry API");
-
+        fs::create_dir_all(root.join("project")).unwrap();
+        fs::create_dir_all(root.join("home")).unwrap();
+        fs::create_dir_all(root.join("state")).unwrap();
+        // ^ wsxd refuses a socket folder that others may write.
+        fs::set_permissions(root.join("state"), fs::Permissions::from_mode(0o700)).unwrap();
+        let project = root.join("project").canonicalize().unwrap();
         Self {
+            asched: root.join("a"),
             root,
             project,
-            scheduler_root,
-            wsx,
         }
     }
 
-    fn client(&self) -> RoutineClient {
-        RoutineClient::new(self.scheduler_root.clone())
-    }
-
-    fn socket(&self) -> PathBuf {
-        self.client().socket_path()
-    }
-
-    fn project_arg(&self) -> &str {
-        self.project.to_str().expect("project path must be UTF-8")
-    }
-
     fn wsx(&self, args: &[&str]) -> Output {
-        let path_without_asched = self.root.join("no-asched-on-path");
-        Command::new(&self.wsx)
+        Command::new(env!("CARGO_BIN_EXE_wsx"))
             .args(args)
             .current_dir(&self.project)
-            .env("ASCHED_ROOT", &self.scheduler_root)
+            .env_remove("WSX_TASK_BROKER")
+            .env_remove("WSX_TASK_ACTOR")
+            .env("ASCHED_ROOT", &self.asched)
             .env("HOME", self.root.join("home"))
-            .env("WSX_EXIT_WITH_PID", std::process::id().to_string())
             .env("XDG_CONFIG_HOME", self.root.join("home/config"))
-            .env("XDG_DATA_HOME", self.root.join("home/data"))
-            .env("PATH", path_without_asched)
+            .env("WSX_SOCKET", self.root.join("state/w.sock"))
+            .env("WSX_EXIT_WITH_PID", std::process::id().to_string())
             .output()
             .unwrap_or_else(|error| panic!("run wsx {args:?}: {error}"))
     }
 
-    fn shutdown(&self) {
-        let _ = self
-            .client()
-            .request(&Request::new(PathBuf::new(), Action::Shutdown));
+    /// `wsx routine <args> --project <project> --json`, which must succeed.
+    fn routine(&self, args: &[&str]) -> Value {
+        let project = self.project.to_str().unwrap();
+        let mut all = vec!["routine"];
+        all.extend_from_slice(args);
+        all.extend_from_slice(&["--project", project, "--json"]);
+        let output = self.wsx(&all);
+        assert!(
+            output.status.success(),
+            "wsx {all:?}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    fn view(&self, name: &str) -> Value {
+        let list = self.routine(&["list"]);
+        list["routines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|view| view["routine"]["name"] == name)
+            .unwrap_or_else(|| panic!("no routine {name}: {list}"))
+            .clone()
+    }
+
+    /// The newest run of `name` once it is no longer running.
+    fn finished_run(&self, name: &str) -> Value {
+        let deadline = Instant::now() + POLL_TIMEOUT;
+        loop {
+            let runs = self.routine(&["logs", name]);
+            let last = runs["runs"].as_array().unwrap().last().cloned();
+            if let Some(run) = last.filter(|run| run["status"] != "running") {
+                return run;
+            }
+            assert!(Instant::now() < deadline, "{name} still runs: {runs}");
+            thread::sleep(POLL_INTERVAL);
+        }
     }
 }
 
-impl Drop for IsolatedInstall {
+impl Drop for Install {
     fn drop(&mut self) {
-        self.shutdown();
-        let socket = self.socket();
-        let deadline = Instant::now() + POLL_TIMEOUT;
-        while socket.exists() && Instant::now() < deadline {
-            thread::sleep(POLL_INTERVAL);
-        }
+        let _ = self.wsx(&["daemon", "stop", "--force"]);
         let _ = fs::remove_dir_all(&self.root);
     }
 }
 
-fn assert_success(output: &Output, operation: &str) {
+#[test]
+fn routine_cli_runs_commands_and_events_through_wsxd() {
+    let install = Install::new();
+    assert_eq!(install.routine(&["list"])["routines"], Value::Array(vec![]));
+    install.routine(&[
+        "add",
+        "report",
+        "--cron",
+        NEVER_DUE,
+        "--arg=sh",
+        "--arg=-c",
+        "--arg=echo out; echo err >&2; exit 3",
+    ]);
+    install.routine(&["run", "report"]);
+    let run = install.finished_run("report");
+    assert_eq!(
+        (&run["status"], &run["exit_code"]),
+        (&"failed".into(), &3.into())
+    );
+    assert_eq!(run["final_output"], "out");
+    let report_err = PathBuf::from(run["stderr_path"].as_str().unwrap());
+    assert_eq!(fs::read_to_string(&report_err).unwrap(), "err\n");
+
+    // An event runs its routine once per id, with the payload in the environment.
+    install.routine(&[
+        "add",
+        "closed",
+        "--event",
+        "task.closed",
+        "--arg=sh",
+        "--arg=-c",
+        "--arg=printf %s \"$WSX_EVENT_PAYLOAD\"",
+    ]);
+    let fire = [
+        "fire",
+        "--kind",
+        "task.closed",
+        "--event-id",
+        "t1",
+        "--payload",
+        r#"{"task":7}"#,
+    ];
+    assert_eq!(
+        install.routine(&fire),
+        serde_json::json!({"handled": {"routines": [{"started": {"name": "closed"}}]}})
+    );
+    let run = install.finished_run("closed");
+    assert_eq!(run["final_output"], r#"{"task":7}"#);
+    assert_eq!(
+        run["cause"],
+        serde_json::json!({"event": {"kind": "task.closed", "event_id": "t1"}})
+    );
+    assert_eq!(install.routine(&fire), Value::from("deduplicated"));
+
+    // A stale revision is refused; a delete removes the routine's runs and their files.
+    let list = install.routine(&["list"]);
+    let stale = (list["revision"].as_u64().unwrap() - 1).to_string();
+    let refused = install.wsx(&[
+        "routine",
+        "delete",
+        "report",
+        "--revision",
+        &stale,
+        "--project",
+        install.project.to_str().unwrap(),
+    ]);
     assert!(
-        output.status.success(),
-        "{operation} failed with {:?}\nstdout:\n{}\nstderr:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+        !refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains("stale")
     );
-}
-
-fn wait_for_logs(install: &IsolatedInstall, routine: &str, expected: &str, run: &Output) -> String {
-    let deadline = Instant::now() + POLL_TIMEOUT;
-    let mut last = String::new();
-    while Instant::now() < deadline {
-        let output = install.wsx(&[
-            "routine",
-            "logs",
-            routine,
-            "--project",
-            install.project_arg(),
-            "--json",
-        ]);
-        let text = format!(
-            "stdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        if output.status.success() && text.to_ascii_lowercase().contains(expected) {
-            return text;
-        }
-        last = text;
-        thread::sleep(POLL_INTERVAL);
-    }
-    panic!(
-        "timed out waiting for {routine} logs to contain {expected:?}; last output:\n{last}\nrun {:?}:\n{}{}",
-        run.status,
-        String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr),
-    );
-}
-
-fn wait_for_socket_removal(socket: &Path) {
-    let deadline = Instant::now() + POLL_TIMEOUT;
-    while socket.exists() && Instant::now() < deadline {
-        thread::sleep(POLL_INTERVAL);
-    }
+    install.routine(&["delete", "report"]);
     assert!(
-        !socket.exists(),
-        "scheduler socket was not removed: {}",
-        socket.display()
+        !report_err.parent().unwrap().exists(),
+        "the deleted routine's output stayed"
     );
-}
-
-fn wait_for_pid_exit(pid: u32) {
-    let deadline = Instant::now() + POLL_TIMEOUT;
-    while Instant::now() < deadline {
-        let result = unsafe { libc::kill(pid as i32, 0) };
-        if result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-            return;
-        }
-        thread::sleep(POLL_INTERVAL);
-    }
-    panic!("scheduler process {pid} remained after shutdown");
+    let names: Vec<Value> = install.routine(&["list"])["routines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|view| view["routine"]["name"].clone())
+        .collect();
+    assert_eq!(names, vec![Value::from("closed")]);
 }
 
 #[test]
-fn routine_cli_starts_adjacent_wsxd_without_asched_and_cleans_up() {
-    let install = IsolatedInstall::new();
-    let socket = install.socket();
-    let project = install.project_arg();
-    assert!(!socket.exists(), "test requires an absent scheduler socket");
-
-    // Listing is a routine operation, so it must start the scheduler despite the
-    // deliberately empty PATH. Repeating it covers requests after startup.
-    assert_success(
-        &install.wsx(&["routine", "list", "--project", project, "--json"]),
-        "initial routine list",
+fn a_run_outlives_a_live_handoff_and_records_its_exit() {
+    let install = Install::new();
+    install.routine(&[
+        "add",
+        "slow",
+        "--cron",
+        NEVER_DUE,
+        "--arg=sh",
+        "--arg=-c",
+        "--arg=sleep 3; echo done; exit 7",
+    ]);
+    install.routine(&["run", "slow"]);
+    assert_eq!(install.view("slow")["running"], true);
+    let restarted = install.wsx(&["daemon", "restart", "--json"]);
+    let answer: Value = serde_json::from_slice(&restarted.stdout).unwrap_or_default();
+    assert_eq!(answer["state"], "restarted", "{restarted:?}");
+    assert_eq!(
+        install.view("slow")["running"],
+        true,
+        "the handoff ended the run"
     );
-    assert!(socket.exists(), "routine list did not start the scheduler");
-    assert_success(
-        &install.wsx(&["routine", "list", "--project", project, "--json"]),
-        "repeated routine list",
+    let run = install.finished_run("slow");
+    assert_eq!(
+        (&run["status"], &run["exit_code"]),
+        (&"failed".into(), &7.into())
     );
-
-    let pid = match install
-        .client()
-        .request(&Request::new(PathBuf::new(), Action::Status))
-        .expect("query scheduler through the public client API")
-    {
-        Response::Daemon { pid, .. } => pid,
-        response => panic!("expected daemon status response, got {response:?}"),
-    };
-
-    let literal = "argv-literal;$(not-a-shell)";
-    assert_success(
-        &install.wsx(&[
-            "routine",
-            "add",
-            "succeeds",
-            "--project",
-            project,
-            "--cron",
-            NEVER_DUE,
-            "--arg",
-            "/usr/bin/printf",
-            "--arg",
-            "%s",
-            "--arg",
-            literal,
-        ]),
-        "add successful routine",
-    );
-    assert_success(
-        &install.wsx(&[
-            "routine",
-            "add",
-            "fails",
-            "--project",
-            project,
-            "--cron",
-            NEVER_DUE,
-            "--arg",
-            "/usr/bin/false",
-        ]),
-        "add failing routine",
-    );
-    let listed = install.wsx(&["routine", "list", "--project", project, "--json"]);
-    assert_success(&listed, "list created routines");
-    let listed = String::from_utf8_lossy(&listed.stdout);
-    assert!(
-        listed.contains("succeeds") && listed.contains("fails"),
-        "routine list omitted created routines:\n{listed}"
-    );
-
-    let run = install.wsx(&["routine", "run", "succeeds", "--project", project]);
-    assert_success(&run, "run successful routine");
-    let successful_logs = wait_for_logs(&install, "succeeds", "succeeded", &run);
-    assert!(
-        successful_logs.contains(literal),
-        "routine argv was not preserved as a literal direct argument:\n{successful_logs}"
-    );
-
-    // A failed child is a run result, not a scheduler failure. Some CLIs return a
-    // nonzero status for this command; the durable run record is the contract.
-    let run = install.wsx(&["routine", "run", "fails", "--project", project]);
-    wait_for_logs(&install, "fails", "failed", &run);
-    assert_success(
-        &install.wsx(&["routine", "list", "--project", project, "--json"]),
-        "routine list after failed run",
-    );
-
-    install.shutdown();
-    wait_for_socket_removal(&socket);
-    wait_for_pid_exit(pid);
+    assert_eq!(run["final_output"], "done");
 }
 
-fn accept_legacy_probe(listener: &UnixListener, phase: &str) -> UnixStream {
-    let deadline = Instant::now() + POLL_TIMEOUT;
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                stream
-                    .set_nonblocking(false)
-                    .expect("use blocking probe I/O");
-                stream
-                    .set_read_timeout(Some(POLL_TIMEOUT))
-                    .expect("bound legacy probe reads");
-                stream
-                    .set_write_timeout(Some(POLL_TIMEOUT))
-                    .expect("bound legacy probe writes");
-                return stream;
-            }
-            Err(error)
-                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-            {
-                thread::sleep(POLL_INTERVAL);
-            }
-            Err(error) => panic!("accept {phase}: {error}"),
-        }
-    }
-}
-
-#[test]
-fn routine_cli_replaces_legacy_same_schema_scheduler_with_adjacent_wsxd() {
-    let install = IsolatedInstall::new();
-    let socket = install.socket();
-    // ^ routine/daemon.rs retains daemon-v1.lock and releases its flock after unpublishing.
+/// asched's daemon as far as the import meets it: it holds its lock and answers `shutdown`.
+fn old_scheduler(asched: &Path) -> thread::JoinHandle<String> {
     let lock = fs::OpenOptions::new()
-        .read(true)
+        .create(true)
+        .truncate(false)
         .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(install.scheduler_root.join("daemon-v1.lock"))
-        .expect("create legacy singleton lock");
+        .open(asched.join("daemon-v1.lock"))
+        .unwrap();
     assert_eq!(
         unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
     );
-    let listener = UnixListener::bind(&socket).expect("bind legacy routine daemon socket");
-    listener
-        .set_nonblocking(true)
-        .expect("bound legacy fixture accepts");
-    let server_socket = socket.clone();
-    let legacy = thread::spawn(move || {
-        let mut current_probe = accept_legacy_probe(&listener, "current protocol probe");
-        let mut line = String::new();
-        BufReader::new(current_probe.try_clone().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let request: Request = serde_json::from_str(&line).unwrap();
-        assert_eq!(request.protocol, asched_core::routine::PROTOCOL_VERSION);
-        assert!(matches!(request.action, Action::Status));
-        current_probe
-            .write_all(
-                b"{\"result\":\"error\",\"kind\":\"protocol_mismatch\",\"message\":\"legacy scheduler protocol\"}\n",
-            )
-            .unwrap();
-
-        let mut legacy_probe = accept_legacy_probe(&listener, "legacy protocol probe");
-        line.clear();
-        BufReader::new(legacy_probe.try_clone().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let request: Request = serde_json::from_str(&line).unwrap();
-        assert_eq!(request.protocol, asched_core::routine::PROTOCOL_VERSION - 1);
-        assert!(matches!(request.action, Action::Status));
-        writeln!(
-            legacy_probe,
-            "{{\"result\":\"daemon\",\"protocol\":{},\"pid\":4242}}",
-            asched_core::routine::PROTOCOL_VERSION - 1
-        )
-        .unwrap();
-
-        let mut shutdown = accept_legacy_probe(&listener, "legacy shutdown");
-        line.clear();
-        BufReader::new(shutdown.try_clone().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let request: Request = serde_json::from_str(&line).unwrap();
-        assert_eq!(request.protocol, asched_core::routine::PROTOCOL_VERSION - 1);
-        assert!(matches!(request.action, Action::Shutdown));
-        shutdown
+    let listener = UnixListener::bind(asched.join("daemon-v1.sock")).unwrap();
+    thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut request = String::new();
+        BufReader::new(&stream).read_line(&mut request).unwrap();
+        (&stream)
             .write_all(b"{\"result\":\"ok\",\"revision\":null}\n")
             .unwrap();
-        drop(shutdown);
-
-        // ^ Model graceful retirement, not a queued connection reset: the client
-        // observes shutdown with a read-only status probe before starting wsxd.
-        let mut retiring_probe = accept_legacy_probe(&listener, "retirement status probe");
-        line.clear();
-        BufReader::new(retiring_probe.try_clone().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let request: Request = serde_json::from_str(&line).unwrap();
-        assert_eq!(request.protocol, asched_core::routine::PROTOCOL_VERSION);
-        assert!(matches!(request.action, Action::Status));
-        fs::remove_file(server_socket).expect("unpublish legacy routine daemon socket");
-        drop(listener);
-        retiring_probe
-            .write_all(
-                b"{\"result\":\"error\",\"kind\":\"protocol_mismatch\",\"message\":\"legacy scheduler retiring\"}\n",
-            )
-            .unwrap();
         drop(lock);
-    });
+        request
+    })
+}
 
-    let output = install.wsx(&[
-        "routine",
+#[test]
+fn the_first_start_imports_asched_routines_and_history() {
+    let install = Install::new();
+    // ^ The fixture names its root, project and project key with placeholders.
+    let key = wsx_core::routine::store::project_key(&install.project);
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/asched-store");
+    for file in ["projects/@KEY@.toml", "runtime/@KEY@.toml"] {
+        let text = fs::read_to_string(fixture.join(file))
+            .unwrap()
+            .replace("@ASCHED@", install.asched.to_str().unwrap())
+            .replace("@PROJECT@", install.project.to_str().unwrap())
+            .replace("@KEY@", &key);
+        let target = install.asched.join(file.replace("@KEY@", &key));
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, text).unwrap();
+    }
+    let logs = fixture.join("logs/@KEY@");
+    for routine in fs::read_dir(&logs).unwrap().flatten() {
+        for run in fs::read_dir(routine.path()).unwrap().flatten() {
+            let target = install
+                .asched
+                .join("logs")
+                .join(&key)
+                .join(routine.file_name())
+                .join(run.file_name());
+            fs::create_dir_all(&target).unwrap();
+            for file in fs::read_dir(run.path()).unwrap().flatten() {
+                fs::copy(file.path(), target.join(file.file_name())).unwrap();
+            }
+        }
+    }
+    let runtime_file = install.asched.join(format!("runtime/{key}.toml"));
+    let before = fs::read(&runtime_file).unwrap();
+    let old = old_scheduler(&install.asched);
+
+    let list = install.routine(&["list"]);
+    let request: Value = serde_json::from_str(&old.join().unwrap()).unwrap();
+    assert_eq!(request["action"], serde_json::json!({"action": "shutdown"}));
+    assert_eq!(list["revision"], 4, "{list}");
+    let names: Vec<&str> = list["routines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|view| view["routine"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["later", "closed", "nightly", "slow"]);
+    let later = install.view("later");
+    assert_eq!(later["routine"]["post"], false);
+    assert_eq!(later["next_run_epoch"], 29979360 * 60);
+
+    // Finished runs keep their result and output, now in wsxd's store.
+    let nightly = install.view("nightly")["latest_run"].clone();
+    assert_eq!(
+        (&nightly["status"], &nightly["final_output"]),
+        (&"succeeded".into(), &"imported-output".into())
+    );
+    let stdout = nightly["stdout_path"].as_str().unwrap();
+    assert!(
+        stdout.starts_with(install.root.join("state/routines").to_str().unwrap()),
+        "{stdout}"
+    );
+    assert_eq!(fs::read_to_string(stdout).unwrap(), "imported-output\n");
+    let closed = install.view("closed")["latest_run"].clone();
+    assert_eq!(
+        closed["cause"],
+        serde_json::json!({"event": {"kind": "task.closed", "event_id": "e1"}})
+    );
+    // The receipt came along: the same event does not run again.
+    let fire = [
         "fire",
-        "--project",
-        install.project_arg(),
         "--kind",
-        "upgrade.probe",
+        "task.closed",
         "--event-id",
-        "upgrade-probe-1",
+        "e1",
         "--payload",
         "{}",
-        "--json",
-    ]);
-    assert_success(&output, "routine fire after legacy scheduler replacement");
-    legacy.join().unwrap();
+    ];
+    assert_eq!(install.routine(&fire), Value::from("deduplicated"));
 
-    let response = install
-        .client()
-        .request(&Request::new(PathBuf::new(), Action::Status))
-        .expect("query replacement scheduler");
-    assert!(matches!(
-        response,
-        Response::Daemon { protocol, pid }
-            if protocol == asched_core::routine::PROTOCOL_VERSION && pid != 4242
-    ));
-    install.shutdown();
-    wait_for_socket_removal(&socket);
+    // The run asched had in flight is not lost: it is recorded as ended by the upgrade.
+    let slow = install.view("slow");
+    assert_eq!(
+        (&slow["running"], &slow["latest_run"]["status"]),
+        (&false.into(), &"interrupted".into())
+    );
+    assert!(slow["latest_run"]["final_output"]
+        .as_str()
+        .unwrap()
+        .contains("interrupted by the upgrade from asched"));
+
+    // asched's files stay as a backup, and the imported routines run.
+    assert_eq!(fs::read(&runtime_file).unwrap(), before);
+    install.routine(&["run", "nightly"]);
+    let run = install.finished_run("nightly");
+    assert_eq!(
+        (&run["status"], &run["final_output"]),
+        (&"succeeded".into(), &"imported-output".into())
+    );
+    assert_eq!(
+        install.routine(&["logs", "nightly"])["runs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 }

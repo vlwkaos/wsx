@@ -100,18 +100,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
-name = "asched-core"
-version = "0.2.0"
-dependencies = [
- "dirs",
- "libc",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "toml",
-]
-
-[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2121,7 +2109,6 @@ name = "wsx"
 version = "0.43.0"
 dependencies = [
  "anyhow",
- "asched-core",
  "base64 0.22.1",
  "clap",
  "crossterm",
@@ -2141,7 +2128,6 @@ name = "wsx-core"
 version = "0.43.0"
 dependencies = [
  "anyhow",
- "asched-core",
  "dirs",
  "glob",
  "libc",
@@ -2157,11 +2143,12 @@ dependencies = [
 name = "wsx-daemon"
 version = "0.43.0"
 dependencies = [
- "asched-core",
+ "dirs",
  "libc",
  "serde",
  "serde_json",
  "sha2",
+ "toml",
  "wsx-core",
  "wsx-terminal",
 ]

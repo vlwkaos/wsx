@@ -1,7 +1,7 @@
 use super::protocol::{
     binary_identity, binary_identity_with_version, encode_line, Request, Response,
     TerminalClientMessage, TerminalRawServerMessage, TerminalServerMessage, MAX_RESPONSE_BYTES,
-    PROTOCOL_VERSION, ROUTINE_DAEMON_ARG,
+    PROTOCOL_VERSION,
 };
 use std::{
     borrow::Cow,
@@ -2438,19 +2438,6 @@ fn wait_until_handoff_ready(client: &Client, target_revision: u32) -> io::Result
         }
         thread::sleep(Duration::from_millis(50));
     }
-}
-
-// ^ Routine startup boundary. Keep wsxd's process submode and asched-core's startup handshake aligned.
-pub fn routine_daemon_command() -> Command {
-    let mut command = Command::new(daemon_binary());
-    command
-        .arg(ROUTINE_DAEMON_ARG)
-        // ^ Its routines run as the owner, also when the manager's command started it.
-        .env_remove(crate::task::owner::ACTOR_ENV)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    command
 }
 
 fn daemon_binary() -> PathBuf {

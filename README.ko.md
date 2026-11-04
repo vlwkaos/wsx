@@ -51,7 +51,7 @@ cargo xtask build
 
 ## Agent integration과 routine
 
-`u`를 눌러 routine을 만듭니다. 문서로 확인된 one-shot agent template 또는 Custom을 선택합니다. Template은 다음 form에 보이는 command argv를 교체합니다. argv는 계속 편집할 수 있고 Custom은 빈 값으로 시작합니다. 배포에 포함된 `wsxd`가 routine 예약 실행을 담당하므로 별도 `asched` executable은 필요하지 않습니다.
+`u`를 눌러 routine을 만듭니다. 문서로 확인된 one-shot agent template 또는 Custom을 선택합니다. Template은 다음 form에 보이는 command argv를 교체합니다. argv는 계속 편집할 수 있고 Custom은 빈 값으로 시작합니다. 배포에 포함된 `wsxd`가 routine을 실행합니다. 처음 시작할 때 이전 asched scheduler의 routine과 실행 기록을 가져옵니다.
 
 wsx는 시작할 때 설치된 integration의 embedded version이 오래되었으면 업데이트를 제안합니다. 거절하면 다음 실행 때 다시 제안합니다. 빠진 integration은 계속 사용 시점에 처리합니다. 설치되어 있고 setup이 필요한 agent를 사용자가 명시적으로 선택했을 때만 설치를 제안하며, 거절하면 **Global Settings → Runtime → Agent integrations**에서 직접 설치할 때까지 해당 agent prompt를 숨깁니다. PATH 감지나 남은 config file만으로는 빠진 integration prompt를 표시하지 않습니다.
 
@@ -119,7 +119,7 @@ copy:
   include: [.env.example]
   exclude: [target]
 git:
-  subtrees: [vendor/asched]
+  subtrees: [vendor/portable-pty]
 worktree:
   branchPrefix: feature/
   defaultSession:

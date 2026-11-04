@@ -14,7 +14,6 @@ use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME}
 use super::{broker, hosting, limit};
 use crate::cli::existing_daemon_snapshot;
 use anyhow::{Context, Result};
-use asched_core::routine::{store::RoutineStore, RoutineClient, RunRecord, RunStatus, Trigger};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
@@ -23,6 +22,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::TaskWorkflow;
+use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::runtime;
 use wsx_core::task::manager::{
     asks_owner, decided_request, event_wakes, instructions_digest, pending_approvals, quiet_reply,
@@ -43,8 +43,6 @@ use wsx_core::task::{
 use wsx_core::task::{owner, roles, usage};
 
 use wsx_core::task::owner::ACTOR_ENV;
-/// The longest a manager host waits for the scheduler to take an event.
-const FIRE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 /// Events within this long of each other, or during a turn, become one message.
 const EVENT_QUIET: Duration = Duration::from_secs(3);
@@ -864,14 +862,10 @@ impl Manager {
 
     /// The project's routine runs that ended, as wsxd's scheduler recorded them.
     fn finished_routine_runs(&self) -> Vec<RunRecord> {
-        let Ok(root) = asched_core::RegistryStore::default_root() else {
-            return Vec::new();
-        };
-        RoutineStore::new(root, &self.main)
-            .and_then(|store| store.load_runtime())
-            .map(|state| state.runs.into_values().flatten().collect::<Vec<_>>())
-            .unwrap_or_default()
-            .into_iter()
+        self.stored_routines()
+            .runs
+            .into_values()
+            .flatten()
             .filter(|run| run.finished_epoch.is_some())
             .collect()
     }
@@ -908,6 +902,7 @@ impl Manager {
             true => Default::default(),
             false => self
                 .stored_routines()
+                .routines
                 .into_iter()
                 .filter(|routine| !routine.post)
                 .map(|routine| routine.name)
@@ -1098,24 +1093,27 @@ impl Manager {
     /// "Routines"). Only a project with such a routine asks the scheduler, so the others send
     /// no request; a scheduler that does not answer drops the event, as a busy routine does.
     fn fire(&self, kind: &str, event_id: String, payload: serde_json::Value) {
-        let wanted = self.stored_routines().iter().any(|routine| {
+        let wanted = self.stored_routines().routines.iter().any(|routine| {
             routine.enabled
                 && matches!(&routine.trigger, Trigger::Event { kind: wanted } if wanted == kind)
         });
-        if let (true, Ok(root)) = (wanted, asched_core::RegistryStore::default_root()) {
-            let _ = RoutineClient::new(root)
-                .with_request_timeout(FIRE_TIMEOUT)
-                .fire(&self.main, kind, payload, &event_id);
+        if wanted {
+            let action = wsx_core::routine::Action::Fire {
+                kind: kind.into(),
+                payload,
+                event_id,
+            };
+            let client = wsx_core::runtime::Client::local();
+            let _ = wsx_core::routine::request(&client, &self.main, action);
         }
     }
 
-    /// The project's routines as stored, without asking the scheduler; none when unreadable.
-    fn stored_routines(&self) -> Vec<asched_core::routine::Routine> {
-        asched_core::RegistryStore::default_root()
-            .ok()
-            .and_then(|root| RoutineStore::new(root, &self.main).ok())
-            .and_then(|store| store.load().ok())
-            .map_or_else(Vec::new, |config| config.routines)
+    /// The project's routines and runs as stored, without asking the scheduler; none when
+    /// unreadable.
+    fn stored_routines(&self) -> routines::ProjectRoutines {
+        routines::canonical_project(&self.main)
+            .and_then(|project| routines::load(&routines::root(), &project))
+            .unwrap_or_default()
     }
 
     /// Add a finished task's memo to `notes/context.md` as one line, unless it is there. Past

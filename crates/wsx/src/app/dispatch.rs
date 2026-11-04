@@ -798,13 +798,13 @@ impl App {
         let project_path = project.path.clone();
         let revision = project.routine_revision;
         let action = if let Some(old_name) = original_name.clone() {
-            asched_core::routine::ipc::Action::Edit {
+            wsx_core::routine::Action::Edit {
                 revision,
                 old_name,
                 routine: routine.clone(),
             }
         } else {
-            asched_core::routine::ipc::Action::Add {
+            wsx_core::routine::Action::Add {
                 revision,
                 routine: routine.clone(),
             }

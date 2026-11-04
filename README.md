@@ -51,7 +51,7 @@ cargo xtask build
 
 ## Agent integrations and routines
 
-Press `u` to create a routine. Choose a documented one-shot agent template or Custom. A template replaces the command argv shown in the next form. The argv remains editable; Custom starts empty. The shipped `wsxd` binary owns routine scheduling, so release installations do not require a separate `asched` executable.
+Press `u` to create a routine. Choose a documented one-shot agent template or Custom. A template replaces the command argv shown in the next form. The argv remains editable; Custom starts empty. The shipped `wsxd` binary runs the routines; at its first start it takes over the routines and run history of an earlier asched scheduler.
 
 At startup, wsx offers to update installed integrations whose embedded version is outdated. Declining defers that update until the next launch. Missing integrations remain demand-driven: wsx offers setup only after you explicitly choose an installed agent that needs it, and declining suppresses that agent until you install it from **Global Settings → Runtime → Agent integrations**. PATH detection and residual config files alone never trigger a missing-integration prompt.
 
@@ -140,7 +140,7 @@ copy:
   include: [.env.example]
   exclude: [target]
 git:
-  subtrees: [vendor/asched]
+  subtrees: [vendor/portable-pty]
 worktree:
   branchPrefix: feature/
   defaultSession:

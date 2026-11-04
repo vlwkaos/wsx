@@ -1,0 +1,50 @@
+version = 2
+revision = 4
+project_path = "@PROJECT@"
+
+[[routines]]
+name = "later"
+command = [
+    "printf",
+    "hi",
+]
+prompt = ""
+enabled = true
+post = false
+
+[routines.trigger.at]
+epoch_minute = 29979360
+
+[[routines]]
+name = "closed"
+command = ["true"]
+prompt = ""
+enabled = true
+
+[routines.trigger.event]
+kind = "task.closed"
+
+[[routines]]
+name = "nightly"
+command = [
+    "sh",
+    "-c",
+    "echo imported-output; echo err >&2",
+]
+prompt = ""
+enabled = true
+
+[routines.trigger]
+cron = "0 0 31 2 *"
+
+[[routines]]
+name = "slow"
+command = [
+    "sleep",
+    "30",
+]
+prompt = ""
+enabled = true
+
+[routines.trigger]
+cron = "0 0 31 2 *"

@@ -6,30 +6,6 @@ pub fn run() -> io::Result<()> {
     run_daemon(None)
 }
 
-pub fn run_routine_daemon(mut arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
-    if arguments.next().is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "unexpected routine daemon argument",
-        ));
-    }
-    let root = asched_core::RegistryStore::default_root().map_err(io::Error::other)?;
-    fs::create_dir_all(&root)?;
-    let socket = asched_core::routine::RoutineClient::new(root.clone()).socket_path();
-    Lifetime::new(&root)?.watch(move || {
-        // ^ Shutdown lets asched settle running routines; a deleted root has no socket left.
-        let shutdown = asched_core::routine::ipc::Request::new(
-            PathBuf::new(),
-            asched_core::routine::ipc::Action::Shutdown,
-        );
-        if asched_core::routine::ipc::send(&socket, &shutdown).is_ok() {
-            thread::sleep(Duration::from_secs(5));
-        }
-        std::process::exit(0);
-    })?;
-    asched_core::routine::daemon::serve_from_startup_env(root).map_err(io::Error::other)
-}
-
 pub fn run_handoff_import(mut arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
     let socket = arguments
         .next()
@@ -207,6 +183,8 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     if let Some(lifetime) = lifetime {
         lifetime.watch(|| STOP_REQUESTED.store(true, Ordering::Release))?;
     }
+    routine::start(&socket);
+    let mut handed_off = false;
 
     while !advance_replacement(&daemon) {
         retry_dirty_persistence(&daemon);
@@ -224,7 +202,10 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
         }
         if let Some(target) = take_ready_handoff(&daemon) {
             match perform_live_handoff(&daemon, &socket, &singleton_lock, &mut listener, target) {
-                Ok(()) => break,
+                Ok(()) => {
+                    handed_off = true;
+                    break;
+                }
                 Err(error) => eprintln!("wsxd handoff: {error}"),
             }
         }
@@ -266,6 +247,7 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
                 if let Some(recovery) = cold_recovery.take() {
                     let _ = recovery.join();
                 }
+                routine::stop(true);
                 cleanup(&daemon, &socket);
                 let _ = plugin_dispatcher.join();
                 let _ = port_scanner.join();
@@ -279,6 +261,8 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     if let Some(recovery) = cold_recovery.take() {
         let _ = recovery.join();
     }
+    // ^ A live handoff's successor takes the running runs over.
+    routine::stop(!handed_off);
     cleanup(&daemon, &socket);
     let _ = plugin_dispatcher.join();
     let _ = port_scanner.join();

@@ -736,24 +736,21 @@ enum RoutineResultKind {
 struct RoutineRefreshResult {
     project_path: PathBuf,
     kind: RoutineResultKind,
-    response: Result<asched_core::routine::ipc::Response>,
+    response: Result<wsx_core::routine::Response>,
 }
 
-fn routine_error_kind(error: &anyhow::Error) -> Option<asched_core::routine::RoutineErrorKind> {
+fn routine_error_kind(error: &anyhow::Error) -> Option<wsx_core::routine::RoutineErrorKind> {
     error
-        .downcast_ref::<asched_core::routine::RoutineError>()
-        .map(asched_core::routine::RoutineError::kind)
+        .downcast_ref::<wsx_core::routine::RoutineError>()
+        .map(|error| error.kind)
 }
 
 fn routine_error_text(error: &anyhow::Error) -> String {
     match routine_error_kind(error) {
-        Some(asched_core::routine::RoutineErrorKind::ProtocolMismatch) => {
-            "routine scheduler is newer than wsx; upgrade wsx and retry".into()
+        Some(wsx_core::routine::RoutineErrorKind::Conflict) => {
+            "routine changed elsewhere; refreshed the latest revision".into()
         }
-        Some(asched_core::routine::RoutineErrorKind::Conflict) => {
-            "routine changed in asched; refreshed the latest revision".into()
-        }
-        Some(asched_core::routine::RoutineErrorKind::AlreadyRunning) => {
+        Some(wsx_core::routine::RoutineErrorKind::AlreadyRunning) => {
             "routine is already running".into()
         }
         _ => error.to_string(),
@@ -1807,7 +1804,7 @@ impl App {
     fn spawn_routine_request(
         &mut self,
         project_path: PathBuf,
-        action: asched_core::routine::ipc::Action,
+        action: wsx_core::routine::Action,
         kind: RoutineResultKind,
     ) {
         let tx = self.routine_tx.clone();
@@ -1830,7 +1827,7 @@ impl App {
         let generation = self.invalidate_routine_refresh(&project_path);
         self.spawn_routine_request(
             project_path,
-            asched_core::routine::ipc::Action::List,
+            wsx_core::routine::Action::List,
             RoutineResultKind::Refresh {
                 generation,
                 expand,

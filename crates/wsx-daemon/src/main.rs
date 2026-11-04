@@ -8,8 +8,8 @@ fn main() -> std::process::ExitCode {
         Some(argument) if argument == wsx_daemon::HANDOFF_IMPORT_ARG => {
             wsx_daemon::run_handoff_import(arguments)
         }
-        Some(argument) if argument == wsx_core::runtime::ROUTINE_DAEMON_ARG => {
-            wsx_daemon::run_routine_daemon(arguments)
+        Some(argument) if argument == wsx_core::runtime::ROUTINE_RUN_ARG => {
+            wsx_daemon::run_routine_run(arguments)
         }
         Some(_) => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
