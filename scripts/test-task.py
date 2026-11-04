@@ -128,9 +128,14 @@ PROBE_EXPECTED = {'read_ssh': False, 'write_ssh': False, 'write_state': False, '
                   'write_library': True, 'move_main': False, 'listen': True, 'pty': True}
 
 
+# ^ The scheduler's protocol, read from its source so a bump does not stale this scenario.
+SCHED_PROTOCOL = int(re.search(r'pub const PROTOCOL_VERSION: u32 = (\d+);',
+                               (ROOT / 'vendor/asched/crates/asched-core/src/routine/mod.rs').read_text()).group(1))
+
+
 def stop_scheduler(home):
     """Shut down the routine scheduler that wsxd hosts for an isolated home, when one runs."""
-    request = {'protocol': 4, 'project': '', 'action': {'action': 'shutdown'}}
+    request = {'protocol': SCHED_PROTOCOL, 'project': '', 'action': {'action': 'shutdown'}}
     try:
         with socket.socket(socket.AF_UNIX) as connection:
             connection.settimeout(5)

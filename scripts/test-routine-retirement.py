@@ -9,12 +9,16 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# ^ The scheduler's protocol, read from its source so a bump does not stale this scenario.
+PROTOCOL = int(re.search(r'pub const PROTOCOL_VERSION: u32 = (\d+);',
+                         (ROOT / 'vendor/asched/crates/asched-core/src/routine/mod.rs').read_text()).group(1))
 
 
 def main():
@@ -81,9 +85,9 @@ def run_case(wsx, wsxd, scratch, mode):
         try:
             with listener.accept()[0] as connection:
                 receive(connection)
-                assert actions[-1] == {'action': 'status', 'protocol': 4}
+                assert actions[-1] == {'action': 'status', 'protocol': PROTOCOL}
                 if mode == 'mutation-disconnect':
-                    reply(connection, {'result': 'daemon', 'protocol': 4, 'pid': os.getpid()})
+                    reply(connection, {'result': 'daemon', 'protocol': PROTOCOL, 'pid': os.getpid()})
                 else:
                     reply(connection, {'result': 'error', 'kind': 'protocol_mismatch', 'message': 'legacy protocol'})
             if mode == 'mutation-disconnect':
@@ -99,16 +103,16 @@ def run_case(wsx, wsxd, scratch, mode):
                     return
             with listener.accept()[0] as connection:
                 receive(connection)
-                assert actions[-1] == {'action': 'status', 'protocol': 3}
-                reply(connection, {'result': 'daemon', 'protocol': 3, 'pid': os.getpid()})
+                assert actions[-1] == {'action': 'status', 'protocol': PROTOCOL - 1}
+                reply(connection, {'result': 'daemon', 'protocol': PROTOCOL - 1, 'pid': os.getpid()})
             with listener.accept()[0] as connection:
                 receive(connection)
-                assert actions[-1] == {'action': 'shutdown', 'protocol': 3}
+                assert actions[-1] == {'action': 'shutdown', 'protocol': PROTOCOL - 1}
                 reply(connection, {'result': 'ok', 'revision': None})
             with listener.accept()[0] as connection:
                 if mode != 'unread-close':
                     receive(connection)
-                    assert actions[-1] == {'action': 'status', 'protocol': 4}
+                    assert actions[-1] == {'action': 'status', 'protocol': PROTOCOL}
                     if mode == 'drip-timeout':
                         # Send often enough to reset a per-read timeout while retaining ownership.
                         for byte in b'{"result':
@@ -155,7 +159,7 @@ def run_case(wsx, wsxd, scratch, mode):
         with socket.socket(socket.AF_UNIX) as connection:
             connection.settimeout(2)
             connection.connect(str(endpoint))
-            request = {'protocol': 4, 'project': str(project), 'action': {'action': action}}
+            request = {'protocol': PROTOCOL, 'project': str(project), 'action': {'action': action}}
             connection.sendall((json.dumps(request) + '\n').encode())
             connection.shutdown(socket.SHUT_WR)
             with connection.makefile('rb') as stream:
@@ -173,7 +177,7 @@ def run_case(wsx, wsxd, scratch, mode):
         if mode in ['unavailable', 'unread-close']:
             assert process.returncode == 0, process.stderr
             status = direct('status')
-            assert status['result'] == 'daemon' and status['protocol'] == 4
+            assert status['result'] == 'daemon' and status['protocol'] == PROTOCOL
             pid = status['pid']
         else:
             assert process.returncode != 0, 'expected fail-closed result'
