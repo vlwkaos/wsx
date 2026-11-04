@@ -6,7 +6,7 @@ import { api, openEvents, pageId, QUIET_MS } from "./api.js";
 import { html, render, useEffect, useRef, useState } from "./lib.js";
 import { can, events, noteBuild, parseRoute, shows, stackUnder, state, trackHistory, update, useRoute, useStore } from "./store.js";
 import { Home } from "./home.js";
-import { applyScheme, Notices, toast } from "./ui.js";
+import { applyBar, applyScheme, Notices, toast } from "./ui.js";
 import { Pair } from "./pair.js";
 import { Inbox } from "./inbox.js";
 import { Project, Projects, ProjectSessions } from "./projects.js";
@@ -278,6 +278,7 @@ async function boot() {
 }
 
 applyScheme();
+applyBar();
 followViewport();
 trackHistory();
 viewImageLinks();

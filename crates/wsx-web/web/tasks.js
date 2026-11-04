@@ -14,7 +14,7 @@ import { readTaskAhead, TaskPage } from "./task.js";
 import { ProjectOverview } from "./page.js";
 import { ChecksPage } from "./checks.js";
 import { UsagePage } from "./usage.js";
-import { RoutinesPage } from "./routines.js";
+import { RoutinesButton, RoutinesPage } from "./routines.js";
 
 // Motion only where the user allows it (the no-preference block of app.css); under reduce,
 // nothing moves and nothing waits for an animation to end.
@@ -926,22 +926,29 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
     : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} all=${finding} />`
     : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${fresh.current.has(row.key)} onMention=${mention} />`
     : html`<${Note} key=${row.key} entry=${row.entry} />`;
+  const header = html`
+    <header class="bar">
+      <${Back} fallback=${role ? `#/p/${id}` : "#/"} />
+      <div class="bar-title">
+        <span class="bar-label">${role ?? project.name}</span>
+        ${!role && !managerWord && chat?.manager.agent && html`<span class="bar-model" title="Model">${agentWords(chat.manager.agent)}</span>`}
+        ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing
+          ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`
+          : managerWord}</span>`}
+      </div>
+      <div class="bar-tools">
+        <${FindButton} open=${finding} onClick=${find} />
+        ${!role && html`
+          <a class="icon-button" href=${`#/p/${id}/page`} aria-label="Overview" title="Overview"><${Icon} name="overview" /></a>
+          <${RoutinesButton} project=${id} />
+          <${ProjectShell} project=${project} /><${More} project=${project} roles=${chat?.roles} />`}
+      </div>
+    </header>`;
+  // ^ The header sits at the bottom, above the composer, when this device chose it (settings.js).
+  const low = store.bar === "bottom";
   return html`
     <div class="page manager">
-      <header class="bar">
-        <${Back} fallback=${role ? `#/p/${id}` : "#/"} />
-        <div class="bar-title">
-          <span class="bar-label">${role ?? project.name}</span>
-          ${!role && !managerWord && chat?.manager.agent && html`<span class="bar-model" title="Model">${agentWords(chat.manager.agent)}</span>`}
-          ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing
-            ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`
-            : managerWord}</span>`}
-        </div>
-        <div class="bar-tools">
-          <${FindButton} open=${finding} onClick=${find} />
-          ${!role && html`<${ProjectShell} project=${project} /><${More} project=${project} roles=${chat?.roles} />`}
-        </div>
-      </header>
+      ${!low && header}
       <div class="chat">
         ${finding && html`<${FindBar} log=${logNode} reveal=${reveal} loading=${whole.current !== true} onClose=${() => setFinding(false)} />`}
         ${!role && html`<${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "bubble" && row.author !== "owner")?.at} sent=${sent} />`}
@@ -959,6 +966,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
         </div>
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
         ${!role && html`<${Reservoir} project=${id} items=${items} tasks=${overview?.tasks ?? []} checking=${overview?.to_check ?? 0} onMention=${mention} />`}
+        ${low && header}
         ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
           onSent=${(message) => { toEnd(); setSent(message); load(); }} />`}
       </div>

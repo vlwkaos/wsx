@@ -213,6 +213,13 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 /* Without the rail the label keeps the row's free width and the state word goes under it. */
 .app:not([data-wide]) .bar-title { flex-direction: column; align-items: stretch; gap: 0; }
 .bar-tools { flex: 0 0 auto; display: flex; }
+[data-tone="danger"].icon-button { color: var(--color-danger); }
+/* Header: bottom (settings.js). One switch: every bar moves to the foot of its column, under the
+   content and above the composer, with its rule on top. The page's own bottom inset and the
+   keyboard-pinned viewport already keep it clear of the home indicator and the keyboard. */
+html[data-bar="bottom"] .page > .bar { order: 1; border-bottom: 0; border-top: var(--border-width) solid var(--color-hairline); }
+html[data-bar="bottom"] .chat > .bar { border-bottom: 0; border-top: var(--border-width) solid var(--color-hairline); }
+html[data-bar="bottom"] .more-menu { top: auto; bottom: 100%; }
 .switch { flex: 0 0 auto; display: flex; }
 .switch a {
   position: relative; isolation: isolate; height: var(--size-control); padding: 0 var(--space-3);
@@ -691,6 +698,8 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .bubble[data-side="out"] .bubble-box { background: var(--color-raised); border-color: transparent; }
 /* A reply that asks the owner: the same box with an accent border (docs/web-client-tasks.md "Project screen"). */
 .bubble[data-asks] .bubble-box { border-color: var(--color-accent); }
+/* A message a routine wrote (wsx posted it, no agent turn): the secondary accent border, apart from the asks-you accent. */
+.bubble[data-routine]:not([data-asks]) .bubble-box { border-color: var(--color-secondary); }
 /* Each speaker's color on its name only, never on its box; the name stays (docs/web-themes.md). */
 [data-speaker="manager"] { --speaker: var(--color-text); }
 .bubble[data-peer="1"] { --speaker: var(--color-peer-1); }

@@ -20,6 +20,8 @@ export const state = {
   tasks: {},
   // This device's notification switches and muted sessions (api/push), once read.
   push: null,
+  // Where the header bar sits on this device: "top" or "bottom" (ui.js, settings.js).
+  bar: "top",
 };
 
 // ^ This page's build: the path segment its modules were loaded from, assets/<build>/.

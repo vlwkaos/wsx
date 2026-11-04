@@ -1,6 +1,6 @@
 // Notices, the confirmation dialog, and the device's light or dark choice.
 import { html, Icon, useEffect, useExit, useRef, useState } from "./lib.js";
-import { backTarget, can, goBack, parseRoute, reloadForBuild, state, useStore } from "./store.js";
+import { backTarget, can, goBack, parseRoute, reloadForBuild, state, update, useStore } from "./store.js";
 
 // A theme with a dark scheme is dark unless this device chose light (docs/web-themes.md).
 const SCHEME_KEY = "wsx-scheme";
@@ -19,6 +19,21 @@ export function applyScheme() {
 export function setScheme(value) {
   try { localStorage.setItem(SCHEME_KEY, value); } catch { /* a private window keeps the default */ }
   applyScheme();
+}
+
+// ^ Where the header bar sits on this device. app.css moves every `.bar` by `html[data-bar]`;
+// the project chat reads `state.bar` to put its bar above the composer.
+const BAR_KEY = "wsx-bar";
+export function applyBar() {
+  let side = "top";
+  try { side = localStorage.getItem(BAR_KEY) === "bottom" ? "bottom" : "top"; } catch { /* the default */ }
+  if (side === "bottom") document.documentElement.dataset.bar = "bottom";
+  else delete document.documentElement.dataset.bar;
+  update({ bar: side });
+}
+export function setBar(side) {
+  try { localStorage.setItem(BAR_KEY, side); } catch { /* a private window keeps the default */ }
+  applyBar();
 }
 
 // One notice over the screen at a time, never in the layout: an outcome clears itself after a
