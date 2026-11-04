@@ -1257,6 +1257,9 @@ await closeSheet("the usage sheet", chat);
 // --- A turn of the manager: two messages group on the right; while it runs a typing bubble
 // ends the chat and the header says "typing"; the reply edits the page (with a link to it),
 // has short chips (the same task twice as two plain chips) and a table that scrolls inside it.
+// ^ #1's landing (Land above) ends when its checks pass. Its event must reach the chat before the
+// two sends, else it goes between them and they do not group.
+await until(`${statusSays(1, "done")} && !document.querySelector('.log .typing')`, "the landing of #1 left no muted line", 300);
 await comeBack();
 await typeInto(".composer-field", "SLOW TABLE");
 await click(".composer-send");
