@@ -43,7 +43,7 @@ def transcript(path):
             if mid in seen or not m.get("usage"): continue
             seen.add(mid)
             u = m["usage"]
-            calls.append({"model": m.get("model"), "in": u.get("input_tokens", 0), "w": u.get("cache_creation_input_tokens", 0), "r": u.get("cache_read_input_tokens", 0), "o": u.get("output_tokens", 0), "sidechain": e.get("isSidechain", False)})
+            calls.append({"model": m.get("model"), "in": u.get("input_tokens", 0), "w": u.get("cache_creation_input_tokens", 0), "r": u.get("cache_read_input_tokens", 0), "o": u.get("output_tokens", 0)})
         elif e.get("type") == "user" and isinstance(m.get("content"), list):
             for b in m["content"]:
                 if isinstance(b, dict) and b.get("type") == "tool_result":
@@ -72,18 +72,19 @@ for folder in sorted(glob.glob(ST + "/[0-9]*")):
     for path in glob.glob(pdir + "/*.jsonl"):
         calls, results = transcript(path)
         if not calls: continue
-        main = [c for c in calls if not c["sidechain"]]
-        if main:
-            first_r.append(main[0]["r"]); first_w.append(main[0]["w"])
+        first_r.append(calls[0]["r"]); first_w.append(calls[0]["w"])
         for c in calls:
             agg["calls"] += 1; agg["r"] += c["r"]; agg["w"] += c["w"]; agg["o"] += c["o"]; agg["usd"] += cost(c)
-            agg["sidechain_usd"] += cost(c) if c["sidechain"] else 0
             ctx_start.append(c["r"] + c["w"] + c["in"])
         n = len(calls)
         for idx, nm, tok in results:
             by_tool[nm] += tok; ntool[nm] += 1
-            carried[nm] += tok * max(n - idx, 0)  # ^ tokens re-read by later calls (upper bound: ignores compaction, sidechain mix)
-print("tasks", tasks, "calls", agg["calls"], "usd %.2f" % agg["usd"], "sidechain usd %.2f" % agg["sidechain_usd"])
+            carried[nm] += tok * max(n - idx, 0)  # ^ tokens re-read by later calls (upper bound: ignores compaction)
+    # ^ Subagent transcripts live beside the session: <session>/subagents/agent-*.jsonl
+    for path in glob.glob(pdir + "/*/subagents/*.jsonl"):
+        for c in transcript(path)[0]:
+            agg["sub_calls"] += 1; agg["sub_usd"] += cost(c)
+print("tasks", tasks, "calls", agg["calls"], "usd %.2f" % agg["usd"], "subagent calls", agg["sub_calls"], "usd %.2f" % agg["sub_usd"])
 print("read M %.1f write M %.2f out M %.2f" % (agg["r"] / 1e6, agg["w"] / 1e6, agg["o"] / 1e6))
 pr = 0.20
 print("read usd share %.0f%%" % (100 * agg["r"] * pr / 1e6 / agg["usd"]))
@@ -104,7 +105,7 @@ pat = sys.argv[1] if len(sys.argv) > 1 else "-Users-vlwkaos-ws-wsx-t*"
 cls = collections.Counter(); usd = collections.Counter(); gaps = collections.Counter(); models = collections.Counter()
 def ts(s): return datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
 for path in glob.glob(os.path.join(PJ, pat, "*.jsonl")):
-    seen, prev_t, prev_ctx, n = set(), None, 0, 0
+    seen, prev_t = set(), None
     for l in open(path, errors="replace"):
         try: e = json.loads(l)
         except ValueError: continue
@@ -124,7 +125,7 @@ for path in glob.glob(os.path.join(PJ, pat, "*.jsonl")):
         if c.startswith("rewrite"):
             gaps["%dk ctx" % (min(ctx // 50000, 4) * 50)] += 1
         cls[c] += 1; usd[c] += w * wp / 1e6; models[m.get("model")] += 1
-        prev_t, prev_ctx = t, ctx
+        prev_t = t
 tot = sum(usd.values())
 for c in sorted(cls): print("%-20s calls %5d write usd %7.2f (%2.0f%%)" % (c, cls[c], usd[c], 100 * usd[c] / tot))
 print("total write usd %.2f" % tot, dict(gaps), dict(models))
