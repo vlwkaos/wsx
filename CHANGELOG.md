@@ -4,6 +4,7 @@
 
 ### Added
 
+- Tasks: `tasks.skillsOnly` names the owner's skills a worker gets; unset keeps all, and a missing name is skipped with a warning. The manager keeps all. A `--plan` task's prompt now tells the worker to read code through the Explore subagent with `model: haiku`, bringing back findings with file:line.
 - Tasks: one shell per project. `S` in the TUI's manager chat and a shell icon in the web project screen's top row open the same session in the main checkout: created on first use, entered after, made again only once it exited. The terminal's workspace key, and the shell's exit, go back to the manager chat. Before, `S` entered any idle shell of the main checkout or made another one, and leaving it went to the workspace.
 - Tasks: a `tasks.scenarios` command written `ci: <where>` runs on CI only. A worker's `check-run` of it answers at once where it runs and takes no slot. wsx's own `task` scenario is one.
 - Tasks: the check slot has two lanes, `checks` and `scenarios`, one run at a time in each, so a plain check run no longer waits behind a 20-minute scenario. A worker's `check-run` that names a scenario, `scripts/check-slot.py` and the live handoff take the scenarios lane; the waiting reason names the lane ("queued for the scenarios slot behind ...").

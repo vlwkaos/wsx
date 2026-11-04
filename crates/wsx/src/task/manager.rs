@@ -2143,7 +2143,7 @@ impl Manager {
         let overview = store::ensure_overview(&self.dir.project_id, &self.project)?;
         let boundary = Boundary::manager(&self.main, &self.dir.path, &overview)?;
         let root = config_root(&self.main)?;
-        let skills = skills_plugin(&self.dir.path, root.as_deref())?;
+        let skills = skills_plugin(&self.dir.path, root.as_deref(), &[])?;
         let workflow = load_task_config(&self.main)
             .map(|settings| settings.workflow)
             .unwrap_or_default();
