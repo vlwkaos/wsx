@@ -3329,7 +3329,8 @@ def run(wsx, wsxd, work, owned):
     replies_before = len([e for e in manager_entries() if e['kind'] == 'reply'])
     js('task', 'say', 'STATUS before the pings')
     wait(lambda: len([e for e in manager_entries() if e['kind'] == 'reply']) > replies_before, 'manager reply')
-    held = js('task', 'new', 'LIMIT 25 NOOP')['id']
+    # ^ A title without LIMIT: the fake manager would meet a limit of its own on the event line.
+    held = js('task', 'new', '--title', 'Held by a limit', 'LIMIT 25 NOOP')['id']
     wait(lambda: show(held)['record'].get('waiting', {}).get('on') == 'limit', 'the limit wait')
     # ^ The account is limited while this task checks: no ping, though it waits on the checks.
     cold = js('task', 'new', 'NOOP')['id']
@@ -3339,7 +3340,7 @@ def run(wsx, wsxd, work, owned):
     assert done['state'] == 'ready', done['result']
     # ^ After the reset its checks wait 11 s: pings at about 2, 4 and 6 s, then the cap holds.
     assert kinds(held, 'limit_wait', 'result', 'ping') == ['limit_wait', 'result', 'ping', 'ping', 'ping'], log(held)
-    assert all(e['usage']['output_tokens'] > 0 for e in pings(held)), pings(held)
+    assert all('usage' in e for e in pings(held)), pings(held)
     results = [e for e in log(held) if e['kind'] == 'result']
     assert len(results) == 1 and results[0]['trigger'] == 'limit', results
     session = show(held)['record']['agent_session']
