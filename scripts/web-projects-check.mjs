@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Real-browser check of adding and removing a project on Home (docs/web-client.md "Projects"),
-// over the Chrome DevTools Protocol. Called by `test-web-client.py --part tasks --browser`.
+// over the Chrome DevTools Protocol. Called by `test-web-client.py --browser`.
 //   web-projects-check.mjs <admin-url> <admin-code> <viewer-url> <viewer-code> <capture-dir> <git repo> <project with an open task>
 // The admin site reaches every project and types into a terminal; the viewer site has neither.
 import fs from "node:fs";
@@ -67,7 +67,9 @@ await viewport(1280, 800, 1);
 await pause(300);
 if (!(await evaluate("!!document.querySelector('.rail [aria-label=\"Add project\"]')"))) await fail("the rail shows no + at 1280 px");
 await capture("1280x800-home");
-if (problems.length) await fail(`page problems: ${problems.join("; ")}`);
+// ^ The refusals are the point: 401 before pairing, 409 for the missing path and the open task.
+const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/status of 409 .*\/api\/projects(\/\d+)?$/.test(problem));
+if (defects.length) await fail(`page problems: ${defects.join("; ")}`);
 console.log("projects page: + and Remove only on the managing site, a refusal stays in the sheet, add and remove take effect, an open task refuses a remove");
 await cleanup();
 process.exit(0);
