@@ -1709,6 +1709,20 @@ impl Host {
             Ok(picked) => picked,
             Err(message) => return refuse(message),
         };
+        // ^ A scenario written `ci: <where>` runs on CI only: no local run, no slot.
+        // ref: docs/tasks.md "Scenarios"
+        if let Some((index, text)) = picked
+            .iter()
+            .find_map(|(index, command)| Some((*index, command.strip_prefix("ci:")?.trim())))
+        {
+            let name = scenarios
+                .keys()
+                .nth(index - checks)
+                .map_or("", String::as_str);
+            return refuse(format!(
+                "the `{name}` scenario runs on CI, not here: {text}"
+            ));
+        }
         // ^ Never two runs in one working copy: the same checks join, other ones wait.
         let indexes: Vec<usize> = picked.iter().map(|(index, _)| *index).collect();
         if let Some(run) = &mut self.check_run {
