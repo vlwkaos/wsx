@@ -2526,7 +2526,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   await stateIs(working, "ready");
   await shows(working, "ready", { health: "ready to land", steps: "+context +build +memo", age: "", said: "" });
 
-  // Running checks, and a second task that waits for the machine's one check slot. Neither has
+  // Running checks, and a second task that waits for the machine's one checks slot. Neither has
   // workflow steps, so neither has a step row.
   const holder = taskNew("--no-steps", "WORK hold-checks.txt");
   await stateIs(holder, "checking");
@@ -2535,7 +2535,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   await shot("progress-checks", ".composer-send");
   const queued = taskNew("--no-steps", "WORK hold-checks.txt");
   await open(queued);
-  await shows(queued, "check slot", { health: "waiting for a check slot", steps: "", next: new RegExp(`^Queued for the check slot behind plans t${holder}`) });
+  await shows(queued, "check slot", { health: "waiting for the checks slot", steps: "", next: new RegExp(`^Queued for the checks slot behind plans t${holder}`) });
   await shot("progress-check-slot", ".composer-send");
   for (const task of [holder, queued]) {
     await stateIs(task, "checking");

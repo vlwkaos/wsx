@@ -2528,7 +2528,7 @@ def run(wsx, wsxd, work, owned):
     slot_config(3)
     pair = [js('task', 'new', 'WORK slot%d.txt' % i)['id'] for i in (1, 2)]
     queued = wait(lambda: queued_row(pair), 'a queued check run', 30)
-    assert queued['waiting']['reason'].startswith('queued for the check slot behind demo t'), queued
+    assert queued['waiting']['reason'].startswith('queued for the checks slot behind demo t'), queued
     for n in pair:
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
         assert 'waiting' not in show(n)['record']
@@ -2723,6 +2723,27 @@ def run(wsx, wsxd, work, owned):
     answers = [t['message'] for t in traces() if 'Your check-run ended. Its answer' in t.get('message', '') and str(late_gate) in t['message']]
     assert len(answers) == 1 and 'check 2 `while [ ! -e' in answers[0] and ': exit 0' in answers[0], answers
     js('task', 'close', late, '--discard')
+    # 32v. Two lanes (docs/tasks.md "Check slot"): a scenario check-run holds the scenarios lane, a
+    # task's result checks still run at once in the checks lane, and a second scenario run waits
+    # with the scenarios reason.
+    mark('32v')
+    lane_gate = base / 'lane-gate'
+    configure(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n' % lane_gate, 'a slow scenario')
+    holds = js('task', 'new', 'CHECKRUN_LATE slow WORK lane1.txt')['id']
+    wait(lambda: kinds(holds, 'result'), 'the first scenario run', 30)
+    waits = js('task', 'new', 'CHECKRUN_LATE slow WORK lane2.txt')['id']
+    reason = wait(lambda: (show(waits)['record'].get('waiting') or {}).get('reason', '').startswith('queued') and show(waits)['record']['waiting']['reason'], 'the second scenario run queued', 30)
+    assert reason.startswith('queued for the scenarios slot behind demo t%s' % holds), reason
+    plain = js('task', 'new', 'WORK lane3.txt')['id']
+    assert wait_state(plain, 'ready', 'failed')['state'] == 'ready', log(plain)
+    checked = next(e for e in log(plain) if e['kind'] == 'checks')
+    assert all(c['queued_ms'] < 1500 for c in checked['results']), checked
+    assert not lane_gate.exists()
+    lane_gate.touch()
+    for n in (holds, waits):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    for n in (holds, waits, plain):
+        js('task', 'close', n, '--discard')
     # 32u. A result that comes while the checks of an earlier one run (Claude's own turn for a
     # background notice) is answered by those checks: one result, one run, one revision.
     mark('32u')

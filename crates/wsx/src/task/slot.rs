@@ -1,4 +1,5 @@
-//! The check slot: one check run at a time for every task host of this wsx state folder.
+//! The check slots: per lane, one check run at a time for every task host of this wsx state
+//! folder. The `checks` lane takes plain checks, the `scenarios` lane the slow end-to-end ones.
 //! The disk slot (`tasks/disk-slot/`) queues the same way: one task resumes from a disk wait
 //! at a time, and holds the slot for a short settle time. ref: docs/tasks.md "Checks, revisions and report"
 //!
@@ -26,6 +27,31 @@ pub enum Priority {
     Normal = 1,
 }
 
+/// Which machine-wide queue a check run waits in. ref: docs/tasks.md "Check slot"
+#[derive(Clone, Copy)]
+pub enum Lane {
+    /// `tasks.checks` runs. The directory keeps its old name, so older hosts still serialize.
+    Checks,
+    /// A worker's `check-run` that names a scenario, and `scripts/check-slot.py`.
+    Scenarios,
+}
+
+impl Lane {
+    fn queue(self) -> &'static str {
+        match self {
+            Lane::Checks => "check-slot",
+            Lane::Scenarios => "scenario-slot",
+        }
+    }
+
+    fn what(self) -> &'static str {
+        match self {
+            Lane::Checks => "the checks slot",
+            Lane::Scenarios => "the scenarios slot",
+        }
+    }
+}
+
 /// The held slot; dropping it frees the slot.
 pub struct Slot(#[allow(dead_code)] File);
 
@@ -36,8 +62,13 @@ fn try_lock(file: &File) -> bool {
 
 /// Wait for the slot. `label` names the holder to the waiters (`demo t3`); `queued` hears
 /// each new reason this run waits, never when the slot is free at once.
-pub fn take(priority: Priority, label: &str, mut queued: impl FnMut(String)) -> io::Result<Slot> {
-    let ticket = Ticket::join("check-slot", "the check slot", priority)?;
+pub fn take(
+    lane: Lane,
+    priority: Priority,
+    label: &str,
+    mut queued: impl FnMut(String),
+) -> io::Result<Slot> {
+    let ticket = Ticket::join(lane.queue(), lane.what(), priority)?;
     let mut said = String::new();
     loop {
         match ticket.try_take(label) {
@@ -156,4 +187,46 @@ fn live_ahead(dir: &Path, name: &str) -> usize {
             }
         })
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Lanes are separate queues: a held scenarios slot never blocks the checks lane, and a
+    // land's ticket goes first within its lane.
+    #[test]
+    fn lanes_queue_apart_and_land_goes_first() {
+        let state = std::env::temp_dir().join(format!("wsx-slot-test-{}", std::process::id()));
+        // SAFETY: the only test that sets the variable, before any thread reads it.
+        unsafe { std::env::set_var("XDG_STATE_HOME", &state) };
+        let scenario = take(Lane::Scenarios, Priority::Normal, "a", |_| {}).unwrap();
+        let checks = take(Lane::Checks, Priority::Normal, "b", |_| {}).unwrap();
+        let normal =
+            Ticket::join(Lane::Checks.queue(), Lane::Checks.what(), Priority::Normal).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        let land = Ticket::join(Lane::Checks.queue(), Lane::Checks.what(), Priority::Land).unwrap();
+        let waiting = normal.try_take("c").err().unwrap();
+        assert_eq!(waiting, "queued for the checks slot behind b and 1 more");
+        assert_eq!(
+            land.try_take("d").err().unwrap(),
+            "queued for the checks slot behind b"
+        );
+        drop(checks);
+        assert!(normal.try_take("c").is_err());
+        assert!(land.try_take("d").is_ok());
+        let other = Ticket::join(
+            Lane::Scenarios.queue(),
+            Lane::Scenarios.what(),
+            Priority::Normal,
+        )
+        .unwrap();
+        assert_eq!(
+            other.try_take("e").err().unwrap(),
+            "queued for the scenarios slot behind a"
+        );
+        drop(scenario);
+        assert!(other.try_take("e").is_ok());
+        let _ = fs::remove_dir_all(&state);
+    }
 }
