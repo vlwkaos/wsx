@@ -441,7 +441,7 @@ async function chats() {
   await evaluate("document.querySelector('.bar button[aria-label=\"Find in chat\"]').click()");
   await until("document.activeElement === document.querySelector('.find-field')", "the session's find bar did not open");
   await evaluate(`(() => { const field = document.querySelector('.find-field'); field.value = 'question 1:'; field.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-  await until("document.querySelector('.find-count').textContent === '1/1'", "the session's find did not count 1/1");
+  await until("document.querySelector('.find-count').textContent === '1/1' && CSS.highlights.has('find-current')", "the session's find did not count 1/1");
   const sessionFind = await evaluate(`(() => { const range = [...CSS.highlights.get('find-current')][0]; const box = range.startContainer.parentElement.getBoundingClientRect();
     const log = document.querySelector('.log').getBoundingClientRect(); return { text: range.toString(), shown: box.top >= log.top && box.bottom <= log.bottom, earlier: !!document.querySelector('.log-earlier') }; })()`);
   if (sessionFind.text !== "Question 1:" || !sessionFind.shown || sessionFind.earlier) await fail(`the session's find reads ${JSON.stringify(sessionFind)}`);
