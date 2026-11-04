@@ -29,6 +29,8 @@ let toasts = [];
 let lastId = 0;
 const watchers = new Set();
 const changed = () => { for (const watcher of watchers) watcher(); };
+// ^ A row that slides left to show Remove (.row-slide) is filled only while it is slid open.
+export const slid = (event) => event.currentTarget.toggleAttribute("data-open", event.currentTarget.scrollLeft > 0);
 export function toast(text, { failure = false } = {}) {
   const entry = { text, failure, id: ++lastId };
   toasts = [...toasts.filter((other) => other.failure), entry];

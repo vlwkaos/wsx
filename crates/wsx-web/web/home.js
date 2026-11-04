@@ -5,7 +5,7 @@ import { api } from "./api.js";
 import { isAgent, listedSessions, stateOf, useStore } from "./store.js";
 import { needTone, needWords } from "./tasks.js";
 import { Dots } from "./bubbles.js";
-import { toast } from "./ui.js";
+import { slid, toast } from "./ui.js";
 
 // The order of need kinds, most urgent first, as the server ranks them.
 const URGENCY = { waiting: 0, failed: 1, approval: 2, land: 3 };
@@ -146,8 +146,6 @@ export function Home({ rail }) {
   useFlip(list);
   const [adding, setAdding] = useState(false);
   const manage = store.site.manage_projects;
-  // Remove is filled only while the row is slid open, as a session row's.
-  const slid = (event) => event.currentTarget.toggleAttribute("data-open", event.currentTarget.scrollLeft > 0);
   let body;
   if (!store.daemon) body = html`<p class="empty">wsx is not running on the host.</p>`;
   else if (!store.loaded) body = html`<${Loading} />`;
