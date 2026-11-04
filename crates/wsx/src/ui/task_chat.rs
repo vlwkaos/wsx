@@ -440,7 +440,10 @@ fn mark(line: Line<'static>, range: Range<usize>, style: Style) -> Line<'static>
 }
 
 /// `cells` broken at spaces into lines of at most `width` cells; a longer word is split.
-pub(super) fn wrap_cells(cells: &[(char, Option<usize>)], width: usize) -> Vec<Vec<(char, Option<usize>)>> {
+pub(super) fn wrap_cells(
+    cells: &[(char, Option<usize>)],
+    width: usize,
+) -> Vec<Vec<(char, Option<usize>)>> {
     let size_of = |char: char| Line::from(char.encode_utf8(&mut [0; 4]).to_string()).width();
     let (mut lines, mut line, mut used) = (Vec::new(), Vec::new(), 0);
     for word in cells.split(|(char, _)| *char == ' ') {
