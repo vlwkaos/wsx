@@ -345,7 +345,7 @@ export function useFollowEnd(name, ready) {
       keep();
     };
   }, []);
-  return { log, away, unread, since: opened?.read ?? null, scrolled, toEnd };
+  return { log, node, away, unread, since: opened?.read ?? null, scrolled, toEnd };
 }
 
 // Motion that script drives (a list that reorders, a view that leaves) reads the same tokens
