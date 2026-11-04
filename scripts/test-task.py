@@ -3760,6 +3760,8 @@ def run(wsx, wsxd, work, owned):
         registry.write('[[agents]]\nname = "fake-pi"\ncommand = ["pi"]\nadapter = "pi"\nmodel = "fake/pi-model"\n')
     configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi]\n    maxWaitMinutes: 1\n'),
               'fallback agent')
+    # ^ Part 20 ran a Pi manager: only the Pi turns from here on are the worker's.
+    traced_before = len(traces())
     switched = js('task', 'new', 'LIMIT 600 WORK fa.txt')['id']
     shown = wait_state(switched, 'ready', 'failed')
     assert shown['state'] == 'ready', shown
@@ -3768,7 +3770,7 @@ def run(wsx, wsxd, work, owned):
     assert switch['to'] == 'fake-pi (pi/fake/pi-model)' and 'claude usage limit until' in switch['reason'], switch
     assert kinds(switched, 'agent_switch', 'rotated', 'result', 'limit_wait') == ['agent_switch', 'rotated', 'result'], log(switched)
     assert next(e for e in log(switched) if e['kind'] == 'result')['summary'] == 'fake pi finished the turn'
-    pi_turns = [t for t in traces() if t.get('adapter') == 'pi' and 'message' in t]
+    pi_turns = [t for t in traces()[traced_before:] if t.get('adapter') == 'pi' and 'message' in t]
     assert len(pi_turns) == 1 and 'LIMIT 600 WORK fa.txt' in pi_turns[0]['message'], pi_turns
     assert 'could write no handoff notes' in pi_turns[0]['message'], pi_turns[0]
     assert any(t.get('adapter') == 'pi' and t.get('reported') == 0 for t in traces()), 'the result was not kept'
