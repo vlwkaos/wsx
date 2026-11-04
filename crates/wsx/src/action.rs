@@ -42,6 +42,8 @@ pub enum Action {
     GroupNext,
     GroupManager,
     Tasks,
+    /// `o` in the Tasks view: the project's overview (docs/tasks.md "TUI").
+    Overview,
     Shell,
     InputChar(char),
     InputBackspace,
@@ -56,8 +58,15 @@ pub enum Action {
     TerminalMouse(crossterm::event::MouseEvent),
     TerminalPrefixedMouse(crossterm::event::KeyEvent, crossterm::event::MouseEvent),
     ToggleTerminalSidebar,
-    MouseClick { col: u16, row: u16 },
-    MouseScroll { col: u16, row: u16, delta: i8 },
+    MouseClick {
+        col: u16,
+        row: u16,
+    },
+    MouseScroll {
+        col: u16,
+        row: u16,
+        delta: i8,
+    },
     Resize,
     FocusGained,
     None,

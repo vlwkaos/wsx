@@ -123,6 +123,14 @@ impl App {
             return self.dispatch_routine_editor(action);
         }
         if let Mode::Tasks { list } = &mut self.mode {
+            // ^ The overview is read-only: it takes every key until `Esc`.
+            if let Some(overview) = &mut list.overview {
+                if !overview.key(&action) {
+                    list.overview = None;
+                }
+                self.needs_redraw = true;
+                return Ok(());
+            }
             let shell = match &list.chat {
                 // ^ The chat takes characters; `S` is the shell only where it types nothing.
                 Some(chat) => {
@@ -134,7 +142,10 @@ impl App {
                 return self.action_task_shell(terminal);
             }
             if let Some(chat) = &mut list.chat {
-                if !chat.key(&action) {
+                // ^ `o` is the overview only where the chat types nothing.
+                if chat.focus == crate::task_chat::Focus::Chat && action == Action::InputChar('o') {
+                    list.open_overview();
+                } else if !chat.key(&action) {
                     list.chat = None;
                 }
                 // ^ A session link (Enter on it) is entered as `S` enters a shell.
@@ -147,6 +158,7 @@ impl App {
             }
             match (action, list.detail.is_some()) {
                 (Action::EnterMove, false) => list.open_chat(None),
+                (Action::Overview, false) => list.open_overview(),
                 (Action::NavigateDown, false) => list.select(1),
                 (Action::NavigateUp, false) => list.select(-1),
                 (Action::Select, false) => list.open_selected(),

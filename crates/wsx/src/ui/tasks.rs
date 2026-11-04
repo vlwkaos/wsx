@@ -1,7 +1,7 @@
 //! The Tasks view: the list in attention order and one task's detail, both read-only.
 //! ref: docs/tasks.md "TUI"
-use super::{theme, workspace_tree::truncate_to_width};
-use crate::task_list::{waits, Section, TaskList, TaskRow};
+use super::{task_chat::wrap_cells, theme, workspace_tree::truncate_to_width};
+use crate::task_list::{waits, Overview, Section, TaskList, TaskRow};
 use ratatui::{
     layout::Rect,
     prelude::Stylize,
@@ -76,6 +76,112 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
         .unwrap_or(0);
     frame.render_widget(Paragraph::new(lines), inner);
     frame.render_widget(Paragraph::new(body).scroll((offset as u16, 0)), area);
+}
+
+/// The overview as written: headings bold, a fenced block (mermaid too) muted with its
+/// fences subtle, long lines wrapped. `Overview <project>` and the lines shown, as `3-30/64`,
+/// head it.
+pub fn render_overview(frame: &mut Frame, area: Rect, project: &str, overview: &Overview) {
+    frame.render_widget(Clear, area);
+    let inner = Rect {
+        x: area.x.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        ..area
+    };
+    if inner.height < 3 || inner.width < 4 {
+        return;
+    }
+    let width = inner.width as usize;
+    let lines = match &overview.text {
+        Ok(Some(text)) => overview_lines(text, width),
+        Ok(None) => vec![muted("No overview yet")],
+        Err(error) => vec![Line::styled(
+            truncate_to_width(&format!("Could not read the overview: {error}"), width),
+            Style::default().fg(theme::ERROR),
+        )],
+    };
+    let height = inner.height - 2;
+    let max_scroll = (lines.len() as u16).saturating_sub(height);
+    overview.max_scroll.set(max_scroll);
+    overview.height.set(height);
+    let first = overview.scroll.min(max_scroll);
+    let last = (first + height).min(lines.len() as u16);
+    let position = format!("{}-{}/{}", first + 1, last, lines.len());
+    let mut head = vec![Span::styled(
+        "Overview",
+        Style::default().fg(theme::ACCENT).bold(),
+    )];
+    let name = format!(" {project}");
+    let used = "Overview".len() + Line::from(name.as_str()).width() + position.len();
+    if used < width {
+        head.push(Span::styled(name, Style::default().fg(theme::TEXT)));
+        head.push(Span::raw(" ".repeat(width - used)));
+    } else {
+        head.push(Span::raw("  "));
+    }
+    head.push(Span::styled(
+        position,
+        Style::default().fg(theme::TEXT_MUTED),
+    ));
+    frame.render_widget(Paragraph::new(Line::from(head)), inner);
+    frame.render_widget(Paragraph::new(lines).scroll((first, 0)), below(inner, 2));
+}
+
+/// The text's lines for `width` cells. A fenced block keeps its spaces and breaks at the
+/// edge; other lines wrap at spaces.
+fn overview_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    let mut fenced = false;
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let fence = line.trim_start().starts_with("```");
+        let (style, pieces) = if fence {
+            fenced = !fenced;
+            (
+                Style::default().fg(theme::TEXT_SUBTLE),
+                vec![line.to_string()],
+            )
+        } else if fenced {
+            (
+                Style::default().fg(theme::TEXT_MUTED),
+                hard_wrap(line, width),
+            )
+        } else if line.starts_with('#') {
+            (Style::default().fg(theme::ACCENT).bold(), wrap(line, width))
+        } else {
+            (Style::default().fg(theme::TEXT), wrap(line, width))
+        };
+        lines.extend(
+            pieces
+                .into_iter()
+                .map(|piece| Line::styled(truncate_to_width(&piece, width), style)),
+        );
+    }
+    lines
+}
+
+/// `text` broken at spaces into lines of at most `width` cells.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let cells: Vec<_> = text.chars().map(|char| (char, None)).collect();
+    wrap_cells(&cells, width)
+        .into_iter()
+        .map(|line| line.into_iter().map(|(char, _)| char).collect())
+        .collect()
+}
+
+/// `text` cut into pieces of at most `width` cells, spaces kept.
+fn hard_wrap(text: &str, width: usize) -> Vec<String> {
+    let (mut pieces, mut piece, mut used) = (Vec::new(), String::new(), 0);
+    for char in text.chars() {
+        let size = Line::from(char.encode_utf8(&mut [0; 4]) as &str).width();
+        if used > 0 && used + size > width {
+            pieces.push(std::mem::take(&mut piece));
+            used = 0;
+        }
+        piece.push(char);
+        used += size;
+    }
+    pieces.push(piece);
+    pieces
 }
 
 fn below(area: Rect, rows: usize) -> Rect {

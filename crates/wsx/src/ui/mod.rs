@@ -540,9 +540,10 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
                 }
             }
         }
-        Mode::Tasks { list } => match &list.chat {
-            Some(chat) => task_chat::render(frame, area, chat),
-            None => tasks::render(frame, area, list),
+        Mode::Tasks { list } => match (&list.overview, &list.chat) {
+            (Some(overview), _) => tasks::render_overview(frame, area, &list.project, overview),
+            (None, Some(chat)) => task_chat::render(frame, area, chat),
+            (None, None) => tasks::render(frame, area, list),
         },
         Mode::Workspace
         | Mode::Terminal { .. }
@@ -699,6 +700,11 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             theme::ModeBadge::Info,
             vec!["(j/k)scroll".into(), "Esc: close".into()],
         ),
+        Mode::Tasks { list } if list.overview.is_some() => (
+            "OVERVIEW",
+            theme::ModeBadge::Info,
+            vec!["(j/k)scroll".into(), "Esc: back".into()],
+        ),
         Mode::Tasks { list } if list.chat.is_some() => (
             match list.chat.as_deref().and_then(|chat| chat.role.as_ref()) {
                 Some(_) => "ROLE",
@@ -729,6 +735,8 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             if tasks::shows_days(list, content_height) {
                 hints.push("(u)sage".into());
             }
+            // ^ After `(u)sage`: the narrow footer drops the overview first.
+            hints.push("(o)verview".into());
             ("TASKS", theme::ModeBadge::Info, hints)
         }
     };
