@@ -416,6 +416,7 @@ mod tests {
 
     fn routine(name: &str) -> Routine {
         Routine {
+            post: true,
             name: name.into(),
             trigger: Trigger::Cron("*/5 * * * *".into()),
             command: vec!["echo".into()],

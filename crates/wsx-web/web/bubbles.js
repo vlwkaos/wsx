@@ -7,6 +7,7 @@ import { Attachments } from "./chat.js";
 import { Quoted, quoteOf } from "./reply.js";
 import { ChatApprovals, TaskChip } from "./tasks.js";
 import { CheckRow } from "./checks.js";
+import { can, shows } from "./store.js";
 
 // Bubbles of one author closer together than this read as one group.
 const GROUP_MS = 5 * 60_000;
@@ -171,6 +172,15 @@ const peerColor = (project) => {
   return hash % PEER_COLORS + 1;
 };
 
+// A `files/<path>` link in a reply (a routine's post) opens the project's files page at that
+// file, for a reader who may read files; one function per project, so the parse is reused.
+const fileHrefs = new Map();
+const fileHrefOf = (project) => {
+  if (!shows("files") || !can("files_read")) return undefined;
+  if (!fileHrefs.has(project)) fileHrefs.set(project, (path) => `#/p/${project}/files/${path}`);
+  return fileHrefs.get(project);
+};
+
 // One message. `words` turns its text runs into task chips.
 export function Bubble({ project, row, words, names, fresh }) {
   const out = row.author === "owner";
@@ -183,7 +193,7 @@ export function Bubble({ project, row, words, names, fresh }) {
   if (out) {
     body = html`<div class="bubble-body" id=${id}><${Quoted} text=${row.entry.text} words=${words} /></div><${Attachments} files=${row.entry.attachments} />`;
   } else {
-    body = html`<div class="bubble-body" id=${id}><${Markdown} text=${row.entry.text} words=${words} prose /></div>
+    body = html`<div class="bubble-body" id=${id}><${Markdown} text=${row.entry.text} words=${words} fileHref=${fileHrefOf(project)} prose /></div>
       ${row.approvals && html`<${ChatApprovals} project=${project} items=${row.approvals} />`}`;
   }
   return html`

@@ -68,7 +68,7 @@ A role ([tasks.md](tasks.md) "Roles") is a contact of its project. The `⋯` men
 
 # Routines
 
-`#/p/<project>/routines` opens a read-only sheet (`routines.js`) over the chat from the ⋯ menu's *Routines*; there is no add, edit, run, toggle or delete on the web. One row per routine: the name and *On* or *Off*, the schedule, the next run (`next 06:00`, or `no next run` for an off routine or an event trigger), and the last run ("succeeded 2h ago", "failed (exit 1) 5h ago", "never run"; a failure is in the danger color). A daily or weekly cron (`m h * * *`, `m h * * d`) reads "daily 06:00", "Mondays 06:00"; any other trigger stays as written. A tap on a row shows the command (argv joined by spaces); another tap hides it. No routines: "No routines". A scheduler that does not answer shows its error.
+`#/p/<project>/routines` opens a read-only sheet (`routines.js`) over the chat from the ⋯ menu's *Routines*; there is no add, edit, run, toggle or delete on the web. One row per routine: the name and *On* or *Off*, the schedule (with ", no chat post" for a routine stored with `post = false`, [tasks.md](tasks.md) "Routines"), the next run (`next 06:00`, or `no next run` for an off routine or an event trigger), and the last run ("succeeded 2h ago", "failed (exit 1) 5h ago", "never run"; a failure is in the danger color). A daily or weekly cron (`m h * * *`, `m h * * d`) reads "daily 06:00", "Mondays 06:00"; any other trigger stays as written. A tap on a row shows the command (argv joined by spaces); another tap hides it. No routines: "No routines". A scheduler that does not answer shows its error.
 
 # Task sheet
 

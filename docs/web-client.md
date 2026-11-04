@@ -206,6 +206,8 @@ A push reaches the owner only when the owner must act. Settings has two switches
 
 The files panel covers each granted project's main checkout only, not its other worktrees. A project's root is pinned when it is first opened (at start for listed paths). `.git` is never listed, read or written. File access uses `O_NOFOLLOW` descriptors from the pinned project root; a write replaces an existing text file only when it did not change since it was read.
 
+`#/p/<project>/files/<path>` opens that file; a `files/<path>` link in a manager chat reply (a routine's post, [tasks.md](tasks.md) "Routines") leads there for a site with `files_read`, and is text elsewhere.
+
 A `.md` or `.markdown` file opens rendered, as the chat renders an answer ([web-client-chat.md](web-client-chat.md) "Markdown"), with **Source** to show the text and, with `files_write`, the editor. The editor stays loaded while the rendered view shows, so an unsaved edit is kept; the rendered view shows the text as last read or saved.
 
 ## Dependencies

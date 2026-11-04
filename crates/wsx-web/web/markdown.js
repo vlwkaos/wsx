@@ -68,7 +68,7 @@ function Code({ source, language }) {
 
 const ALIGN = /text-align:(left|center|right)/;
 
-function inline(tokens, files, words) {
+function inline(tokens, files, words, fileHref) {
   const stack = [[]];
   const push = (node) => stack.at(-1).push(node);
   let linked = 0;
@@ -81,8 +81,11 @@ function inline(tokens, files, words) {
       if (token.type === "link_close") {
         linked -= 1;
         const href = token.meta;
-        // Any other scheme, and a relative address, stays text.
-        push(LINK.test(href) ? html`<a href=${href} target="_blank" rel="noopener noreferrer">${children}</a>` : children);
+        // `files/<path>` opens a file of the project when the view gives `fileHref`; any other
+        // scheme, and another relative address, stays text.
+        const file = fileHref && href.startsWith("files/") && !href.includes("..") ? href.slice(6) : null;
+        push(file ? html`<a href=${fileHref(file)}>${children}</a>`
+          : LINK.test(href) ? html`<a href=${href} target="_blank" rel="noopener noreferrer">${children}</a>` : children);
       } else {
         push(h(token.tag, null, children));
       }
@@ -123,12 +126,12 @@ function task(children) {
 // The words of rendered inline nodes, for a header named in another cell.
 const plain = (nodes) => [nodes].flat(Infinity).map((node) => typeof node === "string" ? node : plain(node?.props?.children ?? "")).join("");
 
-function blocks(tokens, files, words) {
+function blocks(tokens, files, words, fileHref) {
   const stack = [{ children: [] }];
   const push = (...nodes) => stack.at(-1).children.push(...nodes);
   for (const token of tokens) {
     if (token.type === "inline") {
-      push(...inline(token.children, files, words));
+      push(...inline(token.children, files, words, fileHref));
     } else if (token.nesting === 1) {
       // The closing token carries no attributes: keep the opening one.
       stack.push({ open: token, children: [] });
@@ -175,8 +178,9 @@ function blocks(tokens, files, words) {
 
 // One parse per text: a timeline refresh that brings the same message reuses the nodes.
 // `words`, when given, turns a text run into nodes (task chips); keep it the same function.
+// `fileHref(path)`, when given, is the address of a `files/<path>` link; keep it the same function.
 // `prose` reads indented lines as text, not code (docs/web-client-chat.md "Markdown").
-export function Markdown({ text, files, words, prose = false }) {
+export function Markdown({ text, files, words, fileHref, prose = false }) {
   const granted = files?.filter((file) => file.image).map((file) => file.hash).join() ?? "";
   return useMemo(() => {
     const env = {};
@@ -189,6 +193,6 @@ export function Markdown({ text, files, words, prose = false }) {
         else if (child.type === "link_close") child.meta = href;
       }
     }
-    return html`<div class="markdown" data-gallery>${blocks(tokens, files, words)}</div>`;
-  }, [text, granted, words, prose]);
+    return html`<div class="markdown" data-gallery>${blocks(tokens, files, words, fileHref)}</div>`;
+  }, [text, granted, words, fileHref, prose]);
 }

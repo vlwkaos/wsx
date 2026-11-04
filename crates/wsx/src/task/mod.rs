@@ -2236,6 +2236,8 @@ fn checkin(project: Option<&str>, after: Option<&str>, at: Option<&str>, why: &s
         command: vec!["printf".into(), "%s\\n".into(), why.into()],
         prompt: String::new(),
         enabled: true,
+        // ^ The why is for the manager, as the run's event; the owner asked for none.
+        post: false,
     }
     .validated()?;
     let action = match routines.iter().any(|view| view.routine.name == CHECKIN) {

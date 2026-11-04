@@ -430,6 +430,7 @@ pub fn routine_rows(main: &Path, limit: usize, full: bool) -> Value {
             let mut row = json!({
                 "name": view.routine.name,
                 "enabled": view.routine.enabled,
+                "post": view.routine.post,
                 "trigger": trigger_text(&view.routine.trigger),
                 "next_run_unix_ms": view.next_run_epoch.map(|epoch| epoch * 1000),
                 "running": view.capabilities.can_cancel,

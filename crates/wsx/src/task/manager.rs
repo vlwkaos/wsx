@@ -866,10 +866,15 @@ impl Manager {
             .unwrap_or(0)
     }
 
-    /// Turn each routine run that ended into an event line, a failure with the end of its
-    /// output. A success that printed nothing to stdout has nothing for the manager and costs
-    /// no turn. ref: docs/tasks.md "Routines"
+    /// Post each routine run that ended to the chat, with no turn, unless the routine opts out;
+    /// a failure, and the output of a routine that does not post, is also an event line. A
+    /// success that printed nothing to stdout posts nothing and costs no turn.
+    /// ref: docs/tasks.md "Routines"
     fn watch_routines(&mut self) {
+        // ^ A post inside a turn would read as its end: the runs wait for the turn to end.
+        if self.turn.is_some() {
+            return;
+        }
         // ^ A run that ends in this second may be recorded after this read: wait the second out.
         let settled = (now_unix_ms() / 1000) as i64 - 1;
         let mut runs: Vec<RunRecord> = self
@@ -881,13 +886,40 @@ impl Manager {
             })
             .collect();
         runs.sort_by_key(|run| run.finished_epoch);
+        let quiet: std::collections::HashSet<String> = match runs.is_empty() {
+            true => Default::default(),
+            false => self
+                .stored_routines()
+                .into_iter()
+                .filter(|routine| !routine.post)
+                .map(|routine| routine.name)
+                .collect(),
+        };
+        let mut posted = false;
         for run in runs {
             self.observed_routines = run.finished_epoch.unwrap_or_default();
-            if run.status == RunStatus::Succeeded && stdout_empty(&run) {
+            let succeeded = run.status == RunStatus::Succeeded;
+            if succeeded && stdout_empty(&run) {
                 continue;
             }
-            self.pending_events.push(routine_line(&run));
-            self.last_event = Some(Instant::now());
+            let posts = !quiet.contains(&run.routine);
+            if posts {
+                self.post(
+                    format!("routine {}", run.routine),
+                    routine_post(&run, &self.main),
+                );
+                posted = true;
+            }
+            if !succeeded || !posts {
+                self.pending_events.push(routine_line(&run));
+                self.last_event = Some(Instant::now());
+            }
+        }
+        // ^ Waiting events save the mark when they are logged; with none, a restart must not
+        // post these runs again.
+        if posted && self.pending_events.is_empty() {
+            self.state.routines_seen = Some(self.observed_routines);
+            self.save();
         }
     }
 
@@ -1020,22 +1052,24 @@ impl Manager {
     /// "Routines"). Only a project with such a routine asks the scheduler, so the others send
     /// no request; a scheduler that does not answer drops the event, as a busy routine does.
     fn fire(&self, kind: &str, event_id: String, payload: serde_json::Value) {
-        let Ok(root) = asched_core::RegistryStore::default_root() else {
-            return;
-        };
-        let wanted = RoutineStore::new(root.clone(), &self.main)
-            .and_then(|store| store.load())
-            .is_ok_and(|config| {
-                config.routines.iter().any(|routine| {
-                    routine.enabled
-                        && matches!(&routine.trigger, Trigger::Event { kind: wanted } if wanted == kind)
-                })
-            });
-        if wanted {
+        let wanted = self.stored_routines().iter().any(|routine| {
+            routine.enabled
+                && matches!(&routine.trigger, Trigger::Event { kind: wanted } if wanted == kind)
+        });
+        if let (true, Ok(root)) = (wanted, asched_core::RegistryStore::default_root()) {
             let _ = RoutineClient::new(root)
                 .with_request_timeout(FIRE_TIMEOUT)
                 .fire(&self.main, kind, payload, &event_id);
         }
+    }
+
+    /// The project's routines as stored, without asking the scheduler; none when unreadable.
+    fn stored_routines(&self) -> Vec<asched_core::routine::Routine> {
+        asched_core::RegistryStore::default_root()
+            .ok()
+            .and_then(|root| RoutineStore::new(root, &self.main).ok())
+            .and_then(|store| store.load().ok())
+            .map_or_else(Vec::new, |config| config.routines)
     }
 
     /// Add a finished task's memo to `notes/context.md` as one line, unless it is there. Past
@@ -2441,6 +2475,89 @@ fn stdout_empty(run: &RunRecord) -> bool {
 /// or any routine that prints wants the manager to read. ref: docs/tasks.md "Routines"
 fn routine_line(run: &RunRecord) -> String {
     format!("{}{}", routine_result(run), output_ends(&run.final_output))
+}
+
+/// The most of a run's output a chat post shows: its end.
+const POST_OUTPUT_CHARS: usize = 1500;
+/// The most files a chat post links.
+const POST_LINKS: usize = 3;
+
+/// A routine run's chat post: `succeeded after 4 s` or `failed (exit 3)`, the end of its output
+/// as written, and a link to each file of the main checkout the output names, which the web
+/// opens in its files page (docs/web-client.md "Files"). ref: docs/tasks.md "Routines"
+fn routine_post(run: &RunRecord, main: &Path) -> String {
+    let result = routine_result(run);
+    let head = format!("routine {} ", run.routine);
+    let mut text = result.strip_prefix(&head).unwrap_or(&result).to_string();
+    let output = run.final_output.trim();
+    if !output.is_empty() {
+        let skip = output.chars().count().saturating_sub(POST_OUTPUT_CHARS);
+        let end: String = output.chars().skip(skip).collect();
+        let fence = match end.contains("```") {
+            true => "````",
+            false => "```",
+        };
+        let cut = if skip > 0 { "…" } else { "" };
+        text.push_str(&format!("\n{fence}text\n{cut}{end}\n{fence}"));
+    }
+    for path in named_files(output, main) {
+        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+        text.push_str(&format!("\n[{name}](files/{})", link_path(&path)));
+    }
+    text
+}
+
+/// The files of the main checkout that `output` names, as paths relative to it: a word with a
+/// `/` or a `.`, relative to the checkout or absolute inside it, never under `.git`.
+fn named_files(output: &str, main: &Path) -> Vec<String> {
+    let root = main.canonicalize().unwrap_or_else(|_| main.to_path_buf());
+    let mut found: Vec<String> = Vec::new();
+    let words = output.split(|c: char| c.is_whitespace() || "\"'`()[]<>,;=".contains(c));
+    for word in words {
+        let word = word.trim_end_matches(['.', ':']);
+        if word.len() > 512 || !word.contains(['/', '.']) {
+            continue;
+        }
+        let path = Path::new(word);
+        let relative = match path.is_absolute() {
+            true => match path
+                .strip_prefix(&root)
+                .or_else(|_| path.strip_prefix(main))
+            {
+                Ok(relative) => relative.to_path_buf(),
+                Err(_) => continue,
+            },
+            false => path.to_path_buf(),
+        };
+        let normal = relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(name) if name != ".git"));
+        let Some(text) = relative.to_str().filter(|_| normal) else {
+            continue;
+        };
+        if found.iter().any(|known| known == text)
+            || !std::fs::symlink_metadata(root.join(&relative)).is_ok_and(|meta| meta.is_file())
+        {
+            continue;
+        }
+        found.push(text.to_string());
+        if found.len() == POST_LINKS {
+            break;
+        }
+    }
+    found
+}
+
+/// A relative path as a link's address: each byte outside `A-Z a-z 0-9 - . _ ~ /` as `%XX`.
+fn link_path(path: &str) -> String {
+    path.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
 }
 
 /// `routine <name> succeeded after 4 s`, `routine <name> failed (exit 3)`.

@@ -76,6 +76,7 @@ fn write_source_config(fixture: &TestDir, projects: Vec<(&str, PathBuf)>) {
 
 fn routine(name: &str, enabled: bool) -> Routine {
     Routine {
+        post: true,
         name: name.into(),
         trigger: Trigger::Cron("0 9 * * *".into()),
         command: vec!["echo".into(), "{prompt}".into()],

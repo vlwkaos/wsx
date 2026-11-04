@@ -1713,7 +1713,33 @@ def run(wsx, wsxd, work, owned):
     assert report.startswith('Since ') and 'You asked 3 times: "RUN wsx task routine run nightly -p demo --json"' in report, report
     assert 'not judged (--no-model)' in report and Path(report.split('Detail: ')[1].strip()).is_file(), report
     assert not events_with('routine retrospect'), 'the retrospect prints nothing'
-    for name in ('closed', 'retrospect', 'checkin'):
+    # ^ A run's end posts to the chat by default, with no turn and no event: its result, its
+    # output as written and a link to each file of the main checkout it names. `--no-post`
+    # keeps it an event only; a success that prints nothing posts nothing.
+    board = project / 'routine-out' / 'board.html'
+    board.parent.mkdir(exist_ok=True)
+    board.write_text('<p>board</p>\n')
+    js('task', 'routine', 'add', 'board', '-p', 'demo', '--cron', '0 5 * * *', '--arg=sh', '--arg=-c',
+       '--arg=echo "board at routine-out/board.html and missing/none.html"; echo \'{"ok": true}\'')
+    js('task', 'routine', 'add', 'hushed', '-p', 'demo', '--cron', '0 5 * * *', '--no-post', '--arg=echo', '--arg=hushed words')
+    js('task', 'routine', 'add', 'silent', '-p', 'demo', '--cron', '0 5 * * *', '--arg=true')
+    rows = {r['name']: r for r in js('task', 'ledger')['routines']}
+    assert rows['board']['post'] is True and rows['hushed']['post'] is False, rows
+    for name in ('board', 'hushed', 'silent'):
+        js('task', 'routine', 'run', name, '-p', 'demo')
+    post = wait(lambda: posted('routine board'), 'the board routine post', 60)[0]['text']
+    assert post.startswith('succeeded after ') and '{"ok": true}' in post, post
+    assert '[board.html](files/routine-out/board.html)' in post and 'none.html]' not in post, post
+    wait(lambda: events_with('routine hushed succeeded after', 'hushed words'), 'the --no-post event', 60)
+    wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger')['routines']
+                     if r['name'] in ('board', 'hushed', 'silent')), 'the three routines ran', 60)
+    time.sleep(3)
+    assert len(posted('routine board')) == 1 and not events_with('routine board succeeded'), 'one post, no event'
+    assert not posted('routine hushed') and not posted('routine silent') and not events_with('routine silent'), \
+        'a --no-post routine and an empty success post nothing'
+    board.unlink()
+    board.parent.rmdir()
+    for name in ('closed', 'retrospect', 'checkin', 'board', 'hushed', 'silent'):
         js('task', 'routine', 'delete', name, '-p', 'demo')
     # ^ A reply that ends with a question asks the owner and is never quiet, also to a turn of
     # only events; a reply that ends with a table, or a report, does not ask (docs/tasks.md "Manager").
