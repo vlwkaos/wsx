@@ -293,7 +293,10 @@ impl App {
         self.pending_terminal_entry = None;
         self.pending_terminal_resume = None;
         self.terminal_escape_chord.reset();
-        self.mode = Mode::Workspace;
+        self.mode = match self.terminal_return.take() {
+            Some((pane, list)) if pane == pane_id => Mode::Tasks { list },
+            _ => Mode::Workspace,
+        };
     }
 
     pub(super) fn clear_active_terminal_selection(&mut self) {
@@ -1181,18 +1184,32 @@ impl App {
             return Ok(());
         };
         self.pending_shell = None;
-        match self.reveal_session(pi, wi, si) {
-            Some(target) => self.switch_to_flat_session(target, terminal),
-            None => {
-                self.set_status("No shell: its session is hidden by the group");
-                Ok(())
+        let Some(target) = self.reveal_session(pi, wi, si) else {
+            self.set_status("No shell: its session is hidden by the group");
+            return Ok(());
+        };
+        // ^ Leaving the shell goes back to the Tasks view it was opened from.
+        let back = match std::mem::replace(&mut self.mode, Mode::Workspace) {
+            Mode::Tasks { list } => Some(list),
+            mode => {
+                self.mode = mode;
+                None
             }
+        };
+        let entered = self.switch_to_flat_session(target, terminal);
+        match (&self.mode, back) {
+            (Mode::Terminal { pane_id }, Some(list)) => {
+                self.terminal_return = Some((*pane_id, list))
+            }
+            (Mode::Workspace, Some(list)) => self.mode = Mode::Tasks { list },
+            _ => {}
         }
+        entered
     }
 
-    /// `S` in the Tasks view (docs/tasks.md "TUI"): a shell in the project's main checkout or
-    /// in the task's working copy. A shell open there is entered, else one is created as `s`
-    /// creates an empty session. Unlike `wsx task hand`, the worker keeps running.
+    /// `S` in the Tasks view (docs/tasks.md "TUI"): the project's shell in its main checkout,
+    /// or a shell in the task's working copy: one open there is entered, else one is created
+    /// as `s` creates an empty session. Unlike `wsx task hand`, the worker keeps running.
     pub(super) fn action_task_shell(&mut self, terminal: &mut Tui) -> Result<()> {
         let Mode::Tasks { list } = &self.mode else {
             return Ok(());
@@ -1224,6 +1241,15 @@ impl App {
             self.set_status(format!("No shell: {} is not listed", path.display()));
             return Ok(());
         };
+        if worker.is_none() {
+            // ^ The main checkout's is the project's one shell (ops.rs `project_shell`).
+            let main = self.workspace.projects[pi].worktrees[wi].path.clone();
+            let session_id = ops::project_shell(&self.runtime_client, &self.config, &main)?;
+            self.set_worktree_expanded(pi, wi, true);
+            self.spawn_runtime_refresh();
+            self.pending_shell = Some((session_id, Instant::now()));
+            return self.open_pending_shell(terminal);
+        }
         // ^ A shell by identity, not by label: no agent, nothing in its foreground, and not
         // the task's own worker pane.
         let shell = self.workspace.projects[pi].worktrees[wi]

@@ -693,6 +693,58 @@ pub fn create_session_launch(
     Ok((session_id, label))
 }
 
+/// The project's shell: one ordinary shell session in `main`, the project's main checkout,
+/// that the TUI's `S` in the manager chat and the page's header button open. A live one is
+/// reused; an exited one is closed and a new one made. ref: docs/tasks.md "TUI"
+pub fn project_shell(client: &Client, config: &GlobalConfig, main: &Path) -> Result<SessionId> {
+    // ^ Labels are not unique (the daemon takes any), so the session id is kept in
+    // `<state>/shells/<hash of the path>`; the real path, so `/var` and `/private/var` agree.
+    let real = std::fs::canonicalize(main).unwrap_or_else(|_| main.to_path_buf());
+    let record = crate::runtime::state_dir()
+        .join("shells")
+        .join(crate::task::store::project_id("", &real));
+    let (snapshot, worktree_id) = snapshot_with_worktree(runtime_snapshot(client)?, main, || {
+        let discovery = discover_workspace(config)?;
+        synchronize_discovery(client, &discovery)
+    })?;
+    let kept = std::fs::read_to_string(&record)
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok());
+    // ^ The id must still name a session of this checkout: another daemon or a reused id is
+    // not the project's shell.
+    if let Some(session) = kept.and_then(|id| {
+        snapshot
+            .sessions
+            .iter()
+            .find(|session| session.id.0 == id && session.worktree_id == worktree_id)
+    }) {
+        let live = snapshot
+            .panes
+            .iter()
+            .any(|pane| pane.session_id == session.id && !pane.exited);
+        if live {
+            return Ok(session.id);
+        }
+        if let Response::Error(error) = client.call(&Request::SessionClose {
+            session_id: session.id,
+            expected_revision: session.revision,
+        })? {
+            bail!("{}: {}", error.code, error.message);
+        }
+    }
+    let (session_id, _) =
+        create_session_launch(client, config, main, "shell".into(), Vec::new(), None)?;
+    if let Some(dir) = record.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    crate::fs_util::write_atomic(
+        &record,
+        session_id.0.to_string().as_bytes(),
+        crate::fs_util::AtomicWrite::replace().mode(0o600),
+    )?;
+    Ok(session_id)
+}
+
 /// `argv` (empty: the login shell) under the agent account of `project`'s profile:
 /// `env CLAUDE_CONFIG_DIR=<root> <argv>`, so every agent started in the pane uses it and
 /// its reporter records it for a restore. Unchanged when the profile sets no folder.

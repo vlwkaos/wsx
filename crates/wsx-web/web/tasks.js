@@ -697,6 +697,25 @@ function SinceLine({ project, reply, sent }) {
 // newer is unread.
 const ROLES_SEEN_KEY = "wsx-roles-seen";
 
+// The project's one shell in its main checkout, the one the TUI's `S` opens: the live one,
+// else a new one (docs/web-client-tasks.md "Project screen").
+function ProjectShell({ project }) {
+  const [busy, setBusy] = useState(false);
+  if (!shows("terminal") || !can("session_start") || !can("terminal_input")) return null;
+  const open = async () => {
+    setBusy(true);
+    try {
+      const { session_id } = await api(`api/projects/${project.id}/shell`, { method: "POST" });
+      location.hash = `#/s/${session_id}/terminal`;
+    } catch (failure) {
+      toast(failure.message, { failure: true });
+    }
+    setBusy(false);
+  };
+  return html`<button class="icon-button project-shell" type="button" disabled=${busy} onClick=${open}
+    aria-label="Shell" title="Shell"><${Icon} name="terminal" /></button>`;
+}
+
 function More({ project, roles }) {
   const files = shows("files") && can("files_read");
   const seen = readMap(ROLES_SEEN_KEY);
@@ -892,7 +911,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
             ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`
             : managerWord}</span>`}
         </div>
-        ${!role && html`<div class="bar-tools"><${More} project=${project} roles=${chat?.roles} /></div>`}
+        ${!role && html`<div class="bar-tools"><${ProjectShell} project=${project} /><${More} project=${project} roles=${chat?.roles} /></div>`}
       </header>
       <div class="chat">
         ${!role && html`<${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "bubble" && row.author !== "owner")?.at} sent=${sent} />`}

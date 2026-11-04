@@ -361,6 +361,7 @@ fn make_test_app(
         pending_terminal_entry: None,
         pending_terminal_resume: None,
         pending_shell: None,
+        terminal_return: None,
         last_stream_reattach: None,
         installed: None,
         follow_check_pending: false,

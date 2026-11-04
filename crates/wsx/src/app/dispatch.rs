@@ -293,6 +293,7 @@ impl App {
                 if self.is_workspace_click(mouse) {
                     let compact_tree =
                         self.effective_terminal_sidebar() == TerminalSidebar::Compact;
+                    self.terminal_return = None;
                     self.leave_terminal_mode(pane_id);
                     self.handle_mouse_click(mouse.column, mouse.row, terminal, compact_tree)?;
                     self.needs_redraw = true;
@@ -307,6 +308,7 @@ impl App {
                 if self.is_workspace_click(mouse) {
                     let compact_tree =
                         self.effective_terminal_sidebar() == TerminalSidebar::Compact;
+                    self.terminal_return = None;
                     self.leave_terminal_mode(pane_id);
                     self.handle_mouse_click(mouse.column, mouse.row, terminal, compact_tree)?;
                     self.needs_redraw = true;

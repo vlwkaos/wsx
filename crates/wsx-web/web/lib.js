@@ -25,6 +25,7 @@ const ICONS = {
   retry: "M15.5 10a5.5 5.5 0 1 1-1.6-3.9M15.5 4v3.5H12",
   reply: "M8.5 5.5 4 10l4.5 4.5M4.5 10H12a4 4 0 0 1 4 4v1",
   land: "M10 4v9M6 9.5l4 4 4-4M4.5 16h11",
+  terminal: "M3.5 4.5h13v11h-13zM6.5 8l2.5 2-2.5 2M10.5 12.5h3",
 };
 // A line icon. The control around it carries the accessible name.
 export const Icon = ({ name }) => html`

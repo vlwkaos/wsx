@@ -216,15 +216,19 @@ impl App {
                     self.clear_active_terminal_selection();
                     // ^ The stream says it before the next snapshot does, and Enter on the
                     // pane must already start it again.
-                    if let Some(pane_id) = self.terminal_stream.take().map(|active| active.pane_id)
-                    {
+                    let exited = self.terminal_stream.take().map(|active| active.pane_id);
+                    if let Some(pane_id) = exited {
                         self.terminal_surfaces.forget(pane_id);
                         if let Some(pane) = self.pane_mut(pane_id) {
                             pane.exited = true;
                         }
                     }
                     self.pending_terminal_entry = None;
-                    self.mode = Mode::Workspace;
+                    self.mode = match self.terminal_return.take() {
+                        // ^ Back to the chat, whose `S` makes a new shell.
+                        Some((pane, list)) if Some(pane) == exited => Mode::Tasks { list },
+                        _ => Mode::Workspace,
+                    };
                     self.set_warning(
                         "Terminal process exited\nEnter starts it again; d closes the session",
                     );

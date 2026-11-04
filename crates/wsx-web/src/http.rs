@@ -67,6 +67,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/presence", post(presence))
             .route("/api/sessions", post(session_start))
             .route("/api/sessions/{session}", delete(session_remove))
+            .route("/api/projects/{project}/shell", post(project_shell))
             .route("/api/chat/{session}/timeline", get(timeline))
             .route("/api/chat/{session}/send", post(send))
             .route("/api/chat/{session}/commands", get(commands))
@@ -809,6 +810,37 @@ async fn session_start(
             DaemonResponse::Created { id, .. } => Ok(Json(json!({ "session_id": id }))),
             _ => Err(Fault::protocol("unexpected create response")),
         }
+    })
+}
+
+/// The project's shell in its main checkout, the one the TUI's `S` opens: the live one, else a
+/// new one (`wsx_core::ops::project_shell`, docs/web-client-tasks.md "Project screen").
+async fn project_shell(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    UrlPath(project): UrlPath<u64>,
+) -> Outcome<Json<Value>> {
+    need(&app, Panel::Terminal)?;
+    allow(&app, Capability::SessionStart, "starting a session")?;
+    allow(&app, Capability::TerminalInput, "starting a shell")?;
+    blocking(|| {
+        let snapshot = chat::snapshot(&app.client)?;
+        let path = chat::project(&snapshot, &app.site.access, project)?
+            .path
+            .clone();
+        // ^ Every call counts against the start limit, also one that opens a live shell.
+        if !app.limiter.allow(&format!("start:{}", device.id), 3.0, 6.0) {
+            return Err(Fault::new(
+                429,
+                "rate_limited",
+                "too many new sessions; wait a moment",
+            ));
+        }
+        let config = crate::site::global_config()
+            .ok_or_else(|| Fault::new(409, "config_invalid", "the wsx config does not parse"))?;
+        let session = wsx_core::ops::project_shell(&app.client, &config, &path)
+            .map_err(|error| Fault::new(409, "shell_unavailable", format!("{error:#}")))?;
+        Ok(Json(json!({ "session_id": session.0 })))
     })
 }
 

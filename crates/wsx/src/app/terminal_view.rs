@@ -14,7 +14,26 @@ impl App {
     }
 
     pub fn terminal_workspace_hint(&self) -> String {
-        format!("({})workspace", self.terminal_escape_chord.label)
+        format!(
+            "({}){}",
+            self.terminal_escape_chord.label,
+            self.terminal_back_word()
+        )
+    }
+
+    /// Where leaving the terminal goes: the Tasks view a shell was opened from, else the
+    /// workspace (`terminal_return`).
+    fn terminal_back_word(&self) -> &'static str {
+        match (&self.terminal_return, &self.mode) {
+            (Some((pane, list)), Mode::Terminal { pane_id }) if pane == pane_id => {
+                if list.chat.is_some() {
+                    "manager"
+                } else {
+                    "tasks"
+                }
+            }
+            _ => "workspace",
+        }
     }
 
     pub fn terminal_prefix_pending(&self) -> bool {
@@ -34,7 +53,10 @@ impl App {
         if self.terminal_prefix_pending() {
             hints.push(hint("esc", "cancel"));
         }
-        hints.push(hint(&workspace.to_ascii_lowercase(), "workspace"));
+        hints.push(hint(
+            &workspace.to_ascii_lowercase(),
+            self.terminal_back_word(),
+        ));
         // A hint names a key only while the key has a target.
         if self.context_session_target(1).is_some() {
             hints.push(hint(self.terminal_session_navigation_label(), "session"));

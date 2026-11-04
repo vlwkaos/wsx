@@ -194,6 +194,31 @@ if (mode === "restart") {
   process.exit(0);
 }
 
+// The project screen's shell icon (docs/web-client-tasks.md "Project screen"): it opens the
+// project's shell in the terminal, and again the same session.
+//   shell <site-url> <code> <capture-dir> <slop-audit.js or ""> <project-id>
+if (mode === "shell") {
+  const project = Number(rest[2]);
+  const button = ".bar-tools .project-shell";
+  await pair(siteUrl, code);
+  const opened = [];
+  for (const next of [SIZES[1], SIZES[2]]) {
+    await resize(next);
+    await go(`#/p/${project}`);
+    await until(`!!document.querySelector(${JSON.stringify(button)})`, `the project screen has no shell button at ${size[0]} px`);
+    const words = await evaluate(`document.querySelector(${JSON.stringify(button)}).textContent.trim()`);
+    if (words) await fail(`the shell button shows words: ${words}`);
+    await capture(`project-shell-header-${size[0]}`);
+    await evaluate(`document.querySelector(${JSON.stringify(button)}).click()`);
+    await until("/^#\\/s\\/\\d+\\/terminal$/.test(location.hash) && !!document.querySelector('.terminal-host')", `the shell button did not open a terminal at ${size[0]} px`);
+    opened.push(Number(await evaluate("location.hash.split('/')[2]")));
+  }
+  if (opened[0] !== opened[1]) await fail(`the shell button opened sessions ${opened.join(" and ")}`);
+  console.log(`project shell button: an icon that opens session ${opened[0]} in the terminal at 390 and 1280 px, the same both times`);
+  await cleanup();
+  process.exit(0);
+}
+
 if (mode === "down") {
   await resize(SIZES[1]);
   await pair(siteUrl, code);
