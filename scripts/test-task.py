@@ -2182,7 +2182,8 @@ def run(wsx, wsxd, work, owned):
     top, scrolled, bottom = seen[2], seen[3], seen[4]
     assert re.search(r'(?m)^ Overview demo +1-\d+/\d+$', top), top
     assert all(word in top for word in ('# demo', '## Goal', '```mermaid', 'graph LR', 'one[Write it] --> two[Show it]')), top
-    assert '# demo' not in scrolled and 'Open question 1.' not in top, scrolled
+    assert 'Ship the overview view.' in top and 'Open question 1.' in top, top
+    assert '# demo' not in scrolled and 'Ship the overview view.' not in scrolled and '## Tasks' in scrolled, scrolled
     assert '## Open questions' in bottom or 'Open question 60.' in bottom, bottom
     assert 'Overview' not in seen[8] and 'MANAGER' in seen[8], seen[8]
     Path(page).write_text('# demo\n\n## Goal\n\nshort\n')
