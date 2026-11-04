@@ -104,12 +104,23 @@ pub struct Target<'a> {
 
 /// The projects of wsxd that the site may reach. This and `targets` are the only
 /// place that maps daemon state to the grant; nothing else may widen it.
+/// ^ Only projects in the wsx config, as the TUI lists: wsxd keeps an unregistered project
+/// while a session stands on it. An unreadable config hides none.
 pub fn projects<'a>(snapshot: &'a Snapshot, access: &Access) -> Vec<&'a Project> {
     let grant = access.grant();
+    let registered = crate::site::global_config();
     snapshot
         .projects
         .iter()
         .filter(|project| grant.grants(&project.path))
+        .filter(|project| {
+            registered.as_ref().is_none_or(|config| {
+                config
+                    .projects
+                    .iter()
+                    .any(|entry| entry.path == project.path)
+            })
+        })
         .collect()
 }
 
