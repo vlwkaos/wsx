@@ -3598,6 +3598,8 @@ def run(wsx, wsxd, work, owned):
     # ^ A short limit is waited out, and the owner still gets words from the stand-in. The message
     # stays due: the own agent answers it after the limit and hears of the stand-in's reply.
     configure(with_fallback('fake-local, fake-pi'), 'stand-in')
+    # ^ The earlier fa.txt task's ready event waits for the manager: the fake takes its title
+    # (`LIMIT 600 ...`) for no trigger (fake-claude-stream.py own_words), so the limit stays 15 s.
     limit_for(15)
     asked = js('task', 'say', 'STATUS during the limit')
     stood_in = wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and e.get('provisional') == 'fake-local'
