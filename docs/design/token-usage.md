@@ -1,7 +1,7 @@
 # Token usage: where Claude spend goes and what cuts it
 
 Measured on 2026-11-04. The window is the tasks created from 2026-10-28 (85 Claude tasks, 6,869 model calls, $391), plus the manager.
-Prices are API-equivalent: Opus 5.5 at $4 input, $20 output, $0.20 cache read and $8 1h write. Sonnet 5.5 at $2, $10, $0.20 and $4.
+Prices are API-equivalent: Opus 5.5 at $4 input, $20 output, $0.20 cache read and $8 1h write. Sonnet 5.5 at $2, $10, $0.10 and $4 (corrected 2026-11-04 from $0.20: cache reads cost 0.05x input on both models; the tables below keep the first run's numbers).
 Assuming: Haiku 5.5 at $1, $5, $0.10 and $2 (not verified).
 The baseline already includes #182 (context and memo steps folded, `--size small`) and #183 (a queued check-run answers at once).
 
@@ -53,7 +53,7 @@ Savings are for the 10-28..11-04 window ($391 workers plus $70 manager). Build c
 | 2 | Keep the cache warm across a long wait: the host sends a no-op turn at 55 min while a worker waits on a check slot or the manager has a wake due within hours | rewrites after >1h: $12.4 workers + $13.6 manager, against about $0.03 per ping = **$24 (5%)**. It can also replace the idle rotation (`tasks.agent.rotateIdleSeconds`, docs/tasks.md "Context rotation") for a wait the host knows: 27 rotation turns cost $15.3. A limit resume ($15.5) cannot ping | M | none: one short line in context | part 2 "rewrite gap>1h" in $ near 0; ping turns counted |
 | 3 | Read through an Explore subagent on Haiku in the plan step: the step text requires it. The current "Explore, sonnet" line is ignored (6 calls) | read results write $16 + carried $25. If half move and come back as 3k findings: **about $15 (4%)** | S (step text) | medium: the build may re-read what the summary missed | Agent calls per task; part 1 "Bash:read" carried $ per task; re-reads of the same file |
 | 4 | Fresh session per step with a handoff packet | build starts at 72k, review at 93k, prefix 33k: about $16 of reads, minus about $29 of new starts (about $19 after option 1) = **about $0 net** | M | medium: the plan's reasoning is lost | part 3 start context; only worth it to run review on Sonnet |
-| 5 | Sonnet by default for builds that are not large (#182 `--size small` extended) | Sonnet halves writes and output (59% of cost) at the same read price; Opus is 76% of calls: **up to $95 (24%)** | S | high, and the owner decides: no clean quality comparison exists | landed and reverted rate and $/landed by size, 8 tasks each |
+| 5 | Sonnet by default for builds that are not large (#182 `--size small` extended) | Sonnet halves writes and output (59% of cost) and its reads cost half (corrected price); Opus is 76% of calls: **up to $95 (24%)** | S | high, and the owner decides: no clean quality comparison exists | landed and reverted rate and $/landed by size, 8 tasks each |
 | 6 | Earlier compaction (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) or tool-result clearing | upper bound is the carried $42; with rewrite and re-read costs, **about $10-15** | S (env) | medium-high: lost file content leads to re-reads | p90 context and calls after compaction |
 | 7 | Longer shared prefix: move the branch name and per-task notes (`claude.rs:174`) behind the fixed text | at most about 2.5k more shared (the CLAUDE.md header carries the working-copy path): **$3.5 (1%)** | S | none | part 1 first-call read p50 rises above 11.8k |
 | 8 | Lower `BASH_MAX_OUTPUT_LENGTH` | no Bash result is over 8k tokens: **about $0** | S | low | - |
@@ -66,6 +66,31 @@ Savings are for the 10-28..11-04 window ($391 workers plus $70 manager). Build c
 3. **Option 3, Haiku Explore reads in the plan step.** It only changes the prompt. Judge it on the next 8 landed tasks against the 11-04 baseline ($2.38 per landed task, 5.5 turns) before you keep it.
 
 Option 5 has the largest potential and needs an owner decision on quality. Options 4, 6 and 7 are not worth their build cost yet. Options 8 and 9 are rejected by the data.
+
+## Rotation or compaction (measured 2026-11-04, part 5)
+
+Decision: **keep the cold rotation at its defaults** (`tasks.agent.rotateTokens` 200000, `tasks.manager.rotateTokens` 150000). A higher threshold costs more, and compaction in place saves too little to pay for the loss of control. The `wsx.config.yml` comment that said "a context past 200k costs about 3x a turn" was stale, and it is fixed.
+
+| Fact | Number | Source |
+|---|---|---|
+| Long-context premium on Opus 5.5 and Sonnet 5.5 | none: the 1M window costs the same per token (only Haiku 5.5 charges more, over 100k) | [pricing](https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing), [context windows](https://platform.claude.com/docs/en/build-with-claude/context-windows) |
+| Claude Code's own compaction | at about 967k on 1M models. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (or `autoCompactWindow`) sets the window; `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` can only lower the percent. It never fires before wsx's rotation | [model config](https://code.claude.com/docs/en/model-config.md#set-the-auto-compact-window), [env vars](https://code.claude.com/docs/en/env-vars) |
+| Worker rotations in the window | 31: 19 by size, 12 idle | part 5 |
+| Cost of one rotation | handoff turn $0.77 + the new conversation's first turn $0.27 (its prefix write alone $0.19) = **$0.96 to $1.04** (handoff by size $0.54, idle $1.13: an idle handoff resumes the cold conversation and pays the rewrite) | part 5 |
+| Reads saved after it | **$1.11** per rotation (size $1.51, idle $0.48); 23 later calls p50; the new conversation's first turn ends at 37k p50 | part 5, assumes the same growth without the rotation |
+| Context growth per call | workers 1,745 tokens p50 (n=99), manager 1,440 (n=20) | part 5 |
+| Compaction estimate | one call reads the context and writes a summary: about $0.32 at 200k-400k. Not verified: the summary size (10k assumed), whether `-p` compacts by itself, and whether the prefix stays cached | part 5 estimate, docs above |
+
+Extra read cost per call over a fresh start, rotating every k calls: F/k + $0.20/M × g × k / 2, with F the cost of one rotation and g the growth per call (workers, F $0.4 to $1.0):
+
+| Threshold | 150k | 200k | 300k | 400k |
+|---|---|---|---|---|
+| Worker, $ a call | 0.018-0.027 | 0.021-0.027 | 0.029-0.033 | 0.038-0.041 |
+| Manager, $ a call | 0.016-0.024 | 0.020-0.025 | 0.028-0.032 | 0.038-0.040 |
+
+- Rotating at 400k (compacted or not) costs about 1.5-1.9x the extra reads of 200k: every call between 200k and 400k reads up to 200k more for $0.04 each.
+- Compaction at 200k would save at most about $0.4 per size rotation (F $0.72 against about $0.32): about $8 a week. Against that, it fires inside a turn, drops wsx's handoff notes (what is done, checks, decisions), and its cost in `-p` is not verified. Not worth building now; a trial would set `CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000` for 8 tasks and compare part 5's numbers.
+- Idle rotations save less than they cost ($1.31 against $0.48), because the handoff turn pays the cold rewrite anyway. The keep-warm pings (option 2, docs/tasks.md "Context rotation") keep a known wait warm, so these rotations become rare.
 
 ## Limits
 

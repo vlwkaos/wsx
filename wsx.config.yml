@@ -21,8 +21,8 @@ tasks:
     - cargo build -p wsx -p wsx-daemon
     - cargo nextest run --workspace --locked
   checkTimeoutSeconds: 1200
-  # ^ A context past 200k costs about 3x a turn; the usage audit (docs/design/usage-audit.md)
-  # put 44% of worker spend there.
+  # ^ Every call reads the whole context again: rotating at 200k costs less than letting it grow
+  # (docs/design/token-usage.md "Rotation or compaction"). No long-context premium applies.
   # ^ A trial from 2026-11-04 for 8 landed tasks, judged on cost per landed task and reverts
   # against the 11-04 baseline ($2.38, 5.5 turns). The manager passes --model opus for large work.
   agent: { rotateTokens: 200000, model: sonnet }
