@@ -1327,6 +1327,20 @@ await closeSheet("the usage sheet", chat);
     if (!opens) await fail("the ⋯ menu does not open upward from the bottom bar");
     await click(".more-button");
     await shot(wide ? "header-bottom-wide" : "header-bottom");
+    if (!wide) {
+      // ^ The keyboard up (as iOS: only the visual viewport shrinks): the bar rides with the composer above the keyboard's top edge.
+      await typeInto(".composer-field", "");
+      await keyboard(420);
+      await pause(300);
+      const up = await evaluate(`(() => { const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+        return { bar: Math.round(box('.chat > .bar').bottom), composer: Math.round(box('.composer').top), end: Math.round(box('.composer').bottom),
+          visible: Math.round(visualViewport.offsetTop + visualViewport.height), keyboard: document.body.hasAttribute('data-keyboard') }; })()`);
+      if (!up.keyboard || up.bar > up.composer + 1 || Math.abs(up.end - up.visible) > 1) await fail(`the bottom bar is not above the composer on the keyboard: ${JSON.stringify(up)}`);
+      await shot("header-bottom-keyboard", ".composer-send");
+      await evaluate("document.activeElement.blur()");
+      await keyboard(null);
+      await pause(400);
+    }
     await go("#/p/" + project + "/files");
     await until("!!document.querySelector('.page.files > .bar')", "Files did not open");
     const files = await place();
