@@ -1662,11 +1662,13 @@ const markProbe = `(() => { const top = document.querySelector('.log').getBoundi
   bubble.setAttribute('data-follow-probe', ''); return ${probe}; })()`;
 // ^ The probe's place in the log box, from layout: the page moves on the keyboard, the text must not.
 const probeInLog = "(() => { const log = document.querySelector('.log'); return document.querySelector('[data-follow-probe]').offsetTop - log.scrollTop; })()";
-// The newest reply, its bottom's distance from the log's visible bottom, the log's distance from
-// its end and how far the last row reaches below the composer's top, read at each frame.
+// The newest reply with the last named row, its bottom's distance from the log's visible bottom,
+// the log's distance from its end and how far the last row reaches below the composer's top, read
+// at each frame. A row that arrives under the reply (an event line) moves it as the end is kept:
+// its reading names another last row. The typing bubble has no name.
 const tail = `(() => { const log = document.querySelector('.log'); const reply = [...log.querySelectorAll(':scope > .bubble[data-in][data-key]')].at(-1);
   const last = [...log.querySelectorAll(':scope > [data-key]')].at(-1);
-  return [reply?.dataset.key ?? '', reply ? log.clientHeight - (reply.offsetTop + reply.offsetHeight - log.scrollTop) : null,
+  return [(reply?.dataset.key ?? '') + ' ' + last.dataset.key, reply ? log.clientHeight - (reply.offsetTop + reply.offsetHeight - log.scrollTop) : null,
     log.scrollHeight - log.scrollTop - log.clientHeight, last.getBoundingClientRect().bottom - document.querySelector('.composer').getBoundingClientRect().top]; })()`;
 const scrolledUp = "(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight - log.clientHeight * 2; log.dispatchEvent(new Event('scroll')); })()";
 // ^ As an iPhone 13 does: the keyboard leaves 508 px and the visual viewport moves 336 px down the page.
