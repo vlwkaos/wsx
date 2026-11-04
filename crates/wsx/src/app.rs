@@ -309,6 +309,9 @@ const MODE_PROBE_IDLE: Duration = Duration::from_secs(1);
 const FAST_INTERVAL_MS: u64 = 500;
 const GIT_SWEEP_INTERVAL_MS: u64 = 15_000;
 const SLOW_INTERVAL_MS: u64 = 30_000;
+const MANAGER_ASKS_INTERVAL_MS: u64 = 2_000;
+/// How much of a manager log's end tells whether its last reply asks (as the web's overview).
+const MANAGER_TAIL_BYTES: u64 = 64 * 1024;
 const WORKSPACE_SCROLL_LINES: isize = 3;
 const NOTICE_MIN_DWELL: Duration = Duration::from_secs(2);
 const STREAM_REATTACH_WINDOW: Duration = Duration::from_secs(5);
@@ -1122,6 +1125,11 @@ pub struct App {
     routine_tx: mpsc::Sender<RoutineRefreshResult>,
     routine_rx: mpsc::Receiver<RoutineRefreshResult>,
     routine_refresh_generation: HashMap<PathBuf, u64>,
+    /// Projects whose manager's last reply asks the owner, read off the UI thread
+    /// (docs/tasks.md "TUI"); one read at a time.
+    manager_asks: HashSet<PathBuf>,
+    manager_asks_rx: Option<mpsc::Receiver<HashSet<PathBuf>>>,
+    manager_asks_timer: Timer,
     integration_scan_rx: mpsc::Receiver<Result<Vec<wsx_core::integration::IntegrationMetadata>>>,
     integration_metadata: Vec<wsx_core::integration::IntegrationMetadata>,
     pending_integration_demand: Option<wsx_core::integration::IntegrationTarget>,
@@ -1358,6 +1366,9 @@ impl App {
             routine_tx,
             routine_rx,
             routine_refresh_generation: HashMap::new(),
+            manager_asks: HashSet::new(),
+            manager_asks_rx: None,
+            manager_asks_timer: Timer::new(MANAGER_ASKS_INTERVAL_MS),
             integration_scan_rx,
             integration_metadata: Vec::new(),
             pending_integration_demand: None,
@@ -1378,6 +1389,7 @@ impl App {
             app.spawn_runtime_refresh();
         }
         app.spawn_routine_refresh();
+        app.spawn_manager_asks();
         app.spawn_repo_scan();
         Ok(app)
     }
@@ -1753,6 +1765,10 @@ impl App {
         if changed {
             self.mark_dirty();
         }
+    }
+
+    pub(crate) fn manager_asks(&self) -> &HashSet<PathBuf> {
+        &self.manager_asks
     }
 
     pub(crate) fn stale_project_indices(&self) -> HashSet<usize> {

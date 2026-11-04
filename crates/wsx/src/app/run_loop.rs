@@ -399,6 +399,7 @@ impl App {
                 } => self.apply_plugin_view(generation, &plugin_id, pane_id, result),
             }
         }
+        self.apply_manager_asks();
         while let Ok(result) = self.routine_rx.try_recv() {
             self.apply_routine_result(result);
         }

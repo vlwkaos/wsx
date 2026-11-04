@@ -5,7 +5,7 @@ use ratatui::{
     prelude::*,
     widgets::{List, ListItem, ListState},
 };
-use std::collections::HashSet;
+use std::{collections::HashSet, path::PathBuf};
 use wsx_core::{
     config::global::PortVisibility,
     model::workspace::{FlatEntry, SessionInfo, WorkspaceState},
@@ -183,6 +183,8 @@ pub struct TreeView<'a> {
     pub workspace: &'a WorkspaceState,
     pub flat: &'a [FlatEntry],
     pub stale_projects: &'a HashSet<usize>,
+    /// Projects whose manager's last reply asks the owner: their name takes the accent.
+    pub asking: &'a HashSet<PathBuf>,
     pub selected: usize,
     pub scroll_offset: usize,
     pub is_move_mode: bool,
@@ -196,16 +198,27 @@ pub struct CompactTreeView<'a> {
     pub workspace: &'a WorkspaceState,
     pub flat: &'a [FlatEntry],
     pub stale_projects: &'a HashSet<usize>,
+    /// Projects whose manager's last reply asks the owner: their name takes the accent.
+    pub asking: &'a HashSet<PathBuf>,
     pub selected: usize,
     pub scroll_offset: usize,
     pub animation_frame: usize,
     pub search: Option<SearchFeedback<'a>>,
 }
 
+/// A project's name is bold text; it takes the accent while its manager asks the owner, as the
+/// web's Home row does (docs/tasks.md "TUI").
+fn project_style(asks: bool) -> Style {
+    Style::default()
+        .fg(if asks { theme::ACCENT } else { theme::TEXT })
+        .bold()
+}
+
 fn compact_tree_cell(
     workspace: &WorkspaceState,
     entry: &FlatEntry,
     stale_projects: &HashSet<usize>,
+    asking: &HashSet<PathBuf>,
     muted_terminals: &HashSet<String>,
     animation_frame: usize,
 ) -> (&'static str, Style) {
@@ -227,10 +240,11 @@ fn compact_tree_cell(
                 ("!", Style::default().fg(theme::BLOCKED))
             } else if stale_projects.contains(idx) {
                 ("·", theme::stale_project())
-            } else if project.expanded {
-                ("▼", Style::default().fg(theme::ACCENT).bold())
             } else {
-                ("▶", Style::default().fg(theme::ACCENT).bold())
+                (
+                    if project.expanded { "▼" } else { "▶" },
+                    project_style(asking.contains(&project.path)),
+                )
             }
         }
         FlatEntry::Worktree {
@@ -311,6 +325,7 @@ pub fn render_compact_tree(frame: &mut Frame, layout: SidebarLayout, view: Compa
                 view.workspace,
                 entry,
                 view.stale_projects,
+                view.asking,
                 view.muted_terminals,
                 view.animation_frame,
             );
@@ -336,6 +351,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
         workspace,
         flat,
         stale_projects,
+        asking,
         selected,
         scroll_offset,
         is_move_mode,
@@ -383,7 +399,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                 } else {
                     (
                         format!("{} {}{}", icon, p.name, count),
-                        Style::default().fg(theme::ACCENT).bold(),
+                        project_style(asking.contains(&p.path)),
                     )
                 };
                 folded_item(Line::from(label), style, badge, width)
@@ -549,9 +565,17 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
         list_state.select(Some(selected.min(flat.len().saturating_sub(1))));
     }
 
+    // ^ The selection paints its row in text color: a selected project that asks keeps the accent.
+    let mut highlight = theme::selected_row(is_move_mode);
+    if let Some(FlatEntry::Project { idx }) = flat.get(selected) {
+        let project = &workspace.projects[*idx];
+        if !project.missing && asking.contains(&project.path) {
+            highlight = highlight.fg(theme::ACCENT);
+        }
+    }
     let list = List::new(items)
         .style(Style::default().fg(theme::TEXT))
-        .highlight_style(theme::selected_row(is_move_mode))
+        .highlight_style(highlight)
         .highlight_symbol("");
 
     frame.render_stateful_widget(list, layout.list, &mut list_state);
@@ -743,6 +767,7 @@ mod tests {
                         workspace: &workspace,
                         flat: &flat,
                         stale_projects: &stale_projects,
+                        asking: &HashSet::new(),
                         muted_terminals: &HashSet::new(),
                         selected: 2,
                         scroll_offset: 0,
@@ -766,7 +791,7 @@ mod tests {
         assert!(!stale_row.contains('·'));
         assert_eq!(terminal.backend().buffer()[(1, 0)].fg, theme::TEXT_MUTED);
         assert!(!row(1).contains("stale"));
-        assert_eq!(terminal.backend().buffer()[(1, 1)].fg, theme::ACCENT);
+        assert_eq!(terminal.backend().buffer()[(1, 1)].fg, theme::TEXT);
         assert!(row(3).contains("missing (missing)"));
         assert!(!row(3).contains("stale"));
         assert_eq!(terminal.backend().buffer()[(1, 3)].fg, theme::TEXT_SUBTLE);
@@ -782,6 +807,7 @@ mod tests {
                         workspace: &workspace,
                         flat: &flat,
                         stale_projects: &stale_projects,
+                        asking: &HashSet::new(),
                         muted_terminals: &HashSet::new(),
                         selected: 0,
                         scroll_offset: 0,
@@ -865,6 +891,7 @@ mod tests {
                                 workspace: &workspace,
                                 flat: &flat,
                                 stale_projects: &stale_projects,
+                                asking: &HashSet::new(),
                                 muted_terminals: &HashSet::new(),
                                 selected: flat.len() - 1,
                                 scroll_offset: 0,
@@ -902,7 +929,15 @@ mod tests {
             }
             let entry = &flat[usize::from(expanded)];
             assert_eq!(
-                compact_tree_cell(&workspace, entry, &HashSet::from([0]), &HashSet::new(), 0).0,
+                compact_tree_cell(
+                    &workspace,
+                    entry,
+                    &HashSet::from([0]),
+                    &HashSet::new(),
+                    &HashSet::new(),
+                    0
+                )
+                .0,
                 "◐"
             );
         }

@@ -231,6 +231,9 @@ impl App {
             }
             self.spawn_runtime_capture();
             self.spawn_plugin_view();
+            if self.manager_asks_timer.ready() {
+                self.spawn_manager_asks();
+            }
             self.spawn_git_local_for_selected();
             self.tick_git_fetch();
             if !self.jobs.is_empty() || self.has_working_agent() {
@@ -256,6 +259,55 @@ impl App {
             self.notice = None;
             self.notice_started = None;
             self.needs_redraw = true;
+        }
+    }
+
+    /// Read each project's manager log tail off the UI thread, every few seconds, for the
+    /// Workspace row's accent (docs/tasks.md "TUI").
+    pub(super) fn spawn_manager_asks(&mut self) {
+        if self.manager_asks_rx.is_some() {
+            return;
+        }
+        let projects: Vec<(String, PathBuf)> = self
+            .workspace
+            .projects
+            .iter()
+            .map(|project| (project.name.clone(), project.path.clone()))
+            .collect();
+        let (tx, rx) = mpsc::channel();
+        self.manager_asks_rx = Some(rx);
+        std::thread::spawn(move || {
+            let asking = projects
+                .into_iter()
+                .filter(|(name, path)| {
+                    wsx_core::task::store::ManagerDir::existing(&wsx_core::task::store::project_id(
+                        name, path,
+                    ))
+                    .ok()
+                    .flatten()
+                    .and_then(|dir| dir.read_tail(MANAGER_TAIL_BYTES).ok())
+                    .is_some_and(|tail| wsx_core::task::manager::tail_asks(&tail))
+                })
+                .map(|(_, path)| path)
+                .collect();
+            let _ = tx.send(asking);
+        });
+    }
+
+    pub(super) fn apply_manager_asks(&mut self) {
+        let Some(rx) = &self.manager_asks_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(asking) => {
+                self.manager_asks_rx = None;
+                if asking != self.manager_asks {
+                    self.manager_asks = asking;
+                    self.needs_redraw = true;
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => self.manager_asks_rx = None,
         }
     }
 
