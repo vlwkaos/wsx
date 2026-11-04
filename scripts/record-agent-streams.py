@@ -82,12 +82,15 @@ class Scrub:
 
     def value(self, value, key=''):
         if isinstance(value, dict):
+            # ^ Pi lists its system prompt's sections: keep the names, not the prompt.
+            if key == 'sections':
+                return {name: '...' for name in value}
             return {name: self.value(item, name) for name, item in value.items()}
         if isinstance(value, list):
             items = value[:2] if key in LONG_LISTS else value
             return [self.value(item, key) for item in items]
         if isinstance(value, str):
-            if key in ('sections', 'signature'):
+            if key == 'signature':
                 return '...'
             return self.string(value)
         if isinstance(value, float) and key in ('utilization',):
@@ -102,9 +105,6 @@ def scrub_all(lines, folder):
     out = []
     for line in lines:
         value = scrub.value(json.loads(line))
-        # ^ Pi's system message lists its prompt sections: keep the keys, not the prompt.
-        if isinstance(value.get('message'), dict) and isinstance(value['message'].get('sections'), dict):
-            value['message']['sections'] = {name: '...' for name in value['message']['sections']}
         out.append(json.dumps(value, ensure_ascii=False, separators=(',', ':')))
     text = '\n'.join(out) + '\n'
     for secret in (str(Path.home()), os.environ.get('USER', '\0')):
