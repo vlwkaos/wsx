@@ -28,9 +28,9 @@ Verified by `scripts/runtime-smoke.py` (the "daemon-discovery" steps).
 
 ## Lifetime
 
-A wsxd stops by itself when what it serves goes away. This also holds for the routine daemon (`wsxd __wsx_routine_daemon`).
+A wsxd stops by itself when what it serves goes away. Its routine scheduler stops with it (docs/tasks.md "Routines").
 
-- The directory is gone or replaced. For a main daemon, this is the socket's directory. For a routine daemon, it is the asched root. A deleted `.work` folder or task copy then leaves no daemon behind.
+- The socket's directory is gone or replaced. A deleted `.work` folder or task copy then leaves no daemon behind.
 - The process named by `WSX_EXIT_WITH_PID` has ended. Tests, fixtures and scripts set it to their own pid, so their daemons exit when they end, also after a panic or a SIGKILL. A value that is not a pid above 1 makes wsxd refuse to start.
 
-Each daemon checks once a second. A main daemon then stops as it does on SIGTERM. A routine daemon asks asched to shut down, or exits when its socket is gone. A user daemon has no `WSX_EXIT_WITH_PID` and keeps its state directory, so it runs as before.
+Each daemon checks once a second, then stops as it does on SIGTERM. A user daemon has no `WSX_EXIT_WITH_PID` and keeps its state directory, so it runs as before.

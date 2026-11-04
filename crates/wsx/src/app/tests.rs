@@ -507,17 +507,17 @@ fn integration_metadata(
     }
 }
 
-fn routine_view(name: &str) -> asched_core::routine::ipc::RoutineView {
-    asched_core::routine::ipc::RoutineView {
-        routine: asched_core::routine::Routine {
+fn routine_view(name: &str) -> wsx_core::routine::RoutineView {
+    wsx_core::routine::RoutineView {
+        routine: wsx_core::routine::Routine {
             post: true,
             name: name.into(),
-            trigger: asched_core::routine::Trigger::Cron("0 9 * * *".into()),
+            trigger: wsx_core::routine::Trigger::Cron("0 9 * * *".into()),
             command: vec!["echo".into(), "{prompt}".into()],
             prompt: "hello".into(),
             enabled: true,
         },
-        capabilities: asched_core::routine::Capabilities::for_running(false),
+        running: false,
         next_run_epoch: None,
         latest_run: None,
         recent_runs: Vec::new(),
@@ -1631,35 +1631,23 @@ fn failed_routine_delete_restores_selection_and_surfaces_status() {
 }
 
 #[test]
-fn protocol_mismatch_surfaces_packaged_wsx_upgrade_guidance() {
-    let error = anyhow::Error::new(asched_core::routine::RoutineError::ProtocolMismatch {
-        client: 3,
-        daemon: 2,
-    });
-    assert_eq!(
-        routine_error_text(&error),
-        "routine scheduler is newer than wsx; upgrade wsx and retry"
-    );
-}
-
-#[test]
 fn remote_conflict_surfaces_refresh_guidance() {
-    let error = anyhow::Error::new(asched_core::routine::RoutineError::RemoteDaemon {
-        kind: asched_core::routine::RoutineErrorKind::Conflict,
-        message: "stale config revision".into(),
-    });
+    let error = anyhow::Error::new(wsx_core::routine::RoutineError::new(
+        wsx_core::routine::RoutineErrorKind::Conflict,
+        "stale config revision",
+    ));
     assert_eq!(
         routine_error_text(&error),
-        "routine changed in asched; refreshed the latest revision"
+        "routine changed elsewhere; refreshed the latest revision"
     );
 }
 
 #[test]
 fn remote_already_running_has_stable_user_facing_status() {
-    let error = anyhow::Error::new(asched_core::routine::RoutineError::RemoteDaemon {
-        kind: asched_core::routine::RoutineErrorKind::AlreadyRunning,
-        message: "routine 'daily' is already running".into(),
-    });
+    let error = anyhow::Error::new(wsx_core::routine::RoutineError::new(
+        wsx_core::routine::RoutineErrorKind::AlreadyRunning,
+        "routine 'daily' is already running",
+    ));
     assert_eq!(routine_error_text(&error), "routine is already running");
 }
 
@@ -1680,7 +1668,7 @@ fn routine_refresh_applies_by_path_and_discards_superseded_generation() {
                 expand: false,
                 selection: RoutineSelection::Preserve,
             },
-            response: Ok(asched_core::routine::ipc::Response::Routines {
+            response: Ok(wsx_core::routine::Response::Routines {
                 revision: 1,
                 routines: vec![routine_view("fresh")],
             }),
@@ -1700,7 +1688,7 @@ fn routine_refresh_applies_by_path_and_discards_superseded_generation() {
                 expand: false,
                 selection: RoutineSelection::Preserve,
             },
-            response: Ok(asched_core::routine::ipc::Response::Routines {
+            response: Ok(wsx_core::routine::Response::Routines {
                 revision: 0,
                 routines: vec![routine_view("stale")],
             }),
@@ -1886,7 +1874,7 @@ fn routine_refresh_closes_detail_when_routine_was_deleted() {
                 expand: false,
                 selection: RoutineSelection::Preserve,
             },
-            response: Ok(asched_core::routine::ipc::Response::Routines {
+            response: Ok(wsx_core::routine::Response::Routines {
                 revision: 2,
                 routines: Vec::new(),
             }),
@@ -3302,18 +3290,6 @@ fn workspace_footer_shows_compact_capability_aware_routine_hints() {
     assert!(footer.contains("(e)dit"), "{footer:?}");
     assert!(footer.contains("(d)elete"), "{footer:?}");
 
-    app.workspace.projects[0].routines[0].capabilities.can_edit = false;
-    app.workspace.projects[0].routines[0]
-        .capabilities
-        .can_delete = false;
-    terminal
-        .draw(|frame| crate::ui::render(frame, &mut app))
-        .unwrap();
-    let footer = (0..160)
-        .map(|x| terminal.backend().buffer()[(x, 7)].symbol())
-        .collect::<String>();
-    assert!(!footer.contains("(e)dit"), "{footer:?}");
-    assert!(!footer.contains("(d)elete"), "{footer:?}");
     assert!(footer.contains("(?)help"), "{footer:?}");
 }
 

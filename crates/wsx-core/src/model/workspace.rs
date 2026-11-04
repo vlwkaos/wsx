@@ -18,7 +18,7 @@ pub struct Project {
     pub last_terminal_active_unix_ms: Option<u64>,
     pub worktrees: Vec<WorktreeInfo>,
     #[serde(skip)]
-    pub routines: Vec<asched_core::routine::ipc::RoutineView>,
+    pub routines: Vec<crate::routine::RoutineView>,
     #[serde(skip)]
     pub routine_revision: u64,
     #[serde(skip)]

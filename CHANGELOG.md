@@ -24,6 +24,10 @@
 - Tasks: the lean flow is wsx's own behavior in every project. A workflow step named `context` or `memo` no longer runs as its own turn. The `context` prompt joins the first other step after a task context block the host writes (the task's files, the open tasks that share them and the manager's memo lines about them). The `memo` prompt joins the step before it. `wsx task new --size small` runs only the build step on `tasks.agent.smallModel` (default `sonnet`) with effort `high`.
 - Tasks: an explicit effort on every worker and manager launch (`tasks.agent.effort`, `tasks.manager.effort`, default `high` on every model; `medium` only by an explicit setting, for opus workers), as Claude's `--effort` or Pi's `--thinking`. The task record keeps it, and the web and TUI show it after the model.
 
+### Changed
+
+- Routines: wsxd runs the routine scheduler itself, in place of the vendored asched scheduler in its own `wsxd __wsx_routine_daemon` process and socket. Routines, run records and output now live in `routines/` beside wsxd's socket. At its first start, wsxd stops a running asched daemon and imports its store, run history and output included. A run asched had in flight is recorded as `interrupted` with the note "interrupted by the upgrade from asched to wsxd's scheduler". asched's files stay as a backup. A routine run now continues through a live handoff (`wsx daemon restart`) and records its exit code. A fired event's payload is in `WSX_EVENT_PAYLOAD` (was `ASCHED_EVENT_PAYLOAD`). The output a run reports is the end of its stdout (else stderr); asched's parsing of codex and claude JSON lines is gone. wsx-core no longer depends on asched-core, so it can publish again ([docs/tasks.md](docs/tasks.md) "Routines").
+
 ### Fixed
 
 - Security: tokio 1.47.5 to 1.51.6 (RUSTSEC-2026-0386), rustls 0.23.46, rustls-webpki 0.103.16 and webpki-roots 1.0.10; the vendored asched libc pin moves to 0.2.190 because tokio 1.51.6 needs mio 1.2. Left open: lru 0.12.5 and paste 1.0.15 come from ratatui 0.29, and crypto-bigint 0.5.5 comes from p256 0.13.2 (RUSTSEC-2026-0387); none can take its fix without a parent upgrade.

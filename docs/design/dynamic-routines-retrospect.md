@@ -1,6 +1,6 @@
 # Dynamic routines, and the retrospect as one routine
 
-Status: built for owner msgs 2085 and 2091, 2026-11-04. Contracts: docs/tasks.md "Routines"; vendor/asched/PLAN-event-triggers.md.
+Status: built for owner msgs 2085 and 2091, 2026-11-04. Contracts: docs/tasks.md "Routines".
 
 Msg 2091: wsx builds nothing retrospect-specific. The product work is the general routine system. The retrospect is one routine entry in the repo, and it is the example that proves the features.
 
@@ -8,17 +8,17 @@ Msg 2091: wsx builds nothing retrospect-specific. The product work is the genera
 
 | Need | Feature | Why this shape |
 |---|---|---|
-| Not only fixed times | `--at` one-shot trigger (`Trigger::At` in asched) | a third trigger kind in the one scheduler (owner decision 2026-10-31), no second structure |
-| React to the project | wsx fires `task.<state>`, `deploy.*`, `release.*`, `project.idle` through asched's existing `fire` | "after N" and filters stay in the routine's command; asched keeps no filter language |
+| Not only fixed times | `--at` one-shot trigger (`Trigger::At`) | a third trigger kind in the one scheduler (owner decision 2026-10-31), no second structure |
+| React to the project | wsx fires `task.<state>`, `deploy.*`, `release.*`, `project.idle` through the scheduler's `fire` | "after N" and filters stay in the routine's command; asched keeps no filter language |
 | The manager plans its next look | `wsx task checkin --in 40m --why ...` | wsx fixes the argv (`printf` of the why), so no `--owner-said`; one per project |
 | Tell the manager something | a run with stdout is an event with its output ends, also on success | before, a success said only "succeeded" |
 | Tell the owner, no turn | `wsx task post` (stdin to the chat, as the digest posts) | a routine pipes or calls it and prints nothing |
-| Run an agent with a prompt | already there: `--prompt` and `{prompt}` in the argv (asched), as the TUI's agent templates use | nothing new |
+| Run an agent with a prompt | already there: `--prompt` and `{prompt}` in the argv, as the TUI's agent templates use | nothing new |
 | Jitter | not built | `--at` lets the manager pick any minute; random times make runs and tests nondeterministic |
 
 ```mermaid
 flowchart LR
-  M[manager turn] -->|wsx task checkin| A[(asched in wsxd)]
+  M[manager turn] -->|wsx task checkin| A[(scheduler in wsxd)]
   H[manager host: task, deploy, idle] -->|fire kind, id, payload| A
   C[cron] --> A
   A -->|run| R[routine argv]
@@ -57,7 +57,7 @@ Detail: <state dir>/retrospect/1793745316931.md
 
 | Result | Stored | Shown to the owner | In the manager's context |
 |---|---|---|---|
-| Run end | asched run record and stdout file; `post` in the routine | the chat by default (result, output end, file links), the ledger, the routine preview | a failure, or the output of a `--no-post` routine, as an event line; a posted run as `Posted:` in the handover, and every run by `handover_routines` |
+| Run end | run record and stdout file; `post` in the routine | the chat by default (result, output end, file links), the ledger, the routine preview | a failure, or the output of a `--no-post` routine, as an event line; a posted run as `Posted:` in the handover, and every run by `handover_routines` |
 | `wsx task post` (and the digest) | `manager/log.jsonl`: `message{from: events, text: <title>}` and a reply with no usage | the chat, with no turn | built: the handover lists it as `Posted: <text>`, not as the manager's `You:`. Not built: delivery at the next turn |
 
 Next-turn delivery, the design: the manager host keeps the posts since the last turn (title and the first 300 characters each, the newest 3, held in `state.json` so a restart keeps them). The next turn that runs anyway opens with `Shown to the owner since your last turn: <title>: <text>` and clears them. A post starts no turn, so it costs no turn; it costs only those input tokens. The handover covers a rotation, since it reads the log.
@@ -66,7 +66,7 @@ Next-turn delivery, the design: the manager host keeps the posts since the last 
 
 | Scenario | Where |
 |---|---|
-| `At` runs once at or after its minute, then has no next run | asched `daemon.rs` contract test |
+| `At` runs once at or after its minute, then has no next run | `crates/wsx/tests/routine_wsxd_lifecycle.rs` and the task scenario |
 | `checkin --in 0m` and `--in 8d` are refused; `--in 1m` runs within 2 minutes; the event carries the why; then no next run | `scripts/test-task.py` |
 | A `--event task.closed` routine runs on a close and its `wsx task post` reaches the chat with no turn and no event | `scripts/test-task.py` |
 | The retrospect as a routine with `--no-model` posts the 3 repeated owner asks and its detail file, no event | `scripts/test-task.py` |

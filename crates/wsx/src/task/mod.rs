@@ -2289,7 +2289,7 @@ const CHECKIN_WHY_CHARS: usize = 500;
 /// `why`), so it needs no `--owner-said`; its output reaches the manager as the run's event.
 /// ref: docs/tasks.md "Routines"
 fn checkin(project: Option<&str>, after: Option<&str>, at: Option<&str>, why: &str) -> Result<()> {
-    use asched_core::routine::{ipc::Action, Routine, Trigger};
+    use wsx_core::routine::{Action, Routine, Trigger};
     not_for_roles("a check-in")?;
     let why = why.trim();
     if why.is_empty() || why.chars().count() > CHECKIN_WHY_CHARS {

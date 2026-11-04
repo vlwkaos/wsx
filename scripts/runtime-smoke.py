@@ -2159,13 +2159,12 @@ shutil.rmtree(LIFETIME, ignore_errors=True)
 
 def lifetime_daemons(root, owner=None):
     root.mkdir(mode=0o700, parents=True)
-    extra = {"WSX_SOCKET": str(root / "wsx.sock"), "ASCHED_ROOT": str(root / "asched")}
+    extra = {"WSX_SOCKET": str(root / "wsx.sock")}
     extra |= {"WSX_EXIT_WITH_PID": str(owner)} if owner else {}
     base = {key: value for key, value in env.items() if key != "WSX_EXIT_WITH_PID"}
     daemons = [subprocess.Popen([str(DAEMON), *args], env=base | extra, stdin=subprocess.DEVNULL)
-               for args in ([], ["__wsx_routine_daemon"])]
-    wait_for(lambda: (root / "wsx.sock").exists() and (root / "asched" / "daemon-v1.sock").exists(),
-             "lifetime daemons did not start")
+               for args in ([],)]
+    wait_for(lambda: (root / "wsx.sock").exists(), "lifetime daemons did not start")
     return daemons
 
 
@@ -2181,7 +2180,6 @@ owner.kill()
 owner.wait()
 assert_lifetime_ended(with_owner, "wsxd outlived its WSX_EXIT_WITH_PID process")
 assert not (LIFETIME / "owner" / "wsx.sock").exists(), "wsxd kept its socket after its owner"
-assert not (LIFETIME / "owner" / "asched" / "daemon-v1.sock").exists(), "routine socket kept"
 deleted = lifetime_daemons(LIFETIME / "deleted")
 # ^ The daemons still write in it (a marker's temporary file): one pass can fail or leave a file.
 wait_for(lambda: shutil.rmtree(LIFETIME / "deleted", ignore_errors=True) or not (LIFETIME / "deleted").exists(),

@@ -256,7 +256,7 @@ impl App {
                     }
                     self.spawn_routine_request(
                         project_path,
-                        asched_core::routine::ipc::Action::Delete {
+                        wsx_core::routine::Action::Delete {
                             revision,
                             name: name.clone(),
                         },

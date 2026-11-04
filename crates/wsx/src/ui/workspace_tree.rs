@@ -293,7 +293,7 @@ fn compact_tree_cell(
             routine_idx,
         } => {
             let routine = &workspace.projects[*project_idx].routines[*routine_idx];
-            if routine.capabilities.can_cancel {
+            if routine.running {
                 ("●", Style::default().fg(theme::WORKING))
             } else {
                 ("◇", Style::default().fg(theme::ACCENT))
@@ -534,7 +534,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                     .map(|r| format!(" · {:?}", r.status))
                     .unwrap_or_default();
                 ListItem::new(routine_tree_label(&view.routine.name, &status)).style(
-                    Style::default().fg(if view.capabilities.can_cancel {
+                    Style::default().fg(if view.running {
                         theme::WORKING
                     } else {
                         theme::ACCENT

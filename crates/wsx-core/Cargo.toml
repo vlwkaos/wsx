@@ -20,4 +20,3 @@ dirs = { workspace = true }
 glob = { workspace = true }
 libc = { workspace = true }
 sha2 = "=0.10.9"
-asched-core = { workspace = true }

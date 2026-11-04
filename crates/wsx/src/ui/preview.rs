@@ -1,12 +1,12 @@
 // Right preview pane — git info, session capture, project summary
 
 use crate::session_state::{self, AppSessionState};
-use asched_core::routine::ipc::RoutineView;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 use wsx_core::model::workspace::{FetchFailReason, Project, SubmoduleCommitState, WorktreeInfo};
+use wsx_core::routine::RoutineView;
 
 use super::{
     compact_port_label, git_remote_status_color, theme,
@@ -623,20 +623,16 @@ pub fn render_routine_preview(
         Line::raw(""),
     ];
     let mut actions = Vec::new();
-    if view.capabilities.can_edit {
-        actions.push(if view.capabilities.can_rename {
-            "edit (rename allowed)"
-        } else {
-            "edit"
-        });
-    }
-    if view.capabilities.can_delete {
-        actions.push(if view.capabilities.can_cancel {
-            "delete (cancels active run)"
-        } else {
-            "delete"
-        });
-    }
+    actions.push(if view.running {
+        "edit"
+    } else {
+        "edit (rename allowed)"
+    });
+    actions.push(if view.running {
+        "delete (cancels active run)"
+    } else {
+        "delete"
+    });
     lines.push(Line::from(vec![
         Span::styled("Actions: ", label),
         Span::raw(if actions.is_empty() {

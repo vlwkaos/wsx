@@ -7,9 +7,9 @@ use super::view::{
 use super::{checks, copy, store, usage, DeployKind, DeployRecord, TaskRecord, TaskState};
 use crate::config::project::load_task_config;
 use crate::model::workspace::TaskConfig;
+use crate::routine::Trigger;
 use crate::{ops, runtime};
 use anyhow::Result;
-use asched_core::routine::Trigger;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -388,21 +388,15 @@ pub fn routines(main: &Path) -> Value {
 /// `routines` for at most `limit` routines; `full` adds each row's `command` (clipped) and the
 /// last run's `finished_unix_ms`. The web client's Routines screen reads it that way.
 pub fn routine_rows(main: &Path, limit: usize, full: bool) -> Value {
-    use asched_core::routine::ipc::{Action, Request, Response};
-    use asched_core::routine::{store::RoutineStore, RoutineClient};
-    let Ok(root) = asched_core::RegistryStore::default_root() else {
-        return json!([]);
-    };
-    let listed = RoutineClient::new(root.clone())
-        .with_request_timeout(std::time::Duration::from_secs(2))
-        .request(&Request::new(main.to_path_buf(), Action::List));
+    use crate::routine::{request, store, Action, Response};
+    let listed = request(&crate::runtime::Client::local(), main, Action::List);
     let views = match listed {
         Ok(Response::Routines { routines, .. }) => routines,
         Ok(other) => return json!({ "error": format!("unexpected answer: {other:?}") }),
         Err(error) => {
             // ^ No routine file: nothing to schedule, so a stopped scheduler is not news.
-            let defined =
-                RoutineStore::new(root, main).is_ok_and(|store| store.project_file().exists());
+            let defined = store::canonical_project(main)
+                .is_ok_and(|project| store::project_file(&store::root(), &project).exists());
             return match defined {
                 true => {
                     json!({ "error": format!("the routine scheduler does not answer: {error}") })
@@ -433,7 +427,7 @@ pub fn routine_rows(main: &Path, limit: usize, full: bool) -> Value {
                 "post": view.routine.post,
                 "trigger": trigger_text(&view.routine.trigger),
                 "next_run_unix_ms": view.next_run_epoch.map(|epoch| epoch * 1000),
-                "running": view.capabilities.can_cancel,
+                "running": view.running,
                 "last": last,
             });
             if full {

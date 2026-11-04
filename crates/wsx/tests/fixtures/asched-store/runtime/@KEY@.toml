@@ -1,0 +1,46 @@
+version = 2
+
+[claims]
+
+[[runs.closed]]
+id = "1793782981-1793782981976720000"
+routine = "closed"
+started_epoch = 1793782981
+finished_epoch = 1793782982
+status = "succeeded"
+exit_code = 0
+final_output = ""
+stdout_path = "@ASCHED@/logs/@KEY@/636c6f736564/1793782981-1793782981976720000/stdout.log"
+stderr_path = "@ASCHED@/logs/@KEY@/636c6f736564/1793782981-1793782981976720000/stderr.log"
+
+[runs.closed.cause.event]
+kind = "task.closed"
+event_id = "e1"
+
+[[runs.nightly]]
+id = "1793782942-1793782942108559000"
+routine = "nightly"
+started_epoch = 1793782942
+finished_epoch = 1793782942
+cause = "manual"
+status = "succeeded"
+exit_code = 0
+final_output = "imported-output"
+stdout_path = "@ASCHED@/logs/@KEY@/6e696768746c79/1793782942-1793782942108559000/stdout.log"
+stderr_path = "@ASCHED@/logs/@KEY@/6e696768746c79/1793782942-1793782942108559000/stderr.log"
+
+[[runs.slow]]
+id = "1793782955-1793782955310689000"
+routine = "slow"
+started_epoch = 1793782955
+cause = "manual"
+status = "running"
+pid = 89076
+process_start = "1793782955:346810"
+final_output = ""
+stdout_path = "@ASCHED@/logs/@KEY@/736c6f77/1793782955-1793782955310689000/stdout.log"
+stderr_path = "@ASCHED@/logs/@KEY@/736c6f77/1793782955-1793782955310689000/stderr.log"
+
+[[event_receipts]]
+kind = "task.closed"
+event_id = "e1"

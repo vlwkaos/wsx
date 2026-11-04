@@ -24,7 +24,8 @@ pub const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 pub const WSX_PANE_ID_ENV: &str = "WSX_PANE_ID";
 pub const WSX_RUNTIME_GENERATION_ENV: &str = "WSX_RUNTIME_GENERATION";
 pub const WSX_PLUGIN_VIEW_ENV: &str = "WSX_PLUGIN_VIEW_JSON";
-pub const ROUTINE_DAEMON_ARG: &str = "__wsx_routine_daemon";
+// ^ wsxd supervises one routine run in this submode (docs/tasks.md "Routines").
+pub const ROUTINE_RUN_ARG: &str = "__wsx_routine_run";
 pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // ^ Receipt expiry and final PTY drain are daemon-owned runtime behavior.
 // UI-only releases continue to reuse wsxd. See docs/agent-orchestration.md and docs/terminal-exit-ordering.md.
@@ -71,7 +72,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // checkout at the next synchronization, so their chat and new panes resolve again.
 // Revision 40 runs a routine with an `at` trigger once at its minute, also a missed one, and
 // stores a routine's `post` (docs/tasks.md "Routines").
-pub const DAEMON_REVISION: u32 = 40;
+// Revision 41 runs the routine scheduler inside wsxd (the `routine` request) in place of the
+// separate asched process, and imports asched's store once (docs/tasks.md "Routines").
+pub const DAEMON_REVISION: u32 = 41;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -245,6 +248,10 @@ pub fn binary_identity_matches_file(path: &Path, identity: &str) -> io::Result<b
 pub enum Request {
     Hello {
         protocol: u32,
+    },
+    Routine {
+        project: PathBuf,
+        action: crate::routine::Action,
     },
     Snapshot,
     Poll {
@@ -677,6 +684,7 @@ pub enum Response {
     Ack {
         revision: u64,
     },
+    Routine(crate::routine::Response),
     Error(ApiError),
 }
 

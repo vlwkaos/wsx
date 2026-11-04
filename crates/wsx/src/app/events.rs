@@ -58,7 +58,7 @@ impl App {
                     expand,
                     selection,
                 },
-                Ok(asched_core::routine::ipc::Response::Routines { revision, routines }),
+                Ok(wsx_core::routine::Response::Routines { revision, routines }),
             ) => {
                 if self.routine_refresh_generation.get(&result.project_path) != Some(&generation) {
                     return;
@@ -116,7 +116,7 @@ impl App {
                     form,
                     saved_name,
                 },
-                Ok(asched_core::routine::ipc::Response::Ok { .. }),
+                Ok(wsx_core::routine::Response::Ok { .. }),
             ) => {
                 self.spawn_routine_project_refresh(
                     result.project_path,
@@ -137,8 +137,7 @@ impl App {
                 },
                 Err(error),
             ) => {
-                if routine_error_kind(&error)
-                    == Some(asched_core::routine::RoutineErrorKind::Conflict)
+                if routine_error_kind(&error) == Some(wsx_core::routine::RoutineErrorKind::Conflict)
                 {
                     self.spawn_routine_project_refresh(
                         result.project_path,
@@ -154,10 +153,7 @@ impl App {
                 };
                 self.set_status(format!("Routine not saved: {}", routine_error_text(&error)));
             }
-            (
-                RoutineResultKind::Delete { name },
-                Ok(asched_core::routine::ipc::Response::Ok { .. }),
-            ) => {
+            (RoutineResultKind::Delete { name }, Ok(wsx_core::routine::Response::Ok { .. })) => {
                 self.spawn_routine_project_refresh(
                     result.project_path,
                     true,
@@ -166,8 +162,7 @@ impl App {
                 self.set_status(format!("Deleted routine '{name}'"));
             }
             (RoutineResultKind::Delete { name }, Err(error)) => {
-                if routine_error_kind(&error)
-                    == Some(asched_core::routine::RoutineErrorKind::Conflict)
+                if routine_error_kind(&error) == Some(wsx_core::routine::RoutineErrorKind::Conflict)
                 {
                     self.spawn_routine_project_refresh(
                         result.project_path,
@@ -265,32 +260,12 @@ impl App {
     }
 
     pub(super) fn spawn_routine_refresh(&mut self) {
-        let registered = match crate::cli::registered_routine_paths() {
-            // ^ The scheduler's rule: without a registry it runs every project's routines.
-            Ok(paths) => paths.map(|paths| paths.into_iter().collect::<HashSet<_>>()),
-            Err(error) => {
-                self.set_status(format!("Routines unavailable: {error}"));
-                return;
-            }
-        };
-        let mut paths = Vec::new();
-        let mut cleared = false;
-        for project in &mut self.workspace.projects {
-            if registered
-                .as_ref()
-                .is_none_or(|paths| paths.contains(&project.path))
-            {
-                paths.push(project.path.clone());
-            } else if !project.routines.is_empty() || project.routine_revision != 0 {
-                project.routines.clear();
-                project.routine_revision = 0;
-                cleared = true;
-            }
-        }
-        if cleared {
-            self.rebuild_flat();
-            self.needs_redraw = true;
-        }
+        let paths: Vec<PathBuf> = self
+            .workspace
+            .projects
+            .iter()
+            .map(|project| project.path.clone())
+            .collect();
         for path in paths {
             self.spawn_routine_project_refresh(path, false, RoutineSelection::Preserve);
         }

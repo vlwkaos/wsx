@@ -1,9 +1,9 @@
 use super::{popup_block, theme};
-use asched_core::routine::{Routine, Trigger};
 use ratatui::{
     prelude::*,
     widgets::{Clear, Paragraph},
 };
+use wsx_core::routine::{Routine, Trigger};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoutinePreset {
