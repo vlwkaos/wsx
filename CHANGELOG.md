@@ -34,6 +34,9 @@
 - Tasks: `usage.week` starts at the local midnight 6 days back, so it matches the 7 day rows, not 7 times 24 hours back.
 - Tasks: the worker's rules ask for few model calls: reads together in one message, a subagent for a wide search, no polling.
 - Tasks: Pi runs with `PI_CACHE_RETENTION=long`, so a wait of up to an hour does not write the whole context again.
+- Tasks: the manager's notes keep a budget per file. A long `decisions.md` no longer takes all 8 KiB of a fresh conversation's opening notes: each file gets 4 KiB (decisions its newest lines; `context.md` its first lines, then its newest memos), and one that is short leaves the rest to the other.
+- Tasks: a manager conversation idle over 60 min with over 60k tokens of context starts afresh with the handover instead of a cold resume (`rotated` reason "idle over 60 min with <n>k context").
+- Tasks: changed manager instructions reach a warm conversation (answered under 60 min ago, under 100k context) as a message instead of a rotation; others rotate as before.
 
 ## [0.43.0] - 2026-10-31
 

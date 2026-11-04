@@ -212,8 +212,29 @@ const CONTEXT_FILE: &str = "context.md";
 const DECISIONS_FILE: &str = "decisions.md";
 /// The most of both files a fresh conversation's first message carries.
 const MAX_NOTES_BYTES: usize = 8 * 1024;
+/// Each notes file's own share of that budget; one that is short leaves the rest to the other.
+const NOTES_HALF: usize = MAX_NOTES_BYTES / 2;
+/// A conversation idle this long lost Claude's prompt cache (1 hour): past `IDLE_ROTATE_TOKENS`
+/// of context, a fresh conversation costs less than the cold resume.
+const IDLE_ROTATE_MS: u64 = 60 * 60_000;
+const IDLE_ROTATE_TOKENS: u64 = 60_000;
+/// Changed instructions go to a warm conversation under this context as a message.
+const INSTRUCTION_MESSAGE_TOKENS: u64 = 100_000;
 // ^ The agent writes the notes: a link or a huge file must not reach the host's read.
 const MAX_NOTES_READ: u64 = 256 * 1024;
+
+/// The leading lines of `lines` that fit in `budget` bytes (a newline each), and their size.
+fn fit<'a>(lines: impl Iterator<Item = &'a String>, budget: usize) -> (Vec<&'a String>, usize) {
+    let mut used = 0;
+    let kept: Vec<&String> = lines
+        .take_while(|line| {
+            used += line.len() + 1;
+            used <= budget
+        })
+        .collect();
+    let size = kept.iter().map(|line| line.len() + 1).sum();
+    (kept, size)
+}
 
 /// ref: docs/tasks.md "Manager", "Memo"
 fn instructions(
@@ -1946,6 +1967,20 @@ impl Manager {
     fn send_turn(&mut self, text: &str, events_only: bool) -> Result<()> {
         let mut text = text.to_string();
         let model = self.turn_model(events_only);
+        // ^ Claude's prompt cache lives 1 hour: a large conversation resumed later writes its
+        // whole context again, so it starts afresh with the handover.
+        let idle = now_unix_ms().saturating_sub(self.state.last_reply_ms);
+        if self.state.agent_session.is_some()
+            && self.state.last_reply_ms > 0
+            && idle > IDLE_ROTATE_MS
+            && self.state.context_tokens > IDLE_ROTATE_TOKENS
+        {
+            let tokens = self.state.context_tokens;
+            self.rotate(
+                tokens,
+                Some(format!("idle over 60 min with {}k context", tokens / 1000)),
+            );
+        }
         if self.agent.is_none() {
             let mut launch = self.launch()?;
             let digest = instructions_digest(&launch.instructions);
@@ -1954,8 +1989,21 @@ impl Manager {
             if self.state.agent_session.is_some()
                 && self.state.instructions.as_deref() != Some(&digest)
             {
-                self.rotate(0, Some("the manager's instructions changed".into()));
-                launch = self.launch()?;
+                // ^ A warm small conversation takes the new instructions as a message: a
+                // rotation costs a cold start. A state with no digest cannot tell what changed.
+                let warm = self.state.instructions.is_some()
+                    && self.state.context_tokens < INSTRUCTION_MESSAGE_TOKENS
+                    && now_unix_ms().saturating_sub(self.state.last_reply_ms) < IDLE_ROTATE_MS;
+                if warm {
+                    text = format!(
+                        "Your instructions changed. These replace the ones this conversation \
+                         began with:\n\n{}\n\n{text}",
+                        launch.instructions
+                    );
+                } else {
+                    self.rotate(0, Some("the manager's instructions changed".into()));
+                    launch = self.launch()?;
+                }
             }
             let (session, resume) = match &self.state.agent_session {
                 Some(session) => (session.clone(), true),
@@ -2157,6 +2205,8 @@ impl Manager {
         // ^ The last model call's context: the summed usage counts it once per call.
         let context = result.usage.context_tokens;
         self.state.session_cost_micro_usd = result.usage.session_cost_micro_usd;
+        self.state.context_tokens = context;
+        self.state.last_reply_ms = now_unix_ms();
         self.save();
         self.say(&format!(
             "reply {id}: {}",
@@ -2216,8 +2266,9 @@ impl Manager {
         self.log(ManagerEvent::Rotated { tokens, reason });
     }
 
-    /// The owner's decisions, newest first, then the project context, at most 8 KiB
-    /// together: every fresh conversation starts knowing them. ref: docs/tasks.md "Memo"
+    /// The owner's decisions (newest lines) and the project context (its first lines, then its
+    /// newest memo lines), each within its half of 8 KiB, more when the other is short: every
+    /// fresh conversation starts knowing them. ref: docs/tasks.md "Memo"
     fn notes_preamble(&self) -> String {
         let Ok(notes) = self.dir.notes() else {
             return String::new();
@@ -2231,32 +2282,33 @@ impl Manager {
             .map(str::to_string)
             .collect();
         let context = read(CONTEXT_FILE);
+        let size = |lines: &[String]| lines.iter().map(|line| line.len() + 1).sum::<usize>();
+        // ^ The first lines are the project section the manager wrote, which says what the
+        // project is; the memo lines (`- #<n>: ...`) are appended and the oldest go first.
+        let (memos, section): (Vec<String>, Vec<String>) = context
+            .lines()
+            .map(str::to_string)
+            .partition(|line| line.starts_with("- #"));
+        let decisions_budget = MAX_NOTES_BYTES - NOTES_HALF.min(size(&section) + size(&memos));
+        let context_budget = MAX_NOTES_BYTES - NOTES_HALF.min(size(&decisions));
         let mut out = String::new();
-        let mut budget = MAX_NOTES_BYTES;
-        let mut take = |line: &str, out: &mut String| {
-            if line.len() + 1 > budget {
-                return false;
-            }
-            budget -= line.len() + 1;
-            out.push_str(line);
-            out.push('\n');
-            true
-        };
+        let decisions = fit(decisions.iter(), decisions_budget).0;
         if !decisions.is_empty() {
             out.push_str("The owner's decisions (decisions.md, newest first):\n");
-            for line in &decisions {
-                if !take(line, &mut out) {
-                    break;
-                }
+            for line in decisions {
+                out.push_str(line);
+                out.push('\n');
             }
             out.push('\n');
         }
-        if !context.trim().is_empty() {
+        let (section, used) = fit(section.iter(), context_budget / 2);
+        let (mut memos, _) = fit(memos.iter().rev(), context_budget - used);
+        memos.reverse();
+        if !section.is_empty() || !memos.is_empty() {
             out.push_str("Your project context (context.md):\n");
-            for line in context.lines() {
-                if !take(line, &mut out) {
-                    break;
-                }
+            for line in section.into_iter().chain(memos) {
+                out.push_str(line);
+                out.push('\n');
             }
             out.push('\n');
         }
