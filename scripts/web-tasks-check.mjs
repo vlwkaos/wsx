@@ -2765,7 +2765,8 @@ await key("Escape", 27);
   await inScheme("dark");
 }
 
-const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/status of 404.*\/api\/tasks\/999999\/routines/.test(problem));
+const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/status of 404.*\/api\/tasks\/999999\/routines/.test(problem) && !/status of 403.*\/api\/files\?project=\d+&path=$/.test(problem));
+// ^ The header-position block opens Files on a site without the files grant; its bar is what it checks.
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));
 // ^ Last: its 35 messages keep the manager busy for a while.
