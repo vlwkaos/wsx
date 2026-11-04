@@ -1,11 +1,11 @@
 //! Claude worker adapter: one `claude -p` process with stream JSON on stdin and stdout.
 //! ref: docs/tasks.md "Claude adapter"; knowledge "Headless Worker Transport"
 
-use super::agent::{turn_text, AgentLine, Launch, TurnResult, UsageLimit};
+use super::agent::{read_json_lines, turn_text, AgentLine, Launch, TurnResult, UsageLimit};
 use super::boundary::Boundary;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::Sender;
@@ -16,8 +16,6 @@ use wsx_core::model::workspace::TaskWorkflow;
 use wsx_core::task::view::clip;
 use wsx_core::task::{now_unix_ms, worker_result_schema, TaskRecord, TurnUsage};
 
-/// Longest stdout line the host reads; a longer one (a huge tool result) is skipped.
-const MAX_LINE_BYTES: u64 = 4 * 1024 * 1024;
 const PROGRESS_CHARS: usize = 160;
 /// Variables a worker keeps from the host. Everything else, `WSX_*` included, is dropped.
 const KEPT_ENV: &[&str] = &[
@@ -372,35 +370,9 @@ impl ClaudeAgent {
         let stdin = child.stdin.take().context("claude has no stdin")?;
         let stdout = child.stdout.take().context("claude has no stdout")?;
         std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            let mut turns = Turns {
-                cost_base,
-                ..Turns::default()
-            };
-            loop {
-                let mut line = Vec::new();
-                match (&mut reader)
-                    .take(MAX_LINE_BYTES)
-                    .read_until(b'\n', &mut line)
-                {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) if !line.ends_with(b"\n") && line.len() as u64 >= MAX_LINE_BYTES => {
-                        if !matches!(skip_line(&mut reader), Ok(true)) {
-                            break;
-                        }
-                    }
-                    Ok(_) => {
-                        let Ok(value) = serde_json::from_slice::<Value>(&line) else {
-                            continue;
-                        };
-                        if let Some(parsed) = parse_line(&value, &mut turns) {
-                            if events.send(wrap(Some(parsed))).is_err() {
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
+            read_stream(stdout, cost_base, |line| {
+                events.send(wrap(Some(line))).is_ok()
+            });
             let _ = events.send(wrap(None));
         });
         Ok(Self {
@@ -498,25 +470,20 @@ fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::Os
     args
 }
 
-/// Drop the rest of an oversized line one buffer at a time, never holding it.
-/// Returns false at end of input.
-fn skip_line(reader: &mut impl BufRead) -> std::io::Result<bool> {
-    loop {
-        let buffer = reader.fill_buf()?;
-        if buffer.is_empty() {
-            return Ok(false);
-        }
-        match buffer.iter().position(|byte| *byte == b'\n') {
-            Some(end) => {
-                reader.consume(end + 1);
-                return Ok(true);
-            }
-            None => {
-                let length = buffer.len();
-                reader.consume(length);
-            }
-        }
-    }
+/// Read one process's stdout to its end, handing each parsed line to `send` (false stops).
+/// The reader thread and `stream_tests.rs` both run this.
+pub(super) fn read_stream(
+    stdout: impl Read,
+    cost_base: u64,
+    mut send: impl FnMut(AgentLine) -> bool,
+) {
+    let mut turns = Turns {
+        cost_base,
+        ..Turns::default()
+    };
+    read_json_lines(stdout, |value| {
+        parse_line(&value, &mut turns).is_none_or(|line| send(line))
+    });
 }
 
 /// What the reader keeps across the lines of one process.

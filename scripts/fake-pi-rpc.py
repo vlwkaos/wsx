@@ -22,8 +22,32 @@ def trace(record):
         out.write(json.dumps(dict(record, adapter='pi')) + '\n')
 
 
+# ^ The fields the real Pi writes on an assistant message, as recorded in
+# crates/wsx/tests/fixtures/agent-streams/pi (docs/tasks.md "Agent stream recordings"); the
+# scenario's own values stay. crates/wsx/tests/agent_stream_fakes.rs fails when this drifts.
+USAGE = {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'reasoning': 0, 'totalTokens': 0,
+         'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'total': 0}}
+MESSAGE = {'api': 'fake-responses', 'provider': 'fake', 'timestamp': 0, 'responseId': 'resp_fake',
+           'rawStopReason': 'completed', 'durationMs': 0, 'thinkingLevel': 'off'}
+
+
+def shaped(value):
+    if value.get('type') == 'message_end' and value['message'].get('role') == 'assistant':
+        message = {**MESSAGE, **value['message']}
+        message['usage'] = {**USAGE, **message['usage']}
+        message['content'] = [{'textSignature': '{}', **block} if block['type'] == 'text' else block
+                              for block in message['content']]
+        if message['stopReason'] == 'error':
+            # ^ A refused call has no response: the real message lacks these.
+            for name in ('responseId', 'rawStopReason'):
+                del message[name]
+            del message['usage']['reasoning']
+        value = {**value, 'message': message}
+    return value
+
+
 def emit(value):
-    sys.stdout.write(json.dumps(value) + '\n')
+    sys.stdout.write(json.dumps(shaped(value)) + '\n')
     sys.stdout.flush()
 
 
