@@ -447,6 +447,16 @@ impl Drop for ClientGuard {
 }
 
 pub(crate) fn acquire_singleton_lock(path: &Path) -> io::Result<fs::File> {
+    try_lock_file(path)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!("another wsxd owns {}", path.display()),
+        )
+    })
+}
+
+/// The owner-only lock file at `path`, locked by this process, or `None` while another holds it.
+pub(crate) fn try_lock_file(path: &Path) -> io::Result<Option<fs::File>> {
     let file = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -462,18 +472,16 @@ pub(crate) fn acquire_singleton_lock(path: &Path) -> io::Result<fs::File> {
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "unsafe wsxd singleton lock",
+            format!("unsafe lock file {}", path.display()),
         ));
     }
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result == 0 {
-        Ok(file)
-    } else {
-        let error = io::Error::last_os_error();
-        Err(io::Error::new(
-            io::ErrorKind::AddrInUse,
-            format!("another wsxd owns {}: {error}", path.display()),
-        ))
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(Some(file));
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        true => Ok(None),
+        false => Err(error),
     }
 }
 

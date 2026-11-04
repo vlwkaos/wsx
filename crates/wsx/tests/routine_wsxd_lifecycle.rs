@@ -8,7 +8,10 @@ use std::{
     io::{BufRead, BufReader, Write},
     os::{
         fd::AsRawFd,
-        unix::{fs::PermissionsExt, net::UnixListener},
+        unix::{
+            fs::{OpenOptionsExt, PermissionsExt},
+            net::UnixListener,
+        },
     },
     path::{Path, PathBuf},
     process::{Command, Output},
@@ -20,8 +23,8 @@ use std::{
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 const POLL_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
-// ^ Runs start only by hand: February 31 parses and never comes.
-const NEVER_DUE: &str = "0 0 31 2 *";
+// ^ Runs start only by hand: February 29 comes once in four years.
+const NEVER_DUE: &str = "0 0 29 2 *";
 
 struct Install {
     root: PathBuf,
@@ -242,6 +245,7 @@ fn old_scheduler(asched: &Path) -> thread::JoinHandle<String> {
         .create(true)
         .truncate(false)
         .write(true)
+        .mode(0o600)
         .open(asched.join("daemon-v1.lock"))
         .unwrap();
     assert_eq!(
@@ -292,6 +296,11 @@ fn the_first_start_imports_asched_routines_and_history() {
             }
         }
     }
+    // ^ One project asched left unreadable: the import leaves it out and takes the rest.
+    let broken = install
+        .asched
+        .join(format!("projects/{}.toml", "0".repeat(32)));
+    fs::write(&broken, "project_path = [not toml").unwrap();
     let runtime_file = install.asched.join(format!("runtime/{key}.toml"));
     let before = fs::read(&runtime_file).unwrap();
     let old = old_scheduler(&install.asched);
@@ -353,6 +362,13 @@ fn the_first_start_imports_asched_routines_and_history() {
 
     // asched's files stay as a backup, and the imported routines run.
     assert_eq!(fs::read(&runtime_file).unwrap(), before);
+    assert_eq!(
+        fs::read_dir(install.root.join("state/routines/projects"))
+            .unwrap()
+            .count(),
+        1,
+        "only the readable project is imported"
+    );
     install.routine(&["run", "nightly"]);
     let run = install.finished_run("nightly");
     assert_eq!(
@@ -366,4 +382,60 @@ fn the_first_start_imports_asched_routines_and_history() {
             .len(),
         2
     );
+}
+
+/// A cancel can come at any moment of a run's start, also before its command has written
+/// `pid`: the command never goes on without a record. A run starts only once its record is stored.
+#[test]
+fn a_cancel_right_after_the_start_stops_the_command() {
+    let install = Install::new();
+    let started = install.root.join("started");
+    fs::create_dir_all(&started).unwrap();
+    let script = format!("--arg=echo > {}/$$; exec sleep 30", started.display());
+    install.routine(&[
+        "add", "hold", "--cron", NEVER_DUE, "--arg=sh", "--arg=-c", &script,
+    ]);
+    for _ in 0..8 {
+        install.routine(&["run", "hold"]);
+        install.routine(&["cancel", "hold"]);
+        assert_eq!(install.finished_run("hold")["status"], "cancelled");
+    }
+    // ^ A command that was about to start has had time to name itself.
+    thread::sleep(Duration::from_secs(1));
+    let deadline = Instant::now() + POLL_TIMEOUT;
+    for entry in fs::read_dir(&started).unwrap().flatten() {
+        let pid: i32 = entry.file_name().to_str().unwrap().parse().unwrap();
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the cancelled command {pid} still runs"
+            );
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+
+    // A run whose record cannot be stored does not start, and the request says why.
+    let projects = install.root.join("state/routines/projects");
+    let commands = fs::read_dir(&started).unwrap().count();
+    fs::set_permissions(&projects, fs::Permissions::from_mode(0o500)).unwrap();
+    let refused = install.wsx(&[
+        "routine",
+        "run",
+        "hold",
+        "--project",
+        install.project.to_str().unwrap(),
+    ]);
+    fs::set_permissions(&projects, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        !refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains("denied"),
+        "{refused:?}"
+    );
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(
+        fs::read_dir(&started).unwrap().count(),
+        commands,
+        "a run started without its record"
+    );
+    let runs = install.routine(&["logs", "hold"]);
+    assert_eq!(runs["runs"].as_array().unwrap().len(), 8, "{runs}");
 }

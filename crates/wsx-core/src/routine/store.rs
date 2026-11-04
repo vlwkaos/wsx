@@ -3,15 +3,17 @@
 //! `routines/logs/<key>/<run id>/` with each run's output. wsxd writes; others only read.
 
 use super::{Routine, RoutineError, RoutineErrorKind, RunRecord};
-use crate::fs_util::{write_atomic, AtomicWrite};
+use crate::fs_util::{private_dir, write_atomic, AtomicWrite};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Event ids kept per project, so one event runs its routines once.
 const MAX_EVENT_RECEIPTS: usize = 4_096;
+/// The largest store file read, as asched's store had.
+const MAX_STORE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The store of the daemon that `WSX_SOCKET` (or the state folder) names.
 pub fn root() -> PathBuf {
@@ -112,10 +114,8 @@ pub fn load(root: &Path, project: &Path) -> Result<ProjectRoutines, RoutineError
 }
 
 pub fn read(path: &Path) -> Result<Option<ProjectRoutines>, RoutineError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+    let Some(bytes) = read_bounded(path)? else {
+        return Ok(None);
     };
     serde_json::from_slice(&bytes).map(Some).map_err(|error| {
         RoutineError::new(
@@ -134,8 +134,20 @@ pub fn save(root: &Path, routines: &ProjectRoutines) -> Result<(), RoutineError>
     Ok(())
 }
 
-/// Create `dir` and its parents, owner-only.
-pub fn private_dir(dir: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dir)?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+/// A store file's bytes, `None` when it is missing; a file past 64 MiB is an error.
+pub fn read_bounded(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_STORE_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_STORE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} exceeds {MAX_STORE_BYTES} bytes", path.display()),
+        ));
+    }
+    Ok(Some(bytes))
 }
