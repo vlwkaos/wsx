@@ -702,11 +702,7 @@ async fn session_remove(
             .as_ref()
             .map(|agent| agent.provider.as_str());
         // ^ `task-<n>`, `task-manager` and the owner's `task-<n>-hand` (docs/tasks.md "By hand").
-        let task_label = target.label.strip_prefix("task-").is_some_and(|rest| {
-            let number = rest.strip_suffix("-hand").unwrap_or(rest);
-            rest == "manager" || number.parse::<u32>().is_ok()
-        });
-        if matches!(provider, Some("task" | "manager")) || task_label {
+        if wsx_core::task::session_news::is_task_session(target.label, provider) {
             return Err(Fault::new(
                 409,
                 "task_session",

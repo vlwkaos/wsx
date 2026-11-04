@@ -12,6 +12,7 @@ use super::agent::{
 use super::boundary::Boundary;
 use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME};
 use super::{broker, hosting, limit};
+use crate::cli::existing_daemon_snapshot;
 use anyhow::{Context, Result};
 use asched_core::routine::{store::RoutineStore, RoutineClient, RunRecord, RunStatus, Trigger};
 use serde_json::json;
@@ -31,6 +32,7 @@ use wsx_core::task::manager::{
     Author, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
     ManagerState, Seen,
 };
+use wsx_core::task::session_news;
 use wsx_core::task::stall;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
@@ -47,6 +49,8 @@ const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 /// Events within this long of each other, or during a turn, become one message.
 const EVENT_QUIET: Duration = Duration::from_secs(3);
 /// How often the host removes the captures of long-decided "To check" items.
+/// How often the host looks at wsxd for sessions that need the owner.
+const SESSION_LOOK: Duration = Duration::from_secs(2);
 const CAPTURE_SWEEP: Duration = Duration::from_secs(60 * 60);
 /// What wsx asks after a quiet period. The reply is the recap the owner reads.
 const RECAP_REQUEST: &str = "The project has been quiet. Write the owner a short recap, at most 8 lines: \
@@ -191,6 +195,10 @@ struct Manager {
     /// The stall each task shows now, and since when: it is reported after `stall::GRACE`.
     stall_suspects: BTreeMap<u32, (String, Instant)>,
     stalls_swept: Option<Instant>,
+    /// The project's agent sessions already posted, by attention marker; none until a first
+    /// look at wsxd sets the baseline. ref: docs/tasks.md "Session news"
+    observed_sessions: Option<BTreeMap<u64, String>>,
+    sessions_looked: Option<Instant>,
     /// Event lines not yet logged as a message, and when the last one came.
     pending_events: Vec<String>,
     last_event: Option<Instant>,
@@ -440,6 +448,8 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         observed_stalls: BTreeMap::new(),
         stall_suspects: BTreeMap::new(),
         stalls_swept: None,
+        observed_sessions: None,
+        sessions_looked: None,
         pending_events: Vec::new(),
         last_event: None,
         recap_quiet: (settings.manager_recap_secs > 0)
@@ -547,6 +557,7 @@ impl Manager {
                 Event::Tick => {
                     self.watch_tasks();
                     self.watch_stalls();
+                    self.watch_sessions();
                     self.ask_recap();
                     self.sweep_captures();
                     self.close_idle_roles();
@@ -695,6 +706,7 @@ impl Manager {
                 self.observed = seen;
                 self.observed_decisions = self.state.decisions_seen;
                 self.observed_stalls = self.state.stalls.clone();
+                self.observed_sessions = self.state.sessions_seen.clone();
                 self.observed_deploys_ms = self
                     .state
                     .deploys_seen_ms
@@ -932,6 +944,49 @@ impl Manager {
             self.state.routines_seen = Some(self.observed_routines);
             self.save();
         }
+    }
+
+    /// Post a project agent session that entered `exited`, `error` or `blocked`, once per
+    /// entry, with no turn. The first look is the baseline, not news. A turn that runs holds
+    /// the post: nothing is marked seen, so the next free look posts it.
+    /// ref: docs/tasks.md "Session news"
+    fn watch_sessions(&mut self) {
+        if self.turn.is_some()
+            || self
+                .sessions_looked
+                .is_some_and(|at| at.elapsed() < SESSION_LOOK)
+        {
+            return;
+        }
+        self.sessions_looked = Some(Instant::now());
+        // ^ No wsxd, no change: a sleeping daemon must not read as every session gone.
+        let Ok(snapshot) = existing_daemon_snapshot() else {
+            return;
+        };
+        let found = session_news::attention(&snapshot, &self.main);
+        let Some(seen) = self.observed_sessions.take() else {
+            let baseline = found
+                .iter()
+                .map(|n| (n.session, n.marker.clone()))
+                .collect();
+            self.set_sessions_seen(baseline);
+            return;
+        };
+        let (fresh, keep) = session_news::unposted(found, &seen);
+        for news in fresh {
+            self.post(news.event, news.text);
+        }
+        if keep != seen {
+            self.set_sessions_seen(keep);
+        } else {
+            self.observed_sessions = Some(seen);
+        }
+    }
+
+    fn set_sessions_seen(&mut self, seen: BTreeMap<u64, String>) {
+        self.state.sessions_seen = Some(seen.clone());
+        self.observed_sessions = Some(seen);
+        self.save();
     }
 
     /// Remove the capture files of items decided more than 7 days ago, at the start and hourly.

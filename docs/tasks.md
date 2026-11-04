@@ -458,6 +458,20 @@ wsx task routine add digest -p <project> --cron "0 9 * * *" --arg wsx --arg task
 | Lines, no host | Exit non-zero, nothing posted: the failed run reaches the manager when its host starts, and the next run covers the time |
 | No lines | Exit 0, with or without a host |
 
+## Session news
+
+The project chat also tells when one of the project's own agent sessions needs the owner: the sessions Home counts ([web-client-tasks.md](web-client-tasks.md) "Home"), not a task worker, a hand session or the manager (provider `task` or `manager`, or the label `task-<n>`, `task-<n>-hand`, `task-manager`; `wsx_core::task::session_news::is_task_session`). The project's manager host (not a role's) looks at wsxd's snapshot every 2 s while it runs, with the manager idle or not. A session whose agent pane has exited, or whose attached agent is `error` or `blocked`, is posted as `wsx task post` posts, with no manager turn: `message{from: events, text: "session <provider> in <branch>"}` and the reply `[<provider> in <branch>](session/<id>) exited|needs input|ended in an error`. The web turns `session/<id>` into the session's chat (its terminal for a site without chat); the TUI shows the text as written.
+
+| Case | What happens |
+|---|---|
+| Once | One post per entry into the state. A session that leaves it and enters again (its state began again) gets a new one. `state.json` `sessions_seen` keeps each posted session's `<state>:<since>` across a restart |
+| First start | What is in need then is the baseline, not news. Later, a state that still holds when the host starts is posted |
+| A turn runs | The host looks again after the turn: a post inside it would read as its end |
+| wsxd does not answer | Nothing changes: no session reads as gone |
+| No host | No post. The host starts with the manager |
+
+No push is added, and the post is unread as any post is.
+
 ## Deploy and release
 
 ```sh

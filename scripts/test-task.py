@@ -1836,6 +1836,76 @@ def run(wsx, wsxd, work, owned):
     board.parent.rmdir()
     for name in ('closed', 'retrospect', 'checkin', 'board', 'hushed', 'silent'):
         js('task', 'routine', 'delete', name, '-p', 'demo')
+    # ^ Session news (docs/tasks.md "Session news"): a project agent session that enters exited,
+    # error or blocked is one post with no turn, naming it; a session of a task is no news. A pane
+    # reports from inside itself, so the fixture types the report command into a session's shell.
+    def agent_session(name):
+        made = js('session', 'create', '--name', name, '-p', 'demo')
+        return made['session_id'], made['pane_id']
+
+    def pane_of(pane):
+        return next(p for p in daemon_call('snapshot')['data']['panes'] if p['id'] == pane)
+
+    def agent_reports(name, pane, provider, state):
+        cli('session', 'send-text', name, '"$WSX_AGENT_REPORT_BIN" agent report "$WSX_PANE_ID" --provider %s '
+            '--state %s --lifecycle' % (provider, state), '-p', 'demo')
+        wait(lambda: (pane_of(pane).get('agent') or {}).get('state') == state, '%s reports %s' % (name, state))
+
+    def news_of(session):
+        """The posts that name the session: replies with no usage, each after an events message."""
+        titles = {e['id'] for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
+                  and e['text'].startswith('session ')}
+        return [e['text'] for e in manager_entries() if e['kind'] == 'reply' and 'usage' not in e
+                and titles & set(e['to']) and '(session/%d)' % session in e['text']]
+
+    def posts_of(session, count, label):
+        wait(lambda: len(news_of(session)) >= count, label, 30)
+        time.sleep(5)
+        assert len(news_of(session)) == count, (label, news_of(session))
+        return news_of(session)
+
+    gone, gone_pane = agent_session('gone')
+    agent_reports('gone', gone_pane, 'claude', 'working')
+    time.sleep(5)
+    assert not news_of(gone), 'a working agent is no news'
+    cli('session', 'send-text', 'gone', 'exit', '-p', 'demo')
+    wait(lambda: pane_of(gone_pane)['exited'], 'the agent shell exits')
+    assert posts_of(gone, 1, 'the exit post') == ['[claude in main](session/%d) exited' % gone]
+    assert [e['text'] for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
+            and e['text'].startswith('session ')][-1] == 'session claude in main'
+    # ^ blocked is one post, a second report of it none; leaving and entering again is a second.
+    stuck, stuck_pane = agent_session('stuck')
+    agent_reports('stuck', stuck_pane, 'claude', 'blocked')
+    assert posts_of(stuck, 1, 'the blocked post') == ['[claude in main](session/%d) needs input' % stuck]
+    agent_reports('stuck', stuck_pane, 'claude', 'working')
+    agent_reports('stuck', stuck_pane, 'claude', 'blocked')
+    assert posts_of(stuck, 2, 'the second blocked post')[1:] == ['[claude in main](session/%d) needs input' % stuck]
+    agent_reports('stuck', stuck_pane, 'claude', 'error')
+    assert posts_of(stuck, 3, 'the error post')[2:] == ['[claude in main](session/%d) ended in an error' % stuck]
+    # ^ A session of a task is no news, by its label or by its provider.
+    ours = {}
+    for name, provider in (('task-99', 'claude'), ('worker', 'task')):
+        ours[name], pane = agent_session(name)
+        agent_reports(name, pane, provider, 'blocked')
+        agent_reports(name, pane, provider, 'error')
+        cli('session', 'send-text', name, 'exit', '-p', 'demo')
+        wait(lambda: pane_of(pane)['exited'], '%s exits' % name)
+    time.sleep(6)
+    assert not any(news_of(session) for session in ours.values()), manager_entries()[-4:]
+    # ^ A turn that runs holds the post: it comes after the turn's reply, never inside it.
+    turn = js('task', 'say', 'LONG STATUS held')['id']
+    held, held_pane = agent_session('held')
+    agent_reports('held', held_pane, 'claude', 'error')
+    time.sleep(5)
+    assert not news_of(held) and not [e for e in manager_entries() if e['kind'] == 'reply' and turn in e['to']], \
+        'the turn still runs and the post waits'
+    answer = wait(lambda: next((i for i, e in enumerate(manager_entries()) if e['kind'] == 'reply' and turn in e['to']), None),
+                  'the long turn ends', 60)
+    wait(lambda: news_of(held), 'the held post', 30)
+    assert answer < next(i for i, e in enumerate(manager_entries()) if e['kind'] == 'reply'
+                         and '(session/%d)' % held in e.get('text', '')), 'the post waits for the turn'
+    for name in ('gone', 'stuck', 'task-99', 'worker', 'held'):
+        cli('session', 'delete', name, '-p', 'demo')
     # ^ A reply that ends with a question asks the owner and is never quiet, also to a turn of
     # only events; a reply that ends with a table, or a report, does not ask (docs/tasks.md "Manager").
     asking = js('task', 'new', 'NOOP ASK')['id']

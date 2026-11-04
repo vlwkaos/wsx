@@ -3776,6 +3776,20 @@ merge_seconds = 3
                 (work / 'restart-owner.done').write_text('done')
             restarter = threading.Thread(target=restart_owner, daemon=True)
             restarter.start()
+            # The page asks for a post of the host (docs/tasks.md "Session news") by writing this file:
+            # the line a project agent session in need gets, naming the plain worktree's session.
+            news_file = work / 'post-news'
+
+            def post_news():
+                while not news_file.exists():
+                    if servers['owner'].poll() is not None:
+                        return
+                    time.sleep(0.2)
+                line = '[claude in old-work](session/%d) needs input' % plain_session
+                subprocess.run([str(wsx), 'task', 'post', '-p', 'ui', '--title', 'session claude in old-work'], input=line,
+                               env=env, cwd=project, capture_output=True, text=True, timeout=120, check=True)
+                (work / 'post-news.done').write_text(str(plain_session))
+            threading.Thread(target=post_news, daemon=True).start()
             # ^ Settings saves the browser's subscription: the local receiver's endpoint and keys.
             os.environ['WSX_PUSH_FIXTURE'] = json.dumps({'endpoint': push_origin + '/push/browser',
                                                          'keys': {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}})
@@ -3794,7 +3808,7 @@ merge_seconds = 3
             result = check(work, [node, str(ROOT / 'scripts/web-tasks-check.mjs'), owner.origin + '/', browser_code,
                                   str(ids['ui']), str(args.captures), ','.join(home_order),
                                   str(audit) if audit.exists() else '', str(ids['plans']), str(restart),
-                                  str(plans), LONG_NAME, str(work / 'relay'), str(work / 'wsx-cli.json')], timeout=600)
+                                  str(plans), LONG_NAME, str(work / 'relay'), str(work / 'wsx-cli.json'), str(news_file)], timeout=600)
             assert result.returncode == 0, result.stdout + result.stderr
             # ^ Try started #7's preview: its mapping goes with it.
             assert js('task', 'preview', 7, '--stop', '-p', 'ui')['stopped'] is True

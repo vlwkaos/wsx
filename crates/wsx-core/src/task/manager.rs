@@ -302,6 +302,10 @@ pub struct ManagerState {
     /// The `finished_epoch` of the newest routine run already turned into events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routines_seen: Option<i64>,
+    /// The attention state (`kind:since`) of each project agent session already posted, by
+    /// session id. Absent until the host's first start. ref: docs/tasks.md "Session news"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sessions_seen: Option<BTreeMap<u64, String>>,
     /// The stall of each open task already turned into an event, by its marker: the same
     /// stall is reported once. ref: docs/tasks.md "Manager" (Stalls)
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]

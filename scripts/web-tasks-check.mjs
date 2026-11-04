@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Real-browser check of manager mode on the page (docs/web-client-tasks.md), driven over the
 // Chrome DevTools Protocol. Called by `test-web-client.py --part tasks --browser`.
-//   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> <home order> <slop-audit.js|""> <plans-id> <restart-file> <plans-checkout> <long-name> <relay-file> <wsx-cli.json>
+//   web-tasks-check.mjs <site-url> <code> <project-id> <capture-dir> <home order> <slop-audit.js|""> <plans-id> <restart-file> <plans-checkout> <long-name> <relay-file> <wsx-cli.json> <news-file>
 // <home order> is the project names as home must list them, comma-separated. <plans-id> is a
 // project whose #1 waits for the owner's answer, whose #2 is ready to land and writes <long-name>,
 // and whose last deploy failed; <plans-checkout> is its main checkout.
@@ -20,7 +20,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { launch, mobileAudit, pause } from "./web-cdp.mjs";
 
-const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, plansCheckout, longName, relayFile, wsxCli] = process.argv.slice(2);
+const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, plansCheckout, longName, relayFile, wsxCli, newsFile] = process.argv.slice(2);
 const project = Number(projectArg);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key } = await launch({
   captures, prefix: "tasks-", timeoutSeconds: 540,
@@ -2757,6 +2757,24 @@ await click(".more-button");
 await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lost the role");
 if (await count(".role-contact .news-mark")) await fail("a role read on this device still shows unread");
 await key("Escape", 27);
+
+// --- Session news: the host's post for a session that needs the owner links to that session
+// (docs/tasks.md "Session news"). The fixture's host posts it when this file is written.
+await go(chat);
+await until("!!document.querySelector('.log .bubble')", "the chat did not open for the session news");
+fs.writeFileSync(newsFile, "post");
+for (let waited = 0; !fs.existsSync(`${newsFile}.done`); waited += 200) {
+  if (waited > 120_000) await fail("the session news was not posted");
+  await pause(200);
+}
+const newsSession = fs.readFileSync(`${newsFile}.done`, "utf8");
+await until(`!!document.querySelector('.log .bubble a[href="#/s/${newsSession}/chat"]')`, "the session news shows no link to its session", 30);
+const newsLine = await evaluate(`document.querySelector('.log .bubble a[href="#/s/${newsSession}/chat"]').closest('.bubble-box').textContent.trim()`);
+if (newsLine !== "claude in old-work needs input") await fail(`the session news reads "${newsLine}"`);
+await shot("session-news");
+await evaluate(`document.querySelector('.log .bubble a[href="#/s/${newsSession}/chat"]').click()`);
+await until(`location.hash === '#/s/${newsSession}/chat'`, "the link of the session news did not open its chat");
+await go(chat);
 
 // ^ The 401s are expected, and so is the 404 of the Routines block's probe of a project outside the grant.
 // --- A message a routine wrote (a digest: wsx posts it with no agent turn) has a border in the
