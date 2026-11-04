@@ -67,6 +67,8 @@ pub fn router(app: Shared) -> Router {
             .route("/api/presence", post(presence))
             .route("/api/sessions", post(session_start))
             .route("/api/sessions/{session}", delete(session_remove))
+            .route("/api/projects", post(project_add))
+            .route("/api/projects/{project}", delete(project_remove))
             .route("/api/projects/{project}/shell", post(project_shell))
             .route("/api/chat/{session}/timeline", get(timeline))
             .route("/api/chat/{session}/send", post(send))
@@ -442,6 +444,7 @@ async fn session(State(app): State<Shared>, Paired(device): Paired) -> Json<Valu
             "capabilities": app.site.capabilities,
             "max_file_bytes": app.site.media.max_file_bytes,
             "terminal": { "ligatures": app.site.terminal_ligatures },
+            "manage_projects": app.site.manages_projects(),
         },
         "device": { "id": device.id, "name": device.name },
         "build": {
@@ -811,6 +814,30 @@ async fn session_start(
             _ => Err(Fault::protocol("unexpected create response")),
         }
     })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectInput {
+    path: String,
+}
+
+/// Registers a git repository of the host as `p` does in the TUI (docs/web-client.md "Projects").
+async fn project_add(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    Json(input): Json<ProjectInput>,
+) -> Outcome<Json<Value>> {
+    blocking(|| crate::projects::add(&app, &input.path).map(Json))
+}
+
+/// Unregisters a project from wsx only; its folder, worktrees and branches stay.
+async fn project_remove(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(project): UrlPath<u64>,
+) -> Outcome<Json<Value>> {
+    blocking(|| crate::projects::remove(&app, project).map(Json))
 }
 
 /// The project's shell in its main checkout, the one the TUI's `S` opens: the live one, else a

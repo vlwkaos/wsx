@@ -3328,14 +3328,17 @@ def task_journey(args):
         push_origin = 'http://127.0.0.1:%d' % receiver['port']
         vapid = cli('web', 'vapid').stdout
         private_key = next(line.split('"')[1] for line in vapid.splitlines() if line.startswith('private_key'))
-        ports = {name: free_port() for name in ('owner', 'viewer', 'plain', 'relay')}
+        ports = {name: free_port() for name in ('owner', 'viewer', 'plain', 'admin', 'relay')}
         # ^ The browser reaches the owner's site through `Relay`, so its public origin is the relay's.
-        public = {name: 'http://127.0.0.1:%d' % ports['relay' if name == 'owner' else name] for name in ('owner', 'viewer', 'plain')}
+        public = {name: 'http://127.0.0.1:%d' % ports['relay' if name == 'owner' else name] for name in ('owner', 'viewer', 'plain', 'admin')}
         grants = {
             'owner': ('"all"', '"task_view", "task_act", "push", "media_upload", "media_download"'),
             'viewer': (json.dumps([str(project)]), '"task_view", "push"'),
             'plain': (json.dumps([str(other)]), '"chat_send", "push"'),
+            # ^ Adds and removes projects (docs/web-client.md "Projects"): every project and a terminal that takes input.
+            'admin': ('"all"', '"task_view", "terminal_view", "terminal_input"'),
         }
+        panels = {'admin': '"chat", "terminal"'}
         files, sites, servers = {}, {}, {}
         for name, (projects_value, capabilities) in grants.items():
             files[name] = work / (name + '.toml')
@@ -3343,7 +3346,7 @@ def task_journey(args):
 name = "{name}"
 port = {ports[name]}
 public_origin = "{public[name]}"
-panels = ["chat"]
+panels = [{panels.get(name, '"chat"')}]
 [access]
 projects = {projects_value}
 capabilities = [{capabilities}]
@@ -4073,6 +4076,68 @@ merge_seconds = 3
         assert steady(viewer, 'DELETE', '/api/push', {})[1]['choices'] == {'manager': False, 'agents': False}
         assert json.loads(stored.read_text()) == []
         ok('old topics: blocked and error read as an agent needs me, tasks as manager needs me; stored without topics')
+
+        # --- Projects: add and remove from the page (docs/web-client.md "Projects").
+        admin = sites['admin']
+
+        def repo(folder):
+            folder.mkdir()
+            for argv in (['init', '-q', '-b', 'main'], ['commit', '-q', '--allow-empty', '-m', 'start']):
+                subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', *argv],
+                               cwd=folder, env=env, check=True, capture_output=True, timeout=20)
+            return folder.resolve()
+
+        def listed():
+            return {item['name']: item['id'] for item in wsxd_client.call(path, 'snapshot', None, timeout=30)['data']['projects']}
+
+        def board(name):
+            return listed().get(name) in [row['project'] for row in steady(admin, 'GET', '/api/tasks')[1]]
+
+        assert steady(admin, 'GET', '/api/session')[1]['site']['manage_projects'] is True
+        for site in (owner, viewer, plain):
+            assert steady(site, 'GET', '/api/session')[1]['site']['manage_projects'] is False
+            for answer in (steady(site, 'POST', '/api/projects', {'path': str(work)}), steady(site, 'DELETE', '/api/projects/%d' % demo, None)):
+                assert answer[0] == 403 and answer[1]['error']['code'] == 'capability_denied', answer
+        fresh, tilde = repo(work / 'fresh'), repo(home / 'tilde-repo')
+        (work / 'not-a-repo').mkdir()
+        before = listed()
+        for given, status, words in (('', 400, 'absolute'), ('fresh', 400, 'absolute'), (str(work / 'missing'), 409, 'does not exist'),
+                                     (str(work / 'not-a-repo'), 409, 'not a git repository'), (str(project), 409, 'already registered')):
+            answer = steady(admin, 'POST', '/api/projects', {'path': given})
+            assert answer[0] == status and words in answer[1]['error']['message'], (given, answer)
+        assert listed() == before
+        added = steady(admin, 'POST', '/api/projects', {'path': str(fresh)})
+        assert added[0] == 200 and added[1] == {'added': 'fresh'}, added
+        wait(lambda: 'fresh' in listed(), 'the added project in wsxd')
+        assert f'path = "{fresh}"' in (config / 'config-v2.toml').read_text()
+        assert steady(admin, 'POST', '/api/projects', {'path': str(fresh)})[0] == 409
+        # ^ `~/` is the server's home, as in the TUI.
+        assert steady(admin, 'POST', '/api/projects', {'path': '~/tilde-repo'})[1] == {'added': 'tilde-repo'}
+        wait(lambda: 'tilde-repo' in listed() and board('tilde-repo'), 'the page lists both added projects')
+        # ^ A project with an open task is refused; one with a session too, until its session closes.
+        busy = steady(admin, 'DELETE', '/api/projects/%d' % demo, None)
+        assert busy[0] == 409 and busy[1]['error']['message'] == 'demo has open tasks', busy
+        snapshot = wsxd_client.call(path, 'snapshot', None, timeout=30)['data']
+        tree = next(item['id'] for item in snapshot['worktrees'] if item['project_id'] == listed()['tilde-repo'])
+        session = wsxd_client.call(path, 'session_create', {'worktree_id': tree, 'label': 'shell', 'command': ['/bin/sh'], 'rows': 12, 'cols': 80}, timeout=30)['data']
+        held = steady(admin, 'DELETE', '/api/projects/%d' % listed()['tilde-repo'], None)
+        assert held[0] == 409 and held[1]['error']['message'] == 'tilde-repo has open sessions', held
+        revision = next(item['revision'] for item in wsxd_client.call(path, 'snapshot', None, timeout=30)['data']['sessions'] if item['id'] == session['id'])
+        wsxd_client.call(path, 'session_close', {'session_id': session['id'], 'expected_revision': revision}, timeout=30)
+        for name, folder in (('fresh', fresh), ('tilde-repo', tilde)):
+            gone = steady(admin, 'DELETE', '/api/projects/%d' % listed()[name], None)
+            assert gone[0] == 200, gone
+            wait(lambda: name not in listed(), name + ' left wsxd')
+            assert (folder / '.git').is_dir() and str(folder) not in (config / 'config-v2.toml').read_text()
+        assert steady(admin, 'DELETE', '/api/projects/%d' % demo, None)[0] == 409 and steady(admin, 'DELETE', '/api/projects/999999', None)[0] == 404
+        ok('projects: add by path and by ~/, refusals (not a repo, missing, relative, duplicate), open tasks and sessions answer 409, remove keeps the folder, sites without the grant answer 403')
+        if args.browser:
+            repo(work / 'browser-add')
+            checked = check(work, [node, str(ROOT / 'scripts/web-projects-check.mjs'), admin.origin + '/', cli('web', 'pair', '--site', files['admin']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                   viewer.origin + '/', cli('web', 'pair', '--site', files['viewer']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                   str(args.captures), str(work / 'browser-add'), 'demo'], timeout=240)
+            assert checked.returncode == 0, checked.stdout + checked.stderr
+            ok('real browser, ' + checked.stdout.strip().splitlines()[-1])
         success = True
     finally:
         for process in reversed(STARTED):

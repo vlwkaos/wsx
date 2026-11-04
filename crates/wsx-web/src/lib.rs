@@ -10,6 +10,7 @@ mod devices;
 mod events;
 mod http;
 mod media;
+mod projects;
 mod push;
 mod question;
 mod queue;
