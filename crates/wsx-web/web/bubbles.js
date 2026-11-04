@@ -42,6 +42,9 @@ export function conversation(entries, resolutions, approvals = [], checks = [], 
   // ^ wsx's recap request is not shown; the manager's answer to it is tagged Recap
   // (docs/tasks.md "Recap").
   const recaps = new Set(entries.filter((entry) => entry.kind === "message" && entry.from === "recap").map((entry) => entry.id));
+  // ^ A reply with no usage to the "daily digest" events message is what wsx posted for a routine, not
+  // an agent turn (`Post`, docs/tasks.md "Routines"): its bubble gets the secondary accent border.
+  const events = new Set(entries.filter((entry) => entry.kind === "message" && entry.from === "events" && entry.text === "daily digest").map((entry) => entry.id));
   // ^ A reply that asks the owner is tagged until the owner writes after it (docs/tasks.md "Manager").
   const answered = entries.findLastIndex((entry) => entry.kind === "message" && entry.from === "owner");
   entries.forEach((entry, index) => {
@@ -53,7 +56,7 @@ export function conversation(entries, resolutions, approvals = [], checks = [], 
     } else if (entry.kind === "message" && entry.from === "recap") {
       return;
     } else if (entry.kind === "reply") {
-      rows.push({ kind: "bubble", at, key, author: "manager", entry, quiet: entry.quiet, asks: entry.asks && index > answered, tag: entry.to?.some((id) => recaps.has(id)) ? "Recap" : null });
+      rows.push({ kind: "bubble", at, key, author: "manager", entry, quiet: entry.quiet, asks: entry.asks && index > answered, routine: !entry.usage && entry.to?.length > 0 && entry.to.every((id) => events.has(id)), tag: entry.to?.some((id) => recaps.has(id)) ? "Recap" : null });
     } else if (entry.kind === "message" && /^(manager|role)(-reply)?:/.test(entry.from ?? "")) {
       // ^ Another project's manager wrote (docs/tasks.md "Managers talk"), or a role or the
       // manager of this one (`role:<name>`, docs/tasks.md "Roles").
@@ -203,8 +206,8 @@ export function Bubble({ project, row, words, names, fresh }) {
       data-peer=${peer == null ? null : peerColor(peer)} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}
       data-at=${row.pending ? null : row.at} data-key=${row.key} data-in=${out || row.pending ? null : ""}
       data-quote=${quoteOf(row.entry.text) || null}
-      data-pending=${row.pending ? "" : null} data-asks=${row.asks ? "" : null}
-      aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}${row.asks ? ", Asks you" : ""}`}>
+      data-pending=${row.pending ? "" : null} data-asks=${row.asks ? "" : null} data-routine=${row.routine ? "" : null}
+      aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}${row.asks ? ", Asks you" : row.routine ? ", Routine" : ""}`}>
       ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${authorName(row.author, names)}</p>`}
       <div class="bubble-box">${mark && html`<p class="bubble-tag" role="img" aria-label=${mark[1]} title=${mark[1]}><${Icon} name=${mark[0]} /></p>`}${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
       ${row.last && html`<p class="bubble-time" aria-hidden="true">${row.pending ? "Sending…" : clock(row.at)}</p>`}

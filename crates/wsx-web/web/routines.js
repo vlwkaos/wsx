@@ -1,7 +1,7 @@
 // The project's routines, read only, in the sheet the ⋯ menu opens: one row each, a tap shows
 // the command (docs/web-client-tasks.md "Routines").
 import { api } from "./api.js";
-import { ago, clock, html, Loading, useCoalescedLoad, useEffect, useNow, useState } from "./lib.js";
+import { ago, clock, html, Icon, Loading, useCoalescedLoad, useEffect, useNow, useState } from "./lib.js";
 import { SheetBar } from "./ui.js";
 
 const DAYS = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];
@@ -23,6 +23,30 @@ function lastRun(last, now) {
   const exit = last.status === "failed" && last.exit != null ? ` (exit ${last.exit})` : "";
   const end = last.finished_unix_ms;
   return `${what}${exit}${end ? ` ${ago(now - end)}` : ""}`;
+}
+
+const failedRun = (last) => Boolean(last) && last.status !== "succeeded" && last.status !== "running";
+
+// The chat header's Routines button: an icon, with the routines' state in one short word group as its
+// name and title, "retrospect 06:00 ok" for one enabled routine, "3 routines, 1 failed" for several (the
+// worst state wins). A failed last run turns it to the danger color. A tap opens the Routines sheet.
+// Read again every minute.
+export function RoutinesButton({ project }) {
+  const [rows, setRows] = useState([]);
+  useEffect(() => {
+    let live = true;
+    const read = () => api(`api/tasks/${project}/routines`).then((value) => { if (live) setRows((value.routines ?? []).filter((row) => row.enabled)); }, () => {});
+    read();
+    const timer = setInterval(read, 60000);
+    return () => { live = false; clearInterval(timer); };
+  }, [project]);
+  const failed = rows.filter((row) => failedRun(row.last)).length;
+  const word = failed ? "failed" : rows.some((row) => row.last?.status === "running") ? "running" : "ok";
+  const [only] = rows;
+  const label = !rows.length ? "Routines"
+    : rows.length === 1 ? `Routines: ${only.name} ${only.next_run_unix_ms ? clock(only.next_run_unix_ms) : "no next run"} ${word}`
+    : `Routines: ${rows.length} routines, ${failed ? `${failed} failed` : word}`;
+  return html`<a class="icon-button" href=${`#/p/${project}/routines`} aria-label=${label} title=${label} data-tone=${failed ? "danger" : null}><${Icon} name="routines" /></a>`;
 }
 
 export function RoutinesPage({ project, onClose, grip }) {
@@ -55,7 +79,7 @@ export function RoutinesPage({ project, onClose, grip }) {
                   <span class="routine-state" data-on=${row.enabled ? "" : null}>${row.enabled ? "On" : "Off"}</span>
                   <span class="routine-when">${schedule(row.trigger)}${row.post === false ? ", no chat post" : ""}</span>
                   <span class="routine-next">${row.next_run_unix_ms ? `next ${clock(row.next_run_unix_ms)}` : "no next run"}</span>
-                  <span class="routine-last" data-failed=${row.last && row.last.status !== "succeeded" && row.last.status !== "running" ? "" : null}>${lastRun(row.last, now)}</span>
+                  <span class="routine-last" data-failed=${failedRun(row.last) ? "" : null}>${lastRun(row.last, now)}</span>
                 </button>
                 ${open === row.name && html`<code class="routine-argv">${row.command.join(" ")}</code>`}
               </li>`)}

@@ -1254,6 +1254,100 @@ await closeSheet("the usage sheet", chat);
   await closeSheet("the routines sheet", chat);
 }
 
+// --- The Routines and Overview buttons in the chat header (icon only, the routines' state in the name), and Settings' "Header: top | bottom" (docs/web-client.md
+// "Header position"). The fixture has `nightly` (on, succeeded), `idle` (on, never run) and `weekly`
+// (off, failed): the staged routines are switched with the CLI and put back.
+{
+  const cli = JSON.parse(fs.readFileSync(wsxCli));
+  const routine = (verb, name) => execFileSync(cli.wsx, ["task", "routine", verb, name, "-p", "ui", "--json"], { env: cli.env, cwd: cli.cwd, stdio: "pipe" });
+  const chip = async () => {
+    await go(chat);
+    await until(`location.hash === '${chat}' && !!document.querySelector('.manager a.icon-button[href$="/routines"]')`, "the chat header has no routine item");
+    await pause(1000); // ^ the tone's color fades in (app.css transitions)
+    return evaluate(`(() => { const node = document.querySelector('a.icon-button[href$="/routines"]'); return { text: node.getAttribute('aria-label'), title: node.title, icon: !!node.querySelector('svg.icon'), words: node.textContent.trim(), tone: node.dataset.tone ?? null, color: getComputedStyle(node).color,
+      danger: getComputedStyle(document.documentElement).getPropertyValue('--color-danger').trim(), href: node.getAttribute('href') }; })()`);
+  };
+  const reload = async (ready) => { await send("Page.reload"); await until(ready, "the page did not come back after a reload"); };
+  try {
+    let item = await chip();
+    if (item.text !== "Routines: 2 routines, ok" || item.tone || item.title !== item.text || !item.icon || item.words) await fail(`the Routines button with nightly and idle on is ${JSON.stringify(item)}`);
+    routine("disable", "idle");
+    await chip();
+    await reload(`!!document.querySelector('a.icon-button[href$="/routines"]')`);
+    item = await evaluate(`({ text: document.querySelector('a.icon-button[href$="/routines"]').getAttribute('aria-label'), tone: document.querySelector('a.icon-button[href$="/routines"]').dataset.tone ?? null })`);
+    if (!/^Routines: nightly .*\d{1,2}:\d{2}.* ok$/.test(item.text) || item.tone) await fail(`the Routines button with nightly alone is ${JSON.stringify(item)}`);
+    await shot("routine-item-ok");
+    routine("enable", "weekly");
+    await reload(`!!document.querySelector('a.icon-button[href$="/routines"]')`);
+    item = await evaluate(`({ text: document.querySelector('a.icon-button[href$="/routines"]').getAttribute('aria-label'), tone: document.querySelector('a.icon-button[href$="/routines"]').dataset.tone ?? null })`);
+    if (item.text !== "Routines: 2 routines, 1 failed" || item.tone !== "danger") await fail(`the Routines button with a failed run among two is ${JSON.stringify(item)}`);
+    routine("disable", "nightly");
+    await reload(`!!document.querySelector('a.icon-button[href$="/routines"]')`);
+    item = await chip();
+    if (!/^Routines: weekly .* failed$/.test(item.text) || item.tone !== "danger" || item.color !== (await evaluate(`(() => { const probe = Object.assign(document.createElement('i'), {}); probe.style.color = 'var(--color-danger)'; document.body.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; })()`))) {
+      await fail(`the Routines button of a failed run is ${JSON.stringify(item)}`);
+    }
+    await shot("routine-item-failed");
+    await click('a.icon-button[href$="/routines"]');
+    await until(`location.hash === '#/p/${project}/routines' && !!document.querySelector('dialog.task-sheet[open] .routine-list')`, "a tap on the Routines button did not open Routines");
+    await closeSheet("the routines sheet", chat);
+    // Overview: an icon-only button too; one tap opens the project overview.
+    const overview = await evaluate(`(() => { const node = document.querySelector('.manager a.icon-button[href$="/page"]'); return node && { label: node.getAttribute('aria-label'), title: node.title, icon: !!node.querySelector('svg.icon'), words: node.textContent.trim() }; })()`);
+    if (!overview || overview.label !== "Overview" || overview.title !== "Overview" || !overview.icon || overview.words) await fail(`the Overview button is ${JSON.stringify(overview)}`);
+    await click('.manager a.icon-button[href$="/page"]');
+    await until(`location.hash === '#/p/${project}/page' && !!document.querySelector('dialog.task-sheet[open] .project-page h1')`, "a tap on the Overview button did not open the overview");
+    await closeSheet("the overview sheet", chat);
+  } finally {
+    routine("enable", "nightly");
+    routine("enable", "idle");
+    routine("disable", "weekly");
+  }
+
+  // The header at the bottom: the chat's bar sits between the log and the composer, the other
+  // screens' bar at the foot of the page, and the choice survives a reload.
+  const place = () => evaluate(`(() => { const box = (selector) => document.querySelector(selector)?.getBoundingClientRect();
+    const bar = box('.page > .bar, .chat > .bar'), composer = box('.composer'), log = box('.log'), page = box('.page');
+    return { side: document.documentElement.dataset.bar ?? 'top', bar: bar && [Math.round(bar.top), Math.round(bar.bottom)], composer: composer && Math.round(composer.top),
+      log: log && Math.round(log.bottom), page: page && [Math.round(page.top), Math.round(page.bottom)], menu: document.querySelector('.more-menu') ? 1 : 0 }; })()`);
+  await go("#/settings");
+  await until("!!document.querySelector('input[name=bar]')", "Settings has no header setting");
+  if (await evaluate("document.querySelector('input[name=bar]:checked').value") !== "top") await fail("the header setting does not default to top");
+  await click("input[name=bar][value=bottom]");
+  await until("document.documentElement.dataset.bar === 'bottom'", "the header setting did not take effect");
+  await reload("document.documentElement.dataset.bar === 'bottom' && !!document.querySelector('input[name=bar]')");
+  if (await evaluate("document.querySelector('input[name=bar]:checked').value") !== "bottom") await fail("the header setting did not survive a reload");
+  for (const wide of [false, true]) {
+    await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
+    await go(chat);
+    await until(`!!document.querySelector('.manager .chat > .bar') && !!document.querySelector('.composer')`, "the chat has no bottom bar");
+    const low = await place();
+    if (low.bar[0] < low.log || low.bar[1] > low.composer + 1 || low.composer - low.bar[1] > 2) await fail(`the chat's bar is not just above the composer (${wide ? "wide" : "phone"}): ${JSON.stringify(low)}`);
+    await click(".more-button");
+    const opens = await evaluate("(() => { const menu = document.querySelector('.more-menu').getBoundingClientRect(), button = document.querySelector('.more-button').getBoundingClientRect(); return menu.bottom <= button.top + 1 && menu.top >= 0; })()");
+    if (!opens) await fail("the ⋯ menu does not open upward from the bottom bar");
+    await click(".more-button");
+    await shot(wide ? "header-bottom-wide" : "header-bottom");
+    await go("#/p/" + project + "/files");
+    await until("!!document.querySelector('.page.files > .bar')", "Files did not open");
+    const files = await place();
+    if (files.bar[1] < files.page[1] - 1) await fail(`the files bar is not at the foot of the page: ${JSON.stringify(files)}`);
+    await go(chat);
+    await until("!!document.querySelector('.manager .chat > .bar')", "the chat did not return");
+    await go(`#/p/${project}/routines`);
+    await until("!!document.querySelector('dialog.task-sheet[open] .task-page > .bar')", "Routines did not open");
+    const sheet = await evaluate("(() => { const bar = document.querySelector('dialog.task-sheet[open] .task-page > .bar').getBoundingClientRect(), page = document.querySelector('dialog.task-sheet[open] .task-page').getBoundingClientRect(); return bar.bottom >= page.bottom - 1; })()");
+    if (!sheet) await fail("a sheet's bar is not at its foot");
+    await closeSheet("the routines sheet", chat);
+  }
+  await resize([390, 844, 2]);
+  await go("#/settings");
+  await until("!!document.querySelector('input[name=bar]')", "Settings did not return");
+  await click("input[name=bar][value=top]");
+  await until("!document.documentElement.dataset.bar", "the header setting did not go back to top");
+  await go(chat);
+  await until("!!document.querySelector('.manager > .bar') && !!document.querySelector('.log .bubble')", "the chat's bar is not back on top");
+}
+
 // --- A turn of the manager: two messages group on the right; while it runs a typing bubble
 // ends the chat and the header says "typing"; the reply edits the page (with a link to it),
 // has short chips (the same task twice as two plain chips) and a table that scrolls inside it.
@@ -2651,6 +2745,26 @@ if (await count(".role-contact .news-mark")) await fail("a role read on this dev
 await key("Escape", 27);
 
 // ^ The 401s are expected, and so is the 404 of the Routines block's probe of a project outside the grant.
+// --- A message a routine wrote (a digest: wsx posts it with no agent turn) has a border in the
+// secondary accent, not the asks-you accent, in both schemes (docs/web-themes.md "color-secondary").
+{
+  const cli = JSON.parse(fs.readFileSync(wsxCli));
+  execFileSync(cli.wsx, ["task", "digest", "-p", "plans", "--since", "0"], { env: cli.env, cwd: cli.cwd, stdio: "pipe" });
+  await go(`#/p/${plansArg}`);
+  await until("!!document.querySelector('.bubble[data-routine]')", "the digest's bubble has no routine mark", 30);
+  const look = () => evaluate(`(() => { const probe = (name) => { const node = Object.assign(document.createElement('i'), {}); node.style.color = 'var(--' + name + ')'; document.body.append(node);
+    const color = getComputedStyle(node).color; node.remove(); return color; };
+    const box = document.querySelector('.bubble[data-routine] .bubble-box'); return { border: getComputedStyle(box).borderTopColor, secondary: probe('color-secondary'), accent: probe('color-accent'),
+      asks: document.querySelector('.bubble[data-routine]').hasAttribute('data-asks') }; })()`);
+  for (const scheme of ["dark", "light"]) {
+    await inScheme(scheme);
+    const seen = await look();
+    if (seen.border !== seen.secondary || seen.secondary === seen.accent || seen.asks) await fail(`the routine message's border in the ${scheme} scheme: ${JSON.stringify(seen)}`);
+    await shot(`routine-message-${scheme}`);
+  }
+  await inScheme("dark");
+}
+
 const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/status of 404.*\/api\/tasks\/999999\/routines/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 fs.writeFileSync(path.join(captures, "tasks-audits.json"), JSON.stringify(audits, null, 1));

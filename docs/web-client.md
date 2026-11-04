@@ -105,7 +105,7 @@ A chat log (a session's and the manager's) renders its newest 60 rows, or from i
 | `#/p/<project>/t/<task>` | With `task_view`: the project screen with the task sheet open ([web-client-tasks.md](web-client-tasks.md) "Task sheet") |
 | `#/s/<session>/chat`, `#/s/<session>/terminal` | One session. The top row has back, the label with the state in words, and a Chat or Terminal switch with the granted panels. A shell (a session with no agent, open or exited) has no chat: it opens on the terminal, and gains the chat when an agent reports in it |
 | `#/p/<project>/files` | The files of one project |
-| `#/settings` | Appearance, notifications, this device |
+| `#/settings` | Appearance, header position, notifications, this device |
 
 - Back in a top row returns to the screen the reader came from, as the browser's back does: each history entry of the page records its depth and the route before it. A screen opened from outside the page (a link or a notification) goes back to its parent: a session to the inbox, a project to the projects (to Home with `task_view`), files to their project. A task opened from outside puts its project under it in the history, so Back closes the sheet first and then leaves the chat. Switching Chat and Terminal replaces the history entry, so it adds no step to Back.
 - A phone shows Inbox, Projects and Settings over a bottom tab bar; with `task_view` it shows Home, Sessions (the inbox, shells too) and Settings: Home lists every project, and a project's worktrees are in its chat's `⋯` menu (*Sessions*). A session owns the full height and has no tab bar. At 900 px and wider the inbox, the project list or Home is a 300 px left column with the same tabs at its top, and the bar is gone. With `task_view` the column is Home on Home, a project's chat and a project's worktrees, and the inbox on Sessions; a session, the files and Settings keep the column they were opened from.
@@ -166,6 +166,10 @@ The bar (Previous, count, Next, zoom, Share, Close) is at the top; on a touch sc
 ## Live updates
 
 A page opens one `EventSource` (`api/events`) and has no polling timer. Events: `workspace` (projects and session list), `history` (a session's saved conversation changed), `exchange`, `daemon`, `resync`, `revoked`, and with `task_view` `tasks`, `task` and `manager` ([web-client-tasks.md](web-client-tasks.md)). The server follows `wsxd` with its long-poll and states the protocol it reconnects at, so a running web server does not defer a daemon upgrade (`docs/daemon-live-upgrade.md`). While a page is connected it also compares each transcript file's size and modification time about every two seconds.
+
+### Header position
+
+Settings has *Header on this device*: *Top* (default) or *Bottom*. The choice is kept in that browser (`wsx-bar`) and set as `data-bar="bottom"` on the page root. One rule in `app.css` moves every top bar (`.bar`: project chat, Files, session, the sheets) to the foot of its column with its rule on top; the project chat puts its bar just above the composer, and the `⋯` menu then opens upward. The page's bottom safe-area inset and the keyboard-pinned viewport keep the bar clear of the home indicator and the on-screen keyboard. Home, Sessions and Settings have a title, not a bar, and stay as they are.
 
 ### Event stream
 

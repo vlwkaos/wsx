@@ -2,7 +2,7 @@
 import { api } from "./api.js";
 import { html, useEffect, useState } from "./lib.js";
 import { can, loadPush, pageBuild, reloadForBuild, setMuted, state, update, useStore } from "./store.js";
-import { confirmDialog, hasDarkScheme, scheme, setScheme } from "./ui.js";
+import { confirmDialog, hasDarkScheme, scheme, setBar, setScheme } from "./ui.js";
 
 // The two switches of this device (docs/web-client.md "Notifications").
 const SWITCHES = [
@@ -87,6 +87,7 @@ function Push() {
 }
 
 export function Settings() {
+  const store = useStore();
   const [current, setCurrent] = useState(scheme());
   const [error, setError] = useState("");
   const unpair = async () => {
@@ -118,6 +119,15 @@ export function Settings() {
                     onChange=${() => { setScheme(value); setCurrent(value); }} />${label}</label>`)}
             </div>
           </section>`}
+        <section aria-label="Header">
+          <h2 class="label">Header on this device</h2>
+          <div class="options">
+            ${[["top", "Top"], ["bottom", "Bottom, in reach of a thumb"]].map(([value, label]) => html`
+              <label class="option" key=${value}>
+                <input type="radio" name="bar" value=${value} checked=${store.bar === value}
+                  onChange=${() => setBar(value)} />${label}</label>`)}
+          </div>
+        </section>
         ${can("push") && html`<${Push} />`}
         ${state.build && html`
           <section aria-label="Version">
