@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::server::try_lock_file;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Seek;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
@@ -416,15 +416,27 @@ impl Scheduler {
                 }
             };
             let mut changed = false;
+            let findings: BTreeMap<&str, &[u8]> = data
+                .routines
+                .iter()
+                .map(|routine| (routine.name.as_str(), routine.findings_exit.as_slice()))
+                .collect();
             for run in data.runs.values_mut().flatten() {
                 if run.status != RunStatus::Running {
                     continue;
                 }
                 let dir = run.stdout_path.parent().unwrap_or(Path::new("/"));
                 if let Some(result) = read_result(dir) {
+                    // ^ The routine's codes as they stand now: an edit during a run counts.
+                    let codes = findings.get(run.routine.as_str()).copied().unwrap_or(&[]);
                     run.status = match (result.spawn_failed, result.exit_code) {
                         (true, _) => RunStatus::SpawnFailed,
                         (false, Some(0)) => RunStatus::Succeeded,
+                        (false, Some(code))
+                            if u8::try_from(code).is_ok_and(|c| codes.contains(&c)) =>
+                        {
+                            RunStatus::Findings
+                        }
                         (false, _) => RunStatus::Failed,
                     };
                     run.exit_code = result.exit_code;

@@ -112,6 +112,7 @@ impl RoutinePreset {
             command,
             prompt: String::new(),
             enabled: true,
+            findings_exit: Vec::new(),
         });
         form.integration_target = self.integration_target();
         form
@@ -129,6 +130,7 @@ pub struct RoutineForm {
     pub integration_target: Option<wsx_core::integration::IntegrationTarget>,
     enabled: bool,
     post: bool,
+    findings_exit: Vec<u8>,
 }
 
 impl RoutineForm {
@@ -145,6 +147,7 @@ impl RoutineForm {
             integration_target: None,
             enabled: routine.enabled,
             post: routine.post,
+            findings_exit: routine.findings_exit,
         }
     }
 
@@ -220,6 +223,7 @@ impl RoutineForm {
             prompt: self.prompt.clone(),
             enabled: self.enabled,
             post: self.post,
+            findings_exit: self.findings_exit.clone(),
         }
         .validated()
         .map_err(|e| e.to_string())
@@ -401,6 +405,7 @@ mod tests {
             command: vec!["echo".into()],
             prompt: "before".into(),
             enabled: false,
+            findings_exit: Vec::new(),
         });
         form.prompt = "after".into();
 
@@ -420,6 +425,7 @@ mod tests {
             command: vec!["echo".into()],
             prompt: String::new(),
             enabled: true,
+            findings_exit: Vec::new(),
         });
 
         assert_eq!(

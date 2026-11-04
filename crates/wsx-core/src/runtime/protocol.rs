@@ -74,7 +74,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // stores a routine's `post` (docs/tasks.md "Routines").
 // Revision 41 runs the routine scheduler inside wsxd (the `routine` request) in place of the
 // separate asched process, and imports asched's store once (docs/tasks.md "Routines").
-pub const DAEMON_REVISION: u32 = 41;
+// Revision 42 stores a routine's `findings_exit` codes and gives a run that exits with one the
+// status `findings` (docs/tasks.md "Routines").
+pub const DAEMON_REVISION: u32 = 42;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 

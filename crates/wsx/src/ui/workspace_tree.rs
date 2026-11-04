@@ -552,6 +552,13 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                 ListItem::new(routine_tree_label(&view.routine.name, &status)).style(
                     Style::default().fg(if view.running {
                         theme::WORKING
+                    } else if view
+                        .latest_run
+                        .as_ref()
+                        .is_some_and(|run| run.status == wsx_core::routine::RunStatus::Findings)
+                    {
+                        // ^ Found something: attention, not the failed red.
+                        theme::WARNING
                     } else {
                         theme::ACCENT
                     }),

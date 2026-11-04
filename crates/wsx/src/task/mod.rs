@@ -2320,6 +2320,7 @@ fn checkin(project: Option<&str>, after: Option<&str>, at: Option<&str>, why: &s
         enabled: true,
         // ^ The why is for the manager, as the run's event; the owner asked for none.
         post: false,
+        findings_exit: Vec::new(),
     }
     .validated()?;
     let action = match routines.iter().any(|view| view.routine.name == CHECKIN) {

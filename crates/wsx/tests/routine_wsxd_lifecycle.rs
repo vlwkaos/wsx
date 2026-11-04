@@ -210,6 +210,61 @@ fn routine_cli_runs_commands_and_events_through_wsxd() {
 }
 
 #[test]
+fn findings_exit_codes_make_a_finished_run_findings_not_failed() {
+    let install = Install::new();
+    // ^ docs/tasks.md "Routines": exit 1 is listed, 3 is not, 0 succeeds.
+    for (name, code) in [("found", 1), ("broke", 3), ("clean", 0)] {
+        install.routine(&[
+            "add",
+            name,
+            "--cron",
+            NEVER_DUE,
+            "--findings-exit",
+            "2,1",
+            "--arg=sh",
+            "--arg=-c",
+            &format!("--arg=echo {name}; exit {code}"),
+        ]);
+        install.routine(&["run", name]);
+    }
+    let seen: Vec<(Value, Value)> = ["found", "broke", "clean"]
+        .into_iter()
+        .map(|name| {
+            let run = install.finished_run(name);
+            (run["status"].clone(), run["exit_code"].clone())
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("findings".into(), 1.into()),
+            ("failed".into(), 3.into()),
+            ("succeeded".into(), 0.into())
+        ]
+    );
+    // The codes are stored sorted (a routine without them stores none, so older stores read as before).
+    assert_eq!(
+        install.view("found")["routine"]["findings_exit"],
+        serde_json::json!([1, 2])
+    );
+    for bad in ["0", "256", "1,x"] {
+        let out = install.wsx(&[
+            "routine",
+            "add",
+            "bad",
+            "--cron",
+            NEVER_DUE,
+            "--findings-exit",
+            bad,
+            "--arg=true",
+            "--project",
+            install.project.to_str().unwrap(),
+        ]);
+        assert!(!out.status.success(), "{bad} was accepted");
+    }
+}
+
+#[test]
 fn a_run_outlives_a_live_handoff_and_records_its_exit() {
     let install = Install::new();
     install.routine(&[

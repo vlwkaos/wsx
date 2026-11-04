@@ -14,22 +14,23 @@ function schedule(trigger) {
   return match[3] === "*" ? `daily ${time}` : `${DAYS[Number(match[3]) % 7]} ${time}`;
 }
 
-const STATUS = { succeeded: "succeeded", failed: "failed", spawn_failed: "did not start", cancelled: "cancelled", interrupted: "interrupted", running: "running" };
+const STATUS = { succeeded: "succeeded", findings: "found something", failed: "failed", spawn_failed: "did not start", cancelled: "cancelled", interrupted: "interrupted", running: "running" };
 
-// "succeeded 2h ago", "failed (exit 1) 5h ago", "never run".
+// "succeeded 2h ago", "failed (exit 1) 5h ago", "found something (exit 1) 5h ago", "never run".
 function lastRun(last, now) {
   if (!last) return "never run";
   const what = STATUS[last.status] ?? last.status;
-  const exit = last.status === "failed" && last.exit != null ? ` (exit ${last.exit})` : "";
+  const exit = (last.status === "failed" || last.status === "findings") && last.exit != null ? ` (exit ${last.exit})` : "";
   const end = last.finished_unix_ms;
   return `${what}${exit}${end ? ` ${ago(now - end)}` : ""}`;
 }
 
-const failedRun = (last) => Boolean(last) && last.status !== "succeeded" && last.status !== "running";
+const foundRun = (last) => last?.status === "findings";
+const failedRun = (last) => Boolean(last) && last.status !== "succeeded" && last.status !== "running" && !foundRun(last);
 
 // The chat header's Routines button: an icon, with the routines' state in one short word group as its
 // name and title, "retrospect 06:00 ok" for one enabled routine, "3 routines, 1 failed" for several (the
-// worst state wins). A failed last run turns it to the danger color. A tap opens the Routines sheet.
+// worst state wins). A failed last run turns it to the danger color, one that found something to the attention color. A tap opens the Routines sheet.
 // Read again every minute.
 export function RoutinesButton({ project }) {
   const [rows, setRows] = useState([]);
@@ -41,12 +42,13 @@ export function RoutinesButton({ project }) {
     return () => { live = false; clearInterval(timer); };
   }, [project]);
   const failed = rows.filter((row) => failedRun(row.last)).length;
-  const word = failed ? "failed" : rows.some((row) => row.last?.status === "running") ? "running" : "ok";
+  const found = rows.filter((row) => foundRun(row.last)).length;
+  const word = failed ? "failed" : found ? "found something" : rows.some((row) => row.last?.status === "running") ? "running" : "ok";
   const [only] = rows;
   const label = !rows.length ? "Routines"
     : rows.length === 1 ? `Routines: ${only.name} ${only.next_run_unix_ms ? clock(only.next_run_unix_ms) : "no next run"} ${word}`
-    : `Routines: ${rows.length} routines, ${failed ? `${failed} failed` : word}`;
-  return html`<a class="icon-button" href=${`#/p/${project}/routines`} aria-label=${label} title=${label} data-tone=${failed ? "danger" : null}><${Icon} name="routines" /></a>`;
+    : `Routines: ${rows.length} routines, ${failed ? `${failed} failed` : found ? `${found} found something` : word}`;
+  return html`<a class="icon-button" href=${`#/p/${project}/routines`} aria-label=${label} title=${label} data-tone=${failed ? "danger" : found ? "attention" : null}><${Icon} name="routines" /></a>`;
 }
 
 export function RoutinesPage({ project, onClose, grip }) {
@@ -79,7 +81,7 @@ export function RoutinesPage({ project, onClose, grip }) {
                   <span class="routine-state" data-on=${row.enabled ? "" : null}>${row.enabled ? "On" : "Off"}</span>
                   <span class="routine-when">${schedule(row.trigger)}${row.post === false ? ", no chat post" : ""}</span>
                   <span class="routine-next">${row.next_run_unix_ms ? `next ${clock(row.next_run_unix_ms)}` : "no next run"}</span>
-                  <span class="routine-last" data-failed=${failedRun(row.last) ? "" : null}>${lastRun(row.last, now)}</span>
+                  <span class="routine-last" data-failed=${failedRun(row.last) ? "" : null} data-found=${foundRun(row.last) ? "" : null}>${lastRun(row.last, now)}</span>
                 </button>
                 ${open === row.name && html`<code class="routine-argv">${row.command.join(" ")}</code>`}
               </li>`)}
