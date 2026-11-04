@@ -8,7 +8,7 @@ import net from "node:net";
 import { launch, pause } from "./web-cdp.mjs";
 
 const [siteUrl, code, sessionId, captures, daemonSocket, paneId, keysTrace, serverPid] = process.argv.slice(2);
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({
+const { send, evaluate, until, viewport, capture, fail, cleanup, problems, keyboard } = await launch({
   captures, prefix: "terminal-", timeoutSeconds: 210,
 });
 // wsxd's protocol version, read from its source (crates/wsx-core/src/runtime/protocol.rs).
@@ -117,19 +117,6 @@ async function live(label) {
     await evaluate("document.querySelector('.terminal-notice')?.textContent"))}, console ${JSON.stringify(problems)}, page ${JSON.stringify(
     await evaluate("document.querySelector('#app').innerText.slice(0, 300)"))}, socket ${JSON.stringify(await evaluate("window.__sockets.at(-1)?.__log ?? null"))}`);
 }
-// The on-screen keyboard the way iOS reports it: `height` and `top` of the visual viewport
-// change and the layout viewport stays. `null` closes the keyboard.
-const keyboard = (height, top = 0) => evaluate(`(() => {
-  const viewport = window.visualViewport;
-  delete viewport.height;
-  delete viewport.offsetTop;
-  if (${height} !== null) {
-    Object.defineProperty(viewport, "height", { configurable: true, get: () => ${height} });
-    Object.defineProperty(viewport, "offsetTop", { configurable: true, get: () => ${top} });
-  }
-  viewport.dispatchEvent(new Event("resize"));
-  viewport.dispatchEvent(new Event("scroll"));
-})()`);
 // The view fills the visual viewport exactly: top row at its top, key row at its bottom
 // (the keyboard's top edge), the screen between them with no gap, and no page scroll.
 async function aboveKeyboard(height, top, label) {

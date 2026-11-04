@@ -8,6 +8,20 @@ import { fileURLToPath } from "node:url";
 
 export const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// The frames of `seen` (numbers, or [name, number] pairs: only readings of one name compare) where
+// the reading moved more than `limit` from the frame before: `[frame, from, to]`.
+export function jumps(seen, limit = 3) {
+  const found = [];
+  for (let at = 1; at < seen.length; at++) {
+    const [was, now] = [seen[at - 1], seen[at]];
+    const pair = Array.isArray(now);
+    if (pair && (!Array.isArray(was) || was[0] !== now[0])) continue;
+    const [from, to] = pair ? [was[1], now[1]] : [was, now];
+    if (from != null && to != null && Math.abs(to - from) > limit) found.push([at, Math.round(from), Math.round(to)]);
+  }
+  return found;
+}
+
 // The phone layout audit of the ui-view-standards skill (scripts/mobile-audit.js, or the file
 // WSX_MOBILE_AUDIT names), or null when there is none.
 export function mobileAudit() {
@@ -139,8 +153,29 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
     await send("Input.dispatchKeyEvent", { type: "keyDown", key: name, code: name, windowsVirtualKeyCode: keyCode, ...options });
     await send("Input.dispatchKeyEvent", { type: "keyUp", key: name, code: name, windowsVirtualKeyCode: keyCode, ...options });
   }
+  // The on-screen keyboard as iOS shows it: the visual viewport shrinks to `height`, the layout
+  // viewport does not, and the visual viewport may move `top` down the page. null closes it.
+  const keyboard = (height, top = 0) => evaluate(`(() => {
+    const viewport = window.visualViewport;
+    delete viewport.height;
+    delete viewport.offsetTop;
+    if (${height} !== null) {
+      Object.defineProperty(viewport, "height", { configurable: true, get: () => ${height} });
+      Object.defineProperty(viewport, "offsetTop", { configurable: true, get: () => ${top} });
+    }
+    viewport.dispatchEvent(new Event("resize"));
+    viewport.dispatchEvent(new Event("scroll"));
+  })()`);
+  // Reads `expression` in the page at the start of each frame, so each reading is what the frame
+  // before showed, until `watched()` returns the readings. The steps between may take any time.
+  const watch = (expression) => evaluate(`(() => {
+    const seen = window.wsxFrames = [];
+    const read = () => { if (window.wsxFrames !== seen) return; seen.push(${expression}); requestAnimationFrame(read); };
+    requestAnimationFrame(read);
+  })()`);
+  const watched = () => evaluate("(() => { const seen = window.wsxFrames ?? []; window.wsxFrames = null; return seen; })()");
   return {
-    send, evaluate, until, viewport, capture, fail, problems, go, text, count, key,
+    send, evaluate, until, viewport, capture, fail, problems, go, text, count, key, keyboard, watch, watched,
     cleanup: async () => { socket.close(); await cleanup(); },
   };
 }

@@ -18,11 +18,11 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { launch, mobileAudit, pause } from "./web-cdp.mjs";
+import { jumps, launch, mobileAudit, pause } from "./web-cdp.mjs";
 
 const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, plansCheckout, longName, relayFile, wsxCli, newsFile] = process.argv.slice(2);
 const project = Number(projectArg);
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key } = await launch({
+const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched } = await launch({
   captures, prefix: "tasks-", timeoutSeconds: 540,
 });
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
@@ -62,13 +62,6 @@ const pasteInto = (selector, what) => evaluate(`(async () => {
   const field = document.querySelector(${JSON.stringify(selector)});
   field.focus();
   return field.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
-})()`);
-// The keyboard up: the visual viewport shrinks, the layout viewport does not (iOS).
-const keyboard = (height) => evaluate(`(() => {
-  const viewport = window.visualViewport;
-  delete viewport.height;
-  if (${height} !== null) Object.defineProperty(viewport, "height", { configurable: true, get: () => ${height} });
-  viewport.dispatchEvent(new Event("resize"));
 })()`);
 
 // Layout rules of every screen: nothing past the right edge, no raw null, one scroll container
@@ -1651,13 +1644,54 @@ const toLatest = async (where) => {
 };
 // The probe is the first bubble wholly in view; its distance from the screen's top must not change.
 const probe = "document.querySelector('[data-follow-probe]').getBoundingClientRect().top";
+const markProbe = `(() => { const top = document.querySelector('.log').getBoundingClientRect().top;
+  document.querySelector('[data-follow-probe]')?.removeAttribute('data-follow-probe');
+  const bubble = [...document.querySelectorAll('.log > .bubble')].find((node) => node.getBoundingClientRect().top > top + 20);
+  bubble.setAttribute('data-follow-probe', ''); return ${probe}; })()`;
+// ^ The probe's place in the log box, from layout: the page moves on the keyboard, the text must not.
+const probeInLog = "(() => { const log = document.querySelector('.log'); return document.querySelector('[data-follow-probe]').offsetTop - log.scrollTop; })()";
+// The newest reply, its bottom's distance from the log's visible bottom, the log's distance from
+// its end and how far the last row reaches below the composer's top, read at each frame.
+const tail = `(() => { const log = document.querySelector('.log'); const reply = [...log.querySelectorAll(':scope > .bubble[data-in][data-key]')].at(-1);
+  const last = [...log.querySelectorAll(':scope > [data-key]')].at(-1);
+  return [reply?.dataset.key ?? '', reply ? log.clientHeight - (reply.offsetTop + reply.offsetHeight - log.scrollTop) : null,
+    log.scrollHeight - log.scrollTop - log.clientHeight, last.getBoundingClientRect().bottom - document.querySelector('.composer').getBoundingClientRect().top]; })()`;
+const scrolledUp = "(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight - log.clientHeight * 2; log.dispatchEvent(new Event('scroll')); })()";
+// ^ As an iPhone 13 does: the keyboard leaves 508 px and the visual viewport moves 336 px down the page.
+async function keyboardUpAndDown() {
+  await evaluate("document.querySelector('.composer-field').focus({ preventScroll: true })");
+  await keyboard(508, 336);
+  await pause(400);
+  await evaluate("document.activeElement.blur()");
+  await keyboard(null);
+  // ^ Past the second look main.js takes after the focus left.
+  await pause(700);
+}
+const barAt = async (side) => {
+  await go("#/settings");
+  await until("!!document.querySelector('input[name=bar]')", "Settings has no header setting");
+  await click(`input[name=bar][value=${side}]`);
+  await until(`(document.documentElement.dataset.bar ?? 'top') === '${side}'`, `the header did not go to the ${side}`);
+  await go(chat);
+  await until("!!document.querySelector('.log .bubble') && !!document.querySelector('.composer-field')", "the chat did not come back");
+  await pause(300);
+};
 async function followEnd(where) {
   said = 0;
-  // (a) At the end, a reply whose diagram draws after it shows: still at the end.
+  const moves = [];
+  // (a) At the end, a reply whose diagram draws after it shows: still at the end. From the frame
+  // it shows, the reply keeps its place over the composer: the typing bubble it replaces does
+  // not come back under it, and the end is kept in every frame.
   await toLatest(where);
+  await watch(tail);
   await diagramReply();
+  const replied = await watched();
   const lateDiagram = await fromEnd();
   if (lateDiagram > 2) await fail(`${where}: a diagram that drew late left the chat ${lateDiagram} px above its end`);
+  const replyMoves = jumps(replied.map(([key, gap]) => [key, gap]));
+  if (replyMoves.length) moves.push(`at the end, the new reply moved ${JSON.stringify(replyMoves)}`);
+  const offEnd = Math.max(...replied.map((reading) => reading[2]));
+  if (offEnd > 2) moves.push(`at the end, a frame showed the chat ${Math.round(offEnd)} px above its end`);
   for (let more = 0; more < 4 && await evaluate("(() => { const log = document.querySelector('.log'); return log.scrollHeight < log.clientHeight * 3; })()"); more++) await diagramReply();
   // (b, c) Scrolled up: rows below, a late diagram below, the "Since you left" line above, rows
   // inserted above (as older messages would be) and removed again keep the bubble in view where it is.
@@ -1665,13 +1699,12 @@ async function followEnd(where) {
   for (const anchoring of ["auto", "none"]) {
     // ^ iOS Safari has no CSS scroll anchoring: with it off, Chrome scrolls as Safari does.
     await evaluate(`document.querySelector('.log').style.overflowAnchor = '${anchoring}'`);
-    await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight - log.clientHeight * 2; })()");
+    await evaluate(scrolledUp);
     await pause(200);
-    const start = await evaluate(`(() => { const top = document.querySelector('.log').getBoundingClientRect().top;
-      document.querySelector('[data-follow-probe]')?.removeAttribute('data-follow-probe');
-      const bubble = [...document.querySelectorAll('.log > .bubble')].find((node) => node.getBoundingClientRect().top > top + 20);
-      bubble.setAttribute('data-follow-probe', ''); return ${probe}; })()`);
+    const start = await evaluate(markProbe);
     const moved = async (step) => drift.push(`${anchoring} ${step} ${Math.round((await evaluate(probe)) - start)}`);
+    // ^ Every frame between the steps, not only after each: a move that is taken back still shows.
+    await watch(probe);
     await diagramReply();
     await moved("reply below");
     await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 }))`);
@@ -1693,6 +1726,15 @@ async function followEnd(where) {
     await evaluate("document.querySelectorAll('.log > [data-older]').forEach((node) => node.remove())");
     await pause(200);
     await moved("rows above removed");
+    // An image that loads in a bubble above the probe (a diagram's image again).
+    await evaluate(`(() => { const above = document.querySelector('[data-follow-probe]').previousElementSibling.closest('.log > .bubble') ?? document.querySelector('[data-follow-probe]').previousElementSibling;
+      const image = document.querySelector('.log .diagram img').cloneNode(); image.setAttribute('data-late', ''); above.append(image); return image.decode(); })()`);
+    await pause(200);
+    await moved("image above");
+    await evaluate("document.querySelector('.log [data-late]').remove()");
+    await pause(200);
+    const frames = jumps(await watched());
+    if (frames.length) moves.push(`scrolled up (${anchoring}), the bubble in view moved in frames ${JSON.stringify(frames)}`);
     if (await evaluate(atEnd) || !(await count(".jump"))) drift.push(`${anchoring}: the reader was moved to the end`);
   }
   await evaluate("document.querySelector('.log').style.overflowAnchor = ''");
@@ -1703,7 +1745,7 @@ async function followEnd(where) {
   await toLatest(where);
   if (phone()) {
     await evaluate("document.querySelector('.composer-field').focus()");
-    await keyboard(420);
+    await keyboard(508, 336);
     await pause(300);
     const keyboardUp = await fromEnd();
     await diagramReply();
@@ -1711,7 +1753,47 @@ async function followEnd(where) {
     await evaluate("document.activeElement.blur()");
     await keyboard(null);
     if (keyboardUp > 2 || replied > 2) await fail(`${where}: with the keyboard up the chat is ${keyboardUp} px, after a reply ${replied} px above its end`);
+    // (e) The keyboard opens and closes, with the header on top and at the bottom: a reader
+    // scrolled up keeps the text in the log where it was in every frame and after; at the end
+    // the chat stays at its end with its last message above the composer.
+    for (const side of ["top", "bottom"]) {
+      if (side === "bottom") await barAt("bottom");
+      await evaluate(scrolledUp);
+      await pause(200);
+      await evaluate(markProbe);
+      await watch(probeInLog);
+      await keyboardUpAndDown();
+      const read = await watched();
+      const frames = jumps(read);
+      if (frames.length || Math.abs(read.at(-1) - read[0]) > 3) moves.push(`header ${side}, scrolled up, the keyboard moved the text in frames ${JSON.stringify(frames)}, from ${Math.round(read[0])} to ${Math.round(read.at(-1))} px`);
+      await toLatest(where);
+      await watch(tail);
+      await keyboardUpAndDown();
+      const ends = await watched();
+      const off = Math.max(...ends.map((reading) => reading[2])), under = Math.max(...ends.map((reading) => reading[3]));
+      if (off > 2 || under > 1) moves.push(`header ${side}, at the end, a frame with the keyboard showed the chat ${Math.round(off)} px above its end, its last message ${Math.round(under)} px under the composer's top`);
+    }
+    await barAt("top");
+    // (f) A find's match: a row with a match that arrives does not move a reader who scrolled away.
+    await click('.manager button[aria-label="Find in chat"]');
+    await until("document.activeElement === document.querySelector('.find-field')", `${where}: the find bar did not open`);
+    await evaluate(`(() => { const field = document.querySelector('.find-field'); field.value = 'DIAGRAM'; field.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await until("/^[1-9]\\d*\\/\\d+$/.test(document.querySelector('.find-count').textContent)", `${where}: the find did not count its matches`, 200);
+    await pause(300);
+    await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = 0; log.dispatchEvent(new Event('scroll')); })()");
+    await pause(200);
+    await watch("document.querySelector('.log').scrollTop");
+    await evaluate("document.querySelector('.log').append(Object.assign(document.createElement('p'), { className: 'note', textContent: 'DIAGRAM later' }))");
+    await pause(500);
+    const found = jumps(await watched());
+    if (found.length) moves.push(`a find moved the reader to a match that arrived, in frames ${JSON.stringify(found)}`);
+    await evaluate("document.querySelector('.log > .note:last-child').remove()");
+    await click('.find button[aria-label="Close find"]');
+    await until("!document.querySelector('.find')", `${where}: the find bar did not close`);
+    await toLatest(where);
   }
+  fs.appendFileSync(path.join(captures, "follow-end.txt"), `steady scroll, ${where}: ${moves.join("; ") || "no move"}\n`);
+  if (moves.length) await fail(`${where}: the chat moved without the reader: ${moves.join("; ")}`);
   await pause(said * 3000);
 }
 await followEnd("390 px");
