@@ -1,7 +1,9 @@
 //! The TUI's task list: the project's ledger, read off the UI thread and read
 //! again when a file of its task store changes. ref: docs/tasks.md "TUI"
+use crate::action::Action;
 use serde_json::Value;
 use std::{
+    cell::Cell,
     path::PathBuf,
     sync::mpsc,
     time::{Duration, Instant},
@@ -16,6 +18,46 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// A check's answer: none when no stamp changed, else the new stamps and the ledger read.
 type Read = Option<(Stamp, Result<Value, String>)>;
+
+/// The project's `overview.md` in a read-only scroll view, markdown as written (a mermaid
+/// graph reads as the code block it is). ref: docs/tasks.md "TUI"
+pub struct Overview {
+    /// The file's text; none when the file is missing or unread.
+    pub text: Result<Option<String>, String>,
+    /// Lines down from the top.
+    pub scroll: u16,
+    /// ^ The furthest scroll and the height of the last frame, which `j` and a page use.
+    pub max_scroll: Cell<u16>,
+    pub height: Cell<u16>,
+}
+
+impl Overview {
+    fn new(text: Result<Option<(String, u64)>, String>) -> Self {
+        Self {
+            text: text.map(|text| text.map(|(text, _)| text)),
+            scroll: 0,
+            max_scroll: Cell::new(0),
+            height: Cell::new(0),
+        }
+    }
+
+    /// One key. False when the view closes (`Esc` or `q`); the keys of the list or the
+    /// chat under it do nothing meanwhile.
+    pub fn key(&mut self, action: &Action) -> bool {
+        let page = i32::from(self.height.get().saturating_sub(1).max(1));
+        let delta = match action {
+            Action::InputEscape | Action::Quit => return false,
+            Action::NavigateDown | Action::InputChar('j') => 1,
+            Action::NavigateUp | Action::InputChar('k') => -1,
+            Action::PageDown => page,
+            Action::PageUp => -page,
+            _ => 0,
+        };
+        self.scroll =
+            (i32::from(self.scroll) + delta).clamp(0, i32::from(self.max_scroll.get())) as u16;
+        true
+    }
+}
 
 /// One row: an open task in attention order, an open or asked role, then a recent landed or
 /// closed task. A role row has no number; its title is the role's name.
@@ -61,6 +103,8 @@ pub struct TaskList {
     pub tokens: bool,
     /// The project's manager chat, opened over the list with `m`.
     pub chat: Option<Box<crate::task_chat::ManagerChat>>,
+    /// The project's overview, opened with `o` over the list or the chat.
+    pub overview: Option<Overview>,
     stamp: Option<Stamp>,
     pending: Option<mpsc::Receiver<Read>>,
     last_check: Instant,
@@ -81,6 +125,7 @@ impl TaskList {
             scroll: 0,
             tokens: false,
             chat: None,
+            overview: None,
             stamp: None,
             pending: None,
             last_check: Instant::now(),
@@ -117,6 +162,13 @@ impl TaskList {
             self.main.clone(),
             role,
         )));
+    }
+
+    /// `o`: the overview as it is now; a missing file or a failed read shows as words.
+    pub fn open_overview(&mut self) {
+        self.overview = Some(Overview::new(
+            store::read_overview(&self.store).map_err(|error| format!("{error:#}")),
+        ));
     }
 
     /// The selected row's open role, whose chat `Enter` opens.

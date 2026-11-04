@@ -2161,6 +2161,31 @@ def run(wsx, wsxd, work, owned):
         return len(seen_names) == 2
     tui_run(wsx, env, project, row_colors, seconds=40)
     assert seen_names == [accent, plain], 'the project row did not show ask, then answer: %s' % seen_names
+    # `o` opens the project's overview.md read-only, from the list and from the chat: the text as
+    # written, the mermaid graph as a code block; `j` and PageDown scroll, `Esc` returns to what
+    # was under it (docs/tasks.md "TUI"). The file is longer than the window.
+    Path(page).write_text('# demo\n\n## Goal\n\nShip the overview view.\n\n## Tasks\n\n```mermaid\n'
+                          'graph LR\n  one[Write it] --> two[Show it]\n```\n\n## Open questions\n\n'
+                          + ''.join('Open question %d.\n' % n for n in range(1, 61)))
+    seen = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'),
+        (r'(?m)^ TASKS +\(j/k\)move.*\(o\)verview', b'o'),
+        (r'(?m)^ OVERVIEW +\(j/k\)scroll +Esc: back', b'jjjjj'),
+        (r'(?m)^ Overview demo +6-\d+/\d+$', b'\x1b[6~\x1b[6~\x1b[6~'),
+        (r'Open question 60\.', b'\x1b'),
+        (r'(?m)^ TASKS +\(j/k\)move', b'm'),
+        (r'(?m)^ MANAGER +.*\(o\)verview', b'o'),
+        (r'(?m)^ OVERVIEW +\(j/k\)scroll', b'\x1b'),
+        (r'(?m)^ MANAGER +.*\(o\)verview', b'\x1b'),
+        (r'(?m)^ TASKS +\(j/k\)move', b'\x1b'),
+        (r'WORKSPACE', b'')])
+    top, scrolled, bottom = seen[2], seen[3], seen[4]
+    assert re.search(r'(?m)^ Overview demo +1-\d+/\d+$', top), top
+    assert all(word in top for word in ('# demo', '## Goal', '```mermaid', 'graph LR', 'one[Write it] --> two[Show it]')), top
+    assert '# demo' not in scrolled and 'Open question 1.' not in top, scrolled
+    assert '## Open questions' in bottom or 'Open question 60.' in bottom, bottom
+    assert 'Overview' not in seen[8] and 'MANAGER' in seen[8], seen[8]
+    Path(page).write_text('# demo\n\n## Goal\n\nshort\n')
     js('task', 'close', asks, '--discard')
 
     # 23. wsx's boundary (docs/tasks.md "Permissions"): one Seatbelt profile per role over the
