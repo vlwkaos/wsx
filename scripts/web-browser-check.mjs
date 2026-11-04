@@ -6,14 +6,14 @@
 // Each capture is saved with the slop audit of /ui-view-standards beside it.
 import fs from "node:fs";
 import path from "node:path";
-import { launch, mobileAudit, pause } from "./web-cdp.mjs";
+import { jumps, launch, mobileAudit, pause } from "./web-cdp.mjs";
 
 const [mode, siteUrl, code, ...rest] = process.argv.slice(2);
 //   restart <site-url> <code> <capture-dir> <signal-dir> [slop-audit.js]   (the caller restarts the server)
 const [emptyUrl, emptyCode, sessionsJson, captures, auditPath] = mode === "tour" ? rest
   : mode === "restart" ? [null, null, "{}", rest[0], rest[2]] : [null, null, "{}", ...rest];
 const ids = JSON.parse(sessionsJson);
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key } = await launch({
+const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched } = await launch({
   captures, prefix: "", timeoutSeconds: mode === "tour" ? 420 : 100,
 });
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
@@ -313,6 +313,64 @@ async function openSession(role, tab = "chat") {
   if (bar > 48) await fail(`the session top row is ${bar} px high`);
 }
 
+// Nothing the reader did not do moves the session's chat (docs/web-client-chat.md "Following the
+// end"), read at every frame with CSS scroll anchoring off, as iOS Safari has none: at the end a
+// message that grows keeps the end; scrolled up, a refresh of the same timeline, the keyboard
+// opening and closing and "Show N earlier" keep the text in view where it is.
+// It runs in the long chat at its end, before a find shows every row.
+async function steadySession() {
+  const moves = [];
+  const end = "(() => { const log = document.querySelector('.log'); return log.scrollHeight - log.scrollTop - log.clientHeight; })()";
+  await evaluate("document.querySelector('.log').style.overflowAnchor = 'none'");
+  await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
+  await pause(200);
+  await watch(end);
+  await evaluate(`new Promise((done) => { const message = document.querySelector('.log > .message:last-of-type'); let left = 12;
+    const grow = () => { message.append(Object.assign(document.createElement('p'), { textContent: 'A line that the agent writes while the reader is at the end.', className: 'grown' }));
+      if (--left) requestAnimationFrame(grow); else done(); };
+    requestAnimationFrame(grow); })`);
+  await pause(200);
+  const grown = Math.max(...(await watched()));
+  await evaluate("document.querySelectorAll('.log .grown').forEach((node) => node.remove())");
+  if (grown > 2) moves.push(`a message that grew left the end by ${Math.round(grown)} px in a frame`);
+  // ^ The probe is the first message wholly in view; its place in the log box must not change.
+  const probe = "(() => { const log = document.querySelector('.log'); return document.querySelector('[data-follow-probe]').offsetTop - log.scrollTop; })()";
+  const markProbe = `(() => { const log = document.querySelector('.log'), top = log.getBoundingClientRect().top;
+    document.querySelector('[data-follow-probe]')?.removeAttribute('data-follow-probe');
+    [...log.querySelectorAll(':scope > .message')].find((node) => node.getBoundingClientRect().top > top + 20).setAttribute('data-follow-probe', ''); })()`;
+  await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight - log.clientHeight * 2; log.dispatchEvent(new Event('scroll')); })()");
+  await pause(200);
+  await evaluate(markProbe);
+  await watch(probe);
+  // A refresh: a history event reads the same timeline again and renders it.
+  await evaluate(`import(new URL('store.js', document.querySelector('script[type=module]').src)).then(({ events }) => {
+    events.dispatchEvent(new CustomEvent('history', { detail: {} })); })`);
+  await pause(600);
+  // The keyboard as an iPhone 13 shows it: 508 px left, the visual viewport 336 px down the page.
+  await evaluate("document.querySelector('.composer-field').focus({ preventScroll: true })");
+  await keyboard(508, 336);
+  await pause(400);
+  await evaluate("document.activeElement.blur()");
+  await keyboard(null);
+  await pause(700);
+  const read = await watched();
+  const frames = jumps(read);
+  if (frames.length || Math.abs(read.at(-1) - read[0]) > 3) moves.push(`scrolled up, a refresh and the keyboard moved the text in frames ${JSON.stringify(frames)}, from ${Math.round(read[0])} to ${Math.round(read.at(-1))} px`);
+  // Show N earlier: the rows go in above, the message read stays where it is on the screen.
+  await evaluate("document.querySelector('.log').scrollTop = 0");
+  await pause(200);
+  await evaluate(markProbe);
+  const onScreen = "document.querySelector('[data-follow-probe]').getBoundingClientRect().top";
+  await watch(onScreen);
+  await evaluate("document.querySelector('.log-earlier').click()");
+  await pause(400);
+  const earlier = jumps(await watched());
+  if (earlier.length) moves.push(`Show earlier moved the message in view in frames ${JSON.stringify(earlier)}`);
+  await evaluate("document.querySelector('.log').style.overflowAnchor = ''");
+  await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
+  if (moves.length) await fail(`the session's chat moved without the reader: ${moves.join("; ")}`);
+}
+
 async function chats() {
   // Working: the running tool is in the working row only, with the elapsed time and Stop;
   // the step list holds the finished steps; a message waits.
@@ -436,6 +494,7 @@ async function chats() {
   await shot("chat-long-scrolled");
   await evaluate("document.querySelector('.jump').click()");
   await until("!document.querySelector('.jump') && (() => { const log = document.querySelector('.log'); return log.scrollHeight - log.scrollTop - log.clientHeight < 2; })()", "Jump to latest did not go to the end");
+  if (size[0] === 390) await steadySession();
   // Find (docs/web-client-chat.md "Find"): the header's icon; the first question is above the 60
   // rows shown, so the find shows every row. Case-insensitive, one match, scrolled into view; Esc closes.
   await evaluate("document.querySelector('.bar button[aria-label=\"Find in chat\"]').click()");
@@ -966,12 +1025,6 @@ for (const next of [SIZES[1], SIZES[2]]) {
 // The `/` list with the keyboard up (the visual viewport shrinks, the layout viewport does not)
 // and on a short screen: at most 3.5 rows of a name and a muted description, part of the
 // conversation in view, and the composer at the bottom of what is visible.
-const keyboard = (height) => evaluate(`(() => {
-  const viewport = window.visualViewport;
-  delete viewport.height;
-  if (${height} !== null) Object.defineProperty(viewport, "height", { configurable: true, get: () => ${height} });
-  viewport.dispatchEvent(new Event("resize"));
-})()`);
 async function commandsAbove(label, tag) {
   await openSession("long");
   await until("document.querySelectorAll('.message').length > 1 && !!document.querySelector('.composer-field:not([disabled])')", `${label}: the composer is not ready`);
