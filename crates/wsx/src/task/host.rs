@@ -409,11 +409,7 @@ impl Host {
                     );
                     match run {
                         Some(run) if run.result_waits || run.queued && !self.turn_active => {
-                            self.say("check-run: its answer goes to the worker");
-                            self.pending.push_back(answer);
-                            if !self.turn_active {
-                                self.deliver_pending(TurnTrigger::CheckRun);
-                            }
+                            self.send_check_answer(answer)
                         }
                         // ^ The worker still works after `queued`: its result gets the answer.
                         Some(run) if run.queued => {
@@ -940,7 +936,7 @@ impl Host {
             }
             None => {}
         }
-        // ^ Not while a check-run waits: the exec would close its socket unanswered. Not for
+        // ^ Not while a check-run waits or owes its answer: the exec would drop the run. Not for
         // the turn after a limit either: the exec would drop the limit slot before the agent
         // answers, so the next task in the limit queue would go first; the next turn follows.
         if self.check_run.is_none()
@@ -1148,9 +1144,7 @@ impl Host {
         if let Some(run) = &mut self.check_run {
             if let Some(answer) = run.answer.take() {
                 self.check_run = None;
-                self.say("check-run: its answer goes to the worker");
-                self.pending.push_back(answer);
-                self.deliver_pending(TurnTrigger::CheckRun);
+                self.send_check_answer(answer);
                 return;
             }
             run.result_waits = true;
@@ -1905,6 +1899,15 @@ impl Host {
             };
             done(results);
         });
+    }
+
+    /// A check-run's answer goes to the worker as one turn, after its current turn if any.
+    fn send_check_answer(&mut self, answer: String) {
+        self.say("check-run: its answer goes to the worker");
+        self.pending.push_back(answer);
+        if !self.turn_active {
+            self.deliver_pending(TurnTrigger::CheckRun);
+        }
     }
 
     /// The checks wait for the slot: the record shows it while the task works or checks.
