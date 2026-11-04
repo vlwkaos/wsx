@@ -2489,14 +2489,14 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   await resize([390, 844, 2]);
   // ^ The config holds in the main checkout only for this block: a check that waits while its
   // working copy has hold-checks.txt, and three workflow steps.
-  const steps = `  workflow:\n    steps:\n      - { name: context, prompt: NOOP }\n      - { name: build, prompt: "WAIT ${release}" }\n      - { name: memo, prompt: NOOP }\n`;
+  const steps = `  workflow:\n    steps:\n      - { name: plan, prompt: NOOP }\n      - { name: build, prompt: "WAIT ${release}" }\n      - { name: review, prompt: NOOP }\n`;
   fs.writeFileSync(config, before.replace('"test ! -e broken.txt"', '"while test -e hold-checks.txt; do sleep 0.2; done"').replace("tasks:\n", `tasks:\n${steps}`));
 
   // Working: step 2 of 3 is current, the age is near now, and the sentence is the worker's last
   // words although its newest log line is a Bash call.
   const working = taskNew("NOOP");
   await open(working);
-  const workingTop = { health: "working", steps: "+context >build memo", said: "Now I change it." };
+  const workingTop = { health: "working", steps: "+plan >build review", said: "Now I change it." };
   await until(`document.querySelector('.progress-said')?.textContent === 'Now I change it.'`, "the sheet never shows the worker's last sentence", 60);
   await shows(working, "working", { ...workingTop, age: /^(now|\dm ago)$/ });
   await shot("progress-working", ".composer-send");
@@ -2524,7 +2524,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   // Ready: every step is done, and neither age nor sentence shows.
   fs.writeFileSync(release, "go");
   await stateIs(working, "ready");
-  await shows(working, "ready", { health: "ready to land", steps: "+context +build +memo", age: "", said: "" });
+  await shows(working, "ready", { health: "ready to land", steps: "+plan +build +review", age: "", said: "" });
 
   // Running checks, and a second task that waits for the machine's one checks slot. Neither has
   // workflow steps, so neither has a step row.
