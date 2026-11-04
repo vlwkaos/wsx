@@ -1,7 +1,7 @@
 //! The manager chat: the conversation with the newest at the bottom, the owner's open
 //! items under it and the message line last. ref: docs/tasks.md "TUI"
 use super::{tasks::muted, theme, workspace_tree::truncate_to_width};
-use crate::task_chat::{Focus, Item, ManagerChat, Row, Who};
+use crate::task_chat::{links, parts, Focus, Item, ManagerChat, Part, Row, Who};
 use ratatui::{
     layout::Rect,
     prelude::Stylize,
@@ -33,7 +33,10 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
     let items_height = (items.len() as u16).min(room / 3);
     let chat_height = room - items_height;
     chat.area.set((width, chat_height));
-    let mut lines = chat_lines(&chat.rows, chat.who(), width);
+    if let Some(file) = &chat.file {
+        return render_file(frame, inner, file, top);
+    }
+    let mut lines = chat_lines(&chat.rows, chat.who(), width, chat.link).0;
     let matches = find_in(&lines, chat.find.value());
     // ^ Every match reversed, the current one also in a color (docs/tasks.md "TUI").
     let current = chat.found.min(matches.len().saturating_sub(1));
@@ -84,11 +87,63 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
     }
 }
 
+/// A link's file in place of the chat, from its scroll; the name and the position on the line
+/// under the heading.
+fn render_file(
+    frame: &mut Frame,
+    inner: Rect,
+    file: &crate::task_chat::FileView,
+    mut top: Vec<Line<'static>>,
+) {
+    let width = inner.width as usize;
+    let height = inner.height.saturating_sub(top.len() as u16);
+    let lines: Vec<Line> = file
+        .lines
+        .iter()
+        .flat_map(|line| {
+            let cells: Vec<(char, Option<usize>)> = line.chars().map(|char| (char, None)).collect();
+            wrap_cells(&cells, width)
+        })
+        .map(|cells| Line::raw(cells.into_iter().map(|(char, _)| char).collect::<String>()))
+        .collect();
+    let max = (lines.len() as u16).saturating_sub(height);
+    file.max_scroll.set(max);
+    let first = file.scroll.min(max);
+    let shown = (first as usize + height as usize).min(lines.len());
+    top[1] = Line::styled(
+        truncate_to_width(
+            &format!("files/{}  {shown}/{}", file.name, lines.len()),
+            width,
+        ),
+        Style::default().fg(theme::TEXT_MUTED),
+    );
+    frame.render_widget(
+        Paragraph::new(top.clone()),
+        Rect {
+            height: top.len() as u16,
+            ..inner
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(lines).scroll((first, 0)),
+        Rect {
+            y: inner.y + top.len() as u16,
+            height,
+            ..inner
+        },
+    );
+}
+
 /// The footer's hints: only the keys the focus and the selected item take.
 pub fn hints(chat: &ManagerChat) -> Vec<String> {
     match &chat.focus {
         Focus::Compose => vec!["Enter: send".into(), "Esc: done".into()],
         Focus::Find => vec!["Enter: keep".into(), "Esc: clear".into()],
+        Focus::File => vec![
+            "(j/k)scroll".into(),
+            "(g/G)top/end".into(),
+            "Esc: back".into(),
+        ],
         Focus::Fail(_) => vec!["Enter: fail it".into(), "Esc: cancel".into()],
         Focus::Confirm { .. } => vec!["(y)es".into(), "(n)o".into()],
         Focus::Chat => {
@@ -101,7 +156,18 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
                     "(/)find".into(),
                 ];
             }
+            if chat.link.is_some() {
+                return vec![
+                    "Enter: open".into(),
+                    "([/])link".into(),
+                    "Esc: clear".into(),
+                    "(i)message".into(),
+                ];
+            }
             let mut hints = vec!["(i)message".into(), "(/)find".into()];
+            if !links(&chat.rows).is_empty() {
+                hints.push("([/])link".into());
+            }
             match chat.selected_item() {
                 Some(Item::Check(_)) => {
                     hints.extend(["(p)ass".into(), "(s)kip".into(), "(f)ail".into()])
@@ -195,9 +261,16 @@ fn clock(unix_ms: u64) -> String {
 }
 
 /// Each message as its author and time, then its words wrapped under them; each event or
-/// quiet reply as one muted line.
-pub fn chat_lines(rows: &[Row], other: &str, width: usize) -> Vec<Line<'static>> {
+/// quiet reply as one muted line. A link shows its words underlined, the selected one reversed;
+/// the second value is the line of the selected link.
+pub fn chat_lines(
+    rows: &[Row],
+    other: &str,
+    width: usize,
+    selected: Option<(u64, usize)>,
+) -> (Vec<Line<'static>>, Option<usize>) {
     let mut lines = Vec::new();
+    let mut selected_line = None;
     for (index, row) in rows.iter().enumerate() {
         match row {
             Row::Said {
@@ -205,6 +278,7 @@ pub fn chat_lines(rows: &[Row], other: &str, width: usize) -> Vec<Line<'static>>
                 unix_ms,
                 text,
                 asks,
+                routine,
             } => {
                 if index > 0 {
                     lines.push(Line::raw(""));
@@ -214,7 +288,12 @@ pub fn chat_lines(rows: &[Row], other: &str, width: usize) -> Vec<Line<'static>>
                     Who::Manager => (other.to_string(), theme::DONE),
                     Who::Peer(project) => (project.clone(), theme::IDLE),
                 };
-                // ^ A reply that asks is set off like a thin border: a bar in the accent. Its name keeps the speaker's color, as the accent is the owner's.
+                // ^ A reply that asks is set off like a thin border: a bar in the accent; a post of wsx (a routine's run) has its bar in the secondary color, unless it asks. Its name keeps the speaker's color, as the accent is the owner's.
+                let bar = if *asks {
+                    Some(theme::ACCENT)
+                } else {
+                    routine.then_some(theme::SECONDARY)
+                };
                 let heading = vec![
                     Span::styled(name, Style::default().fg(color).bold()),
                     Span::styled(
@@ -223,21 +302,41 @@ pub fn chat_lines(rows: &[Row], other: &str, width: usize) -> Vec<Line<'static>>
                     ),
                 ];
                 lines.push(Line::from(heading));
+                let mut nth = 0;
                 for paragraph in text.lines() {
-                    lines.extend(
-                        wrap(paragraph, width.saturating_sub(2).max(1))
-                            .into_iter()
-                            .map(|part| {
-                                if *asks {
-                                    Line::from(vec![
-                                        Span::styled("│ ", Style::default().fg(theme::ACCENT)),
-                                        Span::raw(part),
-                                    ])
-                                } else {
-                                    Line::raw(format!("  {part}"))
+                    // ^ Each char with the link it belongs to, so a link that wraps stays one.
+                    let mut cells: Vec<(char, Option<usize>)> = Vec::new();
+                    for part in parts(paragraph) {
+                        match part {
+                            Part::Text(words) => cells.extend(words.chars().map(|c| (c, None))),
+                            Part::Link { label, .. } => {
+                                cells.extend(label.chars().map(|c| (c, Some(nth))));
+                                nth += 1;
+                            }
+                        }
+                    }
+                    for part in wrap_cells(&cells, width.saturating_sub(2).max(1)) {
+                        let mut spans = vec![match bar {
+                            Some(color) => Span::styled("│ ", Style::default().fg(color)),
+                            None => Span::raw("  "),
+                        }];
+                        for (link, run) in chunk_by_link(&part) {
+                            let style = match link {
+                                None => Style::default(),
+                                Some(at) if selected == Some((*unix_ms, at)) => {
+                                    selected_line = Some(lines.len());
+                                    Style::default()
+                                        .fg(theme::ACCENT)
+                                        .add_modifier(Modifier::UNDERLINED | Modifier::REVERSED)
                                 }
-                            }),
-                    );
+                                Some(_) => Style::default()
+                                    .fg(theme::ACCENT)
+                                    .add_modifier(Modifier::UNDERLINED),
+                            };
+                            spans.push(Span::styled(run, style));
+                        }
+                        lines.push(Line::from(spans));
+                    }
                 }
             }
             Row::Line(text) => {
@@ -252,7 +351,19 @@ pub fn chat_lines(rows: &[Row], other: &str, width: usize) -> Vec<Line<'static>>
             }
         }
     }
-    lines
+    (lines, selected_line)
+}
+
+/// `cells` as runs of one link (or none): the link's index and the run's text.
+fn chunk_by_link(cells: &[(char, Option<usize>)]) -> Vec<(Option<usize>, String)> {
+    let mut runs: Vec<(Option<usize>, String)> = Vec::new();
+    for (char, link) in cells {
+        match runs.last_mut() {
+            Some((last, text)) if last == link => text.push(*char),
+            _ => runs.push((*link, char.to_string())),
+        }
+    }
+    runs
 }
 
 /// Where `query` shows in `lines`, case-insensitive: each match's line and byte range in
@@ -322,18 +433,23 @@ fn mark(line: Line<'static>, range: Range<usize>, style: Style) -> Line<'static>
     Line { spans, ..line }
 }
 
-/// `text` broken at spaces into lines of at most `width` cells; a longer word is split.
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let cells = |text: &str| Line::from(text).width();
-    let (mut lines, mut line, mut used) = (Vec::new(), String::new(), 0);
-    for word in text.split(' ') {
-        let size = cells(word);
+/// `cells` broken at spaces into lines of at most `width` cells; a longer word is split.
+fn wrap_cells(cells: &[(char, Option<usize>)], width: usize) -> Vec<Vec<(char, Option<usize>)>> {
+    let size_of = |char: char| Line::from(char.encode_utf8(&mut [0; 4]).to_string()).width();
+    let (mut lines, mut line, mut used) = (Vec::new(), Vec::new(), 0);
+    for word in cells.split(|(char, _)| *char == ' ') {
+        let size: usize = word.iter().map(|(char, _)| size_of(*char)).sum();
         if used + usize::from(used > 0) + size <= width {
             if used > 0 {
-                line.push(' ');
+                // ^ The space inside a link belongs to it, so its underline runs on.
+                let inside = match (line.last(), word.first()) {
+                    (Some((_, before)), Some((_, after))) if before == after => *after,
+                    _ => None,
+                };
+                line.push((' ', inside));
                 used += 1;
             }
-            line.push_str(word);
+            line.extend_from_slice(word);
             used += size;
             continue;
         }
@@ -341,13 +457,13 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
             lines.push(std::mem::take(&mut line));
             used = 0;
         }
-        for char in word.chars() {
-            let size = cells(char.encode_utf8(&mut [0; 4]));
+        for cell in word {
+            let size = size_of(cell.0);
             if used > 0 && used + size > width {
                 lines.push(std::mem::take(&mut line));
                 used = 0;
             }
-            line.push(char);
+            line.push(*cell);
             used += size;
         }
     }
@@ -471,6 +587,7 @@ fn composer(chat: &ManagerChat, width: usize) -> (Line<'static>, Option<u16>) {
             ]),
             None,
         ),
+        Focus::File => (Line::raw(""), None),
         Focus::Fail(_) => typed(&chat.note),
         Focus::Confirm { label, approve, .. } => {
             let words = if *approve {

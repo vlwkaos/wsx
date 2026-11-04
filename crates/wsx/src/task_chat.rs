@@ -7,6 +7,8 @@ use crate::{
 };
 use std::{
     cell::Cell,
+    collections::HashSet,
+    io::Read as _,
     path::{Path, PathBuf},
     sync::mpsc,
     time::{Duration, Instant},
@@ -46,8 +48,149 @@ pub enum Row {
         text: String,
         /// A manager reply that asks the owner, before the owner wrote again.
         asks: bool,
+        /// A post of wsx, not an agent turn (`is_post`): its bar is the secondary color.
+        routine: bool,
     },
     Line(String),
+}
+
+/// What a link of the chat opens (docs/tasks.md "Session news", "Routines"): a session, as `S`
+/// enters one, or a file of the main checkout in the chat's file view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Session(u64),
+    File(String),
+}
+
+/// A piece of a message: plain words, or a link `[label](session/<id>)` / `[label](files/<path>)`.
+/// Any other link stays plain words as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Part<'a> {
+    Text(&'a str),
+    Link { label: &'a str, target: Target },
+}
+
+fn target_of(href: &str) -> Option<Target> {
+    if let Some(id) = href.strip_prefix("session/") {
+        return id.parse().ok().map(Target::Session);
+    }
+    let path = href
+        .strip_prefix("files/")
+        .filter(|path| !path.is_empty())?;
+    // ^ `link_path` in task/manager.rs writes each byte outside a safe set as `%XX`.
+    let (mut bytes, mut at) = (Vec::new(), path.bytes());
+    while let Some(byte) = at.next() {
+        if byte != b'%' {
+            bytes.push(byte);
+            continue;
+        }
+        let hex = [at.next()?, at.next()?];
+        bytes.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+    }
+    String::from_utf8(bytes).ok().map(Target::File)
+}
+
+/// `text` as plain words and links, in order.
+pub fn parts(text: &str) -> Vec<Part<'_>> {
+    let (mut out, mut plain, mut from) = (Vec::new(), 0, 0);
+    while let Some(open) = text[from..].find('[').map(|at| from + at) {
+        from = open + 1;
+        let Some(close) = text[from..].find(']').map(|at| from + at) else {
+            break;
+        };
+        let label = &text[from..close];
+        let Some(href) = text[close + 1..].strip_prefix('(') else {
+            continue;
+        };
+        let Some(end) = href.find(')') else {
+            continue;
+        };
+        let target = target_of(&href[..end]);
+        match target {
+            Some(target) if !label.is_empty() && !label.contains(['[', '\n']) => {
+                if plain < open {
+                    out.push(Part::Text(&text[plain..open]));
+                }
+                out.push(Part::Link { label, target });
+                plain = close + 2 + end + 1;
+                from = plain;
+            }
+            _ => {}
+        }
+    }
+    if plain < text.len() {
+        out.push(Part::Text(&text[plain..]));
+    }
+    out
+}
+
+/// The links of the conversation, oldest first: the message's time, the link's place in it and
+/// what it opens. The time and place name a link while rows come and go.
+pub fn links(rows: &[Row]) -> Vec<(u64, usize, Target)> {
+    let mut found = Vec::new();
+    for row in rows {
+        if let Row::Said { unix_ms, text, .. } = row {
+            let targets = parts(text).into_iter().filter_map(|part| match part {
+                Part::Link { target, .. } => Some(target),
+                Part::Text(_) => None,
+            });
+            found.extend(
+                targets
+                    .enumerate()
+                    .map(|(nth, target)| (*unix_ms, nth, target)),
+            );
+        }
+    }
+    found
+}
+
+/// A file shown in place of the chat, from its top.
+pub struct FileView {
+    pub name: String,
+    pub lines: Vec<String>,
+    pub scroll: u16,
+    /// ^ The furthest scroll the last frame could show.
+    pub max_scroll: Cell<u16>,
+}
+
+/// The most a file view reads.
+const FILE_BYTES: u64 = 256 * 1024;
+
+/// The lines of `relative`, a file of `main` (never under `.git`, none through a link out of it),
+/// at most `FILE_BYTES` of it.
+fn read_file(main: &Path, relative: &str) -> Result<Vec<String>, String> {
+    let path = Path::new(relative);
+    let normal = path
+        .components()
+        .all(|part| matches!(part, std::path::Component::Normal(name) if name != ".git"));
+    if !normal {
+        return Err("not a file of the project".into());
+    }
+    let root = main.canonicalize().map_err(|error| error.to_string())?;
+    let real = root
+        .join(path)
+        .canonicalize()
+        .map_err(|_| "no such file".to_string())?;
+    if !real.starts_with(&root) || !real.is_file() {
+        return Err("not a file of the project".into());
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(&real)
+        .and_then(|file| file.take(FILE_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(|error| error.to_string())?;
+    if bytes.contains(&0) {
+        return Err("a binary file".into());
+    }
+    let cut = bytes.len() as u64 > FILE_BYTES;
+    bytes.truncate(FILE_BYTES as usize);
+    let mut lines: Vec<String> = String::from_utf8_lossy(&bytes)
+        .lines()
+        .map(|line| line.replace('\t', "    "))
+        .collect();
+    if cut {
+        lines.push("… cut at 256 KiB".into());
+    }
+    Ok(lines)
 }
 
 /// What the owner decides: an open To check item or a waiting approval.
@@ -72,6 +215,8 @@ pub enum Focus {
     Chat,
     Compose,
     Find,
+    /// A file of a link, in place of the chat.
+    File,
     Fail(String),
     Confirm {
         id: String,
@@ -118,6 +263,11 @@ pub struct ManagerChat {
     /// ^ The furthest scroll the last frame could show, so `k` stops at the oldest line.
     pub max_scroll: Cell<u16>,
     pub focus: Focus,
+    /// The selected link, as `links` names it; Enter opens it.
+    pub link: Option<(u64, usize)>,
+    /// A session the owner opened by its link: the app enters it and clears this.
+    pub session: Option<u64>,
+    pub file: Option<FileView>,
     pub composer: InputState,
     pub note: InputState,
     /// What `/` finds in the conversation, case-insensitive; empty when no find is on.
@@ -163,6 +313,9 @@ impl ManagerChat {
             scroll: 0,
             max_scroll: Cell::new(0),
             focus: Focus::Chat,
+            link: None,
+            session: None,
+            file: None,
             composer: InputState::new("> "),
             note: InputState::new(""),
             find: InputState::new("/"),
@@ -435,15 +588,18 @@ fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyh
     let limit = if whole { usize::MAX } else { CHAT_ENTRIES };
     let (entries, _) = chat_window(&log, None, limit);
     let mut rows = Vec::new();
+    // ^ The ids of the events messages: a reply to them with no usage is a post (`is_post`).
+    let mut events = HashSet::new();
     for entry in entries {
         let said = |who, text: &str| Row::Said {
             who,
             unix_ms: entry.unix_ms,
             text: text.trim().to_string(),
             asks: false,
+            routine: false,
         };
         match &entry.event {
-            ManagerEvent::Message { from, text, .. } => match from {
+            ManagerEvent::Message { id, from, text } => match from {
                 // ^ A reply asks until the owner writes after it (docs/tasks.md "Manager").
                 Author::Owner => {
                     for row in &mut rows {
@@ -466,11 +622,14 @@ fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyh
                     }),
                     text,
                 )),
-                Author::Events => rows.extend(
-                    text.lines()
-                        .filter(|line| !line.trim().is_empty())
-                        .map(|line| Row::Line(event_line(line))),
-                ),
+                Author::Events => {
+                    events.insert(*id);
+                    rows.extend(
+                        text.lines()
+                            .filter(|line| !line.trim().is_empty())
+                            .map(|line| Row::Line(event_line(line))),
+                    )
+                }
             },
             // ^ A quiet `-` or empty reply says nothing changed: it shows nothing, as on the web.
             ManagerEvent::Reply {
@@ -480,7 +639,9 @@ fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyh
                 text, quiet: true, ..
             } => rows.push(Row::Line(text.trim().to_string())),
             ManagerEvent::Reply {
+                to,
                 text,
+                usage,
                 asks,
                 provisional,
                 ..
@@ -492,6 +653,7 @@ fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyh
                     None => text.trim().to_string(),
                 },
                 asks: *asks,
+                routine: is_post(usage.is_none(), to, &events),
             }),
             // ^ An empty `sent` (older hosts logged one without --json) shows nothing.
             ManagerEvent::Sent { text, .. } if text.trim().is_empty() => {}
@@ -546,6 +708,13 @@ fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyh
     })
 }
 
+/// A post of wsx, not an agent turn: a reply with no usage to events messages only, as a routine's
+/// run, the digest, `wsx task post` and the session news are written (docs/tasks.md "Routines").
+/// The web's `conversation` in bubbles.js reads the same rule.
+fn is_post(no_usage: bool, to: &[u64], events: &HashSet<u64>) -> bool {
+    no_usage && !to.is_empty() && to.iter().all(|id| events.contains(id))
+}
+
 /// An event line written by wsx in short form: its first clause, `#3 ready r2: <title>`.
 fn event_line(line: &str) -> String {
     line.split("; ").next().unwrap_or(line).trim().to_string()
@@ -575,6 +744,14 @@ impl ManagerChat {
                     }
                 }
             },
+            Focus::File => match action {
+                Action::InputEscape => self.close_file(),
+                Action::InputChar('j') | Action::NavigateDown => self.scroll_file(1),
+                Action::InputChar('k') | Action::NavigateUp => self.scroll_file(-1),
+                Action::InputChar('G') => self.scroll_file(i32::MAX),
+                Action::InputChar('g') => self.scroll_file(i32::MIN),
+                _ => {}
+            },
             Focus::Fail(id) => match action {
                 Action::Select => self.fail_check(id),
                 Action::InputEscape => self.focus = Focus::Chat,
@@ -597,8 +774,12 @@ impl ManagerChat {
         match (action, selected) {
             // ^ Esc clears a find first; the next Esc leaves the chat.
             (Action::InputEscape, _) if finding => self.close_find(),
+            (Action::InputEscape, _) if self.link.is_some() => self.link = None,
             (Action::InputEscape, _) => return false,
             (Action::InputChar('/'), _) => self.open_find(),
+            (Action::InputChar('['), _) => self.step_link(-1),
+            (Action::InputChar(']'), _) => self.step_link(1),
+            (Action::Select, _) if self.link.is_some() => self.open_link(),
             // ^ While a find is on, n and N move between matches, before an approval's n.
             (Action::InputChar('n'), _) if finding => self.step(-1),
             (Action::InputChar('N'), _) if finding => self.step(1),
@@ -626,6 +807,66 @@ impl ManagerChat {
         true
     }
 
+    /// Select the next link toward `delta` (-1 older, 1 newer), from none the newest, and show it.
+    fn step_link(&mut self, delta: isize) {
+        let links = links(&self.rows);
+        let at = self
+            .link
+            .and_then(|link| links.iter().position(|(ms, nth, _)| (*ms, *nth) == link));
+        let next = match at {
+            Some(at) => at
+                .saturating_add_signed(delta)
+                .min(links.len().saturating_sub(1)),
+            None => links.len().saturating_sub(1),
+        };
+        let Some((ms, nth, _)) = links.get(next) else {
+            return;
+        };
+        self.link = Some((*ms, *nth));
+        let (width, _) = self.area.get();
+        let (lines, line) =
+            crate::ui::task_chat::chat_lines(&self.rows, self.who(), width, self.link);
+        if let Some(line) = line {
+            self.center(line, lines.len());
+        }
+    }
+
+    /// Open the selected link: a session is the app's to enter, a file shows in place of the chat.
+    fn open_link(&mut self) {
+        let target = links(&self.rows)
+            .into_iter()
+            .find(|(ms, nth, _)| Some((*ms, *nth)) == self.link)
+            .map(|(.., target)| target);
+        match target {
+            Some(Target::Session(id)) => self.session = Some(id),
+            Some(Target::File(path)) => match read_file(&self.main, &path) {
+                Ok(lines) => {
+                    self.file = Some(FileView {
+                        name: path,
+                        lines,
+                        scroll: 0,
+                        max_scroll: Cell::new(0),
+                    });
+                    self.focus = Focus::File;
+                }
+                Err(error) => self.notice = Some((format!("files/{path}: {error}"), true)),
+            },
+            None => self.link = None,
+        }
+    }
+
+    fn close_file(&mut self) {
+        self.file = None;
+        self.focus = Focus::Chat;
+    }
+
+    fn scroll_file(&mut self, delta: i32) {
+        if let Some(file) = &mut self.file {
+            file.scroll = (i32::from(file.scroll).saturating_add(delta))
+                .clamp(0, i32::from(file.max_scroll.get())) as u16;
+        }
+    }
+
     fn open_find(&mut self) {
         self.focus = Focus::Find;
         if !self.whole {
@@ -647,7 +888,7 @@ impl ManagerChat {
     /// The matches of the find as the last frame drew the chat: (line, byte range).
     pub fn matches(&self) -> Vec<(usize, std::ops::Range<usize>)> {
         let (width, _) = self.area.get();
-        let lines = crate::ui::task_chat::chat_lines(&self.rows, self.who(), width);
+        let lines = crate::ui::task_chat::chat_lines(&self.rows, self.who(), width, self.link).0;
         crate::ui::task_chat::find_in(&lines, self.find.value())
     }
 
@@ -670,12 +911,19 @@ impl ManagerChat {
         };
         self.reveal_due = false;
         self.found = self.found.min(last);
-        let (width, height) = self.area.get();
-        let total = crate::ui::task_chat::chat_lines(&self.rows, self.who(), width).len();
-        let line = matches[self.found].0;
+        let total =
+            crate::ui::task_chat::chat_lines(&self.rows, self.who(), self.area.get().0, self.link)
+                .0
+                .len();
+        self.center(matches[self.found].0, total);
+    }
+
+    /// Scroll so `line` of `total` sits mid-chat.
+    fn center(&mut self, line: usize, total: usize) {
+        let height = usize::from(self.area.get().1);
         // ^ `scroll` counts lines up from the newest: the line's distance from the end, less half the chat.
         let below = total.saturating_sub(line + 1);
-        let scroll = below.saturating_sub(usize::from(height) / 2);
-        self.scroll = scroll.min(total.saturating_sub(usize::from(height))) as u16;
+        let scroll = below.saturating_sub(height / 2);
+        self.scroll = scroll.min(total.saturating_sub(height)) as u16;
     }
 }

@@ -13,6 +13,8 @@ pub const TEXT: Color = Color::Rgb(224, 229, 237);
 pub const TEXT_MUTED: Color = Color::Rgb(143, 152, 166);
 pub const TEXT_SUBTLE: Color = Color::Rgb(99, 108, 123);
 pub const ACCENT: Color = Color::Rgb(102, 153, 255);
+/// The second accent: the bar of a post of wsx (a routine's run), apart from the asks bar's accent.
+pub const SECONDARY: Color = Color::Rgb(184, 140, 240);
 const ACCENT_MUTED: Color = Color::Rgb(92, 132, 208);
 pub const SUCCESS: Color = Color::Rgb(88, 190, 112);
 pub const WORKING: Color = Color::Rgb(137, 220, 158);

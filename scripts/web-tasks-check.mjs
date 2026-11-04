@@ -2795,6 +2795,15 @@ await go(chat);
     await shot(`routine-message-${scheme}`);
   }
   await inScheme("dark");
+  // ^ Any wsx post has it, not only the digest's: a routine other than the digest, such as the retrospect,
+  // posts under its own events text (`wsx task post --title`, docs/tasks.md "Routines").
+  const before = await count(".bubble[data-routine]");
+  execFileSync(cli.wsx, ["task", "post", "-p", "plans", "--title", "retrospect"], { env: cli.env, cwd: cli.cwd, input: "Since the last post: $0.10\n", stdio: "pipe" });
+  await until(`document.querySelectorAll('.bubble[data-routine]').length === ${before + 1}`, "the retrospect's post has no routine mark", 30);
+  const retro = await evaluate(`(() => { const last = [...document.querySelectorAll('.bubble[data-routine]')].at(-1); return { text: last.textContent, border: getComputedStyle(last.querySelector('.bubble-box')).borderTopColor }; })()`);
+  const digest = await look();
+  if (!retro.text.includes("Since the last post") || retro.border !== digest.secondary) await fail(`the retrospect post is ${JSON.stringify(retro)}, not bordered in ${digest.secondary}`);
+  await shot("routine-message-retrospect");
 }
 
 const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/status of 404.*\/api\/tasks\/999999\/routines/.test(problem) && !/status of 403.*\/api\/files\?project=\d+&path=$/.test(problem));

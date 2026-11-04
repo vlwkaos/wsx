@@ -1824,6 +1824,34 @@ def run(wsx, wsxd, work, owned):
     assert len(posted('routine board')) == 1 and not events_with('routine board succeeded'), 'one post, no event'
     assert not posted('routine hushed') and not posted('routine silent') and not events_with('routine silent'), \
         'a --no-post routine and an empty success post nothing'
+    # ^ The TUI chat shows a link's words and opens it (docs/tasks.md "TUI"): `S` makes sure the
+    # project shell lives; a post links to it as the session news does. `[` selects the newest
+    # link, Enter enters that session and the workspace key comes back to the chat; two `[` reach
+    # the board's file, which Enter shows in place of the chat and Esc closes. A routine's post
+    # (any `wsx task post`, here the retrospect's) has its bar in the secondary colour.
+    tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'MANAGER', b'S'), (r'(?m)\$ *$', b'')])
+    shell_id = next(i for i, label in zip(sessions_at(project, 'id'), sessions_at(project)) if label == 'shell')
+    subprocess.run([str(wsx), 'task', 'post', '-p', 'demo', '--title', 'session shell'], env=env, cwd=project,
+                   input='[shell in main](session/%d) exited\n' % shell_id, text=True, check=True)
+    frames = []
+    linked = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'),
+        (r'\(m\)anager', b'm'),
+        (r'\(\[/\]\)link', b'['),
+        (r'(?m)^ MANAGER +Enter: open +\(\[/\]\)link +Esc: clear +\(i\)message', b'\r'),
+        (r'(?m)\$ *$', b'\x01w'),
+        (r'(?m)^ MANAGER ', b'[['),
+        (r'(?m)^ MANAGER +Enter: open', b'\r'),
+        (r'(?s)files/routine-out/board.html +\d+/\d+\n.*<p>board</p>', b'\x1b'),
+        (r'(?m)^ MANAGER +Enter: open', b'\x1b'),
+        (r'(?m)^ MANAGER +\(i\)message', b'\x1b'),
+        (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], raw=frames)
+    # ^ The chat shows the words, not `[words](session/N)`.
+    assert 'shell in main exited' in linked[2] and '(session/' not in linked[2], linked[2]
+    assert re.search(r'(?m)^ MANAGER ', linked[5]) and 'shell in main exited' in linked[5], linked[5]
+    assert re.search(r'(?m)^ \u2502 shell in main exited', linked[2]), linked[2]
+    assert re.search(r'38;2;184;140;240[;0-9]*m\u2502', frames[2].decode('utf-8', 'replace')), 'a wsx post has no secondary bar'
     board.unlink()
     board.parent.rmdir()
     for name in ('closed', 'retrospect', 'checkin', 'board', 'hushed', 'silent'):
