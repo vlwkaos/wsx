@@ -37,6 +37,8 @@ function described(entry) {
       `${entry.commands.join(", ")} (automatic retry ${entry.attempt} of 2)`, "attention"];
     case "revision": return [`Revision r${entry.revision}`, `${short(entry.commit)} · ${entry.paths_total} ${entry.paths_total === 1 ? "file" : "files"}`];
     case "stopped": return ["Stopped", entry.reason];
+    // ^ The host's keep-warm turn during a wait: no step, no result (docs/tasks.md "Context rotation").
+    case "ping": return ["Ping", "kept the prompt cache warm during the wait"];
     case "closed": return [entry.discarded ? "Closed and discarded" : "Closed", ""];
     case "conflict": return [`Conflict onto ${short(entry.onto)}`, entry.paths.join(", "), "danger"];
     case "land_stopped": return ["Landing stopped", entry.reason, "danger"];

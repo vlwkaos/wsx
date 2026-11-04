@@ -151,7 +151,7 @@ fn cached(files: &[PathBuf], read: impl FnOnce() -> Vec<Turn>) -> Turns {
     turns
 }
 
-/// The worker turns of a task: its log's `result` lines.
+/// The worker turns of a task: its log's `result` and `ping` lines.
 pub fn task_turns(dir: &TaskDir) -> Turns {
     cached(&[dir.file(store::LOG_FILE)], || {
         let log = dir.read_log().unwrap_or_default();
@@ -163,6 +163,8 @@ pub fn task_turns(dir: &TaskDir) -> Turns {
                     .unwrap_or(PART_OTHER);
                 Some((entry.unix_ms, part, usage.as_ref()))
             }
+            // ^ A keep-warm ping is no step's work. ref: docs/tasks.md "Context rotation"
+            LogEvent::Ping { usage } => Some((entry.unix_ms, PART_OTHER, usage.as_ref())),
             _ => None,
         }))
     })
@@ -173,7 +175,7 @@ pub fn task(dir: &TaskDir) -> Usage {
     Usage::since(&task_turns(dir), 0)
 }
 
-/// The manager's turns: its replies in both log files.
+/// The manager's turns: its replies and pings in both log files.
 pub fn manager_turns(dir: &ManagerDir) -> Turns {
     cached(&dir.log_files(), || {
         manager_log_turns(&dir.read_log().unwrap_or_default())
@@ -182,7 +184,9 @@ pub fn manager_turns(dir: &ManagerDir) -> Turns {
 
 pub fn manager_log_turns(log: &[ManagerEntry]) -> Vec<Turn> {
     turns(log.iter().filter_map(|entry| match &entry.event {
-        ManagerEvent::Reply { usage, .. } => Some((entry.unix_ms, PART_MANAGER, usage.as_ref())),
+        ManagerEvent::Reply { usage, .. } | ManagerEvent::Ping { usage } => {
+            Some((entry.unix_ms, PART_MANAGER, usage.as_ref()))
+        }
         _ => None,
     }))
 }

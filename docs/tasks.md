@@ -169,7 +169,7 @@ tasks:
 - At most 3 pings in a row (`KEEP_WARM_PINGS`): a real turn resets the count. Three pings keep a wait warm for about 3 h 40 min. Each costs about $0.03 at 120k context, against about $1 for the rewrite after a gap of over 1 h. A longer wait rotates as before.
 - No ping in a usage limit (the task's own wait or the account's limit record), a disk wait, by hand, on a fallback that is not Claude, when the last answer is over 1 h old (the cache is gone), or when the context has reached `rotateTokens` (that turn rotates anyway).
 - No ping for a task that is ready or waits on the owner: such a wait often ends with no next turn.
-- A turn that comes during a ping (a check-run answer, a check retry, a message) starts when the ping ends. A ping that meets a usage limit records it, so no further ping comes; the next real turn waits as usual.
+- A turn that comes during a ping (a check-run answer, a check retry, a message) starts when the ping ends. A ping that meets a usage limit is no answer (Claude's refusal costs nothing); the next real turn meets the limit and waits as usual.
 
 ## Checks, revisions and report
 
