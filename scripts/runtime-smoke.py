@@ -766,6 +766,17 @@ assert isinstance(project["last_terminal_active_unix_ms"], int), project
 assert isinstance(project["last_agent_active_unix_ms"], int), project
 session = next(item for item in snapshot["sessions"] if item["id"] == session_id)
 pane_id = session["focused_pane"]
+
+
+def pane_text(pane):
+    frames = call("view", {"pane_ids": [pane]})["data"]["frames"]
+    return "".join(cell[0] for cell in frames[0]["cells"]) if frames else ""
+
+
+# ^ session_create returns before its helper runs: the helper starts 0.1 s later, and seconds
+# later on a loaded machine (measured under `yes` load: 2 s). The 3 s report deadline below
+# counts from a helper that reads its input.
+wait_for(lambda: "claude-renderer:" in pane_text(pane_id), "terminal helper did not start", 30)
 reorder_peer = call("session_create", {
     "worktree_id": worktree_id,
     "label": "reorder-peer",
