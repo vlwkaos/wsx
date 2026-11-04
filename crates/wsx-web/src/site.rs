@@ -529,6 +529,12 @@ impl Site {
         self.capabilities.contains(&capability)
     }
 
+    /// Add and remove projects: every project is reachable and a terminal takes input, which
+    /// already gives a full shell (docs/web-client.md "Projects").
+    pub fn manages_projects(&self) -> bool {
+        matches!(self.access, Access::All) && self.allows(Capability::TerminalInput)
+    }
+
     pub fn shows(&self, panel: Panel) -> bool {
         self.panels.contains(&panel)
     }

@@ -1,9 +1,11 @@
 // Home with task_view: one row per granted project, what needs the owner first
 // (docs/web-client-tasks.md "Home"). A row opens the project's manager chat.
 import { ago, html, Icon, Loading, READ_EVENT, readUpTo, useEffect, useFlip, useNow, useRef, useState } from "./lib.js";
+import { api } from "./api.js";
 import { isAgent, listedSessions, stateOf, useStore } from "./store.js";
 import { needTone, needWords } from "./tasks.js";
 import { Dots } from "./bubbles.js";
+import { toast } from "./ui.js";
 
 // The order of need kinds, most urgent first, as the server ranks them.
 const URGENCY = { waiting: 0, failed: 1, approval: 2, land: 3 };
@@ -77,6 +79,57 @@ function newsOf(project, overview) {
   return news && read != null && news.unix_ms > read ? news.text.split("\n")[0] : null;
 }
 
+// ^ A sheet with one path field registers a git repository of the host, as the TUI's `p` does
+// (docs/web-client.md "Projects"). The server's refusal stays in the sheet; the row comes with
+// the next workspace event.
+function AddProject({ onClose }) {
+  const dialog = useRef();
+  const field = useRef();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    dialog.current.showModal();
+    field.current.focus();
+  }, []);
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api("api/projects", { method: "POST", json: { path: field.current.value } });
+      dialog.current.close();
+    } catch (failure) {
+      setError(failure.message);
+      setBusy(false);
+      field.current.focus();
+    }
+  };
+  return html`
+    <dialog class="sheet" ref=${dialog} aria-labelledby="add-project-title" onClose=${onClose}>
+      <form onSubmit=${submit}>
+        <h2 class="sheet-title" id="add-project-title">Add project</h2>
+        <label class="field">Path of a git repository
+          <input class="input" type="text" name="path" ref=${field} placeholder="~/code/app" required autocomplete="off"
+            autocapitalize="none" autocorrect="off" spellcheck=${false} enterkeyhint="go" />
+        </label>
+        <p class="error" role="alert">${error}</p>
+        <div class="actions sheet-actions">
+          <button class="button" type="button" onClick=${() => dialog.current.close()}>Cancel</button>
+          <button class="button button-primary" type="submit" disabled=${busy}>Add</button>
+        </div>
+      </form>
+    </dialog>`;
+}
+
+// Unregisters the project from wsx only; its folder, worktrees and branches stay.
+async function removeProject(project) {
+  try {
+    await api(`api/projects/${project.id}`, { method: "DELETE" });
+  } catch (failure) {
+    toast(failure.message, { failure: true });
+  }
+}
+
 export function Home({ rail }) {
   const store = useStore();
   // ^ The chat keeps what it read as it goes, and as it closes, which is after this list drew.
@@ -91,6 +144,10 @@ export function Home({ rail }) {
   const [, kind, open] = location.hash.split("/");
   const list = useRef();
   useFlip(list);
+  const [adding, setAdding] = useState(false);
+  const manage = store.site.manage_projects;
+  // Remove is filled only while the row is slid open, as a session row's.
+  const slid = (event) => event.currentTarget.toggleAttribute("data-open", event.currentTarget.scrollLeft > 0);
   let body;
   if (!store.daemon) body = html`<p class="empty">wsx is not running on the host.</p>`;
   else if (!store.loaded) body = html`<${Loading} />`;
@@ -105,7 +162,7 @@ export function Home({ rail }) {
           const last = row.last;
           const news = row.news;
           return html`
-            <li class="row" key=${row.project.id} data-key=${row.project.id} data-news=${news ? "" : null}>
+            <li class=${manage ? "row row-slide" : "row"} onScroll=${manage ? slid : null} key=${row.project.id} data-key=${row.project.id} data-news=${news ? "" : null}>
               <a class="row-link home-row" href=${`#/p/${row.project.id}`} aria-current=${rail && Number(open) === row.project.id ? "page" : null}>
                 <span class="row-main">
                   <span class="row-work">
@@ -123,13 +180,20 @@ export function Home({ rail }) {
                   ${last ? html`<span class="time">${ago(now - last)}</span>` : null}
                 </span>
               </a>
+              ${manage && html`<button class="row-remove" type="button" onClick=${() => removeProject(row.project)}
+                aria-label=${`Remove project ${row.project.name}`} title="Remove"><${Icon} name="fail" /></button>`}
             </li>`;
         })}
       </ul>`;
   }
   return html`
     <div class="page">
-      ${!rail && html`<h1 class="title">Home</h1>`}
+      ${(!rail || manage) && html`
+        <div class="home-top">
+          ${!rail && html`<h1 class="title">Home</h1>`}
+          ${manage && html`<button class="icon-button new-project" type="button" onClick=${() => setAdding(true)} aria-label="Add project" title="Add project"><${Icon} name="plus" /></button>`}
+        </div>`}
+      ${adding && html`<${AddProject} onClose=${() => setAdding(false)} />`}
       <div class="scroll">
         ${body}
       </div>

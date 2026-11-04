@@ -60,6 +60,14 @@ p, h1, h2 { margin: 0; }
   padding: var(--space-4) var(--space-4) var(--space-2);
   font-size: var(--font-size-title); font-weight: var(--font-weight-strong); letter-spacing: var(--tracking-title);
 }
+/* Hook: .home-top — Home's title row; the + that adds a project sits at its right gutter. */
+.home-top { display: flex; align-items: center; justify-content: flex-end; padding-right: var(--space-2); }
+.home-top .title { flex: 1; }
+.rail .home-top { padding-top: var(--space-1); }
+.sheet .error { margin-top: var(--space-2); }
+.new-project:focus-visible { color: var(--color-text); }
+@media (hover: hover) { .new-project:hover { color: var(--color-text); background: var(--color-raised); } }
+.new-project:active:not(:disabled) { color: var(--color-accent); }
 .scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .label {
   padding: var(--space-4) var(--space-4) var(--space-1);
