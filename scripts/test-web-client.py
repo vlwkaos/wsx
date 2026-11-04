@@ -3240,6 +3240,14 @@ def task_journey(args):
                 assert js('task', 'land', n, '-p', 'ui')['state'] == 'landed'
             wait(lambda: sum('#%d landed r1' % n in e.get('text', '') for n in (7, 8) for e in js('task', 'chat', '-p', 'ui')['entries']) == 2,
                  'the manager heard of #7 and #8', timeout=30)
+
+            # ^ Answered before the next message: an owner message goes before waiting events and
+            # takes them along (manager.rs `accept`), and that turn's reply is not the one to events.
+            def lands_answered():
+                entries = js('task', 'chat', '-p', 'ui')['entries']
+                lands = {e['id'] for e in entries if e['kind'] != 'reply' and re.search(r'#[78] landed r1', e.get('text', ''))}
+                return lands and lands <= {at for e in entries if e['kind'] == 'reply' for at in e['to']}
+            wait(lands_answered, 'the manager answered the lands of #7 and #8', timeout=30)
             # The manager of plans asked ui's manager, which answered: both show as bubbles in ui.
             js('task', 'say', 'RUN wsx task say -p ui --from-manager "How is ui?" --json', '-p', 'plans')
             wait(lambda: any(e.get('from') == 'manager:plans' for e in js('task', 'chat', '-p', 'ui')['entries']),
