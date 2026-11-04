@@ -900,9 +900,10 @@ def run(wsx, wsxd, work, owned):
     for n in (d1, d2, d3):
         js('task', 'close', n, '--discard')
 
-    # 14e. `S` in the Tasks view opens a shell: in the task's working copy on its row, in the
-    # main checkout from the chat. A second `S` enters the same session, and the worker keeps
-    # its turn: no hand, no stop (docs/tasks.md "TUI").
+    # 14e. `S` in the Tasks view opens a shell: in the task's working copy on its row, the
+    # project's shell in the main checkout from the chat. The workspace key goes back to the
+    # Tasks view. A second `S` enters the same session, and the worker keeps its turn: no
+    # hand, no stop. After `exit`, `S` makes a new project shell (docs/tasks.md "TUI").
     mark('14e')
     shell_gate = work / 'shell-gate'
     sh = js('task', 'new', 'WAIT %s' % shell_gate)['id']
@@ -910,10 +911,10 @@ def run(wsx, wsxd, work, owned):
     copy_name = Path(show(sh)['record']['working_copy']).name
     where = b'printf "at:%s\\n" "${PWD##*/}"\r'
 
-    def sessions_at(path):
+    def sessions_at(path, key='label'):
         data = daemon_call('snapshot')['data']
         ids = {w['id'] for w in data['worktrees'] if os.path.realpath(w['path']) == os.path.realpath(path)}
-        return [s['label'] for s in data['sessions'] if s['worktree_id'] in ids]
+        return [s[key] for s in data['sessions'] if s['worktree_id'] in ids]
     prompt = r'(?m)\$ *$'
     # ^ The raw frames of the list and the chat with the `S` hint, replayed into the Human
     # Verify captures; `.work/` is git-ignored.
@@ -942,25 +943,42 @@ def run(wsx, wsxd, work, owned):
         (shown_task, b'S'),
         (prompt, where),
         (r'at:%s' % re.escape(copy_name), b'\x01w'),
-        (r'WORKSPACE', b'tm'),
+        (shown_task, b'\x1b'),
+        (r'(?m)^ TASKS ', b'm'),
         (r'MANAGER', b'S'),
         (prompt, where),
         (r'at:%s' % re.escape(project.name), b'')])
     copy_path = show(sh)['record']['working_copy']
     task_shells = [label for label in sessions_at(copy_path) if label != 'task-%d' % sh]
     main_shells = [label for label in sessions_at(project) if not label.startswith('task-')]
-    assert len(task_shells) == 1 and len(main_shells) == 1, (task_shells, main_shells)
+    assert len(task_shells) == 1 and main_shells == ['shell'], (task_shells, main_shells)
+    main_ids = [i for i, label in zip(sessions_at(project, 'id'), sessions_at(project)) if not label.startswith('task-')]
     again = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
         (r'#%d +working' % sh, to_row),
         (shown_task, b'S'),
         (r'at:%s' % re.escape(copy_name), b'\x01w'),
-        (r'WORKSPACE', b'tm'),
+        (shown_task, b'\x1b'),
+        (r'(?m)^ TASKS ', b'm'),
         (r'MANAGER', b'S'),
         (r'at:%s' % re.escape(project.name), b'')])
     assert 'TASK ' not in again[3] and 'MANAGER' not in again[-1], again
     assert [label for label in sessions_at(copy_path) if label != 'task-%d' % sh] == task_shells
     assert [label for label in sessions_at(project) if not label.startswith('task-')] == main_shells
+    # ^ The same project shell, its earlier output on the screen; the workspace key and its
+    # exit go back to the chat, and the next `S` makes a new one.
+    exited = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b'tm'),
+        (r'MANAGER', b'S'),
+        (r'at:%s' % re.escape(project.name), b'\x01w'),
+        (r'MANAGER', b'S'),
+        (r'at:%s' % re.escape(project.name), b'exit\r'),
+        (r'MANAGER', b'S'),
+        (prompt, b'')])
+    assert '(S)hell' in exited[3] and 'at:' not in exited[-1], exited
+    renewed = [i for i, label in zip(sessions_at(project, 'id'), sessions_at(project)) if not label.startswith('task-')]
+    assert len(main_ids) == 1 and len(renewed) == 1 and renewed != main_ids, (main_ids, renewed)
+    main_shells = ['shell']
     assert show(sh)['state'] == 'working' and not kinds(sh, 'hand', 'stopped'), log(sh)
     shell_gate.write_text('open')
     wait_state(sh, 'ready', 'failed')

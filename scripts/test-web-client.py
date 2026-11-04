@@ -1217,10 +1217,10 @@ agent_command = ["/bin/sh"]
 name = "Work"
 port = {ports['work']}
 public_origin = "http://127.0.0.1:{ports['work']}"
-panels = ["chat"]
+panels = ["chat", "terminal"]
 [access]
 projects = {{ profile = "work" }}
-capabilities = ["chat_send", "session_start", "task_view", "task_act"]
+capabilities = ["chat_send", "session_start", "task_view", "task_act", "terminal_view", "terminal_input"]
 agent_command = ["/bin/sh", "-c", {json.dumps('printf %s "$CLAUDE_CONFIG_DIR" > ' + str(work / 'profile-agent.txt'))}]
 '''),
             # Watch-only terminal: terminal_view without terminal_input.
@@ -2503,6 +2503,37 @@ capabilities = ["terminal_view"]
         assert work_site.request('GET', '/api/tasks/%d/mentions' % projects['project3'])[0] == 200
         wait(lambda: work_projects() == ['project2', 'project3'], 'project3 joins the profile site')
         ok('profile site: exactly its profile\'s projects, a project that joins later, agents and skills under its config root')
+
+        # --- The project's shell (docs/web-client-tasks.md "Project screen"): the header icon
+        # opens one shell session in the main checkout, the same while it lives, a new one
+        # once it exited.
+        project_shell = '/api/projects/%d/shell' % projects['project2']
+        if args.browser:
+            result = check(work, [node, str(ROOT / 'scripts/web-browser-check.mjs'), 'shell', work_site.origin + '/',
+                                  cli('web', 'pair', '--site', files['work']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                  str(args.captures), '', str(projects['project2'])], timeout=120)
+            assert result.returncode == 0, result.stdout + result.stderr
+            ok('real browser, ' + result.stdout.strip().splitlines()[-1])
+        status, opened = work_site.request('POST', project_shell)
+        assert status == 200, opened
+        assert work_site.request('POST', project_shell) == (200, opened)
+        if args.browser:
+            assert opened['session_id'] == int(re.search(r'opens session (\d+)', result.stdout).group(1)), result.stdout
+        shell = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == opened['session_id'])
+        checkout = next(w for w in call('snapshot')['data']['worktrees'] if w['id'] == shell['worktree_id'])
+        assert shell['label'] == 'shell' and os.path.realpath(checkout['path']) == os.path.realpath(work / 'project2'), (shell, checkout)
+        typing = Terminal(work_site, opened['session_id'])
+        typing.control('replay')
+        typing.send(b'exit\r')
+        wait(lambda: next(p for p in call('snapshot')['data']['panes'] if p['session_id'] == opened['session_id'])['exited'], 'the shell exits')
+        typing.drop()
+        status, renewed = work_site.request('POST', project_shell)
+        assert status == 200 and renewed['session_id'] != opened['session_id'], renewed
+        assert all(s['id'] != opened['session_id'] for s in call('snapshot')['data']['sessions']), 'the exited shell stays'
+        assert viewer.request('POST', project_shell)[0] == 403
+        session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == renewed['session_id'])
+        assert call('session_close', {'session_id': session['id'], 'expected_revision': session['revision']})['type'] == 'ack'
+        ok('project shell: the header icon opens one shell in the main checkout, the same again, a new one after it exited; 403 without the terminal')
         session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == term)
         assert call('session_close', {'session_id': term, 'expected_revision': session['revision']})['type'] == 'ack'
 
