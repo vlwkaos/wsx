@@ -200,6 +200,7 @@ if (mode === "restart") {
 if (mode === "shell") {
   const project = Number(rest[2]);
   const button = ".bar-tools .project-shell";
+  await resize(SIZES[1]);
   await pair(siteUrl, code);
   const opened = [];
   for (const next of [SIZES[1], SIZES[2]]) {
