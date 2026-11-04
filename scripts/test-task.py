@@ -1352,6 +1352,9 @@ def run(wsx, wsxd, work, owned):
     (owner_skills / 'scribe/SKILL.md').write_text('---\nname: scribe\ndescription: fixture\n'
                                                   'allowed-tools: Write, Edit\n---\nWrite a file.\n')
 
+    (owner_skills / 'other').mkdir()
+    (owner_skills / 'other/SKILL.md').write_text('---\nname: other\ndescription: fixture\n---\nx\n')
+
     def chat(after=None):
         return js('task', 'chat', *(['--after', after] if after is not None else []))['entries']
 
@@ -1454,6 +1457,18 @@ def run(wsx, wsxd, work, owned):
     skilled = [t for t in traces() if t.get('launch') and not t.get('manager')][-1]
     assert skilled['plugin_dir'].endswith('/%d/skills-plugin' % manager_task), skilled
     assert 'Run the fixture rule.' in skilled['instructions'] and 'as `owner:<name>`' in skilled['instructions']
+    # ^ No tasks.skillsOnly: the worker gets every skill. With it: only the named ones, and a
+    # name the owner lacks is skipped (docs/tasks.md "Workflow").
+    assert os.readlink(Path(skilled['plugin_dir']) / 'skills') == str(owner_skills), skilled
+    unrestricted = (project / 'wsx.config.yml').read_text()
+    configure(unrestricted + '  skillsOnly: [scribe, ghost]\n', 'skills only')
+    only_task = js('task', 'new', 'WORK only.txt')['id']
+    assert wait_state(only_task, 'ready', 'failed')['state'] == 'ready'
+    only = [t for t in traces() if t.get('launch') and not t.get('manager')][-1]
+    only_dir = Path(only['plugin_dir']) / 'skills'
+    assert only_dir.is_dir() and not only_dir.is_symlink() and sorted(os.listdir(only_dir)) == ['scribe'], os.listdir(only_dir)
+    assert os.readlink(only_dir / 'scribe') == str(owner_skills / 'scribe')
+    configure(unrestricted, 'skills all')
     added = js('task', 'say', 'RUN wsx task add %d "WORK s2.txt" -p demo --json' % running)
     assert '-> 0' in reply_to(added['id'])['text']
     # Any command shape reaches the broker: `;`, a heredoc with a multi-line prompt, a pipe.
@@ -1514,7 +1529,7 @@ def run(wsx, wsxd, work, owned):
     assert bare['plugin_dir'] is None, bare
     assert 'owner:' not in bare['instructions'] and 'check rather than guess' in bare['instructions']
     assert [e['id'] for e in chat(after=big['id']) if e['kind'] == 'message' and e['from'] == 'owner'] == [after_rotation['id']]
-    for n in (running, manager_task, heredoc_task):
+    for n in (running, manager_task, heredoc_task, only_task):
         js('task', 'close', n, '--discard')
 
     # 21. Events: task state changes reach the manager, merged while it is busy; an owner

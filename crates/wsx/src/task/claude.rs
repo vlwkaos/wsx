@@ -69,8 +69,14 @@ pub(super) fn config_root(project: &Path) -> Result<Option<PathBuf>> {
 /// An agent runs with project and local settings only, which load no user skill: a plugin
 /// in its folder links the owner's skills folder, `<config root>/skills`,
 /// `$CLAUDE_CONFIG_DIR/skills` or `~/.claude/skills`. None when the owner has none.
+/// `only` (`tasks.skillsOnly`) non-empty: `skills/` is a folder of links to just those skills;
+/// one the owner lacks is skipped with a warning.
 /// ref: docs/tasks.md "Manager", "Workflow"
-pub(super) fn skills_plugin(folder: &Path, root: Option<&Path>) -> Result<Option<PathBuf>> {
+pub(super) fn skills_plugin(
+    folder: &Path,
+    root: Option<&Path>,
+    only: &[String],
+) -> Result<Option<PathBuf>> {
     use std::os::unix::fs::{symlink, DirBuilderExt};
     let Some(skills) = root
         .map(Path::to_path_buf)
@@ -102,6 +108,33 @@ pub(super) fn skills_plugin(folder: &Path, root: Option<&Path>) -> Result<Option
     )
     .with_context(|| format!("cannot write {}", meta.display()))?;
     let link = plugin.join("skills");
+    if !only.is_empty() {
+        // ^ A link from an earlier launch without `only` goes; a folder is rebuilt.
+        match link.symlink_metadata() {
+            Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(&link),
+            Ok(_) => std::fs::remove_file(&link),
+            Err(_) => Ok(()),
+        }
+        .with_context(|| format!("cannot replace {}", link.display()))?;
+        std::fs::create_dir(&link).with_context(|| format!("cannot create {}", link.display()))?;
+        for name in only {
+            let source = skills.join(name);
+            if source.is_dir() {
+                symlink(&source, link.join(name))
+                    .with_context(|| format!("cannot link {}", link.join(name).display()))?;
+            } else {
+                eprintln!(
+                    "wsx: tasks.skillsOnly names {name}, not in {}",
+                    skills.display()
+                );
+            }
+        }
+        return Ok(Some(plugin));
+    }
+    if link.symlink_metadata().is_ok_and(|meta| meta.is_dir()) {
+        std::fs::remove_dir_all(&link)
+            .with_context(|| format!("cannot replace {}", link.display()))?;
+    }
     match std::fs::read_link(&link) {
         Ok(target) if target == skills => return Ok(Some(plugin)),
         Ok(_) => std::fs::remove_file(&link)
@@ -123,7 +156,7 @@ impl Launch {
         let settings = load_task_config(&record.project_path).map_err(anyhow::Error::msg)?;
         let root = config_root(&record.project_path)?;
         let skills = match settings.owner_skills {
-            true => skills_plugin(folder, root.as_deref())?,
+            true => skills_plugin(folder, root.as_deref(), &settings.skills_only)?,
             false => None,
         };
         let boundary = Boundary::worker(record, folder)?;

@@ -23,7 +23,9 @@ tasks:
   checkTimeoutSeconds: 1200
   # ^ A context past 200k costs about 3x a turn; the usage audit (docs/design/usage-audit.md)
   # put 44% of worker spend there.
-  agent: { rotateTokens: 200000 }
+  # ^ A trial from 2026-11-04 for 8 landed tasks, judged on cost per landed task and reverts
+  # against the 11-04 baseline ($2.38, 5.5 turns). The manager passes --model opus for large work.
+  agent: { rotateTokens: 200000, model: sonnet }
   # ^ The end-to-end scripts, for a worker to run by name (`wsx task check-run web`) outside its
   # boundary in the check slot; never after a result. Each builds the binaries it runs first.
   scenarios:
@@ -33,6 +35,9 @@ tasks:
     boundary: cargo build -p wsx -p wsx-daemon && python3 -B scripts/test-manager-boundary.py
   # ^ Workers get the owner's skills; the project's words for each stage (docs/tasks.md "Workflow").
   skills: owner
+  # ^ Only these skills in a worker's list: all 76 cost 8.9k tokens in every prefix
+  # (docs/design/token-usage.md option 1). The manager keeps all.
+  skillsOnly: [develop, simplify, recall, memo, backpressure, ui-view-standards, seek, write-test]
   workflow:
     # ^ The steps (context, plan, build, review, memo) are the owner's, in ~/.config/wsx/wsx.config.yml.
     build: >-

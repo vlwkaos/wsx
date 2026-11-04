@@ -112,6 +112,9 @@ struct TasksFile {
     /// `owner` or `none`.
     #[serde(skip_serializing_if = "Option::is_none")]
     skills: Option<String>,
+    /// Names of the owner's skills a worker gets; empty = all.
+    #[serde(rename = "skillsOnly", skip_serializing_if = "Vec::is_empty")]
+    skills_only: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     workflow: Option<TaskWorkflowFile>,
 }
@@ -572,6 +575,14 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         Some("owner") => true,
         Some(other) => return Err(format!("tasks.skills must be owner or none, not {other:?}")),
     };
+    if let Some(bad) = file
+        .skills_only
+        .iter()
+        .find(|name| name.is_empty() || name.starts_with('.') || name.contains(['/', '\\']))
+    {
+        return Err(format!("tasks.skillsOnly: {bad:?} is not a skill name"));
+    }
+    config.skills_only = file.skills_only;
     if let Some(workflow) = file.workflow {
         let text = |value: Option<String>, field: &str, default: &mut String| {
             let Some(value) = value else { return Ok(()) };

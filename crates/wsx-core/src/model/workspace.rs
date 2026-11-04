@@ -89,6 +89,8 @@ pub struct TaskConfig {
     pub rotate_idle_seconds: u64,
     /// `tasks.skills: owner` lends workers the owner's skills, as the manager has them.
     pub owner_skills: bool,
+    /// `tasks.skillsOnly`: the only skills a worker gets (the manager keeps all); empty = all.
+    pub skills_only: Vec<String>,
     pub workflow: TaskWorkflow,
     pub checks: Vec<String>,
     /// `tasks.scenarios`: named end-to-end commands a worker runs through `check-run <name>`,
@@ -221,6 +223,7 @@ impl Default for TaskConfig {
             rotate_tokens: 200_000,
             rotate_idle_seconds: 3_600,
             owner_skills: false,
+            skills_only: Vec::new(),
             workflow: TaskWorkflow::default(),
             checks: Vec::new(),
             scenarios: Default::default(),
