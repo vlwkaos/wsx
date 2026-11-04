@@ -3190,17 +3190,21 @@ def task_journey(args):
         # --json with no text: the page shows neither (docs/web-client-tasks.md "Project screen").
         logged('owner', 'Anything new?', '-', quiet=False)
         old_log.append({'kind': 'sent', 'to': 'ui', 'text': '', 'unix_ms': old_log[-1]['unix_ms'] + 1000})
-        # ^ Before them, 220 older turns: more than the 200 entries a read sends and the 400 the page
-        # keeps, so a find must load the whole chat to reach the first and the fourth (they say
-        # "quasar"; docs/web-client-chat.md "Find").
-        filler = []
-        for n in range(220):
-            at = first_ms - (220 - n) * 20_000
+        # ^ Before them, 1,500 older turns (3,000 messages, with markdown and task chips): more than
+        # the 200 entries a read sends and the 400 the page keeps, so a find must load the whole chat
+        # to reach the first and the fourth (they say "quasar"; docs/web-client-chat.md "Find"), and
+        # the page's render cost of a long chat is measured on them ("Long chats").
+        filler, turns = [], 1500
+        for n in range(turns):
+            at = first_ms - (turns - n) * 20_000
+            answer = ('The quasar notes are in docs.' if n == 3
+                      else 'Older answer %d: **#89** is ready.\n\n- the `chat` part\n- #91 and #88\n\n| Part | State |\n|---|---|\n| web | built |' % n if n % 3 == 1
+                      else 'Older answer %d about #88 and #91.' % n)
             filler.extend([{'kind': 'message', 'id': 5001 + 2 * n, 'from': 'owner', 'unix_ms': at,
-                            'text': 'Where did the Quasar notes go?' if n == 0 else 'Older question %d.' % n},
+                            'text': 'Where did the Quasar notes go?' if n == 0 else 'Older question %d about #89.' % n},
                            {'kind': 'delivered', 'ids': [5001 + 2 * n], 'unix_ms': at + 1},
                            {'kind': 'reply', 'id': 5002 + 2 * n, 'to': [5001 + 2 * n], 'quiet': False, 'unix_ms': at + 2000,
-                            'text': 'The quasar notes are in docs.' if n == 3 else 'Older answer %d.' % n}])
+                            'text': answer}])
         (manager_dir / 'log.1.jsonl').write_text(''.join(json.dumps(entry) + '\n' for entry in filler + old_log))
         # `plans`: #1 waits for the owner (its worker was refused a tool and asks), #2 is ready.
         assert js('task', 'new', 'Let me jump between projects from the keyboard NEEDS WebSearch NOOP', '-p', 'plans')['id'] == 1

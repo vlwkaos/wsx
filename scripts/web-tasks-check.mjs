@@ -2413,6 +2413,34 @@ await evaluate(`${foldRow}.scrollIntoView({ block: 'start' })`);
 await shot("fold-open");
 await evaluate(`${foldRow}.querySelector('.fold-toggle').click()`);
 await until(`${foldRow}.querySelector('.fold-toggle').getAttribute('aria-expanded') === 'false' && !${foldRow}.querySelector('.status-line')`, "a second tap did not fold the run");
+// --- A long chat's render (docs/web-client-chat.md "Long chats"): plans' log holds 3,000 older
+// messages with markdown and chips. At 390 px with the CPU slowed 4x, a read that brings no new
+// message (the event a change sends) is timed on the main thread; it renders no bubble again. The
+// rows and the page's elements are counted with the newest rows shown, while a find shows every
+// row, and back at the end after the find closed, where the log keeps its newest rows again.
+await send("Performance.enable");
+const moduleUrl = (name) => `new URL('${name}', document.querySelector('script[type=module]').src)`;
+await evaluate(`(async () => { const { options } = await import(${moduleUrl("preact.js")});
+  // ^ Preact's render hook (\`options._render\`, \`__r\` in its build) runs for each component it renders, not for one it skips.
+  const before = options.__r; window.wsxRenders = 0;
+  options.__r = (vnode) => { if (vnode.type?.name === 'Bubble') window.wsxRenders += 1; before?.(vnode); }; })()`);
+const renderCost = async (label) => {
+  const busy = async () => (await send("Performance.getMetrics")).metrics.find((item) => item.name === "TaskDuration").value;
+  await send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  const start = await busy();
+  await evaluate(`(async () => { window.wsxRenders = 0; performance.clearResourceTimings();
+    const { events } = await import(${moduleUrl("store.js")});
+    events.dispatchEvent(new CustomEvent('manager', { detail: {} }));
+    for (let n = 0; n < 500 && !performance.getEntriesByType('resource').some((entry) => /\/chat(\?|$)/.test(entry.name)); n++) await new Promise((done) => setTimeout(done, 20));
+    await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))); })()`);
+  const ms = Math.round(((await busy()) - start) * 1000);
+  await send("Emulation.setCPUThrottlingRate", { rate: 1 });
+  const seen = await evaluate("({ rows: document.querySelector('.log').children.length, named: document.querySelectorAll('.log > [data-key]').length, nodes: document.getElementsByTagName('*').length, renders: window.wsxRenders })");
+  const line = { label, ms, ...seen };
+  fs.appendFileSync(path.join(captures, "render.txt"), `${JSON.stringify(line)}\n`);
+  return line;
+};
+const costs = [await renderCost("newest rows")];
 // --- Find (docs/web-client-chat.md "Find"): the header's icon opens the bar and loads the whole
 // chat; "quasar" is only in plans' 1st and 4th older turns, past the newest 400 entries
 // (test-web-client.py). It starts at the newer match; Previous goes to the older one, Next back.
@@ -2427,6 +2455,7 @@ const found = () => evaluate(`(() => { const current = CSS.highlights.get('find-
   return { count: document.querySelector('.find-count').textContent, marks: CSS.highlights.get('find')?.size ?? 0, text: range?.toString(),
     bubble: node?.closest('.bubble')?.textContent ?? '', shown: !!box && box.top >= log.top && box.bottom <= log.bottom }; })()`);
 await until("document.querySelector('.find-count').textContent === '2/2'", "the find did not count 2/2 over the whole chat", 30);
+costs.push(await renderCost("find open"));
 let seen = await found();
 if (seen.marks !== 2 || seen.text !== "quasar" || !/notes are in docs/.test(seen.bubble) || !seen.shown) await fail(`the newest match reads ${JSON.stringify(seen)}`);
 await shot("find");
@@ -2440,6 +2469,12 @@ await evaluate("document.querySelector('.find-field').focus()");
 await key("Escape", 27);
 await until("!document.querySelector('.find') && !CSS.highlights.has('find') && !CSS.highlights.has('find-current')", "Esc did not close the find and clear its marks");
 await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
+await until("!document.querySelector('.jump')", "the long chat did not reach its end after the find");
+await pause(300);
+costs.push(await renderCost("at the end after a find"));
+console.log(`long chat render at 390 px, CPU 4x: ${costs.map((cost) => `${cost.label} ${cost.ms} ms, ${cost.named} rows, ${cost.nodes} elements, ${cost.renders} bubbles rendered`).join("; ")}`);
+const costly = costs.filter((cost) => cost.renders > 0 || (cost.label === "at the end after a find" && cost.named > 60));
+if (costly.length) await fail(`a read with no new message rendered bubbles again, or the log kept more than its newest 60 rows: ${JSON.stringify(costs)}`);
 await openReservoir();
 await until(`!!${rowOf("#1")}`, "the waiting task has no reservoir row");
 const waitRow = (await rows()).find((row) => row[0] === "#1");
