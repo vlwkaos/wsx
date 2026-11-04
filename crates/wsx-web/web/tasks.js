@@ -45,6 +45,11 @@ function useLeaving(list, keyOf) {
   return rows;
 }
 
+const sameFields = (a, b) => {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
+};
+
 // True for `ms` after `flag` stops holding, so a thing can play its exit.
 function useAfter(flag, ms) {
   const [after, setAfter] = useState(false);
@@ -891,7 +896,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
     rows.push({ kind: "bubble", key: "sending", author: "owner", at: Date.now(), first: !grouped, last: true, pending: true, entry: { text: sent.text } });
   }
   const firstNew = since == null ? null : rows.find((row) => row.kind === "bubble" && row.author !== "owner" && !row.pending && row.at > since);
-  const [recent, earlier] = useRecent(place, rows, firstNew, { all: finding });
+  const [recent, earlier] = useRecent(place, rows, firstNew, { all: finding, away });
   const find = () => {
     if (finding) return setFinding(false);
     setFinding(true);
@@ -908,6 +913,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
   // message this device just sent, do not.
   const known = useRef(null);
   const fresh = useRef(new Set());
+  const drawn = useRef(null);
   if (ready) {
     if (!known.current) known.current = new Set(rows.map((row) => row.key));
     for (const row of rows) {
@@ -920,12 +926,26 @@ export function Manager({ project: id, task, page, checks, usage, routines, role
   const stopped = chat && !chat.running && entries.at(-1)?.kind === "stopped";
   // ^ The manager's state only when it matters: typing or stopped (docs/web-client-tasks.md "Project screen").
   const managerWord = typing ? "typing" : stopped ? "stopped" : "";
-  const show = (row) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${fresh.current.has(row.key)} />`
-    : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} text=${row.text} fresh=${fresh.current.has(row.key)} />`
-    : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} name=${names.manager} fresh=${fresh.current.has(row.key)} />`
+  const draw = (row, isNew) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${isNew} />`
+    : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} text=${row.text} fresh=${isNew} />`
+    : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} name=${names.manager} fresh=${isNew} />`
     : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} all=${finding} />`
-    : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${fresh.current.has(row.key)} onMention=${mention} />`
+    : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${isNew} onMention=${mention} />`
     : html`<${Note} key=${row.key} entry=${row.entry} />`;
+  // ^ A read rebuilds every row from the entries it keeps: a row whose fields are the ones it was
+  // drawn with gives back the same node, which Preact does not render again (docs/web-client-chat.md
+  // "Long chats"). What every row reads besides its own fields starts the rows over, also a new
+  // day: a row's time says its day once it is not today's (lib.js `clock`).
+  const context = `${id} ${finding} ${names.manager} ${JSON.stringify(names.peers ?? null)} ${new Date().toDateString()}`;
+  if (drawn.current?.context !== context || drawn.current.rows.size > rows.length + 200) drawn.current = { context, rows: new Map() };
+  const show = (row) => {
+    const isNew = fresh.current.has(row.key);
+    const kept = drawn.current.rows.get(row.key);
+    if (kept && kept.isNew === isNew && sameFields(kept.row, row)) return kept.node;
+    const node = draw(row, isNew);
+    drawn.current.rows.set(row.key, { row, isNew, node });
+    return node;
+  };
   const header = html`
     <header class="bar">
       <${Back} fallback=${role ? `#/p/${id}` : "#/"} />

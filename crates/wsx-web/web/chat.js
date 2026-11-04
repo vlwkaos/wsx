@@ -542,15 +542,21 @@ const RECENT_ROWS = 60;
 // wsx manager's 1,864 rows (2,272 entries) render in 0.4 s, 1.4 s at Chrome's 4x CPU throttle.
 // content-visibility saved nothing there, and steps of RECENT_ROWS took 9.8 s: each step renders
 // every row again (2026-11-04, docs/web-client-chat.md "Find").
-export function useRecent(name, rows, first, { keyOf = (row) => row.key, all = false } = {}) {
+// `away`: the reader is not at the end (useFollowEnd). At the end the log keeps its newest rows
+// only, so its length stays bounded however long it was read (docs/web-client-chat.md "Long chats").
+export function useRecent(name, rows, first, { keyOf = (row) => row.key, all = false, away = false } = {}) {
   const [shown, setShown] = useState({ name, count: RECENT_ROWS });
-  // ^ The top row shown: rows that arrive later extend the end, so no row above the reader
-  // goes (docs/web-client.md "Screens"). Rows that "Show earlier" adds go in above the reader;
-  // useFollowEnd keeps the row they read in place.
+  // ^ The top row shown: while the reader is away from the end, rows that arrive later extend
+  // the end, so no row above the reader goes (docs/web-client.md "Screens"). Rows that "Show
+  // earlier" adds go in above the reader; useFollowEnd keeps the row they read in place.
   const top = useRef(null);
+  // ^ Back at the end, what the reader showed above goes again.
+  useEffect(() => {
+    if (!away && !all) setShown((now) => now.name === name && now.count === RECENT_ROWS ? now : { name, count: RECENT_ROWS });
+  }, [away, all, name]);
   const count = shown.name === name ? shown.count : RECENT_ROWS;
   const from = first ? Math.min(rows.indexOf(first), rows.length - count) : rows.length - count;
-  const kept = top.current?.name === name ? rows.findIndex((row) => keyOf(row) === top.current.key) : -1;
+  const kept = away && top.current?.name === name ? rows.findIndex((row) => keyOf(row) === top.current.key) : -1;
   const start = all ? 0 : Math.max(0, kept >= 0 ? Math.min(from, kept) : from);
   top.current = { name, key: rows[start] && keyOf(rows[start]) };
   const more = () => setShown({ name, count: rows.length - start + RECENT_ROWS });
@@ -659,7 +665,7 @@ export function Chat({ session, onModel, finding = false, onFindClose }) {
   const blocked = status.key === "blocked";
   const lastUserBlock = list.findLast?.((block) => block.kind === "user");
   const firstNew = since == null ? null : list.find((block) => block.kind === "assistant" && block.at_unix_ms > since);
-  const [recent, earlier] = useRecent(`session-${id}`, list, firstNew, { keyOf: (block) => block.id, all: finding });
+  const [recent, earlier] = useRecent(`session-${id}`, list, firstNew, { keyOf: (block) => block.id, all: finding, away });
   const terminalLink = shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`;
   // A hold the chat cannot name: the server sends the rows above the agent's editor, closed
   // until asked for (docs/web-client-chat.md "Timeline").
