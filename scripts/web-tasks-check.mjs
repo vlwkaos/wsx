@@ -2079,8 +2079,18 @@ await closeSheet("#4 again");
 // manager as its own bubbles (docs/web-client-tasks.md "Project screen").
 await go(chat);
 await until("!!document.querySelector('.composer .icon-button[aria-label=\"Attach files\"]')", "the manager chat has no attach button");
+// ^ The reply to plans is older than the newest 60 rows the chat keeps at its end: the reader
+// goes up and shows earlier rows until it is there (docs/web-client-chat.md "Long chats").
+const replyToPlans = "[...document.querySelectorAll('.log .bubble-tag')].some((node) => node.textContent === 'Reply to plans')";
+for (let n = 0; n < 20 && !(await evaluate(replyToPlans)) && await count(".log-earlier"); n++) {
+  await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = 0; log.dispatchEvent(new Event('scroll')); })()");
+  await pause(200);
+  await click(".log-earlier");
+  await pause(300);
+}
 const peers = await bubbles();
 if (!peers.some(({ author }) => author === "plans") || !peers.some(({ tag }) => tag === "Reply to plans")) await fail(`the managers' messages read ${JSON.stringify(peers)}`);
+if (await count(".jump")) await toLatest("the managers' messages");
 // ^ Each speaker with a name has its own color on that name, never on its box: this manager's
 // and the other manager's names and wsx's muted lines; the owner's bubble has no name and no color
 // (docs/web-themes.md "Tokens").
