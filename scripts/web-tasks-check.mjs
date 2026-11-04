@@ -748,7 +748,19 @@ const eventLines = await evaluate(`[...document.querySelectorAll('.status-line')
 if (eventLines.length) await fail(`the event lines read ${JSON.stringify(eventLines)}`);
 // ^ A long reply shows its first sentence whole and More; More shows the rest.
 const longReply = "[...document.querySelectorAll('.reply-text')].find((node) => node.querySelector('button'))";
-await until(`${longReply}?.firstChild?.textContent === 'noted events.'`, "a long reply to events does not show its first sentence and More", 60);
+const longShown = `${longReply}?.firstChild?.textContent === 'noted events.'`;
+// ^ A row after it (an event line) folds it with the run above (bubbles.js `folded`): the folds open.
+const lastRows = "[...document.querySelectorAll('.log > *')].slice(-8).map((node) => `${node.className}: ${node.textContent.trim().slice(0, 60)}`)";
+let foldedRows = null;
+for (let attempt = 0; attempt < 60 && !(await evaluate(longShown)); attempt++) {
+  if (attempt === 30 && await count(".log .fold-toggle[aria-expanded=false]")) {
+    foldedRows = await evaluate(lastRows);
+    await evaluate("document.querySelectorAll('.log .fold-toggle[aria-expanded=false]').forEach((node) => node.click())");
+  }
+  await pause(100);
+}
+if (foldedRows) fs.appendFileSync(path.join(captures, "follow-end.txt"), `the long reply to events was in a closed fold: ${JSON.stringify(foldedRows)}\n`);
+if (!(await evaluate(longShown))) await fail(`a long reply to events does not show its first sentence and More; the chat's last rows are ${JSON.stringify(await evaluate(lastRows))}`);
 // ^ The page in a scheme once its marks have faded to the scheme's colors (app.css transitions).
 const inScheme = async (scheme) => { await evaluate(scheme === "light" ? "document.documentElement.dataset.scheme = 'light'" : "delete document.documentElement.dataset.scheme"); await pause(1000); };
 for (const scheme of ["dark", "light"]) {
