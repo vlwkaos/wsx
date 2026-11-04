@@ -1740,9 +1740,13 @@ async function followEnd(where) {
     await evaluate("document.querySelectorAll('.log > [data-older]').forEach((node) => node.remove())");
     await pause(200);
     await moved("rows above removed");
-    // An image that loads in a bubble above the probe (a diagram's image again).
-    await evaluate(`(() => { const above = document.querySelector('[data-follow-probe]').previousElementSibling.closest('.log > .bubble') ?? document.querySelector('[data-follow-probe]').previousElementSibling;
-      const image = document.querySelector('.log .diagram img').cloneNode(); image.setAttribute('data-late', ''); above.append(image); return image.decode(); })()`);
+    // An image that loads in a bubble above the screen (a diagram's image again). ^ Not a row that
+    // starts in view: it is the anchor, and what is below it on the screen moves as it grows.
+    const above = await evaluate(`(() => { const log = document.querySelector('.log');
+      const above = [...log.querySelectorAll(':scope > .bubble')].filter((node) => node.offsetTop + node.offsetHeight <= log.scrollTop).at(-1);
+      if (!above) return false;
+      const image = document.querySelector('.log .diagram img').cloneNode(); image.setAttribute('data-late', ''); above.append(image); return image.decode().then(() => true); })()`);
+    if (!above) await fail(`${where}: scrolled up, no bubble is wholly above the screen`);
     await pause(200);
     await moved("image above");
     await evaluate("document.querySelector('.log [data-late]').remove()");
