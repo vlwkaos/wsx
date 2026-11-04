@@ -8,12 +8,15 @@ use crate::{
     App,
 };
 use serde_json::{json, Value};
-use std::path::Path;
+use std::sync::Mutex;
 use wsx_core::{
     config::global::GlobalConfig,
     ops,
     task::{store, view},
 };
+
+/// Load, change and save of the config run one at a time: two calls would lose one change.
+static CONFIG: Mutex<()> = Mutex::new(());
 
 /// Only a site that reaches every project and types into a terminal: a shell already gives
 /// that power, so a host path adds none. A profile or path grant never manages projects.
@@ -51,6 +54,7 @@ pub fn add(app: &App, path: &str) -> Outcome<Value> {
             "enter an absolute path, or one that starts with ~/",
         ));
     }
+    let _one = crate::locked(&CONFIG);
     let mut config = config()?;
     let project = ops::register_project(path, &mut config)
         .map_err(|error| Fault::new(409, "project_refused", format!("{error:#}")))?;
@@ -88,9 +92,13 @@ pub fn remove(app: &App, id: u64) -> Outcome<Value> {
             format!("{} has open sessions", project.name),
         ));
     }
+    let _one = crate::locked(&CONFIG);
     let mut config = config()?;
-    let path: &Path = &project.path;
-    if !config.projects.iter().any(|entry| entry.path == path) {
+    if !config
+        .projects
+        .iter()
+        .any(|entry| entry.path == project.path)
+    {
         return Err(Fault::new(
             409,
             "project_refused",

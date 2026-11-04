@@ -3,7 +3,7 @@
 import { api } from "./api.js";
 import { elapsed, html, Icon, Loading, useNow, useState } from "./lib.js";
 import { can, isNew, listedSessions, sessionLink, shows, stateOf, useStore } from "./store.js";
-import { toast } from "./ui.js";
+import { slid, toast } from "./ui.js";
 
 // One session. Left: a state mark. Middle: the work first, project › worktree, then the
 // session and its provider, and for a working session what it does. Right: the state
@@ -33,8 +33,6 @@ export function SessionRow({ session, now, current, place }) {
   };
   // ^ The owner's hand session of a task closes with its handback (docs/tasks.md "By hand").
   const removable = can("session_start") && !/^task-\d+-hand$/.test(session.label);
-  // Remove is filled only while the row is slid open, so closed rows show no red buttons.
-  const slid = (event) => event.currentTarget.toggleAttribute("data-open", event.currentTarget.scrollLeft > 0);
   return html`
     <li class=${removable ? "row row-slide" : "row"} onScroll=${removable ? slid : null}>
       <a class="row-link" href=${sessionLink(session)} aria-current=${current ? "page" : null}>
