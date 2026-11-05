@@ -3344,7 +3344,10 @@ def run(wsx, wsxd, work, owned):
     heard = wait(lambda: events_with('#%d ready r1' % passed, 'check-run slow passed (recorded by the host); worker says'),
                  'the ready event with the recorded check-run', 30)
     assert len(heard) == 1 and len(events_with('#%d ready' % passed)) == 1, manager_entries()[-6:]
-    assert not events_with('#%d ready' % failed, 'recorded by the host'), events_with('#%d ready' % failed)
+    # ^ Events that come together are one message: look at the failed task's own line.
+    own = wait(lambda: [line for e in events_with('#%d ready r1' % failed) for line in e['text'].split('\n')
+                        if line.startswith('#%d ready r1' % failed)], 'the ready event of the failed run', 30)
+    assert 'recorded by the host' not in own[0], own
     assert [e['trigger'] for e in log(failed) if e['kind'] == 'result'] == ['step', 'check_run'], log(failed)
     sent = [t for t in traces() if 'Your check-run ended' in t.get('message', '') and str(fail_gate) in t['message']]
     assert len(sent) == 1 and ': exit 1' in sent[0]['message'], sent
