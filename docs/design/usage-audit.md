@@ -176,3 +176,80 @@ Prove each with the loop above: one `decisions.md` line, then compare `--until` 
 - The owner's steps become `plan, build, review`, and the `review` result carries the memo. The `context` step goes with no replacement. This waits on the owner (proposal 1). Baseline: $4.32 per landed task, 35 turns after the last step.
 - A stated change runs on sonnet as build only. Opus runs only when the cause is unknown or the change needs design. Baseline: opus 5-step median $5.73 / 7 turns, sonnet $0.54 / 4 turns.
 - 2026-11-04 (#182): the lean flow is wsx's own behavior for every project and manager, not an edit to one config. A `context` step folds into the first other step after the host's task context block; a `memo` step folds into the step before it; `task new --size small` runs the build only on `tasks.agent.smallModel` (sonnet). Measure after 8 landed tasks against $2.38 per landed task, 5.5 turns (`usage-report.py --since` the land date): `context` turns = 0, small tasks near $0.33-0.54. The saving from folding `context` is small, about one first turn's recall work: its own turns cost $0.47-0.79, mostly the first-turn cache write, which the first real step now pays.
+
+## Audit 2026-11-05 (owner msg 2513)
+
+Assuming: window 11-04 00:00 to 11-05 13:50 local, 52 tasks, 43 landed; a `restart` turn is a deploy follow, from the code (`host.rs` `take_handoff`, `try_start_turn`), because the log keeps no cause. The $9.40 docs follow-up in pr-review's feedback is not in this project's log. Numbers: `/usr/bin/python3 scripts/usage-report.py ~/.local/state/wsx/tasks/wsx-8cbe3f08 --days 2`, plus inline joins over `log*.jsonl` (rule: the last non-`agent` event between two results names a turn's cause).
+
+**Answer.** Cost follows model calls, not context size and not restarts. Worker $139.31 + manager $36.63 = $4.09 mean per landed task. The report's $1.78 is the median of worker cost, so the 11-04 baseline ($2.38) compares with it, not with $4.09. Eight tasks cost 52% of the worker $ (#197 $14.36, #199 $13.90, #183, #187, #194, #188, #212, #216). A restart turn is the real turn with the label of the exec that carried it: no extra turn and no extra context rewrite. The largest waste is the land notice, which starts its own turn.
+
+### Where the worker $ goes (a restart turn counted under its real cause)
+
+| cause | turns | $ | share | note |
+|---|---|---|---|---|
+| step starts (plan, build, review, context, memo) | 106 | 58.13 | 42% | work the task needs |
+| messages: 34 labelled `message` + 10 labelled `restart` | 44 | 43.01 | 31% | table below |
+| check-run answers: 20 `check_run` + 47 `restart` | 67 | 17.59 | 13% | 36 pass $6.54, 31 fail $11.04 |
+| other `restart` turns: no event 11, failed checks 7, conflict 3, rotation 2, blocked 1 | 24 | 8.57 | 6% | steps and retries after a deploy |
+| rotation 14, limit 6, conflict 4, result_retry 3, verify 3 | 30 | 12.02 | 9% | |
+
+Cost per model call is flat in context and set by the model (previous turn's context as the bucket; `calls` from `result.usage`):
+
+| context at turn start | opus $/call | sonnet $/call |
+|---|---|---|
+| < 80k | 0.064 (808 calls) | 0.028 (1242) |
+| 80-120k | 0.063 (341) | 0.026 (301) |
+| 120-160k | 0.063 (151) | 0.027 (273) |
+| 160-200k | 0.064 (36) | 0.034 (79) |
+
+So the "turns over 200k: $35.49" row is long turns (10 turns, median 46 calls), not a context penalty. 29 turns with 30 or more calls cost $63.20 (45%); 13 of them are build step turns. Lowering `rotateTokens` would save little.
+
+### Restart turns: 81, $27.63
+
+| question | answer | source |
+|---|---|---|
+| cause | 81 of 81 are deploy follows. A host-restart turn logs `stopped` and waits; a limit turn logs `limit` (6 turns, $4.87) | `host.rs:310` (only `take_handoff` sets `Restart`), `host.rs:990` (the only writer of `handoff.txt`), docs/tasks.md "Usage" |
+| why so many | a check-run waits 20-90 min and a land of wsx code replaces the binary (43 lands in 2 days), so the answer turn often finds a new file | check_run answers are 47 of the 81 |
+| does the prompt make the agent re-read files | no: `handoff.txt` holds the text the turn would have had, and the exec resumes the same session | `host.rs:990` writes `text` |
+| extra cache rewrite | no: median cache write 9k tokens (message turns 15k, step turns 31k); 5 of 81 wrote more than half of the previous context, against 2 of 20 `check_run` turns | `usage.cache_creation_tokens` |
+| cost per call | restart $0.041, step $0.039, message $0.051, check_run $0.026 | |
+
+So 11-04's "restart turns $14.67 in 47" was not waste. The waste inside them is the 36 pass answers: the worker already returned `done`, the answer says exit 0, and the turn only returns the result again with the proof (median 1 to 2.5 calls, $6.54).
+
+### Message turns: 44, $43.01, by why they were sent
+
+| reason | turns | $ | calls | note |
+|---|---|---|---|---|
+| land notice ("#N landed ... At your next step boundary run `git rebase`") | 15 | 20.86 | 409 | 6 turns of 31 to 108 calls cost $18.51; 9 of 15 were followed by a new check round |
+| agent process killed, "continue where you stopped" | 3 | 7.99 | 105 | the work of the step; the cut-off turn's own spend is not logged |
+| `go` after a plan, `Continue: finish the build` | 5 | 6.25 | 124 | work the task needs |
+| owner adds | 3 | 4.28 | 69 | |
+| send-back to run or prove (CI, check, scenario) | 9 | 2.28 | 116 | cheap |
+| send-back for a code fix | 5 | 0.54 | 25 | |
+| other | 4 | 0.80 | 30 | |
+
+55 notices went to 30 tasks. 15 started a turn of their own; about 12 joined a step turn at no extra turn. `docs/tasks.md` "Land notice" says the notice "starts no turn", but `notice()` (`host.rs:622`) queues it and `deliver_pending` after the checks (`host.rs:2324`) starts one. A notice also does not prevent conflicts: 5 of the 6 tasks with a `conflict` event had received one. The host's land rebases a task anyway.
+
+### Did the 11-04 cuts work
+
+| cut | baseline (decisions.md) | now | verdict |
+|---|---|---|---|
+| all of them: median worker $ per landed task | $2.38, 5.5 turns, 1.6 failed checks, 0.3 send-backs, 50 min check wait | $1.78, 5 turns, 1.3, 1.0, 62 min | -25% cost; send-backs and check wait rose |
+| sonnet default (#193) | opus 5-step median $5.73, sonnet build only $0.54 | 36 sonnet tasks, 28 landed (8 needed): $1.46 mean per task against opus $5.80; per call $0.027 against $0.063; failed checks per landed 0.9 (sonnet, after #193) against 1.8 (opus); no revert in `git log --grep=revert` since 11-04 | keep. The sonnet tasks are bigger than the $0.54 sample (1-step mean $1.06, 3-step $2.29), so compare per call |
+| 4 opus tasks after #193 (manager chose `--model opus`) | | $35.5 = 25% of worker $ | the largest remaining lever |
+| skill allowlist (#193) | about 8.9k tokens in each prefix | smallest first-turn cache write 36k → 21k; median 46k → 44k (turns of 15 calls or fewer; noisy) | cannot show a gain in this data |
+| keep-warm ping (#194) | $4.82 cold turns in 7 days | 0 worker pings, 1 manager ping; 15 cold turns $7.05, 10 of them right after a session-limit wait | no effect either way: pings need a 55 min wait, and queue waits end at about 20 min or sit behind a limit |
+
+### Proposals, ranked by expected saving per landed task (mean $4.09)
+
+| # | change in wsx | evidence | saving per landed task | risk | measure after 8 landed tasks |
+|---|---|---|---|---|---|
+| 1 | A land notice never starts a turn. `notice()` keeps it apart from `pending`; any turn that starts anyway (step, add, check answer, check retry, conflict) carries it; at the worker's last result it is dropped, since the land rebases. Fix the "starts no turn" line to match | 15 own turns, $20.86, 409 calls; 5 of 6 conflict tasks got a notice; the 4 logged conflict turns cost $1.10 | about $0.45 (11%): $20.86 less about $1.4 for 5 more conflict turns | a task lands with a conflict turn instead of an early rebase: +$0.3 and a delay | notice turns per landed task 0.35 → 0; conflict turns per landed 0.16 → under 0.3; else revert |
+| 2 | A step may name its model. The plan step stays on the task's model; the build step runs on `tasks.agent.smallModel` unless the manager sets otherwise; the host switches by the handoff notes it already writes for a rotation. Works for Claude and Pi (Pi's model per launch) | opus build turns $27.05 (469 calls); sonnet is 0.43x per call; 4 opus tasks after #193 cost $35.5 | about $0.23 (est.): $15.4 less 8 switches at about $0.7 | build quality on large tasks drops: more send-backs and failed checks | per task kind: send-backs, failed checks and $ per landed against opus-only tasks of the same area; needs a step x model table in `usage-report.py` (not built) |
+| 3 | A passing check-run on a clean, unchanged tree ends the wait without a turn: the host adds the run's lines to the held result's `evidence`. A failure still sends the turn | 36 pass answers, $6.54, median 1 to 2.5 calls each, status `done` every time | about $0.15 | the worker loses a last look at the tree: the host checks `clean_tree` equals the run's tree | `check_run` + `restart` turns after a pass per landed task 0.84 → 0; send-backs for missing proof do not rise |
+| 4 | A follow-up of a landed task starts with a digest of it in its context block (summary, commits, files; 1 to 2k tokens, any adapter). Claude only: resume the old session when it answered under 55 min ago and its context is under 100k, else start fresh. A resume carries all of the old context in every later call | 7 tasks started within 2 h of a landed task and share its files (#196, #199, #208, #217, #220, #221, #223); their first turns cost $5.28 in 8 to 34 calls; the predecessors ended at 68k to 197k, so only 4 of 7 pass the gate | about $0.06 (est.) here; larger where a follow-up reloads a big docs set, as in pr-review (unverified) | a resumed session pulls stale context: the gate keeps it small and warm | follow-up first-turn $ and calls against the 8 to 34 calls now |
+| 5 | Log the cause of a re-exec turn: `handoff.txt` keeps the real trigger and the new host logs it, so `restart` stops hiding message and check answers | 81 turns relabelled; the 11-04 audit counted them as waste | $0 direct; stops a wrong ranking | none | restart share of the trigger table is 0; message and `check_run` rows absorb it |
+
+Together 1 to 4 save about $0.9 per landed task (22%). Not proposed: stopping restarts (they cost nothing extra), lower `rotateTokens` (flat $/call), a model gate by file path (no evidence yet), and the web check (#225 fixes its step; 31 fail answers cost $11.04, the loss is the 20-90 min queue wait).
+
+Gaps: a turn killed from outside logs no `usage`, so the 3 kill messages hide spend; the report has no step x model table; the manager is $36.63 in 191 turns (98 events turns $20.09, 25 quiet) and was not examined.
