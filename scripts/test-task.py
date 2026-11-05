@@ -1897,7 +1897,7 @@ def run(wsx, wsxd, work, owned):
     # ^ An exchange of the conversation before the rotation, older than the handover's, matches too.
     reply_to(js('task', 'say', 'ZEBRAFISH revisit')['id'])
     earlier = turn_with('ZEBRAFISH revisit')['message']
-    assert 'earlier conversation: Owner: ZEBRAFISH quarterly' in earlier, earlier
+    assert re.search(r'earlier conversation: Owner \(message \d+\): ZEBRAFISH quarterly', earlier), earlier
     # ^ Warm and small, with other instructions: the same conversation, the new ones as a message.
     rotations = len([e for e in manager_entries() if e['kind'] == 'rotated'])
     edit_state(instructions='stale-digest')
