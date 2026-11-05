@@ -3415,6 +3415,48 @@ merge_seconds = 3
         workspace = events.expect('workspace')
         ids = {item['name']: item['id'] for item in workspace['projects']}
         demo = ids['demo']
+        # Panels (docs/panels.md): the command runs in wsxd, on open and when its result is older than
+        # `refresh`; only a site that may run commands reads them.
+        def panels_journey(admin):
+            calm_id = ids['calm']
+            panel_url = '/api/projects/%d/panels' % calm_id
+            assert steady(owner, 'GET', panel_url)[0] == 403 and steady(viewer, 'GET', panel_url)[0] == 403
+            assert steady(admin, 'GET', '/api/projects/999999/panels')[0] == 404
+            listed_panels = steady(admin, 'GET', panel_url)[1]
+            assert [p['name'] for p in listed_panels['panels']] == ['device', 'broken'] and listed_panels['notice'] is None, listed_panels
+
+            def panel_shown(name, run=False, done=True):
+                def read():
+                    status, body = steady(admin, 'GET', '%s/%s%s' % (panel_url, name, '?run=1' if run else ''))
+                    assert status == 200, (status, body)
+                    return body if not done or (body['run']['status'] != 'pending' and not body['running']) else None
+                return wait(read, 'panel ' + name)
+            first = panel_shown('device', run=True)
+            assert first['run']['status'] == 'ok' and first['run']['output'] == 'mem 8G swap 0\ndevice run 1\n', first
+            # ^ A reopen shows the last output at once, with its age, while a new run goes.
+            again = panel_shown('device', run=True, done=False)
+            assert again['run']['output'].endswith('device run 1\n') and again['age_ms'] >= 0 and again['running'], again
+            assert panel_shown('device')['run']['output'].endswith('device run 2\n')
+            time.sleep(0.5)
+            assert steady(admin, 'GET', '%s/device' % panel_url)[1]['run']['output'].endswith('device run 2\n'), 'a fresh result ran again'
+            # ^ Nothing asked for 10 s: the next read finds it stale and starts the run.
+            time.sleep(10.5)
+            stale = steady(admin, 'GET', '%s/device' % panel_url)[1]
+            assert stale['running'] and stale['run']['output'].endswith('device run 2\n'), stale
+            assert panel_shown('device')['run']['output'].endswith('device run 3\n')
+            broken = panel_shown('broken', run=True)
+            assert broken['run']['status'] == 'failed' and broken['run']['exit'] == 2 and 'broken: no disk' in broken['run']['output'], broken
+            status, body = steady(admin, 'GET', panel_url + '/missing')
+            assert status == 409 and 'no panel' in body['error']['message'], (status, body)
+            ok('panels: run in wsxd on open and when stale, cached with its age, a failing command with its exit code, 403 without terminal_input, 404 for an unknown project')
+            if args.browser:
+                checked = check(work, [node, str(ROOT / 'scripts/web-panels-check.mjs'), admin.origin + '/', cli('web', 'pair', '--site', files['admin']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                       owner.origin + '/', cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                       str(args.captures), str(calm_id)], timeout=240)
+                assert checked.returncode == 0, checked.stdout + checked.stderr
+                ok('real browser, ' + checked.stdout.strip().splitlines()[-1])
+        panels_journey(sites['admin'])
+        # ^ Before the manager's part, which waits on its fake agent: a stop there must not hide these.
 
         # --- Read models: the strip order, the working count, the chip list.
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
