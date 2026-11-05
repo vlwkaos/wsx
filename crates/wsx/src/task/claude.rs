@@ -1,7 +1,9 @@
 //! Claude worker adapter: one `claude -p` process with stream JSON on stdin and stdout.
 //! ref: docs/tasks.md "Claude adapter"; knowledge "Headless Worker Transport"
 
-use super::agent::{read_json_lines, turn_text, AgentLine, Launch, TurnResult, UsageLimit};
+use super::agent::{
+    read_json_lines, thinking_chars, turn_text, AgentLine, Launch, TurnResult, UsageLimit,
+};
 use super::boundary::Boundary;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -511,6 +513,8 @@ struct Turns {
     background: usize,
     /// The turn's main-conversation text blocks so far, in order: `result` holds the last one.
     said: Vec<String>,
+    /// The characters of the turn's main-conversation thinking so far.
+    thought: usize,
 }
 
 impl Turns {
@@ -604,6 +608,7 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
                         .filter(|text| !text.trim().is_empty())
                         .map(str::to_string),
                 );
+                turns.thought += thinking_chars(content);
             }
             content
                 .iter()
@@ -638,6 +643,7 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
             Some(AgentLine::Result(Box::new(TurnResult {
                 limit: usage_limit(value, turns.resets_at.take()),
                 background: turns.background,
+                thought: std::mem::take(&mut turns.thought),
                 is_error,
                 subtype: str_field(value, "subtype"),
                 text,

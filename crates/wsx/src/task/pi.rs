@@ -1,7 +1,9 @@
 //! Pi adapter: one `pi --mode rpc` process, JSONL commands on stdin, session events on stdout.
 //! ref: docs/tasks.md "Pi adapter"; Pi docs rpc.md, rpc-commands.md, json.md
 
-use super::agent::{read_json_lines, turn_text, AgentLine, Launch, TurnResult, UsageLimit};
+use super::agent::{
+    read_json_lines, thinking_chars, turn_text, AgentLine, Launch, TurnResult, UsageLimit,
+};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -217,6 +219,8 @@ struct Run {
     usage: TurnUsage,
     /// The run's assistant text blocks in order; the last message's stop reason and error.
     said: Vec<String>,
+    /// The characters of the run's assistant thinking.
+    thought: usize,
     stop: String,
     error: String,
 }
@@ -294,6 +298,10 @@ impl Run {
                 .filter(|text| !text.trim().is_empty())
                 .map(str::to_string),
         );
+        self.thought += message
+            .get("content")
+            .and_then(Value::as_array)
+            .map_or(0, |content| thinking_chars(content));
         self.stop = message["stopReason"].as_str().unwrap_or_default().into();
         self.error = message["errorMessage"].as_str().unwrap_or_default().into();
     }
@@ -326,6 +334,7 @@ impl Run {
             denials: Vec::new(),
             usage,
             background: 0,
+            thought: run.thought,
         }
     }
 }

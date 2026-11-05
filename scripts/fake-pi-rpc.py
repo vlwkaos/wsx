@@ -108,7 +108,9 @@ def main():
         emit({'type': 'tool_execution_start', 'toolCallId': 't1', 'toolName': 'bash', 'args': {'command': 'git status'}})
         emit({'type': 'message_end', 'message': {
             'role': 'assistant', 'model': option(argv, '--model') or 'fake', 'stopReason': 'stop',
-            'content': [{'type': 'text', 'text': answer}],
+            # ^ PITHINK: a long thinking block ahead of the short answer, as Pi's `thinking` content has.
+            'content': ([{'type': 'thinking', 'thinking': 'the whole answer, in prose. ' * 8}] if 'PITHINK' in own else [])
+            + [{'type': 'text', 'text': answer}],
             'usage': {'input': context, 'output': 10, 'cacheRead': 0, 'cacheWrite': 0, 'totalTokens': context + 10,
                       'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0, 'total': cost}}}})
         emit({'type': 'agent_end', 'messages': [], 'willRetry': False})

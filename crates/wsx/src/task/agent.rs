@@ -49,6 +49,9 @@ pub struct TurnResult {
     /// Background jobs still running when the turn ended: the agent starts its own turn
     /// when each ends. ref: docs/tasks.md "Claude adapter"
     pub background: usize,
+    /// The characters of thinking text in the turn's main conversation: some of an answer can
+    /// sit there, which no reader shows. ref: docs/tasks.md "Reply text"
+    pub thought: usize,
 }
 
 /// The agent's provider refused the turn for its usage limit.
@@ -74,7 +77,32 @@ pub fn turn_text(blocks: &[String], fallback: String) -> String {
     said.join("\n\n")
 }
 
+/// Thinking shorter than this is no answer.
+const THOUGHT_MIN_CHARS: usize = 100;
+
+/// The characters of the `thinking` blocks among a message's content blocks.
+pub fn thinking_chars(content: &[Value]) -> usize {
+    content
+        .iter()
+        .filter(|item| item["type"] == "thinking")
+        .filter_map(|item| item["thinking"].as_str())
+        .map(|text| text.trim().chars().count())
+        .sum()
+}
+
 impl TurnResult {
+    /// The turn thought far more than it said (twice its words, at least `THOUGHT_MIN_CHARS`;
+    /// a `-` or empty reply has none): the answer may be in the thinking. Both adapters count
+    /// the thinking, so one rule serves both. ref: docs/tasks.md "Reply text"
+    pub fn answered_in_thinking(&self) -> bool {
+        let said = if wsx_core::task::manager::says_nothing(&self.text) {
+            0
+        } else {
+            self.text.trim().chars().count()
+        };
+        !self.is_error && self.thought >= THOUGHT_MIN_CHARS && self.thought >= 2 * said
+    }
+
     /// No result and no model call: the agent's own turn for a background-task notification
     /// (a job that ended or was killed, also on a resume), which answers no message.
     pub fn answers_nothing(&self) -> bool {

@@ -54,8 +54,10 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   (the host's request "<path>/context.md is <n> lines / <n> bytes ...") compact that file to its
                  project section, its lines that name Claude.app and its last 5 memos, unless its
                  first line is "# stubborn"
-  BLOCKS <a>|<b>|...  (a line) say each part as its own assistant line, a part `TOOL` as a tool call;
-                 the result holds only the last text, as Claude's does
+  BLOCKS <a>|<b>|...  (a line) say each part as its own assistant line, a part `TOOL` as a tool call,
+                 a part `THINK <words>` as a thinking block; the result holds only the last text,
+                 as Claude's does. The host's follow-up "...only in your thinking..." then answers
+                 the last THINK words, or `-` when they start with `nothing`
   NOTIFY         first end a 0-token turn with no result, as Claude's own turn for a notification
   SLOW           take about 3 s
   LONG           take about 25 s
@@ -86,6 +88,7 @@ def trace(record):
 
 
 SESSION = MODEL = None
+THOUGHT = ''  # ^ The words of the last `THINK` part: the manager's follow-up writes them as its answer.
 LINES = 0
 SPENT = 0.0  # ^ The process's running `total_cost_usd`: every result carries it.
 # ^ The fields the real CLI writes on every line, as recorded in
@@ -265,6 +268,8 @@ def edit_page(page, section, words):
 
 def manager_turn(text, project, page):
     replies = []
+    if 'only in your thinking' in text:
+        return '-' if THOUGHT.startswith('nothing') else THOUGHT
     if 'SLOW' in text.split():
         time.sleep(3)
     if 'LONG' in text.split():
@@ -368,7 +373,7 @@ def interactive(options):
 
 
 def main():
-    global SESSION, MODEL, SPENT
+    global SESSION, MODEL, SPENT, THOUGHT
     options = parse_args(sys.argv[1:])
     if '-p' not in options:
         return interactive(options)
@@ -446,15 +451,19 @@ def main():
                 if line.startswith('BLOCKS '):
                     parts = line[7:].split('|')
                     for part in parts:
-                        block = {'type': 'tool_use', 'id': 'tool-1', 'name': 'Bash', 'input': {'command': 'true'}} \
-                            if part == 'TOOL' else {'type': 'text', 'text': part}
+                        if part.startswith('THINK '):
+                            THOUGHT = part[6:]
+                            block = {'type': 'thinking', 'thinking': THOUGHT}
+                        else:
+                            block = {'type': 'tool_use', 'id': 'tool-1', 'name': 'Bash', 'input': {'command': 'true'}} \
+                                if part == 'TOOL' else {'type': 'text', 'text': part}
                         # ^ Each line carries its call's usage, as the real CLI's do.
                         emit({'type': 'assistant', 'parent_tool_use_id': None, 'message': {
                             'model': model, 'content': [block],
                             'usage': {'input_tokens': 10, 'cache_read_input_tokens': calls[-1] - 10, 'output_tokens': 5}}})
                         if part == 'TOOL':
                             tool_result('tool-1', 'ok', False)
-                    answer = next((part for part in reversed(parts) if part != 'TOOL'), '')
+                    answer = next((part for part in reversed(parts) if part != 'TOOL' and not part.startswith('THINK ')), '')
             # ^ A subagent's call is another context: it never counts as the conversation's.
             model_call(model, {'input_tokens': 900000}, parent='sub')
             if 'NOTIFY' in text.split():
