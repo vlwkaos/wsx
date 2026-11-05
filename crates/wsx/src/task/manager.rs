@@ -1025,9 +1025,20 @@ impl Manager {
                     .count();
                 let words = result["result"]["summary"].as_str().unwrap_or_default();
                 let worker = format!("worker says: {}", clip(words, EVENT_SUMMARY_CHARS));
+                // ^ A check-run that passed after the worker's result is in the evidence, not in
+                // its words, which may still say the run is pending.
+                let recorded: String = result["result"]["evidence"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|entry| entry["check"].as_str())
+                    .filter(|check| check.ends_with(super::RECORDED_BY_HOST))
+                    .filter_map(|check| check.strip_prefix("wsx task "))
+                    .map(|check| format!("{check}; "))
+                    .collect();
                 let mut summary = match checks.len() {
-                    0 => worker,
-                    total => format!("checks {passed} of {total} passed; {worker}"),
+                    0 => format!("{recorded}{worker}"),
+                    total => format!("checks {passed} of {total} passed; {recorded}{worker}"),
                 };
                 if let Some(waiting) = &record.waiting {
                     summary = format!(
