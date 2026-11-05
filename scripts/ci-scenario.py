@@ -6,7 +6,8 @@
 name. The script waits for the run, prints each job's end and the failed steps' log tail,
 downloads the run's `scenario-files` artifact (files.tar, paths in this checkout such as
 `.work/web-captures`) into the same paths, deletes the branch and exits 0 only when the run
-passed. The task host runs it outside the slot (docs/tasks.md "Scenarios").
+passed. A branch a killed run left behind is deleted by a later run once it is STALE_SECONDS
+old. The task host runs it outside the slot (docs/tasks.md "Scenarios").
 """
 
 import json
@@ -22,6 +23,8 @@ import time
 POLL_SECONDS = 30
 FIND_SECONDS = 180
 LOG_LINES = 150
+# ^ Past the host's 75 min limit for a `ci:` command, no run still waits on the branch.
+STALE_SECONDS = 2 * 3600
 # ^ The run's files may land only here: the scenario scripts' output folder.
 FILES_UNDER = '.work/'
 
@@ -94,7 +97,8 @@ def take_files(repo, run_id, root, scratch):
             if member.name.startswith('/') or '..' in parts or not member.name.startswith(FILES_UNDER):
                 raise RuntimeError('scenario-files holds %r, outside %s' % (member.name, FILES_UNDER))
         # ^ A folder the run sends replaces this checkout's copy, as a local run rewrites it.
-        for top in sorted({Path(*Path(m.name).parts[:2]) for m in members if len(Path(m.name).parts) > 1}):
+        tops = sorted({str(Path(*Path(m.name).parts[:2])) for m in members if len(Path(m.name).parts) > 1})
+        for top in tops:
             shutil.rmtree(root / top, ignore_errors=True)
         for member in members:
             target = root / member.name
@@ -104,8 +108,16 @@ def take_files(repo, run_id, root, scratch):
             target.parent.mkdir(parents=True, exist_ok=True)
             with tar.extractfile(member) as source, open(target, 'wb') as out:
                 shutil.copyfileobj(source, out)
-        say('files: %d from the run, in %s' % (sum(m.isfile() for m in members),
-                                                ', '.join(sorted({str(Path(*Path(m.name).parts[:2])) for m in members}))))
+        say('files: %d from the run, in %s' % (sum(m.isfile() for m in members), ', '.join(tops)))
+
+
+def sweep(repo):
+    """Delete the scenario branches of killed runs: the name holds when it was pushed."""
+    refs = json.loads(gh('api', 'repos/%s/git/matching-refs/heads/wsx-scenario/' % repo, check=False).stdout or '[]')
+    for ref in refs if isinstance(refs, list) else []:
+        pushed = ref['ref'].rsplit('/', 1)[-1].split('-', 1)[0]
+        if pushed.isdigit() and time.time() - int(pushed) > STALE_SECONDS:
+            gh('api', '-X', 'DELETE', 'repos/%s/%s' % (repo, ref['ref'].replace('refs/', 'git/refs/', 1)), check=False)
 
 
 def main():
@@ -128,19 +140,21 @@ def main():
                  'until then run the scenario by hand (docs/tasks.md "Scenarios").' % name)
     scratch = root / '.work' / ('ci-scenario-%d' % os.getpid())
     scratch.mkdir(parents=True)
-    branch, run = None, None
+    branch, run, ended = None, None, False
     # A SIGTERM (the host's timeout) still runs the cleanup below.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     try:
         head = git('rev-parse', 'HEAD')
         commit = git('commit-tree', tree_for_ci(main_commit, scratch), '-p', head,
                      '-m', 'wsx scenario %s for %s' % (name, head))
-        branch = 'wsx-scenario/%s/%s' % (name, commit[:12])
+        sweep(repo)
+        branch = 'wsx-scenario/%s/%d-%s' % (name, time.time(), commit[:12])
         subprocess.run(['git', '-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential',
                         'push', '-q', url, '%s:refs/heads/%s' % (commit, branch)], check=True)
         run = find_run(repo, commit)
         say('%s on CI for %s: %s' % (name, head[:12], run['url']))
         view = wait_run(repo, run['databaseId'])
+        ended = True
         take_files(repo, run['databaseId'], root, scratch)
         if view['conclusion'] != 'success':
             failed = gh('run', 'view', str(run['databaseId']), '--repo', repo, '--log-failed', check=False).stdout
@@ -150,10 +164,8 @@ def main():
         say('%s passed on CI: %s' % (name, run['url']))
         return 0
     finally:
-        if run and gh('run', 'view', str(run['databaseId']), '--repo', repo, '--json', 'status', '-q', '.status',
-                      check=False).stdout.strip() not in ('completed', ''):
+        if run and not ended:
             gh('run', 'cancel', str(run['databaseId']), '--repo', repo, check=False)
-        # ^ ci.yml's job deletes the branch too, for a run whose script was killed.
         if branch:
             gh('api', '-X', 'DELETE', 'repos/%s/git/refs/heads/%s' % (repo, branch), check=False)
         shutil.rmtree(scratch, ignore_errors=True)
