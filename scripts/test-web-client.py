@@ -1421,7 +1421,7 @@ capabilities = ["terminal_view"]
         assert css.split(dark_rule)[1].startswith('--color-accent:#6fe3c1;')
         # The token contract is the default theme's list: 64 tokens, 16 of them the terminal palette.
         light_tokens = re.findall(r'--([a-z0-9-]+):', css.split(dark_rule)[0])
-        assert len(light_tokens) == 72 and len([token for token in light_tokens if token.startswith('color-ansi-')]) == 16, len(light_tokens)
+        assert len(light_tokens) == 74 and len([token for token in light_tokens if token.startswith('color-ansi-')]) == 16, len(light_tokens)
         assert 'prefers-color-scheme' not in css
         # The page is dark by default, so the installed app's splash and toolbar are dark too.
         assert (manifest['background_color'], manifest['theme_color']) == ('#0a0b0d', '#0a0b0d')
