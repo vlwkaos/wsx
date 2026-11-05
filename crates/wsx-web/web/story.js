@@ -129,7 +129,7 @@ export function TaskStory({ detail, words, children }) {
   const decisions = detail.result?.decisions ?? [];
   const longer = summary !== sentence || decisions.length > 0;
   // ^ What it waits for, why, how long and what comes next (docs/tasks.md "Status").
-  const next = detail.status?.sentence ?? "";
+  const next = detail.status.sentence;
   if (!detail.progress && !sentence && !next && !children) return null;
   return html`
     <section class="story" aria-label="Where this task stands">
