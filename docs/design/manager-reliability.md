@@ -70,6 +70,6 @@ flowchart LR
 | 4 | B, C, D layer 1: review, promise, scope and claim sentences | bench replay | kinds B to D; send-backs for "left out" asks |
 | 5 | Layer 2 hints, only for a kind that did not fall within 7 days | the turn text in a replay | the same counts |
 
-Steps 3 and 4 land as one instruction change. A warm conversation gets it as a message, and a cold one rotates once (`manager.rs:2210-2219`). The instructions are 1672 words (`manager.rs:256-388`). Steps 3 and 4 add about 120 words, under 10%, read from cache on each call.
+Steps 3 and 4 may land as one instruction change, so the manager pays for the change once. The retrospect kinds still measure them apart. A warm conversation gets it as a message, and a cold one rotates once (`manager.rs:2210-2219`). The instructions are 1672 words (`manager.rs:256-388`). Steps 3 and 4 add about 120 words, under 10%, read from cache on each call.
 
 Bench: `scripts/bench-manager.py` has five synthetic turns (`turns()`, `bench-manager.py:146`) and `ROTATE_TOKENS = 150000` (`:32`), where Claude's default is 400000. Step 3 adds cases copied from the logged batches: a fresh start with 2284 plus events 2282 and 2283, then 2312, then 2326 and 2327. Each case lists the owner ids its reply must answer. One sonnet call judges them, in the same way as `retrospect.py:160`. Compare `--mode before` against `--mode after`. This spends real money (about $1-3 a run).
