@@ -37,8 +37,8 @@ pub fn find(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
 }
 
 /// A task the manager must act on (ready for its review, or waiting on `plan`) that has had
-/// no action of the manager (`add`, a steer, `hold`, `check-run`; a land or a close ends the
-/// wait) for `tasks.manager.reviewMinutes` since it entered the state. An owner wait is none.
+/// no action of the manager for `tasks.manager.reviewMinutes` since it entered the state. An
+/// owner wait is none.
 /// ref: docs/tasks.md "Manager" (Stalls)
 fn manager_wait(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
     let settings = load_task_config(&record.project_path).ok();
@@ -46,15 +46,19 @@ fn manager_wait(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall
         .as_ref()
         .map_or(DEFAULT_MANAGER_REVIEW_SECS, |s| s.manager_review_secs)
         * 1000;
-    if limit_ms == 0 || !record.manager_reviews(settings.map_or(true, |s| s.land_auto)) {
+    if limit_ms == 0 || !record.manager_reviews(settings.is_none_or(|s| s.land_auto)) {
         return None;
     }
     let entered = record.state_unix_ms.max(record.created_unix_ms);
+    // ^ A manager's `add`, steer, land or close changes the state, so the state's start counts.
+    // A `message` entry does not count: the log keeps no author, and the host writes its own
+    // (a land notice). `check_run` and `hold` count; `check_run` has no author either, but the
+    // worker's turn is over while the task waits, so a late one is rare.
     let acted = dir
         .last_entry(|entry| {
             matches!(
                 entry.event,
-                LogEvent::Message { .. } | LogEvent::CheckRun { .. } | LogEvent::Hold { .. }
+                LogEvent::CheckRun { .. } | LogEvent::Hold { .. }
             )
             .then_some(entry.unix_ms)
         })
