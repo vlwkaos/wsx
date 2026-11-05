@@ -2181,7 +2181,10 @@ try:
     except AssertionError:
         print("screen tail:", re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"|", bytes(panel_screen))[-1500:].decode("utf8", "replace"))
         raise
-    wait_for(lambda: b"updated" in panel_screen and b"open" in panel_screen, "the TUI did not show the state")
+    wait_for(lambda: b"updated" in panel_screen and b"ago" in panel_screen and b"open" in panel_screen,
+             "the TUI did not show the state with its age")
+    wait_for(lambda: b"scroll" in panel_screen and b"next" in panel_screen and b"close" in panel_screen,
+             "the TUI did not show the panels' key hints")
     assert b"\x1b[32mdevice" not in panel_screen.split(b"smoke panels", 1)[1], "ANSI reached the screen"
     # ^ The capture of this screen for the review: its bytes drawn by the web client's xterm.js.
     CAPTURES = ROOT / ".work" / "web-captures"
