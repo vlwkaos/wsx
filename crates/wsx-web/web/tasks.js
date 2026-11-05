@@ -4,7 +4,7 @@
 // go straight to wsx.
 import { api } from "./api.js";
 import { html, Icon, keepIn, readMap, unreadNews, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
-import { can, leaveFor, shows, state, touch, update, useEventLoad, useStore } from "./store.js";
+import { can, goBack, shows, state, touch, update, useEventLoad, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, inlinePasted, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
 import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
@@ -954,6 +954,8 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
     drawn.current.rows.set(row.key, { row, isNew, node });
     return node;
   };
+  // ^ A sheet closes as Back does: to the entry under it, else to this chat.
+  const leave = () => goBack(`#/p/${id}`);
   const header = html`
     <header class="bar">
       <${Back} fallback=${role ? `#/p/${id}` : "#/"} />
@@ -1001,28 +1003,28 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
       </div>
       ${menu}
       ${task != null && html`
-        <${Sheet} key=${`t${task}`} label=${`Task #${task}`} onClose=${() => leaveFor(`#/p/${id}`)}>
-          ${(grip) => html`<${TaskPage} key=${task} project=${id} task=${task} onClose=${() => leaveFor(`#/p/${id}`)} onMention=${mention} grip=${grip} />`}
+        <${Sheet} key=${`t${task}`} label=${`Task #${task}`} onClose=${leave}>
+          ${(grip) => html`<${TaskPage} key=${task} project=${id} task=${task} onClose=${leave} onMention=${mention} grip=${grip} />`}
         </${Sheet}>`}
       ${page && html`
-        <${Sheet} key="page" label="Overview" onClose=${() => leaveFor(`#/p/${id}`)}>
-          ${(grip) => html`<${ProjectOverview} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
+        <${Sheet} key="page" label="Overview" onClose=${leave}>
+          ${(grip) => html`<${ProjectOverview} project=${id} onClose=${leave} grip=${grip} />`}
         </${Sheet}>`}
       ${checks && html`
-        <${Sheet} key="checks" label="To check" fit onClose=${() => leaveFor(`#/p/${id}`)}>
-          ${(grip) => html`<${ChecksPage} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} onMention=${mention} grip=${grip} />`}
+        <${Sheet} key="checks" label="To check" fit onClose=${leave}>
+          ${(grip) => html`<${ChecksPage} project=${id} onClose=${leave} onMention=${mention} grip=${grip} />`}
         </${Sheet}>`}
       ${usage && html`
-        <${Sheet} key="usage" label="Usage" fit onClose=${() => leaveFor(`#/p/${id}`)}>
-          ${(grip) => html`<${UsagePage} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
+        <${Sheet} key="usage" label="Usage" fit onClose=${leave}>
+          ${(grip) => html`<${UsagePage} project=${id} onClose=${leave} grip=${grip} />`}
         </${Sheet}>`}
       ${routines && html`
-        <${Sheet} key="routines" label="Routines" fit onClose=${() => leaveFor(`#/p/${id}`)}>
-          ${(grip) => html`<${RoutinesPage} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
+        <${Sheet} key="routines" label="Routines" fit onClose=${leave}>
+          ${(grip) => html`<${RoutinesPage} project=${id} onClose=${leave} grip=${grip} />`}
         </${Sheet}>`}
       ${panels && html`
-        <${Sheet} key="panels" label="Panels" fit onClose=${() => leaveFor(`#/p/${id}`)}>
-          ${(grip) => html`<${PanelsPage} project=${id} onClose=${() => leaveFor(`#/p/${id}`)} grip=${grip} />`}
+        <${Sheet} key="panels" label="Panels" fit onClose=${leave}>
+          ${(grip) => html`<${PanelsPage} project=${id} onClose=${leave} grip=${grip} />`}
         </${Sheet}>`}
     </div>`;
 }

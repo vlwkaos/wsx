@@ -5,7 +5,7 @@
 // is done and when the panel's `refresh` is due.
 import { api } from "./api.js";
 import { html, Icon, Loading, useEffect, useNow, useState } from "./lib.js";
-import { can, leaveFor } from "./store.js";
+import { can, goBack } from "./store.js";
 import { SheetBar } from "./ui.js";
 
 const url = (project, name = "", run = false) => `api/projects/${project}/panels${name ? `/${encodeURIComponent(name)}` : ""}${run ? "?run=1" : ""}`;
@@ -152,4 +152,4 @@ export function PanelsPage({ project, onClose, grip }) {
 }
 
 // The same page as a screen, for a site without the manager (no task_view).
-export const PanelsScreen = ({ project }) => html`<${PanelsPage} project=${project} onClose=${() => leaveFor(`#/p/${project}`)} />`;
+export const PanelsScreen = ({ project }) => html`<${PanelsPage} project=${project} onClose=${() => goBack(`#/p/${project}`)} />`;

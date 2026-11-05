@@ -200,15 +200,28 @@ export function useRoute() {
   return route;
 }
 
-// ^ Back returns to the screen the reader came from. Each history entry of this page
-// records its depth and the hash before it; an entry opened from outside (a link or a
-// notification) has depth 0, so Back goes to its fallback instead of leaving the page.
+// ^ Back returns to the screen the reader came from, as the system's swipe back does: both are
+// history.back(). Each history entry of this page records its depth and the hash before it; an
+// entry opened from outside (a link or a notification) has depth 0, and Back there replaces it
+// with its fallback, so a swipe after it does not return (docs/web-client.md "Screens").
 let depth = 0;
+// ^ A list's scroll place, per entry (depth and hash): its screen remounts on a return, and the
+// browser restores only the window's scroll. Held until a reload, one value per entry.
+const places = new Map();
+// ^ A hash change that a popstate started is a return; the viewer's popstate changes no hash.
+let popped = null, returning = false;
+const screenScroll = () => document.querySelector("#main > .page > .scroll");
 export function trackHistory() {
   const known = history.state?.wsx ? history.state : { wsx: true, depth: 0, from: null };
   depth = known.depth;
   history.replaceState(known, "");
+  addEventListener("popstate", () => { popped = location.href; });
   addEventListener("hashchange", (event) => {
+    returning = popped === location.href;
+    popped = null;
+    // ^ The old screen is still drawn: the route renders after this event.
+    const scroll = screenScroll();
+    if (scroll) places.set(`${depth}${new URL(event.oldURL).hash || "#/"}`, scroll.scrollTop);
     if (history.state?.wsx) {
       depth = history.state.depth;
       return;
@@ -216,6 +229,14 @@ export function trackHistory() {
     depth += 1;
     history.replaceState({ wsx: true, depth, from: new URL(event.oldURL).hash || "#/" }, "");
   });
+}
+// After a route renders: a return through history puts the list where it was left.
+export function restorePlace() {
+  if (!returning) return;
+  returning = false;
+  const scroll = screenScroll();
+  const place = places.get(`${depth}${location.hash || "#/"}`);
+  if (scroll && place) scroll.scrollTop = place;
 }
 // Put `under` beneath the current entry when the page was opened on this one from outside:
 // a task deep link (a notification) gets its chat beneath, so Back closes the sheet first.
@@ -230,27 +251,22 @@ export function stackUnder(under) {
 const previous = () => (depth > 0 && history.state?.from) || null;
 // The screen Back leads to: the previous entry of this page, else `fallback`.
 export const backTarget = (fallback) => previous() ?? fallback;
-export function goBack(event) {
-  if (previous()) {
-    event.preventDefault();
-    history.back();
-  }
+// ^ The one Back: the top row's Back, a sheet's close (its Back, Escape, a tap beside it, a swipe
+// down) and the system's swipe back all take the same step.
+export function goBack(fallback) {
+  if (previous()) history.back();
+  else replaceHash(fallback);
 }
-// Switch a view of the same screen (Chat or Terminal) without a new history entry,
-// so Back still leads to where the screen was opened from.
+// Switch a section or a view of the same screen (a tab, a Settings section, Chat or Terminal)
+// without a new history entry, so Back leaves the section instead of walking through the taps.
 export function replaceRoute(event, hash) {
   event.preventDefault();
-  replaceHash(hash);
+  if (previous() === hash) history.back();
+  else replaceHash(hash);
 }
 function replaceHash(hash) {
   if (location.hash === hash) return;
   const oldURL = location.href;
   history.replaceState(history.state, "", hash);
   dispatchEvent(new HashChangeEvent("hashchange", { oldURL, newURL: location.href }));
-}
-// Leave a screen layer (a sheet) for `under`: Back when the previous entry is `under`,
-// else replace this entry, so the next Back does not return to the layer.
-export function leaveFor(under) {
-  if (previous() === under) history.back();
-  else replaceHash(under);
 }

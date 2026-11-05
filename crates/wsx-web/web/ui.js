@@ -148,7 +148,7 @@ export function Back({ fallback }) {
     session: state.sessions.find((candidate) => candidate.id === route.id)?.label ?? "session",
   };
   return html`
-    <a class="icon-button" href=${target} aria-label=${`Back to ${names[route.screen]}`} onClick=${goBack}>
+    <a class="icon-button" href=${target} aria-label=${`Back to ${names[route.screen]}`} onClick=${(event) => { event.preventDefault(); goBack(fallback); }}>
       <${Icon} name="back" />
     </a>`;
 }
