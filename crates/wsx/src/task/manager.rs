@@ -1656,7 +1656,7 @@ impl Manager {
         }
         // ^ The id of its last reply: a quote names a message by id, and the agent never sees
         // the ids of its own replies. Older ones: `wsx task chat`.
-        if let (false, Some(id)) = (events_only, self.state.last_reply) {
+        if let Some(id) = self.state.last_reply.filter(|_| !events_only) {
             text.push_str(&format!("Your last reply: {id}.\n\n"));
         }
         if std::mem::take(&mut self.state.provisional) {
@@ -2445,7 +2445,6 @@ impl Manager {
         self.state.session_cost_micro_usd = result.usage.session_cost_micro_usd;
         self.state.context_tokens = context;
         self.state.last_reply_ms = now_unix_ms();
-        self.save();
         self.say(&format!(
             "reply {id}: {}",
             result.text.lines().next().unwrap_or_default()
@@ -2456,8 +2455,8 @@ impl Manager {
         let quiet = self.turn_events && !asks && quiet_reply(&text);
         if !quiet && !says_nothing(&text) {
             self.state.last_reply = Some(id);
-            self.save();
         }
+        self.save();
         self.log(ManagerEvent::Reply {
             id,
             to,
