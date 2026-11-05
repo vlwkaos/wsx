@@ -199,10 +199,73 @@ pub fn manager_log_turns(log: &[ManagerEntry]) -> Vec<Turn> {
 /// How many days the project's usage covers, today included.
 const DAYS: usize = 7;
 
-/// The project's spend today (since local midnight) and in the last 7 days from a local
-/// midnight, workers and manager apart, and per day (newest first) by `PARTS`. A task not
-/// updated in those days had no turn in them and is not read.
-pub fn project(project_id: &str, now_ms: u64) -> Value {
+/// Workers and manager apart, over one window.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+struct Window {
+    workers: Usage,
+    manager: Usage,
+}
+
+/// One day: its cost per `PARTS` and its token use.
+#[derive(Debug, Clone, Copy, Default)]
+struct Day {
+    day_ms: u64,
+    costs: [u64; PARTS.len()],
+    usage: Usage,
+}
+
+/// What `project` and `all` sum: the windows and the days, newest first.
+#[derive(Debug, Clone, Default)]
+struct Spend {
+    today: Window,
+    week: Window,
+    days: Vec<Day>,
+}
+
+impl Spend {
+    fn add(&mut self, other: &Spend) {
+        for (mine, theirs) in [
+            (&mut self.today, &other.today),
+            (&mut self.week, &other.week),
+        ] {
+            mine.workers.add(&theirs.workers);
+            mine.manager.add(&theirs.manager);
+        }
+        self.days.resize(other.days.len(), Day::default());
+        for (mine, theirs) in self.days.iter_mut().zip(&other.days) {
+            mine.day_ms = theirs.day_ms;
+            for (cost, other) in mine.costs.iter_mut().zip(theirs.costs) {
+                *cost += other;
+            }
+            mine.usage.add(&theirs.usage);
+        }
+    }
+
+    fn cost(window: &Window) -> u64 {
+        window.workers.cost_micro_usd + window.manager.cost_micro_usd
+    }
+
+    fn json(&self) -> Value {
+        let days: Vec<Value> = self
+            .days
+            .iter()
+            .map(|day| {
+                let parts: serde_json::Map<String, Value> = PARTS
+                    .iter()
+                    .zip(day.costs)
+                    .filter(|(_, cost)| *cost > 0)
+                    .map(|(part, cost)| (part.to_string(), json!(cost)))
+                    .collect();
+                json!({ "day_ms": day.day_ms, "parts": parts, "usage": day.usage })
+            })
+            .collect();
+        json!({ "today": self.today, "week": self.week, "days": days })
+    }
+}
+
+/// The project's spend: see `Spend`. A task not updated in the 7 days had no turn in them and
+/// is not read.
+fn spend(project_id: &str, now_ms: u64) -> Spend {
     let today = local_midnight_ms(now_ms);
     let mut starts = vec![today];
     for _ in 1..DAYS {
@@ -211,23 +274,30 @@ pub fn project(project_id: &str, now_ms: u64) -> Value {
         ));
     }
     let week = starts[DAYS - 1];
-    let mut days = [[0u64; PARTS.len()]; DAYS];
-    let mut day_usage = [Usage::default(); DAYS];
-    let mut add_days = |turns: &[Turn]| {
+    let mut sum = Spend {
+        days: starts
+            .iter()
+            .map(|day_ms| Day {
+                day_ms: *day_ms,
+                ..Day::default()
+            })
+            .collect(),
+        ..Spend::default()
+    };
+    let add_days = |days: &mut [Day], turns: &[Turn]| {
         for turn in turns.iter().filter(|turn| turn.unix_ms >= week) {
             if let Some(day) = starts.iter().position(|start| turn.unix_ms >= *start) {
-                days[day][turn.part] += turn.usage.cost_micro_usd;
-                day_usage[day].add(&turn.usage);
+                days[day].costs[turn.part] += turn.usage.cost_micro_usd;
+                days[day].usage.add(&turn.usage);
             }
         }
     };
-    let (mut workers_today, mut workers_week) = (Usage::default(), Usage::default());
     for (dir, record) in project_tasks(project_id).unwrap_or_default() {
         if record.is_ok_and(|record| record.updated_unix_ms >= week) {
             let turns = task_turns(&dir);
-            add_days(&turns);
-            workers_today.add(&Usage::since(&turns, today));
-            workers_week.add(&Usage::since(&turns, week));
+            add_days(&mut sum.days, &turns);
+            sum.today.workers.add(&Usage::since(&turns, today));
+            sum.week.workers.add(&Usage::since(&turns, week));
         }
     }
     let manager = ManagerDir::existing(project_id)
@@ -235,25 +305,39 @@ pub fn project(project_id: &str, now_ms: u64) -> Value {
         .flatten()
         .map(|dir| manager_turns(&dir))
         .unwrap_or_default();
-    add_days(&manager);
-    let days: Vec<Value> = starts
-        .iter()
-        .zip(days.into_iter().zip(day_usage))
-        .map(|(start, (costs, usage))| {
-            let parts: serde_json::Map<String, Value> = PARTS
-                .iter()
-                .zip(costs)
-                .filter(|(_, cost)| *cost > 0)
-                .map(|(part, cost)| (part.to_string(), json!(cost)))
-                .collect();
-            json!({ "day_ms": start, "parts": parts, "usage": usage })
-        })
+    add_days(&mut sum.days, &manager);
+    sum.today.manager = Usage::since(&manager, today);
+    sum.week.manager = Usage::since(&manager, week);
+    sum
+}
+
+/// The project's spend today (since local midnight) and in the last 7 days from a local
+/// midnight, workers and manager apart, and per day (newest first) by `PARTS`.
+pub fn project(project_id: &str, now_ms: u64) -> Value {
+    spend(project_id, now_ms).json()
+}
+
+/// `project` summed over `projects` (name, task store id), plus `projects`: each one's
+/// cost today and in 7 days, the dearest 7 days first. A project that spent nothing in 7 days
+/// has no row. ref: docs/web-client-tasks.md "All projects"
+pub fn all(projects: &[(String, String)], now_ms: u64) -> Value {
+    let mut sum = Spend::default();
+    let mut rows: Vec<(String, u64, u64)> = Vec::new();
+    for (name, store) in projects {
+        let each = spend(store, now_ms);
+        sum.add(&each);
+        let week = Spend::cost(&each.week);
+        if week > 0 {
+            rows.push((name.clone(), Spend::cost(&each.today), week));
+        }
+    }
+    rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    let mut value = sum.json();
+    value["projects"] = rows
+        .into_iter()
+        .map(|(name, today, week)| json!({ "name": name, "today_micro_usd": today, "week_micro_usd": week }))
         .collect();
-    json!({
-        "today": { "workers": workers_today, "manager": Usage::since(&manager, today) },
-        "week": { "workers": workers_week, "manager": Usage::since(&manager, week) },
-        "days": days,
-    })
+    value
 }
 
 /// The start of `now_ms`'s day in this machine's zone; 24 hours back when that cannot be told.

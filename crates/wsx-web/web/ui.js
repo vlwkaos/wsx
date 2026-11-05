@@ -36,6 +36,23 @@ export function setBar(side) {
   applyBar();
 }
 
+// ^ The bottom-bar tabs this device hides, as a list of names (settings.js UI). Settings
+// cannot be hidden: it is left out here and in `shownTabs`.
+const TABS_KEY = "wsx-tabs-hidden";
+export function applyTabs() {
+  let hidden = [];
+  try {
+    const stored = JSON.parse(localStorage.getItem(TABS_KEY));
+    if (Array.isArray(stored)) hidden = stored.filter((name) => typeof name === "string" && name !== "settings");
+  } catch { /* the default */ }
+  update({ hiddenTabs: hidden });
+}
+export function setTabHidden(name, hidden) {
+  const rest = state.hiddenTabs.filter((other) => other !== name);
+  try { localStorage.setItem(TABS_KEY, JSON.stringify(hidden && name !== "settings" ? [...rest, name] : rest)); } catch { /* a private window keeps the default */ }
+  applyTabs();
+}
+
 // One notice over the screen at a time, never in the layout: an outcome clears itself after a
 // few seconds; a failure the owner must act on stays until dismissed, and a later outcome does
 // not hide it (docs/web-client.md "Notices").

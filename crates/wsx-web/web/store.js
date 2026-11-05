@@ -22,6 +22,8 @@ export const state = {
   push: null,
   // Where the header bar sits on this device: "top" or "bottom" (ui.js, settings.js).
   bar: "top",
+  // The bottom-bar tabs this device hides, by name (ui.js; Settings is never in it).
+  hiddenTabs: [],
 };
 
 // ^ This page's build: the path segment its modules were loaded from, assets/<build>/.
@@ -59,10 +61,11 @@ export function update(patch) {
 // sessions of the lists and every project's task needs (docs/web-client.md "PWA and push").
 // The count changes when the data loads and when an opened item is answered.
 let badge = null;
+const blockedCount = () => listedSessions(state.sessions).filter((session) => isAgent(session) && stateOf(session).key === "blocked").length;
+const needsCount = () => Object.values(state.tasks).reduce((sum, overview) => sum + (overview?.needs?.length ?? 0), 0);
 function showBadge() {
   if (!state.loaded || !("setAppBadge" in navigator)) return;
-  const blocked = listedSessions(state.sessions).filter((session) => isAgent(session) && stateOf(session).key === "blocked").length;
-  const count = blocked + Object.values(state.tasks).reduce((sum, overview) => sum + (overview?.needs?.length ?? 0), 0);
+  const count = blockedCount() + needsCount();
   if (count === badge) return;
   badge = count;
   (count ? navigator.setAppBadge(count) : navigator.clearAppBadge()).catch(() => {});
@@ -143,8 +146,17 @@ export function markSeen(session) {
   writeMap(SEEN_KEY, kept);
 }
 
+// ^ The one list of the bottom bar's screens: name, link, label, icon and the count on its
+// icon, the two counts the app badge sums. The bar, its hidden tabs and Settings > UI read it,
+// so a tab added here shows in all three (docs/web-client.md "Screens").
+export const tabs = () => can("task_view")
+  ? [["home", "#/", "Home", "home", needsCount()], ["inbox", "#/sessions", "Sessions", "terminal", blockedCount()], ["settings", "#/settings", "Settings", "settings", 0]]
+  : [["home", "#/", "Inbox", "inbox", blockedCount()], ["projects", "#/projects", "Projects", "projects", 0], ["settings", "#/settings", "Settings", "settings", 0]];
+// The tabs this device shows: Settings always, so the way back to the switches stays.
+export const shownTabs = () => tabs().filter(([name]) => name === "settings" || !state.hiddenTabs.includes(name));
+
 // Routes: #/ (home: the projects with task_view, else the inbox), #/sessions (the inbox),
-// #/projects, #/settings, #/s/<id>/chat|terminal, #/p/<id> (the manager with task_view, else the
+// #/projects, #/settings[/ui|usage], #/s/<id>/chat|terminal, #/p/<id> (the manager with task_view, else the
 // sessions), #/p/<id>/sessions, #/p/<id>/files, #/p/<id>/t/<task> (the manager with the task's sheet),
 // #/p/<id>/page (the manager with the project overview's sheet), #/p/<id>/checks (with the To check list),
 // #/p/<id>/usage (with the project's token use and cost), #/p/<id>/routines (with its routines), #/p/<id>/panels (with its panels),
@@ -170,7 +182,8 @@ export function parseRoute(hash) {
     }
     return { screen: { files: "files", sessions: "sessions" }[third] ?? "project", id: Number(second) };
   }
-  if (first === "projects" || first === "settings") return { screen: first };
+  if (first === "settings") return { screen: first, sub: second };
+  if (first === "projects") return { screen: first };
   if (first === "sessions") return { screen: "inbox" };
   return { screen: "home" };
 }

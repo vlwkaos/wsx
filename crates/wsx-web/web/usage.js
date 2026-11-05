@@ -1,5 +1,6 @@
 // What the project's agents spent today and in 7 days, workers and manager apart, from the
 // overview's `usage` (docs/web-client-tasks.md "Usage"); and one task's usage line.
+import { api } from "./api.js";
 import { html, useEffect, useState } from "./lib.js";
 import { useStore } from "./store.js";
 import { SheetBar } from "./ui.js";
@@ -89,33 +90,64 @@ function DayRows({ days, chart }) {
     </section>`;
 }
 
-export function UsagePage({ project, onClose, grip }) {
-  const usage = useStore().tasks[project]?.usage;
-  useEffect(() => { grip.ready(); }, []);
+// The chart switch, the day rows and the token table of one spend (a project's `usage` or the
+// all-projects sum); `usage` is missing until a first read.
+function UsageView({ usage }) {
   // ^ One chart at a time, Cost or Tokens, so each day shows once.
   const [chart, setChart] = useState(COST);
   const cells = usage && [usage.today.workers, usage.today.manager, usage.week.workers, usage.week.manager];
+  if (!cells) return html`<p class="empty">No usage yet.</p>`;
+  return html`
+    <div class="usage-view" role="tablist" aria-label="Chart">
+      ${[COST, TOKENS].map((each) => html`<button key=${each.name} type="button" role="tab" aria-selected=${chart === each} onClick=${() => setChart(each)}>${each.title}</button>`)}
+    </div>
+    <${DayRows} key=${chart.name} days=${usage.days ?? []} chart=${chart}/>
+    <details class="usage-tokens"><summary>Tokens</summary><div class="table-wrap">
+      <table aria-label="Token use and cost">
+        <thead>
+          <tr><td></td><th colspan="2" scope="colgroup">Today</th><th colspan="2" scope="colgroup">7 days</th></tr>
+          <tr><td></td>${["Workers", "Manager", "Workers", "Manager"].map((who, index) => html`<th key=${index} scope="col" data-align="right">${who}</th>`)}</tr>
+        </thead>
+        <tbody>
+          ${ROWS.map(([label, value]) => html`
+            <tr key=${label}><th scope="row">${label}</th>${cells.map((cell, index) => html`<td key=${index} data-align="right">${value(cell)}</td>`)}</tr>`)}
+        </tbody>
+      </table>
+    </div></details>`;
+}
+
+export function UsagePage({ project, onClose, grip }) {
+  const usage = useStore().tasks[project]?.usage;
+  useEffect(() => { grip.ready(); }, []);
   return html`
     <div class="page task-page">
       <${SheetBar} grip=${grip} onClose=${onClose}><span class="bar-label">Usage</span></${SheetBar}>
-      <div class="scroll usage">
-        ${!cells ? html`<p class="empty">No usage yet.</p>` : html`
-          <div class="usage-view" role="tablist" aria-label="Chart">
-            ${[COST, TOKENS].map((each) => html`<button key=${each.name} type="button" role="tab" aria-selected=${chart === each} onClick=${() => setChart(each)}>${each.title}</button>`)}
-          </div>
-          <${DayRows} key=${chart.name} days=${usage.days ?? []} chart=${chart}/>
-          <details class="usage-tokens"><summary>Tokens</summary><div class="table-wrap">
-            <table aria-label="Token use and cost">
-              <thead>
-                <tr><td></td><th colspan="2" scope="colgroup">Today</th><th colspan="2" scope="colgroup">7 days</th></tr>
-                <tr><td></td>${["Workers", "Manager", "Workers", "Manager"].map((who, index) => html`<th key=${index} scope="col" data-align="right">${who}</th>`)}</tr>
-              </thead>
-              <tbody>
-                ${ROWS.map(([label, value]) => html`
-                  <tr key=${label}><th scope="row">${label}</th>${cells.map((cell, index) => html`<td key=${index} data-align="right">${value(cell)}</td>`)}</tr>`)}
-              </tbody>
-            </table>
-          </div></details>`}
-      </div>
+      <div class="scroll usage"><${UsageView} usage=${usage} /></div>
+    </div>`;
+}
+
+// Settings > Usage: every project this device may see, summed in Rust (`usage::all`), the
+// same charts as a project's sheet, and the cost per project, the dearest first. It reads
+// again when a task event changes the overviews (docs/web-client-tasks.md "All projects").
+export function AllUsage() {
+  const { tasks } = useStore();
+  const [usage, setUsage] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let live = true;
+    api("api/tasks/usage").then((value) => { if (live) { setUsage(value); setError(""); } }, (failure) => { if (live) setError(failure.message); });
+    return () => { live = false; };
+  }, [tasks]);
+  if (!usage) return error ? html`<p class="error" role="alert">${error}</p>` : html`<p class="empty">Loading usage</p>`;
+  return html`
+    <div class="usage" data-scope="all">
+      <${UsageView} usage=${usage} />
+      ${usage.projects?.length > 0 && html`
+        <h2 class="label usage-projects-label">Projects</h2>
+        <div class="table-wrap"><table aria-label="Cost per project">
+          <thead><tr><th scope="col">Project</th><th scope="col" data-align="right">Today</th><th scope="col" data-align="right">7 days</th></tr></thead>
+          <tbody>${usage.projects.map((row) => html`
+            <tr key=${row.name}><th scope="row">${row.name}</th><td data-align="right">${usd(row.today_micro_usd)}</td><td data-align="right">${usd(row.week_micro_usd)}</td></tr>`)}</tbody>
+        </table></div>`}
     </div>`;
 }

@@ -28,8 +28,13 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
     };
     let width = inner.width as usize;
     let mut lines = vec![heading(list, width)];
-    if let Some(spent) = list.ledger.as_ref().and_then(project_usage) {
-        lines.push(muted(&truncate_to_width(&spent, width)));
+    if let Some(ledger) = &list.ledger {
+        for spent in project_usage(&ledger["usage"], "")
+            .into_iter()
+            .chain(project_usage(&ledger["usage_all"], "All projects "))
+        {
+            lines.push(muted(&truncate_to_width(&spent, width)));
+        }
     }
     // ^ A short window keeps its height for the tasks. ref: docs/tasks.md "TUI"
     if shows_days(list, area.height) {
@@ -437,12 +442,12 @@ fn usage_rows(ledger: &Value, width: usize, tokens: bool) -> Vec<Line<'static>> 
     lines
 }
 
-/// The ledger's project spend: "Today $3.42 (manager $0.80) · 7 days $21.10 (manager $4.02)".
-fn project_usage(ledger: &Value) -> Option<String> {
+/// A spend (`usage::project`'s or `usage::all`'s): "Today $3.42 (manager $0.80) · 7 days
+/// $21.10 (manager $4.02)", after `prefix`.
+fn project_usage(spend: &Value, prefix: &str) -> Option<String> {
     let spent = |window: &str| {
         let cost = |who: &str| {
-            Usage::deserialize(&ledger["usage"][window][who])
-                .map_or(0, |usage| usage.cost_micro_usd)
+            Usage::deserialize(&spend[window][who]).map_or(0, |usage| usage.cost_micro_usd)
         };
         let manager = cost("manager");
         format!(
@@ -451,9 +456,13 @@ fn project_usage(ledger: &Value) -> Option<String> {
             usage::usd(manager)
         )
     };
-    ledger["usage"]
-        .is_object()
-        .then(|| format!("Today {} · 7 days {}", spent("today"), spent("week")))
+    spend.is_object().then(|| {
+        format!(
+            "{prefix}Today {} · 7 days {}",
+            spent("today"),
+            spent("week")
+        )
+    })
 }
 
 /// One task's ledger entry as labeled rows: state, what it waits for, its checks, its

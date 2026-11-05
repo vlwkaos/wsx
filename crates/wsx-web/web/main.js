@@ -3,10 +3,10 @@
 // Wide (900 px and more): a left rail with the home list (the inbox or the projects without
 // task_view), the rest beside it.
 import { api, openEvents, pageId, QUIET_MS } from "./api.js";
-import { html, render, useEffect, useRef, useState } from "./lib.js";
-import { can, events, noteBuild, parseRoute, shows, stackUnder, state, trackHistory, update, useRoute, useStore } from "./store.js";
+import { html, Icon, render, useEffect, useRef, useState } from "./lib.js";
+import { can, events, noteBuild, parseRoute, shownTabs, shows, stackUnder, state, tabs, trackHistory, update, useRoute, useStore } from "./store.js";
 import { Home } from "./home.js";
-import { applyBar, applyScheme, Notices, toast } from "./ui.js";
+import { applyBar, applyScheme, applyTabs, Notices, toast } from "./ui.js";
 import { Pair } from "./pair.js";
 import { Inbox } from "./inbox.js";
 import { Project, Projects, ProjectSessions } from "./projects.js";
@@ -16,13 +16,6 @@ import { Files } from "./files.js";
 import { PanelsScreen } from "./panels.js";
 import { Settings } from "./settings.js";
 import { viewImageLinks } from "./viewer.js";
-
-// ^ With task_view home lists the projects, one row each, and Sessions (the inbox, shells
-// too) stays one tap away beside it, so work that no task owns is never hidden. A project's
-// worktrees are in its chat's ⋯ menu (docs/web-client.md "Screens").
-const tabs = () => can("task_view")
-  ? [["home", "#/", "Home"], ["inbox", "#/sessions", "Sessions"], ["settings", "#/settings", "Settings"]]
-  : [["home", "#/", "Inbox"], ["projects", "#/projects", "Projects"], ["settings", "#/settings", "Settings"]];
 
 function useWide() {
   const query = matchMedia("(min-width: 900px)");
@@ -76,10 +69,26 @@ function followViewport() {
   changed();
 }
 
-const Tabs = ({ current, rail }) => html`
-  <nav class=${rail ? "rail-tabs" : "tabbar"} aria-label="Screens">
+// ^ With task_view home lists the projects, one row each, and Sessions (the inbox, shells
+// too) stays one tap away beside it, so work that no task owns is never hidden. A project's
+// worktrees are in its chat's ⋯ menu (docs/web-client.md "Screens").
+// The bar is a floating pill of equal-width tabs, an icon over its label, the current one on a
+// highlight; the count is on the icon (`data-count`, drawn by app.css, so the name stays the label).
+// The wide rail lists every tab: it switches the list beside it.
+const Tabs = ({ current, rail }) => rail ? html`
+  <nav class="rail-tabs" aria-label="Screens">
     ${tabs().map(([name, href, label]) => html`
       <a href=${href} aria-current=${current === name ? "page" : null}>${label}</a>`)}
+  </nav>` : html`
+  <nav class="tabbar" aria-label="Screens">
+    <div class="tabbar-pill">
+      ${shownTabs().map(([name, href, label, icon, count]) => html`
+        <a key=${name} href=${href} aria-current=${current === name ? "page" : null}
+          aria-label=${count ? `${label}, ${count} ${count === 1 ? "needs" : "need"} you` : null}>
+          <span class="tab-icon" data-count=${count ? (count > 99 ? "99+" : count) : null}><${Icon} name=${icon} /></span>
+          <span class="tab-label">${label}</span>
+        </a>`)}
+    </div>
   </nav>`;
 
 function Screen({ route }) {
@@ -92,7 +101,7 @@ function Screen({ route }) {
   }
   if (route.screen === "role" && can("task_view")) return html`<${Manager} key=${`${route.id}/${route.role}`} project=${route.id} role=${route.role} />`;
   if (route.screen === "sessions") return html`<${ProjectSessions} key=${route.id} id=${route.id} />`;
-  if (route.screen === "settings") return html`<${Settings} />`;
+  if (route.screen === "settings") return html`<${Settings} sub=${route.sub} />`;
   if (route.screen === "projects") return html`<${Projects} />`;
   if (route.screen === "inbox" || !can("task_view")) return html`<${Inbox} />`;
   return html`<${Home} />`;
@@ -280,6 +289,7 @@ async function boot() {
 
 applyScheme();
 applyBar();
+applyTabs();
 followViewport();
 trackHistory();
 viewImageLinks();

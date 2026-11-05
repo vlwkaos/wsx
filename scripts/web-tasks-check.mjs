@@ -3068,6 +3068,7 @@ const cut = await evaluate("({ lines: (document.querySelector('.project-page .ta
 if (cut.lines > 59 || !/Over the size limit/.test(cut.note)) await fail(`the over-cap overview is not cut: ${JSON.stringify(cut)}`);
 await closeSheet("the page", `#/p/${plansArg}`);
 
+<<<<<<< HEAD
 // --- A task mention of another project (docs/web-client-tasks.md "Project screen"): ui and plans
 // both have a #1. "plans #1" in ui's own reply and a bare #1 in plans' manager's message open plans'
 // #1 in plans' chat; a bare #1 in ui's reply opens ui's #1; a sender the site does not grant leaves a
@@ -3123,6 +3124,82 @@ await closeSheet("the page", `#/p/${plansArg}`);
   await evaluate(`(async () => { const { update } = await ${pageModule("store.js")}; update({ projects: globalThis.mentionKept }); })()`);
 }
 
+||||||| parent of ffaf91cf (feat(web): floating pill tab bar, Settings sections (General, UI, Usage), hideable bottom-bar tabs, all-projects usage (web and TUI))
+=======
+// --- The bottom bar, Settings > UI and Settings > Usage (docs/web-client.md "Screens", "Settings").
+// ^ Equal-width tabs whatever their count, an icon over the label, the current tab on a highlight;
+// a tab hidden in Settings > UI leaves the bar, Settings cannot be hidden; Settings > Usage
+// shows the sum of every project's usage, which the page reads from the overviews it already has.
+{
+  await resize([390, 844, 2]);
+  await go("#/sessions");
+  await until("document.querySelectorAll('.tabbar a').length === 3", "the bottom bar lacks its three tabs");
+  const barShape = () => evaluate(`(() => { const tabs = [...document.querySelectorAll('.tabbar a')];
+    return { names: tabs.map((tab) => tab.querySelector('.tab-label').textContent), widths: tabs.map((tab) => Math.round(tab.getBoundingClientRect().width * 10) / 10),
+      stacked: tabs.every((tab) => tab.querySelector('svg').getBoundingClientRect().bottom <= tab.querySelector('.tab-label').getBoundingClientRect().top + 0.5),
+      highlight: tabs.map((tab) => getComputedStyle(tab).backgroundColor !== 'rgba(0, 0, 0, 0)' ? tab.querySelector('.tab-label').textContent : null).filter(Boolean),
+      pill: document.querySelector('.tabbar-pill').getBoundingClientRect().width < document.querySelector('.tabbar').getBoundingClientRect().width,
+      frame: Math.round(document.querySelector('.tabbar').getBoundingClientRect().bottom) === innerHeight }; })()`);
+  const equal = (shape) => shape.widths.length > 0 && shape.widths.every((width) => Math.abs(width - shape.widths[0]) <= 0.5);
+  let shape = await barShape();
+  if (!equal(shape) || !shape.stacked || shape.highlight.join() !== "Sessions" || !shape.pill || !shape.frame) await fail(`the bottom bar is ${JSON.stringify(shape)}`);
+  await shot("tabbar");
+  await go("#/settings/ui");
+  await until("document.querySelectorAll('.options input[name^=tab-]').length === 3", "Settings > UI does not list the three tabs");
+  if ((await text(".subtabs a")).join() !== "General,UI,Usage" || (await text(".subtabs a[aria-current=page]")).join() !== "UI") await fail(`the settings sections are ${await text(".subtabs a")}`);
+  const tabSwitches = () => evaluate("Object.fromEntries([...document.querySelectorAll('.options input[name^=tab-]')].map((node) => [node.name, [node.checked, node.disabled]]))");
+  if (JSON.stringify(await tabSwitches()) !== JSON.stringify({ "tab-home": [true, false], "tab-inbox": [true, false], "tab-settings": [true, true] })) await fail(`the tab switches are ${JSON.stringify(await tabSwitches())}`);
+  await shot("settings-ui");
+  await click("input[name=tab-inbox]");
+  await until("document.querySelectorAll('.tabbar a').length === 2", "hiding Sessions left it in the bar");
+  shape = await barShape();
+  if (shape.names.join() !== "Home,Settings" || !equal(shape)) await fail(`the bar with Sessions hidden is ${JSON.stringify(shape)}`);
+  await shot("tabbar-two");
+  // ^ Settings cannot be hidden: the switch is off limits, and a stored list that names it is not obeyed.
+  await evaluate("localStorage.setItem('wsx-tabs-hidden', JSON.stringify(['inbox', 'settings', 'home']))");
+  await send("Page.reload");
+  await until("!!document.querySelector('.tabbar a')", "the page did not come back after a reload");
+  const kept = await text(".tabbar a");
+  if (kept.join() !== "Settings") await fail(`the bar with a stored list naming Settings is ${kept}`);
+  await evaluate("localStorage.removeItem('wsx-tabs-hidden')");
+  await send("Page.reload");
+  await until("document.querySelectorAll('.tabbar a').length === 3", "the bar did not return with every tab shown");
+  // The header at the bottom (Settings > General) keeps the bar clear of the tab pill.
+  await go("#/settings");
+  await click("input[name=bar][value=bottom]");
+  await go("#/sessions");
+  await until("document.querySelectorAll('.tabbar a').length === 3", "the bar is gone with the header at the bottom");
+  await shot("tabbar-header-bottom");
+  await go("#/settings");
+  await click("input[name=bar][value=top]");
+
+  // Usage: the all-projects total equals the sum of the projects' own usage.
+  const sums = await evaluate(`fetch('api/tasks').then((r) => r.json()).then((all) => {
+    const add = (key, who, field) => all.reduce((sum, view) => sum + view.usage[key][who][field], 0);
+    return { projects: all.filter((view) => view.usage.week.workers.cost_micro_usd + view.usage.week.manager.cost_micro_usd > 0).length,
+      week: add('week', 'workers', 'cost_micro_usd') + add('week', 'manager', 'cost_micro_usd'), today: add('today', 'workers', 'cost_micro_usd') + add('today', 'manager', 'cost_micro_usd'),
+      cells: ['today', 'week'].flatMap((key) => ['workers', 'manager'].map((who) => add(key, who, 'cost_micro_usd'))), turns: add('week', 'workers', 'turns') + add('week', 'manager', 'turns') }; })`);
+  if (!(sums.week > 0) || sums.projects < 2) await fail(`the fixture projects have little usage: ${JSON.stringify(sums)}`);
+  const usd = (micro) => `$${(micro / 1e6).toFixed(2)}`;
+  await go("#/settings/usage");
+  await until("!!document.querySelector('.usage[data-scope=all] [data-chart=cost] .usage-total .usage-cost')", "Settings > Usage shows no total");
+  if ((await text(".subtabs a[aria-current=page]")).join() !== "Usage") await fail("Usage is not the current section");
+  await evaluate("document.querySelector('.usage-tokens').open = true");
+  const cost = await text(".usage[data-scope=all] [data-chart=cost] .usage-total .usage-cost");
+  const cells = await text(".usage tbody tr:first-child td");
+  const turns = await text(".usage tbody tr:last-child td");
+  if (cost[0] !== usd(sums.week) || cells.join() !== sums.cells.map(usd).join() || Number(turns[2]) + Number(turns[3]) !== sums.turns) {
+    await fail(`the usage total is ${cost} ${cells} ${turns}, the projects' sum ${JSON.stringify(sums)}`);
+  }
+  const perProject = await evaluate(`fetch('api/tasks/usage').then((r) => r.json()).then((usage) => ({ rows: usage.projects, week: usage.week, days: usage.days.length }))`);
+  const rowsWeek = perProject.rows.reduce((sum, row) => sum + row.week_micro_usd, 0);
+  const sorted = perProject.rows.every((row, index) => index === 0 || perProject.rows[index - 1].week_micro_usd >= row.week_micro_usd);
+  if (rowsWeek !== sums.week || perProject.rows.length !== sums.projects || !sorted || perProject.days !== 7) await fail(`the per-project rows are ${JSON.stringify(perProject)} for ${JSON.stringify(sums)}`);
+  const shownRows = await text("table[aria-label='Cost per project'] tbody tr");
+  if (shownRows.length !== sums.projects) await fail(`Settings > Usage lists ${shownRows.length} projects, not ${sums.projects}`);
+  await shot("settings-usage");
+}
+>>>>>>> ffaf91cf (feat(web): floating pill tab bar, Settings sections (General, UI, Usage), hideable bottom-bar tabs, all-projects usage (web and TUI))
 console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass in a bubble that stays in place, Skip, the fix task's line), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Roles (the ⋯ contact with its unread dot, its chat at #/p/<project>/r/<role> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);

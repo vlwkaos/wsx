@@ -496,10 +496,17 @@ impl App {
                 return;
             }
         };
+        let all = self
+            .workspace
+            .projects
+            .iter()
+            .map(|project| (project.name.clone(), project.path.clone()))
+            .collect();
         self.mode = Mode::Tasks {
             list: Box::new(crate::task_list::TaskList::new(
                 project.name.clone(),
                 project.path.clone(),
+                all,
             )),
         };
     }

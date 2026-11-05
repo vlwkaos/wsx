@@ -9,8 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 use wsx_core::task::{
-    ledger,
+    ledger, now_unix_ms,
     store::{self, Stamp},
+    usage,
 };
 
 /// How often the store's files are compared with the last read.
@@ -92,6 +93,8 @@ pub struct TaskList {
     pub project: String,
     main: PathBuf,
     store: String,
+    /// Every project of the workspace (name, path), for the all-projects spend.
+    projects: Vec<(String, PathBuf)>,
     pub ledger: Option<Value>,
     pub rows: Vec<TaskRow>,
     pub error: Option<String>,
@@ -111,12 +114,13 @@ pub struct TaskList {
 }
 
 impl TaskList {
-    pub fn new(project: String, main: PathBuf) -> Self {
+    pub fn new(project: String, main: PathBuf, projects: Vec<(String, PathBuf)>) -> Self {
         let store = store::project_id(&project, &main);
         let mut list = Self {
             project,
             main,
             store,
+            projects,
             ledger: None,
             rows: Vec::new(),
             error: None,
@@ -137,18 +141,29 @@ impl TaskList {
     /// Start a check when none runs; the thread reads the ledger only when a stamp changed.
     fn check(&mut self) {
         let (tx, rx) = mpsc::sync_channel(1);
-        let (project, main, store, last) = (
+        let (project, main, store, last, projects) = (
             self.project.clone(),
             self.main.clone(),
             self.store.clone(),
             self.stamp.clone(),
+            self.projects.clone(),
         );
         self.pending = Some(rx);
         self.last_check = Instant::now();
         std::thread::spawn(move || {
             let now = store::stamp(&store);
             let read = (last.as_ref() != Some(&now)).then(|| {
-                let ledger = ledger::build(&project, &main).map_err(|error| format!("{error:#}"));
+                let mut ledger =
+                    ledger::build(&project, &main).map_err(|error| format!("{error:#}"));
+                // ^ Every project's spend summed, read with the ledger: it follows this
+                // project's changes, not the others'. ref: docs/tasks.md "TUI"
+                if let Ok(ledger) = &mut ledger {
+                    let stores: Vec<(String, String)> = projects
+                        .iter()
+                        .map(|(name, path)| (name.clone(), store::project_id(name, path)))
+                        .collect();
+                    ledger["usage_all"] = usage::all(&stores, now_unix_ms());
+                }
                 (now, ledger)
             });
             let _ = tx.send(read);
