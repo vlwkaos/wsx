@@ -21,6 +21,8 @@ env:
 jobs:
   test:
     name: ${{ matrix.os }}
+    # ^ A `wsx-scenario/<name>/` branch (scripts/ci-scenario.py) runs only its scenario's job.
+    if: ${{ !startsWith(github.ref_name, 'wsx-scenario/') }}
     strategy:
       fail-fast: false
       matrix:
@@ -83,9 +85,11 @@ jobs:
 
   # ^ The task scenario (scripts/test-task.py, 20+ min) runs here instead of on the owner's Mac:
   # on a push or pull request that changes the task code, and always on a tag (release.yml
-  # calls this workflow). Seatbelt (part 23) needs macOS. ref: docs/tasks.md "Verify"
+  # calls this workflow), and on a worker's `wsx task check-run task` (a `wsx-scenario/task/`
+  # branch). Seatbelt (part 23) needs macOS. ref: docs/tasks.md "Verify", "Scenarios"
   task-scenario:
     name: task scenario
+    if: ${{ !startsWith(github.ref_name, 'wsx-scenario/') || startsWith(github.ref_name, 'wsx-scenario/task/') }}
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -133,3 +137,62 @@ jobs:
       - name: Run the task scenario
         if: steps.changed.outputs.run == 'true'
         run: cargo build --locked -p wsx -p wsx-daemon && python3 -B scripts/test-task.py
+
+  # ^ The web scenario of a worker's `wsx task check-run web` (scripts/ci-scenario.py). Its
+  # captures go back to the worker's checkout as the `scenario-files` artifact.
+  web-scenario:
+    name: web scenario
+    if: ${{ startsWith(github.ref_name, 'wsx-scenario/web/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.96.1
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          key: web-scenario
+
+      - name: Run the web scenario
+        run: cargo build --locked -p wsx -p wsx-daemon && python3 -B scripts/test-web-client.py --browser
+
+      - name: Pack the captures
+        if: always()
+        run: if [ -d .work/web-captures ]; then tar -cf files.tar .work/web-captures; fi
+
+      - name: Upload the captures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scenario-files
+          path: files.tar
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # ^ A scenario branch is gone when its run ends, also when scripts/ci-scenario.py was killed.
+  # Its own job, so the scenario's code never holds a token that can write.
+  scenario-cleanup:
+    name: delete the scenario branch
+    needs: [task-scenario, web-scenario]
+    if: ${{ always() && startsWith(github.ref_name, 'wsx-scenario/') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Delete the branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$GITHUB_REF_NAME" || true

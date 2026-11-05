@@ -132,6 +132,8 @@ struct CheckRun {
     answer: Option<CheckAnswer>,
     /// The checks it runs, for the evidence name: scenario names and check numbers.
     label: String,
+    /// It runs a `ci:` scenario, so it answered `queued` at once: CI takes 20 min or more.
+    ci: bool,
 }
 
 /// A check-run's answer to the worker, and the proof the host keeps when the run passed on
@@ -141,11 +143,20 @@ struct CheckAnswer {
     proof: Option<Evidence>,
 }
 
-/// What a `check-run` that queues for the check slot answers at once: a background job of
-/// the agent dies long before a 20-90 min queue ends. ref: docs/tasks.md "Check-run"
-const CHECK_RUN_QUEUED: &str = "queued for the machine's check slot: its answer comes after your \
-result. Do not wait or poll for it: finish this step and return its result now. The host \
-sends you the answer as your next turn, in this step.\n";
+/// What a `check-run` that queues for the check slot, or runs on CI, answers at once: a
+/// background job of the agent dies long before a 20-90 min queue ends. ref: docs/tasks.md "Check-run"
+const CHECK_RUN_QUEUED: &str = "its answer comes after your result. Do not wait or poll for it: \
+finish this step and return its result now. The host sends you the answer as your next turn, \
+in this step.\n";
+
+/// A `ci:` scenario's command runs on CI and waits there: its own time limit, beyond the job's
+/// 60 min and the runner's queue. ref: docs/tasks.md "Scenarios"
+const CI_TIMEOUT: Duration = Duration::from_secs(75 * 60);
+
+/// The command of a `ci:` scenario: it runs on CI and takes no check slot.
+fn ci_command(command: &str) -> Option<&str> {
+    command.strip_prefix("ci:").map(str::trim)
+}
 
 struct Host {
     dir: TaskDir,
@@ -2045,27 +2056,12 @@ impl Host {
             Ok(picked) => picked,
             Err(message) => return refuse(message),
         };
-        // ^ A scenario written `ci: <where>` runs on CI only: no local run, no slot.
-        // ref: docs/tasks.md "Scenarios"
-        if let Some((index, text)) = picked
-            .iter()
-            .filter(|(index, _)| *index >= checks)
-            .find_map(|(index, command)| Some((*index, command.strip_prefix("ci:")?.trim())))
-        {
-            let name = scenarios
-                .keys()
-                .nth(index - checks)
-                .map_or("", String::as_str);
-            return refuse(format!(
-                "the `{name}` scenario runs on CI, not here: {text}"
-            ));
-        }
         // ^ Never two runs in one working copy: the same checks join, other ones wait.
         let indexes: Vec<usize> = picked.iter().map(|(index, _)| *index).collect();
         if let Some(run) = &mut self.check_run {
             // ^ A queued run answers only after the result, also when it already ended.
             if run.queued && run.indexes == indexes {
-                let _ = reply.send(queued_response());
+                let _ = reply.send(queued_response(run.ci));
                 return;
             }
             if run.indexes != indexes {
@@ -2093,6 +2089,11 @@ impl Host {
                 disk_full(free_mb, min_gb)
             ));
         }
+        // ^ A `ci:` scenario runs on CI: it takes no slot and answers `queued` at once.
+        // ref: docs/tasks.md "Scenarios"
+        let ci = to_run
+            .iter()
+            .any(|(_, command)| ci_command(command).is_some());
         self.check_run = Some(CheckRun {
             indexes,
             replies: vec![reply],
@@ -2107,15 +2108,20 @@ impl Host {
                 })
                 .collect::<Vec<_>>()
                 .join(" "),
+            ci,
         });
-        // ^ A run of checks that only format or compile is light: it takes no slot. One that
-        // names a scenario takes the scenarios lane, else the checks lane.
-        let lane = match picked.iter().any(|(index, _)| *index >= checks) {
+        // ^ A run of checks that only format or compile, or only runs on CI, is light: it takes
+        // no slot. One that names a local scenario takes the scenarios lane, else the checks lane.
+        let local: Vec<&(usize, String)> = to_run
+            .iter()
+            .filter(|(_, command)| ci_command(command).is_none())
+            .collect();
+        let lane = match local.iter().any(|(index, _)| *index >= checks) {
             true => Lane::Scenarios,
             false => Lane::Checks,
         };
         let priority =
-            (!to_run.iter().all(|(_, command)| light(command))).then_some((lane, Priority::Normal));
+            (!local.iter().all(|(_, command)| light(command))).then_some((lane, Priority::Normal));
         let events = self.events.clone();
         self.spawn_checks(priority, "check-run", to_run.clone(), move |results| {
             let ran: BTreeMap<usize, CheckResult> = to_run
@@ -2138,6 +2144,15 @@ impl Host {
                 unchanged.map(|tree| (tree, ran)),
             ));
         });
+        if ci {
+            self.say("check-run: a scenario runs on CI; its answer comes after the result");
+            if let Some(run) = &mut self.check_run {
+                run.queued = true;
+                for reply in run.replies.drain(..) {
+                    let _ = reply.send(queued_response(true));
+                }
+            }
+        }
     }
 
     /// A check that ran on this clean tree with the same command gives the same answer: the
@@ -2224,7 +2239,8 @@ impl Host {
     }
 
     /// Run `checks` in a thread, holding a machine check slot (lane and priority) unless `priority` is
-    /// `None`; each check's timeout counts from the slot. Check `n`'s whole output goes to
+    /// `None`; each check's timeout counts from the slot. A `ci:` command takes no slot: it starts
+    /// at once beside the others, with `CI_TIMEOUT`. Check `n`'s whole output goes to
     /// `<kind>-<n>.log` in the task folder. ref: docs/tasks.md "Checks, revisions and report"
     fn spawn_checks(
         &self,
@@ -2243,8 +2259,31 @@ impl Host {
             .into_iter()
             .map(|(index, command)| (command, self.dir.file(&format!("{kind}-{}.log", index + 1))))
             .collect::<Vec<_>>();
+        let (remote, local): (Vec<_>, Vec<_>) = checks
+            .into_iter()
+            .enumerate()
+            .partition(|(_, (command, _))| ci_command(command).is_some());
+        let priority = priority.filter(|_| !local.is_empty());
         std::thread::spawn(move || {
-            let results = {
+            let on_ci = {
+                let (working_copy, env) = (working_copy.clone(), env.clone());
+                std::thread::spawn(move || {
+                    remote
+                        .into_iter()
+                        .map(|(at, (command, log))| {
+                            let ran = run_check(
+                                &working_copy,
+                                ci_command(&command).unwrap_or_default(),
+                                &env,
+                                CI_TIMEOUT,
+                                &log,
+                            );
+                            (at, CheckResult { command, ..ran })
+                        })
+                        .collect::<Vec<_>>()
+                })
+            };
+            let mut results = {
                 let queued = std::time::Instant::now();
                 let _slot = priority.and_then(|(lane, priority)| {
                     let taken = slot::take(lane, priority, &label, |reason| {
@@ -2256,17 +2295,18 @@ impl Host {
                 });
                 // ^ The wait is the run's: each of its results carries it.
                 let queued_ms = queued.elapsed().as_millis() as u64;
-                let results = checks
-                    .iter()
-                    .map(|(command, log)| CheckResult {
-                        queued_ms,
-                        ..run_check(&working_copy, command, &env, timeout, log)
+                local
+                    .into_iter()
+                    .map(|(at, (command, log))| {
+                        let ran = run_check(&working_copy, &command, &env, timeout, &log);
+                        (at, CheckResult { queued_ms, ..ran })
                     })
-                    .collect();
-                build::prune(&working_copy, born);
-                results
+                    .collect::<Vec<_>>()
             };
-            done(results);
+            results.extend(on_ci.join().unwrap_or_default());
+            results.sort_by_key(|(at, _)| *at);
+            build::prune(&working_copy, born);
+            done(results.into_iter().map(|(_, result)| result).collect());
         });
     }
 
@@ -2314,7 +2354,7 @@ impl Host {
         {
             run.queued = true;
             for reply in run.replies.drain(..) {
-                let _ = reply.send(queued_response());
+                let _ = reply.send(queued_response(run.ci));
             }
         }
         if self.record.state == TaskState::Waiting {
@@ -3192,9 +3232,13 @@ fn check_run_response(
     }
 }
 
-fn queued_response() -> broker::Response {
+fn queued_response(ci: bool) -> broker::Response {
+    let on = match ci {
+        true => "queued on CI",
+        false => "queued for the machine's check slot",
+    };
     broker::Response {
-        stdout: CHECK_RUN_QUEUED.into(),
+        stdout: format!("{on}: {CHECK_RUN_QUEUED}"),
         stderr: String::new(),
         code: 0,
     }

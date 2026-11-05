@@ -3536,13 +3536,35 @@ def run(wsx, wsxd, work, owned):
     worker_launch = [t for t in traces() if t.get('launch') and not t.get('manager')][-1]
     assert '2. `probe` (`echo scenario-ran' in worker_launch['instructions'], worker_launch['instructions']
     js('task', 'close', scenario, '--discard')
-    # ^ A `ci:` scenario is refused at once with where it runs, and takes no slot.
-    configure(LAND_CONFIG + '  scenarios:\n    remote: "ci: GitHub Actions job remote-job"\n', 'a ci scenario')
-    remote = js('task', 'new', 'CHECKRUN_WITH remote WORK remote.txt')['id']
-    assert wait_state(remote, 'ready', 'failed')['state'] == 'ready'
-    refused = next(t for t in traces() if 'check_run_with' in t and 'remote' in t['check_run_with'][0][1])['check_run_with'][0]
-    assert refused[0] != 0 and 'the `remote` scenario runs on CI, not here: GitHub Actions job remote-job' in refused[1], refused
-    js('task', 'close', remote, '--discard')
+    # ^ A `ci:` scenario (docs/tasks.md "Scenarios") runs its command without the check slot and
+    # answers `queued` at once: two tasks run theirs at the same time while a third holds the
+    # scenarios slot, and each gets its answer as a turn after its result.
+    ci_lane, ci_gate, ci_started = base / 'ci-lane-gate', base / 'ci-gate', base / 'ci-started.log'
+    configure(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n'
+              '    remote: "ci: echo started >> %s; while [ ! -e %s ]; do sleep 0.2; done; echo remote-ran"\n'
+              % (ci_lane, ci_started, ci_gate), 'a ci scenario')
+    holds = js('task', 'new', 'CHECKRUN_LATE slow WORK cilane.txt')['id']
+    wait(lambda: kinds(holds, 'result'), 'the local scenario run that holds the slot', 30)
+    remotes = [js('task', 'new', 'CHECKRUN_WITH remote WORK remote%d.txt' % n)['id'] for n in (1, 2)]
+    queued = wait(lambda: len(answers := [t['check_run_with'][0] for t in traces() if 'check_run_with' in t
+                                          and t['check_run_with'][0][1].startswith('queued on CI')]) == 2 and answers,
+                  'both ci check-runs answer queued', 60)
+    assert all(code == 0 and 'its answer comes after your result' in said for code, said in queued), queued
+    wait(lambda: ci_started.exists() and ci_started.read_text().count('started') == 2, 'both ci scenarios run at once', 30)
+    assert not ci_lane.exists() and not ci_gate.exists()
+    for n in remotes:
+        assert not kinds(n, 'check_queued'), log(n)
+    ci_gate.touch()
+    for n in remotes:
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+        ran = next(e for e in log(n) if e['kind'] == 'check_run')['results']
+        assert len(ran) == 1 and ran[0]['exit'] == 0 and ran[0]['queued_ms'] == 0 and 'remote-ran' in ran[0]['output'], ran
+        assert ran[0]['command'].startswith('ci: '), ran
+    assert len([t for t in traces() if 'Your check-run ended. Its answer' in t.get('message', '') and str(ci_gate) in t['message']]) == 2
+    ci_lane.touch()
+    assert wait_state(holds, 'ready', 'failed')['state'] == 'ready', log(holds)
+    for n in (holds, *remotes):
+        js('task', 'close', n, '--discard')
     # 32t. A result that comes before its own check-run's answer waits for it: the worker gets
     # the answer in one turn, and only its next result runs the checks.
     mark('32t')
