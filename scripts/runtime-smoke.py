@@ -2052,12 +2052,42 @@ subprocess.run(["git", "init", "-q", "-b", "main", str(BAD)], check=True, env=en
 (BAD / "wsx.config.yml").write_text("panels:\n  - name: Bad Name\n    command: [true]\n")
 PANEL_SCRIPTS = PROJECT / "scripts"
 PANEL_SCRIPTS.mkdir()
+# ^ The `format: json` panels print these files (docs/panels.md "JSON panels"): every kind, an
+# unknown field (ignored), a bad level, an unknown kind and a gauge with total 0 (each skipped
+# with a notice); `limits` is over every limit.
+PANEL_DOC = {
+    "title": "This Mac",
+    "future": 1,
+    "sections": [
+        {"title": "Memory", "items": [
+            {"kind": "gauge", "label": "Memory", "used": 13.6, "total": 16, "unit": "GB", "level": "warn", "future": True},
+            {"kind": "gauge", "label": "Swap", "used": 0, "total": 4, "unit": "GB", "level": "ok"},
+            {"kind": "stat", "label": "Pressure", "value": "normal", "note": "vm_stat", "level": "ok"},
+            {"kind": "stat", "label": "Disk", "value": "full", "level": "red"},
+        ]},
+        {"title": "Storage", "items": [
+            {"kind": "table", "columns": ["Volume", "Used", "Free"], "rows": [["Macintosh HD", "412 GB", "88 GB"], ["Data", 12, 3]]},
+            {"kind": "list", "items": ["Time Machine", "Spotlight idle"], "level": "bad"},
+            {"kind": "chart", "label": "x"},
+            {"kind": "gauge", "label": "Zero", "used": 1, "total": 0},
+        ]},
+    ],
+}
+PANEL_LIMITS = {"sections": [{"title": "s0", "items": [
+    {"kind": "table", "columns": ["n"], "rows": [[r] for r in range(101)]},
+    {"kind": "stat", "label": "x" * 300, "value": "v"}] + [{"kind": "stat", "label": "a", "value": "v"}] * 50}
+] + [{"title": f"s{n}", "items": [{"kind": "list", "items": ["a"]}]} for n in range(1, 13)]}
+for name, body in {"json.json": PANEL_DOC, "limits.json": PANEL_LIMITS}.items():
+    (PANEL_SCRIPTS / name).write_text(json.dumps(body))
 for script, body in {
     "device-status.sh": "echo x >> ok.log\nprintf '\\033[32mdevice-ok\\033[0m\\r\\n'\npwd -P\n",
     "fail.sh": "echo boom\necho oops >&2\nexit 3\n",
     "big.sh": "i=0\nwhile [ $i -lt 3000 ]; do echo \"line $i padding padding padding\"; i=$((i+1)); done\n",
     "slow.sh": "echo $$ > slow.pid\necho started\nsleep 30\n",
     "tick.sh": "echo x >> tick.log\nsleep 1\necho tick\n",
+    "json.sh": "cat scripts/json.json\n",
+    "badjson.sh": "echo '{oops'\n",
+    "limits.sh": "cat scripts/limits.json\n",
 }.items():
     (PANEL_SCRIPTS / script).write_text("#!/bin/sh\n" + body)
     (PANEL_SCRIPTS / script).chmod(0o755)
@@ -2065,9 +2095,12 @@ for script, body in {
     "panels:\n"
     "  - name: ok\n    command: [scripts/device-status.sh]\n"
     "  - name: fail\n    command: [scripts/fail.sh]\n"
+    "  - name: json\n    command: [scripts/json.sh]\n    format: json\n"
+    "  - name: badjson\n    command: [scripts/badjson.sh]\n    format: json\n"
     "  - name: big\n    command: [scripts/big.sh]\n"
     "  - name: slow\n    command: [scripts/slow.sh]\n    timeout: 2\n"
     "  - name: tick\n    command: [scripts/tick.sh]\n    refresh: 10\n"
+    "  - name: limits\n    command: [scripts/limits.sh]\n    format: json\n"
 )
 assert call("synchronize_projects", {"projects": [
     {"path": str(PROJECT), "name": "smoke", "worktrees": [{"path": str(PROJECT), "branch": "main"}]},
@@ -2100,7 +2133,7 @@ def log_lines(name):
 
 
 listed = panel_call(PROJECT, {"action": "list"})
-assert [item["name"] for item in listed["data"]["panels"]] == ["ok", "fail", "big", "slow", "tick"], listed
+assert [item["name"] for item in listed["data"]["panels"]] == ["ok", "fail", "json", "badjson", "big", "slow", "tick", "limits"], listed
 # Exit 0: the output as written, ANSI and CR stripped, in the main checkout, found by its relative path.
 shown = panel_finished("ok")
 assert shown["run"]["status"] == "ok" and shown["run"]["exit"] == 0, shown
@@ -2109,6 +2142,29 @@ assert shown["run"]["output"] == f"device-ok\n{os.path.realpath(PROJECT)}\n", sh
 failed = panel_finished("fail")
 assert failed["run"]["status"] == "failed" and failed["run"]["exit"] == 3, failed
 assert "boom" in failed["run"]["output"] and "oops" in failed["run"]["output"], failed
+# `format: json`: the typed document, an unknown field ignored, what cannot be drawn skipped with a notice.
+doc_run = panel_finished("json")["run"]
+doc = doc_run["doc"]
+assert doc_run["status"] == "ok" and doc["title"] == "This Mac" and [s["title"] for s in doc["sections"]] == ["Memory", "Storage"], doc_run
+assert [[i["kind"] for i in s["items"]] for s in doc["sections"]] == [["gauge", "gauge", "stat"], ["table", "list"]], doc
+assert doc["sections"][0]["items"][0] == {"kind": "gauge", "label": "Memory", "used": 13.6, "total": 16.0, "unit": "GB", "level": "warn"}, doc
+assert doc["sections"][1]["items"][0]["rows"] == [["Macintosh HD", "412 GB", "88 GB"], ["Data", "12", "3"]], doc
+notes = doc_run["notice"].splitlines()
+assert len(notes) == 3 and notes[0].startswith("section 1, item 4:") and "`red`" in notes[0], notes
+assert notes[1].startswith("section 2, item 3:") and "`chart`" in notes[1] and notes[2].startswith("section 2, item 4:"), notes
+assert json.loads(doc_run["output"])["title"] == "This Mac", "the raw text stays in output"
+# Not valid JSON: no document, the text as written and a notice, so a broken script still shows something.
+bad_run = panel_finished("badjson")["run"]
+assert bad_run["status"] == "ok" and bad_run["doc"] is None and bad_run["output"] == "{oops\n", bad_run
+assert bad_run["notice"].startswith("not a panel document:"), bad_run
+# Over every limit: 12 sections, 50 items, 100 rows, strings of 200 characters.
+limits_run = panel_finished("limits")["run"]
+limits = limits_run["doc"]
+assert len(limits["sections"]) == 12 and len(limits["sections"][0]["items"]) == 50, limits_run["notice"]
+assert len(limits["sections"][0]["items"][0]["rows"]) == 100, "rows are cut at 100"
+label = limits["sections"][0]["items"][1]["label"]
+assert len(label) == 200 and label.endswith("…"), label
+assert limits_run["notice"] == "cut to the limits: sections, items, table rows", limits_run["notice"]
 # Over 16 KiB: the last 16 KiB stay.
 big = panel_finished("big")["run"]
 assert len(big["output"].encode()) <= 16 * 1024 and big["truncated"] and "line 2999 " in big["output"], big["truncated"]
@@ -2212,6 +2268,20 @@ try:
     os.write(panel_master, b"\t")
     wait_for(lambda: b"failed" in panel_screen and b"(exit" in panel_screen and b"boom" in panel_screen,
              "the TUI did not show the failing panel with its exit code", 20)
+    # A `format: json` panel is drawn: boxed sections, a bar with its percent and the level word.
+    os.write(panel_master, b"\t")
+    wait_for(lambda: all(word in panel_screen for word in (b"Memory", b"85%", b"warn", b"Macintosh", "┌".encode(), "█".encode())),
+             "the TUI did not draw the json panel", 20)
+    wait_for(lambda: b"chart" in panel_screen, "the TUI did not show the skipped item's notice")
+    (WORK / "panels-tui-json.bytes").write_bytes(bytes(panel_screen))
+    if shutil.which("node"):
+        drawn = subprocess.run(["node", str(ROOT / "scripts/render-ansi.mjs"), str(WORK / "panels-tui-json.bytes"), str(CAPTURES),
+                                "panels-tui-json", "120", "40"], capture_output=True, text=True, timeout=90)
+        print("panels TUI json capture:", "written" if drawn.returncode == 0 else "not drawn: " + drawn.stderr.strip()[-300:], flush=True)
+    # Not valid JSON: the text as written and the notice.
+    os.write(panel_master, b"\t")
+    wait_for(lambda: b"oops" in panel_screen and b"document:" in panel_screen,
+             "the TUI did not show the broken json panel's text and notice", 20)
     os.write(panel_master, b"\x1b")
     wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the panels")
 finally:

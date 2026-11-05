@@ -78,7 +78,8 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // status `findings` (docs/tasks.md "Routines").
 // Revision 43 runs a project's panels (the `panel` request) and keeps their last output
 // (docs/panels.md).
-pub const DAEMON_REVISION: u32 = 43;
+// Revision 44 reads a `format: json` panel's output into a typed document (`PanelRun::doc`).
+pub const DAEMON_REVISION: u32 = 44;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
