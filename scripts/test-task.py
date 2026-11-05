@@ -3117,11 +3117,24 @@ def run(wsx, wsxd, work, owned):
     moved = js('task', 'new', 'WORK moved.txt')['id']
     assert wait_state(moved, 'ready', 'failed')['state'] == 'ready'
     ran = len(kinds(moved, 'checks'))
+    # ^ A host that started again at ready has no worker result in memory: the checks of the
+    # land's rebase read the stored one, so the passed checks keep `done` and the task lands.
+    moved_id = show(moved)['record']['project_id']
+    os.kill(next(int(line.split()[0]) for line in leftovers('task host %s %d' % (moved_id, moved))
+                 if line.endswith('task host %s %d' % (moved_id, moved))), 9)
+
+    def restart_moved():
+        try:
+            return cli('session', 'restart', 'task-%d' % moved)
+        except AssertionError:
+            return None
+    wait(restart_moved, 'the ready host restarts')
     (project / 'main-moved.txt').write_text('main moved\n')
     git('add', 'main-moved.txt')
     git('commit', '-q', '-m', 'main moves')
     assert 'checks run on the new revision' in land(moved)['message']
     assert wait_state(moved, 'landed', 'failed')['state'] == 'landed' and len(kinds(moved, 'checks')) == ran + 1, log(moved)
+    assert not kinds(moved, 'land_stopped') and '"status": "done"' in (Path(show(moved)['report']).parent / 'result.json').read_text(), log(moved)
     wait_closed(moved)
     # 32w. Each check's result has its run time and its run's wait for the check slot (ms), in
     # show and the ledger; the checks after a result answer from a check-run on the same clean
