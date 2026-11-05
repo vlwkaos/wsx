@@ -3833,7 +3833,7 @@ merge_seconds = 3
                       '/api/tasks/%d/usage' % demo):
             assert steady(plain, 'GET', route)[0] == 403, route
         # ^ The usage filters are checked at the route: an unknown field or hands is refused.
-        for query in ('who=nobody', 'since_ms=soon', 'colour=red'):
+        for query in ('who=nobody', 'period=soon', 'colour=red'):
             assert steady(owner, 'GET', '/api/tasks/usage?' + query)[0] == 400, query
         # ^ The all-projects usage is the sum of the granted projects' own (docs/web-client-tasks.md "All projects").
         def usage_sum(views, key, who, field):

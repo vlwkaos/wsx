@@ -89,20 +89,30 @@ pub enum Who {
     Manager,
 }
 
+/// The turns a spend's days and total count: since this machine's midnight, the 7 days, or
+/// since the start of Claude's current limit window of that kind (`limits`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Period {
+    Today,
+    Week,
+    FiveHour,
+    SevenDay,
+}
+
 /// Which turns a spend counts (docs/web-client-tasks.md "Usage"). The default counts all of
 /// the 7 days.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Filter {
-    /// Only turns at or after this time (unix ms): local midnight, or a limit window's start.
-    pub since_ms: Option<u64>,
+    pub period: Option<Period>,
     pub who: Option<Who>,
     /// An adapter (`claude`) or one model of it (`claude/claude-opus-5-5`).
     pub agent: Option<String>,
 }
 
 impl Filter {
-    /// A turn of this agent and of these hands; `since_ms` is the caller's.
+    /// A turn of this agent and of these hands; the period is `start`'s.
     fn takes(&self, turn: &Turn) -> bool {
         let who = match self.who {
             Some(Who::Workers) => turn.part != PART_MANAGER,
@@ -264,9 +274,40 @@ pub fn manager_log_turns(log: &[ManagerEntry]) -> Vec<Turn> {
 
 /// How many days the project's usage covers, today included.
 const DAYS: usize = 7;
-/// The earliest a filter's `since_ms` reaches back: a 7-day limit window can start before
-/// the 7 days' first midnight.
+/// The earliest a period reaches back: a 7-day limit window can start before the 7 days'
+/// first midnight.
 const SINCE_MAX_MS: u64 = 8 * DAY_MS;
+
+/// The local midnight that starts the 7 days, today included.
+fn week_start(now_ms: u64) -> u64 {
+    let mut week = local_midnight_ms(now_ms);
+    for _ in 1..DAYS {
+        week = local_midnight_ms(week.saturating_sub(1));
+    }
+    week
+}
+
+/// When `filter`'s period starts. A limit window not in `limits` has reset and its next one
+/// starts with Claude's next turn, so it holds none yet.
+fn start(filter: &Filter, now_ms: u64, limits: &Value) -> u64 {
+    let window = |kind: &str| {
+        limits
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|limit| limit["windows"].as_array().into_iter().flatten())
+            .find(|window| window["kind"] == kind)
+            .and_then(|window| window["start_ms"].as_u64())
+            .unwrap_or(now_ms)
+    };
+    let since = match filter.period {
+        None | Some(Period::Week) => week_start(now_ms),
+        Some(Period::Today) => local_midnight_ms(now_ms),
+        Some(Period::FiveHour) => window("five_hour"),
+        Some(Period::SevenDay) => window("seven_day"),
+    };
+    since.max(now_ms.saturating_sub(SINCE_MAX_MS))
+}
 
 /// Workers and manager apart, over one window.
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -334,18 +375,11 @@ impl Spend {
 }
 
 /// The project's spend: see `Spend`. The windows follow the filter's agent and hands; the
-/// days and the total also its start, the 7 days when it names none. A task not updated
-/// since then had no turn in them and is not read.
-fn spend(project_id: &str, now_ms: u64, filter: &Filter) -> Spend {
+/// days and the total also `since`, the period's `start`. A task not updated since then had
+/// no turn in them and is not read.
+fn spend(project_id: &str, now_ms: u64, filter: &Filter, since: u64) -> Spend {
     let today = local_midnight_ms(now_ms);
-    let mut week = today;
-    for _ in 1..DAYS {
-        week = local_midnight_ms(week.saturating_sub(1));
-    }
-    let since = filter
-        .since_ms
-        .unwrap_or(week)
-        .max(now_ms.saturating_sub(SINCE_MAX_MS));
+    let week = week_start(now_ms);
     let mut starts = vec![today];
     while starts[starts.len() - 1] > since {
         starts.push(local_midnight_ms(
@@ -363,25 +397,32 @@ fn spend(project_id: &str, now_ms: u64, filter: &Filter) -> Spend {
         ..Spend::default()
     };
     let add = |sum: &mut Spend, turns: &[Turn]| {
-        for turn in turns.iter().filter(|turn| turn.unix_ms >= week) {
-            if let Some((adapter, _)) = turn.agent.split_once('/') {
-                sum.agents.insert(adapter.to_string());
+        let (mut on_today, mut on_week) = (Usage::default(), Usage::default());
+        for turn in turns {
+            if turn.unix_ms >= week && !sum.agents.contains(&*turn.agent) {
+                if let Some((adapter, _)) = turn.agent.split_once('/') {
+                    sum.agents.insert(adapter.to_string());
+                }
+                sum.agents.insert(turn.agent.to_string());
             }
-            sum.agents.insert(turn.agent.to_string());
-        }
-        let taken: Vec<Turn> = turns
-            .iter()
-            .filter(|turn| filter.takes(turn))
-            .cloned()
-            .collect();
-        for turn in taken.iter().filter(|turn| turn.unix_ms >= since) {
-            if let Some(day) = starts.iter().position(|start| turn.unix_ms >= *start) {
-                sum.days[day].costs[turn.part] += turn.usage.cost_micro_usd;
-                sum.days[day].usage.add(&turn.usage);
+            if !filter.takes(turn) {
+                continue;
             }
-            sum.total.add(&turn.usage);
+            if turn.unix_ms >= today {
+                on_today.add(&turn.usage);
+            }
+            if turn.unix_ms >= week {
+                on_week.add(&turn.usage);
+            }
+            if turn.unix_ms >= since {
+                if let Some(day) = starts.iter().position(|start| turn.unix_ms >= *start) {
+                    sum.days[day].costs[turn.part] += turn.usage.cost_micro_usd;
+                    sum.days[day].usage.add(&turn.usage);
+                }
+                sum.total.add(&turn.usage);
+            }
         }
-        (Usage::since(&taken, today), Usage::since(&taken, week))
+        (on_today, on_week)
     };
     for (dir, record) in project_tasks(project_id).unwrap_or_default() {
         if record.is_ok_and(|record| record.updated_unix_ms >= since.min(week)) {
@@ -402,7 +443,7 @@ fn spend(project_id: &str, now_ms: u64, filter: &Filter) -> Spend {
 /// The project's spend today (since local midnight) and in the last 7 days from a local
 /// midnight, workers and manager apart, and per day (newest first) by `PARTS`.
 pub fn project(project_id: &str, now_ms: u64) -> Value {
-    spend(project_id, now_ms, &Filter::default()).json()
+    spend(project_id, now_ms, &Filter::default(), week_start(now_ms)).json()
 }
 
 /// `project`'s spend of `filter` summed over `projects` (name, task store id), plus `total`
@@ -412,8 +453,10 @@ pub fn project(project_id: &str, now_ms: u64) -> Value {
 pub fn all(projects: &[(String, String)], now_ms: u64, filter: &Filter) -> Value {
     let mut sum = Spend::default();
     let mut rows: Vec<(String, u64)> = Vec::new();
+    let limits = limits(now_ms);
+    let since = start(filter, now_ms, &limits);
     for (name, store) in projects {
-        let each = spend(store, now_ms, filter);
+        let each = spend(store, now_ms, filter, since);
         sum.add(&each);
         if each.total.cost_micro_usd > 0 {
             rows.push((name.clone(), each.total.cost_micro_usd));
@@ -427,7 +470,7 @@ pub fn all(projects: &[(String, String)], now_ms: u64, filter: &Filter) -> Value
         .into_iter()
         .map(|(name, cost)| json!({ "name": name, "cost_micro_usd": cost }))
         .collect();
-    value["limits"] = limits(now_ms);
+    value["limits"] = limits;
     value
 }
 
