@@ -219,9 +219,9 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
     // (docs/design/manager-reliability.md "F").
     let search = match record.adapter.as_str() {
         "claude" => {
-            "A search across many files, and the code reading of a plan, goes to a subagent in \
-             the foreground (the Agent tool, type Explore, `model: haiku`, \
-             `run_in_background: false`), and only its findings, with file:line, come back to you. "
+            "A search across many files goes to a subagent in the foreground (the Agent tool, \
+             type Explore, `run_in_background: false`; `model: sonnet`, or `model: haiku` for a \
+             plan's code reading), and only its findings, with file:line, come back to you. "
         }
         _ => "",
     };

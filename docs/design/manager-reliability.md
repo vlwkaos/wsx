@@ -81,7 +81,7 @@ Steps 1 to 4 landed as one instruction change. Words are counted on the rendered
 | Text | Before | After |
 |---|---|---|
 | `instructions()` | 1619 words | 1695 (+76, +4.7%) |
-| `worker_instructions` literals | 461 | 488 (+27; 15 of them only for Claude) |
+| `worker_instructions` literals | 461 | 489 (+28; 16 of them only for Claude) |
 | `PLAN_REQUEST` (first plan turn) | 80 | 58 (the Explore sentence moved to the Claude-only worker sentence) |
 
 Offsets: the overview's "keep it under the cap" (wsx enforces the cap), "(decisions are in ...)", `-p <project>` in the check-in command, and one shorter `waiting` sentence.
