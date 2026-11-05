@@ -990,6 +990,8 @@ await until("!!document.querySelector('input[name=scheme]')", "settings did not 
 await evaluate("document.querySelector('input[name=scheme][value=dark]').click()");
 if ((await evaluate("getComputedStyle(document.body).backgroundColor")) !== background) await fail("choosing dark did not restore the dark scheme");
 // The unpair confirmation: opened by keyboard, focus on Cancel, Escape closes it, focus returns.
+await go("#/settings");
+await until("!!document.querySelector('.button-danger')", "General did not open for the unpair button");
 await evaluate("document.querySelector('.button-danger').focus()");
 await key("Enter", 13, { text: "\r" });
 await until("!!document.querySelector('dialog.sheet[open]')", "the dialog did not open");
