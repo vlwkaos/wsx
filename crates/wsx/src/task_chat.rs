@@ -54,6 +54,9 @@ pub enum Row {
         level: Option<Level>,
     },
     Line(String),
+    /// A muted line about the manager: the chat puts its shown name before the words
+    /// ("plans paused: usage limit, resumes at 07:45"), as the web does.
+    Manager(String),
 }
 
 /// What a link of the chat opens (docs/tasks.md "Session news", "Routines"): a session, as `S`
@@ -255,6 +258,9 @@ pub struct ManagerChat {
     pub project: String,
     /// The role this chat talks to; none is the manager.
     pub role: Option<String>,
+    /// The manager's name as the owner reads it (`TaskConfig::manager_shown_name`), as the
+    /// web shows it.
+    manager: String,
     main: PathBuf,
     store: String,
     pub rows: Vec<Row>,
@@ -305,9 +311,14 @@ type Answer = (String, bool, Option<String>);
 impl ManagerChat {
     pub fn new(project: String, main: PathBuf, role: Option<String>) -> Self {
         let store = store::project_id(&project, &main);
+        let manager = load_task_config(&main)
+            .unwrap_or_default()
+            .manager_shown_name(&project)
+            .to_string();
         let mut chat = Self {
             project,
             role,
+            manager,
             main,
             store,
             rows: Vec::new(),
@@ -454,7 +465,7 @@ impl ManagerChat {
 
     /// The name the chat shows for the other side: the role's, or `Manager`.
     pub fn who(&self) -> &str {
-        self.role.as_deref().unwrap_or("Manager")
+        self.role.as_deref().unwrap_or(&self.manager)
     }
 
     pub fn selected_item(&self) -> Option<&Item> {
@@ -676,12 +687,12 @@ fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyh
             }
             ManagerEvent::Rotated { .. } => rows.push(Row::Line("New conversation".into())),
             ManagerEvent::Stopped { reason } => {
-                rows.push(Row::Line(format!("Manager stopped: {reason}")))
+                rows.push(Row::Manager(format!("stopped: {reason}")))
             }
-            ManagerEvent::Limit { until: Some(until) } => rows.push(Row::Line(format!(
-                "Manager paused: usage limit, resumes at {until}"
+            ManagerEvent::Limit { until: Some(until) } => rows.push(Row::Manager(format!(
+                "paused: usage limit, resumes at {until}"
             ))),
-            ManagerEvent::Limit { until: None } => rows.push(Row::Line("Manager resumed".into())),
+            ManagerEvent::Limit { until: None } => rows.push(Row::Manager("resumed".into())),
             ManagerEvent::Delivered { .. }
             | ManagerEvent::Agent { .. }
             | ManagerEvent::Ping { .. } => {}

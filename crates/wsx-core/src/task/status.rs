@@ -16,6 +16,9 @@ const STOPPED_BY_REQUEST: &str = "stopped by request";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Status {
+    /// Which row of the table in docs/tasks.md "Status" matched: "scenario_slot", "review",
+    /// "owner". A client picks its tone or icon by it, never by the words.
+    pub kind: &'static str,
     /// "Waiting for the scenario test slot", "Ready, waiting for the manager's review".
     pub label: String,
     /// The label, how long, the facts and what comes next: "Waiting for the scenario test
@@ -54,6 +57,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
     });
     if let (Some((label, asked)), true) = (approval, record.state.is_open()) {
         return words(
+            "approval",
             "Waiting for your approval",
             Some(asked),
             &format!("the manager asks: {label}"),
@@ -63,6 +67,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
     }
     if let (Some(why), true) = (facts.stuck, record.state.is_open()) {
         return words(
+            "stuck",
             "Stuck",
             None,
             why,
@@ -88,6 +93,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
                     .flatten();
                 match stopped {
                     Some(reason) if reason == STOPPED_BY_REQUEST => words(
+                        "stopped",
                         "Stopped",
                         Some(entered),
                         STOPPED_BY_REQUEST,
@@ -95,6 +101,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
                         now_ms,
                     ),
                     Some(reason) => words(
+                        "interrupted",
                         "Interrupted",
                         Some(entered),
                         &reason,
@@ -102,6 +109,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
                         now_ms,
                     ),
                     None => words(
+                        "owner",
                         "Waiting for your answer",
                         Some(entered),
                         &waiting.reason,
@@ -111,6 +119,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
                 }
             }
             WaitOn::Plan => words(
+                "plan",
                 "Plan ready, waiting for the manager's review",
                 Some(entered),
                 "the worker wrote its plan",
@@ -118,6 +127,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
                 now_ms,
             ),
             WaitOn::Hand => words(
+                "hand",
                 "Waiting for you to hand it back",
                 Some(entered),
                 "you work on it in its session and no agent runs",
@@ -125,6 +135,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
                 now_ms,
             ),
             WaitOn::Disk => words(
+                "disk",
                 "Waiting for disk space",
                 Some(entered),
                 &queue_words(record, &waiting.reason, "goes on first"),
@@ -132,6 +143,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
                 now_ms,
             ),
             WaitOn::Limit => words(
+                "limit",
                 "Waiting for the usage limit",
                 Some(entered),
                 &queue_words(record, &waiting.reason, "goes on first"),
@@ -141,6 +153,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
             WaitOn::CheckSlot => slot(dir, record, &waiting.reason, entered, now_ms),
         },
         (TaskState::Checking, _) => words(
+            "checking",
             "Running checks",
             Some(entered),
             &format!(
@@ -152,6 +165,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
             now_ms,
         ),
         (TaskState::Working, _) if resolving_conflict(dir) => words(
+            "conflict",
             "Resolving a conflict",
             None,
             &format!("the worker rebases it onto {main}"),
@@ -175,7 +189,14 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
             } else {
                 "Its checks run after its result."
             };
-            words(&label, None, "the worker runs its turn", next, now_ms)
+            words(
+                "working",
+                &label,
+                None,
+                "the worker runs its turn",
+                next,
+                now_ms,
+            )
         }
         (TaskState::Ready, _) => ready(dir, record, entered, now_ms),
         (TaskState::Failed, _) => {
@@ -185,6 +206,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
             let failed = outcomes.iter().filter(|(_, o)| *o != "passed").count();
             match failed {
                 0 => words(
+                    "failed",
                     "Failed",
                     None,
                     "the worker could not finish",
@@ -192,6 +214,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
                     now_ms,
                 ),
                 _ => words(
+                    "failed",
                     "Failed",
                     None,
                     &format!(
@@ -204,6 +227,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
             }
         }
         (TaskState::Landed, _) => words(
+            "landed",
             "Landed",
             None,
             &match facts.deployed {
@@ -213,7 +237,14 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
             "",
             now_ms,
         ),
-        (TaskState::Closed, _) => words("Closed", None, "closed without landing", "", now_ms),
+        (TaskState::Closed, _) => words(
+            "closed",
+            "Closed",
+            None,
+            "closed without landing",
+            "",
+            now_ms,
+        ),
     };
     // ^ A hold matters once it is ready; before, the sentence says it is coming.
     if let (Some(hold), true) = (&record.hold, record.state.is_open()) {
@@ -240,6 +271,7 @@ fn ready(dir: &TaskDir, record: &TaskRecord, entered: u64, now_ms: u64) -> Statu
         .flatten();
     if let Some(reason) = stopped {
         return words(
+            "land_stopped",
             "Landing stopped",
             Some(entered),
             &reason,
@@ -249,6 +281,7 @@ fn ready(dir: &TaskDir, record: &TaskRecord, entered: u64, now_ms: u64) -> Statu
     }
     if let Some(hold) = &record.hold {
         return words(
+            "held",
             "Held for you to try",
             Some(entered),
             hold,
@@ -267,6 +300,7 @@ fn ready(dir: &TaskDir, record: &TaskRecord, entered: u64, now_ms: u64) -> Statu
     let land_auto = load_task_config(&record.project_path).is_ok_and(|s| s.land_auto);
     match record.manager_reviews(land_auto) {
         true => words(
+            "review",
             "Ready, waiting for the manager's review",
             Some(entered),
             &checks,
@@ -274,6 +308,7 @@ fn ready(dir: &TaskDir, record: &TaskRecord, entered: u64, now_ms: u64) -> Statu
             now_ms,
         ),
         false => words(
+            "ready",
             "Ready, waiting for you to land it",
             Some(entered),
             &checks,
@@ -294,19 +329,22 @@ fn slot(dir: &TaskDir, record: &TaskRecord, reason: &str, entered: u64, now_ms: 
         .flatten()
         .unwrap_or(entered);
     let scenarios = queue(reason).is_some_and(|queue| queue.what.contains("scenario"));
-    let (label, run, next) = match scenarios {
+    let (kind, label, run, next) = match scenarios {
         true => (
+            "scenario_slot",
             "Waiting for the scenario test slot",
             "runs its scenario tests now",
             "Its scenario tests start when the slot is free.",
         ),
         false => (
+            "check_slot",
             "Waiting for the check slot",
             "runs its checks now",
             "Its checks start when the slot is free.",
         ),
     };
     words(
+        kind,
         label,
         Some(since),
         &queue_words(record, reason, run),
@@ -340,8 +378,15 @@ fn count(n: usize, what: &str) -> String {
     }
 }
 
-/// "<label> for <span>: <facts>. <next>"; facts and next may be empty.
-fn words(label: &str, since: Option<u64>, facts: &str, next: &str, now_ms: u64) -> Status {
+/// "<label> for <span>: <facts>. <next>"; facts and next may be empty. `kind`: `Status::kind`.
+fn words(
+    kind: &'static str,
+    label: &str,
+    since: Option<u64>,
+    facts: &str,
+    next: &str,
+    now_ms: u64,
+) -> Status {
     let mut sentence = label.to_string();
     if let Some(since) = since {
         sentence.push_str(&format!(" for {}", span(now_ms.saturating_sub(since))));
@@ -359,6 +404,7 @@ fn words(label: &str, since: Option<u64>, facts: &str, next: &str, now_ms: u64) 
         sentence.push_str(next);
     }
     Status {
+        kind,
         label: label.to_string(),
         sentence,
         since_unix_ms: since,

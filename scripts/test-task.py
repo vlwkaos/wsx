@@ -2391,7 +2391,8 @@ def run(wsx, wsxd, work, owned):
     assert re.search(r'(?m)^ +▸ %s +#%d +open the file' % (item['id'], seen_item), opened), opened
     assert re.search(r'pass if: it has text', opened) and re.search(r'%s +Approve land #%d' % (request, asks), opened), opened
     assert re.search(r'(?m)^ You +\d\d:\d\d$', sent) and 'hello from the tui' in sent, sent
-    assert re.search(r'(?m)^ Manager +\d\d:\d\d$', opened) and 'MANAGER' in opened, opened
+    # ^ The chat names the manager as the web does: its shown name (docs/tasks.md "Config").
+    assert re.search(r'(?m)^ %s +\d\d:\d\d$' % re.escape(js('task', 'manager')['name']), opened) and 'MANAGER' in opened, opened
     assert owner_said('hello from the tui'), manager_log.read_text()[-2000:]
     assert item['id'] not in [i['id'] for i in js('task', 'check')['open']]
     rows = [json.loads(line) for line in checks_file.read_text().splitlines() if line.strip()]

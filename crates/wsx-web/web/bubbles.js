@@ -74,7 +74,7 @@ export function conversation(entries, resolutions, approvals = [], checks = [], 
       const text = entry.until ? `${manager} paused: usage limit, resumes at ${entry.until}` : `${manager} resumed`;
       rows.push({ kind: "line", at, key, text });
     } else if (entry.kind === "rotated" || entry.kind === "stopped") {
-      rows.push({ kind: "note", at, key, entry });
+      rows.push({ kind: "note", at, key, entry, manager });
     }
   });
   const said = rows.filter((row) => row.kind === "line");
