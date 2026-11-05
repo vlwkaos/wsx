@@ -1514,7 +1514,7 @@ def run(wsx, wsxd, work, owned):
     usage = reply_to(summed['id'])['usage']
     replies = [e for e in manager_entries() if e['kind'] == 'reply']
     assert usage['input_tokens'] + usage['cache_read_tokens'] == 200000 and usage['context_tokens'] == 50000, usage
-    assert usage['model'] == 'fake-manager', usage
+    assert usage['model'] == 'fake-manager' and usage['adapter'] == 'claude', usage
     # Quotes (docs/tasks.md "Manager"): a reply that opens with `> message <id>` is stored with
     # that message's first line in the owner's quote format; a bad or unknown id drops the line and
     # the reply stands. The next turn names the id of the manager's last reply.
@@ -3859,7 +3859,7 @@ def run(wsx, wsxd, work, owned):
     results = lambda: [e for e in log(idler) if e['kind'] == 'result']
     # ^ 400k is under 600k and the build step came at once: no rotation yet.
     assert [(e['step'], e['trigger']) for e in results()] == [('plan', 'step'), ('build', 'step')], results()
-    assert results()[0]['usage']['calls'] == 1, results()[0]
+    assert results()[0]['usage']['calls'] == 1 and results()[0]['usage']['adapter'] == 'claude', results()[0]
     assert not [e for e in log(idler) if e['kind'] == 'rotated']
     time.sleep(3)
     js('task', 'add', idler, 'NOOP')

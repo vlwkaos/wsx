@@ -3528,9 +3528,12 @@ merge_seconds = 3
         assert usage['turns'] >= 1, usage
         assert js('task', 'show', 2, '-p', 'demo')['usage'] == usage
         spent = [steady(owner, 'GET', '/api/tasks/%d/t/%d' % (demo, row['id']))[1]['usage'] for row in overview['tasks']]
-        workers = overview['usage']['today']['workers']
+        # ^ The overview carries no usage: the Usage sheet reads the project's usage route.
+        assert 'usage' not in overview, overview.keys()
+        project_usage = steady(owner, 'GET', '/api/tasks/%d/usage' % demo)[1]
+        workers = project_usage['today']['workers']
         assert workers['turns'] == sum(one['turns'] for one in spent) and workers['cost_micro_usd'] == sum(one['cost_micro_usd'] for one in spent), (workers, spent)
-        assert overview['usage']['week']['workers'] == workers, overview['usage']
+        assert project_usage['week']['workers'] == workers, project_usage
         ledger_usage = json.loads(cli('task', 'ledger', '-p', 'demo').stdout)['usage']
         assert ledger_usage['today']['workers'] == workers, ledger_usage
         kinds = [entry['kind'] for entry in detail['timeline']['entries']]
@@ -3639,7 +3642,7 @@ merge_seconds = 3
         assert reply['text'].startswith('open: #1 ready') and chat['running'], chat
         assert all(e['kind'] not in ('delivered', 'agent') for e in chat['entries'])
         # ^ The manager's replies count apart from the workers' (docs/tasks.md "Usage").
-        manager_usage = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['usage']['today']['manager']
+        manager_usage = steady(owner, 'GET', '/api/tasks/%d/usage' % demo)[1]['today']['manager']
         assert manager_usage['turns'] >= 1 and manager_usage['cost_micro_usd'] == 1000 * manager_usage['turns'], manager_usage
         later = steady(owner, 'GET', '/api/tasks/%d/chat?after=%d' % (demo, reply['id']))[1]
         assert all(e.get('id', reply['id'] + 1) > reply['id'] for e in later['entries']), later
@@ -3826,14 +3829,19 @@ merge_seconds = 3
         assert brief['deploys']['deploy']['configured'] and not brief['deploys']['release']['configured'], brief['deploys']
         assert [row['id'] for row in brief['open']] == [row['id'] for row in js('task', 'ledger', '-p', 'demo')['open']]
         assert steady(viewer, 'GET', '/api/tasks/%d/brief' % ids['ui'])[0] == 404
-        for route in ('/api/tasks', '/api/tasks/%d' % demo, '/api/tasks/%d/chat' % demo, '/api/tasks/%d/brief' % demo, '/api/tasks/usage'):
+        for route in ('/api/tasks', '/api/tasks/%d' % demo, '/api/tasks/%d/chat' % demo, '/api/tasks/%d/brief' % demo, '/api/tasks/usage',
+                      '/api/tasks/%d/usage' % demo):
             assert steady(plain, 'GET', route)[0] == 403, route
+        # ^ The usage filters are checked at the route: an unknown field or hands is refused.
+        for query in ('who=nobody', 'since_ms=soon', 'colour=red'):
+            assert steady(owner, 'GET', '/api/tasks/usage?' + query)[0] == 400, query
         # ^ The all-projects usage is the sum of the granted projects' own (docs/web-client-tasks.md "All projects").
         def usage_sum(views, key, who, field):
-            return sum(view['usage'][key][who][field] for view in views)
+            return sum(view[key][who][field] for view in views)
         def usage_pair():
             # Both reads in a quiet moment: a running agent may add a turn between them.
-            overviews = steady(owner, 'GET', '/api/tasks')[1]
+            overviews = [steady(owner, 'GET', '/api/tasks/%d/usage' % view['project'])[1]
+                         for view in steady(owner, 'GET', '/api/tasks')[1]]
             everything = steady(owner, 'GET', '/api/tasks/usage')[1]
             same = all(everything[key][who][field] == usage_sum(overviews, key, who, field)
                        for key in ('today', 'week') for who in ('workers', 'manager')
@@ -3843,7 +3851,7 @@ merge_seconds = 3
         assert len(overviews) >= 2 and everything['week']['workers']['turns'] > 0 and everything['week']['manager']['cost_micro_usd'] > 0 and len(everything['days']) == 7, everything
         assert sum(day['usage']['cost_micro_usd'] for day in everything['days']) == sum(
             usage_sum(overviews, 'week', who, 'cost_micro_usd') for who in ('workers', 'manager')), everything['days']
-        weeks = [row['week_micro_usd'] for row in everything['projects']]
+        weeks = [row['cost_micro_usd'] for row in everything['projects']]
         assert weeks == sorted(weeks, reverse=True) and len(weeks) >= 2, everything['projects']
         assert [row['name'] for row in steady(viewer, 'GET', '/api/tasks/usage')[1]['projects']] == ['demo']
         ok('brief: the ledger with deploys and the main checkout; refusals: task_act and task_view per site, ungranted project 404, actions hidden without task_act')

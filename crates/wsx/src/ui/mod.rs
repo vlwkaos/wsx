@@ -741,6 +741,8 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
                 "(m)anager".into(),
             ];
             hints.extend(["(S)hell".into(), "Esc: close".into()]);
+            // ^ The agent the spend counts; its name is on the spend line.
+            hints.push("(a)gent".into());
             // ^ Last, so a narrow footer drops it first; only while the day rows show.
             if tasks::shows_days(list, content_height) {
                 hints.push("(u)sage".into());

@@ -89,6 +89,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/tasks/{project}/brief", get(tasks_brief))
             .route("/api/tasks/{project}/page", get(tasks_page))
             .route("/api/tasks/{project}/routines", get(tasks_routines))
+            .route("/api/tasks/{project}/usage", get(tasks_project_usage))
             .route("/api/tasks/{project}/say", post(tasks_say))
             .route("/api/tasks/{project}/t/{task}", get(task_detail))
             .route("/api/tasks/{project}/t/{task}/{action}", post(task_act))
@@ -1050,9 +1051,26 @@ async fn tasks_all(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json
     blocking(|| crate::tasks::overviews(&app).map(Json))
 }
 
-async fn tasks_usage(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<Value>> {
+async fn tasks_usage(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    Query(filter): Query<wsx_core::task::usage::Filter>,
+) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
-    blocking(|| crate::tasks::usage_all(&app).map(Json))
+    blocking(|| crate::tasks::usage_all(&app, &filter).map(Json))
+}
+
+async fn tasks_project_usage(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(project): UrlPath<u64>,
+    Query(filter): Query<wsx_core::task::usage::Filter>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, false)?;
+    with_scope(&app, project, |scope| {
+        Ok(crate::tasks::usage(scope, &filter))
+    })
+    .map(Json)
 }
 
 async fn tasks_overview(

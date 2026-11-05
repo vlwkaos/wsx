@@ -1165,21 +1165,24 @@ if (!factsRead(facts)) await fail(`the page's facts read ${facts}`);
 await shot("page");
 await closeSheet("the page", chat);
 
-// --- Usage: the ⋯ menu's sheet has the project's spend today and in 7 days, workers and
-// manager apart, from the overview's `usage` (docs/web-client-tasks.md "Usage").
+// --- Usage: the ⋯ menu's sheet has the project's spend of one choice of filters, from
+// `api/tasks/<project>/usage` (docs/web-client-tasks.md "Usage").
 await click(".more-button");
 await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Usage').click()");
 await until(`location.hash === '#/p/${project}/usage' && !!document.querySelector('dialog.task-sheet[open] .usage table')`, "Usage did not open the usage sheet");
-await evaluate(`document.querySelector('.usage-tokens').open = true`);
 const usageRows = await text(".usage tbody th");
 if (usageRows.join() !== "Cost,Input,Cache read,Cache write,Output,Turns") await fail(`the usage rows are ${usageRows}`);
-const usageCost = await text(".usage tbody tr:first-child td");
-const usageTurns = await text(".usage tbody tr:last-child td");
-// ^ Columns: Today workers, Today manager, 7 days workers, 7 days manager. The fake worker's
-// results cost nothing; each manager turn costs 0.001 USD.
-if (usageCost.length !== 4 || !usageCost.every((cell) => /^\$\d+\.\d\d$/.test(cell)) || usageCost[3] === "$0.00"
-  || usageTurns.length !== 4 || !(Number(usageTurns[2]) > 0) || !(Number(usageTurns[3]) > 0)) {
-  await fail(`the usage costs are ${usageCost}, the turns ${usageTurns}`);
+// ^ One column, the filters' slice: 7 days of workers and manager on every agent at first.
+const USAGE_TOTALS = `({ head: document.querySelector('.usage thead th')?.textContent,
+  cost: document.querySelector('.usage tbody tr:first-child td')?.textContent, cells: document.querySelectorAll('.usage tbody tr:first-child td').length,
+  turns: Number(document.querySelector('.usage tbody tr:last-child td')?.textContent), days: document.querySelectorAll('.usage-days > li').length,
+  periods: [...document.querySelectorAll('select[name=period] option')].map((option) => option.value),
+  agent: document.querySelector('select[name=agent]')?.value })`;
+const usageTotals = () => evaluate(USAGE_TOTALS);
+const usageAll = await usageTotals();
+// ^ The fake worker's results cost nothing; each manager turn costs 0.001 USD.
+if (usageAll.head !== "7 days" || usageAll.cells !== 1 || !/^\$\d+\.\d\d$/.test(usageAll.cost) || usageAll.cost === "$0.00" || !(usageAll.turns > 1)) {
+  await fail(`the usage totals are ${JSON.stringify(usageAll)}`);
 }
 // ^ One row per day, a stacked bar on one scale, a legend, and a tap shows the exact amounts.
 // ^ One chart at a time, so each day shows once: Cost first, the Tokens tab switches it.
@@ -1222,6 +1225,31 @@ const tokenWeek = await text("[data-chart=tokens] .usage-total .usage-rate");
 if (!/^\d+%$/.test(tokenWeek[0])) await fail(`the 7-day hit rate is ${tokenWeek}`);
 await evaluate(`document.querySelector('[data-chart=tokens] .usage-days > li:first-child .usage-day').click()`);
 await until(`document.querySelectorAll('[data-chart=tokens] .usage-days > li:first-child .usage-parts dd').length === ${tokenDays[0].kinds.length}`, "a tap on a token day shows its amounts");
+// ^ One set of filters drives the chart and the table: each choice reads again and both follow.
+const choose = async (name, value) => {
+  const before = JSON.stringify(await usageTotals());
+  await evaluate(`(() => { const select = document.querySelector('select[name=${name}]'); select.value = ${JSON.stringify(value)};
+    select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  // ^ The filters are busy until the read of the new choice came.
+  await until(`!document.querySelector('.usage-filters[aria-busy=true]') && JSON.stringify(${USAGE_TOTALS}) !== ${JSON.stringify(before)}`, `the usage did not follow ${name} ${value}`);
+  return usageTotals();
+};
+const usageOnlyToday = await choose("period", "today");
+if (usageOnlyToday.head !== "Today" || usageOnlyToday.days !== 1 || usageOnlyToday.turns !== usageAll.turns) await fail(`Today's usage is ${JSON.stringify(usageOnlyToday)} after ${JSON.stringify(usageAll)}`);
+await choose("period", "week");
+const usageManager = await choose("who", "manager");
+if (!(usageManager.turns > 0) || !(usageManager.turns < usageAll.turns)) await fail(`the manager's usage is ${JSON.stringify(usageManager)} of ${JSON.stringify(usageAll)}`);
+await choose("who", "");
+const agents = await evaluate(`[...document.querySelectorAll('select[name=agent] option')].map((option) => option.value)`);
+if (!agents.includes("claude") || !agents.includes("claude/fake-manager")) await fail(`the agent choices are ${agents}`);
+const usageAgent = await choose("agent", "claude/fake-manager");
+if (!(usageAgent.turns > 0) || usageAgent.turns > usageManager.turns || usageAgent.cost === "$0.00") await fail(`the manager model's usage is ${JSON.stringify(usageAgent)}, the manager's ${JSON.stringify(usageManager)}`);
+// ^ The limit window: fake Claude's 5-hour window starts at its newest turn, so it holds fewer
+// turns than the 7 days; picked with every agent it counts Claude's.
+await choose("agent", "");
+if (!usageAll.periods.includes("five_hour") || !usageAll.periods.includes("seven_day")) await fail(`the periods are ${usageAll.periods}`);
+const usageWindow = await choose("period", "five_hour");
+if (usageWindow.head !== "5-hour window" || usageWindow.agent !== "claude" || !(usageWindow.turns < usageAll.turns) || usageWindow.days !== 1) await fail(`the 5-hour window's usage is ${JSON.stringify(usageWindow)}`);
 await shot("usage");
 const usageSize = size;
 await resize([1280, 800, 1]);
@@ -3171,29 +3199,30 @@ await closeSheet("the page", `#/p/${plansArg}`);
   await click("input[name=bar][value=top]");
 
   // Usage: the all-projects total equals the sum of the projects' own usage.
-  const sums = await evaluate(`fetch('api/tasks').then((r) => r.json()).then((all) => {
-    const add = (key, who, field) => all.reduce((sum, view) => sum + view.usage[key][who][field], 0);
-    return { projects: all.filter((view) => view.usage.week.workers.cost_micro_usd + view.usage.week.manager.cost_micro_usd > 0).length,
-      week: add('week', 'workers', 'cost_micro_usd') + add('week', 'manager', 'cost_micro_usd'), today: add('today', 'workers', 'cost_micro_usd') + add('today', 'manager', 'cost_micro_usd'),
-      cells: ['today', 'week'].flatMap((key) => ['workers', 'manager'].map((who) => add(key, who, 'cost_micro_usd'))), turns: add('week', 'workers', 'turns') + add('week', 'manager', 'turns') }; })`);
+  const sums = await evaluate(`fetch('api/tasks').then((r) => r.json())
+    .then((all) => Promise.all(all.map((view) => fetch('api/tasks/' + view.project + '/usage').then((r) => r.json()))))
+    .then((each) => ({ projects: each.filter((usage) => usage.total.cost_micro_usd > 0).length,
+      week: each.reduce((sum, usage) => sum + usage.total.cost_micro_usd, 0), turns: each.reduce((sum, usage) => sum + usage.total.turns, 0) }))`);
   if (!(sums.week > 0) || sums.projects < 2) await fail(`the fixture projects have little usage: ${JSON.stringify(sums)}`);
   const usd = (micro) => `$${(micro / 1e6).toFixed(2)}`;
   await go("#/settings/usage");
   await until("!!document.querySelector('.usage[data-scope=all] [data-chart=cost] .usage-total .usage-cost')", "Settings > Usage shows no total");
   if ((await text(".subtabs a[aria-current=page]")).join() !== "Usage") await fail("Usage is not the current section");
-  await evaluate("document.querySelector('.usage-tokens').open = true");
   const cost = await text(".usage[data-scope=all] [data-chart=cost] .usage-total .usage-cost");
   const cells = await text("table[aria-label='Token use and cost'] tbody tr:first-child td");
   const turns = await text("table[aria-label='Token use and cost'] tbody tr:last-child td");
-  if (cost[0] !== usd(sums.week) || cells.join() !== sums.cells.map(usd).join() || Number(turns[2]) + Number(turns[3]) !== sums.turns) {
+  if (cost[0] !== usd(sums.week) || cells.join() !== usd(sums.week) || Number(turns[0]) !== sums.turns) {
     await fail(`the usage total is ${cost} ${cells} ${turns}, the projects' sum ${JSON.stringify(sums)}`);
   }
-  const perProject = await evaluate(`fetch('api/tasks/usage').then((r) => r.json()).then((usage) => ({ rows: usage.projects, week: usage.week, days: usage.days.length }))`);
-  const rowsWeek = perProject.rows.reduce((sum, row) => sum + row.week_micro_usd, 0);
-  const sorted = perProject.rows.every((row, index) => index === 0 || perProject.rows[index - 1].week_micro_usd >= row.week_micro_usd);
+  const perProject = await evaluate(`fetch('api/tasks/usage').then((r) => r.json()).then((usage) => ({ rows: usage.projects, days: usage.days.length }))`);
+  const rowsWeek = perProject.rows.reduce((sum, row) => sum + row.cost_micro_usd, 0);
+  const sorted = perProject.rows.every((row, index) => index === 0 || perProject.rows[index - 1].cost_micro_usd >= row.cost_micro_usd);
   if (rowsWeek !== sums.week || perProject.rows.length !== sums.projects || !sorted || perProject.days !== 7) await fail(`the per-project rows are ${JSON.stringify(perProject)} for ${JSON.stringify(sums)}`);
   const shownRows = await text("table[aria-label='Cost per project'] tbody tr");
   if (shownRows.length !== sums.projects) await fail(`Settings > Usage lists ${shownRows.length} projects, not ${sums.projects}`);
+  // ^ Claude's limit state from fake Claude's rate_limit_event: each window's share, status, reset.
+  const limitRows = await evaluate(`[...document.querySelectorAll("table[aria-label='Claude limit'] tbody tr")].map((row) => [...row.children].slice(0, 3).map((cell) => cell.textContent).join(" "))`);
+  if (limitRows.join() !== "5 hours 25% allowed,7 days 47% allowed") await fail(`the Claude limit rows are ${limitRows}`);
   await shot("settings-usage");
 }
 console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass in a bubble that stays in place, Skip, the fix task's line), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Roles (the ⋯ contact with its unread dot, its chat at #/p/<project>/r/<role> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);

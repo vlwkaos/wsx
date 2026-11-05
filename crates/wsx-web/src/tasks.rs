@@ -293,8 +293,6 @@ pub fn overview(scope: &Scope) -> Value {
             settings.deploy_command.is_some() && !settings.deploy_public
         }),
         "trial": ledger::trial_status(&scope.store, &store::read_deploys(&scope.store).unwrap_or_default()),
-        // ^ Spend today and in 7 days, workers and manager apart (docs/tasks.md "Usage").
-        "usage": task::usage::project(&scope.store, now),
     })
 }
 
@@ -1549,14 +1547,20 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
     watch.stamps.retain(|store, _| stores.contains(store));
 }
 
-/// The granted projects' spend summed (docs/web-client-tasks.md "All projects").
-pub fn usage_all(app: &App) -> Outcome<Value> {
+/// The granted projects' spend of `filter` summed (docs/web-client-tasks.md "All projects").
+pub fn usage_all(app: &App, filter: &task::usage::Filter) -> Outcome<Value> {
     let snapshot = chat::snapshot(&app.client)?;
     let projects: Vec<(String, String)> = scopes(&snapshot, &app.site.access)
         .into_iter()
         .map(|scope| (scope.name, scope.store))
         .collect();
-    Ok(task::usage::all(&projects, task::now_unix_ms()))
+    Ok(task::usage::all(&projects, task::now_unix_ms(), filter))
+}
+
+/// One project's spend of `filter` (docs/web-client-tasks.md "Usage").
+pub fn usage(scope: &Scope, filter: &task::usage::Filter) -> Value {
+    let project = [(scope.name.clone(), scope.store.clone())];
+    task::usage::all(&project, task::now_unix_ms(), filter)
 }
 
 /// Every granted project's overview, for a page that just opened.

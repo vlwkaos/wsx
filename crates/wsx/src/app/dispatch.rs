@@ -164,6 +164,8 @@ impl App {
                 (Action::Select, false) => list.open_selected(),
                 // ^ `u` is the Workspace's routine key; here it flips the day rows.
                 (Action::AddRoutine, false) => list.tokens = !list.tokens,
+                // ^ `a` is the Workspace's next-active key; here it picks the agent counted.
+                (Action::NextActive, false) => list.cycle_agent(),
                 (Action::NavigateDown, true) => list.scroll = list.scroll.saturating_add(1),
                 (Action::NavigateUp, true) => list.scroll = list.scroll.saturating_sub(1),
                 (Action::InputEscape | Action::Quit | Action::Select, true) => list.detail = None,

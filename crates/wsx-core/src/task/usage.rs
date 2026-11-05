@@ -7,7 +7,7 @@ use super::view::project_tasks;
 use super::{LogEvent, TurnUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -71,12 +71,65 @@ const PARTS: [&str; 7] = [
 const PART_OTHER: usize = 5;
 const PART_MANAGER: usize = 6;
 
-/// One model turn: when, of which part, and what it cost.
-#[derive(Debug, Clone, Copy)]
+/// One model turn: when, of which part, on which agent, and what it cost.
+#[derive(Debug, Clone)]
 pub struct Turn {
     pub unix_ms: u64,
     part: usize,
+    /// `adapter/model`, or `unknown` for a turn whose adapter no record names.
+    agent: Arc<str>,
     pub usage: Usage,
+}
+
+/// Who ran a turn: a task's worker or the project's manager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Who {
+    Workers,
+    Manager,
+}
+
+/// Which turns a spend counts (docs/web-client-tasks.md "Usage"). The default counts all of
+/// the 7 days.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Filter {
+    /// Only turns at or after this time (unix ms): local midnight, or a limit window's start.
+    pub since_ms: Option<u64>,
+    pub who: Option<Who>,
+    /// An adapter (`claude`) or one model of it (`claude/claude-opus-5-5`).
+    pub agent: Option<String>,
+}
+
+impl Filter {
+    /// A turn of this agent and of these hands; `since_ms` is the caller's.
+    fn takes(&self, turn: &Turn) -> bool {
+        let who = match self.who {
+            Some(Who::Workers) => turn.part != PART_MANAGER,
+            Some(Who::Manager) => turn.part == PART_MANAGER,
+            None => true,
+        };
+        who && self.agent.as_deref().is_none_or(|agent| {
+            *turn.agent == *agent
+                || turn
+                    .agent
+                    .strip_prefix(agent)
+                    .is_some_and(|model| model.starts_with('/'))
+        })
+    }
+}
+
+/// `adapter/model` of a turn: its own adapter, else `adapter` (its task's, from task.json).
+/// A turn with neither is `unknown`; one with no model is `<adapter>/unknown`.
+fn agent_of(usage: Option<&TurnUsage>, adapter: &str) -> Arc<str> {
+    let own = usage.map_or("", |usage| usage.adapter.as_str());
+    let adapter = if own.is_empty() { adapter } else { own };
+    let model = usage.map_or("", |usage| usage.model.as_str());
+    match (adapter, model) {
+        ("", _) => "unknown".into(),
+        (adapter, "") => format!("{adapter}/unknown").into(),
+        (adapter, model) => format!("{adapter}/{model}").into(),
+    }
 }
 
 /// "$3.42".
@@ -97,10 +150,14 @@ pub fn tokens(count: u64) -> String {
 /// 94f0b26) has it 0 and `cost_micro_usd` holding the session's running total, so its
 /// turn's part is the difference from the previous such line, as `scripts/usage-report.py`
 /// counts it.
-fn turns<'a>(lines: impl Iterator<Item = (u64, usize, Option<&'a TurnUsage>, bool)>) -> Vec<Turn> {
+fn turns<'a>(
+    lines: impl Iterator<Item = (u64, usize, Option<&'a TurnUsage>, bool)>,
+    adapter: &str,
+) -> Vec<Turn> {
     let mut running = 0;
     lines
         .map(|(unix_ms, part, usage, ping)| {
+            let agent = agent_of(usage, adapter);
             let legacy = usage.is_some_and(|usage| usage.session_cost_micro_usd == 0);
             let usage = usage.cloned().unwrap_or_default();
             let mut cost = usage.cost_micro_usd;
@@ -111,6 +168,7 @@ fn turns<'a>(lines: impl Iterator<Item = (u64, usize, Option<&'a TurnUsage>, boo
             Turn {
                 unix_ms,
                 part,
+                agent,
                 usage: Usage {
                     cost_micro_usd: cost,
                     input_tokens: usage.input_tokens,
@@ -155,11 +213,16 @@ fn cached(files: &[PathBuf], read: impl FnOnce() -> Vec<Turn>) -> Turns {
     turns
 }
 
-/// The worker turns of a task: its log's `result` and `ping` lines.
+/// The worker turns of a task: its log's `result` and `ping` lines. A line from before
+/// `adapter` counts under the task's adapter. ref: docs/tasks.md "Usage"
 pub fn task_turns(dir: &TaskDir) -> Turns {
     cached(&[dir.file(store::LOG_FILE)], || {
         let log = dir.read_log().unwrap_or_default();
-        turns(log.iter().filter_map(|entry| match &entry.event {
+        let adapter = dir
+            .read_record()
+            .map(|record| record.adapter)
+            .unwrap_or_default();
+        let lines = log.iter().filter_map(|entry| match &entry.event {
             LogEvent::Result { usage, step, .. } => {
                 let part = step
                     .as_deref()
@@ -170,7 +233,8 @@ pub fn task_turns(dir: &TaskDir) -> Turns {
             // ^ A keep-warm ping is no step's work. ref: docs/tasks.md "Context rotation"
             LogEvent::Ping { usage } => Some((entry.unix_ms, PART_OTHER, usage.as_ref(), true)),
             _ => None,
-        }))
+        });
+        turns(lines, &adapter)
     })
 }
 
@@ -179,7 +243,8 @@ pub fn task(dir: &TaskDir) -> Usage {
     Usage::since(&task_turns(dir), 0)
 }
 
-/// The manager's turns: its replies and pings in both log files.
+/// The manager's turns: its replies and pings in both log files. A line from before `adapter`
+/// is `unknown`: no record tells which agent the manager ran then.
 pub fn manager_turns(dir: &ManagerDir) -> Turns {
     cached(&dir.log_files(), || {
         manager_log_turns(&dir.read_log().unwrap_or_default())
@@ -187,17 +252,21 @@ pub fn manager_turns(dir: &ManagerDir) -> Turns {
 }
 
 pub fn manager_log_turns(log: &[ManagerEntry]) -> Vec<Turn> {
-    turns(log.iter().filter_map(|entry| match &entry.event {
+    let lines = log.iter().filter_map(|entry| match &entry.event {
         ManagerEvent::Reply { usage, .. } => {
             Some((entry.unix_ms, PART_MANAGER, usage.as_ref(), false))
         }
         ManagerEvent::Ping { usage } => Some((entry.unix_ms, PART_MANAGER, usage.as_ref(), true)),
         _ => None,
-    }))
+    });
+    turns(lines, "")
 }
 
 /// How many days the project's usage covers, today included.
 const DAYS: usize = 7;
+/// The earliest a filter's `since_ms` reaches back: a 7-day limit window can start before
+/// the 7 days' first midnight.
+const SINCE_MAX_MS: u64 = 8 * DAY_MS;
 
 /// Workers and manager apart, over one window.
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -214,12 +283,15 @@ struct Day {
     usage: Usage,
 }
 
-/// What `project` and `all` sum: the windows and the days, newest first.
+/// What `project` and `all` sum: the windows, the days from the filter's start (newest
+/// first), the filter's whole slice, and the agents of the 7 days.
 #[derive(Debug, Clone, Default)]
 struct Spend {
     today: Window,
     week: Window,
     days: Vec<Day>,
+    total: Usage,
+    agents: BTreeSet<String>,
 }
 
 impl Spend {
@@ -239,10 +311,8 @@ impl Spend {
             }
             mine.usage.add(&theirs.usage);
         }
-    }
-
-    fn cost(window: &Window) -> u64 {
-        window.workers.cost_micro_usd + window.manager.cost_micro_usd
+        self.total.add(&other.total);
+        self.agents.extend(other.agents.iter().cloned());
     }
 
     fn json(&self) -> Value {
@@ -263,17 +333,25 @@ impl Spend {
     }
 }
 
-/// The project's spend: see `Spend`. A task not updated in the 7 days had no turn in them and
-/// is not read.
-fn spend(project_id: &str, now_ms: u64) -> Spend {
+/// The project's spend: see `Spend`. The windows follow the filter's agent and hands; the
+/// days and the total also its start, the 7 days when it names none. A task not updated
+/// since then had no turn in them and is not read.
+fn spend(project_id: &str, now_ms: u64, filter: &Filter) -> Spend {
     let today = local_midnight_ms(now_ms);
-    let mut starts = vec![today];
+    let mut week = today;
     for _ in 1..DAYS {
+        week = local_midnight_ms(week.saturating_sub(1));
+    }
+    let since = filter
+        .since_ms
+        .unwrap_or(week)
+        .max(now_ms.saturating_sub(SINCE_MAX_MS));
+    let mut starts = vec![today];
+    while starts[starts.len() - 1] > since {
         starts.push(local_midnight_ms(
             starts[starts.len() - 1].saturating_sub(1),
         ));
     }
-    let week = starts[DAYS - 1];
     let mut sum = Spend {
         days: starts
             .iter()
@@ -284,20 +362,32 @@ fn spend(project_id: &str, now_ms: u64) -> Spend {
             .collect(),
         ..Spend::default()
     };
-    let add_days = |days: &mut [Day], turns: &[Turn]| {
+    let add = |sum: &mut Spend, turns: &[Turn]| {
         for turn in turns.iter().filter(|turn| turn.unix_ms >= week) {
-            if let Some(day) = starts.iter().position(|start| turn.unix_ms >= *start) {
-                days[day].costs[turn.part] += turn.usage.cost_micro_usd;
-                days[day].usage.add(&turn.usage);
+            if let Some((adapter, _)) = turn.agent.split_once('/') {
+                sum.agents.insert(adapter.to_string());
             }
+            sum.agents.insert(turn.agent.to_string());
         }
+        let taken: Vec<Turn> = turns
+            .iter()
+            .filter(|turn| filter.takes(turn))
+            .cloned()
+            .collect();
+        for turn in taken.iter().filter(|turn| turn.unix_ms >= since) {
+            if let Some(day) = starts.iter().position(|start| turn.unix_ms >= *start) {
+                sum.days[day].costs[turn.part] += turn.usage.cost_micro_usd;
+                sum.days[day].usage.add(&turn.usage);
+            }
+            sum.total.add(&turn.usage);
+        }
+        (Usage::since(&taken, today), Usage::since(&taken, week))
     };
     for (dir, record) in project_tasks(project_id).unwrap_or_default() {
-        if record.is_ok_and(|record| record.updated_unix_ms >= week) {
-            let turns = task_turns(&dir);
-            add_days(&mut sum.days, &turns);
-            sum.today.workers.add(&Usage::since(&turns, today));
-            sum.week.workers.add(&Usage::since(&turns, week));
+        if record.is_ok_and(|record| record.updated_unix_ms >= since.min(week)) {
+            let (today, week) = add(&mut sum, &task_turns(&dir));
+            sum.today.workers.add(&today);
+            sum.week.workers.add(&week);
         }
     }
     let manager = ManagerDir::existing(project_id)
@@ -305,39 +395,89 @@ fn spend(project_id: &str, now_ms: u64) -> Spend {
         .flatten()
         .map(|dir| manager_turns(&dir))
         .unwrap_or_default();
-    add_days(&mut sum.days, &manager);
-    sum.today.manager = Usage::since(&manager, today);
-    sum.week.manager = Usage::since(&manager, week);
+    (sum.today.manager, sum.week.manager) = add(&mut sum, &manager);
     sum
 }
 
 /// The project's spend today (since local midnight) and in the last 7 days from a local
 /// midnight, workers and manager apart, and per day (newest first) by `PARTS`.
 pub fn project(project_id: &str, now_ms: u64) -> Value {
-    spend(project_id, now_ms).json()
+    spend(project_id, now_ms, &Filter::default()).json()
 }
 
-/// `project` summed over `projects` (name, task store id), plus `projects`: each one's
-/// cost today and in 7 days, the dearest 7 days first. A project that spent nothing in 7 days
-/// has no row. ref: docs/web-client-tasks.md "All projects"
-pub fn all(projects: &[(String, String)], now_ms: u64) -> Value {
+/// `project`'s spend of `filter` summed over `projects` (name, task store id), plus `total`
+/// (the filter's slice), `agents` (each adapter and `adapter/model` of the 7 days, for the
+/// agent choice), `projects` (each one's cost in the slice, the dearest first; one that spent
+/// nothing has no row) and `limits` (see `limits`). ref: docs/web-client-tasks.md "Usage"
+pub fn all(projects: &[(String, String)], now_ms: u64, filter: &Filter) -> Value {
     let mut sum = Spend::default();
-    let mut rows: Vec<(String, u64, u64)> = Vec::new();
+    let mut rows: Vec<(String, u64)> = Vec::new();
     for (name, store) in projects {
-        let each = spend(store, now_ms);
+        let each = spend(store, now_ms, filter);
         sum.add(&each);
-        let week = Spend::cost(&each.week);
-        if week > 0 {
-            rows.push((name.clone(), Spend::cost(&each.today), week));
+        if each.total.cost_micro_usd > 0 {
+            rows.push((name.clone(), each.total.cost_micro_usd));
         }
     }
-    rows.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     let mut value = sum.json();
+    value["total"] = json!(sum.total);
+    value["agents"] = json!(sum.agents);
     value["projects"] = rows
         .into_iter()
-        .map(|(name, today, week)| json!({ "name": name, "today_micro_usd": today, "week_micro_usd": week }))
+        .map(|(name, cost)| json!({ "name": name, "cost_micro_usd": cost }))
         .collect();
+    value["limits"] = limits(now_ms);
     value
+}
+
+/// How long each of Claude's limit windows lasts, by the kind `rate_limit_info` names.
+const WINDOWS: [(&str, u64); 2] = [("five_hour", 5 * 3_600_000), ("seven_day", 7 * DAY_MS)];
+
+/// Claude's newest limit state (`store::rate_limit` of the `claude` account; Pi reports none):
+/// `[{agent, as_of_ms, status, windows}]`, each window `{kind, status, utilization,
+/// resets_ms, start_ms}` that has not reset yet. `utilization` (0 to 1) and `start_ms`
+/// (`resets_ms` less the window's length) only when known. Empty with no record or none left.
+/// ref: docs/tasks.md "Usage"
+pub fn limits(now_ms: u64) -> Value {
+    let Some(record) = store::rate_limit("claude", now_ms) else {
+        return json!([]);
+    };
+    let info = &record["info"];
+    let window = |kind: &str, each: &Value| {
+        let resets_ms = each["resetsAt"].as_u64()?.checked_mul(1000)?;
+        (resets_ms > now_ms).then(|| {
+            let length = WINDOWS.iter().find(|(name, _)| *name == kind);
+            json!({
+                "kind": kind,
+                "status": each["status"].as_str().unwrap_or(""),
+                "utilization": each["utilization"].as_f64(),
+                "resets_ms": resets_ms,
+                "start_ms": length.map(|(_, length)| resets_ms.saturating_sub(*length)),
+            })
+        })
+    };
+    // ^ Claude Code 2.1.316 names each window in `unifiedWindows`; an older line names one.
+    let windows: Vec<Value> = match info["unifiedWindows"].as_object() {
+        Some(each) => each
+            .iter()
+            .filter_map(|(kind, each)| window(kind, each))
+            .collect(),
+        None => info["rateLimitType"]
+            .as_str()
+            .and_then(|kind| window(kind, info))
+            .into_iter()
+            .collect(),
+    };
+    if windows.is_empty() {
+        return json!([]);
+    }
+    json!([{
+        "agent": "claude",
+        "as_of_ms": record["unix_ms"],
+        "status": info["status"].as_str().unwrap_or(""),
+        "windows": windows,
+    }])
 }
 
 /// The start of `now_ms`'s day in this machine's zone; 24 hours back when that cannot be told.

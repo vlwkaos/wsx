@@ -23,7 +23,7 @@ fn run(adapter: &str, name: &str, cost_base: u64) -> (Vec<AgentLine>, TurnResult
         true
     };
     match adapter {
-        "claude" => super::claude::read_stream(stream.as_slice(), cost_base, keep),
+        "claude" => super::claude::read_stream(stream.as_slice(), cost_base, |_| (), keep),
         _ => super::pi::read_stream(stream.as_slice(), cost_base, keep),
     }
     let mut results = lines

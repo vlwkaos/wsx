@@ -317,6 +317,7 @@ impl Run {
             .started
             .map_or(0, |started| started.elapsed().as_millis() as u64);
         usage.session_cost_micro_usd = self.cost_base;
+        usage.adapter = "pi".into();
         TurnResult {
             is_error: aborted || failed,
             subtype: match (aborted, failed) {
