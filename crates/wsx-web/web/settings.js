@@ -1,4 +1,5 @@
-// Settings: this device's appearance, its notification switches and its pairing.
+// Settings: General (notifications, version, pairing), UI (appearance, header, bottom bar) and Usage.
+// Every setting here is kept per device.
 import { api } from "./api.js";
 import { html, useEffect, useState } from "./lib.js";
 import { can, loadPush, pageBuild, reloadForBuild, setMuted, state, tabs, update, useStore } from "./store.js";
@@ -7,8 +8,8 @@ import { AllUsage } from "./usage.js";
 
 // The two switches of this device (docs/web-client.md "Notifications").
 const SWITCHES = [
-  ["manager", "Manager needs me", "A task waits for you, an approval is asked, or there is something new to check.", "task_view"],
-  ["agents", "An agent needs me", "A session's agent needs your input or stopped with an error."],
+  ["manager", "Manager needs me", "Tasks, approvals, things to check", "task_view"],
+  ["agents", "An agent needs me", "Input needed or an error"],
 ];
 
 function keyBytes(base64url) {
@@ -68,7 +69,7 @@ function Push() {
   };
   return html`
     <section aria-label="Notifications">
-      <h2 class="label">Notifications on this device</h2>
+      <h2 class="label">Notifications</h2>
       <div class="options">
         ${SWITCHES.filter(([, , , needs]) => !needs || can(needs)).map(([name, label, hint]) => html`
           <label class="option option-row" key=${name}>
@@ -87,13 +88,33 @@ function Push() {
     </section>`;
 }
 
-// The bottom bar's tabs, one switch each, from the one list the bar reads (store.js `tabs`).
+// Appearance, header position and the bottom bar's tabs, one switch each, from the one list the bar reads (store.js `tabs`).
 // Settings is always shown, so the way back to these switches stays (docs/web-client.md "Settings").
 function Interface() {
   const store = useStore();
+  const [current, setCurrent] = useState(scheme());
   return html`
+    ${hasDarkScheme() && html`
+      <section aria-label="Appearance">
+        <h2 class="label">Appearance</h2>
+        <div class="options">
+          ${[["dark", "Dark"], ["light", "Light"]].map(([value, label]) => html`
+            <label class="option" key=${value}>
+              <input type="radio" name="scheme" value=${value} checked=${current === value}
+                onChange=${() => { setScheme(value); setCurrent(value); }} />${label}</label>`)}
+        </div>
+      </section>`}
+    <section aria-label="Header">
+      <h2 class="label">Header</h2>
+      <div class="options">
+        ${[["top", "Top"], ["bottom", "Bottom"]].map(([value, label]) => html`
+          <label class="option" key=${value}>
+            <input type="radio" name="bar" value=${value} checked=${store.bar === value}
+              onChange=${() => setBar(value)} />${label}</label>`)}
+      </div>
+    </section>
     <section aria-label="Bottom bar">
-      <h2 class="label">Bottom bar on this device</h2>
+      <h2 class="label">Bottom bar</h2>
       <div class="options">
         ${tabs().map(([name, , label]) => {
           const always = name === "settings";
@@ -110,8 +131,6 @@ function Interface() {
 }
 
 function General() {
-  const store = useStore();
-  const [current, setCurrent] = useState(scheme());
   const [error, setError] = useState("");
   const unpair = async () => {
     const sure = await confirmDialog({
@@ -129,25 +148,6 @@ function General() {
     }
   };
   return html`
-    ${hasDarkScheme() && html`
-      <section aria-label="Appearance">
-        <h2 class="label">Appearance on this device</h2>
-        <div class="options">
-          ${[["dark", "Dark"], ["light", "Light"]].map(([value, label]) => html`
-            <label class="option" key=${value}>
-              <input type="radio" name="scheme" value=${value} checked=${current === value}
-                onChange=${() => { setScheme(value); setCurrent(value); }} />${label}</label>`)}
-        </div>
-      </section>`}
-    <section aria-label="Header">
-      <h2 class="label">Header on this device</h2>
-      <div class="options">
-        ${[["top", "Top"], ["bottom", "Bottom, in reach of a thumb"]].map(([value, label]) => html`
-          <label class="option" key=${value}>
-            <input type="radio" name="bar" value=${value} checked=${store.bar === value}
-              onChange=${() => setBar(value)} />${label}</label>`)}
-      </div>
-    </section>
     ${can("push") && html`<${Push} />`}
     ${state.build && html`
       <section aria-label="Version">

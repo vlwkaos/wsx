@@ -836,7 +836,7 @@ async function others() {
   // ^ `#/p/<project>/files/<path>`, the address of a routine post's file link, opens that file.
   await evaluate("location.hash = location.hash.replace(/\\/files.*$/, '/files/README.md')");
   await until("/\\/files\\/README\\.md$/.test(location.hash) && document.querySelector('.file-markdown h1')?.textContent === 'design'", "a file link did not open the file");
-  await go("#/settings");
+  await go("#/settings/ui");
   await until("!!document.querySelector('input[name=scheme]')", "settings did not open");
   await sound("settings");
   await shot("settings");
@@ -866,7 +866,7 @@ for (const next of SIZES) {
 }
 await resize(SIZES[1]);
 await largeAnswer();
-await go("#/settings");
+await go("#/settings/ui");
 await until("!!document.querySelector('input[name=scheme]')", "settings did not reopen after the large answer");
 
 // Once, at 390 px: the device's light choice, the dialog, reduced motion, the installed shell.
@@ -913,14 +913,14 @@ await shot("settings-light");
   await send("Page.reload");
   await until("document.querySelectorAll('.tabbar a').length === 3", "the bar did not return with every tab shown");
   // The header at the bottom leaves the pill where it was.
-  await go("#/settings");
+  await go("#/settings/ui");
   await clickIt("input[name=bar][value=bottom]");
   await go("#/");
   await until("document.querySelectorAll('.tabbar a').length === 3", "the bar is gone with the header at the bottom");
   shape = await barShape();
   if (!equal(shape) || !shape.frame) await fail(`the bar with the header at the bottom is ${JSON.stringify(shape)}`);
   await shot("tabbar-header-bottom");
-  await go("#/settings");
+  await go("#/settings/ui");
   await clickIt("input[name=bar][value=top]");
   await scheme("light");
 }
@@ -985,7 +985,7 @@ await openSession("markdown");
 await until("!!document.querySelector('.markdown table')", "the markdown answer did not render in the light scheme");
 await evaluate("document.querySelector('.log').scrollTop = 0");
 await shot("chat-markdown-light");
-await go("#/settings");
+await go("#/settings/ui");
 await until("!!document.querySelector('input[name=scheme]')", "settings did not reopen");
 await evaluate("document.querySelector('input[name=scheme][value=dark]').click()");
 if ((await evaluate("getComputedStyle(document.body).backgroundColor")) !== background) await fail("choosing dark did not restore the dark scheme");

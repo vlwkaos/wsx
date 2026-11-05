@@ -30,7 +30,7 @@ Role use: `color-bg` is the page and the terminal. `color-surface` is the compos
 
 Dark scheme rule: a theme has a dark scheme when it has a `[tokens_dark]` table. A theme that changes any `color-*` token in `[tokens]` and has no `[tokens_dark]` is light only; it does not inherit the dark colors of the theme it extends. A light-only theme is served with `color-scheme: light`.
 
-A theme with a dark scheme is shown dark by default. A device switches to light under Settings, "Appearance on this device"; the choice is kept in that browser as `data-scheme="light"` on the page root. The operating system preference is not read. An element with `data-scheme="dark"` uses the dark tokens in either case: the terminal does, so there is no light bar around the dark screen.
+A theme with a dark scheme is shown dark by default. A device switches to light under Settings > UI, "Appearance"; the choice is kept in that browser as `data-scheme="light"` on the page root. The operating system preference is not read. An element with `data-scheme="dark"` uses the dark tokens in either case: the terminal does, so there is no light bar around the dark screen.
 
 ### Contrast of the default theme
 
