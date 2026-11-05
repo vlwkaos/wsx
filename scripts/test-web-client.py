@@ -3244,8 +3244,14 @@ def task_journey(args):
             wait(lambda: sum('#%d landed r1' % n in e.get('text', '') for n in (7, 8) for e in js('task', 'chat', '-p', 'ui')['entries']) == 2,
                  'the manager heard of #7 and #8', timeout=30)
 
-            # ^ Answered before the next message: an owner message goes before waiting events and
-            # takes them along (manager.rs `accept`), and that turn's reply is not the one to events.
+            # A deploy of the default branch tip: the brief says it is up to date until a task lands.
+            # A deploy by hand answers that it started; its detached run records the result.
+            # ^ A landing wakes no turn (`event_wakes`; the host sees a task that is ready and lands
+            # within one second only as landed), so the lands wait for a waking event. The deploy's
+            # is one, and it comes before any message of another manager, whose turn would take the
+            # lands along and answer them in its own reply (manager.rs `accept`).
+            assert js('task', 'deploy', '-p', 'ui')['started'] is True
+            wait(lambda: js('task', 'deployed', '-p', 'ui')['deploy'].get('behind') == 0, 'the deploy of ui was recorded', timeout=60)
             def lands_answered():
                 entries = js('task', 'chat', '-p', 'ui')['entries']
                 lands = {e['id'] for e in entries if e['kind'] != 'reply' and re.search(r'#[78] landed r1', e.get('text', ''))}
@@ -3269,10 +3275,6 @@ def task_journey(args):
                 return [e for e in entries if e['kind'] == 'reply' and asked & set(e['to'])]
             wait(answered, 'plans answered the reply of ui', timeout=30)
             assert all(e.get('quiet') for e in answered()), answered()
-            # A deploy of the default branch tip: the brief says it is up to date until a task lands.
-            # A deploy by hand answers that it started; its detached run records the result.
-            assert js('task', 'deploy', '-p', 'ui')['started'] is True
-            wait(lambda: js('task', 'deployed', '-p', 'ui')['deploy'].get('behind') == 0, 'the deploy of ui was recorded', timeout=60)
             # plans' deploy fails with 60 lines: its project overview folds their end.
             failed = subprocess.run([str(wsx), 'task', 'deploy', '-p', 'plans', '--json'], env=dict(env, WSX_FIXTURE_DEPLOY_FAIL='1'),
                                     cwd=project, capture_output=True, text=True, timeout=60)
