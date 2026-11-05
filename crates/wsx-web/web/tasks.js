@@ -4,7 +4,7 @@
 // go straight to wsx.
 import { api } from "./api.js";
 import { html, Icon, keepIn, readMap, unreadNews, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
-import { can, goBack, shows, state, touch, update, useEventLoad, useStore } from "./store.js";
+import { can, goBack, leaveFor, shows, state, touch, update, useEventLoad, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, inlinePasted, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
 import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
@@ -956,6 +956,8 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
   };
   // ^ A sheet closes as Back does: to the entry under it, else to this chat.
   const leave = () => goBack(`#/p/${id}`);
+  // ^ A sheet's Answer goes to this chat, also when another screen is under the sheet.
+  const answer = (n, words) => { mention(n, words); leaveFor(`#/p/${id}`); };
   const header = html`
     <header class="bar">
       <${Back} fallback=${role ? `#/p/${id}` : "#/"} />
@@ -1004,7 +1006,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
       ${menu}
       ${task != null && html`
         <${Sheet} key=${`t${task}`} label=${`Task #${task}`} onClose=${leave}>
-          ${(grip) => html`<${TaskPage} key=${task} project=${id} task=${task} onClose=${leave} onMention=${mention} grip=${grip} />`}
+          ${(grip) => html`<${TaskPage} key=${task} project=${id} task=${task} onClose=${leave} onMention=${answer} grip=${grip} />`}
         </${Sheet}>`}
       ${page && html`
         <${Sheet} key="page" label="Overview" onClose=${leave}>
@@ -1012,7 +1014,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
         </${Sheet}>`}
       ${checks && html`
         <${Sheet} key="checks" label="To check" fit onClose=${leave}>
-          ${(grip) => html`<${ChecksPage} project=${id} onClose=${leave} onMention=${mention} grip=${grip} />`}
+          ${(grip) => html`<${ChecksPage} project=${id} onClose=${leave} onMention=${answer} grip=${grip} />`}
         </${Sheet}>`}
       ${usage && html`
         <${Sheet} key="usage" label="Usage" fit onClose=${leave}>

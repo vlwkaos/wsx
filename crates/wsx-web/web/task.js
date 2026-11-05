@@ -185,7 +185,6 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
     (detail.waiting?.on === "owner" || detail.state === "failed") && button("Answer", (event) => {
       event.currentTarget.closest("dialog").close();
       onMention(task);
-      onClose();
     }, { "aria-label": `Answer #${task}: mention it to the manager` }, "reply"),
     !trial && actions.includes("land") && button(action.busy === "land" ? "Landing…" : "Land", () => action.run("land"), {}, "land"),
     // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
@@ -208,7 +207,7 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
   const lastResult = !summaryIsCurrent(detail) && detail.result?.summary?.trim();
   const checkRows = html`
     <ul class="check-list">${detail.to_check.map((item) => html`
-      <${CheckRow} key=${item.id} project=${project} item=${item} revision=${detail.revision} onChanged=${load} onMention=${(n, words) => { onMention(n, words); onClose(); }} />`)}
+      <${CheckRow} key=${item.id} project=${project} item=${item} revision=${detail.revision} onChanged=${load} onMention=${onMention} />`)}
     </ul>`;
   return html`
     <div class="page task-page">
