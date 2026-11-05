@@ -2830,7 +2830,7 @@ def run(wsx, wsxd, work, owned):
     for n in (first, second):
         js('task', 'close', n, '--discard')
 
-    # 27c. A stop outlasts a limit wait (docs/tasks.md "Stop"): the reset starts no turn, the task
+    # 27c. A stop outlasts a limit wait (docs/tasks.md "Host", Stop): the reset starts no turn, the task
     # waits on the owner, and an add resumes it.
     mark('27c')
     held = js('task', 'new', 'LIMIT 4 WORK lh.txt')['id']
@@ -3403,7 +3403,7 @@ def run(wsx, wsxd, work, owned):
     answers = [t['message'] for t in traces() if 'Your check-run ended. Its answer' in t.get('message', '') and str(late_gate) in t['message']]
     assert len(answers) == 1 and 'check 2 `while [ ! -e' in answers[0] and ': exit 0' in answers[0], answers
     js('task', 'close', late, '--discard')
-    # 32t1. A stop outlasts a check-run (docs/tasks.md "Stop"): its late answer is logged and
+    # 32t1. A stop outlasts a check-run (docs/tasks.md "Host", Stop): its late answer is logged and
     # kept, starts no turn, and joins the turn the next add starts.
     mark('32t1')
     stop_gate = base / 'stop-gate'
