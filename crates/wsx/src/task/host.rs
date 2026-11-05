@@ -162,7 +162,7 @@ struct Host {
     carried: bool,
     stop_requested: bool,
     /// `wsx task stop` ran and no add or steer came since: nothing else starts a turn.
-    /// ref: docs/tasks.md "Stop"
+    /// ref: docs/tasks.md "Host" (Stop)
     stopped: bool,
     /// Counts check runs and stops: the results of an older run (one a stop left running) are
     /// logged and nothing more.
