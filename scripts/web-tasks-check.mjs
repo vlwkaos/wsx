@@ -3022,10 +3022,16 @@ if (Math.abs(shifted) > 2) await fail(`Show earlier moved the row in view by ${s
 await toLatest("390 px");
 // --- The manager quotes an earlier message by id (docs/tasks.md "Manager"): its reply shows the
 // quote as one line over its words, and a tap goes to the quoted message.
-await say("the plan is on the overview");
+// ^ The say route limits a burst: a refused message waits and goes again.
+const sayAgain = async (words) => {
+  let status = 0;
+  for (let attempt = 0; attempt < 20 && status !== 200; attempt++) { status = await say(words); if (status !== 200) await pause(1000); }
+  if (status !== 200) await fail(`the manager was not told ${JSON.stringify(words)}: ${status}`);
+};
+await sayAgain("the plan is on the overview");
 await until("[...document.querySelectorAll('.log .bubble[data-side=out]')].some((node) => node.textContent.includes('the plan is on the overview'))", "the message to be quoted did not show");
 const planId = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => data.entries.filter((entry) => entry.kind === 'message' && entry.from === 'owner' && entry.text === 'the plan is on the overview').at(-1).id)`);
-await say(`QUOTE ${planId} still waiting on #8`);
+await sayAgain(`QUOTE ${planId} still waiting on #8`);
 await until("!!document.querySelector('.log .bubble[data-side=in] button.quote') && !document.querySelector('.log .typing')", "the manager's quote did not show", 120);
 const quoted = await evaluate(`(() => { const button = [...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1);
   return { quote: button.textContent, body: button.closest('.bubble-body').textContent.trim(), blockquote: !!button.closest('.bubble-body').querySelector('blockquote') }; })()`);
