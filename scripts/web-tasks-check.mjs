@@ -3369,8 +3369,23 @@ await closeSheet("the page", `#/p/${plansArg}`);
       || middle.pillBottom > middle.height - 34 || end.lastBottom > end.pillTop) await fail(`${hash}: the bar does not float: ${JSON.stringify({ middle, end })}`);
   };
   for (const hash of ["#/sessions", "#/settings", "#/settings/ui"]) await floating(hash);
+  // ^ The count badge (tab bar pseudo-element and Home row .count) shares --size-badge: 16 px high, a circle for one digit, "99+" wider and uncut.
+  const badges = await evaluate(`(() => { const out = {}; const icon = document.querySelector('.tab-icon');
+    const read = (label, style, text) => { out[label] = { height: parseFloat(style.height), width: parseFloat(style.width), text }; };
+    for (const text of ['2', '99+']) { icon.setAttribute('data-count', text); read('tab ' + text, getComputedStyle(icon, '::after'), text); }
+    icon.removeAttribute('data-count');
+    const host = document.querySelector('.screen > .page > .scroll');
+    for (const text of ['2', '99+']) { const node = document.createElement('span'); node.className = 'count'; node.textContent = text; node.style.cssText = 'position:absolute;top:0;left:0';
+      host.append(node); const box = node.getBoundingClientRect(); out['row ' + text] = { height: box.height, width: box.width, text, cut: node.scrollWidth > node.clientWidth }; node.remove(); }
+    out.token = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--size-badge'));
+    return out; })()`);
+  const roundOne = ["tab 2", "row 2"].every((key) => badges[key].height === 16 && badges[key].width === badges[key].height);
+  const wide = ["tab 99+", "row 99+"].every((key) => badges[key].height === 16 && badges[key].width > 16 && !badges[key].cut);
+  if (badges.token !== 16 || !roundOne || !wide) await fail(`the count badge is not the shared 16 px circle: ${JSON.stringify(badges)}`);
+  await evaluate("document.querySelector('.tab-icon').setAttribute('data-count', '2')");
   await evaluate("document.querySelector('.screen > .page > .scroll').scrollTop = 300");
   for (const scheme of ["light", "dark"]) { await inScheme(scheme); await shot(`tabbar-floating-${scheme}`); }
+  await evaluate("document.querySelector('.tab-icon').removeAttribute('data-count')");
   await send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, bottom: 0 } });
   await go("#/settings/ui");
   await until("document.querySelectorAll('.options input[name^=tab-]').length === 3", "Settings > UI does not list the three tabs");

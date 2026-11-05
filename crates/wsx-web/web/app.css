@@ -76,12 +76,17 @@ body[data-keyboard] .tabbar { padding-bottom: var(--space-2); }
 .tabbar a:active { background: var(--color-raised); }
 .tabbar a:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
 .tab-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Hook: .count, .tab-icon[data-count]::after — the count badge (Home row, tab bar): one size from
+   --size-badge, so one digit is a circle and "99+" widens it. */
+.count, .tab-icon[data-count]::after {
+  box-sizing: border-box; min-width: var(--size-badge); height: var(--size-badge); padding: 0 var(--space-1); border-radius: var(--size-badge);
+  text-align: center; font-size: var(--font-size-badge); font-weight: var(--font-weight-medium); line-height: var(--size-badge); font-variant-numeric: tabular-nums;
+}
+.count { flex: 0 0 auto; }
 .tab-icon { position: relative; display: flex; }
 .tab-icon[data-count]::after {
-  content: attr(data-count); position: absolute; bottom: 50%; left: 50%; box-sizing: border-box;
-  min-width: calc(var(--space-4) * 1.25); padding: 0 var(--space-1); border-radius: var(--space-4);
-  background: var(--color-danger); color: var(--color-bg); text-align: center;
-  font-size: var(--font-size-label); font-weight: var(--font-weight-medium); line-height: calc(var(--space-4) * 1.25); font-variant-numeric: tabular-nums;
+  content: attr(data-count); position: absolute; bottom: 50%; left: 50%;
+  background: var(--color-danger); color: var(--color-bg);
 }
 .placeholder { margin: auto; color: var(--color-faint); }
 
@@ -878,10 +883,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .home-rows { position: relative; }
 .home-rows > [data-ghost] { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
 .row-typing { display: inline-flex; align-items: center; gap: var(--space-1); margin-inline-end: var(--space-2); vertical-align: middle; }
-.count {
-  flex: 0 0 auto; min-width: calc(var(--space-4) * 1.25); padding: 0 var(--space-1); border-radius: var(--space-4);
-  text-align: center; font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); font-variant-numeric: tabular-nums;
-}
+
 .count[data-tone="attention"] { background: var(--color-attention); color: var(--color-bg); }
 /* The number carries the chip's baseline, so "#6" sits on the line of the text around it; the
    dot alone is centered. An inline flex box takes the baseline of its first item, the dot,

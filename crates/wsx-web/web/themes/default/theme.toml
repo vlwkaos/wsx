@@ -63,6 +63,8 @@ font-terminal = "'JetBrains Mono', 'Symbols Nerd Font Mono', ui-monospace, 'SF M
 font-size-md = "15px"
 font-size-sm = "13px"
 font-size-label = "12px"
+# Count badges (Home row, tab bar).
+font-size-badge = "11px"
 font-size-title = "22px"
 # Text fields on a touch device. iOS zooms the page when a focused field is below 16px.
 font-size-field = "16px"
@@ -82,6 +84,8 @@ space-4 = "16px"
 size-control = "44px"
 size-row = "52px"
 size-bar = "48px"
+# Height of a count badge; one digit is a circle of this size.
+size-badge = "16px"
 size-key = "36px"
 size-rail = "300px"
 size-prose = "72ch"
