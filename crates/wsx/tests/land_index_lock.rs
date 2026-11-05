@@ -114,3 +114,54 @@ fn an_old_lock_a_live_process_holds_refuses_with_its_pid() {
     assert!(lock.exists());
     assert_eq!(git(&root, &["rev-parse", "main"]), tip);
 }
+
+#[test]
+fn a_stale_lock_is_cleared_in_a_checkout_with_the_owners_changes() {
+    let (root, _, _) = fixture("lock-dirty");
+    fs::write(root.join("mine.txt"), "1\n").unwrap();
+    git(&root, &["add", "mine.txt"]);
+    git(&root, &["commit", "-q", "-m", "mine"]);
+    let tip = git(&root, &["rev-parse", "HEAD"]);
+    git(&root, &["checkout", "-q", "task"]);
+    git(&root, &["rebase", "-q", "main"]);
+    let commit = git(&root, &["rev-parse", "HEAD"]);
+    git(&root, &["checkout", "-q", "main"]);
+    fs::write(root.join("mine.txt"), "2\n").unwrap();
+    fs::create_dir_all(root.join("scratch")).unwrap();
+    fs::write(root.join("scratch/a"), "u\n").unwrap();
+    let lock = root.join(".git/index.lock");
+    fs::write(&lock, "").unwrap();
+    age(&lock, 600);
+    let cleared = copy::fast_forward(&root, "main", &tip, &commit).unwrap();
+    assert!(cleared.is_some() && !lock.exists());
+    assert_eq!(git(&root, &["rev-parse", "main"]), commit);
+}
+
+/// Removing `index.lock` is a file event: a watcher's `git status` takes a new lock at once.
+/// The land waits for it (pizzahouse #34, 2026-11-05) instead of refusing on that plain error.
+#[test]
+fn a_lock_a_watcher_takes_after_the_clearing_is_waited_for() {
+    let (root, tip, commit) = fixture("lock-race");
+    let lock = root.join(".git/index.lock");
+    fs::write(&lock, "").unwrap();
+    age(&lock, 600);
+    let watcher = {
+        let lock = lock.clone();
+        std::thread::spawn(move || {
+            let metadata = |lock: &Path| fs::metadata(lock).map(|m| m.modified().unwrap());
+            let first = metadata(&lock).unwrap();
+            while metadata(&lock).is_ok_and(|now| now == first) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            fs::write(&lock, "").unwrap();
+            std::thread::sleep(Duration::from_millis(900));
+            fs::remove_file(&lock).unwrap();
+        })
+    };
+    let cleared = copy::fast_forward(&root, "main", &tip, &commit)
+        .unwrap()
+        .expect("the stale lock is reported");
+    watcher.join().unwrap();
+    assert!(cleared.age_s >= 600);
+    assert_eq!(git(&root, &["rev-parse", "main"]), commit);
+}

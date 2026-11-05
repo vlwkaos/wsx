@@ -23,6 +23,9 @@ pub fn git_cmd(repo: &Path) -> Command {
 
 /// A lock older than this, with no process holding it open, is left by a git that died.
 const STALE_LOCK_AGE: std::time::Duration = std::time::Duration::from_secs(300);
+/// How long a refused run waits for a young lock to go, and how often it looks.
+const LOCK_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// A stale `index.lock` that `run_clearing_stale_lock` removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,54 +34,75 @@ pub struct LockCleared {
     pub age_s: u64,
 }
 
-/// Run `git -C repo args`. When git refuses with "index.lock: File exists" and the repository's
-/// own `index.lock` is stale (over 5 minutes old by mtime and no process has it open, as
-/// `lsof -t` says; a missing or failing lsof is not stale), remove that file and run once more.
-/// A lock that is not stale stays, and the output's stderr names it, its age and its holder.
-/// No other lock file is touched. ref: docs/tasks.md "Landing"
+/// Run `git -C repo args`. When git refuses with "index.lock: File exists", the repository's
+/// own `index.lock` is looked at again and again for up to `LOCK_SETTLE`:
+/// - gone, or young (a live git, such as a status refresh of a watcher, holds it for a moment):
+///   wait and run again;
+/// - over 5 minutes old by mtime and no process has it open (`lsof -t`; a missing or failing
+///   lsof is not "no holder"): remove it, once, and run again at once. Removing the file is
+///   itself a file event, so a watcher may take a new lock at that moment: the run after it
+///   waits like any other (a land of pizzahouse #34 failed so on 2026-11-05);
+/// - old and held, or its holder unknown: refuse.
+/// A lock that stays refuses, and the output's stderr names it, its age and its holder. No
+/// other lock file is touched. ref: docs/tasks.md "Landing"
 pub fn run_clearing_stale_lock(
     repo: &Path,
     args: &[&str],
 ) -> std::io::Result<(std::process::Output, Option<LockCleared>)> {
-    let run = || git_cmd(repo).args(args).output();
-    let mut output = run()?;
-    let refused = String::from_utf8_lossy(&output.stderr);
-    if output.status.success()
-        || !(refused.contains("index.lock") && refused.contains("File exists"))
-    {
-        return Ok((output, None));
-    }
-    let Some(lock) = index_lock(repo) else {
-        return Ok((output, None));
-    };
-    let Ok(modified) = std::fs::metadata(&lock).and_then(|meta| meta.modified()) else {
-        return Ok((output, None));
-    };
-    let age = modified.elapsed().unwrap_or_default();
-    let holder = lock_holder(&lock);
-    if age > STALE_LOCK_AGE && holder == Holder::None {
-        std::fs::remove_file(&lock)?;
-        let cleared = LockCleared {
-            path: lock,
-            age_s: age.as_secs(),
+    let started = std::time::Instant::now();
+    let mut cleared = None;
+    loop {
+        let mut output = git_cmd(repo).args(args).output()?;
+        let refused = String::from_utf8_lossy(&output.stderr);
+        if output.status.success()
+            || !(refused.contains("index.lock") && refused.contains("File exists"))
+        {
+            return Ok((output, cleared));
+        }
+        let Some(lock) = index_lock(repo) else {
+            return Ok((output, cleared));
         };
-        return Ok((run()?, Some(cleared)));
+        let settling = started.elapsed() < LOCK_SETTLE;
+        let Ok(modified) = std::fs::metadata(&lock).and_then(|meta| meta.modified()) else {
+            // ^ Gone between git's refusal and now: its holder ended.
+            if settling {
+                std::thread::sleep(LOCK_RETRY);
+                continue;
+            }
+            return Ok((output, cleared));
+        };
+        let age = modified.elapsed().unwrap_or_default();
+        let holder = lock_holder(&lock);
+        let stale = age > STALE_LOCK_AGE;
+        if stale && holder == Holder::None && cleared.is_none() {
+            std::fs::remove_file(&lock)?;
+            cleared = Some(LockCleared {
+                path: lock,
+                age_s: age.as_secs(),
+            });
+            continue;
+        }
+        if settling && !(stale && holder != Holder::None) {
+            std::thread::sleep(LOCK_RETRY);
+            continue;
+        }
+        let why = match holder {
+            Holder::Pid(pid) => format!("held open by pid {pid}"),
+            Holder::Unknown => "its holder could not be checked".into(),
+            Holder::None if stale => "taken again after wsx removed a stale one".into(),
+            Holder::None => format!("younger than {} s", STALE_LOCK_AGE.as_secs()),
+        };
+        output.stderr.extend_from_slice(
+            format!(
+                "\nwsx: {} is {} s old, {why}; wsx removes a lock only when it is older than {} s and no process holds it\n",
+                lock.display(),
+                age.as_secs(),
+                STALE_LOCK_AGE.as_secs()
+            )
+            .as_bytes(),
+        );
+        return Ok((output, cleared));
     }
-    let why = match holder {
-        Holder::Pid(pid) => format!("held open by pid {pid}"),
-        Holder::Unknown => "its holder could not be checked".into(),
-        Holder::None => format!("younger than {} s", STALE_LOCK_AGE.as_secs()),
-    };
-    output.stderr.extend_from_slice(
-        format!(
-            "\nwsx: {} is {} s old, {why}; wsx removes a lock only when it is older than {} s and no process holds it\n",
-            lock.display(),
-            age.as_secs(),
-            STALE_LOCK_AGE.as_secs()
-        )
-        .as_bytes(),
-    );
-    Ok((output, None))
 }
 
 /// The `index.lock` of the git dir `repo` uses (a linked worktree's own).
