@@ -16,10 +16,10 @@ theme = "/abs/path/to/my-theme"   # a theme directory, or the path of a theme .t
 | Color roles | `color-bg` `color-surface` `color-raised` `color-hairline` `color-text` `color-muted` `color-faint` `color-accent` `color-accent-text` `color-attention` `color-secondary` `color-danger` `color-overlay` `color-series-1` … `color-series-7` `color-peer-1` … `color-peer-4` | `#rgb`, `#rrggbb` or `#rrggbbaa` |
 | Terminal palette | `color-ansi-0` … `color-ansi-15` (ANSI 0-7, then bright) | same |
 | Type families | `font-body` `font-mono` `font-terminal` | family list: letters, digits, space, `,` `'` `-` `_` |
-| Type scale | `font-size-md` `font-size-sm` `font-size-label` `font-size-title`, `font-size-field` (text fields on a touch device; keep it at 16px or more, or iOS zooms the page on focus) | length |
+| Type scale | `font-size-md` `font-size-sm` `font-size-label` `font-size-badge` (count badges) `font-size-title`, `font-size-field` (text fields on a touch device; keep it at 16px or more, or iOS zooms the page on focus) | length |
 | Type weight, leading, tracking | `font-weight-medium` `font-weight-strong`, `line-height` `line-height-prose`, `tracking-label` `tracking-title` | 100-900; 1-3; length, may be negative |
 | Spacing | `space-1` … `space-4` (4 px grid; `space-4` is the screen gutter and row inset) | length |
-| Sizes | `size-control` (touch target) `size-row` `size-bar` (top row, tab bar) `size-key` (terminal keys) `size-rail` `size-prose` (longest text line) | length |
+| Sizes | `size-control` (touch target) `size-row` `size-bar` (top row, tab bar) `size-badge` (count badge height) `size-key` (terminal keys) `size-rail` `size-prose` (longest text line) | length |
 | Radius, border | `radius-control` `radius-key` `radius-sheet` `border-width` | length |
 | Motion | `motion-duration`, `motion-easing` | `ms` or `s`; `linear` `ease` `ease-in` `ease-out` `ease-in-out` |
 | Focus, opacity | `focus-width`, `opacity-disabled` | length; 0-1 |
