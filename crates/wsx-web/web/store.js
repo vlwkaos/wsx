@@ -219,15 +219,16 @@ export function trackHistory() {
   addEventListener("hashchange", (event) => {
     returning = popped === location.href;
     popped = null;
+    const from = new URL(event.oldURL).hash || "#/";
     // ^ The old screen is still drawn: the route renders after this event.
     const scroll = screenScroll();
-    if (scroll) places.set(`${depth}${new URL(event.oldURL).hash || "#/"}`, scroll.scrollTop);
+    if (scroll) places.set(`${depth}${from}`, scroll.scrollTop);
     if (history.state?.wsx) {
       depth = history.state.depth;
       return;
     }
     depth += 1;
-    history.replaceState({ wsx: true, depth, from: new URL(event.oldURL).hash || "#/" }, "");
+    history.replaceState({ wsx: true, depth, from }, "");
   });
 }
 // After a route renders: a return through history puts the list where it was left.
