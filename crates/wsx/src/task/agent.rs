@@ -8,9 +8,13 @@ use super::claude::ClaudeAgent;
 use super::pi::PiAgent;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Read};
+use std::ffi::OsString;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
+use std::process::{Child, ChildStdout, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, Sender, SyncSender, TrySendError};
+use std::time::{Duration, Instant};
 use wsx_core::model::workspace::TaskConfig;
 use wsx_core::task::{store, usage, TurnUsage};
 
@@ -197,9 +201,10 @@ impl Agent {
         }
     }
 
+    /// Stop the agent's whole process tree and reap it; dropping it does the same.
     pub fn stop(self) {
         match self {
-            Self::Claude(agent) => agent.stop(),
+            Self::Claude(agent) => drop(agent),
             Self::Pi(agent) => agent.stop(),
         }
     }
@@ -343,29 +348,292 @@ const MAX_LINE_BYTES: u64 = 4 * 1024 * 1024;
 /// Hand each JSON line of an agent's stdout to `each` (false stops), to the end of the stream.
 /// A line over `MAX_LINE_BYTES` is dropped in buffer-sized steps, never held; a line that is
 /// no JSON is skipped.
-pub(super) fn read_json_lines(stdout: impl Read, mut each: impl FnMut(Value) -> bool) {
+/// A read error ends the stream too and comes back, so the reader can say why.
+pub(super) fn read_json_lines(
+    stdout: impl Read,
+    mut each: impl FnMut(Value) -> bool,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stdout);
     loop {
         let mut line = Vec::new();
         match (&mut reader)
             .take(MAX_LINE_BYTES)
-            .read_until(b'\n', &mut line)
+            .read_until(b'\n', &mut line)?
         {
-            Ok(0) | Err(_) => return,
-            Ok(_) if !line.ends_with(b"\n") && line.len() as u64 >= MAX_LINE_BYTES => {
-                if !matches!(skip_line(&mut reader), Ok(true)) {
-                    return;
+            0 => return Ok(()),
+            length if !line.ends_with(b"\n") && length as u64 >= MAX_LINE_BYTES => {
+                if !skip_line(&mut reader)? {
+                    return Ok(());
                 }
             }
-            Ok(_) => {
+            _ => {
                 if let Ok(value) = serde_json::from_slice::<Value>(&line) {
                     if !each(value) {
-                        return;
+                        return Ok(());
                     }
                 }
             }
         }
     }
+}
+
+/// The reader thread's end: a read error is said first, so the log tells why the stream
+/// ended. The host then drops the agent, which stops its whole tree and reaps it.
+pub(super) fn end_stream<E>(
+    events: &Sender<E>,
+    wrap: &impl Fn(Option<AgentLine>) -> E,
+    read: std::io::Result<()>,
+) {
+    if let Err(error) = read {
+        let text = format!("cannot read the agent's output: {error}; the host stops it");
+        let _ = events.send(wrap(Some(AgentLine::Progress { text, said: false })));
+    }
+    let _ = events.send(wrap(None));
+}
+
+/// Set on every agent, unique to its process: the processes of its tree that left its
+/// process group (Claude's Bash tool starts each shell in its own session) still carry it.
+const TREE_ENV: &str = "WSX_AGENT_TREE";
+/// Lines that wait for a slow agent's stdin before `write` refuses the next one.
+const INPUT_LINES: usize = 64;
+/// How long a stopped agent has to end after SIGTERM before SIGKILL.
+const STOP_GRACE: Duration = Duration::from_secs(5);
+/// The wsxd argument of a resumable session's supervisor, which a stop never signals.
+/// ref: crates/wsx-daemon/src/lib.rs `RESUME_SUPERVISOR_ARG`
+#[cfg(target_os = "macos")]
+const RESUME_SUPERVISOR_ARG: &[u8] = b"__wsx_resume_supervisor";
+static SPAWNED: AtomicU64 = AtomicU64::new(0);
+
+/// One agent process. It leads its own process group, a thread writes its stdin so a hung
+/// agent cannot block the host, and dropping it stops its whole tree and reaps it.
+/// ref: docs/tasks.md "Agents"
+pub(super) struct AgentProcess {
+    child: Child,
+    input: Option<SyncSender<Vec<u8>>>,
+    /// `WSX_AGENT_TREE=<value>` as it stands in each tree process's environment.
+    marker: Vec<u8>,
+    program: &'static str,
+}
+
+impl AgentProcess {
+    /// Start `program` with `args` in the launch's boundary, folder and environment: `kept`
+    /// names the host variables it keeps, `env` adds the adapter's own.
+    pub(super) fn spawn(
+        launch: &Launch,
+        program: &'static str,
+        args: Vec<OsString>,
+        kept: &[&str],
+        env: &[(&str, &str)],
+    ) -> Result<(Self, ChildStdout)> {
+        // ^ The host's boundary confines the agent; the adapter only adds its own argv.
+        let mut command = launch.boundary.command(program)?;
+        command.args(args).env_clear();
+        for name in kept {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        if let Some(prefix) = &launch.path_prefix {
+            let mut paths = vec![prefix.clone()];
+            paths.extend(
+                std::env::var_os("PATH")
+                    .iter()
+                    .flat_map(std::env::split_paths),
+            );
+            command.env("PATH", std::env::join_paths(paths)?);
+        }
+        for (name, value) in &launch.env {
+            command.env(name, value);
+        }
+        // ^ No terminal to edit in: `git rebase --continue` and `git commit` keep their message.
+        command.env("GIT_EDITOR", "true");
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let tree = format!(
+            "{}-{}",
+            std::process::id(),
+            SPAWNED.fetch_add(1, Ordering::Relaxed)
+        );
+        command.env(TREE_ENV, &tree);
+        // ^ Its own group: a stop reaches the tool processes in it and never the host.
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        let child = command
+            .current_dir(&launch.cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .with_context(|| format!("cannot start {program}; is it on PATH?"))?;
+        let mut process = Self {
+            child,
+            input: None,
+            marker: format!("{TREE_ENV}={tree}").into_bytes(),
+            program,
+        };
+        let mut stdin = process
+            .child
+            .stdin
+            .take()
+            .context("the agent has no stdin")?;
+        let stdout = process
+            .child
+            .stdout
+            .take()
+            .context("the agent has no stdout")?;
+        let (input, lines) = sync_channel::<Vec<u8>>(INPUT_LINES);
+        // ^ Ends when the sender is dropped, which closes stdin, or when a write fails.
+        std::thread::spawn(move || {
+            for line in lines {
+                if stdin.write_all(&line).and_then(|()| stdin.flush()).is_err() {
+                    return;
+                }
+            }
+        });
+        process.input = Some(input);
+        Ok((process, stdout))
+    }
+
+    /// Queue one JSON line for the agent's stdin; never waits for the agent to read it.
+    pub(super) fn write(&self, value: &Value) -> Result<()> {
+        let mut line = serde_json::to_vec(value)?;
+        line.push(b'\n');
+        let input = self.input.as_ref().context("the agent is stopped")?;
+        match input.try_send(line) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => bail!(
+                "{} does not read its input: {INPUT_LINES} lines wait",
+                self.program
+            ),
+            Err(TrySendError::Disconnected(_)) => bail!("cannot write to {}", self.program),
+        }
+    }
+
+    /// The agent's process group, and each process of its tree outside it. The leader is not
+    /// reaped yet, so its group ID is still its own.
+    fn signal(&self, signal: libc::c_int) {
+        let leader = self.child.id() as libc::pid_t;
+        // SAFETY: plain signals to the agent's own group and to processes that carry its mark.
+        unsafe { libc::killpg(leader, signal) };
+        for pid in marked(&self.marker) {
+            unsafe { libc::kill(pid, signal) };
+        }
+    }
+}
+
+/// Close stdin, SIGTERM the tree, give the leader `STOP_GRACE` to end, SIGKILL what is left,
+/// then reap the leader.
+impl Drop for AgentProcess {
+    fn drop(&mut self) {
+        drop(self.input.take());
+        let leader = self.child.id() as libc::pid_t;
+        self.signal(libc::SIGTERM);
+        let deadline = Instant::now() + STOP_GRACE;
+        while !exited(leader) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.signal(libc::SIGKILL);
+        let _ = self.child.wait();
+    }
+}
+
+/// The leader has ended. `WNOWAIT` leaves it a zombie, so its pid and group cannot be
+/// reused before the SIGKILL.
+fn exited(pid: libc::pid_t) -> bool {
+    // SAFETY: a zeroed siginfo_t is valid, and waitid writes only into it.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+    if unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, flags) } != 0 {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    let ended = info.si_pid;
+    // SAFETY: waitid filled the struct.
+    #[cfg(not(target_os = "macos"))]
+    let ended = unsafe { info.si_pid() };
+    ended != 0
+}
+
+/// The processes, other than this host, whose environment holds `marker`. A wsxd session
+/// supervisor is never one. Another user's process does not answer `KERN_PROCARGS2`.
+#[cfg(target_os = "macos")]
+fn marked(marker: &[u8]) -> Vec<libc::pid_t> {
+    let me = std::process::id() as libc::pid_t;
+    // SAFETY: a null buffer asks only for the count.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) }.max(0) as usize;
+    let mut pids: Vec<libc::pid_t> = vec![0; count + 64];
+    let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+    // SAFETY: the buffer holds `bytes` bytes.
+    let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    pids.truncate(listed.max(0) as usize);
+    let mut args = vec![0u8; arg_max()];
+    let mut found = Vec::new();
+    for pid in pids.into_iter().filter(|pid| *pid > 1 && *pid != me) {
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+        let mut size = args.len();
+        // SAFETY: `args` holds `size` bytes, and sysctl writes at most that and sets `size`.
+        let read = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                3,
+                args.as_mut_ptr().cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if read == 0 && in_tree(&args[..size], marker) {
+            found.push(pid);
+        }
+    }
+    found
+}
+
+#[cfg(not(target_os = "macos"))]
+fn marked(_marker: &[u8]) -> Vec<libc::pid_t> {
+    Vec::new()
+}
+
+#[cfg(target_os = "macos")]
+fn arg_max() -> usize {
+    let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+    let mut value: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    // SAFETY: KERN_ARGMAX is one int.
+    let read = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            2,
+            (&mut value as *mut libc::c_int).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if read == 0 && value > 0 {
+        value as usize
+    } else {
+        1 << 20
+    }
+}
+
+/// `KERN_PROCARGS2` is argc, the exec path, NUL padding, the arguments, then the environment,
+/// each NUL-ended.
+#[cfg(target_os = "macos")]
+fn in_tree(args: &[u8], marker: &[u8]) -> bool {
+    let Some((argc, rest)) = args.split_first_chunk::<4>() else {
+        return false;
+    };
+    let argc = i32::from_ne_bytes(*argc).max(0) as usize;
+    let mut strings = rest
+        .split(|byte| *byte == 0)
+        .filter(|text| !text.is_empty());
+    let _path = strings.next();
+    let supervisor = strings
+        .by_ref()
+        .take(argc)
+        .any(|arg| arg == RESUME_SUPERVISOR_ARG);
+    !supervisor && strings.any(|variable| variable == marker)
 }
 
 /// Drop the rest of an oversized line one buffer at a time. Returns false at end of input.

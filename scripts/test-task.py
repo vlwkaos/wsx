@@ -411,6 +411,28 @@ def run(wsx, wsxd, work, owned):
         ps = subprocess.run(['ps', '-axo', 'pid=,command='], capture_output=True, text=True).stdout
         return [line for line in ps.splitlines() if marker in line and 'ps -axo' not in line]
 
+    def leaks(seen):
+        # ^ The fake's LEAK records after trace line `seen`: its tool pids and its own.
+        return [t for t in traces()[seen:] if 'leak' in t]
+
+    def gone(*pids):
+        # ^ No such process: an ended child that its parent has not reaped is still found.
+        def missing(pid):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            return False
+        return all(missing(pid) for pid in pids)
+
+    def tree_gone(record, label):
+        wait(lambda: gone(record['agent'], *record['leak']), label, 15)
+
+    def zombies(n):
+        host = int(leftovers('task host %s %d' % (show(n)['record']['project_id'], n))[0].split()[0])
+        ps = subprocess.run(['ps', '-axo', 'ppid=,stat='], capture_output=True, text=True).stdout
+        return [line for line in ps.splitlines() if line.split()[0] == str(host) and 'Z' in line.split()[1]]
+
     # Refusals leave nothing: bad config, then bad ids.
     (project / 'wsx.config.yml').write_text('tasks:\n  agent:\n    adapter: nope\n')
     refused = cli('task', 'new', 'WORK a.txt', ok=False)
@@ -475,7 +497,7 @@ def run(wsx, wsxd, work, owned):
     assert oct(host_socket.parent.stat().st_mode & 0o777) == '0o700'
     launch = wait(lambda: next((t for t in traces() if t.get('launch')), None), 'fake launch')
     # ^ One wsx variable: the host's broker for `wsx task check-run`.
-    assert launch['wsx_env'] == ['WSX_TASK_BROKER'] and launch['schema']
+    assert launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_BROKER'] and launch['schema']
     assert launch['model'] == 'fake-model' and not launch['resume'] and launch['mode'] == 'bypassPermissions'
     assert not {'--allowedTools', '--disallowedTools'} & set(launch['argv']), launch['argv']
     assert "put in the result's memo a short, lean memo of durable" in launch['instructions'], launch['instructions']
@@ -783,9 +805,16 @@ def run(wsx, wsxd, work, owned):
     (project / 'wsx.config.yml').write_text(
         'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  checks: ["test -f r.txt"]\n'
         '  agent: { rotateTokens: 300000 }\n')
-    rotated = js('task', 'new', 'NOOP')['id']
+    seen = len(traces())
+    rotated = js('task', 'new', 'NOOP LEAK')['id']
     done = wait_state(rotated, 'ready', 'failed')
     assert done['state'] == 'ready', done
+    # ^ The rotation stopped the first conversation's agent with its tool processes, and its
+    # host reaped it (docs/tasks.md "Agents", process tree).
+    first = leaks(seen)
+    assert len({t['agent'] for t in first}) == 2, first
+    tree_gone(first[0], 'rotated agent tree')
+    assert not zombies(rotated), zombies(rotated)
     assert [e['tokens'] for e in log(rotated) if e['kind'] == 'rotated'] == [400000], log(rotated)
     sent = [t for t in traces() if 'message' in t and t.get('manager') is False]
     asked = [t for t in sent if "past this task's limit" in t['message']]
@@ -797,6 +826,8 @@ def run(wsx, wsxd, work, owned):
     # ^ The handoff turn is not a result: one per step.
     assert len([e for e in log(rotated) if e['kind'] == 'result']) == 2, log(rotated)
     js('task', 'close', rotated, '--discard')
+    for record in leaks(seen):
+        tree_gone(record, 'closed agent tree')
     # A bad rotateTokens refuses the task.
     (project / 'wsx.config.yml').write_text('tasks:\n  minFreeGb: 0\n  agent: { rotateTokens: 5 }\n')
     assert 'tasks.agent.rotateTokens must be' in cli('task', 'new', 'NOOP', ok=False).stderr
@@ -806,6 +837,39 @@ def run(wsx, wsxd, work, owned):
         '      - {name: a, prompt: x}\n      - {name: a, prompt: y}\n')
     assert 'named twice' in cli('task', 'new', 'NOOP', ok=False).stderr
     owner_config.unlink()
+    # 13t. A stopped agent takes its whole tree: a tool process in its process group and one in
+    # a session of its own, as Claude's Bash tool starts its shells. Stop, close, a Pi stop and
+    # an agent that ends by itself leave none, and the host reaps the agent (docs/tasks.md
+    # "Agents", process tree).
+    mark('13t')
+    (project / 'wsx.config.yml').write_text('tasks:\n  minFreeGb: 0\n  land: { auto: false }\n')
+    release = work / 'release-13t'
+    seen = len(traces())
+    held = js('task', 'new', 'LEAK WAIT %s' % release)['id']
+    wait(lambda: leaks(seen), 't%s leaked' % held)
+    stopped = js('task', 'stop', held)
+    assert stopped['ok'] and stopped['state'] == 'waiting', stopped
+    tree_gone(leaks(seen)[0], 'stopped agent tree')
+    assert not zombies(held), zombies(held)
+    js('task', 'close', held, '--discard')
+    seen = len(traces())
+    ended = js('task', 'new', 'LEAKEXIT')['id']
+    failed = wait_state(ended, 'failed')
+    assert any(e['kind'] == 'stopped' and 'ended during a turn' in e['reason'] for e in log(ended)), log(ended)
+    tree_gone(leaks(seen)[0], 'self-ended agent tree')
+    assert failed['host_running'] and not zombies(ended), zombies(ended)
+    js('task', 'close', ended, '--discard')
+    (project / 'wsx.config.yml').write_text(
+        'tasks:\n  minFreeGb: 0\n  land: { auto: false }\n  agent: { adapter: pi, model: fake/pi-model }\n')
+    seen = len(traces())
+    piped = js('task', 'new', 'NOOP LEAK')['id']
+    wait_state(piped, 'ready', 'failed')
+    pi_leak = leaks(seen)
+    assert [t.get('adapter') for t in pi_leak] == ['pi'], pi_leak
+    js('task', 'close', piped, '--discard')
+    tree_gone(pi_leak[0], 'closed pi agent tree')
+    release.unlink(missing_ok=True)
+
     # 13c. The checks are the main checkout's as they are when a result comes: a task started
     # under a failing check passes once the project's checks change.
     mark('13c')
@@ -1413,7 +1477,7 @@ def run(wsx, wsxd, work, owned):
     assert len(follow) == 1 and 'the cap is 60 / 4,000' in follow[0]['message'], follow
     assert len(Path(page).read_text().splitlines()) == 70
     Path(page).write_text('# demo\n\n## Goal\n\nshort\n')
-    assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
+    assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     assert launch['git_optional_locks'] == '0', launch
     # ^ README "Profiles": the manager and every worker so far run under demo's profile root.
     demo_launches = [t for t in traces() if t.get('launch')]
@@ -3810,7 +3874,7 @@ def run(wsx, wsxd, work, owned):
     role_launch = next(t for t in traces() if t.get('launch') and t.get('actor') == 'role:billing')
     assert role_launch['instructions'].startswith('You are billing, a role in the project demo'), role_launch
     assert 'Drive the billing rewrite.' in role_launch['instructions'] and '/roles/billing/notes' in role_launch['instructions']
-    assert role_launch['wsx_env'] == ['WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], role_launch
+    assert role_launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], role_launch
     assert roles()['billing']['running'], roles()
     # Only the creating role hears its task's events; the manager hears its own.
     assert wait_state(role_task, 'ready', 'failed')['state'] == 'ready'

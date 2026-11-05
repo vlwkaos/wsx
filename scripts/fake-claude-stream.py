@@ -87,6 +87,13 @@ def trace(record):
         out.write(json.dumps(record) + '\n')
 
 
+def leak(session):
+    # ^ LEAK: two tool processes left running, one in the agent's process group and one in a
+    # session of its own, as Claude's Bash tool starts its shells. Both keep its environment.
+    kids = [subprocess.Popen(['sleep', '600'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=own) for own in (False, True)]
+    trace({'leak': [kid.pid for kid in kids], 'agent': os.getpid(), 'session': session})
+
 SESSION = MODEL = None
 THOUGHT = ''  # ^ The words of the last `THINK` part: the manager's follow-up writes them as its answer.
 LINES = 0
@@ -408,7 +415,8 @@ def main():
            'plugin_dir': options.get('--plugin-dir'),
            'claude_config_dir': os.environ.get('CLAUDE_CONFIG_DIR'),
            'cwd': os.getcwd()})
-    signal.signal(signal.SIGINT, lambda *_: (trace({'interrupted': True}), sys.exit(130)))
+    # ^ The host stops an agent with SIGTERM to its process group.
+    signal.signal(signal.SIGTERM, lambda *_: (trace({'interrupted': True}), sys.exit(143)))
     SESSION, MODEL = session, options.get('--model')
     emit({'type': 'system', 'subtype': 'init', 'session_id': session})
     stdin = sys.stdin.buffer
@@ -502,6 +510,11 @@ def main():
             continue
         if 'HUGE' in words:
             emit({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'x' * (5 << 20)}]}})
+        if 'LEAK' in words or 'LEAKEXIT' in words:
+            leak(session)
+        if 'LEAKEXIT' in words:
+            # ^ The agent ends by itself during the turn: its host must reap it and its tree.
+            os._exit(3)
         steers = []
         if 'SLOW' in words:
             deadline = time.monotonic() + 2.0
