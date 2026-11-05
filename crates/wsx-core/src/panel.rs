@@ -280,6 +280,13 @@ struct RawSection {
     items: Vec<Value>,
 }
 
+/// Note once, in the order found, what a limit cut.
+fn mark(cut: &mut Vec<&'static str>, what: &'static str) {
+    if !cut.contains(&what) {
+        cut.push(what);
+    }
+}
+
 /// `item` when it is drawable: a gauge needs `total` > 0 and `used` >= 0, a table at most
 /// `MAX_COLUMNS` columns with rows as long as its columns (rows past `MAX_ROWS` are cut and
 /// the list past `MAX_ITEMS`).
@@ -297,12 +304,12 @@ fn checked(mut item: Item, cut: &mut Vec<&'static str>) -> Result<Item, String> 
             }
             if rows.len() > MAX_ROWS {
                 rows.truncate(MAX_ROWS);
-                cut.push("table rows");
+                mark(cut, "table rows");
             }
         }
         Item::List { items, .. } if items.len() > MAX_ITEMS => {
             items.truncate(MAX_ITEMS);
-            cut.push("list items");
+            mark(cut, "list items");
         }
         _ => {}
     }
@@ -320,7 +327,7 @@ pub fn parse_doc(text: &str) -> (Option<PanelDoc>, Option<String>) {
     let mut notes: Vec<String> = Vec::new();
     let mut cut: Vec<&'static str> = Vec::new();
     if raw.sections.len() > MAX_SECTIONS {
-        cut.push("sections");
+        mark(&mut cut, "sections");
     }
     let mut sections = Vec::new();
     for (number, section) in raw.sections.into_iter().take(MAX_SECTIONS).enumerate() {
@@ -333,7 +340,7 @@ pub fn parse_doc(text: &str) -> (Option<PanelDoc>, Option<String>) {
             }
         };
         if section.items.len() > MAX_ITEMS {
-            cut.push("items");
+            mark(&mut cut, "items");
         }
         let mut items = Vec::new();
         for (index, item) in section.items.into_iter().take(MAX_ITEMS).enumerate() {
@@ -354,7 +361,6 @@ pub fn parse_doc(text: &str) -> (Option<PanelDoc>, Option<String>) {
         notes.push("no section to show".into());
         return (None, Some(notes.join("\n")));
     }
-    cut.dedup();
     if !cut.is_empty() {
         notes.push(format!("cut to the limits: {}", cut.join(", ")));
     }
