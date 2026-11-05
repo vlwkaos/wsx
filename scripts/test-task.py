@@ -2830,6 +2830,23 @@ def run(wsx, wsxd, work, owned):
     for n in (first, second):
         js('task', 'close', n, '--discard')
 
+    # 27c. A stop outlasts a limit wait (docs/tasks.md "Stop"): the reset starts no turn, the task
+    # waits on the owner, and an add resumes it.
+    mark('27c')
+    held = js('task', 'new', 'LIMIT 4 WORK lh.txt')['id']
+    wait(lambda: limited(held), 'the limit wait to stop', 30)
+    assert js('task', 'stop', held)['state'] == 'waiting'
+    assert js('task', 'stop', held)['message'].startswith('already stopped')
+    time.sleep(14)
+    stopped_at = show(held)['record']
+    assert show(held)['state'] == 'waiting' and stopped_at['waiting'] == {'on': 'owner', 'reason': 'stopped by request'}, stopped_at
+    assert not [t for t in traces() if t.get('session') == stopped_at['agent_session']
+                and str(t.get('message', '')).startswith('The usage limit has reset')], traces()
+    assert kinds(held, 'result', 'stopped') == ['stopped'], log(held)
+    js('task', 'add', held, 'WORK lh2.txt')
+    assert wait_state(held, 'ready', 'failed')['state'] == 'ready', log(held)
+    js('task', 'close', held, '--discard')
+
     # 28. A land deploys by itself with tasks.deploy.auto; deploys run one at a time and a
     mark('28')
     # deploy that waited runs for the newest commit, so quick lands skip the ones between.
@@ -3386,6 +3403,25 @@ def run(wsx, wsxd, work, owned):
     answers = [t['message'] for t in traces() if 'Your check-run ended. Its answer' in t.get('message', '') and str(late_gate) in t['message']]
     assert len(answers) == 1 and 'check 2 `while [ ! -e' in answers[0] and ': exit 0' in answers[0], answers
     js('task', 'close', late, '--discard')
+    # 32t1. A stop outlasts a check-run (docs/tasks.md "Stop"): its late answer is logged and
+    # kept, starts no turn, and joins the turn the next add starts.
+    mark('32t1')
+    stop_gate = base / 'stop-gate'
+    configure(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n' % stop_gate, 'a stop scenario')
+    parked = js('task', 'new', 'CHECKRUN_LATE slow WORK parked.txt')['id']
+    wait(lambda: kinds(parked, 'result'), 'the result before the answer', 30)
+    assert js('task', 'stop', parked)['state'] == 'waiting'
+    stop_gate.touch()
+    wait(lambda: kinds(parked, 'check_run'), 'the check-run ends while stopped', 30)
+    time.sleep(3)
+    assert show(parked)['state'] == 'waiting' and show(parked)['record']['waiting']['on'] == 'owner', log(parked)
+    assert kinds(parked, 'result', 'check_run', 'checks') == ['result', 'check_run'], log(parked)
+    answers = lambda: [t['message'] for t in traces() if 'Your check-run ended. Its answer' in t.get('message', '') and str(stop_gate) in t['message']]
+    assert not answers(), answers()
+    js('task', 'add', parked, 'WORK parked2.txt')
+    assert wait_state(parked, 'ready', 'failed')['state'] == 'ready', log(parked)
+    assert len(answers()) == 1 and 'WORK parked2.txt' in answers()[0], answers()
+    js('task', 'close', parked, '--discard')
     # 32t2. A check-run that ended after the worker's last result and passed on a clean tree
     # starts no turn: the host records it as evidence in the result. A failure starts a turn.
     mark('32t2')
