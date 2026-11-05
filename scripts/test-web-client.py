@@ -3034,7 +3034,31 @@ PANEL_CONFIG = '''panels:
     refresh: 10
   - name: broken
     command: [scripts/broken.sh]
+  - name: gauges
+    command: [scripts/gauges.sh]
+    format: json
+  - name: badjson
+    command: [scripts/badjson.sh]
+    format: json
 '''
+# ^ docs/panels.md "JSON panels": every kind, a bad level and an unknown kind (each skipped with a
+# notice), and a number cell; `badjson` is not a document.
+PANEL_DOC = {
+    'title': 'This Mac',
+    'sections': [
+        {'title': 'Memory', 'items': [
+            {'kind': 'gauge', 'label': 'Memory', 'used': 13.6, 'total': 16, 'unit': 'GB', 'level': 'warn'},
+            {'kind': 'gauge', 'label': 'Swap', 'used': 0, 'total': 4, 'unit': 'GB', 'level': 'ok'},
+            {'kind': 'stat', 'label': 'Pressure', 'value': 'normal', 'note': 'vm_stat', 'level': 'ok'},
+            {'kind': 'stat', 'label': 'Disk', 'value': 'full', 'level': 'red'},
+        ]},
+        {'title': 'Storage', 'items': [
+            {'kind': 'table', 'columns': ['Volume', 'Used', 'Free'], 'rows': [['Macintosh HD', '412 GB', '88 GB'], ['Data', 12, 3]]},
+            {'kind': 'list', 'items': ['Time Machine: 2 days ago', 'Spotlight idle'], 'level': 'bad'},
+            {'kind': 'chart', 'label': 'x'},
+        ]},
+    ],
+}
 LONG_NAME = 'notes-about-jumping-between-projects-from-the-keyboard-and-back.txt'
 TASK_CONFIG = '''tasks:
   minFreeGb: 0
@@ -3152,7 +3176,10 @@ def task_journey(args):
                             '#!/bin/sh\nn=$(cat device.count 2>/dev/null || echo 0)\nn=$((n+1))\necho $n > device.count\n'
                             'printf "mem 8G swap 0\\ndevice run %s\\n" "$n"\n')
                         (folder / 'scripts/broken.sh').write_text('#!/bin/sh\necho broken: no disk\nexit 2\n')
-                        for script in ('device.sh', 'broken.sh'):
+                        (folder / 'scripts/gauges.json').write_text(json.dumps(PANEL_DOC))
+                        (folder / 'scripts/gauges.sh').write_text('#!/bin/sh\ncat scripts/gauges.json\n')
+                        (folder / 'scripts/badjson.sh').write_text("#!/bin/sh\necho '{oops'\n")
+                        for script in ('device.sh', 'broken.sh', 'gauges.sh', 'badjson.sh'):
                             (folder / 'scripts' / script).chmod(0o755)
                     (folder / 'README').write_text('fixture\n')
                 subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', *argv],
@@ -3426,7 +3453,7 @@ merge_seconds = 3
             assert steady(owner, 'GET', panel_url)[0] == 403 and steady(viewer, 'GET', panel_url)[0] == 403
             assert steady(admin, 'GET', '/api/projects/999999/panels')[0] == 404
             listed_panels = steady(admin, 'GET', panel_url)[1]
-            assert [p['name'] for p in listed_panels['panels']] == ['device', 'broken'] and listed_panels['notice'] is None, listed_panels
+            assert [p['name'] for p in listed_panels['panels']] == ['device', 'broken', 'gauges', 'badjson'] and listed_panels['notice'] is None, listed_panels
 
             def panel_shown(name, run=False, done=True):
                 asked = [run]
@@ -3452,9 +3479,16 @@ merge_seconds = 3
             assert panel_shown('device')['run']['output'].endswith('device run 3\n')
             broken = panel_shown('broken', run=True)
             assert broken['run']['status'] == 'failed' and broken['run']['exit'] == 2 and 'broken: no disk' in broken['run']['output'], broken
+            # ^ `format: json`: the typed document, the skipped items in the notice; bad JSON stays text.
+            gauges = panel_shown('gauges', run=True)['run']
+            assert gauges['doc']['title'] == 'This Mac' and [i['kind'] for i in gauges['doc']['sections'][0]['items']] == ['gauge', 'gauge', 'stat'], gauges
+            assert gauges['doc']['sections'][1]['items'][0]['rows'][1] == ['Data', '12', '3'], gauges
+            assert gauges['notice'].count('\n') == 1 and '`red`' in gauges['notice'] and '`chart`' in gauges['notice'], gauges['notice']
+            badjson = panel_shown('badjson', run=True)['run']
+            assert badjson['doc'] is None and badjson['output'] == '{oops\n' and badjson['notice'].startswith('not a panel document'), badjson
             status, body = steady(admin, 'GET', panel_url + '/missing')
             assert status == 409 and 'no panel' in body['error']['message'], (status, body)
-            ok('panels: run in wsxd on open and when stale, cached with its age, a failing command with its exit code, 403 without terminal_input, 404 for an unknown project')
+            ok('panels: run in wsxd on open and when stale, cached with its age, a failing command with its exit code, a json panel as a typed document with a notice for what it skipped, 403 without terminal_input, 404 for an unknown project')
             if args.browser:
                 checked = check(work, [node, str(ROOT / 'scripts/web-panels-check.mjs'), admin.origin + '/', cli('web', 'pair', '--site', files['admin']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                        owner.origin + '/', cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1],

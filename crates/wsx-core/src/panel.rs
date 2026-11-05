@@ -1,7 +1,8 @@
 //! Project panels: a command in `wsx.config.yml` whose output the web client and the TUI show.
 //! wsxd runs it and keeps the last result; the clients only ask (docs/panels.md).
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -16,6 +17,14 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const MAX_TIMEOUT_SECS: u64 = 300;
 /// What a result keeps of the output: its last bytes.
 pub const MAX_OUTPUT_BYTES: usize = 16 * 1024;
+/// What a `format: json` document keeps (docs/panels.md "JSON panels").
+pub const MAX_SECTIONS: usize = 12;
+pub const MAX_ITEMS: usize = 50;
+pub const MAX_COLUMNS: usize = 8;
+pub const MAX_ROWS: usize = 100;
+pub const MAX_STRING_CHARS: usize = 200;
+/// Notice lines shown before "and n more".
+const MAX_NOTICES: usize = 5;
 const MAX_ARGV: usize = 64;
 const MAX_ARG_BYTES: usize = 4096;
 /// After a kill, how long the output streams get to close before the bytes read so far count.
@@ -30,6 +39,16 @@ pub struct PanelConfig {
     pub refresh: u64,
     /// Seconds before the command is stopped.
     pub timeout: u64,
+    pub format: PanelFormat,
+}
+
+/// How a panel's output is read: as text, or as a JSON document drawn as a UI.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelFormat {
+    #[default]
+    Text,
+    Json,
 }
 
 /// One `panels:` entry as written.
@@ -40,6 +59,7 @@ pub(crate) struct PanelFile {
     command: Vec<String>,
     refresh: u64,
     timeout: Option<u64>,
+    format: Option<String>,
 }
 
 /// The `panels:` list checked: the error names the entry and the rule it breaks.
@@ -85,11 +105,19 @@ pub(crate) fn validate(files: Vec<PanelFile>) -> Result<Vec<PanelConfig>, String
                 "{at}.timeout must be 1..={MAX_TIMEOUT_SECS} seconds"
             ));
         }
+        let format = match file.format.as_deref() {
+            None | Some("text") => PanelFormat::Text,
+            Some("json") => PanelFormat::Json,
+            Some(other) => {
+                return Err(format!("{at}.format must be text or json, not {other:?}"));
+            }
+        };
         panels.push(PanelConfig {
             name,
             command: file.command,
             refresh: file.refresh,
             timeout,
+            format,
         });
     }
     Ok(panels)
@@ -120,6 +148,227 @@ pub struct PanelRun {
     pub truncated: bool,
     pub exit: Option<i32>,
     pub finished_unix_ms: u64,
+    /// With `format: json` and a good document: the typed view; `output` stays the raw text.
+    #[serde(default)]
+    pub doc: Option<PanelDoc>,
+    /// What the parse skipped or why `doc` is empty; one line each.
+    #[serde(default)]
+    pub notice: Option<String>,
+}
+
+/// A JSON panel's document: sections of items, checked and cut to the limits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PanelDoc {
+    pub title: Option<String>,
+    pub sections: Vec<Section>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Section {
+    pub title: Option<String>,
+    pub items: Vec<Item>,
+}
+
+/// The theme's state colours, by word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Level {
+    Ok,
+    Warn,
+    Bad,
+}
+
+/// A number the parse found finite (JSON has no NaN), so `Eq` holds.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Num(pub f64);
+impl Eq for Num {}
+
+/// One item. A string field also takes a number; an unknown field is ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Item {
+    /// A bar of `used` out of `total` (`total` > 0, `used` >= 0).
+    Gauge {
+        #[serde(deserialize_with = "scalar")]
+        label: String,
+        used: Num,
+        total: Num,
+        #[serde(default, deserialize_with = "opt_scalar")]
+        unit: Option<String>,
+        #[serde(default)]
+        level: Option<Level>,
+    },
+    Stat {
+        #[serde(deserialize_with = "scalar")]
+        label: String,
+        #[serde(deserialize_with = "scalar")]
+        value: String,
+        #[serde(default, deserialize_with = "opt_scalar")]
+        note: Option<String>,
+        #[serde(default)]
+        level: Option<Level>,
+    },
+    Table {
+        #[serde(deserialize_with = "scalars")]
+        columns: Vec<String>,
+        #[serde(deserialize_with = "scalar_rows")]
+        rows: Vec<Vec<String>>,
+    },
+    List {
+        #[serde(deserialize_with = "scalars")]
+        items: Vec<String>,
+        #[serde(default)]
+        level: Option<Level>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Scalar {
+    Text(String),
+    Number(serde_json::Number),
+}
+
+impl Scalar {
+    /// The text, cut at `MAX_STRING_CHARS` with a mark.
+    fn text(self) -> String {
+        let text = match self {
+            Self::Text(text) => text,
+            Self::Number(number) => number.to_string(),
+        };
+        if text.chars().count() <= MAX_STRING_CHARS {
+            return text;
+        }
+        let mut cut: String = text.chars().take(MAX_STRING_CHARS - 1).collect();
+        cut.push('…');
+        cut
+    }
+}
+
+fn scalar<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Scalar::deserialize(d).map(Scalar::text)
+}
+
+fn opt_scalar<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Option::<Scalar>::deserialize(d).map(|text| text.map(Scalar::text))
+}
+
+fn scalars<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    Vec::<Scalar>::deserialize(d).map(|all| all.into_iter().map(Scalar::text).collect())
+}
+
+fn scalar_rows<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Vec<String>>, D::Error> {
+    Vec::<Vec<Scalar>>::deserialize(d).map(|rows| {
+        rows.into_iter()
+            .map(|row| row.into_iter().map(Scalar::text).collect())
+            .collect()
+    })
+}
+
+#[derive(Deserialize)]
+struct RawDoc {
+    #[serde(default, deserialize_with = "opt_scalar")]
+    title: Option<String>,
+    sections: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+struct RawSection {
+    #[serde(default, deserialize_with = "opt_scalar")]
+    title: Option<String>,
+    items: Vec<Value>,
+}
+
+/// `item` when it is drawable: a gauge needs `total` > 0 and `used` >= 0, a table at most
+/// `MAX_COLUMNS` columns with rows as long as its columns (rows past `MAX_ROWS` are cut and
+/// the list past `MAX_ITEMS`).
+fn checked(mut item: Item, cut: &mut Vec<&'static str>) -> Result<Item, String> {
+    match &mut item {
+        Item::Gauge { used, total, .. } if !(total.0 > 0.0 && used.0 >= 0.0) => {
+            return Err("a gauge needs total > 0 and used >= 0".into());
+        }
+        Item::Table { columns, rows } => {
+            if columns.is_empty() || columns.len() > MAX_COLUMNS {
+                return Err(format!("a table has 1..={MAX_COLUMNS} columns"));
+            }
+            if rows.iter().any(|row| row.len() != columns.len()) {
+                return Err("a table row must have as many cells as columns".into());
+            }
+            if rows.len() > MAX_ROWS {
+                rows.truncate(MAX_ROWS);
+                cut.push("table rows");
+            }
+        }
+        Item::List { items, .. } if items.len() > MAX_ITEMS => {
+            items.truncate(MAX_ITEMS);
+            cut.push("list items");
+        }
+        _ => {}
+    }
+    Ok(item)
+}
+
+/// Read `text` (a `format: json` panel's output) as a `PanelDoc`. An unknown kind, a bad level
+/// or value skips that item; anything over a limit is cut; both leave a notice line. Text that
+/// is not a document gives no `doc`, only the notice, so the clients show the text.
+pub fn parse_doc(text: &str) -> (Option<PanelDoc>, Option<String>) {
+    let raw = match serde_json::from_str::<RawDoc>(text) {
+        Ok(raw) => raw,
+        Err(error) => return (None, Some(format!("not a panel document: {error}"))),
+    };
+    let mut notes: Vec<String> = Vec::new();
+    let mut cut: Vec<&'static str> = Vec::new();
+    if raw.sections.len() > MAX_SECTIONS {
+        cut.push("sections");
+    }
+    let mut sections = Vec::new();
+    for (number, section) in raw.sections.into_iter().take(MAX_SECTIONS).enumerate() {
+        let at = number + 1;
+        let section = match serde_json::from_value::<RawSection>(section) {
+            Ok(section) => section,
+            Err(error) => {
+                notes.push(format!("section {at}: {error}"));
+                continue;
+            }
+        };
+        if section.items.len() > MAX_ITEMS {
+            cut.push("items");
+        }
+        let mut items = Vec::new();
+        for (index, item) in section.items.into_iter().take(MAX_ITEMS).enumerate() {
+            match serde_json::from_value::<Item>(item)
+                .map_err(|error| error.to_string())
+                .and_then(|item| checked(item, &mut cut))
+            {
+                Ok(item) => items.push(item),
+                Err(error) => notes.push(format!("section {at}, item {}: {error}", index + 1)),
+            }
+        }
+        sections.push(Section {
+            title: section.title,
+            items,
+        });
+    }
+    if sections.is_empty() {
+        notes.push("no section to show".into());
+        return (None, Some(notes.join("\n")));
+    }
+    cut.dedup();
+    if !cut.is_empty() {
+        notes.push(format!("cut to the limits: {}", cut.join(", ")));
+    }
+    if notes.len() > MAX_NOTICES {
+        let more = notes.len() - MAX_NOTICES;
+        notes.truncate(MAX_NOTICES);
+        notes.push(format!("and {more} more"));
+    }
+    let notice = (!notes.is_empty()).then(|| notes.join("\n"));
+    let doc = PanelDoc {
+        title: raw.title,
+        sections,
+    };
+    (Some(doc), notice)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,6 +488,8 @@ pub fn run(panel: &PanelConfig, cwd: &Path) -> PanelRun {
         truncated,
         exit,
         finished_unix_ms: now_ms(),
+        doc: None,
+        notice: None,
     };
     let program = Path::new(&panel.command[0]);
     // ^ A relative program such as `scripts/device-status.sh` is the checkout's, whatever
@@ -320,7 +571,16 @@ pub fn run(panel: &PanelConfig, cwd: &Path) -> PanelRun {
         }
         output.push_str(&format!("stopped after {} s", panel.timeout));
     }
-    result(status, output, truncated, exit)
+    let (doc, notice) = if panel.format == PanelFormat::Json && status == PanelStatus::Ok {
+        parse_doc(&output)
+    } else {
+        (None, None)
+    };
+    PanelRun {
+        doc,
+        notice,
+        ..result(status, output, truncated, exit)
+    }
 }
 
 /// `text` without ANSI escape sequences or control characters other than newline and tab;

@@ -81,6 +81,8 @@ pub(crate) fn handle(daemon: &Daemon, project: &Path, action: Action) -> Respons
                 truncated: false,
                 exit: None,
                 finished_unix_ms: 0,
+                doc: None,
+                notice: None,
             });
             Response::Panel(PanelView {
                 name: panel.name,
