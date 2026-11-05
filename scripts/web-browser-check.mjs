@@ -875,6 +875,55 @@ await evaluate("document.querySelector('input[name=scheme][value=light]').click(
 if ((await evaluate("getComputedStyle(document.body).backgroundColor")) !== "rgb(247, 247, 248)" || (await evaluate("document.documentElement.dataset.scheme")) !== "light") await fail("choosing light did not change the scheme");
 await sound("settings in the light scheme");
 await shot("settings-light");
+// --- The bottom bar and Settings > UI at 390 px, light and dark (docs/web-client.md "Screens", "Settings sections").
+// ^ Equal-width tabs, an icon over each label, the current tab on a highlight; a tab hidden in Settings > UI
+// leaves the bar and Settings cannot be hidden. The header at the bottom does not move the bar.
+{
+  const clickIt = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const barShape = () => evaluate(`(() => { const tabs = [...document.querySelectorAll('.tabbar a')];
+    return { names: tabs.map((tab) => tab.querySelector('.tab-label').textContent), widths: tabs.map((tab) => Math.round(tab.getBoundingClientRect().width * 10) / 10),
+      stacked: tabs.every((tab) => tab.querySelector('svg').getBoundingClientRect().bottom <= tab.querySelector('.tab-label').getBoundingClientRect().top + 0.5),
+      highlight: tabs.filter((tab) => getComputedStyle(tab).backgroundColor !== 'rgba(0, 0, 0, 0)').map((tab) => tab.querySelector('.tab-label').textContent),
+      floats: getComputedStyle(document.querySelector('.tabbar-pill')).boxShadow !== 'none' && document.querySelector('.tabbar-pill').getBoundingClientRect().width < document.querySelector('.tabbar').getBoundingClientRect().width,
+      frame: Math.round(document.querySelector('.tabbar').getBoundingClientRect().bottom) === innerHeight }; })()`);
+  const equal = (shape) => shape.widths.length > 0 && shape.widths.every((width) => Math.abs(width - shape.widths[0]) <= 0.5);
+  const scheme = (name) => evaluate(`document.documentElement.dataset.scheme = ${JSON.stringify(name)}`);
+  await go("#/");
+  await until("document.querySelectorAll('.tabbar a').length === 3", "the bottom bar lacks its three tabs");
+  let shape = await barShape();
+  if (!equal(shape) || !shape.stacked || shape.highlight.join() !== "Inbox" || !shape.floats || !shape.frame) await fail(`the bottom bar is ${JSON.stringify(shape)}`);
+  for (const name of ["light", "dark"]) { await scheme(name); await shot(`tabbar-${name}`); }
+  await go("#/settings/ui");
+  await until("document.querySelectorAll('.options input[name^=tab-]').length === 3", "Settings > UI does not list the three tabs");
+  const switches = () => evaluate("Object.fromEntries([...document.querySelectorAll('.options input[name^=tab-]')].map((node) => [node.name, [node.checked, node.disabled]]))");
+  if (JSON.stringify(await switches()) !== JSON.stringify({ "tab-home": [true, false], "tab-projects": [true, false], "tab-settings": [true, true] })
+    || (await text(".subtabs a")).join() !== "General,UI" || (await text(".subtabs a[aria-current=page]")).join() !== "UI") await fail(`Settings > UI is ${JSON.stringify(await switches())}`);
+  for (const name of ["light", "dark"]) { await scheme(name); await shot(`settings-ui-${name}`); }
+  await clickIt("input[name=tab-projects]");
+  await until("document.querySelectorAll('.tabbar a').length === 2", "hiding Projects left it in the bar");
+  shape = await barShape();
+  if (shape.names.join() !== "Inbox,Settings" || !equal(shape)) await fail(`the bar with Projects hidden is ${JSON.stringify(shape)}`);
+  await shot("tabbar-two");
+  // ^ A stored list that names Settings is not obeyed.
+  await evaluate("localStorage.setItem('wsx-tabs-hidden', JSON.stringify(['home', 'projects', 'settings']))");
+  await send("Page.reload");
+  await until("!!document.querySelector('.tabbar a')", "the page did not come back after a reload");
+  if ((await text(".tabbar a")).join() !== "Settings") await fail(`the bar with a stored list naming Settings is ${await text(".tabbar a")}`);
+  await evaluate("localStorage.removeItem('wsx-tabs-hidden')");
+  await send("Page.reload");
+  await until("document.querySelectorAll('.tabbar a').length === 3", "the bar did not return with every tab shown");
+  // The header at the bottom leaves the pill where it was.
+  await go("#/settings");
+  await clickIt("input[name=bar][value=bottom]");
+  await go("#/");
+  await until("document.querySelectorAll('.tabbar a').length === 3", "the bar is gone with the header at the bottom");
+  shape = await barShape();
+  if (!equal(shape) || !shape.frame) await fail(`the bar with the header at the bottom is ${JSON.stringify(shape)}`);
+  await shot("tabbar-header-bottom");
+  await go("#/settings");
+  await clickIt("input[name=bar][value=top]");
+  await scheme("light");
+}
 // The changed views in the light scheme, at the phone and the wide size.
 for (const next of [SIZES[1], SIZES[2]]) {
   await resize(next);
