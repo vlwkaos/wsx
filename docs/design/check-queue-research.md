@@ -37,7 +37,7 @@ Findings:
 
 ## External evidence
 
-Status column: "draft" means the number comes from the earlier draft (`/Users/vlwkaos/ws/wsx/docs/design/verification-pipeline.md`, not in this repo). "Not re-fetched" means the source agent was stopped before it confirmed the page, so the number needs a check before anyone quotes it.
+Status column: "draft" means the number comes from the earlier draft (`<main checkout>/docs/design/verification-pipeline.md`, not in this repo). "Not re-fetched" means the source agent was stopped before it confirmed the page, so the number needs a check before anyone quotes it.
 
 | # | Claim | Source | Measured | Number | Status | Transfer to 1 machine, 2-5 agents |
 |---|---|---|---|---|---|---|

@@ -5,6 +5,8 @@ Part 2: cache writes per call by the gap before it. Part 3: context at the start
 import json, os, sys, glob, collections, datetime
 ST = os.path.expanduser("~/.local/state/wsx/tasks/wsx-8cbe3f08")
 PJ = os.path.expanduser("~/.claude/projects")
+# ^ Claude names a transcript dir after the checkout path with / as -; set WSX_MAIN to the main checkout path
+MAIN = os.environ.get("WSX_MAIN", os.getcwd()).replace("/", "-")
 SINCE = datetime.datetime(2026, 10, 28).timestamp() * 1000
 P = {"opus": (4, 20, 0.20, 8), "sonnet": (2, 10, 0.10, 4), "haiku": (1, 5, 0.10, 2)}
 def price(model):
@@ -101,7 +103,7 @@ for nm, c in carried.most_common(12):
     print("  %-16s %5d %7.0f %7.1f %7.2f" % (nm, ntool[nm], by_tool[nm] / 1e3, c / 1e6, c * pr / 1e6))
 print("carried total M %.1f usd %.2f" % (tot / 1e6, tot * pr / 1e6))
 print("\n== part 2: cache writes by gap")
-pat = sys.argv[1] if len(sys.argv) > 1 else "-Users-vlwkaos-ws-wsx-t*"
+pat = sys.argv[1] if len(sys.argv) > 1 else MAIN + "-t*"
 cls = collections.Counter(); usd = collections.Counter(); gaps = collections.Counter(); models = collections.Counter()
 def ts(s): return datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
 for path in glob.glob(os.path.join(PJ, pat, "*.jsonl")):
@@ -235,8 +237,8 @@ def growth(paths):
         if len(calls) >= 20 and calls[0]["t"] >= SINCE:
             g.append((max(c["ctx"] for c in calls) - calls[0]["ctx"]) / len(calls))
     return sorted(g)
-wg = growth(glob.glob(os.path.join(PJ, "-Users-vlwkaos-ws-wsx-t*", "*.jsonl")))
-mg = growth([p for p in glob.glob(os.path.join(PJ, "-Users-vlwkaos-ws-wsx", "*.jsonl"))
+wg = growth(glob.glob(os.path.join(PJ, MAIN + "-t*", "*.jsonl")))
+mg = growth([p for p in glob.glob(os.path.join(PJ, MAIN, "*.jsonl"))
              if "manager" in open(p, errors="replace").read(20000) and "wsx task" in open(p, errors="replace").read(20000)])
 for name, g, start in (("worker", wg, 37_000), ("manager", mg, 40_000)):
     if not g: continue

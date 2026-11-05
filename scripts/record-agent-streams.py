@@ -78,6 +78,9 @@ class Scrub:
             return ('00000000-0000-4000-8000-%012d' % known) if prefix == 'uuid' else '%s_%d' % (prefix, known)
         for real, fake in self.texts:
             text = text.replace(real, fake)
+        text = re.sub(r'-private-var-folders-[^/"]*-wsx-record-[^/"]*', '-work', text)
+        # ^ Claude's per-user task dir holds the uid and the temp folder's name.
+        text = re.sub(r'/private/tmp/claude-\d+/[^/]+/[^/]+/tasks/', '/tmp/claude/tasks/', text)
         return re.sub(r'/tmp/cc-socks/\d+\.sock', '/tmp/cc-socks/1.sock', text)
 
     def value(self, value, key=''):
