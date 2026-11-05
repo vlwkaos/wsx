@@ -860,6 +860,10 @@ impl Host {
         self.result_asked = false;
         self.gate = None;
         self.checks_epoch += 1;
+        // ^ The result it held is dead with the turn: an add's new result is not its answer's.
+        if let Some(run) = &mut self.check_run {
+            run.result_waits = false;
+        }
         let dropped = self.pending.len();
         self.pending.clear();
         self.log(LogEvent::Stopped {
