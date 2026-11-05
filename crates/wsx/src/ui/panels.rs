@@ -283,7 +283,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &PanelsView) {
         )
     };
     if let Some(notice) = &view.notice {
-        lines.extend(notice.lines().map(|line| muted(line)));
+        lines.extend(notice.lines().map(&muted));
     }
     match (&view.panels, &view.shown, &view.error) {
         (None, _, None) => lines.push(muted("Loading panels")),
@@ -305,7 +305,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &PanelsView) {
         .as_ref()
         .and_then(|shown| shown.run.notice.as_ref())
     {
-        lines.extend(notice.lines().map(|line| muted(line)));
+        lines.extend(notice.lines().map(&muted));
     }
     lines.push(Line::raw(""));
     let chrome = lines.len() as u16;
