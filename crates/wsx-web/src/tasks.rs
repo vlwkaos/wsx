@@ -1549,6 +1549,16 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
     watch.stamps.retain(|store, _| stores.contains(store));
 }
 
+/// The granted projects' spend summed (docs/web-client-tasks.md "All projects").
+pub fn usage_all(app: &App) -> Outcome<Value> {
+    let snapshot = chat::snapshot(&app.client)?;
+    let projects: Vec<(String, String)> = scopes(&snapshot, &app.site.access)
+        .into_iter()
+        .map(|scope| (scope.name, scope.store))
+        .collect();
+    Ok(task::usage::all(&projects, task::now_unix_ms()))
+}
+
 /// Every granted project's overview, for a page that just opened.
 pub fn overviews(app: &App) -> Outcome<Value> {
     let snapshot = chat::snapshot(&app.client)?;

@@ -81,6 +81,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/chat/{session}/queue/{id}/retry", post(queue_edit))
             .route("/api/chat/{session}/queue/{id}/steer", post(queue_steer))
             .route("/api/tasks", get(tasks_all))
+            .route("/api/tasks/usage", get(tasks_usage))
             .route("/api/tasks/{project}", get(tasks_overview))
             .route("/api/tasks/{project}/chat", get(tasks_chat))
             .route("/api/tasks/{project}/since", get(tasks_since))
@@ -1047,6 +1048,11 @@ async fn with_scope_long<T: Send + 'static>(
 async fn tasks_all(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
     blocking(|| crate::tasks::overviews(&app).map(Json))
+}
+
+async fn tasks_usage(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, false)?;
+    blocking(|| crate::tasks::usage_all(&app).map(Json))
 }
 
 async fn tasks_overview(

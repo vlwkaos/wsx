@@ -31,6 +31,10 @@ const ICONS = {
   panel: "M3.5 4.5h13v9h-13zM7 16.5h6M10 13.5v3",
   land: "M10 4v9M6 9.5l4 4 4-4M4.5 16h11",
   terminal: "M3.5 4.5h13v11h-13zM6.5 8l2.5 2-2.5 2M10.5 12.5h3",
+  home: "M3.5 9 10 3.5 16.5 9v7a1 1 0 0 1-1 1h-3.5v-4.5h-4V17H4.5a1 1 0 0 1-1-1z",
+  inbox: "M3.5 11.5 5.5 4.5h9l2 7v4a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM3.5 11.5h4l.5 1.5h4l.5-1.5h4",
+  projects: "M3.5 6a1 1 0 0 1 1-1h3.5l1.5 2h5.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-10.5a1 1 0 0 1-1-1z",
+  settings: "M3.5 6h5.5M13 6h3.5M11 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM3.5 14h2.5M10 14h6.5M8 12a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z",
 };
 // A line icon. The control around it carries the accessible name.
 export const Icon = ({ name }) => html`
