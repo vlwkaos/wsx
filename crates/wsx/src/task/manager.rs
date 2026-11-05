@@ -43,6 +43,7 @@ use wsx_core::task::{owner, roles, usage};
 use wsx_core::task::owner::ACTOR_ENV;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 /// Events within this long of each other, or during a turn, become one message.
+const START_RETRY: Duration = Duration::from_secs(30);
 const EVENT_QUIET: Duration = Duration::from_secs(3);
 /// How often the host removes the captures of long-decided "To check" items.
 const CAPTURE_SWEEP: Duration = Duration::from_secs(60 * 60);
@@ -202,6 +203,8 @@ struct Manager {
     /// When the host last removed old captures; `None` sweeps on the first tick.
     captures_swept: Option<Instant>,
     owed: Owed,
+    /// When the agent last failed to start a turn; the next try waits `START_RETRY`.
+    start_failed: Option<Instant>,
     /// Event lines of tasks a role created, by role, not yet sent to it.
     role_events: BTreeMap<String, Vec<(String, Short)>>,
     roles_swept: Option<Instant>,
@@ -459,6 +462,7 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         reexec: false,
         captures_swept: None,
         owed: Owed::default(),
+        start_failed: None,
         role_events: BTreeMap::new(),
         roles_swept: None,
         leaving: false,
@@ -677,15 +681,38 @@ impl Manager {
         });
     }
 
-    /// Re-queue messages logged but never delivered, and pick up what was last reported.
+    /// Re-queue messages logged but never delivered, and those delivered to a turn that got no
+    /// reply, and pick up what was last reported.
     /// ^ No event is lost across a restart: a change reported in no logged message is
-    /// found again because `seen` is saved only when its message is logged.
+    /// found again because `seen` is saved only when its message is logged. A turn ends with
+    /// a reply naming its messages in `to`: the host killed or the agent lost in between leaves
+    /// them unanswered. Only deliveries after the last agent reply count (older unanswered ones
+    /// ended in `stopped` long ago), and a limit hold keeps its own ids, which the turn after
+    /// the limit delivers.
     fn restore(&mut self) -> Result<()> {
         let log = self.dir.read_log()?;
-        let delivered: std::collections::HashSet<u64> = log
+        let after = log
+            .iter()
+            .rposition(|entry| matches!(&entry.event, ManagerEvent::Reply { usage: Some(_), .. }))
+            .map_or(0, |at| at + 1);
+        let answered: std::collections::HashSet<u64> = log
             .iter()
             .flat_map(|entry| match &entry.event {
-                ManagerEvent::Delivered { ids } => ids.clone(),
+                ManagerEvent::Reply { to, .. } => to.clone(),
+                _ => Vec::new(),
+            })
+            .chain(self.state.limit.iter().flat_map(|hold| hold.ids.clone()))
+            .collect();
+        let delivered: std::collections::HashSet<u64> = log
+            .iter()
+            .enumerate()
+            .flat_map(|(at, entry)| match &entry.event {
+                ManagerEvent::Delivered { ids } if at < after => ids.clone(),
+                ManagerEvent::Delivered { ids } => ids
+                    .iter()
+                    .copied()
+                    .filter(|id| answered.contains(id))
+                    .collect(),
                 _ => Vec::new(),
             })
             .collect();
@@ -1551,6 +1578,19 @@ impl Manager {
         self.queue.insert(at, (id, from, text));
     }
 
+    /// A message of a manager or a role is answered once (docs/tasks.md "Roles").
+    fn owe(&self, author: &Author) {
+        let who = match author {
+            Author::Manager {
+                project,
+                reply: false,
+            } => project.clone(),
+            Author::Role { name, reply: false } => format!("role:{name}"),
+            _ => return,
+        };
+        *self.owed.lock().expect("owed lock").entry(who).or_default() += 1;
+    }
+
     fn next_id(&mut self) -> u64 {
         self.state.next_id += 1;
         self.save();
@@ -1559,6 +1599,13 @@ impl Manager {
 
     /// Start a turn with every waiting owner message, or else with the waiting events.
     fn next_turn(&mut self) {
+        // ^ A start that failed waits: its messages are back in the queue.
+        if self
+            .start_failed
+            .is_some_and(|failed| failed.elapsed() < START_RETRY)
+        {
+            return;
+        }
         self.choose_agent();
         // ^ During a limit the messages wait, also when another host met it or a budget is
         // spent; after it they go with the held ones.
@@ -1610,6 +1657,8 @@ impl Manager {
         // ^ Events that need no judgment go along with a turn that runs anyway, after its
         // own messages.
         let mut along = Vec::new();
+        // ^ What left the queue, to put back when the agent does not start.
+        let mut taken = Vec::new();
         let mut for_owner = false;
         if first != Author::Events {
             while let Some(at) = self.queue.iter().position(|(_, author, text)| {
@@ -1631,15 +1680,7 @@ impl Manager {
                 Author::Manager {
                     project,
                     reply: false,
-                } => {
-                    *self
-                        .owed
-                        .lock()
-                        .expect("owed lock")
-                        .entry(project.clone())
-                        .or_default() += 1;
-                    format!("Manager {project}")
-                }
+                } => format!("Manager {project}"),
                 Author::Manager {
                     project,
                     reply: true,
@@ -1647,14 +1688,6 @@ impl Manager {
                 // ^ A role's or this project's manager's message is answered once, as a
                 // manager's (docs/tasks.md "Roles").
                 Author::Role { name, reply } => {
-                    if !reply {
-                        *self
-                            .owed
-                            .lock()
-                            .expect("owed lock")
-                            .entry(format!("role:{name}"))
-                            .or_default() += 1;
-                    }
                     let who = match name.as_str() {
                         "manager" => "Manager".to_string(),
                         name => format!("Role {name}"),
@@ -1672,6 +1705,7 @@ impl Manager {
                 said.push('\n');
             }
             ids.push(id);
+            taken.push((id, author, body));
         }
         if !said.is_empty() {
             text.push_str(&self.notes_matching(&said));
@@ -1686,9 +1720,10 @@ impl Manager {
                 owner.join(", ")
             ));
         }
-        for (id, _, body) in along {
+        for (id, author, body) in along {
             text.push_str(&format!("Events (message {id}):\n{body}\n\n"));
             ids.push(id);
+            taken.push((id, author, body));
         }
         // ^ The limit preface is no owner message: a held turn is events-only when its
         // held and its new messages all are. Another manager's or a role's reply is used, not
@@ -1726,10 +1761,21 @@ impl Manager {
         }
         if let Err(error) = self.send_turn(text.trim_end(), events_only) {
             self.say(&format!("cannot start the manager agent: {error:#}"));
-            self.log(ManagerEvent::Stopped {
-                reason: format!("cannot start the manager agent: {error:#}"),
-            });
+            // ^ The messages go back to the front, in order, for the retry: they are not
+            // logged as delivered. One `stopped` entry for a run of failures.
+            for item in taken.into_iter().rev() {
+                self.queue.push_front(item);
+            }
+            if self.start_failed.replace(Instant::now()).is_none() {
+                self.log(ManagerEvent::Stopped {
+                    reason: format!("cannot start the manager agent: {error:#}"),
+                });
+            }
             return;
+        }
+        self.start_failed = None;
+        for (_, author, _) in &taken {
+            self.owe(author);
         }
         if held.as_ref().is_some_and(|hold| !hold.switched) {
             self.log(ManagerEvent::Limit { until: None });

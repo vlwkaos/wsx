@@ -1788,6 +1788,33 @@ def run(wsx, wsxd, work, owned):
     # ^ The decisions it left out are named, with their lines and the file's absolute path.
     assert re.search(r'NOT SHOWN: decisions\.md lines 1-\d+ of 200 .*Read /\S+/notes/decisions\.md', head), head
     assert 'NOT SHOWN: context.md' not in head, head
+    # 21b. Restart: a message delivered to a turn that got no reply goes to the next turn once,
+    # one with a reply does not (docs/tasks.md "Manager"). The first HANG turn never answers; the
+    # host and its agent are killed after `delivered` is logged.
+    mark('21b')
+    wait(manager_idle, 'the manager idle before HANG', 60)
+    answered = js('task', 'say', 'STATUS before the kill')
+    reply_to(answered['id'])
+    hung = js('task', 'say', 'HANG once')
+    wait(lambda: any(e['kind'] == 'delivered' and hung['id'] in e['ids'] for e in manager_entries()), 'HANG delivered')
+    assert not [e for e in manager_entries() if e['kind'] == 'reply' and hung['id'] in e['to']]
+    host_id = show(unseen)['record']['project_id']
+    manager_host = next(int(line.split()[0]) for line in leftovers('task manager-host %s' % host_id)
+                        if line.endswith('task manager-host %s' % host_id))
+    os.kill(manager_host, 9)
+    os.kill([t for t in traces() if t.get('launch') and t.get('manager')][-1]['pid'], 9)
+    cli('session', 'delete', 'task-manager', '-p', 'demo')
+    assert js('task', 'manager')['state'] == 'started'
+    reply_to(hung['id'])
+    turns_of = lambda text: [t for t in traces() if t.get('manager') and text in str(t.get('message', ''))]
+    assert len(turns_of('HANG once')) == 2 and len(turns_of('STATUS before the kill')) == 1, (
+        turns_of('HANG once'), turns_of('STATUS before the kill'))
+    # ^ A restart after the reply delivers neither again.
+    stop_manager()
+    reply_to(js('task', 'say', 'STATUS after the second start')['id'])
+    assert len(turns_of('HANG once')) == 2 and len(turns_of('STATUS before the kill')) == 1
+    assert len([e for e in manager_entries() if e['kind'] == 'reply' and hung['id'] in e['to']]) == 1
+
     # 21a. Notes budget (docs/tasks.md "Notes budget"): a context.md over what a fresh conversation
     # shows is never cut silently. The fixture is pizzahouse's: 60 lines, about 15 KB, and the
     # fact the manager got wrong sits among the oldest memos.

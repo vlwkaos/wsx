@@ -61,6 +61,8 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   NOTIFY         first end a 0-token turn with no result, as Claude's own turn for a notification
   SLOW           take about 3 s
   LONG           take about 25 s
+  HANG           the first turn with it never answers (a marker file next to the trace keeps the
+                 later ones normal), as an agent that dies before its reply
   BIG            a last model call of 200k tokens, so the host rotates the conversation
   CTX <n>        (a line) a last model call of n tokens, as BIG with a size of the test's choice
   SUMMED         four model calls of 50k each: the result's usage sums 200k, the context is 50k
@@ -283,6 +285,9 @@ def manager_turn(text, project, page):
         time.sleep(3)
     if 'LONG' in text.split():
         time.sleep(25)
+    if 'HANG' in text.split() and not os.path.exists(TRACE + '.hung'):
+        open(TRACE + '.hung', 'w').close()
+        time.sleep(600)
     if '\nSCRIPT\n' in '\n' + text:
         # ^ Events that come along with the turn follow the owner's message: they are no script.
         script = ('\n' + text).split('\nSCRIPT\n', 1)[1].split('\n\nEvents (message ', 1)[0]
