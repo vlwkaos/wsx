@@ -300,6 +300,12 @@ pub enum LogEvent {
     Checks {
         results: Vec<CheckResult>,
     },
+    /// A land removed a stale `index.lock` (older than 5 minutes, no holder) and ran its git
+    /// step again. ref: docs/tasks.md "Landing"
+    LockCleared {
+        path: String,
+        age_s: u64,
+    },
     /// Failed checks of `revision` went back to the worker as turn `attempt`.
     CheckRetry {
         revision: u32,

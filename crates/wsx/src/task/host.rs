@@ -2574,12 +2574,18 @@ impl Host {
     fn fast_forward(&mut self, tried: bool) -> Result<String> {
         let tip = self.default_tip()?;
         let head = copy::resolve_commit(&self.record.working_copy, "HEAD")?;
-        copy::fast_forward(
+        let cleared = copy::fast_forward(
             &self.record.project_path,
             &self.record.default_branch,
             &tip,
             &head,
         )?;
+        if let Some(lock) = cleared {
+            self.log(LogEvent::LockCleared {
+                path: lock.path.display().to_string(),
+                age_s: lock.age_s,
+            });
+        }
         self.landed(&head, tried);
         if let Some(parent) = self.record.parent {
             self.tell_parent(parent, &tip, &head);

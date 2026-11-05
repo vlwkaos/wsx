@@ -2,7 +2,7 @@
 //! of the main checkout's files, so builds start warm.
 //! ref: docs/tasks.md "Working copy"
 
-use crate::git::{git_cmd, worktree::list_worktrees};
+use crate::git::{git_cmd, run_clearing_stale_lock, worktree::list_worktrees, LockCleared};
 use anyhow::{bail, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -52,6 +52,18 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
         .stderr(Stdio::piped())
         .output()
         .with_context(|| format!("cannot run git {}", args.join(" ")))?;
+    finished(args, output)
+}
+
+/// `git` for a step that takes the checkout's index lock; a stale one is cleared and the
+/// step runs again. ref: docs/tasks.md "Landing"
+fn git_clearing_lock(repo: &Path, args: &[&str]) -> Result<(String, Option<LockCleared>)> {
+    let (output, cleared) = run_clearing_stale_lock(repo, args)
+        .with_context(|| format!("cannot run git {}", args.join(" ")))?;
+    Ok((finished(args, output)?, cleared))
+}
+
+fn finished(args: &[&str], output: std::process::Output) -> Result<String> {
     if !output.status.success() {
         bail!(
             "git {} exited {}: {}",
@@ -448,8 +460,13 @@ pub fn land_blockers(main: &Path, default_branch: &str, commit: &str) -> Result<
 /// checked out, its changed files that the move also changes refuse it; other changes stay
 /// (`git merge --ff-only` keeps them). Elsewhere the ref moves with `old_tip` as guard, so a
 /// branch that moved meanwhile is never overwritten. Nothing stashes or commits the owner's
-/// files. ref: docs/tasks.md "Landing"
-pub fn fast_forward(main: &Path, default_branch: &str, old_tip: &str, commit: &str) -> Result<()> {
+/// files. Gives back the stale index lock it cleared, if any. ref: docs/tasks.md "Landing"
+pub fn fast_forward(
+    main: &Path,
+    default_branch: &str,
+    old_tip: &str,
+    commit: &str,
+) -> Result<Option<LockCleared>> {
     match checkout_of(main, default_branch)? {
         Some(checkout) => {
             let blocked = overlapping_changes(&checkout, commit)?;
@@ -462,7 +479,8 @@ pub fn fast_forward(main: &Path, default_branch: &str, old_tip: &str, commit: &s
                     checkout.display()
                 );
             }
-            git(&checkout, &["merge", "--ff-only", "--quiet", commit]).map(drop)
+            git_clearing_lock(&checkout, &["merge", "--ff-only", "--quiet", commit])
+                .map(|(_, cleared)| cleared)
         }
         None => git(
             main,
@@ -473,7 +491,7 @@ pub fn fast_forward(main: &Path, default_branch: &str, old_tip: &str, commit: &s
                 old_tip,
             ],
         )
-        .map(drop),
+        .map(|_| None),
     }
 }
 

@@ -2307,6 +2307,37 @@ def run(wsx, wsxd, work, owned):
     for n in (probed, held):
         js('task', 'close', n, '--discard')
 
+    # 24b. A land that meets index.lock in the main checkout: a fresh lock refuses naming it, an
+    # old one that a live process holds open refuses with its pid, an old one with no holder is
+    # cleared (log `lock_cleared`) and the land goes on. Only index.lock is ever removed.
+    mark('24b')
+    locked = js('task', 'new', 'WORK locked.txt')['id']
+    assert wait_state(locked, 'ready', 'failed')['state'] == 'ready'
+    lock, other_lock = common / 'index.lock', common / 'shallow.lock'
+    named = os.path.realpath(common) + '/index.lock'  # ^ git names the real path
+    lock.write_text('')
+    other_lock.write_text('')
+    refused = land(locked, ok=False)
+    assert named in refused['message'] and 'younger than 300 s' in refused['message'], refused
+    assert lock.exists() and not kinds(locked, 'lock_cleared'), log(locked)
+    old = time.time() - 600
+    os.utime(lock, (old, old))
+    with open(lock, 'ab') as held_open:
+        holder = subprocess.Popen(['sleep', '60'], stdout=held_open)
+    try:
+        refused = land(locked, ok=False)
+        assert named in refused['message'] and 'held open by pid %d' % holder.pid in refused['message'], refused
+        assert lock.exists() and not kinds(locked, 'lock_cleared'), log(locked)
+    finally:
+        holder.kill()
+        holder.wait()
+    assert land(locked)['ok']
+    wait_closed(locked)
+    cleared = [e for e in log(locked) if e['kind'] == 'lock_cleared']
+    assert len(cleared) == 1 and cleared[0]['path'].endswith('/.git/index.lock') and cleared[0]['age_s'] >= 600, cleared
+    assert not lock.exists() and other_lock.exists() and main_has('locked.txt')
+    other_lock.unlink()
+
     # 25. A done result whose checks fail goes back to the worker with the failed command and
     mark('25')
     # its output, at most twice, then the task fails as before.

@@ -21,6 +21,101 @@ pub fn git_cmd(repo: &Path) -> Command {
     cmd
 }
 
+/// A lock older than this, with no process holding it open, is left by a git that died.
+const STALE_LOCK_AGE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// A stale `index.lock` that `run_clearing_stale_lock` removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockCleared {
+    pub path: std::path::PathBuf,
+    pub age_s: u64,
+}
+
+/// Run `git -C repo args`. When git refuses with "index.lock: File exists" and the repository's
+/// own `index.lock` is stale (over 5 minutes old by mtime and no process has it open, as
+/// `lsof -t` says; a missing or failing lsof is not stale), remove that file and run once more.
+/// A lock that is not stale stays, and the output's stderr names it, its age and its holder.
+/// No other lock file is touched. ref: docs/tasks.md "Landing"
+pub fn run_clearing_stale_lock(
+    repo: &Path,
+    args: &[&str],
+) -> std::io::Result<(std::process::Output, Option<LockCleared>)> {
+    let run = || git_cmd(repo).args(args).output();
+    let mut output = run()?;
+    let refused = String::from_utf8_lossy(&output.stderr);
+    if output.status.success()
+        || !(refused.contains("index.lock") && refused.contains("File exists"))
+    {
+        return Ok((output, None));
+    }
+    let Some(lock) = index_lock(repo) else {
+        return Ok((output, None));
+    };
+    let Ok(modified) = std::fs::metadata(&lock).and_then(|meta| meta.modified()) else {
+        return Ok((output, None));
+    };
+    let age = modified.elapsed().unwrap_or_default();
+    let holder = lock_holder(&lock);
+    if age > STALE_LOCK_AGE && holder == Holder::None {
+        std::fs::remove_file(&lock)?;
+        let cleared = LockCleared {
+            path: lock,
+            age_s: age.as_secs(),
+        };
+        return Ok((run()?, Some(cleared)));
+    }
+    let why = match holder {
+        Holder::Pid(pid) => format!("held open by pid {pid}"),
+        Holder::Unknown => "its holder could not be checked".into(),
+        Holder::None => format!("younger than {} s", STALE_LOCK_AGE.as_secs()),
+    };
+    output.stderr.extend_from_slice(
+        format!(
+            "\nwsx: {} is {} s old, {why}; wsx removes a lock only when it is older than {} s and no process holds it\n",
+            lock.display(),
+            age.as_secs(),
+            STALE_LOCK_AGE.as_secs()
+        )
+        .as_bytes(),
+    );
+    Ok((output, None))
+}
+
+/// The `index.lock` of the git dir `repo` uses (a linked worktree's own).
+fn index_lock(repo: &Path) -> Option<std::path::PathBuf> {
+    let output = git_cmd(repo)
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "index.lock",
+        ])
+        .output()
+        .ok()?;
+    let text = String::from_utf8(output.stdout).ok()?;
+    (output.status.success() && !text.trim().is_empty()).then(|| text.trim().into())
+}
+
+#[derive(PartialEq)]
+enum Holder {
+    None,
+    Pid(u32),
+    Unknown,
+}
+
+/// `lsof -t` exits 0 with the pids of the holders and 1 with no output when there is none.
+fn lock_holder(path: &Path) -> Holder {
+    let Ok(output) = Command::new("lsof").arg("-t").arg(path).output() else {
+        return Holder::Unknown;
+    };
+    let pids = String::from_utf8_lossy(&output.stdout);
+    match (output.status.code(), pids.split_whitespace().next()) {
+        (Some(0), Some(pid)) => pid.parse().map_or(Holder::Unknown, Holder::Pid),
+        (Some(1), None) if output.stderr.is_empty() => Holder::None,
+        _ => Holder::Unknown,
+    }
+}
+
 /// Spawn `cmd` in its own process group with piped stdout/stderr.
 /// Kills the entire group on timeout so ssh + credential helpers are also reaped.
 /// After the process ends, waits at most `STREAM_GRACE` for its output streams to close.
