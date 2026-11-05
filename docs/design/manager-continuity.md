@@ -65,7 +65,7 @@ Result: 1 clear repeat (#1019) and 1 unchecked (#935) in 72 rotations. 0 cases w
 
 ## 3. Is the handover enough?
 
-Handover: notes at most 8 KiB (`notes_preamble`, `crates/wsx/src/task/manager.rs`), last 4 owner messages and replies at 600 chars, routine results, ledger.
+Handover: notes at most 10 KiB, with what is left out named (`notes::preamble`, `crates/wsx/src/task/notes.rs`; docs/tasks.md "Notes budget"), last 4 owner messages and replies at 600 chars, routine results, ledger.
 
 - `notes/decisions.md` is 23.5 KB (132 lines) and is read newest first into the 8 KiB budget. Only the newest 50 lines fit, and `context.md` (8.9 KB) comes after, so it gets what is left, usually little or nothing. This is the only structural gap found: decisions from before the last 50 lines, and the project context, are not in a fresh conversation.
 - Last 4 messages at 600 chars hold about 2 owner turns. #1019 refers to an instruction older than that and in no note.
