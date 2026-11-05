@@ -198,7 +198,10 @@ fn a_task_worker_starts_inside_the_boundary() {
             .find(|trace| trace["launch"] == true)
     });
     assert_eq!(launch["mode"], "bypassPermissions", "{launch}");
-    assert_eq!(launch["wsx_env"], serde_json::json!(["WSX_TASK_BROKER"]));
+    assert_eq!(
+        launch["wsx_env"],
+        serde_json::json!(["WSX_AGENT_TREE", "WSX_TASK_BROKER"])
+    );
 }
 
 #[test]
