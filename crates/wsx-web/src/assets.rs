@@ -36,6 +36,7 @@ const FILES: &[(&str, &str, &str)] = &[
     ("checks.js", JS, include_str!("../web/checks.js")),
     ("usage.js", JS, include_str!("../web/usage.js")),
     ("routines.js", JS, include_str!("../web/routines.js")),
+    ("panels.js", JS, include_str!("../web/panels.js")),
     ("bubbles.js", JS, include_str!("../web/bubbles.js")),
     ("find.js", JS, include_str!("../web/find.js")),
     ("reply.js", JS, include_str!("../web/reply.js")),

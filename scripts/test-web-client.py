@@ -3028,6 +3028,13 @@ capabilities = ["terminal_view"]
 # ^ `minFreeGb: 0`: tasks must not wait on this machine's free disk. `approve: true` keeps
 # the manager's land an approval request for the journey. `rotateTokens`: the manager's BIG (200k)
 # must pass its limit, which is 400000 on Claude when unset (docs/tasks.md "Manager").
+PANEL_CONFIG = '''panels:
+  - name: device
+    command: [scripts/device.sh]
+    refresh: 10
+  - name: broken
+    command: [scripts/broken.sh]
+'''
 LONG_NAME = 'notes-about-jumping-between-projects-from-the-keyboard-and-back.txt'
 TASK_CONFIG = '''tasks:
   minFreeGb: 0
@@ -3137,7 +3144,16 @@ def task_journey(args):
                     # ^ ui's manager has a name (docs/tasks.md "Config"); the others read as their project.
                     (folder / 'wsx.config.yml').write_text(
                         TASK_CONFIG.replace('{ model: fake-manager,', '{ name: Atlas, model: fake-manager,') if folder == other
-                        else TASK_CONFIG)
+                        else TASK_CONFIG + PANEL_CONFIG if folder == calm else TASK_CONFIG)
+                    if folder == calm:
+                        # ^ docs/panels.md: `device` counts its runs, `broken` exits 2 after a line.
+                        (folder / 'scripts').mkdir()
+                        (folder / 'scripts/device.sh').write_text(
+                            '#!/bin/sh\nn=$(cat device.count 2>/dev/null || echo 0)\nn=$((n+1))\necho $n > device.count\n'
+                            'printf "mem 8G swap 0\\ndevice run %s\\n" "$n"\n')
+                        (folder / 'scripts/broken.sh').write_text('#!/bin/sh\necho broken: no disk\nexit 2\n')
+                        for script in ('device.sh', 'broken.sh'):
+                            (folder / 'scripts' / script).chmod(0o755)
                     (folder / 'README').write_text('fixture\n')
                 subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', *argv],
                                cwd=folder, env=env, check=True, capture_output=True, timeout=20)

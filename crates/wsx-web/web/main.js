@@ -13,6 +13,7 @@ import { Project, Projects, ProjectSessions } from "./projects.js";
 import { loadTasks, Manager, noteDecisions } from "./tasks.js";
 import { Session } from "./session.js";
 import { Files } from "./files.js";
+import { PanelsScreen } from "./panels.js";
 import { Settings } from "./settings.js";
 import { viewImageLinks } from "./viewer.js";
 
@@ -87,7 +88,7 @@ function Screen({ route }) {
   // ^ The chat and the chat with a task's sheet are one Manager, so opening and closing the
   // sheet keeps the conversation, its scroll and the composer's draft.
   if (route.screen === "project" || route.screen === "task") {
-    return can("task_view") ? html`<${Manager} key=${route.id} project=${route.id} task=${route.task ?? null} page=${Boolean(route.page)} checks=${Boolean(route.checks)} usage=${Boolean(route.usage)} routines=${Boolean(route.routines)} />` : html`<${Project} key=${route.id} id=${route.id} />`;
+    return can("task_view") ? html`<${Manager} key=${route.id} project=${route.id} task=${route.task ?? null} page=${Boolean(route.page)} checks=${Boolean(route.checks)} usage=${Boolean(route.usage)} routines=${Boolean(route.routines)} panels=${Boolean(route.panels)} />` : route.panels ? html`<${PanelsScreen} key=${route.id} project=${route.id} />` : html`<${Project} key=${route.id} id=${route.id} />`;
   }
   if (route.screen === "role" && can("task_view")) return html`<${Manager} key=${`${route.id}/${route.role}`} project=${route.id} role=${route.role} />`;
   if (route.screen === "sessions") return html`<${ProjectSessions} key=${route.id} id=${route.id} />`;

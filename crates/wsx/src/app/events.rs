@@ -200,6 +200,11 @@ impl App {
                 self.needs_redraw = true;
             }
         }
+        if let Mode::Panels { view } = &mut self.mode {
+            if view.poll() {
+                self.needs_redraw = true;
+            }
+        }
         self.expire_notice(Instant::now());
         if let Some(target) = self.pending_integration_demand.take() {
             self.prompt_for_integration_if_needed(target);

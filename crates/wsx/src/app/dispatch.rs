@@ -174,6 +174,21 @@ impl App {
             }
             return Ok(());
         }
+        if let Mode::Panels { view } = &mut self.mode {
+            match action {
+                Action::InputEscape | Action::Quit | Action::Panels => self.mode = Mode::Workspace,
+                Action::NavigateDown => view.scroll_by(1),
+                Action::NavigateUp => view.scroll_by(-1),
+                Action::PageDown => view.scroll_by(10),
+                Action::PageUp => view.scroll_by(-10),
+                Action::InputTab | Action::NavigateRight => view.select(1),
+                Action::InputBackTab | Action::NavigateLeft => view.select(-1),
+                Action::Refresh => view.refresh(),
+                _ => {}
+            }
+            self.needs_redraw = true;
+            return Ok(());
+        }
         if matches!(self.mode, Mode::RoutineDetail { .. }) {
             match action {
                 Action::InputEscape | Action::Quit | Action::Select => self.mode = Mode::Workspace,
@@ -242,6 +257,7 @@ impl App {
             Mode::RoutinePresetPicker { .. }
             | Mode::RoutineEditor { .. }
             | Mode::RoutineDetail { .. }
+            | Mode::Panels { .. }
             | Mode::Tasks { .. } => unreachable!(),
         }
         Ok(())
@@ -506,6 +522,7 @@ impl App {
             Action::GroupPrev => self.action_group_prev(),
             Action::GroupManager => self.action_group_manager(),
             Action::Tasks => self.action_tasks(),
+            Action::Panels => self.action_panels(),
             Action::MouseClick { col, row } => {
                 self.handle_mouse_click(col, row, terminal, false)?
             }

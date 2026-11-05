@@ -11,6 +11,7 @@ pub mod hooks;
 pub mod integration;
 pub mod model;
 pub mod ops;
+pub mod panel;
 pub mod routine;
 pub mod runtime;
 pub mod task;

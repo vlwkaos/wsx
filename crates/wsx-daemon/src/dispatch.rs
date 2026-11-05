@@ -29,6 +29,7 @@ pub(crate) fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Res
             | Request::AgentExchangeContinueKeyed { .. }
             | Request::AgentSteer { .. }
             | Request::Routine { .. }
+            | Request::Panel { .. }
     ))
     .then(|| lock(&daemon.mutation_lock));
     if !matches!(&request, Request::Hello { .. } | Request::LifecycleStatus)
@@ -52,6 +53,9 @@ pub(crate) fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Res
         }
         Request::Routine { project, action } => {
             Ok(Response::Routine(routine::handle(&project, action)))
+        }
+        Request::Panel { project, action } => {
+            Ok(Response::Panel(panel::handle(daemon, &project, action)))
         }
         Request::Snapshot => Ok(Response::Snapshot(snapshot(daemon, &lock(&daemon.state)))),
         Request::Poll {

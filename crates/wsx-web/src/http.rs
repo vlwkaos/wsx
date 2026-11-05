@@ -70,6 +70,8 @@ pub fn router(app: Shared) -> Router {
             .route("/api/projects", post(project_add))
             .route("/api/projects/{project}", delete(project_remove))
             .route("/api/projects/{project}/shell", post(project_shell))
+            .route("/api/projects/{project}/panels", get(project_panels))
+            .route("/api/projects/{project}/panels/{name}", get(project_panel))
             .route("/api/chat/{session}/timeline", get(timeline))
             .route("/api/chat/{session}/send", post(send))
             .route("/api/chat/{session}/commands", get(commands))
@@ -874,6 +876,23 @@ async fn project_shell(
             .map_err(|error| Fault::new(409, "shell_unavailable", format!("{error:#}")))?;
         Ok(Json(json!({ "session_id": session.0 })))
     })
+}
+
+async fn project_panels(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(project): UrlPath<u64>,
+) -> Outcome<Json<Value>> {
+    crate::panels::list(&app, project).map(Json)
+}
+
+async fn project_panel(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath((project, name)): UrlPath<(u64, String)>,
+    Query(query): Query<crate::panels::GetQuery>,
+) -> Outcome<Json<Value>> {
+    crate::panels::get(&app, project, name, query).map(Json)
 }
 
 /// `from` and `at`: the id and time of an item the page has. The answer then starts at

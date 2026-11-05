@@ -43,6 +43,7 @@ pub enum Action {
     GroupNext,
     GroupManager,
     Tasks,
+    Panels,
     Overview,
     Shell,
     InputChar(char),

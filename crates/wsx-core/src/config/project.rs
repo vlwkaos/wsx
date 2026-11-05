@@ -79,6 +79,8 @@ struct ProjectConfigFile {
     worktree: WorktreeConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
     tasks: Option<TasksFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    panels: Vec<crate::panel::PanelFile>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -857,8 +859,10 @@ fn validate_project_file(file: ProjectConfigFile) -> Result<ProjectConfig, Strin
         })
         .transpose()?;
     let tasks = validate_tasks(file.tasks)?;
+    let panels = crate::panel::validate(file.panels)?;
     Ok(ProjectConfig {
         tasks,
+        panels,
         post_create: file.hooks.post_create,
         copy_includes: file.copy.include,
         copy_excludes: file.copy.exclude,
@@ -968,6 +972,7 @@ fn write_yaml(path: &Path, config: &ProjectConfig) -> Result<(), String> {
                 }),
         },
         tasks: None,
+        panels: Vec::new(),
     };
     let text = yaml_serde::to_string(&document).map_err(|error| error.to_string())?;
     write_text_atomic(path, &text, Publish::Create)

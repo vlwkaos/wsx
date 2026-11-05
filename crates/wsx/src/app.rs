@@ -536,6 +536,9 @@ pub enum Mode {
     Tasks {
         list: Box<crate::task_list::TaskList>,
     },
+    Panels {
+        view: Box<crate::panel_view::PanelsView>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

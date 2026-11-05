@@ -4,6 +4,7 @@ import { html, Loading, useNow } from "./lib.js";
 import { can, listedSessions, shows, stateOf, useStore } from "./store.js";
 import { NewSession, SessionRow } from "./inbox.js";
 import { Back } from "./ui.js";
+import { PanelsButton } from "./panels.js";
 
 const counted = (count) => (count === 1 ? "1 session" : `${count} sessions`);
 // How many task items wait for the owner in a project, after its session count.
@@ -72,7 +73,7 @@ export function Project({ id, back = "#/projects" }) {
           <span class="bar-label">${project.name}</span>
           <span class="bar-state">${counted(sessions.length)}</span>
         </div>
-        <div class="bar-tools">${filesLink(project)}</div>
+        <div class="bar-tools">${filesLink(project)}<${PanelsButton} project=${id} /></div>
       </header>
       <div class="scroll">
         ${worktrees.map((worktree) => {
