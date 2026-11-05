@@ -1397,7 +1397,7 @@ await closeSheet("the usage sheet", chat);
     const bar = box('.page > .bar, .chat > .bar'), composer = box('.composer'), log = box('.log'), page = box('.page');
     return { side: document.documentElement.dataset.bar ?? 'top', bar: bar && [Math.round(bar.top), Math.round(bar.bottom)], composer: composer && Math.round(composer.top),
       log: log && Math.round(log.bottom), page: page && [Math.round(page.top), Math.round(page.bottom)], menu: document.querySelector('.more-menu') ? 1 : 0 }; })()`);
-  await go("#/settings");
+  await go("#/settings/ui");
   await until("!!document.querySelector('input[name=bar]')", "Settings has no header setting");
   if (await evaluate("document.querySelector('input[name=bar]:checked').value") !== "top") await fail("the header setting does not default to top");
   await click("input[name=bar][value=bottom]");
@@ -1442,7 +1442,7 @@ await closeSheet("the usage sheet", chat);
     await closeSheet("the routines sheet", chat);
   }
   await resize([390, 844, 2]);
-  await go("#/settings");
+  await go("#/settings/ui");
   await until("!!document.querySelector('input[name=bar]')", "Settings did not return");
   await click("input[name=bar][value=top]");
   await until("!document.documentElement.dataset.bar", "the header setting did not go back to top");
@@ -1765,7 +1765,7 @@ async function keyboardUpAndDown() {
   await pause(700);
 }
 const barAt = async (side) => {
-  await go("#/settings");
+  await go("#/settings/ui");
   await until("!!document.querySelector('input[name=bar]')", "Settings has no header setting");
   await click(`input[name=bar][value=${side}]`);
   await until(`(document.documentElement.dataset.bar ?? 'top') === '${side}'`, `the header did not go to the ${side}`);
@@ -2790,6 +2790,11 @@ await settled("Settings opened");
 if (JSON.stringify(await switches()) !== JSON.stringify({ manager: false, agents: false })) await fail(`a new device has switches on: ${JSON.stringify(await switches())}`);
 const labels = await text(".option-row .option-text");
 if (!labels[0].startsWith("Manager needs me") || !labels[1].startsWith("An agent needs me") ) await fail(`the switch labels are ${labels}`);
+// ^ Short hints, no "on this device" in a title, and General holds no appearance or header setting (they are in UI).
+const hints = await text(".option-row .option-hint");
+if (hints.join("|") !== "Tasks, approvals, things to check|Input needed or an error") await fail(`the notification hints are ${hints}`);
+const general = await evaluate("[...document.querySelectorAll('.settings section')].map((section) => section.getAttribute('aria-label')).join()");
+if (general.replace(",Version", "") !== "Notifications,This device" || await evaluate("/on this device/i.test(document.querySelector('.settings').textContent)")) await fail(`General is ${general}`);
 if (await evaluate("/digest/i.test(document.querySelector('[aria-label=Notifications]').textContent) || !!document.querySelector('input[name=digest], input[name=digest-time]')")) await fail("Settings still offers a digest");
 // ^ The label is left and the control right on a wide row; on a narrow one the control may wrap under it.
 await shot("settings-notifications-empty");
@@ -3392,6 +3397,8 @@ await closeSheet("the page", `#/p/${plansArg}`);
   if ((await text(".subtabs a")).join() !== "General,UI,Usage" || (await text(".subtabs a[aria-current=page]")).join() !== "UI") await fail(`the settings sections are ${await text(".subtabs a")}`);
   const tabSwitches = () => evaluate("Object.fromEntries([...document.querySelectorAll('.options input[name^=tab-]')].map((node) => [node.name, [node.checked, node.disabled]]))");
   if (JSON.stringify(await tabSwitches()) !== JSON.stringify({ "tab-home": [true, false], "tab-inbox": [true, false], "tab-settings": [true, true] })) await fail(`the tab switches are ${JSON.stringify(await tabSwitches())}`);
+  const uiSections = await evaluate("[...document.querySelectorAll('.settings section')].map((section) => [section.getAttribute('aria-label'), section.querySelector('h2').textContent].join(':')).join()");
+  if (uiSections !== "Appearance:Appearance,Header:Header,Bottom bar:Bottom bar" || (await text(".options .option")).join() !== "Dark,Light,Top,Bottom,Home,Sessions,SettingsAlways shown") await fail(`Settings > UI is ${uiSections}: ${await text(".options .option")}`);
   await shot("settings-ui");
   await click("input[name=tab-inbox]");
   await until("document.querySelectorAll('.tabbar a').length === 2", "hiding Sessions left it in the bar");
@@ -3407,13 +3414,13 @@ await closeSheet("the page", `#/p/${plansArg}`);
   await evaluate("localStorage.removeItem('wsx-tabs-hidden')");
   await send("Page.reload");
   await until("document.querySelectorAll('.tabbar a').length === 3", "the bar did not return with every tab shown");
-  // The header at the bottom (Settings > General) keeps the bar clear of the tab pill.
-  await go("#/settings");
+  // The header at the bottom (Settings > UI) keeps the bar clear of the tab pill.
+  await go("#/settings/ui");
   await click("input[name=bar][value=bottom]");
   await go("#/sessions");
   await until("document.querySelectorAll('.tabbar a').length === 3", "the bar is gone with the header at the bottom");
   await shot("tabbar-header-bottom");
-  await go("#/settings");
+  await go("#/settings/ui");
   await click("input[name=bar][value=top]");
 
   // Usage: the all-projects total equals the sum of the projects' own usage.

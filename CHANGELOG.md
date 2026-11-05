@@ -6,6 +6,7 @@
 
 - Web: the phone's bottom tab pill really floats. The nav around it is transparent and takes no pointer, so content scrolled behind the corners and margins shows through; a scrolled list still ends above the pill, by padding each top screen's scroll area with the bar's measured height (`--tabbar-space`, safe area included). Screens without the bar are unchanged ([docs/web-client.md](docs/web-client.md) "Screens").
 - Web: the count badges are smaller and share one size. The tab bar's count and Home's row count both use the new theme tokens `size-badge` (16 px high, was 20) and `font-size-badge` (11 px): one digit is a circle, `99+` widens it ([docs/web-themes.md](docs/web-themes.md)).
+- Web: Settings > UI holds the appearance (Dark, Light), the header position (Top, Bottom) and the bottom bar; General keeps Notifications, Version and This device. Titles drop "on this device" and the hints are short ("Bottom", "Tasks, approvals, things to check", "Input needed or an error"); errors keep their full text ([docs/web-client.md](docs/web-client.md) "Settings sections").
 
 ### Added
 
