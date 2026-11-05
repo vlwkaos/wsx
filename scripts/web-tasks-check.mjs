@@ -3068,7 +3068,6 @@ const cut = await evaluate("({ lines: (document.querySelector('.project-page .ta
 if (cut.lines > 59 || !/Over the size limit/.test(cut.note)) await fail(`the over-cap overview is not cut: ${JSON.stringify(cut)}`);
 await closeSheet("the page", `#/p/${plansArg}`);
 
-<<<<<<< HEAD
 // --- A task mention of another project (docs/web-client-tasks.md "Project screen"): ui and plans
 // both have a #1. "plans #1" in ui's own reply and a bare #1 in plans' manager's message open plans'
 // #1 in plans' chat; a bare #1 in ui's reply opens ui's #1; a sender the site does not grant leaves a
@@ -3124,8 +3123,6 @@ await closeSheet("the page", `#/p/${plansArg}`);
   await evaluate(`(async () => { const { update } = await ${pageModule("store.js")}; update({ projects: globalThis.mentionKept }); })()`);
 }
 
-||||||| parent of ffaf91cf (feat(web): floating pill tab bar, Settings sections (General, UI, Usage), hideable bottom-bar tabs, all-projects usage (web and TUI))
-=======
 // --- The bottom bar, Settings > UI and Settings > Usage (docs/web-client.md "Screens", "Settings").
 // ^ Equal-width tabs whatever their count, an icon over the label, the current tab on a highlight;
 // a tab hidden in Settings > UI leaves the bar, Settings cannot be hidden; Settings > Usage
@@ -3199,7 +3196,6 @@ await closeSheet("the page", `#/p/${plansArg}`);
   if (shownRows.length !== sums.projects) await fail(`Settings > Usage lists ${shownRows.length} projects, not ${sums.projects}`);
   await shot("settings-usage");
 }
->>>>>>> ffaf91cf (feat(web): floating pill tab bar, Settings sections (General, UI, Usage), hideable bottom-bar tabs, all-projects usage (web and TUI))
 console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass in a bubble that stays in place, Skip, the fix task's line), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Roles (the ⋯ contact with its unread dot, its chat at #/p/<project>/r/<role> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);
