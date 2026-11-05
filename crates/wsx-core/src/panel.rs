@@ -18,11 +18,11 @@ pub const MAX_TIMEOUT_SECS: u64 = 300;
 /// What a result keeps of the output: its last bytes.
 pub const MAX_OUTPUT_BYTES: usize = 16 * 1024;
 /// What a `format: json` document keeps (docs/panels.md "JSON panels").
-pub const MAX_SECTIONS: usize = 12;
-pub const MAX_ITEMS: usize = 50;
-pub const MAX_COLUMNS: usize = 8;
-pub const MAX_ROWS: usize = 100;
-pub const MAX_STRING_CHARS: usize = 200;
+const MAX_SECTIONS: usize = 12;
+const MAX_ITEMS: usize = 50;
+const MAX_COLUMNS: usize = 8;
+const MAX_ROWS: usize = 100;
+const MAX_STRING_CHARS: usize = 200;
 /// Notice lines shown before "and n more".
 const MAX_NOTICES: usize = 5;
 const MAX_ARGV: usize = 64;
@@ -319,7 +319,7 @@ fn checked(mut item: Item, cut: &mut Vec<&'static str>) -> Result<Item, String> 
 /// Read `text` (a `format: json` panel's output) as a `PanelDoc`. An unknown kind, a bad level
 /// or value skips that item; anything over a limit is cut; both leave a notice line. Text that
 /// is not a document gives no `doc`, only the notice, so the clients show the text.
-pub fn parse_doc(text: &str) -> (Option<PanelDoc>, Option<String>) {
+fn parse_doc(text: &str) -> (Option<PanelDoc>, Option<String>) {
     let raw = match serde_json::from_str::<RawDoc>(text) {
         Ok(raw) => raw,
         Err(error) => return (None, Some(format!("not a panel document: {error}"))),
