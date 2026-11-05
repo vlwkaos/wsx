@@ -4129,8 +4129,8 @@ merge_seconds = 3
             asked = {e['id'] for e in entries if e['kind'] == 'message' and e['from'] == 'events' and e['text'] == title}
             return [e for e in entries if e['kind'] == 'reply' and asked & set(e['to'])]
         post('memory is fine\n', '--title', 'guard info')
-        (plain,) = replies_of('guard info')
-        assert 'level' not in plain, plain
+        (info_reply,) = replies_of('guard info')
+        assert 'level' not in info_reply, info_reply
         pushed = new_pushes('manager', 'the push of an info post')
         assert len(pushed) == 1 and 'memory is fine' in pushed[0]['body'] and pushed[0]['tag'] == 'wsx-owner-manager', pushed
         post('rss 9 GB\nsecond line\n', '--title', 'memory guard', '--level', 'warn', '--key', 'mem')
