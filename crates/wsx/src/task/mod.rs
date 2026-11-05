@@ -1586,7 +1586,18 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
     let report = report.exists().then_some(report);
     let host = call_host(&dir.socket_path(), &HostRequest::Status, HOST_TIMEOUT).is_ok();
     let mut summary = task_summary(dir, &record);
+    // ^ The words every view shows; one task, so it asks whether it is stuck too.
+    let approvals = store::read_approvals(&dir.project_id).unwrap_or_default();
+    let now = wsx_core::task::now_unix_ms();
+    let stuck = wsx_core::task::stall::stuck(dir, &record, now);
+    let facts = wsx_core::task::status::Facts {
+        approvals: &wsx_core::task::manager::pending_approvals(&approvals),
+        stuck: stuck.as_deref(),
+        deployed: None,
+    };
+    let status = wsx_core::task::status::status(dir, &record, &facts, now);
     if json {
+        summary["status"] = json!(status);
         summary["record"] = serde_json::to_value(&record)?;
         summary["result"] = result.unwrap_or(serde_json::Value::Null);
         summary["report"] = json!(report);
@@ -1623,6 +1634,7 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
         record.revision,
         summary["title"].as_str().unwrap_or_default()
     );
+    println!("status:       {}", status.sentence);
     println!("branch:       {}", record.branch);
     println!("working copy: {}", record.working_copy.display());
     println!(

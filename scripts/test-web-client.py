@@ -3503,7 +3503,9 @@ merge_seconds = 3
         kinds = [(item['kind'], item.get('task')) for item in overview['needs']]
         assert kinds[0] == ('waiting', 1) and sorted(kinds[1:]) == [('land', 2), ('land', 3)], kinds
         assert overview['needs'][0]['waiting']['on'] == 'owner', overview['needs'][0]
-        assert overview['needs'][1]['reason'] == 'ready to land' and overview['working'] == 0 and overview['to_check'] == 0, overview
+        # ^ wsx-core's status words (docs/tasks.md "Status"): the label in a row, the sentence in the sheet.
+        assert overview['needs'][0]['status']['label'] == 'Waiting for your answer', overview['needs'][0]
+        assert next(item for item in overview['needs'] if item.get('task') == 2)['status']['label'] == 'Ready, waiting for you to land it' and overview['working'] == 0 and overview['to_check'] == 0, overview
         # Three states for the owner; the store's own states stay in the record.
         assert {row['id']: row['stage'] for row in overview['tasks']} == {1: 'needs_you', 2: 'needs_you', 3: 'needs_you'}
         # Chips and the `#` picker: attention order, then the newest first.
@@ -3518,7 +3520,8 @@ merge_seconds = 3
         assert sorted(item['project'] for item in everything) == sorted(ids.values()), everything
         detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
         assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'hand'], detail['actions']
-        assert detail['land_reason'] == 'ready to land' and detail['to_check'] == [] and detail['fixes'] is None, detail
+        assert re.match(r'Ready, waiting for you to land it for [^:]+: checks 1 of 1 passed\. Land it to put it on main\.$', detail['status']['sentence']), detail['status']
+        assert detail['to_check'] == [] and detail['fixes'] is None, detail
         assert detail['result']['human_verify'] == [{'check': 'open the file', 'where': 'a real device', 'capture': '', 'poster': '', 'pass_if': 'it has text'}]
         headings = [line for line in detail['report'].splitlines() if line.startswith('## ')]
         assert headings == ['## Summary', '## Changes', '## Evidence', '## To check', '## Left open'], headings
@@ -3567,7 +3570,8 @@ merge_seconds = 3
         assert act(2, 'hold', {'text': 'two\nlines'}, site=trier)[0] == 400
         assert act(2, 'hold', {}, site=trier)[0] == 200
         held = steady(trier, 'GET', '/api/tasks/%d/t/2' % demo)[1]
-        assert held['hold'] == 'the owner holds it' and held['land_reason'] == 'try it first: the owner holds it', held
+        assert held['hold'] == 'the owner holds it' and held['status']['label'] == 'Held for you to try', held
+        assert held['status']['sentence'].endswith(': the owner holds it. Try it, then land it or tell the manager what is wrong.'), held['status']
         assert held['actions'] == ['land', 'hand'] and held['trial'] is None, held['actions']
         overview = steady(trier, 'GET', '/api/tasks/%d' % demo)[1]
         assert overview['try_live'] is True and overview['trial'] is None, overview
@@ -4006,7 +4010,7 @@ merge_seconds = 3
 
         def line(n, what, project='demo'):
             row = next(row for row in steady(owner, 'GET', '/api/tasks/%d' % ids[project])[1]['tasks'] if row['id'] == n)
-            what = 'needs you: ' + row['waiting']['reason'] if what == 'asks' else what
+            what = row['status']['label'] if what == 'asks' else what
             title = row['title'] if len(row['title']) <= 60 else row['title'][:60] + '…'  # cut as the push cuts it
             return '#%d %s: %s' % (n, title, what)
 

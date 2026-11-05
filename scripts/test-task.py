@@ -932,7 +932,7 @@ def run(wsx, wsxd, work, owned):
     shots = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
         (r'(?s)Open.*#%d .*Recent' % d3, b'\r'),
-        (r'Waits', b'\x1b'),
+        (r'Status +Waiting for your answer', b'\x1b'),
         (r'\(enter\)detail', b'j\r'),
         (r'Checks', b'\x1b'),
         (r'\(enter\)detail', open_gate),
@@ -941,11 +941,16 @@ def run(wsx, wsxd, work, owned):
     listed, asked, _, checked = shots[1:5]
     order = [listed.index(row(listed, n)) for n in (asking, failing, x1, d1, memo_task)]
     assert order == sorted(order) and order[-1] > listed.index('Recent'), listed
-    assert re.search(r'NEEDS WebSearch NOOP +#%d +waiting +owner: ' % asking, row(listed, asking)), listed
+    # ^ The row's label and the detail's sentence are wsx-core's status words, as `show` has them.
+    assert re.search(r'NEEDS WebSearch NOOP +#%d +waiting +Waiting for your answer' % asking, row(listed, asking)), listed
     assert re.search(r'#%d +failed' % failing, row(listed, failing)), listed
     assert re.search(r'#%d +working' % d1, row(listed, d1)) and 'closed' in row(listed, memo_task), listed
     assert 'NEEDS WebSearch NOOP  #%d' % asking in asked and re.search(r'State +waiting', asked), asked
-    assert re.search(r'Waits +owner: ' + re.escape(reason[:30]), asked), asked
+    asked_status = show(asking)['status']
+    assert asked_status['label'] == 'Waiting for your answer' and reason in asked_status['sentence'], asked_status
+    assert asked_status['sentence'].startswith('Waiting for your answer for '), asked_status
+    assert re.search(r'Status +Waiting for your answer for ', asked), asked
+    assert next(r for r in js('task', 'ledger')['open'] if r['id'] == asking)['status']['label'] == asked_status['label']
     assert re.search(r'Checks +0 passed, 1 failed', checked) and re.search(r'failed +test ! -e broken.txt', checked), checked
     assert 'Summary' in checked and 'TASK ' in checked, checked
     assert 'ping' not in checked, checked
@@ -2685,7 +2690,9 @@ def run(wsx, wsxd, work, owned):
     dw = js('task', 'new', 'WORK dw.txt')['id']
     waiting = wait(lambda: (current := show(dw))['state'] == 'waiting' and current['record'].get('waiting') and current,
                    'disk wait')
-    assert waiting['record']['waiting']['on'] == 'disk' and waiting['record']['waiting']['reason'].startswith('Disk full: ')
+    assert waiting['record']['waiting']['on'] == 'disk' and ' GB free of the 100000 GB a task needs' in waiting['record']['waiting']['reason']
+    assert waiting['status']['label'] == 'Waiting for disk space', waiting['status']
+    assert waiting['status']['sentence'].endswith('It goes on by itself once there is space.'), waiting['status']
     assert any(e['kind'] == 'disk_wait' for e in log(dw))
     row = next(r for r in js('task', 'ledger')['open'] if r['id'] == dw)
     assert row['waiting']['on'] == 'disk', row
@@ -3142,7 +3149,9 @@ def run(wsx, wsxd, work, owned):
     slot_config(3)
     pair = [js('task', 'new', 'WORK slot%d.txt' % i)['id'] for i in (1, 2)]
     queued = wait(lambda: queued_row(pair), 'a queued check run', 30)
-    assert queued['waiting']['reason'].startswith('queued for the checks slot behind demo t'), queued
+    assert queued['waiting']['reason'].startswith('queued for the check slot behind demo t'), queued
+    assert queued['status']['label'] == 'Waiting for the check slot', queued['status']
+    assert re.match(r'Waiting for the check slot for [^:]+: #\d+ runs its checks now(, \d+ more tasks? ahead)?\. Its checks start when the slot is free\.$', queued['status']['sentence']), queued['status']
     for n in pair:
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
         assert 'waiting' not in show(n)['record']
@@ -3417,7 +3426,12 @@ def run(wsx, wsxd, work, owned):
     wait(lambda: kinds(holds, 'result'), 'the first scenario run', 30)
     waits = js('task', 'new', 'CHECKRUN_LATE slow WORK lane2.txt')['id']
     reason = wait(lambda: (show(waits)['record'].get('waiting') or {}).get('reason', '').startswith('queued') and show(waits)['record']['waiting']['reason'], 'the second scenario run queued', 30)
-    assert reason.startswith('queued for the scenarios slot behind demo t%s' % holds), reason
+    assert reason.startswith('queued for the scenario test slot behind demo t%s' % holds), reason
+    # ^ `show` and its text say the scenario wait in wsx-core's words (docs/tasks.md "Status").
+    lane_status = show(waits)['status']
+    assert lane_status['label'] == 'Waiting for the scenario test slot', lane_status
+    assert re.match(r'Waiting for the scenario test slot for [^:]+: #%s runs its scenario tests now(, \d+ more tasks? ahead)?\. Its scenario tests start when the slot is free\.$' % holds, lane_status['sentence']), lane_status
+    assert 'status:       Waiting for the scenario test slot for ' in cli('task', 'show', waits).stdout
     plain = js('task', 'new', 'WORK lane3.txt')['id']
     assert wait_state(plain, 'ready', 'failed')['state'] == 'ready', log(plain)
     checked = next(e for e in log(plain) if e['kind'] == 'checks')
@@ -3559,11 +3573,12 @@ def run(wsx, wsxd, work, owned):
     # continues it as an ordinary task.
     planned = js('task', 'new', '--plan', 'NOOP plan the change')['id']
     waiting = wait_state(planned, 'waiting', 'ready', 'failed')
-    assert waiting['record']['waiting'] == {'on': 'plan', 'reason': 'its plan waits for the manager'}, waiting['record']
+    assert waiting['record']['waiting'] == {'on': 'plan', 'reason': 'the worker wrote its plan'}, waiting['record']
+    assert waiting['status']['label'] == "Plan ready, waiting for the manager's review", waiting['status']
     assert 'plan' not in waiting['record'], waiting['record']
     assert not kinds(planned, 'checks', 'revision'), log(planned)
     assert 'First write a short plan and stop' in next(e for e in log(planned) if e['kind'] == 'result')['summary']
-    wait(lambda: events_with('#%d waiting r0' % planned, 'waits on plan'), 'the plan event')
+    wait(lambda: events_with('#%d waiting r0' % planned, "waits on plan: Plan ready, waiting for the manager's review for "), 'the plan event')
     js('task', 'add', planned, 'go WORK planned.txt')
     assert wait_state(planned, 'ready', 'failed')['state'] == 'ready'
     assert kinds(planned, 'checks', 'revision') == ['checks', 'revision']

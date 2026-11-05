@@ -112,6 +112,7 @@ function Talk({ project, talk, words }) {
 // "Task sheet"). Kept for the page's life, at most DETAILS_KEPT, oldest out first.
 const details = new Map();
 const DETAILS_KEPT = 40;
+const STATUS_EVERY_MS = 60_000;
 const keepDetail = (key, value) => {
   details.delete(key);
   details.set(key, value);
@@ -139,6 +140,13 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
   // An approval or a decision changes the overview, not this task's files.
   const overview = store.tasks[project];
   useEffect(() => { if (detail) load(); }, [overview?.decisions?.[0]?.approval, overview?.needs?.length]);
+  // ^ A wait's sentence counts its minutes, and a wait raises no event: read it again each minute.
+  const since = detail?.status?.since_unix_ms;
+  useEffect(() => {
+    if (since == null) return undefined;
+    const timer = setInterval(load, STATUS_EVERY_MS);
+    return () => clearInterval(timer);
+  }, [since]);
   const action = useAction(project, task);
   const words = withChips(project);
 

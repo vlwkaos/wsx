@@ -22,7 +22,7 @@ use wsx_core::task::{
         activity, chat_window, decided_request, pending_approvals, ApprovalLine, Author,
         ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, CHAT_ENTRIES,
     },
-    owner, stall,
+    owner, stall, status,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
     view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
 };
@@ -93,32 +93,6 @@ fn stage(record: &TaskRecord, land_auto: bool) -> &'static str {
     }
 }
 
-/// Why a ready task waits for the owner: its landing stopped, it has no checks, or the
-/// project lands by hand.
-fn land_reason(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> String {
-    let stopped = dir
-        .last_event(|event| match event {
-            LogEvent::LandStopped { reason } => Some(Some(reason.clone())),
-            LogEvent::Revision { .. } => Some(None),
-            _ => None,
-        })
-        .ok()
-        .flatten();
-    if let Some(Some(reason)) = stopped {
-        return format!("could not land: {}", view::clip(&reason, SUMMARY_CHARS));
-    }
-    if let Some(hold) = &record.hold {
-        return format!("try it first: {hold}");
-    }
-    if record.manager_reviews(land_auto) {
-        return "the manager reviews it".into();
-    }
-    if record.checks.is_empty() {
-        return "no checks; land by hand".into();
-    }
-    "ready to land".into()
-}
-
 fn open_task(scope: &Scope, task: u32) -> Outcome<TaskDir> {
     TaskDir::open(&scope.store, task).map_err(|_| Fault::not_found())
 }
@@ -132,9 +106,17 @@ pub fn overview(scope: &Scope) -> Value {
     let mut working = 0;
     let mut titles: HashMap<u32, String> = HashMap::new();
     let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
+    let approvals = store::read_approvals(&scope.store).unwrap_or_default();
+    let pending = pending_approvals(&approvals);
     for (dir, record) in &tasks {
         let Ok(record) = record else { continue };
         let title = view::readable_title(dir, record).unwrap_or_default();
+        // ^ The words every view shows (docs/tasks.md "Status"); a row shows the label.
+        let facts = status::Facts {
+            approvals: &pending,
+            ..Default::default()
+        };
+        let status = status::status(dir, record, &facts, now);
         titles.insert(record.id, title.clone());
         let order = view::attention(record.state);
         listed.push((
@@ -145,7 +127,7 @@ pub fn overview(scope: &Scope) -> Value {
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
                 "waiting": record.waiting,
                 "hold": record.hold,
-                "step": step_label(record),
+                "status": status,
                 "conflict": record.state == TaskState::Working && view::resolving_conflict(dir),
                 "agent": record.state.is_open().then(|| view::task_agent(dir, record)),
             }),
@@ -159,7 +141,7 @@ pub fn overview(scope: &Scope) -> Value {
         .unwrap_or(Value::Null);
         let item = |kind: &str| {
             json!({
-                "kind": kind, "task": record.id, "title": title, "state": record.state,
+                "kind": kind, "task": record.id, "title": title, "state": record.state, "status": status,
                 "revision": record.revision, "unix_ms": record.updated_unix_ms,
                 "summary": result["result"]["summary"].as_str().map(|text| view::clip(text, SUMMARY_CHARS)),
             })
@@ -171,11 +153,7 @@ pub fn overview(scope: &Scope) -> Value {
         let (rank, mut row) = match record.state {
             TaskState::Waiting => (0, item("waiting")),
             TaskState::Failed => (1, item("failed")),
-            TaskState::Ready => {
-                let mut row = item("land");
-                row["reason"] = json!(land_reason(dir, record, land_auto));
-                (3, row)
-            }
+            TaskState::Ready => (3, item("land")),
             _ => continue,
         };
         if let Some(waiting) = &record.waiting {
@@ -473,14 +451,16 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     } else {
         json!([])
     };
-    summary["progress"] = progress(&dir, &record, &log);
+    // ^ It asks the task host, so it is read once for the progress and the status.
+    let now = task::now_unix_ms();
+    let stuck = stall::stuck(&dir, &record, now);
+    summary["progress"] = progress(&dir, &record, &log, stuck.as_deref());
     let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
     summary["agent"] = view::task_agent(&dir, &record);
     summary["stage"] = json!(stage(&record, land_auto));
     summary["conflict"] =
         json!(record.state == TaskState::Working && view::resolving_conflict(&dir));
     if record.state == TaskState::Ready {
-        summary["land_reason"] = json!(land_reason(&dir, &record, land_auto));
         summary["land_blocked_by"] = json!(ledger::land_blockers(&record));
     }
     // ^ This task's items of the project's "To check" list, and the task a fail started.
@@ -506,6 +486,13 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         _ => None,
     });
     summary["deploy"] = deployed(scope, landed.as_deref());
+    // ^ One task, so it knows whether it is stuck and deployed (docs/tasks.md "Status").
+    let facts = status::Facts {
+        approvals: &approvals,
+        stuck: stuck.as_deref(),
+        deployed: summary["deploy"]["deployed"].as_bool(),
+    };
+    summary["status"] = json!(status::status(&dir, &record, &facts, now));
     summary["hold"] = json!(record.hold);
     let trial = ledger::trial_status(
         &scope.store,
@@ -539,7 +526,12 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
 /// What the top of an open task's sheet shows: its workflow steps, whether it is stuck, the
 /// last write and the worker's last words; `null` once it is finished.
 /// ref: docs/web-client-tasks.md "Task sheet"
-fn progress(dir: &TaskDir, record: &TaskRecord, log: &[task::LogEntry]) -> Value {
+fn progress(
+    dir: &TaskDir,
+    record: &TaskRecord,
+    log: &[task::LogEntry],
+    stuck: Option<&str>,
+) -> Value {
     if !record.state.is_open() {
         return Value::Null;
     }
@@ -550,22 +542,10 @@ fn progress(dir: &TaskDir, record: &TaskRecord, log: &[task::LogEntry]) -> Value
     json!({
         "steps": record.steps.iter().map(|step| &step.name).collect::<Vec<_>>(),
         "step": record.step,
-        "stuck": stall::stuck(dir, record, task::now_unix_ms()),
+        "stuck": stuck,
         "last_unix_ms": stall::progress_ms(dir),
         "said": said,
     })
-}
-
-/// The workflow step a working task is on, as `plan (2/6)`; none without steps.
-/// ref: docs/tasks.md "Workflow"
-fn step_label(record: &TaskRecord) -> Option<String> {
-    let step = record.steps.get(record.step as usize)?;
-    Some(format!(
-        "{} ({}/{})",
-        step.name,
-        record.step + 1,
-        record.steps.len()
-    ))
 }
 
 /// The actions a task's state allows. The host still decides; this only picks buttons.
@@ -1201,7 +1181,7 @@ struct Open {
 }
 
 /// The items of "Manager needs me" in an overview, in its order (docs/web-client.md
-/// "Notifications"): `#4 Fix the login: needs you: <the ask>`, `Approve land #5`, `2 to check`.
+/// "Notifications"): `#4 Fix the login: Waiting for your answer`, `Approve land #5`, `2 to check`.
 fn attention(project: u64, overview: &Value) -> Vec<Open> {
     let mut open = Vec::new();
     for need in overview["needs"].as_array().into_iter().flatten() {
@@ -1211,16 +1191,15 @@ fn attention(project: u64, overview: &Value) -> Vec<Open> {
             None => format!("#/p/{project}"),
         };
         let (key, line) = match (need["kind"].as_str(), task) {
-            (Some("waiting"), Some(task)) => {
-                let what = match need["waiting"]["reason"].as_str().map(str::trim) {
-                    Some(reason) if !reason.is_empty() => format!("needs you: {reason}"),
-                    _ => "needs you".into(),
-                };
-                (
-                    Key::Task(task),
-                    view::task_line(task, need["title"].as_str().unwrap_or(""), &what),
-                )
-            }
+            (Some("waiting"), Some(task)) => (
+                Key::Task(task),
+                view::task_line(
+                    task,
+                    need["title"].as_str().unwrap_or(""),
+                    // ^ The label: the sentence counts minutes, and a push is sent once.
+                    need["status"]["label"].as_str().unwrap_or(""),
+                ),
+            ),
             (Some("approval"), _) => (
                 Key::Approval(need["approval"].as_str().unwrap_or("").to_owned()),
                 need["label"].as_str().unwrap_or("").to_owned(),

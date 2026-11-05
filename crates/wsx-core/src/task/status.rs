@@ -1,0 +1,404 @@
+//! A task's status in words: a short label for a row or a pill, and a sentence that says what
+//! the task waits for, why, how long, and what comes next. The web client, the TUI, `wsx task`
+//! and the manager's events all show these words; none makes its own. Decisions never read
+//! them: they test the record. ref: docs/tasks.md "Status"
+
+use super::manager::ApprovalLine;
+use super::store::TaskDir;
+use super::view::{check_outcomes, clip, read_result, resolving_conflict};
+use super::{LogEvent, TaskRecord, TaskState, WaitOn};
+use crate::config::project::load_task_config;
+use serde::Serialize;
+
+const FACT_CHARS: usize = 240;
+/// The reason the host gives a stop the owner asked for. ref: crates/wsx/src/task/host.rs `stop`
+const STOPPED_BY_REQUEST: &str = "stopped by request";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Status {
+    /// "Waiting for the scenario test slot", "Ready, waiting for the manager's review".
+    pub label: String,
+    /// The label, how long, the facts and what comes next: "Waiting for the scenario test
+    /// slot for 4 min: #233 runs its scenario tests now, 2 more tasks ahead. Its scenario
+    /// tests start when the slot is free."
+    pub sentence: String,
+    /// When the wait the sentence counts began: a page that shows the sentence reads it again
+    /// as minutes pass.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub since_unix_ms: Option<u64>,
+}
+
+/// What a caller knows beyond the task's own files.
+#[derive(Default)]
+pub struct Facts<'a> {
+    /// The project's pending approval requests (`manager::pending_approvals`).
+    pub approvals: &'a [&'a ApprovalLine],
+    /// `stall::stuck`: it asks the task host, so only a view of one task passes it.
+    pub stuck: Option<&'a str>,
+    /// For a landed task: whether the project's last deploy has it. None when the project
+    /// does not deploy or the caller does not know.
+    pub deployed: Option<bool>,
+}
+
+/// The status of one task now.
+pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) -> Status {
+    let entered = record.state_unix_ms.max(record.created_unix_ms);
+    let main = &record.default_branch;
+    let approval = facts.approvals.iter().find_map(|line| match line {
+        ApprovalLine::Request {
+            task: Some(task),
+            unix_ms,
+            ..
+        } if *task == record.id => Some((super::owner::approval_label(line), *unix_ms)),
+        _ => None,
+    });
+    if let (Some((label, asked)), true) = (approval, record.state.is_open()) {
+        return words(
+            "Waiting for your approval",
+            Some(asked),
+            &format!("the manager asks: {label}"),
+            "It goes on when you approve or deny it.",
+            now_ms,
+        );
+    }
+    if let (Some(why), true) = (facts.stuck, record.state.is_open()) {
+        return words(
+            "Stuck",
+            None,
+            why,
+            "The manager hears of the stall and decides what to do.",
+            now_ms,
+        );
+    }
+    let waiting = record.waiting.as_ref();
+    let mut status = match (record.state, waiting) {
+        (_, Some(waiting)) if waiting.on == WaitOn::CheckSlot => {
+            slot(dir, record, &waiting.reason, entered, now_ms)
+        }
+        (TaskState::Waiting, Some(waiting)) => match waiting.on {
+            WaitOn::Owner => {
+                let stopped = dir
+                    .last_event(|event| match event {
+                        LogEvent::Stopped { reason } => Some(Some(reason.clone())),
+                        LogEvent::Blocked { .. } | LogEvent::Result { .. } => Some(None),
+                        _ => None,
+                    })
+                    .ok()
+                    .flatten()
+                    .flatten();
+                match stopped {
+                    Some(reason) if reason == STOPPED_BY_REQUEST => words(
+                        "Stopped",
+                        Some(entered),
+                        STOPPED_BY_REQUEST,
+                        "Tell the manager to resume or close it.",
+                        now_ms,
+                    ),
+                    Some(reason) => words(
+                        "Interrupted",
+                        Some(entered),
+                        &reason,
+                        "The manager resumes it or tells you why not.",
+                        now_ms,
+                    ),
+                    None => words(
+                        "Waiting for your answer",
+                        Some(entered),
+                        &waiting.reason,
+                        "Answer the manager; the worker goes on then.",
+                        now_ms,
+                    ),
+                }
+            }
+            WaitOn::Plan => words(
+                "Plan ready, waiting for the manager's review",
+                Some(entered),
+                "the worker wrote its plan",
+                "The manager answers go or what to change, then the build starts.",
+                now_ms,
+            ),
+            WaitOn::Hand => words(
+                "Waiting for you to hand it back",
+                Some(entered),
+                "you work on it in its session and no agent runs",
+                "Commit, then hand it back: its checks run and it lands as usual.",
+                now_ms,
+            ),
+            WaitOn::Disk => words(
+                "Waiting for disk space",
+                Some(entered),
+                &queue_words(record, &waiting.reason, "goes on first"),
+                "It goes on by itself once there is space.",
+                now_ms,
+            ),
+            WaitOn::Limit => words(
+                "Waiting for the usage limit",
+                Some(entered),
+                &queue_words(record, &waiting.reason, "goes on first"),
+                "It goes on by itself then, one task at a time.",
+                now_ms,
+            ),
+            WaitOn::CheckSlot => slot(dir, record, &waiting.reason, entered, now_ms),
+        },
+        (TaskState::Checking, _) => words(
+            "Running checks",
+            Some(entered),
+            &format!(
+                "{} of r{} run now",
+                count(record.checks.len(), "check"),
+                record.revision
+            ),
+            "When they pass it is ready; a failed check goes back to the worker.",
+            now_ms,
+        ),
+        (TaskState::Working, _) if resolving_conflict(dir) => words(
+            "Resolving a conflict",
+            None,
+            &format!("the worker rebases it onto {main}"),
+            "It lands when its checks pass.",
+            now_ms,
+        ),
+        (TaskState::Working | TaskState::Waiting, _) => {
+            let label = match record.steps.get(record.step as usize) {
+                Some(step) => format!(
+                    "Working on {} ({} of {})",
+                    step.name,
+                    record.step + 1,
+                    record.steps.len()
+                ),
+                None => "Working".into(),
+            };
+            let next = if record.plan {
+                "Its plan goes to the manager after its result."
+            } else if record.checks.is_empty() {
+                "It is ready after its result."
+            } else {
+                "Its checks run after its result."
+            };
+            words(&label, None, "the worker runs its turn", next, now_ms)
+        }
+        (TaskState::Ready, _) => ready(dir, record, entered, now_ms),
+        (TaskState::Failed, _) => {
+            let outcomes = read_result(dir)
+                .map(|result| check_outcomes(&result))
+                .unwrap_or_default();
+            let failed = outcomes.iter().filter(|(_, o)| *o != "passed").count();
+            match failed {
+                0 => words(
+                    "Failed",
+                    None,
+                    "the worker could not finish",
+                    "Tell the manager what to do next.",
+                    now_ms,
+                ),
+                _ => words(
+                    "Failed",
+                    None,
+                    &format!(
+                        "{failed} of {} failed after the worker's retries",
+                        count(outcomes.len(), "check")
+                    ),
+                    "Tell the manager, so the worker fixes it.",
+                    now_ms,
+                ),
+            }
+        }
+        (TaskState::Landed, _) => words(
+            "Landed",
+            None,
+            &match facts.deployed {
+                Some(false) => format!("on {main}; the last deploy does not have it yet"),
+                _ => format!("on {main}"),
+            },
+            "",
+            now_ms,
+        ),
+        (TaskState::Closed, _) => words("Closed", None, "closed without landing", "", now_ms),
+    };
+    // ^ A hold matters once it is ready; before, the sentence says it is coming.
+    if let (Some(hold), true) = (&record.hold, record.state.is_open()) {
+        if record.state != TaskState::Ready {
+            status.sentence.push_str(&format!(
+                " Held for you to try once it is ready: {}.",
+                clip(hold.trim_end_matches('.'), FACT_CHARS)
+            ));
+        }
+    }
+    status
+}
+
+/// A ready task: its landing stopped, it is held, the manager reviews it, or the owner lands it.
+fn ready(dir: &TaskDir, record: &TaskRecord, entered: u64, now_ms: u64) -> Status {
+    let stopped = dir
+        .last_event(|event| match event {
+            LogEvent::LandStopped { reason } => Some(Some(reason.clone())),
+            LogEvent::Revision { .. } => Some(None),
+            _ => None,
+        })
+        .ok()
+        .flatten()
+        .flatten();
+    if let Some(reason) = stopped {
+        return words(
+            "Landing stopped",
+            Some(entered),
+            &reason,
+            "Land it again when that is fixed.",
+            now_ms,
+        );
+    }
+    if let Some(hold) = &record.hold {
+        return words(
+            "Held for you to try",
+            Some(entered),
+            hold,
+            "Try it, then land it or tell the manager what is wrong.",
+            now_ms,
+        );
+    }
+    let outcomes = read_result(dir)
+        .map(|result| check_outcomes(&result))
+        .unwrap_or_default();
+    let passed = outcomes.iter().filter(|(_, o)| *o == "passed").count();
+    let checks = match outcomes.len() {
+        0 => "no checks prove it".to_string(),
+        total => format!("checks {passed} of {total} passed"),
+    };
+    let land_auto = load_task_config(&record.project_path).is_ok_and(|s| s.land_auto);
+    match record.manager_reviews(land_auto) {
+        true => words(
+            "Ready, waiting for the manager's review",
+            Some(entered),
+            &checks,
+            "The manager reads the diff, then lands it or asks for changes.",
+            now_ms,
+        ),
+        false => words(
+            "Ready, waiting for you to land it",
+            Some(entered),
+            &checks,
+            &format!("Land it to put it on {}.", record.default_branch),
+            now_ms,
+        ),
+    }
+}
+
+/// A run that waits for the machine's check slot, in its lane, since its `check_queued`.
+fn slot(dir: &TaskDir, record: &TaskRecord, reason: &str, entered: u64, now_ms: u64) -> Status {
+    let since = dir
+        .last_entry(|entry| match entry.event {
+            LogEvent::CheckQueued { .. } => Some(entry.unix_ms),
+            _ => None,
+        })
+        .ok()
+        .flatten()
+        .unwrap_or(entered);
+    let scenarios = queue(reason).is_some_and(|queue| queue.what.contains("scenario"));
+    let (label, run, next) = match scenarios {
+        true => (
+            "Waiting for the scenario test slot",
+            "runs its scenario tests now",
+            "Its scenario tests start when the slot is free.",
+        ),
+        false => (
+            "Waiting for the check slot",
+            "runs its checks now",
+            "Its checks start when the slot is free.",
+        ),
+    };
+    words(
+        label,
+        Some(since),
+        &queue_words(record, reason, run),
+        next,
+        now_ms,
+    )
+}
+
+/// A queue reason as "#233 runs its checks now, 2 more tasks ahead"; any other reason as is.
+fn queue_words(record: &TaskRecord, reason: &str, holder_does: &str) -> String {
+    let Some(queue) = queue(reason) else {
+        return reason.to_string();
+    };
+    let holder = match task_label(queue.holder) {
+        Some((project, id)) if project == record.project => format!("#{id} {holder_does}"),
+        Some((project, id)) => format!("{project} #{id} {holder_does}"),
+        // ^ `scripts/check-slot.py` names its command and pid.
+        None => format!("{} runs now", queue.holder),
+    };
+    match queue.ahead {
+        0 => holder,
+        1 => format!("{holder}, 1 more task ahead"),
+        n => format!("{holder}, {n} more tasks ahead"),
+    }
+}
+
+fn count(n: usize, what: &str) -> String {
+    match n {
+        1 => format!("1 {what}"),
+        n => format!("{n} {what}s"),
+    }
+}
+
+/// "<label> for <span>: <facts>. <next>"; facts and next may be empty.
+fn words(label: &str, since: Option<u64>, facts: &str, next: &str, now_ms: u64) -> Status {
+    let mut sentence = label.to_string();
+    if let Some(since) = since {
+        sentence.push_str(&format!(" for {}", span(now_ms.saturating_sub(since))));
+    }
+    let facts = clip(facts.trim(), FACT_CHARS);
+    if !facts.is_empty() {
+        sentence.push_str(": ");
+        sentence.push_str(&facts);
+    }
+    if !sentence.ends_with(['.', '?', '!', '…']) {
+        sentence.push('.');
+    }
+    if !next.is_empty() {
+        sentence.push(' ');
+        sentence.push_str(next);
+    }
+    Status {
+        label: label.to_string(),
+        sentence,
+        since_unix_ms: since,
+    }
+}
+
+/// A slot's queue reason, made by crates/wsx/src/task/slot.rs `try_take`:
+/// "queued for the check slot behind demo t3 and 2 more".
+pub(crate) struct Queue<'a> {
+    pub what: &'a str,
+    pub holder: &'a str,
+    pub ahead: u32,
+}
+
+pub(crate) fn queue(reason: &str) -> Option<Queue<'_>> {
+    let (what, holder) = reason.strip_prefix("queued for ")?.split_once(" behind ")?;
+    let more = holder
+        .rsplit_once(" and ")
+        .and_then(|(holder, more)| Some((holder, more.strip_suffix(" more")?.parse().ok()?)));
+    let (holder, ahead) = more.unwrap_or((holder, 0));
+    Some(Queue {
+        what,
+        holder,
+        ahead,
+    })
+}
+
+/// A holder's label as the task it names: "demo t3" is ("demo", 3).
+pub(crate) fn task_label(holder: &str) -> Option<(&str, u32)> {
+    let (project, id) = holder.rsplit_once(" t")?;
+    Some((project, id.parse().ok()?))
+}
+
+/// "45 min", "3 h 10 min", "2 d 4 h".
+pub(crate) fn span(ms: u64) -> String {
+    let minutes = ms / 60_000;
+    match minutes {
+        0 => "less than a minute".into(),
+        1..60 => format!("{minutes} min"),
+        60..1440 => format!("{} h {} min", minutes / 60, minutes % 60),
+        _ => format!("{} d {} h", minutes / 1440, minutes % 1440 / 60),
+    }
+}

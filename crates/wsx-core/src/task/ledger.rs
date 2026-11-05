@@ -4,7 +4,7 @@
 use super::view::{
     attention, check_outcomes, clip, overlaps, project_tasks, read_result, task_agent, task_summary,
 };
-use super::{checks, copy, store, usage, DeployKind, DeployRecord, TaskRecord, TaskState};
+use super::{checks, copy, status, store, usage, DeployKind, DeployRecord, TaskRecord, TaskState};
 use crate::config::project::load_task_config;
 use crate::model::workspace::TaskConfig;
 use crate::routine::Trigger;
@@ -32,6 +32,9 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         .collect();
     let mut open = Vec::new();
     let mut recent = Vec::new();
+    let approvals = super::store::read_approvals(&project_id).unwrap_or_default();
+    let pending = super::manager::pending_approvals(&approvals);
+    let now = super::now_unix_ms();
     for (dir, record) in &tasks {
         let Ok(record) = record else { continue };
         let summary = task_summary(dir, record);
@@ -55,6 +58,11 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
             continue;
         }
         let result = read_result(dir);
+        let facts = status::Facts {
+            approvals: &pending,
+            ..Default::default()
+        };
+        let status = status::status(dir, record, &facts, now);
         let mut row = json!({
             "id": record.id,
             "title": title,
@@ -76,6 +84,8 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
                 .collect::<Vec<_>>()).unwrap_or_default(),
             // ^ What a waiting task waits for: the owner, disk, the check slot or a person's hands.
             "waiting": record.waiting,
+            // ^ The same words as every other view (docs/tasks.md "Status").
+            "status": status,
             // ^ Held for the owner to try before it lands (docs/tasks.md "Hold and trial").
             "hold": record.hold,
             // ^ The main checkout's changed files this land would overwrite: pressing
@@ -127,11 +137,9 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         "recent": recent.into_iter().map(|(_, row)| row).collect::<Vec<_>>(),
         "open": open.iter().map(|(_, _, row)| row.clone()).collect::<Vec<_>>(),
         "open_omitted": 0,
-        "approvals": super::store::read_approvals(&project_id)
-            .map(|lines| json!(super::manager::pending_approvals(&lines)))
-            .unwrap_or(Value::Null),
+        "approvals": pending,
         // ^ Open and asked roles; a closed one is history (docs/tasks.md "Roles").
-        "roles": super::roles::rows(&project_id, &super::store::read_approvals(&project_id).unwrap_or_default())
+        "roles": super::roles::rows(&project_id, &approvals)
             .into_iter()
             .filter(|row| row["state"] != "closed")
             .collect::<Vec<_>>(),

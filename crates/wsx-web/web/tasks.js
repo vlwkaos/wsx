@@ -173,16 +173,10 @@ export function withChips(project, source = null) {
   return chipWords.get(key);
 }
 
-// What a waiting task waits for, in words: "waits for disk
-// space", "waits for the usage limit", "stopped", "needs an answer" (docs/tasks.md "Store").
-const waitWords = (item) => item.waiting?.on === "disk" ? "waits for disk space"
-  : item.waiting?.on === "limit" ? "waits for the usage limit"
-  : item.waiting?.reason === "stopped by request" ? "stopped" : "needs an answer";
 const KIND_TONE = { waiting: "attention", failed: "danger", approval: "attention", land: "accent" };
-// One open item in words, as the owner would read it: "#4 needs an answer", "Approve land #3".
-export const needWords = (item) => item.kind === "approval" ? item.label
-  : item.kind === "waiting" ? `#${item.task} ${waitWords(item)}`
-  : `#${item.task} ${item.kind === "land" ? "is ready to land" : "failed"}`;
+// One open item in words, as the owner would read it: "#4 Waiting for your answer", "Approve
+// land #3". The words are the server's `status` (wsx-core task::status, docs/tasks.md "Status").
+export const needWords = (item) => item.kind === "approval" ? item.label : `#${item.task} ${item.status.label}`;
 export const needTone = (item) => KIND_TONE[item.kind];
 const itemKey = (item) => item.kind === "approval" ? item.approval : `${item.kind}-${item.task}`;
 
@@ -309,8 +303,7 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, leaving 
   }
   // ^ An approval reads as the action it asks for, never as its id (docs/web-client-tasks.md).
   const context = item.kind === "approval" ? item.title ?? item.commit ?? ""
-    : item.kind === "waiting" ? waitWords(item)
-    : item.kind === "land" ? (trial?.stage === "live" ? "on the live site: try it" : item.reason) : "failed";
+    : item.kind === "land" && trial?.stage === "live" ? "on the live site: try it" : item.status.label;
   // ^ An approval names its task in its label ("Approve land #3").
   const task = item.kind === "approval" ? null : overview?.tasks.find((candidate) => candidate.id === item.task);
   const body = html`
@@ -329,25 +322,12 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, leaving 
     </li>`;
 }
 
-// What a working task does, in one line: a conflict, the owner's hands, the checks, or the
-// workflow step it is on (docs/tasks.md "Workflow").
-const workingWords = (task) => task.state === "ready" ? "waiting for the manager's review" : task.waiting?.on === "plan" ? "plan waiting for the manager"
-  : task.conflict ? "resolving a conflict" : task.waiting?.on === "hand" ? "by hand"
-  : task.waiting?.on === "check_slot" ? `waiting for the ${/scenarios slot/.test(task.waiting.reason) ? "scenarios" : "checks"} slot` : task.state === "checking" ? "running checks" : task.step ?? "";
-
-// How an open task is doing, in one or a few words from wsx's facts (docs/web-client-tasks.md
-// "Task sheet"). [words, tone].
-export function taskHealth(task) {
-  const tone = taskStage(task)[1];
-  const on = task.waiting?.on;
-  if (task.approvals?.length) return ["needs you", "attention"];
-  if (task.state === "failed") return ["failed", "danger"];
-  if (task.progress.stuck) return ["stuck", "danger"];
-  if (on === "owner") return task.waiting.reason === "stopped by request" ? ["stopped", "attention"] : ["needs you", "attention"];
-  if (on === "disk") return ["waiting for disk", tone];
-  if (on === "limit") return ["waiting for the usage limit", tone];
-  if (task.state === "ready" && task.land_reason !== "the manager reviews it") return ["ready to land", tone];
-  return [workingWords({ ...task, step: null }) || "working", tone];
+// The tone of a task's status; its words are the server's `status` (docs/web-client-tasks.md
+// "Task sheet").
+export function statusTone(task) {
+  if (task.approvals?.length || task.waiting?.on === "owner") return "attention";
+  if (task.state === "failed" || task.progress?.stuck) return "danger";
+  return taskStage(task)[1];
 }
 
 // The agent in use now, in few words: "sonnet high", "pi/qwen high", "fallback pi/qwen": the
@@ -361,7 +341,7 @@ const RunningRow = ({ project, task, leaving }) => html`
     <div class="row-link">
       <${StateMark} task=${task} />
       <a class="row-main row-open" href=${taskLink(project, task.id)}><${TaskTitle} title=${task.title} id=${task.id} state=${taskStage(task)[0]} />
-        ${(workingWords(task) || agentWords(task.agent)) && html`<span class="row-context">${[workingWords(task), agentWords(task.agent)].filter(Boolean).join(" · ")}</span>`}</a>
+        <span class="row-context">${[task.status.label, agentWords(task.agent)].filter(Boolean).join(" · ")}</span></a>
     </div>
   </li>`;
 

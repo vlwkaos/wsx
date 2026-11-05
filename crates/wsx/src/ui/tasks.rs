@@ -1,7 +1,7 @@
 //! The Tasks view: the list in attention order and one task's detail, both read-only.
 //! ref: docs/tasks.md "TUI"
 use super::{task_chat::wrap_cells, theme, workspace_tree::truncate_to_width};
-use crate::task_list::{waits, Overview, Section, TaskList, TaskRow};
+use crate::task_list::{Overview, Section, TaskList, TaskRow};
 use ratatui::{
     layout::Rect,
     prelude::Stylize,
@@ -15,9 +15,9 @@ use serde_json::Value;
 use wsx_core::task::usage::{self, Usage};
 
 const STATE_WIDTH: usize = 8;
-/// Below this width a row drops its number; below `WAITS_MIN_WIDTH` what it waits for.
+/// Below this width a row drops its number; below `STATUS_MIN_WIDTH` its status label.
 const NUMBER_MIN_WIDTH: usize = 40;
-const WAITS_MIN_WIDTH: usize = 64;
+const STATUS_MIN_WIDTH: usize = 64;
 
 pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
     frame.render_widget(Clear, area);
@@ -261,7 +261,7 @@ fn cell(text: &str, width: usize) -> String {
 }
 
 /// The rows under `Open` and `Recent` headings, and the line of the selected row.
-/// Title first, then the number, the state word and what it waits for; narrow widths keep
+/// Title first, then the number, the state word and the status label; narrow widths keep
 /// the title and the state.
 fn task_lines(
     rows: &[TaskRow],
@@ -276,12 +276,12 @@ fn task_lines(
     } else {
         0
     };
-    let waits_width = if width >= WAITS_MIN_WIDTH {
+    let status_width = if width >= STATUS_MIN_WIDTH {
         width * 2 / 5
     } else {
         0
     };
-    let title_width = width.saturating_sub(STATE_WIDTH + 1 + number_width + waits_width);
+    let title_width = width.saturating_sub(STATE_WIDTH + 1 + number_width + status_width);
     let mut lines = Vec::new();
     let mut selected_line = None;
     for (index, row) in rows.iter().enumerate() {
@@ -313,9 +313,9 @@ fn task_lines(
             cell(&row.state, STATE_WIDTH) + " ",
             Style::default().fg(state_color(&row.state)),
         ));
-        if waits_width > 0 {
+        if status_width > 0 {
             spans.push(Span::styled(
-                cell(&row.waits, waits_width),
+                cell(&row.status, status_width),
                 Style::default().fg(theme::TEXT_MUTED),
             ));
         }
@@ -516,7 +516,7 @@ fn limit_line(limits: &Value, width: usize) -> Option<Line<'static>> {
     ))
 }
 
-/// One task's ledger entry as labeled rows: state, what it waits for, its checks, its
+/// One task's ledger entry as labeled rows: state, its status sentence, its checks, its
 /// To check items, then the worker's summary or memo.
 fn detail(task: &Value) -> Vec<Line<'static>> {
     let label = |text: &str| {
@@ -560,9 +560,11 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
         }
         lines.push(Line::from(vec![label("Usage"), Span::raw(line)]));
     }
-    let waiting = waits(task);
-    if !waiting.is_empty() {
-        lines.push(Line::from(vec![label("Waits"), Span::raw(waiting)]));
+    if let Some(status) = task["status"]["sentence"].as_str() {
+        lines.push(Line::from(vec![
+            label("Status"),
+            Span::raw(status.to_string()),
+        ]));
     }
     if let Some(checks) = task["checks"]
         .as_array()

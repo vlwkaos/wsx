@@ -46,8 +46,8 @@ impl Lane {
 
     fn what(self) -> &'static str {
         match self {
-            Lane::Checks => "the checks slot",
-            Lane::Scenarios => "the scenarios slot",
+            Lane::Checks => "the check slot",
+            Lane::Scenarios => "the scenario test slot",
         }
     }
 }
