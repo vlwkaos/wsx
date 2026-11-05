@@ -2688,6 +2688,29 @@ def run(wsx, wsxd, work, owned):
     assert stalls(dw) == stalled, stalls(dw)
     assert 'waiting' not in show(dw)['record'] and not any(e['kind'] == 'check_retry' for e in log(dw))
     js('task', 'close', dw, '--discard')
+    # A task the manager must act on and does not is a stall once `tasks.manager.reviewMinutes`
+    # passed since it entered the state; a land, or an add and a close, before that end the
+    # wait (docs/tasks.md "Manager", Stalls). The fake manager reviews nothing by itself.
+    configure(LAND_CONFIG.replace('tasks:\n', 'tasks:\n  manager: { reviewMinutes: 0.2 }\n'), 'review wait')
+
+    def manager_new(prompt):
+        made = subprocess.run([str(wsx), 'task', 'new', prompt, '--json'], cwd=project, env=manager_env,
+                              capture_output=True, text=True, timeout=60)
+        assert made.returncode == 0, made.stderr
+        return json.loads(made.stdout)['id']
+
+    idle, landed_first, added = (manager_new('WORK rw%d.txt' % i) for i in range(3))
+    for n in (landed_first, added):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', show(n)
+    assert land(landed_first)['state'] == 'landed'
+    js('task', 'add', added, 'WORK rw-more.txt')
+    js('task', 'close', added, '--discard')
+    waited = wait(lambda: stalls(idle), 'the manager-wait stall event', 150)
+    assert len(waited) == 1 and re.search(r'^#%d stalled r1: .*; ready for .*; the manager has not reviewed it$' % idle, waited[0]), waited
+    time.sleep(25)
+    assert stalls(idle) == waited and not stalls(landed_first) and not stalls(added), (stalls(idle), stalls(landed_first), stalls(added))
+    js('task', 'close', idle, '--discard')
+    configure(LAND_CONFIG, 'review wait over')
     # A usage limit is no failure: the task waits on `limit` and its session continues after the
     # reset, oldest wait first, one task at a time (docs/tasks.md "Claude adapter").
     first = js('task', 'new', 'LIMIT 4 WORK la.txt')['id']

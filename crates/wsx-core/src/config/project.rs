@@ -169,6 +169,8 @@ struct TaskManagerFile {
     rotate_tokens: Option<u64>,
     #[serde(rename = "recapMinutes", skip_serializing_if = "Option::is_none")]
     recap_minutes: Option<f64>,
+    #[serde(rename = "reviewMinutes", skip_serializing_if = "Option::is_none")]
+    review_minutes: Option<f64>,
     /// Agents of the global `[[agents]]` the manager moves to when its own is at a long
     /// usage limit, in order. ref: docs/tasks.md "Agents"
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -729,6 +731,17 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
             }
             // ^ A fraction of a minute is a shorter quiet period, at least one second.
             config.manager_recap_secs = match minutes {
+                0.0 => 0,
+                minutes => ((minutes * 60.0).round() as u64).max(1),
+            };
+        }
+        if let Some(minutes) = manager.review_minutes {
+            if !(0.0..=MAX_RECAP_MINUTES as f64).contains(&minutes) {
+                return Err(format!(
+                    "tasks.manager.reviewMinutes must be 0 (off) to {MAX_RECAP_MINUTES}"
+                ));
+            }
+            config.manager_review_secs = match minutes {
                 0.0 => 0,
                 minutes => ((minutes * 60.0).round() as u64).max(1),
             };

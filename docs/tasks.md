@@ -337,6 +337,7 @@ One manager per project runs as hidden `wsx task manager-host <project-id>` in a
   | its queue does not move | waits on `disk`, `limit` or `check_slot` "queued for ... behind `<project> t<n>`", and that task (of any project) is not working or checking, its host does not answer, or it is silent as below. A dead holder frees its `flock` at once, so this is what stops a queue. `scripts/check-slot.py` writes its own label, so a stale task label does not count |
   | silent | working or checking without a wait, with no write to `log.jsonl` or a `check-*.log` for `tasks.checkTimeoutSeconds` plus 10 minutes: the longest a check or a background job's wait runs, plus one Bash call (Claude's maximum). The evidence names the last log entry |
   | its host is down | working, checking, or waiting on `disk` or `limit`, and its host does not answer `status` |
+  | waits on the manager | ready and reviewed by the manager (`land_reason` "the manager reviews it": it created the task, or `tasks.land.auto` with checks), or waiting on `plan`, with no `add`, steer, `hold`, `check-run`, land or close for `tasks.manager.reviewMinutes` (default 30, `0` is off, a fraction allowed) since it entered the state. The line reads `ready for 35 min; the manager has not reviewed it`. Its marker is the state's start, so it is reported once per entry. Owner waits (`owner`, `hand`, approvals) and a held task are none |
 
   Each stall has a marker (its kind with the wait's start, the holder, or the time of the last progress), and `state.json` `stalls` keeps the one reported per open task, so a stall is reported once, also across a restart; progress or a new wait makes a new stall that is reported again. A first start reports the stalls it finds. Nothing is reported while things are fine. The manager's instructions: act on it with `wsx task` (a silent worker: `stop`, then `add`), start a task that fixes wsx when the evidence shows its bug, else tell the owner in one line. The chats show it as other events (`#7 stalled`).
 - Restart: `state.json` records the reported state of each task only when its message is logged, and `delivered` marks what reached the agent. A restarted host queues logged messages that were never delivered and reports changes it has not reported, so no event is lost. Its first start takes the existing tasks as they are, without events.
@@ -551,7 +552,7 @@ tasks:
   deploy: { command: "sh deploy.sh", approve: false, public: false, auto: true }
   release: { command: "sh release.sh", approve: true }
   preview: { command: "npm run serve -- --port $PORT", ready: /health, ports: 9100-9199 }
-  manager: { name: Atlas, adapter: claude, model: opus, effort: high, eventModel: off, recapMinutes: 0, fallback: [] }   # eventModel: a model or off; rotateTokens: unset is 400000 on Claude (its 1M window), 150000 on Pi
+  manager: { name: Atlas, adapter: claude, model: opus, effort: high, eventModel: off, recapMinutes: 0, reviewMinutes: 30, fallback: [] }   # eventModel: a model or off; rotateTokens: unset is 400000 on Claude (its 1M window), 150000 on Pi
   roles: { max: 2, closeDays: 14 }                               # see Roles
 ```
 
