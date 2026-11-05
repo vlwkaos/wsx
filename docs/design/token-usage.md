@@ -34,7 +34,7 @@ It reads `~/.local/state/wsx/tasks/wsx-8cbe3f08/<n>/{task.json,log*.jsonl}` and 
 | Subagents | 6 Agent calls in 6,869 main calls; their 33 calls cost $1.39 | part 1 (`<session>/subagents/*.jsonl`) |
 | Models | Opus 5,236 calls, Sonnet 1,479, Haiku 12 | part 2 |
 | Big tool results | every result over 8k tokens is a `Read`, mostly images. Bash output is already middle-truncated | part 4 (72 results, all `Read`) |
-| Manager | 423 turns, $69.8, context p50 96k. Rewrites after >1h: $13.6 (20) | manager `log*.jsonl` usage; part 2 logic on the 21 sessions in `~/.claude/projects/-Users-vlwkaos-ws-wsx` whose first 20 kB hold "manager" and "wsx task" |
+| Manager | 423 turns, $69.8, context p50 96k. Rewrites after >1h: $13.6 (20) | manager `log*.jsonl` usage; part 2 logic on the 21 sessions in `~/.claude/projects/<main checkout path with / as ->` whose first 20 kB hold "manager" and "wsx task" |
 
 ## Research (searched 2026-11-04)
 

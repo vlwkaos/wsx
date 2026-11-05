@@ -114,7 +114,7 @@ The rule for code or judgment: a step the agents repeat with the same inputs and
 
 ## Audit 2026-11-04
 
-Replaces "Findings (2026-11-03)" (#169). Window: rolling 7 days, plus the tasks since #169 landed. Transcript evidence is in each task's `log.jsonl` and `~/.claude/projects/-Users-vlwkaos-ws-wsx-t<n>/`.
+Replaces "Findings (2026-11-03)" (#169). Window: rolling 7 days, plus the tasks since #169 landed. Transcript evidence is in each task's `log.jsonl` and `~/.claude/projects/<main checkout path with / as ->-t<n>/`.
 
 **Answer.** Per landed task fell from $4.32 to $2.38 over 7 days and to $1.73 since 11-03. Most of the fall comes from the mix of tasks, not from the two changes: the expensive 10-28 tasks left the window, and 6 of the 10 tasks landed since 11-03 ran on sonnet. The two changes have not run yet: #176 still runs a `context` step, and only #174 ran build only. Since 11-03 the cost goes to turns started by owner messages, restarts and check-run answers, to waiting for checks inside a turn, and to failed check runs that each wait 20-90 min in the queue. (Corrected 11-04, #182: an earlier version put 39% on the `context` step; see the step row below.)
 
