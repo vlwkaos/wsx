@@ -3426,8 +3426,11 @@ merge_seconds = 3
             assert [p['name'] for p in listed_panels['panels']] == ['device', 'broken'] and listed_panels['notice'] is None, listed_panels
 
             def panel_shown(name, run=False, done=True):
+                asked = [run]
+                # ^ run=1 starts a run each time the last one is over: only the first read asks.
                 def read():
-                    status, body = steady(admin, 'GET', '%s/%s%s' % (panel_url, name, '?run=1' if run else ''))
+                    status, body = steady(admin, 'GET', '%s/%s%s' % (panel_url, name, '?run=1' if asked[0] else ''))
+                    asked[0] = False
                     assert status == 200, (status, body)
                     return body if not done or (body['run']['status'] != 'pending' and not body['running']) else None
                 return wait(read, 'panel ' + name)
