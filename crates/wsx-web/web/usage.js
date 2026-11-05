@@ -96,15 +96,8 @@ const WINDOWS = ["five_hour", "seven_day"];
 const WHO = [["", "Workers and manager"], ["workers", "Workers"], ["manager", "Manager"]];
 const ADAPTERS = { claude: "Claude", pi: "Pi", unknown: "Unknown" };
 
-// The query of one choice of filters: `since_ms` from the period, then the hands and the agent.
-const query = ({ period, who, agent }, windows) => {
-  const params = new URLSearchParams();
-  const since = period === "today" ? new Date().setHours(0, 0, 0, 0) : windows.find((each) => each.kind === period)?.start_ms;
-  if (since) params.set("since_ms", String(since));
-  if (who) params.set("who", who);
-  if (agent) params.set("agent", agent);
-  return params.toString();
-};
+// The query of one choice of filters; Rust tells when the period starts (`usage::start`).
+const query = ({ period, who, agent }) => new URLSearchParams(Object.entries({ period, who, agent }).filter(([, value]) => value)).toString();
 
 // The agent choice: All, then per adapter all of it and each model (`usage.rs` `agents`).
 function AgentSelect({ agents, value, onChange }) {
@@ -157,7 +150,7 @@ function UsageView({ url, all = false }) {
   const claude = !filters.agent || filters.agent === "claude" || filters.agent.startsWith("claude/");
   const periods = PERIODS.filter(([period]) => !WINDOWS.includes(period) || (claude && windows.some((each) => each.kind === period)));
   const period = periods.some(([each]) => each === filters.period) ? filters.period : "week";
-  const search = query({ ...filters, period }, windows);
+  const search = query({ ...filters, period: period === "week" ? "" : period });
   useEffect(() => {
     let live = true;
     api(search ? `${url}?${search}` : url).then((value) => { if (live) { setRead({ usage: value, loaded: search }); setError(""); } }, (failure) => { if (live) setError(failure.message); });
