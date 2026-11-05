@@ -43,6 +43,7 @@ pub struct LockCleared {
 ///   itself a file event, so a watcher may take a new lock at that moment: the run after it
 ///   waits like any other (a land of pizzahouse #34 failed so on 2026-11-05);
 /// - old and held, or its holder unknown: refuse.
+///
 /// A lock that stays refuses, and the output's stderr names it, its age and its holder. No
 /// other lock file is touched. ref: docs/tasks.md "Landing"
 pub fn run_clearing_stale_lock(
