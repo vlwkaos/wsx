@@ -2075,25 +2075,31 @@ try:
     wait_for(lambda: "All projects" in remove_view.text(), "t opened no Tasks view for keep-me", seconds=60)
     os.write(remove_master, b"m")
     wait_for(lambda: "Atlas stopped: agent exited" in remove_view.text(), "the TUI chat did not show keep-me's log", seconds=60)
-    chat_screen = remove_view.text()
-    shown = [row.strip() for row in chat_screen.splitlines() if row.strip()]
     # ^ Each row in order, by its kind and shown name: an owner message, a short event line, a
     # quiet reply under the manager's name, the recap answer tagged, a peer, a rotation with its
     # reason, an asking reply and a stop, both by the shown name. The recap request and the ping
     # show nothing.
-    expected = [r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 done$", r"^Atlas$", r"^#3 is on main\.$",
-                r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.", r"^elsewhere\s+\d\d:\d\d",
-                r"^Hello from elsewhere\.", r"^New conversation: the launch changed; the ledger carries the state\.$",
-                r"^Atlas\s+\d\d:\d\d", r"^Should I land #4\?", r"^Atlas stopped: agent exited$"]
-    found, at_row = [], 0
-    for pattern in expected:
-        at_row = next((n for n in range(at_row, len(shown)) if re.search(pattern, shown[n].lstrip("│ "))), None)
-        assert at_row is not None, f"the TUI chat has no row {pattern} after {found}:\n{chat_screen}"
-        found.append(pattern)
-        at_row += 1
-    assert "RECAP REQUEST" not in chat_screen and "Manager" not in chat_screen and "r2:" not in chat_screen, chat_screen
+    def rows_in_order(expected):
+        chat_screen = remove_view.text()
+        shown = [row.strip() for row in chat_screen.splitlines() if row.strip()]
+        found, at_row = [], 0
+        for pattern in expected:
+            at_row = next((n for n in range(at_row, len(shown)) if re.search(pattern, shown[n].lstrip("│ "))), None)
+            assert at_row is not None, f"the TUI chat has no row {pattern} after {found}:\n{chat_screen}"
+            found.append(pattern)
+            at_row += 1
+        assert "RECAP REQUEST" not in chat_screen and "Manager" not in chat_screen and "r2:" not in chat_screen, chat_screen
+    rows_in_order([r"^#3 done$", r"^Atlas$", r"^#3 is on main\.$",
+                   r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.", r"^elsewhere\s+\d\d:\d\d",
+                   r"^Hello from elsewhere\.", r"^New conversation: the launch changed; the ledger carries the state\.$",
+                   r"^Atlas\s+\d\d:\d\d", r"^Should I land #4\?", r"^Atlas stopped: agent exited$"])
+    # ^ The chat opens at its end; on a short screen the first rows are above it, and k scrolls
+    # up one line at a time to the top.
+    os.write(remove_master, b"k" * 40)
+    wait_for(lambda: "Where is #3?" in remove_view.text(), "k did not scroll the TUI chat to its top", seconds=60)
+    rows_in_order([r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 done$", r"^Atlas$"])
     os.write(remove_master, b"\x1b")
-    wait_for(lambda: "Atlas stopped" not in remove_view.text(), "Esc did not close the manager chat", seconds=60)
+    wait_for(lambda: "press i to write a message" not in remove_view.text(), "Esc did not close the manager chat", seconds=60)
     os.write(remove_master, b"q")
     wait_for(lambda: "All projects" not in remove_view.text(), "q did not close keep-me's Tasks view", seconds=60)
     remove_from_tui("halt-me", b"H")

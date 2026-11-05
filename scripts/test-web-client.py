@@ -3649,16 +3649,18 @@ merge_seconds = 3
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS'})
         assert status == 200 and body['ok'] and isinstance(body['id'], int), body
         events.expect('manager', lambda data: data == {'project': demo}, timeout=20)
-        chat = wait(lambda: (lambda data: data if any(e['kind'] == 'reply' for e in data['entries']) else None)(
+        # ^ The chat route sends wsx-core chat rows (docs/web-client-tasks.md "Chat").
+        manager_said = lambda row: row.get('author') == 'manager' and row['kind'] in ('message', 'quiet')
+        chat = wait(lambda: (lambda data: data if any(manager_said(r) for r in data['rows']) else None)(
             steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]), 'manager reply')
-        reply = next(e for e in chat['entries'] if e['kind'] == 'reply')
-        assert reply['text'].startswith('open: #1 ready') and chat['running'], chat
-        assert all(e['kind'] not in ('delivered', 'agent') for e in chat['entries'])
+        reply = next(r for r in chat['rows'] if manager_said(r))
+        assert reply['text'].startswith('open: #1 ready') and reply['name'] == 'demo' and chat['running'], chat
+        assert {r['kind'] for r in chat['rows']} <= {'message', 'line', 'quiet', 'note'}, chat['rows']
         # ^ The manager's replies count apart from the workers' (docs/tasks.md "Usage").
         manager_usage = steady(owner, 'GET', '/api/tasks/%d/usage' % demo)[1]['today']['manager']
         assert manager_usage['turns'] >= 1 and manager_usage['cost_micro_usd'] == 1000 * manager_usage['turns'], manager_usage
         later = steady(owner, 'GET', '/api/tasks/%d/chat?after=%d' % (demo, reply['id']))[1]
-        assert all(e.get('id', reply['id'] + 1) > reply['id'] for e in later['entries']), later
+        assert all(r.get('id', reply['id'] + 1) > reply['id'] for r in later['rows']), later
         # --- A role (docs/tasks.md "Roles"): its chat by ?role=, a say to it starts it, and the
         # manager's chat lists it as a contact.
         notes_brief = work / 'notes-brief.md'
@@ -3667,7 +3669,7 @@ merge_seconds = 3
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS', 'role': 'notes'})
         assert status == 200 and body['ok'], body
         events.expect('manager', lambda data: data == {'project': demo, 'role': 'notes'}, timeout=20)
-        role_chat = wait(lambda: (lambda data: data if any(e['kind'] == 'reply' for e in data['entries']) else None)(
+        role_chat = wait(lambda: (lambda data: data if any(manager_said(r) for r in data['rows']) else None)(
             steady(owner, 'GET', '/api/tasks/%d/chat?role=notes' % demo)[1]), 'role reply')
         assert role_chat['manager'] == {'name': 'notes'} and role_chat['roles'] is None and role_chat['running'], role_chat
         contacts = steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['roles']
@@ -3883,18 +3885,20 @@ merge_seconds = 3
         ok('a waiting task: its need and reason, hand, no brief or start')
         if args.browser:
             # A worker's report stays in the task sheet: the chat route carries the events lines only.
-            entries = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]['entries']
-            assert not any('reports' in e for e in entries), entries
-            assert any(e['kind'] == 'message' and e.get('from') == 'events' and '#5 ready' in e['text'] for e in entries), entries
+            rows = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]['rows']
+            assert not any('reports' in r for r in rows), rows
+            assert any(r['kind'] == 'line' and r.get('task') == 5 and r['text'].startswith('#5 ready') for r in rows), rows
             # The manager's name: ui's set name, plans' default; a peer by its set name.
             ui_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]
             plans_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['plans'])[1]
-            assert ui_chat['manager'] == {'name': 'Atlas', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and ui_chat['peers'] == {'plans': 'plans'}, (ui_chat['manager'], ui_chat['peers'])
-            assert plans_chat['manager']['name'] == 'plans' and plans_chat['peers'] == {'ui': 'Atlas'}, (plans_chat['manager'], plans_chat['peers'])
             # ^ A find reads the whole chat (docs/web-client-chat.md "Find"): `all` sends every entry.
             whole = steady(owner, 'GET', '/api/tasks/%d/chat?all=true' % ids['plans'])[1]
-            assert plans_chat['skipped'] > 0 and len(plans_chat['entries']) == 200, (plans_chat['skipped'], len(plans_chat['entries']))
-            assert whole['skipped'] == 0 and whole['entries'][0]['text'] == 'Where did the Quasar notes go?', (whole['skipped'], whole['entries'][:1])
+            peer = lambda chat, key: {r['name'] for r in chat['rows'] if r.get('author') == 'peer:' + key}
+            assert ui_chat['manager'] == {'name': 'Atlas', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and peer(ui_chat, 'plans') == {'plans'}, (ui_chat['manager'], peer(ui_chat, 'plans'))
+            assert plans_chat['manager']['name'] == 'plans' and peer(whole, 'ui') == {'Atlas'}, (plans_chat['manager'], peer(whole, 'ui'))
+            # ^ The window is 200 log entries; a ping, a recap request or a repeat shows no row.
+            assert plans_chat['skipped'] > 0 and 0 < len(plans_chat['rows']) <= 200, (plans_chat['skipped'], len(plans_chat['rows']))
+            assert whole['skipped'] == 0 and whole['rows'][0]['text'] == 'Where did the Quasar notes go?', (whole['skipped'], whole['rows'][:1])
             args.captures.mkdir(parents=True, exist_ok=True)
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
@@ -3918,7 +3922,7 @@ merge_seconds = 3
             role_brief.write_text('Write the release notes.\n')
             js('task', 'role', 'new', 'billing', '--brief', role_brief, '-p', 'ui')
             assert steady(owner, 'POST', '/api/tasks/%d/say' % ids['ui'], {'text': 'STATUS', 'role': 'billing'})[0] == 200
-            wait(lambda: any(e['kind'] == 'reply' for e in steady(owner, 'GET', '/api/tasks/%d/chat?role=billing' % ids['ui'])[1]['entries']),
+            wait(lambda: any(manager_said(r) for r in steady(owner, 'GET', '/api/tasks/%d/chat?role=billing' % ids['ui'])[1]['rows']),
                  'the ui role reply', 60)
             # The page asks for a server with another build by writing this file: the owner's
             # server restarts under another site name, which is part of the page files' digest.
