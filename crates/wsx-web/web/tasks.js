@@ -322,13 +322,10 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, leaving 
     </li>`;
 }
 
-// The tone of a task's status; its words are the server's `status` (docs/web-client-tasks.md
-// "Task sheet").
-export function statusTone(task) {
-  if (task.approvals?.length || task.waiting?.on === "owner") return "attention";
-  if (task.state === "failed" || task.progress?.stuck) return "danger";
-  return taskStage(task)[1];
-}
+// The tone of a task's status by its `status.kind` (docs/tasks.md "Status"), else its stage's;
+// its words are the server's `status` (docs/web-client-tasks.md "Task sheet").
+const STATUS_TONE = { approval: "attention", owner: "attention", stopped: "attention", interrupted: "attention", failed: "danger", stuck: "danger" };
+export const statusTone = (task) => STATUS_TONE[task.status?.kind] ?? taskStage(task)[1];
 
 // The agent in use now, in few words: "sonnet high", "pi/qwen high", "fallback pi/qwen": the
 // effort wsx passes follows the model (docs/web-client-tasks.md "Agent"; view.rs `agent_label`).
@@ -942,7 +939,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
     : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} name=${names.manager} fresh=${isNew} />`
     : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} all=${finding} />`
     : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${isNew} onMention=${mention} />`
-    : html`<${Note} key=${row.key} entry=${row.entry} />`;
+    : html`<${Note} key=${row.key} entry=${row.entry} manager=${row.manager} />`;
   // ^ A read rebuilds every row from the entries it keeps: a row whose fields are the ones it was
   // drawn with gives back the same node, which Preact does not render again (docs/web-client-chat.md
   // "Long chats"). What every row reads besides its own fields starts the rows over, also a new
@@ -1032,6 +1029,6 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
 }
 
 // A rotation or a stop of the manager, said once.
-const Note = ({ entry }) => entry.kind === "rotated"
+const Note = ({ entry, manager }) => entry.kind === "rotated"
   ? html`<p class="note">${entry.reason ? `New conversation: ${entry.reason}` : `New conversation after ${entry.tokens.toLocaleString()} tokens`}; the ledger carries the state.</p>`
-  : html`<p class="note" data-tone="danger">The manager stopped: ${entry.reason}</p>`;
+  : html`<p class="note" data-tone="danger">${manager || "The manager"} stopped: ${entry.reason}</p>`;

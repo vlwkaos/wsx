@@ -380,7 +380,11 @@ pub fn chat_lines(
                     }
                 }
             }
-            Row::Line(text) => {
+            Row::Line(_) | Row::Manager(_) => {
+                let text = match row {
+                    Row::Manager(text) => format!("{other} {text}"),
+                    Row::Line(text) | Row::Said { text, .. } => text.clone(),
+                };
                 // ^ Lines after a message start apart from it, at the author's column.
                 if matches!(
                     index.checked_sub(1).map(|at| &rows[at]),

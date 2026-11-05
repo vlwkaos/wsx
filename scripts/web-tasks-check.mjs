@@ -2054,7 +2054,8 @@ await evaluate("document.querySelector('.task-details > .fold-head').click()");
 await clickNext("Land");
 await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '') === 'done'", "#2 did not land", 300);
 told = await story();
-if (told.next !== "On main; the last deploy does not have it yet.") await fail(`the top of a done task reads ${JSON.stringify(told)}`);
+// ^ The core's sentence (docs/tasks.md "Status"); only the web knows the deploy fact.
+if (told.next !== "Landed: on main; the last deploy does not have it yet.") await fail(`the top of a done task reads ${JSON.stringify(told)}`);
 await until("[...document.querySelectorAll('.task-sheet .scroll > .task-section > .task-heading')].some((node) => node.textContent === 'To check · 1 open')", "#2's item is not open under To check, outside Details", 60);
 const offers = await evaluate("[...document.querySelectorAll('.task-sheet .scroll > .task-section .check-item .check-act')].map((node) => node.title).join()");
 if (await count(".task-sheet .progress")) await fail("a finished task still shows the progress view");
@@ -2942,7 +2943,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
     await pause(200);
   }
   const shownStatus = show(behind).status;
-  if (!slotWords.test(shownStatus.sentence)) await fail(`wsx task show says ${JSON.stringify(shownStatus)}`);
+  if (shownStatus.kind !== "scenario_slot" || !slotWords.test(shownStatus.sentence)) await fail(`wsx task show says ${JSON.stringify(shownStatus)}`);
   await open(behind);
   await shows(behind, "scenario test slot", { health: shownStatus.label, steps: "", next: slotWords });
   await shot("progress-scenario-slot", ".composer-send");
@@ -3210,7 +3211,7 @@ if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${
   const sheetWords = await story();
   const json = await evaluate(`fetch('api/tasks/${project}/t/${id}').then((r) => r.json()).then((view) => view.status)`);
   const minutes = (text) => text.replace(/ for [^:]+:/, ":");
-  if (json.label !== "Ready, waiting for the manager's review" || !rowWords.startsWith(json.label) || await sheetState() !== json.label
+  if (json.kind !== "review" || json.label !== "Ready, waiting for the manager's review" || !rowWords.startsWith(json.label) || await sheetState() !== json.label
     || minutes(sheetWords.next) !== minutes(json.sentence)
     || !/^Ready, waiting for the manager's review for [^:]+: (checks \d+ of \d+ passed|no checks prove it)\. The manager reads the diff, then lands it or asks for changes\.$/.test(sheetWords.next)) {
     await fail(`the review-waiting task reads ${JSON.stringify({ rowWords, sheetWords, json })}`);
