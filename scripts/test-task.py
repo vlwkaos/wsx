@@ -7,6 +7,7 @@ close with and without unlanded commits, failure cleanup, and that no process, s
 worktree or branch is left. Build adjacent wsx and wsxd first. ref: docs/tasks.md
 """
 import argparse
+import atexit
 import fcntl
 import hashlib
 import urllib.request
@@ -118,6 +119,11 @@ seen = {name: tried(lambda path=path: open(path).read()) for name, path in spec[
 seen.update({name: tried(lambda path=path: write(path)) for name, path in spec["write"].items()})
 seen["move_main"] = subprocess.run(["git", "update-ref", "refs/heads/main", "HEAD"], capture_output=True).returncode == 0
 seen.update(listen=tried(listen), pty=tried(pty))
+# ^ A signal reaches only this agent's own sandbox: its child yes, a process outside it no.
+child = subprocess.Popen(["sleep", "60"])
+seen["signal_own"] = tried(lambda: os.kill(child.pid, 15))
+child.wait()
+seen["signal_outside"] = tried(lambda: os.kill(spec["signal_outside"], 9))
 json.dump(seen, open(sys.argv[2], "w"))
 '''
 # ^ True: the boundary allows it; False: it refuses it.
@@ -125,7 +131,8 @@ PROBE_EXPECTED = {'read_ssh': False, 'write_ssh': False, 'write_state': False, '
                   'write_later_copy': False, 'write_main_ref': False, 'write_main_lock': False,
                   'write_main_reflog': False, 'write_hooks': False, 'write_config': False, 'write_routines': False,
                   'write_own_copy': True, 'write_task_folder': True, 'write_tmpdir': True, 'write_cargo': True,
-                  'write_library': True, 'move_main': False, 'listen': True, 'pty': True}
+                  'write_library': True, 'move_main': False, 'listen': True, 'pty': True,
+                  'signal_own': True, 'signal_outside': False}
 
 
 def tui_text(wsx, env, cwd, until, seconds=15):
@@ -2272,10 +2279,13 @@ def run(wsx, wsxd, work, owned):
     store_dir, common = Path(created['task_dir']).parent, project / '.git'
     probe_script = work / 'probe.py'
     probe_script.write_text(PROBE_SCRIPT)
+    # ^ A process outside the boundary that the probe's signal must not reach.
+    signal_target = subprocess.Popen(['sleep', '600'])
+    atexit.register(signal_target.kill)
 
     def probe_files(n):
         """The probe's spec and answer for task n, which is created next."""
-        spec = {'read': {'read_ssh': str(secret)},
+        spec = {'read': {'read_ssh': str(secret)}, 'signal_outside': signal_target.pid,
                 'write': {'write_ssh': str(home / '.ssh/probe'), 'write_state': str(store_dir / 'probe.txt'),
                           'write_existing_copy': str(base / 'project-t998/probe.txt'),
                           'write_later_copy': str(base / 'project-t999/probe.txt'),
@@ -2308,6 +2318,7 @@ def run(wsx, wsxd, work, owned):
     assert not (common / 'hooks/pre-commit').exists() and not (common / 'refs/heads/main.lock').exists()
     assert not (base / 'project-t999').exists() and not any((base / 'project-t998').iterdir())
     (base / 'project-t998').rmdir()
+    assert signal_target.poll() is None, 'the worker signalled a process outside its sandbox'
     # The manager's `wsx task` commands run through its broker with no denial.
     held = js('task', 'new', 'WAIT %s NOOP' % (base / 'never'))['id']
     wait(lambda: show(held)['state'] == 'working' and launches_in(held), 'held worker')
@@ -3293,6 +3304,7 @@ def run(wsx, wsxd, work, owned):
         # ^ The turn itself reached Anthropic's API from inside the boundary: the network is open.
         assert git('rev-parse', 'main') == tip and not any(e['kind'] == 'blocked' for e in log(auto))
         (base / 'project-t998').rmdir()
+        assert signal_target.poll() is None, 'the real claude signalled a process outside its sandbox'
         js('task', 'close', auto, '--discard')
         fake.write_text('#!/bin/sh\nexec ' + sys.executable + ' ' + str(fake_script) + ' "$@"\n')
         configure(LAND_CONFIG, 'fake claude')
