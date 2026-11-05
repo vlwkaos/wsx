@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import atexit
+import codecs
 import fcntl
 import json
 import os
@@ -1895,13 +1896,74 @@ fcntl.ioctl(remove_slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0)
 remove_tui = subprocess.Popen([str(WSX)], cwd=PROJECT, env={k: v for k, v in env.items() if k != "WSX_PANE_ID"},
                               stdin=remove_slave, stdout=remove_slave, stderr=remove_slave, close_fds=True)
 os.close(remove_slave)
-remove_screen = bytearray()
+class Screen:
+    """The rows a TUI has painted, from its output stream.
+
+    ratatui repaints only the cells that changed and skips the rest with a cursor move, so a
+    word it draws over blank cells (a space of "Unregister project" over a blank) is not one run
+    of bytes in the stream: only the grid shows the text the user sees.
+    """
+    TOKEN = re.compile(r"\x1b\[([0-9;?]*)[ -/]*([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[^\[\]]|[\r\n]|[^\x00-\x1f]+")
+
+    def __init__(self, rows, cols):
+        self.rows, self.cols = rows, cols
+        self.grid = [[" "] * cols for _ in range(rows)]
+        self.row = self.col = 0
+        self.lock = threading.Lock()
+        self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self.pending = ""
+
+    def feed(self, data):
+        with self.lock:
+            text = self.pending + self.decoder.decode(data)
+            self.pending = ""
+            # ^ An escape sequence cut by the read waits for the rest of it.
+            cut = text.rfind("\x1b")
+            if cut >= 0 and not self.TOKEN.match(text, cut):
+                text, self.pending = text[:cut], text[cut:]
+            for token in self.TOKEN.finditer(text):
+                self.apply(token)
+
+    def apply(self, token):
+        params, final = token.group(1), token.group(2)
+        if final:
+            numbers = [int(part) if part.isdigit() else 0 for part in params.lstrip("?").split(";")]
+            first = numbers[0] or 1
+            if final in "Hf":
+                self.row = min((numbers[0] or 1) - 1, self.rows - 1)
+                self.col = min(((numbers[1] if len(numbers) > 1 else 0) or 1) - 1, self.cols - 1)
+            elif final == "A": self.row = max(self.row - first, 0)
+            elif final == "B": self.row = min(self.row + first, self.rows - 1)
+            elif final == "C": self.col = min(self.col + first, self.cols - 1)
+            elif final == "D": self.col = max(self.col - first, 0)
+            elif final == "G": self.col = min(first - 1, self.cols - 1)
+            elif final == "J" and numbers[0] in (2, 3):
+                self.grid = [[" "] * self.cols for _ in range(self.rows)]
+            elif final == "K":
+                start, end = {0: (self.col, self.cols), 1: (0, self.col + 1), 2: (0, self.cols)}[numbers[0]]
+                self.grid[self.row][start:end] = [" "] * (end - start)
+            return
+        text = token.group(0)
+        if text == "\r": self.col = 0
+        elif text == "\n": self.row = min(self.row + 1, self.rows - 1)
+        elif not text.startswith("\x1b"):
+            for char in text:
+                if self.col < self.cols:
+                    self.grid[self.row][self.col] = char
+                    self.col += 1
+
+    def text(self):
+        with self.lock:
+            return "\n".join("".join(row) for row in self.grid)
+
+
+remove_view = Screen(40, 120)
 
 
 def read_remove_tui():
     try:
         while chunk := os.read(remove_master, 65536):
-            remove_screen.extend(chunk)
+            remove_view.feed(chunk)
     except OSError:
         pass
 
@@ -1918,23 +1980,23 @@ def project_sessions(name):
 
 def remove_from_tui(name, key):
     # ^ `[` goes up to the first project, then each `]` down one; `d` asks about the project under
-    # the cursor, and `q` leaves a question about another project. Keys reach the TUI in order, so
-    # no sleep is needed between them; only the question is waited for, and for long: a loaded
-    # host answers late, and a late question must not meet the next key (Esc followed at once by
-    # `]` would also read as Alt-`]`).
+    # the cursor, and `q` closes a question about another project. Keys reach the TUI in order, so
+    # no sleep sits between them: each wait is for what the screen shows, and for long. (An Esc
+    # followed at once by `]` would read as Alt-`]`.)
+    asked = re.compile(r"Unregister project '([^']+)'")
     os.write(remove_master, b"[" * 6)
-    asked = re.compile(rb"Unregister project '([^']+)'")
     for _ in range(8):
-        mark = len(remove_screen)
         os.write(remove_master, b"d")
-        wait_for(lambda: asked.search(remove_screen, mark), "the TUI asked no project question", seconds=60)
-        shown = asked.findall(remove_screen, mark)[-1].decode()
+        wait_for(lambda: asked.search(remove_view.text()), "the TUI asked no project question", seconds=60)
+        shown = asked.search(remove_view.text()).group(1)
         if shown == name:
-            wait_for(lambda: b"halt" in remove_screen[mark:], "the question does not offer halting", seconds=10)
+            assert "halt all its sessions" in remove_view.text(), remove_view.text()
             os.write(remove_master, key)
             return
-        os.write(remove_master, b"q]")
-    raise AssertionError(f"the cursor never reached {name}: {bytes(remove_screen[-600:])}")
+        os.write(remove_master, b"q")
+        wait_for(lambda: "Unregister project" not in remove_view.text(), "the question stayed after q", seconds=60)
+        os.write(remove_master, b"]")
+    raise AssertionError(f"the cursor never reached {name}:\n{remove_view.text()}")
 
 
 def config_names():
@@ -1950,7 +2012,7 @@ try:
             created = call("session_create", {"worktree_id": tree, "label": label, "command": ["/bin/sh"], "rows": 24, "cols": 80})
             assert created["type"] == "created", created
         assert sorted(project_sessions(name)) == ["shell", "task-manager"], project_sessions(name)
-    wait_for(lambda: b"halt-me" in remove_screen, "the TUI did not list halt-me")
+    wait_for(lambda: "halt-me" in remove_view.text(), "the TUI did not list halt-me", seconds=60)
     remove_from_tui("halt-me", b"H")
     wait_for(lambda: "halt-me" not in config_names(), "H did not unregister halt-me")
     wait_for(lambda: project_sessions("halt-me") == [], "H did not halt the sessions of halt-me")
