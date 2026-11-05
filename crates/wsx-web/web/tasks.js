@@ -9,7 +9,7 @@ import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, inlinePasted, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
 import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
 import { FindBar, FindButton } from "./find.js";
-import { QuoteChip, useReply, withQuote } from "./reply.js";
+import { QuoteChip, quoteSplit, useReply, withQuote } from "./reply.js";
 import { readTaskAhead, TaskPage } from "./task.js";
 import { ProjectOverview } from "./page.js";
 import { ChecksPage } from "./checks.js";
@@ -853,22 +853,21 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
     if (all) {
       whole.current = true;
       cut.current = false;
-      shown.current = next.entries;
+      shown.current = next.rows;
       setChat(next);
       setFailure("");
       return;
     }
-    // ^ A rotation or a stop has no id, so every read after the last id returns it again
-    // until the next message: it joins once.
-    const known = (entry) => entry.id == null
-      && shown.current.some((seen) => seen.id == null && seen.kind === entry.kind && seen.unix_ms === entry.unix_ms);
-    const joined = [...shown.current, ...next.entries.filter((entry) => !known(entry))];
+    // ^ A rotation, a stop or a limit has no id, so every read after the last id returns it
+    // again until the next message: a row joins once, by its key.
+    const keys = new Set(shown.current.map((row) => row.key));
+    const joined = [...shown.current, ...next.rows.filter((row) => !keys.has(row.key))];
     if (whole.current) shown.current = joined;
     else {
       if (next.skipped || joined.length > 400) cut.current = true;
       shown.current = joined.slice(-400);
     }
-    setChat({ ...next, entries: shown.current });
+    setChat({ ...next, rows: shown.current });
     setFailure("");
   }, (error) => setFailure(error.message), [id]);
   useEffect(() => { if (!overview) loadTasks(id, { missing: true }); }, [id]);
@@ -890,20 +889,20 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
         <p class="empty">${!store.daemon ? "wsx is not running on the host." : store.loaded ? "This project is not available." : "Loading…"}</p>
       </div>`;
   }
-  const entries = chat?.entries ?? [];
+  const entries = chat?.rows ?? [];
   const items = role ? [] : overview?.needs ?? [];
   const words = withChips(id);
-  const rows = ready ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems, chat?.manager.name) : [];
+  const rows = ready ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems) : [];
   // The sent message shows until the log has it.
-  if (sent && !entries.some((entry) => entry.kind === "message" && entry.id === sent.id)) {
+  if (sent && !entries.some((row) => row.kind === "message" && row.id === sent.id)) {
     const last = rows.at(-1);
-    const grouped = last?.kind === "bubble" && last.author === "owner";
+    const grouped = last?.kind === "message" && last.author === "owner";
     if (grouped) last.last = false;
     // ^ The owner answered: no reply asks any more.
     for (const row of rows) row.asks = false;
-    rows.push({ kind: "bubble", key: "sending", author: "owner", at: Date.now(), first: !grouped, last: true, pending: true, entry: { text: sent.text } });
+    rows.push({ kind: "message", key: "sending", author: "owner", name: "You", at: Date.now(), first: !grouped, last: true, pending: true, ...quoteSplit(sent.text) });
   }
-  const firstNew = since == null ? null : rows.find((row) => row.kind === "bubble" && row.author !== "owner" && !row.pending && row.at > since);
+  const firstNew = since == null ? null : rows.find((row) => row.kind === "message" && row.author !== "owner" && !row.pending && row.at > since);
   const [recent, earlier] = useRecent(place, rows, firstNew, { all: finding, away });
   const find = () => {
     if (finding) return setFinding(false);
@@ -927,25 +926,25 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
     for (const row of rows) {
       if (known.current.has(row.key)) continue;
       known.current.add(row.key);
-      if (!(sent && row.entry?.id === sent.id) && row.key !== "sending") fresh.current.add(row.key);
+      if (!(sent && row.id === sent.id) && row.key !== "sending") fresh.current.add(row.key);
     }
   }
-  const names = { manager: chat?.manager.name, peers: chat?.peers };
-  const stopped = chat && !chat.running && entries.at(-1)?.kind === "stopped";
+  const names = { manager: chat?.manager.name };
+  const stopped = chat && !chat.running && entries.at(-1)?.danger;
   // ^ The manager's state only when it matters: typing or stopped (docs/web-client-tasks.md "Project screen").
   const managerWord = typing ? "typing" : stopped ? "stopped" : "";
-  const draw = (row, isNew) => row.kind === "bubble" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} names=${names} fresh=${isNew} />`
-    : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} text=${row.text} fresh=${isNew} />`
-    : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} name=${names.manager} fresh=${isNew} />`
+  const draw = (row, isNew) => row.kind === "message" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} />`
+    : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} row=${row} fresh=${isNew} />`
+    : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} fresh=${isNew} />`
     : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} all=${finding} />`
     : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${isNew} onMention=${mention} />`
-    : html`<${Note} key=${row.key} entry=${row.entry} manager=${row.manager} />`;
+    : html`<${Note} key=${row.key} row=${row} />`;
   // ^ A read rebuilds every row from the entries it keeps: a row whose fields are the ones it was
   // drawn with gives back the same node, which Preact does not render again (docs/web-client-chat.md
   // "Long chats"). What every row reads besides its own fields starts the rows over, also a new
   // day: a row's time says its day once it is not today's (lib.js `clock`); the project names are
   // what `<project> #n` reads (`withChips`).
-  const context = `${id} ${finding} ${names.manager} ${JSON.stringify(names.peers ?? null)} ${store.projects.map((other) => `${other.id}:${other.name}`)} ${new Date().toDateString()}`;
+  const context = `${id} ${finding} ${names.manager} ${store.projects.map((other) => `${other.id}:${other.name}`)} ${new Date().toDateString()}`;
   if (drawn.current?.context !== context || drawn.current.rows.size > rows.length + 200) drawn.current = { context, rows: new Map() };
   const show = (row) => {
     const isNew = fresh.current.has(row.key);
@@ -981,7 +980,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
       ${!low && header}
       <div class="chat">
         ${finding && html`<${FindBar} log=${logNode} reveal=${reveal} loading=${whole.current !== true} onClose=${() => setFinding(false)} />`}
-        ${!role && html`<${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "bubble" && row.author !== "owner")?.at} sent=${sent} />`}
+        ${!role && html`<${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "message" && row.author !== "owner")?.at} sent=${sent} />`}
         <div class="log-wrap">
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label=${`Conversation with ${role ?? "the manager"}`} tabindex="0" ...${gestures}>
             ${cut.current ? html`<p class="note">Older messages are not shown.</p>` : null}
@@ -1029,6 +1028,4 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
 }
 
 // A rotation or a stop of the manager, said once.
-const Note = ({ entry, manager }) => entry.kind === "rotated"
-  ? html`<p class="note">${entry.reason ? `New conversation: ${entry.reason}` : `New conversation after ${entry.tokens.toLocaleString()} tokens`}; the ledger carries the state.</p>`
-  : html`<p class="note" data-tone="danger">${manager || "The manager"} stopped: ${entry.reason}</p>`;
+const Note = ({ row }) => html`<p class="note" data-tone=${row.danger ? "danger" : null}>${row.text}</p>`;

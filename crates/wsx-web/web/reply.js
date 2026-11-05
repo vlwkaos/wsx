@@ -2,11 +2,11 @@
 // "Replies"): a swipe right on a message, or a long press (a right click) and Reply, puts a
 // one-line quote above the composer; the sent text starts with `> <that line>`, and a tap on
 // the quote in the chat scrolls to the quoted message while it is still in the log.
-// A row that can be quoted is a child of the log with `data-quote`, its first line.
+// A row that can be quoted is a child of the log with `data-quote`, its first line as the
+// server cuts it (wsx-core `quote_of`, sent as `quote`).
 import { html, Icon, motion, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
 import { toast } from "./ui.js";
 
-const QUOTE_CHARS = 120;
 // A swipe this far right replies; a press this long opens the menu; a move past the slop is
 // a scroll or a swipe, not a press.
 const SWIPE_PX = 64;
@@ -21,13 +21,13 @@ export function splitQuote(text) {
   return quoted ? [quoted[1], text.slice(quoted[0].length)] : [null, text ?? ""];
 }
 
-// A message's first line without its own quote, cut to QUOTE_CHARS.
-export function quoteOf(text) {
-  const line = splitQuote(text)[1].split("\n").map((part) => part.trim()).find(Boolean) ?? "";
-  return line.length > QUOTE_CHARS ? `${line.slice(0, QUOTE_CHARS - 1).trimEnd()}…` : line;
-}
-
 export const withQuote = (quote, body) => quote ? `> ${quote}\n\n${body}` : body;
+
+// A message as a chat row's fields: `quoted`, its leading quote line, and `text`, the rest.
+export function quoteSplit(text) {
+  const [quoted, rest] = splitQuote(text);
+  return { quoted, text: rest.trim() };
+}
 
 // A quote as a button that goes to the quoted message.
 export function Quote({ quote }) {

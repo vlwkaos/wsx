@@ -68,7 +68,9 @@ pub fn ensure_manager(
 }
 
 /// Give the manager, or the open role `role`, a message, starting it first when needed.
-/// `from` is another manager or role; none is the owner.
+/// `from` is another manager or role; none is the owner. `short`: an events message's lines
+/// as the chat shows them.
+#[allow(clippy::too_many_arguments)]
 pub fn say(
     name: &str,
     main: &Path,
@@ -77,11 +79,12 @@ pub fn say(
     launch: impl FnOnce(String, Vec<String>) -> Result<()>,
     text: String,
     from: Option<super::manager::Author>,
+    short: Vec<super::manager::Short>,
 ) -> Result<ManagerResponse> {
     let (_, dir) = ensure_manager(name, main, wsx, role, launch)?;
     call_socket(
         &dir.socket_path(),
-        &ManagerRequest::Say { text, from },
+        &ManagerRequest::Say { text, from, short },
         HOST_TIMEOUT,
     )
 }

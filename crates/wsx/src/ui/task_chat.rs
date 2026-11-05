@@ -1,7 +1,7 @@
 //! The manager chat: the conversation with the newest at the bottom, the owner's open
 //! items under it and the message line last. ref: docs/tasks.md "TUI"
 use super::{tasks::muted, theme, workspace_tree::truncate_to_width};
-use crate::task_chat::{links, parts, Focus, Item, ManagerChat, Part, Row, Who};
+use crate::task_chat::{links, parts, Focus, Item, ManagerChat, Part};
 use ratatui::{
     layout::Rect,
     prelude::Stylize,
@@ -11,6 +11,7 @@ use ratatui::{
     Frame,
 };
 use std::ops::Range;
+use wsx_core::task::chat::{ChatRow, RowKind, Speaker};
 use wsx_core::task::manager::Level;
 
 /// Below this width a To check row drops where to look.
@@ -37,7 +38,7 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
     if let Some(file) = &chat.file {
         return render_file(frame, inner, file, top);
     }
-    let mut lines = chat_lines(&chat.rows, chat.who(), width, chat.link).0;
+    let mut lines = chat_lines(&chat.rows, width, chat.link).0;
     let matches = find_in(&lines, chat.find.value());
     // ^ Every match reversed, the current one also in a color (docs/tasks.md "TUI").
     let current = chat.found.min(matches.len().saturating_sub(1));
@@ -267,132 +268,139 @@ fn clock(unix_ms: u64) -> String {
     })
 }
 
-/// Each message as its author and time, then its words wrapped under them; each event or
-/// quiet reply as one muted line. A link shows its words underlined, the selected one reversed;
-/// the second value is the line of the selected link.
+/// Each message as its author, tag and time, then its words wrapped under them; each event,
+/// limit or note as one muted line, and a run of quiet replies under the manager's name once
+/// (`chat_rows`). A link shows its words underlined, the selected one reversed; the second
+/// value is the line of the selected link.
 pub fn chat_lines(
-    rows: &[Row],
-    other: &str,
+    rows: &[ChatRow],
     width: usize,
     selected: Option<(u64, usize)>,
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let mut lines = Vec::new();
     let mut selected_line = None;
     for (index, row) in rows.iter().enumerate() {
-        match row {
-            Row::Said {
-                who,
-                unix_ms,
-                text,
-                asks,
-                routine,
-                level,
-            } => {
-                if index > 0 {
-                    lines.push(Line::raw(""));
-                }
-                let (name, color) = match who {
-                    Who::Owner => ("You".to_string(), theme::ACCENT),
-                    Who::Manager => (other.to_string(), theme::DONE),
-                    Who::Peer(project) => (project.clone(), theme::IDLE),
-                };
-                // ^ A reply that asks is set off like a thin border: a bar in the accent; a post of wsx (the digest, `wsx task post`) has its bar in the secondary color, unless it asks. Its name keeps the speaker's color, as the accent is the owner's.
-                // A level of a post (`--level warn|bad`) names itself in the heading and colours the
-                // bar: warning, error.
-                let level_color = level.map(|level| match level {
-                    Level::Warn => theme::WARNING,
-                    Level::Bad => theme::ERROR,
-                });
-                let bar = if *asks {
-                    Some(theme::ACCENT)
-                } else {
-                    level_color.or_else(|| routine.then_some(theme::SECONDARY))
-                };
-                let mut heading = vec![
-                    Span::styled(name, Style::default().fg(color).bold()),
-                    Span::styled(
-                        format!("  {}", clock(*unix_ms)),
-                        Style::default().fg(theme::TEXT_SUBTLE),
-                    ),
-                ];
-                if let Some((level, color)) = level.zip(level_color) {
-                    heading.push(Span::styled(
-                        format!("  {}", level.word()),
-                        Style::default().fg(color).bold(),
-                    ));
-                }
-                lines.push(Line::from(heading));
-                // ^ A leading quote is one compact line, link 0 of the message: Enter goes to the
-                // quoted message. ref: `links`
-                let (quote, body) = wsx_core::task::manager::split_quote(text);
-                let mut nth = 0;
-                if let Some(quote) = quote {
-                    let on = selected == Some((*unix_ms, 0));
-                    let style = match on {
-                        true => Style::default()
-                            .fg(theme::ACCENT)
-                            .add_modifier(Modifier::UNDERLINED | Modifier::REVERSED),
-                        false => Style::default().fg(theme::TEXT_SUBTLE),
-                    };
-                    if on {
-                        selected_line = Some(lines.len());
-                    }
-                    let shown = truncate_to_width(quote, width.saturating_sub(4).max(1));
-                    lines.push(Line::from(vec![
-                        Span::styled("  ▎ ", Style::default().fg(theme::TEXT_SUBTLE)),
-                        Span::styled(shown, style),
-                    ]));
-                    nth = 1;
-                }
-                for paragraph in body.lines() {
-                    // ^ Each char with the link it belongs to, so a link that wraps stays one.
-                    let mut cells: Vec<(char, Option<usize>)> = Vec::new();
-                    for part in parts(paragraph) {
-                        match part {
-                            Part::Text(words) => cells.extend(words.chars().map(|c| (c, None))),
-                            Part::Link { label, .. } => {
-                                cells.extend(label.chars().map(|c| (c, Some(nth))));
-                                nth += 1;
-                            }
-                        }
-                    }
-                    for part in wrap_cells(&cells, width.saturating_sub(2).max(1)) {
-                        let mut spans = vec![match bar {
-                            Some(color) => Span::styled("│ ", Style::default().fg(color)),
-                            None => Span::raw("  "),
-                        }];
-                        for (link, run) in chunk_by_link(&part) {
-                            let style = match link {
-                                None => Style::default(),
-                                Some(at) if selected == Some((*unix_ms, at)) => {
-                                    selected_line = Some(lines.len());
-                                    Style::default()
-                                        .fg(theme::ACCENT)
-                                        .add_modifier(Modifier::UNDERLINED | Modifier::REVERSED)
-                                }
-                                Some(_) => Style::default()
-                                    .fg(theme::ACCENT)
-                                    .add_modifier(Modifier::UNDERLINED),
-                            };
-                            spans.push(Span::styled(run, style));
-                        }
-                        lines.push(Line::from(spans));
+        let before = index.checked_sub(1).map(|at| &rows[at]);
+        let color = match row.author {
+            Some(Speaker::Owner) => theme::ACCENT,
+            Some(Speaker::Peer(_)) => theme::IDLE,
+            _ => theme::DONE,
+        };
+        let name = row.name.clone().unwrap_or_default();
+        if row.kind != RowKind::Message {
+            // ^ Lines after a message start apart from it, at the author's column; a quiet
+            // reply after another one keeps the name shown once.
+            let quiet_run = row.kind == RowKind::Quiet
+                && before.is_some_and(|before| before.kind == RowKind::Quiet);
+            if before.is_some_and(|before| before.kind == RowKind::Message)
+                || (row.kind == RowKind::Quiet && !quiet_run && before.is_some())
+            {
+                lines.push(Line::raw(""));
+            }
+            if row.kind == RowKind::Quiet && !quiet_run {
+                lines.push(Line::from(Span::styled(
+                    name,
+                    Style::default().fg(color).bold(),
+                )));
+            }
+            let text = truncate_to_width(&row.text.replace('\n', " "), width);
+            lines.push(match row.danger {
+                true => Line::from(Span::styled(text, Style::default().fg(theme::ERROR))),
+                false => muted(&text),
+            });
+            continue;
+        }
+        if index > 0 {
+            lines.push(Line::raw(""));
+        }
+        // ^ A reply that asks is set off like a thin border: a bar in the accent; a post of wsx (the digest, `wsx task post`) has its bar in the secondary color, unless it asks. Its name keeps the speaker's color, as the accent is the owner's.
+        // A level of a post (`--level warn|bad`) names itself in the heading and colours the
+        // bar: warning, error.
+        let level_color = row.level.map(|level| match level {
+            Level::Warn => theme::WARNING,
+            Level::Bad => theme::ERROR,
+        });
+        let bar = if row.asks {
+            Some(theme::ACCENT)
+        } else {
+            level_color.or_else(|| row.post.then_some(theme::SECONDARY))
+        };
+        let mut heading = vec![Span::styled(name, Style::default().fg(color).bold())];
+        if let Some(tag) = &row.tag {
+            heading.push(Span::styled(
+                format!("  {tag}"),
+                Style::default().fg(theme::TEXT_SUBTLE),
+            ));
+        }
+        heading.push(Span::styled(
+            format!("  {}", clock(row.unix_ms)),
+            Style::default().fg(theme::TEXT_SUBTLE),
+        ));
+        if let Some((level, color)) = row.level.zip(level_color) {
+            heading.push(Span::styled(
+                format!("  {}", level.word()),
+                Style::default().fg(color).bold(),
+            ));
+        }
+        lines.push(Line::from(heading));
+        // ^ A leading quote is one compact line, link 0 of the message: Enter goes to the
+        // quoted message. ref: `links`
+        let mut nth = 0;
+        if let Some(quote) = &row.quoted {
+            let on = selected == Some((row.unix_ms, 0));
+            let style = match on {
+                true => Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::UNDERLINED | Modifier::REVERSED),
+                false => Style::default().fg(theme::TEXT_SUBTLE),
+            };
+            if on {
+                selected_line = Some(lines.len());
+            }
+            let shown = truncate_to_width(quote, width.saturating_sub(4).max(1));
+            lines.push(Line::from(vec![
+                Span::styled("  ▎ ", Style::default().fg(theme::TEXT_SUBTLE)),
+                Span::styled(shown, style),
+            ]));
+            nth = 1;
+        }
+        let body = match &row.provisional {
+            Some(agent) => format!("Stand-in {agent}, not checked: {}", row.text),
+            None => row.text.clone(),
+        };
+        for paragraph in body.lines() {
+            // ^ Each char with the link it belongs to, so a link that wraps stays one.
+            let mut cells: Vec<(char, Option<usize>)> = Vec::new();
+            for part in parts(paragraph) {
+                match part {
+                    Part::Text(words) => cells.extend(words.chars().map(|c| (c, None))),
+                    Part::Link { label, .. } => {
+                        cells.extend(label.chars().map(|c| (c, Some(nth))));
+                        nth += 1;
                     }
                 }
             }
-            Row::Line(text) | Row::Manager(text) => {
-                let text = match row {
-                    Row::Manager(_) => format!("{other} {text}"),
-                    _ => text.clone(),
-                };
-                // ^ Lines after a message start apart from it, at the author's column.
-                if matches!(
-                    index.checked_sub(1).map(|at| &rows[at]),
-                    Some(Row::Said { .. })
-                ) {
-                    lines.push(Line::raw(""));
+            for part in wrap_cells(&cells, width.saturating_sub(2).max(1)) {
+                let mut spans = vec![match bar {
+                    Some(color) => Span::styled("│ ", Style::default().fg(color)),
+                    None => Span::raw("  "),
+                }];
+                for (link, run) in chunk_by_link(&part) {
+                    let style = match link {
+                        None => Style::default(),
+                        Some(at) if selected == Some((row.unix_ms, at)) => {
+                            selected_line = Some(lines.len());
+                            Style::default()
+                                .fg(theme::ACCENT)
+                                .add_modifier(Modifier::UNDERLINED | Modifier::REVERSED)
+                        }
+                        Some(_) => Style::default()
+                            .fg(theme::ACCENT)
+                            .add_modifier(Modifier::UNDERLINED),
+                    };
+                    spans.push(Span::styled(run, style));
                 }
-                lines.push(muted(&truncate_to_width(&text.replace('\n', " "), width)))
+                lines.push(Line::from(spans));
             }
         }
     }

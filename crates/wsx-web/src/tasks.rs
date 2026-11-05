@@ -615,7 +615,9 @@ pub fn chat(
     media: &crate::media::Media,
 ) -> Outcome<Value> {
     // ^ The name the owner reads (docs/tasks.md "Config"); the role stays `manager` inside.
-    let mut manager = json!({ "name": role.map_or_else(|| manager_name(scope), str::to_string) });
+    let project_manager = manager_name(scope);
+    let own = role.map_or_else(|| project_manager.clone(), str::to_string);
+    let mut manager = json!({ "name": own });
     let roles = match role {
         Some(_) => Value::Null,
         None => json!(role_contacts(scope)),
@@ -629,7 +631,7 @@ pub fn chat(
     };
     let Some(dir) = dir else {
         return Ok(
-            json!({ "entries": [], "skipped": 0, "running": false, "busy": false, "manager": manager, "peers": {}, "roles": roles }),
+            json!({ "rows": [], "skipped": 0, "running": false, "busy": false, "manager": manager, "roles": roles }),
         );
     };
     // ^ The agent in use now, a fallback's while one runs; a role's has none shown.
@@ -639,27 +641,60 @@ pub fn chat(
     }
     let log = dir.read_log().map_err(internal)?;
     let activity = activity(&log).map(str::to_string);
-    let (entries, skipped) = chat_window(&log, after, if all { usize::MAX } else { CHAT_ENTRIES });
-    let entries: Vec<Value> = entries
+    let (window, skipped) = chat_window(&log, after, if all { usize::MAX } else { CHAT_ENTRIES });
+    // ^ An owner message's files show as attachments, not as their paths.
+    let mut attachments: std::collections::HashMap<u64, Value> = std::collections::HashMap::new();
+    let window: Vec<task::manager::ManagerEntry> = window
         .into_iter()
-        .map(|entry| {
-            let mut value = serde_json::to_value(entry).unwrap_or_default();
-            // ^ An owner message's files show as attachments, not as their paths.
+        .cloned()
+        .map(|mut entry| {
             if let ManagerEvent::Message {
-                from: task::manager::Author::Owner,
+                id,
+                from: Author::Owner,
                 text,
                 ..
-            } = &entry.event
+            } = &mut entry.event
             {
-                let (text, attachments) = chat::sent_message(text, media);
-                if !attachments.is_empty() {
-                    value["text"] = json!(text);
-                    value["attachments"] = json!(attachments);
+                let (shown, files) = chat::sent_message(text, media);
+                if !files.is_empty() {
+                    *text = shown;
+                    attachments.insert(*id, json!(files));
                 }
             }
-            value
+            entry
         })
         .collect();
+    // ^ To check items and approvals are the manager's (docs/tasks.md "Roles").
+    let approvals = match role {
+        Some(_) => Vec::new(),
+        None => store::read_approvals(&scope.store).unwrap_or_default(),
+    };
+    // ^ Another project's manager by its set name, read only from granted projects.
+    let peer = |project: &str| {
+        scopes
+            .iter()
+            .find(|other| other.name == project)
+            .map_or_else(|| project.to_string(), manager_name)
+    };
+    let rows: Vec<Value> = task::chat::chat_rows(
+        &window.iter().collect::<Vec<_>>(),
+        &pending_approvals(&approvals),
+        &task::chat::Names {
+            own: &own,
+            manager: &project_manager,
+            peer: &peer,
+        },
+    )
+    .into_iter()
+    .map(|row| {
+        let files = row.id.and_then(|id| attachments.get(&id)).cloned();
+        let mut value = serde_json::to_value(row).unwrap_or_default();
+        if let Some(files) = files {
+            value["attachments"] = files;
+        }
+        value
+    })
+    .collect();
     let status = call_socket::<_, ManagerResponse>(
         &dir.socket_path(),
         &ManagerRequest::Status,
@@ -667,50 +702,10 @@ pub fn chat(
     )
     .ok();
     let busy = status.as_ref().is_some_and(|status| status.busy);
-    // ^ Another project's manager by its set name, else by its project's.
-    let mut peers = serde_json::Map::new();
-    for entry in &log {
-        let peer = match &entry.event {
-            ManagerEvent::Message {
-                from: task::manager::Author::Manager { project, .. },
-                ..
-            } => project,
-            ManagerEvent::Sent { to, .. } => to,
-            // ^ A role or this project's manager, by its name (docs/tasks.md "Roles").
-            ManagerEvent::Message {
-                from: task::manager::Author::Role { name, .. },
-                ..
-            } => {
-                let shown = match name.as_str() {
-                    "manager" => manager_name(scope),
-                    name => name.to_string(),
-                };
-                peers.insert(format!("role:{name}"), json!(shown));
-                continue;
-            }
-            _ => continue,
-        };
-        if let Some(name) = peer.strip_prefix("role:") {
-            let shown = match name {
-                "manager" => manager_name(scope),
-                name => name.to_string(),
-            };
-            peers.insert(peer.clone(), json!(shown));
-            continue;
-        }
-        if !peers.contains_key(peer) {
-            let name = scopes
-                .iter()
-                .find(|other| &other.name == peer)
-                .map_or_else(|| peer.clone(), manager_name);
-            peers.insert(peer.clone(), json!(name));
-        }
-    }
     Ok(json!({
         "manager": manager,
-        "peers": peers,
         "roles": roles,
-        "entries": entries,
+        "rows": rows,
         "skipped": skipped,
         "running": status.is_some(),
         "busy": busy,
@@ -1072,8 +1067,17 @@ pub fn say(app: &App, scope: &Scope, role: Option<&str>, text: &str) -> Outcome<
             _ => anyhow::bail!("unexpected create response"),
         }
     };
-    let response = owner::say(&scope.name, &scope.path, &wsx, role, launch, text, None)
-        .map_err(|error| Fault::new(502, "manager_unavailable", format!("{error:#}")))?;
+    let response = owner::say(
+        &scope.name,
+        &scope.path,
+        &wsx,
+        role,
+        launch,
+        text,
+        None,
+        Vec::new(),
+    )
+    .map_err(|error| Fault::new(502, "manager_unavailable", format!("{error:#}")))?;
     if !response.ok {
         return Err(Fault::new(409, "refused", response.message));
     }
@@ -1261,8 +1265,8 @@ fn notice(scope: &Scope, watch: &mut Watch) {
 /// Note a reply the manager or a role started on its own for "Manager needs me": one that is
 /// a message (not quiet) to a turn of only wsx's events or a recap request, as after a
 /// routine's result. A reply to the owner or another manager is no news (docs/web-client.md
-/// "Notifications"). A role's names the role and opens its chat. A reply with no usage came from
-/// wsx, not the agent, so the push shows its text.
+/// "Notifications"). A role's names the role and opens its chat. A `post` came from wsx, not
+/// the agent, so the push shows its text.
 fn wrote(scope: &Scope, watch: &mut Watch) {
     let roles = task::roles::open_roles(&scope.store);
     let chats = std::iter::once(ManagerDir::existing(&scope.store).ok().flatten())
@@ -1298,7 +1302,7 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
                 to,
                 quiet,
                 text,
-                usage,
+                post,
                 level,
                 ..
             } = &entry.event
@@ -1307,10 +1311,10 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
             };
             if last.is_some_and(|last| *id > last) && !quiet && !to.is_empty() && to.iter().all(own)
             {
-                match (usage, level) {
-                    (Some(_), _) => news = true,
+                match (post, level) {
+                    (false, _) => news = true,
                     // ^ Push text is written by wsx: `<project>: <title>` over the first line.
-                    (None, Some(_)) => {
+                    (true, Some(_)) => {
                         let title = to.first().and_then(event_of).unwrap_or_default();
                         watch.pending.add((
                             scope.project,
@@ -1322,7 +1326,7 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
                             }),
                         ));
                     }
-                    (None, None) => watch
+                    (true, None) => watch
                         .pending
                         .add((scope.project, Key::Wrote(text.clone(), url.clone()))),
                 }

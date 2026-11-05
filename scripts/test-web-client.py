@@ -3218,25 +3218,34 @@ def task_journey(args):
         manager_dir.mkdir(mode=0o700, parents=True)
         old_log, first_ms = [], int(time.time() * 1000) - 3_600_000
 
-        def logged(author, text, reply, quiet=True):
+        def logged(author, text, reply, quiet=True, short=None):
             said, at = 9001 + len(old_log), first_ms + len(old_log) * 20_000
-            old_log.extend([{'kind': 'message', 'id': said, 'from': author, 'text': text, 'unix_ms': at},
+            message = {'kind': 'message', 'id': said, 'from': author, 'text': text, 'unix_ms': at}
+            if short:
+                message['short'] = short
+            old_log.extend([message,
                             {'kind': 'delivered', 'ids': [said], 'unix_ms': at + 1},
                             {'kind': 'reply', 'id': said + 1, 'to': [said], 'text': reply, 'quiet': quiet, 'unix_ms': at + 2000}])
-        for line, reply in (('#89 ready r1: Fold the events', 'Landing #89.'), ('#89 landed r1: Fold the events', '#89 is on main.'),
-                            ('#91 ready r1: Chat chips', "I'm landing #91. It touches the chat, so I read its captures first."),
-                            ('#88 ready r1: Since line', 'Landing #88.'), ('#91 landed r1: Chat chips', '#91 is on main.'),
-                            ('#88 landed r1: Since line', '#88 is on main.')):
-            logged('events', line, reply)
+
+        def event(task, state, title, reply):
+            # ^ As the host writes a task's event: the line and its short form (`Short::task`),
+            # where a landing says `done`.
+            words = 'done' if state == 'landed' else state
+            logged('events', '#%d %s r1: %s' % (task, state, title), reply, short=[{'text': '#%d %s' % (task, words), 'task': task}])
+        for task, state, title, reply in ((89, 'ready', 'Fold the events', 'Landing #89.'), (89, 'landed', 'Fold the events', '#89 is on main.'),
+                                          (91, 'ready', 'Chat chips', "I'm landing #91. It touches the chat, so I read its captures first."),
+                                          (88, 'ready', 'Since line', 'Landing #88.'), (91, 'landed', 'Chat chips', '#91 is on main.'),
+                                          (88, 'landed', 'Since line', '#88 is on main.')):
+            event(task, state, title, reply)
         logged('owner', 'Keep going.', 'On it.', quiet=False)
-        logged('events', '#92 ready r1: Short run', 'Landing #92.')
+        event(92, 'ready', 'Short run', 'Landing #92.')
         logged('owner', 'Thanks.', 'Noted.', quiet=False)
         # ^ The usage limit held that turn: wsx wrote a pause and a resume between the message and the reply.
         held_at = old_log[-3]['unix_ms']
         old_log[-1:-1] = [{'kind': 'limit', 'until': '07:45', 'unix_ms': held_at + 100},
                           {'kind': 'limit', 'unix_ms': held_at + 1500}]
         # ^ Stored quiet before the length rule: a long reply to events reads as a message.
-        logged('events', '#93 landed r1: Release notes', 'Release notes are ready:\n\n| Part | State |\n|---|---|\n| wsx | built |\n\n- the notes are written')
+        event(93, 'landed', 'Release notes', 'Release notes are ready:\n\n| Part | State |\n|---|---|\n| wsx | built |\n\n- the notes are written')
         # ^ Older hosts logged a `-` reply to an owner message as a message, and a `sent` without
         # --json with no text: the page shows neither (docs/web-client-tasks.md "Project screen").
         logged('owner', 'Anything new?', '-', quiet=False)

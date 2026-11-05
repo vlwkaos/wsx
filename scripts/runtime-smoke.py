@@ -1979,9 +1979,9 @@ def project_sessions(name):
     return [item["label"] for item in snapshot["sessions"] if item["worktree_id"] in trees]
 
 
-def remove_from_tui(name, key):
+def select_in_tui(name):
     # ^ `[` goes up to the first project, then each `]` down one; `d` asks about the project under
-    # the cursor, and `q` closes a question about another project. Keys reach the TUI in order, so
+    # the cursor, which names it, and `q` closes the question. Keys reach the TUI in order, so
     # no sleep sits between them: each wait is for what the screen shows, and for long. (An Esc
     # followed at once by `]` would read as Alt-`]`.)
     asked = re.compile(r"Unregister project '([^']+)'")
@@ -1990,14 +1990,20 @@ def remove_from_tui(name, key):
         os.write(remove_master, b"d")
         wait_for(lambda: asked.search(remove_view.text()), "the TUI asked no project question", seconds=60)
         shown = asked.search(remove_view.text()).group(1)
-        if shown == name:
-            assert "halt all its sessions" in remove_view.text(), remove_view.text()
-            os.write(remove_master, key)
-            return
         os.write(remove_master, b"q")
         wait_for(lambda: "Unregister project" not in remove_view.text(), "the question stayed after q", seconds=60)
+        if shown == name:
+            return
         os.write(remove_master, b"]")
     raise AssertionError(f"the cursor never reached {name}:\n{remove_view.text()}")
+
+
+def remove_from_tui(name, key):
+    select_in_tui(name)
+    os.write(remove_master, b"d")
+    wait_for(lambda: f"Unregister project '{name}'" in remove_view.text(), "the TUI asked no project question", seconds=60)
+    assert "halt all its sessions" in remove_view.text(), remove_view.text()
+    os.write(remove_master, key)
 
 
 def config_names():
@@ -2043,6 +2049,53 @@ try:
     wait_for(lambda: "All projects Today $0.03" in remove_view.text(), "a did not count one agent", seconds=60)
     os.write(remove_master, b"q")
     wait_for(lambda: "All projects" not in remove_view.text(), "q did not close the Tasks view", seconds=60)
+    # The TUI's manager chat renders wsx-core `chat_rows`, the rows the web gets (docs/tasks.md
+    # "TUI"): keep-me's manager is named Atlas, and its log holds each kind of row.
+    (removal["keep-me"] / "wsx.config.yml").write_text("tasks:\n  manager:\n    name: Atlas\n")
+    at = int(time.time() * 1000) - 600_000
+    chat_log = [
+        {"kind": "message", "id": 10, "from": "owner", "text": "Where is #3?"},
+        {"kind": "message", "id": 11, "from": "events", "text": "#3 landed r2: Chat rows; worker says: done",
+         "short": [{"text": "#3 done", "task": 3}]},
+        {"kind": "reply", "id": 12, "to": [11], "text": "#3 is on main.", "quiet": True},
+        {"kind": "message", "id": 13, "from": "recap", "text": "RECAP REQUEST"},
+        {"kind": "reply", "id": 14, "to": [13], "text": "Quiet day: one landing."},
+        {"kind": "message", "id": 15, "from": "manager:elsewhere", "text": "Hello from elsewhere."},
+        {"kind": "ping", "usage": {"cost_micro_usd": 0, "turns": 1}},
+        {"kind": "rotated", "tokens": 152000, "reason": "the launch changed"},
+        {"kind": "reply", "id": 16, "to": [10], "text": "Should I land #4?", "asks": True},
+        {"kind": "stopped", "reason": "agent exited"},
+    ]
+    keep_log = STATE / "wsx" / "tasks" / f"keep-me-{hashlib.sha256(str(removal['keep-me']).encode()).hexdigest()[:8]}" / "manager" / "log.jsonl"
+    with keep_log.open("a") as log_file:
+        for n, entry in enumerate(chat_log):
+            log_file.write(json.dumps({"unix_ms": at + n * 1000, **entry}) + "\n")
+    select_in_tui("keep-me")
+    os.write(remove_master, b"t")
+    wait_for(lambda: "All projects" in remove_view.text(), "t opened no Tasks view for keep-me", seconds=60)
+    os.write(remove_master, b"m")
+    wait_for(lambda: "Atlas stopped: agent exited" in remove_view.text(), "the TUI chat did not show keep-me's log", seconds=60)
+    chat_screen = remove_view.text()
+    shown = [row.strip() for row in chat_screen.splitlines() if row.strip()]
+    # ^ Each row in order, by its kind and shown name: an owner message, a short event line, a
+    # quiet reply under the manager's name, the recap answer tagged, a peer, a rotation with its
+    # reason, an asking reply and a stop, both by the shown name. The recap request and the ping
+    # show nothing.
+    expected = [r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 done$", r"^Atlas$", r"^#3 is on main\.$",
+                r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.", r"^elsewhere\s+\d\d:\d\d",
+                r"^Hello from elsewhere\.", r"^New conversation: the launch changed; the ledger carries the state\.$",
+                r"^Atlas\s+\d\d:\d\d", r"^Should I land #4\?", r"^Atlas stopped: agent exited$"]
+    found, at_row = [], 0
+    for pattern in expected:
+        at_row = next((n for n in range(at_row, len(shown)) if re.search(pattern, shown[n].lstrip("│ "))), None)
+        assert at_row is not None, f"the TUI chat has no row {pattern} after {found}:\n{chat_screen}"
+        found.append(pattern)
+        at_row += 1
+    assert "RECAP REQUEST" not in chat_screen and "Manager" not in chat_screen and "r2:" not in chat_screen, chat_screen
+    os.write(remove_master, b"\x1b")
+    wait_for(lambda: "Atlas stopped" not in remove_view.text(), "Esc did not close the manager chat", seconds=60)
+    os.write(remove_master, b"q")
+    wait_for(lambda: "All projects" not in remove_view.text(), "q did not close keep-me's Tasks view", seconds=60)
     remove_from_tui("halt-me", b"H")
     wait_for(lambda: "halt-me" not in config_names(), "H did not unregister halt-me")
     wait_for(lambda: project_sessions("halt-me") == [], "H did not halt the sessions of halt-me")

@@ -6,6 +6,7 @@
 //! and after it has exited.
 
 pub mod build;
+pub mod chat;
 pub mod checks;
 pub mod copy;
 pub mod ledger;

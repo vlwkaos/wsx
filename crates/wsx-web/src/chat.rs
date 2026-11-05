@@ -340,9 +340,11 @@ impl Chat {
                 }
                 (None, _) => (None, Vec::new()),
             };
+            // ^ `quote`: the line a quote of this message carries, cut once in core.
+            let quote = text.as_deref().map(quote_line);
             json!({
                 "id": item.id, "kind": item.kind, "at_unix_ms": item.at_unix_ms,
-                "text": text, "attachments": attachments, "tool": item.tool,
+                "text": text, "attachments": attachments, "tool": item.tool, "quote": quote,
             })
         };
         let mut items: Vec<Value> = timeline
@@ -1428,6 +1430,11 @@ fn provider_name(provider: &str) -> String {
     })
 }
 
+/// A message's quote line (`quote_of`), or none when it has no words.
+fn quote_line(text: &str) -> Option<String> {
+    Some(wsx_core::task::manager::quote_of(text)).filter(|quote| !quote.is_empty())
+}
+
 fn queued_view(queued: &crate::queue::Queued, media: &Media) -> Value {
     let attachments: Vec<Attachment> = queued
         .attachments
@@ -1436,7 +1443,7 @@ fn queued_view(queued: &crate::queue::Queued, media: &Media) -> Value {
         .map(Attachment::from)
         .collect();
     json!({
-        "id": queued.id, "text": queued.text, "attachments": attachments,
+        "id": queued.id, "text": queued.text, "quote": quote_line(&queued.text), "attachments": attachments,
         "at_unix_ms": queued.at_unix_ms, "failed": queued.failed,
         "delivered_unix_ms": queued.delivered_unix_ms, "resent": queued.resent,
     })

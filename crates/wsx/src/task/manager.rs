@@ -30,7 +30,7 @@ use wsx_core::task::manager::{
 };
 use wsx_core::task::manager::{
     Author, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
-    ManagerResponse, ManagerState, Seen,
+    ManagerResponse, ManagerState, Seen, Short,
 };
 use wsx_core::task::session_news;
 use wsx_core::task::stall;
@@ -132,7 +132,7 @@ pub(super) enum Event {
     /// The events of a role's tasks that its host did not take: the manager hears them.
     Undelivered {
         role: String,
-        text: String,
+        lines: Vec<(String, Short)>,
     },
 }
 
@@ -188,8 +188,9 @@ struct Manager {
     stall_suspects: BTreeMap<u32, (String, Instant)>,
     stalls_swept: Option<Instant>,
     sessions_looked: Option<Instant>,
-    /// Event lines not yet logged as a message, and when the last one came.
-    pending_events: Vec<String>,
+    /// Event lines not yet logged as a message, each with the chat's short form of it, and
+    /// when the last one came.
+    pending_events: Vec<(String, Short)>,
     last_event: Option<Instant>,
     /// `tasks.manager.recapMinutes` as a duration; `None` is off.
     recap_quiet: Option<Duration>,
@@ -202,7 +203,7 @@ struct Manager {
     captures_swept: Option<Instant>,
     owed: Owed,
     /// Event lines of tasks a role created, by role, not yet sent to it.
-    role_events: BTreeMap<String, Vec<String>>,
+    role_events: BTreeMap<String, Vec<(String, Short)>>,
     roles_swept: Option<Instant>,
     /// A role host that is closed or idle: it leaves.
     leaving: bool,
@@ -575,10 +576,12 @@ impl Manager {
                     self.say(&format!("cannot start the idle task: {error}"))
                 }
                 Event::Sent { to, text, reply } => self.log(ManagerEvent::Sent { to, text, reply }),
-                Event::Undelivered { role, text } => {
-                    self.pending_events.push(format!(
-                        "role {role} did not take the events of its tasks, so they are yours:\n{text}"
-                    ));
+                Event::Undelivered { role, lines } => {
+                    let head = format!(
+                        "role {role} did not take the events of its tasks, so they are yours:"
+                    );
+                    self.pending_events.push(plain_event(head));
+                    self.pending_events.extend(lines);
                     self.last_event = Some(Instant::now());
                 }
             }
@@ -608,8 +611,8 @@ impl Manager {
                 busy,
                 message: format!("{} message(s) waiting", self.queue.len()),
             },
-            ManagerRequest::Say { text, from } => {
-                match self.accept(from.unwrap_or(Author::Owner), text) {
+            ManagerRequest::Say { text, from, short } => {
+                match self.accept(from.unwrap_or(Author::Owner), text, short) {
                     Ok(id) => ManagerResponse {
                         ok: true,
                         id: Some(id),
@@ -650,13 +653,14 @@ impl Manager {
 
     /// Write to the owner with no turn: a delivered events message, so that no restart hands it
     /// to the agent, and the reply to it, which the web pushes like the manager's own. The reply
-    /// has no usage, and only the agent's replies have one.
+    /// has no usage and is marked `post`, which the chats read.
     fn post(&mut self, event: String, text: String, level: Option<Level>) {
         let id = self.next_id();
         self.log(ManagerEvent::Message {
             id,
             from: Author::Events,
             text: event,
+            short: Vec::new(),
         });
         self.log(ManagerEvent::Delivered { ids: vec![id] });
         let reply = self.next_id();
@@ -669,6 +673,7 @@ impl Manager {
             asks: false,
             provisional: None,
             level,
+            post: true,
         });
     }
 
@@ -697,7 +702,7 @@ impl Manager {
             self.save();
         }
         for entry in log {
-            if let ManagerEvent::Message { id, from, text } = entry.event {
+            if let ManagerEvent::Message { id, from, text, .. } = entry.event {
                 if !delivered.contains(&id) {
                     self.enqueue(id, from, text);
                 }
@@ -803,14 +808,23 @@ impl Manager {
                 ),
                 _ => String::new(),
             };
-            let verdict = match (approved, outcome.starts_with(owner::DROPPED)) {
-                (true, _) => format!("approved; {outcome}"),
-                (false, true) => outcome.clone(),
-                (false, false) => format!("denied; {}", note.as_deref().unwrap_or("no note")),
+            let (verdict, short) = match (approved, outcome.strip_prefix(owner::DROPPED)) {
+                (true, _) => (format!("approved; {outcome}"), format!("Approved {asked}")),
+                (false, Some(why)) => (outcome.clone(), format!("Dropped {asked}: {why}")),
+                (false, None) => (
+                    format!("denied; {}", note.as_deref().unwrap_or("no note")),
+                    format!("Denied {asked}"),
+                ),
             };
-            self.pending_events.push(format!(
-                "approval {id} ({asked}) {}",
-                clip(&verdict, EVENT_SUMMARY_CHARS * 2)
+            self.pending_events.push((
+                format!(
+                    "approval {id} ({asked}) {}",
+                    clip(&verdict, EVENT_SUMMARY_CHARS * 2)
+                ),
+                Short {
+                    text: clip(&short, EVENT_SUMMARY_CHARS * 2),
+                    task: None,
+                },
             ));
             self.last_event = Some(Instant::now());
         }
@@ -848,22 +862,27 @@ impl Manager {
                 json!({ "commit": record.commit, "exit": record.exit }),
             );
             if record.exit == Some(0) {
-                self.pending_events.push(format!(
+                let line = format!(
                     "{} of {:.12} succeeded after {} s",
                     ledger::kind_name(record.kind),
                     record.commit,
                     record.duration_ms / 1000
-                ));
+                );
+                self.pending_events.push(plain_event(line));
                 self.last_event = Some(Instant::now());
                 continue;
             }
-            self.pending_events.push(format!(
-                "{} of {:.12} failed ({}){}",
+            let failed = format!(
+                "{} of {:.12} failed ({})",
                 ledger::kind_name(record.kind),
                 record.commit,
                 exit_words(record.exit),
+            );
+            let line = format!(
+                "{failed}{}",
                 output_ends(record.output.as_deref().unwrap_or_default())
-            ));
+            );
+            self.pending_events.push((line, Short::plain(&failed)));
             self.last_event = Some(Instant::now());
         }
     }
@@ -921,11 +940,11 @@ impl Manager {
             if run.status == RunStatus::Succeeded && stdout_empty(&run) {
                 continue;
             }
-            self.pending_events
-                .push(match quiet.contains(&run.routine) {
-                    true => routine_line(&run),
-                    false => routine_event(&run, &self.main),
-                });
+            let line = match quiet.contains(&run.routine) {
+                true => routine_line(&run),
+                false => routine_event(&run, &self.main),
+            };
+            self.pending_events.push(plain_event(line));
             self.last_event = Some(Instant::now());
         }
     }
@@ -1092,7 +1111,12 @@ impl Manager {
                 clip(&title, EVENT_TITLE_CHARS),
                 summary,
             );
-            self.task_event(&record, &open_roles, line);
+            // ^ The chat says `done` for a landing (docs/web-client-tasks.md "Project screen").
+            let words = match record.state {
+                TaskState::Landed => "done",
+                state => state.as_str(),
+            };
+            self.task_event(&record, &open_roles, line, Short::task(record.id, words));
             let state = record.state.as_str();
             self.fire(
                 &format!("task.{state}"),
@@ -1148,7 +1172,13 @@ impl Manager {
 
     /// Queue a task's event line. Only a task's creator hears of it: an open role, else the
     /// manager. ref: docs/tasks.md "Roles"
-    fn task_event(&mut self, record: &TaskRecord, open_roles: &[String], line: String) {
+    fn task_event(
+        &mut self,
+        record: &TaskRecord,
+        open_roles: &[String],
+        line: String,
+        short: Short,
+    ) {
         match record
             .created_by
             .role()
@@ -1158,8 +1188,8 @@ impl Manager {
                 .role_events
                 .entry(role.to_string())
                 .or_default()
-                .push(line),
-            None => self.pending_events.push(line),
+                .push((line, short)),
+            None => self.pending_events.push((line, short)),
         }
         self.last_event = Some(Instant::now());
     }
@@ -1209,7 +1239,12 @@ impl Manager {
                 found.words
             );
             self.observed_stalls.insert(record.id, found.marker);
-            self.task_event(&record, &open_roles, line);
+            self.task_event(
+                &record,
+                &open_roles,
+                line,
+                Short::task(record.id, "stalled"),
+            );
         }
         self.stall_suspects = suspects;
         // ^ Saved with the next event's `seen`.
@@ -1227,9 +1262,10 @@ impl Manager {
             return;
         };
         for role in roles::close_idle(&self.dir.project_id, settings.roles_close_secs) {
-            self.pending_events.push(format!(
+            let line = format!(
                 "role {role} closed by wsx: no turn for tasks.roles.closeDays; its notes are kept"
-            ));
+            );
+            self.pending_events.push(plain_event(line));
             self.last_event = Some(Instant::now());
         }
     }
@@ -1265,18 +1301,24 @@ impl Manager {
                 self.events.clone(),
             );
             std::thread::spawn(move || {
-                let text = lines.join("\n");
+                let text = lines
+                    .iter()
+                    .map(|(line, _)| line.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let short = lines.iter().map(|(_, short)| short.clone()).collect();
                 let sent = owner::say(
                     &project,
                     &main,
                     &exe,
                     Some(&role),
                     super::launch_manager(&main),
-                    text.clone(),
+                    text,
                     Some(Author::Events),
+                    short,
                 );
                 if !sent.is_ok_and(|response| response.ok) {
-                    let _ = events.send(Event::Undelivered { role, text });
+                    let _ = events.send(Event::Undelivered { role, lines });
                 }
             });
         }
@@ -1295,8 +1337,18 @@ impl Manager {
             self.save_seen();
             return;
         }
-        let text = self.pending_events.join("\n");
-        match self.accept(Author::Events, text) {
+        let text = self
+            .pending_events
+            .iter()
+            .map(|(line, _)| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let short = self
+            .pending_events
+            .iter()
+            .map(|(_, short)| short.clone())
+            .collect();
+        match self.accept(Author::Events, text, short) {
             Ok(_) => {
                 self.pending_events.clear();
                 self.save_seen();
@@ -1323,7 +1375,7 @@ impl Manager {
     }
 
     /// Log a message and queue it; owner messages go before events.
-    fn accept(&mut self, from: Author, text: String) -> Result<u64> {
+    fn accept(&mut self, from: Author, text: String, short: Vec<Short>) -> Result<u64> {
         if text.trim().is_empty() {
             anyhow::bail!("the message is empty");
         }
@@ -1335,6 +1387,7 @@ impl Manager {
             id,
             from: from.clone(),
             text: text.clone(),
+            short,
         })?;
         self.last_activity = Instant::now();
         self.overview_asked &= from != Author::Owner;
@@ -1380,7 +1433,7 @@ impl Manager {
         let text = format!("{RECAP_REQUEST} {}", self.cost_since(&log, since));
         self.state.recap_ms = Some(now_unix_ms());
         self.save();
-        if let Err(error) = self.accept(Author::Recap, text) {
+        if let Err(error) = self.accept(Author::Recap, text, Vec::new()) {
             self.say(&format!("cannot ask for a recap: {error:#}"));
         }
     }
@@ -1839,6 +1892,7 @@ impl Manager {
                 id,
                 from: Author::Owner,
                 text: said,
+                ..
             } = &entry.event
             {
                 if queued.contains(id) || held.contains(id) {
@@ -1935,6 +1989,7 @@ impl Manager {
                     asks: false,
                     provisional: Some(name),
                     level: None,
+                    post: false,
                 });
                 self.state.provisional_to = answered;
                 self.state.provisional = true;
@@ -2476,6 +2531,7 @@ impl Manager {
             asks,
             provisional: None,
             level: None,
+            post: false,
         });
         if context > self.rotate_limit() {
             self.rotate(context, None);
@@ -2492,7 +2548,7 @@ impl Manager {
     fn check_thought(&mut self, in_thinking: bool) {
         if in_thinking && !self.thought_asked {
             self.thought_asked = true;
-            if let Err(error) = self.accept(Author::Recap, THOUGHT_ASKED.into()) {
+            if let Err(error) = self.accept(Author::Recap, THOUGHT_ASKED.into(), Vec::new()) {
                 self.say(&format!("cannot ask for the answer in thinking: {error:#}"));
             }
         }
@@ -2527,7 +2583,9 @@ impl Manager {
             self.overview_asked = false;
         } else if !self.overview_asked {
             self.overview_asked = true;
-            if let Err(error) = self.accept(Author::Recap, overview_too_long(lines, chars)) {
+            if let Err(error) =
+                self.accept(Author::Recap, overview_too_long(lines, chars), Vec::new())
+            {
                 self.say(&format!("cannot ask for a shorter overview: {error:#}"));
             }
         }
@@ -2546,9 +2604,11 @@ impl Manager {
             None => self.context_asked = false,
             Some((lines, bytes)) if !self.context_asked => {
                 self.context_asked = true;
-                if let Err(error) =
-                    self.accept(Author::Recap, notes::too_long(&notes, bytes, lines))
-                {
+                if let Err(error) = self.accept(
+                    Author::Recap,
+                    notes::too_long(&notes, bytes, lines),
+                    Vec::new(),
+                ) {
                     self.say(&format!("cannot ask for a shorter context.md: {error:#}"));
                 }
             }
@@ -2856,6 +2916,7 @@ fn recent_exchanges(log: &[ManagerEntry], limit: usize) -> Vec<String> {
                 id,
                 from: Author::Owner,
                 text,
+                ..
             } => Some(format!("Owner (message {id}): {}", one_line(text))),
             ManagerEvent::Reply {
                 id,
@@ -2863,12 +2924,12 @@ fn recent_exchanges(log: &[ManagerEntry], limit: usize) -> Vec<String> {
                 provisional: Some(name),
                 ..
             } => Some(format!("Stand-in {name} (reply {id}): {}", one_line(text))),
-            // ^ Only a post (`wsx task post`, the digest) is a reply with no usage: the owner
-            // saw it, the manager did not write it.
+            // ^ A post (`wsx task post`, the digest, the session news): the owner saw it, the
+            // manager did not write it.
             ManagerEvent::Reply {
                 id,
                 text,
-                usage: None,
+                post: true,
                 ..
             } => Some(format!("Posted (reply {id}): {}", one_line(text))),
             ManagerEvent::Reply { id, text, .. } => {
@@ -2897,6 +2958,12 @@ fn clock(secs: i64) -> String {
             )
         },
     )
+}
+
+/// An event line the chat shows as its first clause (`Short::plain`).
+fn plain_event(line: String) -> (String, Short) {
+    let short = Short::plain(&line);
+    (line, short)
 }
 
 fn exit_words(exit: Option<i32>) -> String {

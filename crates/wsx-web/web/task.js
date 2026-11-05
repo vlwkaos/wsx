@@ -7,6 +7,7 @@ import { can, useEventLoad, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { act, agentWords, taskStage, TaskChip, TaskTitle, withChips } from "./tasks.js";
 import { Bubble } from "./bubbles.js";
+import { quoteSplit } from "./reply.js";
 import { SheetBar } from "./ui.js";
 import { summaryIsCurrent, TaskStory } from "./story.js";
 import { CheckRow, TryButton } from "./checks.js";
@@ -98,7 +99,7 @@ function useAction(project, task) {
 // The messages added or steered to the worker after its prompt, as bubbles.
 function Talk({ project, talk, words }) {
   const rowOf = (entry, index) => ({
-    kind: "bubble", key: `talk-${index}`, at: entry.unix_ms ?? 0, author: "owner", entry: { text: entry.text },
+    kind: "message", key: `talk-${index}`, at: entry.unix_ms ?? 0, author: "owner", name: "You", ...quoteSplit(entry.text),
     first: index === 0, last: index === talk.length - 1,
   });
   return html`

@@ -4,118 +4,58 @@
 import { clock, firstSentence, html, Icon, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
-import { Quote, Quoted, quoteOf, splitQuote } from "./reply.js";
+import { Quote } from "./reply.js";
 import { ChatApprovals, TaskChip, withChips } from "./tasks.js";
 import { CheckRow } from "./checks.js";
 import { can, sessionLink, shows } from "./store.js";
 
 // Bubbles of one author closer together than this read as one group.
 const GROUP_MS = 5 * 60_000;
-// The same status line again this soon shows once.
-const LINE_MS = 60_000;
+// A resolution this close to an event line that says it too shows once.
+const NEAR_MS = 10 * 60_000;
 
-const EVENT_WORDS = { landed: "done" };
-const TASK = /^#(\d+) /;
 const CLOSED = /^#\d+ was closed\b/;
-// A line's leading task number and the words after it.
-const LEADING_TASK = /^#(\d+)\b(.*)$/s;
 
-// One line written by wsx in its short form: `#3 ready r2: title; summary` → `#3 ready`,
-// `approval a3 (land #5) approved; done` → `Approved land #5`, a dropped one with its reason:
-// `approval a9 (discard #42) dropped; #42 is closed` → `Dropped discard #42: #42 is closed`.
-function shortLine(line) {
-  const task = /^#(\d+) (\w+) r\d+:/.exec(line);
-  if (task) return `#${task[1]} ${EVENT_WORDS[task[2]] ?? task[2]}`;
-  const decision = /^approval \S+ \((.+?)\) (approved|denied|dropped)\b(?:; (.*))?/.exec(line);
-  if (decision?.[2] === "dropped") return `Dropped ${decision[1]}: ${decision[3] ?? ""}`;
-  if (decision) return `${decision[2] === "approved" ? "Approved" : "Denied"} ${decision[1]}`;
-  return line.split("; ")[0];
-}
+// ^ A line's leading task: the chip, and the words after it (wsx-core `chat_rows` sets `task`
+// only on a line that starts with it).
+const leading = (row) => row.task != null && row.text.startsWith(`#${row.task} `) ? row.text.slice(`#${row.task}`.length) : null;
 
-// The conversation in time order: bubbles, status lines and quiet replies. A wsx line that a
-// resolution says too ("Approved land #3", or "#3 closed" and "#3 was closed") shows once, as the
-// wsx line, and so does a line said again within a minute. A pending approval goes into the
-// manager's reply that ended the turn which asked for it, and each To check item is a bubble at
-// the time it was added (docs/web-client-tasks.md "Project screen").
-export function conversation(entries, resolutions, approvals = [], checks = [], manager = "") {
-  const rows = [];
-  // ^ wsx's recap request is not shown; the manager's answer to it is tagged Recap
-  // (docs/tasks.md "Recap").
-  const recaps = new Set(entries.filter((entry) => entry.kind === "message" && entry.from === "recap").map((entry) => entry.id));
-  // ^ A reply with no usage to events messages only is what wsx posted (the digest,
-  // `wsx task post`, the session news), not an agent turn: its bubble gets the secondary accent
-  // border. The TUI reads the same rule (`is_post` in task_chat.rs, docs/tasks.md "Routines").
-  const events = new Set(entries.filter((entry) => entry.kind === "message" && entry.from === "events").map((entry) => entry.id));
-  // ^ A reply that asks the owner is tagged until the owner writes after it (docs/tasks.md "Manager").
-  const answered = entries.findLastIndex((entry) => entry.kind === "message" && entry.from === "owner");
-  entries.forEach((entry, index) => {
-    const at = entry.unix_ms ?? 0;
-    // ^ A key never names a place in a list: a row keeps its element while rows come and go.
-    const key = entry.id != null ? `${entry.kind}-${entry.id}` : `${entry.kind}-${at}`;
-    if (entry.kind === "message" && entry.from === "owner") {
-      rows.push({ kind: "bubble", at, key, author: "owner", entry });
-    } else if (entry.kind === "message" && entry.from === "recap") {
-      return;
-    } else if (entry.kind === "reply") {
-      rows.push({ kind: "bubble", at, key, author: "manager", entry, quiet: entry.quiet, asks: entry.asks && index > answered, routine: !entry.usage && entry.to?.length > 0 && entry.to.every((id) => events.has(id)), level: entry.level ?? null, tag: entry.to?.some((id) => recaps.has(id)) ? "Recap" : null });
-    } else if (entry.kind === "message" && /^(manager|role)(-reply)?:/.test(entry.from ?? "")) {
-      // ^ Another project's manager wrote (docs/tasks.md "Managers talk"), or a role or the
-      // manager of this one (`role:<name>`, docs/tasks.md "Roles").
-      const [from, name] = entry.from.split(/:(.*)/s);
-      const peer = from.startsWith("role") ? `role:${name}` : name;
-      rows.push({ kind: "bubble", at, key, author: `peer:${peer}`, entry, tag: from.endsWith("-reply") ? "Reply" : null });
-    } else if (entry.kind === "sent") {
-      // ^ An empty `sent` (older hosts logged one without --json) shows nothing.
-      if (entry.text?.trim()) rows.push({ kind: "bubble", at, key, author: "manager", entry, to: entry.to });
-    } else if (entry.kind === "message") {
-      entry.text.split("\n").filter(Boolean).forEach((line, part) => rows.push({ kind: "line", at, key: `${key}-${part}`, text: shortLine(line) }));
-    } else if (entry.kind === "limit") {
-      // ^ wsx's own line: the usage limit paused the manager, or lifted (docs/web-client-tasks.md).
-      const text = entry.until ? `${manager} paused: usage limit, resumes at ${entry.until}` : `${manager} resumed`;
-      rows.push({ kind: "line", at, key, text });
-    } else if (entry.kind === "rotated" || entry.kind === "stopped") {
-      rows.push({ kind: "note", at, key, entry, manager });
-    }
-  });
+// The conversation in time order: the chat route's rows, which wsx-core `chat_rows` classifies
+// (kind, author and name, tag, short event lines, quiet replies, asks, post, quote), with the
+// resolutions, the To check items at the time each was added and the pending approvals each
+// reply carries. A resolution that an event line says too ("Approved land #3", or "#3 closed"
+// and "#3 was closed") shows once, as the event line (docs/web-client-tasks.md "Project screen").
+export function conversation(entries, resolutions, approvals = [], checks = []) {
+  // ^ An owner message ends what a reply asks, also one a later read brought.
+  const answered = entries.findLastIndex((row) => row.kind === "message" && row.author === "owner");
+  const rows = entries.map((row, index) => ({
+    ...row, at: row.unix_ms, asks: row.asks && index > answered,
+    approvals: row.approvals && approvals.filter((item) => row.approvals.includes(item.approval)),
+  }));
   const said = rows.filter((row) => row.kind === "line");
   resolutions.forEach((resolution) => {
-    const near = (row) => Math.abs(row.at - resolution.unix_ms) < 10 * LINE_MS;
+    const near = (row) => Math.abs(row.at - resolution.unix_ms) < NEAR_MS;
     // ^ A close is a task change the events say too ("#7 closed", "#7 done"): the event line
     // about that task stays. An answer or a failed check has no event line of its own.
     const closed = CLOSED.test(resolution.text);
-    const same = (row) => row.text === resolution.text || (closed && TASK.exec(row.text)?.[1] === String(resolution.task));
+    const same = (row) => row.text === resolution.text || (closed && row.task === resolution.task);
     if (said.some((row) => near(row) && same(row))) return;
-    rows.push({ kind: "line", at: resolution.unix_ms, key: `res-${resolution.unix_ms}-${resolution.text}`, text: resolution.text });
+    rows.push({ kind: "line", at: resolution.unix_ms, key: `res-${resolution.unix_ms}-${resolution.text}`, text: resolution.text, task: resolution.task });
   });
   for (const item of checks) rows.push({ kind: "check", at: item.added_unix_ms, key: `check-${item.id}`, item });
   rows.sort((left, right) => left.at - right.at);
-  for (const approval of approvals) {
-    const reply = rows.find((row) => row.entry?.kind === "reply" && row.at >= approval.unix_ms);
-    if (reply) reply.approvals = [...(reply.approvals ?? []), approval];
-  }
-  // ^ A quiet reply (short, to a turn of only events) is the manager's own work: a muted line under its name,
-  // unless it asks for an approval; `-` says nothing changed for the owner (docs/tasks.md "Manager").
-  const shown = [];
-  for (const row of rows) {
-    const quiet = row.quiet && !row.approvals;
-    const text = quiet ? row.entry.text.trim() : row.text;
-    if (quiet && (!text || text === "-")) continue;
-    const last = shown.at(-1);
-    if (row.kind === "line" && last?.kind === "line" && last.text === row.text && row.at - last.at < LINE_MS) continue;
-    shown.push(quiet ? { kind: "quiet", at: row.at, key: row.key, text } : { ...row });
-  }
   // ^ Adjacent bubbles of one author group (author once, time last); quiet replies in a row
   // name the manager once.
-  shown.forEach((row, index) => {
-    const before = shown[index - 1];
-    const after = shown[index + 1];
+  rows.forEach((row, index) => {
+    const before = rows[index - 1];
+    const after = rows[index + 1];
     if (row.kind === "quiet") row.first = !(before?.kind === "quiet" && row.at - before.at < GROUP_MS);
-    if (row.kind !== "bubble") return;
-    const same = (other, gap) => other?.kind === "bubble" && other.author === row.author && gap < GROUP_MS;
+    if (row.kind !== "message") return;
+    const same = (other, gap) => other?.kind === "message" && other.author === row.author && gap < GROUP_MS;
     row.first = !same(before, row.at - (before?.at ?? 0));
     row.last = !same(after, (after?.at ?? 0) - row.at);
   });
-  return folded(shown);
+  return folded(rows);
 }
 
 // ^ Event lines and quiet replies in a row, three or more, fold into one row: each task of the
@@ -140,8 +80,8 @@ function folded(rows) {
     }
     const chips = new Map();
     for (const row of run) {
-      const [, task, rest] = row.kind === "line" ? LEADING_TASK.exec(row.text) ?? [] : [];
-      if (task) chips.set(task, rest);
+      const rest = row.kind === "line" ? leading(row) : null;
+      if (rest != null) chips.set(String(row.task), rest);
     }
     if (run[tail].kind === "quiet") run[tail].first = true;
     // ^ Keyed by the run's first row: a run that grows keeps its row and whether it is open.
@@ -164,10 +104,6 @@ export function Fold({ row, render, all = false }) {
       ${open && row.rows.map(render)}
     </div>`;
 }
-
-// `names`: the manager's and its peers' names as the server resolves them (docs/tasks.md "Config").
-const authorName = (author, names) => author === "owner" ? "You" : author === "manager" ? names.manager
-  : names.peers[author.slice(5)];
 
 // ^ Another project's manager keeps one of the `color-peer-N` colors, from its project
 // (docs/web-themes.md "Tokens").
@@ -195,32 +131,29 @@ const relativeOf = (project) => {
 
 // One message. `home` turns its text runs into task chips; a message of another project's
 // manager (not a role) reads its bare `#n` as that project's task.
-export function Bubble({ project, row, words: home, names, fresh }) {
+export function Bubble({ project, row, words: home, fresh }) {
   const out = row.author === "owner";
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
   const words = peer != null && !peer.startsWith("role:") ? withChips(project, peer) : home;
   const id = `bubble-${row.key}`;
   // ^ A post with a level (`wsx task post --level warn|bad`) says it in its tag (docs/web-client-tasks.md "Task notifications").
-  const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${names.peers[row.to]}` : row.level ? (row.level === "bad" ? "Bad" : "Warn") : row.tag;
+  const tag = row.level ? (row.level === "bad" ? "Bad" : "Warn") : row.tag;
   // ^ In a chat's small space the stand-in mark is an icon; an asking reply is set off by its border, and its words are in the aria-label.
-  const mark = row.entry.provisional ? ["unchecked", "Stand-in, not checked"] : null;
-  let body;
-  if (out) {
-    body = html`<div class="bubble-body" id=${id}><${Quoted} text=${row.entry.text} words=${words} /></div><${Attachments} files=${row.entry.attachments} />`;
-  } else {
-    // ^ The manager quotes an earlier message in the owner's format (docs/tasks.md "Manager").
-    const [quote, rest] = splitQuote(row.entry.text);
-    body = html`<div class="bubble-body" id=${id}>${quote != null && html`<${Quote} quote=${quote} />`}<${Markdown} text=${rest} words=${words} relative=${relativeOf(project)} prose /></div>
-      ${row.approvals && html`<${ChatApprovals} project=${project} items=${row.approvals} />`}`;
-  }
+  const mark = row.provisional ? ["unchecked", "Stand-in, not checked"] : null;
+  // ^ A message quotes an earlier one in the owner's format (docs/tasks.md "Manager").
+  const quoted = row.quoted != null && html`<${Quote} quote=${row.quoted} />`;
+  const body = out
+    ? html`<div class="bubble-body" id=${id}>${quoted}${row.text && html`<p class="prose">${words ? words(row.text) : row.text}</p>`}</div><${Attachments} files=${row.attachments} />`
+    : html`<div class="bubble-body" id=${id}>${quoted}<${Markdown} text=${row.text} words=${words} relative=${relativeOf(project)} prose /></div>
+      ${row.approvals?.length > 0 && html`<${ChatApprovals} project=${project} items=${row.approvals} />`}`;
   return html`
     <article class="bubble" data-side=${out ? "out" : "in"} data-speaker=${peer == null ? row.author : "peer"}
       data-peer=${peer == null ? null : peerColor(peer)} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}
       data-at=${row.pending ? null : row.at} data-key=${row.key} data-in=${out || row.pending ? null : ""}
-      data-quote=${quoteOf(row.entry.text) || null}
-      data-pending=${row.pending ? "" : null} data-asks=${row.asks ? "" : null} data-routine=${row.routine ? "" : null} data-level=${row.level}
-      aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}${row.asks ? ", Asks you" : row.level ? `, ${tag}` : row.routine ? ", Routine" : ""}`}>
-      ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${authorName(row.author, names)}</p>`}
+      data-quote=${row.quote ?? null}
+      data-pending=${row.pending ? "" : null} data-asks=${row.asks ? "" : null} data-routine=${row.post ? "" : null} data-level=${row.level ?? null}
+      aria-label=${`${row.name}, ${clock(row.at)}${row.asks ? ", Asks you" : row.level ? `, ${tag}` : row.post ? ", Routine" : ""}`}>
+      ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${row.name}</p>`}
       <div class="bubble-box">${mark && html`<p class="bubble-tag" role="img" aria-label=${mark[1]} title=${mark[1]}><${Icon} name=${mark[0]} /></p>`}${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
       ${row.last && html`<p class="bubble-time" aria-hidden="true">${row.pending ? "Sending…" : clock(row.at)}</p>`}
     </article>`;
@@ -249,21 +182,21 @@ export const Typing = ({ name }) => html`
 
 // One task change in a muted line: its task's chip, then its words as plain text ("#2 ready",
 // "Approved land #3").
-export function StatusLine({ project, text, fresh }) {
-  const [, task, rest] = LEADING_TASK.exec(text) ?? [];
-  return html`<p class="status-line" data-fresh=${fresh ? "" : null}>${task ? html`<${TaskChip} project=${project} id=${Number(task)} />${rest}` : text}</p>`;
+export function StatusLine({ project, row, fresh }) {
+  const rest = leading(row);
+  return html`<p class="status-line" data-fresh=${fresh ? "" : null}>${rest != null ? html`<${TaskChip} project=${project} id=${row.task} />${rest}` : row.text}</p>`;
 }
 
 // The manager's reply to events: a muted line under its name, in full when it is one sentence,
 // else its first sentence and More.
-export function QuietReply({ row, name, fresh }) {
+export function QuietReply({ row, fresh }) {
   const [open, setOpen] = useState(false);
   // ^ Its first sentence, or its first line when that ends sooner, never cut inside.
   const first = firstSentence(row.text, Infinity);
   const whole = open || first === row.text;
   return html`
-    <article class="reply-line" data-speaker="manager" data-fresh=${fresh ? "" : null} data-key=${row.key} data-at=${row.at} aria-label=${`${name}, ${clock(row.at)}`}>
-      ${row.first && html`<p class="bubble-author" aria-hidden="true">${name}</p>`}
+    <article class="reply-line" data-speaker="manager" data-fresh=${fresh ? "" : null} data-key=${row.key} data-at=${row.at} aria-label=${`${row.name}, ${clock(row.at)}`}>
+      ${row.first && html`<p class="bubble-author" aria-hidden="true">${row.name}</p>`}
       <p class="reply-text">${whole ? row.text : first}${!whole && html` <button class="link-action" type="button" onClick=${() => setOpen(true)}>More</button>`}</p>
     </article>`;
 }
