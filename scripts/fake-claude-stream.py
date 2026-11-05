@@ -164,6 +164,15 @@ def shaped(value):
 
 
 def emit(value):
+    if value.get('type') == 'result' and not value.get('is_error'):
+        # ^ Claude Code 2.1.316 sends the account's limit state with each turn, in this shape. The
+        # 5-hour window resets in 5 hours, so it starts at this turn: it holds only this turn.
+        now = int(time.time())
+        windows = {'five_hour': {'utilization': 0.25, 'resetsAt': now + 5 * 3600, 'status': 'allowed'},
+                   'seven_day': {'utilization': 0.47, 'resetsAt': now + 3 * 86400, 'status': 'allowed'}}
+        sys.stdout.write(json.dumps(shaped({'type': 'rate_limit_event', 'rate_limit_info': {
+            'status': 'allowed', 'resetsAt': now + 5 * 3600, 'rateLimitType': 'five_hour', 'overageStatus': 'rejected',
+            'overageDisabledReason': 'org_level_disabled', 'isUsingOverage': False, 'unifiedWindows': windows}})) + '\n')
     sys.stdout.write(json.dumps(shaped(value)) + '\n')
     sys.stdout.flush()
 

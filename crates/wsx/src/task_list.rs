@@ -104,6 +104,9 @@ pub struct TaskList {
     pub scroll: u16,
     /// The day rows show tokens, not cost (`u`).
     pub tokens: bool,
+    /// The agent the spend lines and the day rows count (`a`): an adapter or
+    /// `adapter/model` of `usage_all.agents`; none for all.
+    pub agent: Option<String>,
     /// The project's manager chat, opened over the list with `m`.
     pub chat: Option<Box<crate::task_chat::ManagerChat>>,
     /// The project's overview, opened with `o` over the list or the chat.
@@ -128,6 +131,7 @@ impl TaskList {
             detail: None,
             scroll: 0,
             tokens: false,
+            agent: None,
             chat: None,
             overview: None,
             stamp: None,
@@ -148,6 +152,10 @@ impl TaskList {
             self.stamp.clone(),
             self.projects.clone(),
         );
+        let filter = usage::Filter {
+            agent: self.agent.clone(),
+            ..usage::Filter::default()
+        };
         self.pending = Some(rx);
         self.last_check = Instant::now();
         std::thread::spawn(move || {
@@ -156,18 +164,44 @@ impl TaskList {
                 let mut ledger =
                     ledger::build(&project, &main).map_err(|error| format!("{error:#}"));
                 // ^ Every project's spend summed, read with the ledger: it follows this
-                // project's changes, not the others'. ref: docs/tasks.md "TUI"
+                // project's changes, not the others'. Both count the chosen agent's turns.
+                // ref: docs/tasks.md "TUI"
                 if let Ok(ledger) = &mut ledger {
                     let stores: Vec<(String, String)> = projects
                         .iter()
                         .map(|(name, path)| (name.clone(), store::project_id(name, path)))
                         .collect();
-                    ledger["usage_all"] = usage::all(&stores, now_unix_ms());
+                    let now = now_unix_ms();
+                    ledger["usage"] = usage::all(&[(project, store)], now, &filter);
+                    ledger["usage_all"] = usage::all(&stores, now, &filter);
                 }
                 (now, ledger)
             });
             let _ = tx.send(read);
         });
+    }
+
+    /// `a`: count the next agent of the 7 days, after the last all of them again. The ledger is
+    /// read again at once; a read of the last agent still running is dropped.
+    pub fn cycle_agent(&mut self) {
+        let agents: Vec<String> = self
+            .ledger
+            .as_ref()
+            .and_then(|ledger| ledger["usage_all"]["agents"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|agent| agent.as_str().map(str::to_string))
+            .collect();
+        let next = match &self.agent {
+            None => 0,
+            Some(agent) => agents
+                .iter()
+                .position(|each| each == agent)
+                .map_or(0, |at| at + 1),
+        };
+        self.agent = agents.get(next).cloned();
+        self.stamp = None;
+        self.check();
     }
 
     /// Open the manager's chat, or a role's (docs/tasks.md "Roles").

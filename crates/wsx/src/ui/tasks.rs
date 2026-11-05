@@ -29,12 +29,18 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
     let width = inner.width as usize;
     let mut lines = vec![heading(list, width)];
     if let Some(ledger) = &list.ledger {
-        for spent in project_usage(&ledger["usage"], "")
+        // ^ The agent `a` picked, named once on the first line; both lines count it.
+        let agent = list
+            .agent
+            .as_deref()
+            .map_or(String::new(), |agent| format!("{agent}: "));
+        for spent in project_usage(&ledger["usage"], &agent)
             .into_iter()
             .chain(project_usage(&ledger["usage_all"], "All projects "))
         {
             lines.push(muted(&truncate_to_width(&spent, width)));
         }
+        lines.extend(limit_line(&ledger["usage_all"]["limits"], width));
     }
     // ^ A short window keeps its height for the tasks. ref: docs/tasks.md "TUI"
     if shows_days(list, area.height) {
@@ -463,6 +469,51 @@ fn project_usage(spend: &Value, prefix: &str) -> Option<String> {
             spent("week")
         )
     })
+}
+
+/// Claude's limit state (`usage::limits`): "Claude limit 5 hours 25%, resets 14:00 · 7 days
+/// 47%, resets Nov 8 10:00", a window's status after its share unless it is `allowed`; in
+/// the warning color while one warns, the error color while one refuses.
+fn limit_line(limits: &Value, width: usize) -> Option<Line<'static>> {
+    let limit = limits.as_array()?.first()?;
+    let now = wsx_core::task::now_unix_ms();
+    let mut worst = "allowed";
+    let windows: Vec<String> = limit["windows"]
+        .as_array()?
+        .iter()
+        .map(|window| {
+            let kind = window["kind"].as_str().unwrap_or("");
+            let status = window["status"].as_str().unwrap_or("");
+            if status == "rejected" || (status == "warning" && worst == "allowed") {
+                worst = status;
+            }
+            let mut words = match kind {
+                "five_hour" => "5 hours".to_string(),
+                "seven_day" => "7 days".to_string(),
+                kind => kind.replace('_', " "),
+            };
+            if let Some(used) = window["utilization"].as_f64() {
+                words += &format!(" {}%", (used * 100.0).round());
+            }
+            if !status.is_empty() && status != "allowed" {
+                words += &format!(" {status}");
+            }
+            let resets = window["resets_ms"].as_u64().unwrap_or(0);
+            format!(
+                "{words}, resets {}",
+                crate::task::limit::resume_time(resets, now)
+            )
+        })
+        .collect();
+    let color = match worst {
+        "rejected" => theme::ERROR,
+        "warning" => theme::WARNING,
+        _ => theme::TEXT_MUTED,
+    };
+    Some(Line::styled(
+        truncate_to_width(&format!("Claude limit {}", windows.join(" · ")), width),
+        Style::default().fg(color),
+    ))
 }
 
 /// One task's ledger entry as labeled rows: state, what it waits for, its checks, its

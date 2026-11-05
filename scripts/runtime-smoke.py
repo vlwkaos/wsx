@@ -2017,16 +2017,30 @@ try:
     # The TUI's Tasks view (`t`) sums the usage of every project (docs/tasks.md "TUI"): two
     # projects with a manager reply each, 0.03 and 0.012 USD today, show as $0.04 in one line.
     # ^ The store id is `<name>-<first 8 hex of sha256(path)>` (wsx-core task/store.rs `project_id`).
-    for name, micro in (("halt-me", 30000), ("keep-me", 12000)):
+    # Each reply names its adapter and model, so `a` counts one agent (docs/tasks.md "Usage").
+    for name, micro, adapter, model in (("halt-me", 30000, "claude", "m1"), ("keep-me", 12000, "pi", "local")):
         manager = STATE / "wsx" / "tasks" / f"{name}-{hashlib.sha256(str(removal[name]).encode()).hexdigest()[:8]}" / "manager"
         manager.mkdir(parents=True, mode=0o700)
         (manager / "log.jsonl").write_text(json.dumps(
             {"unix_ms": int(time.time() * 1000), "kind": "reply", "id": 1, "to": [], "text": "ok",
-             "usage": {"cost_micro_usd": micro, "turns": 1}}) + "\n")
+             "usage": {"cost_micro_usd": micro, "turns": 1, "adapter": adapter, "model": model}}) + "\n")
+    # ^ Claude's newest limit state, as `claude.rs` keeps a rate_limit_event (`store::note_rate_limit`).
+    agents = STATE / "wsx" / "tasks" / "agents"
+    agents.mkdir(parents=True, exist_ok=True, mode=0o700)
+    now = int(time.time())
+    (agents / "claude.rate.json").write_text(json.dumps({"unix_ms": now * 1000, "info": {
+        "status": "allowed", "resetsAt": now + 3600, "rateLimitType": "five_hour", "unifiedWindows": {
+            "five_hour": {"utilization": 0.25, "resetsAt": now + 3600, "status": "allowed"},
+            "seven_day": {"utilization": 0.47, "resetsAt": now + 3 * 86400, "status": "allowed"}}}}))
     os.write(remove_master, b"[t")
     wait_for(lambda: "All projects" in remove_view.text(), "the Tasks view showed no all-projects usage", seconds=60)
     all_projects = next(row.strip() for row in remove_view.text().splitlines() if "All projects" in row)
     assert re.search(r"All projects Today \$0\.04 \(manager \$0\.04\) · 7 days \$0\.04 \(manager \$0\.04\)", all_projects), all_projects
+    limit = next((row.strip() for row in remove_view.text().splitlines() if "Claude limit" in row), "")
+    assert re.search(r"Claude limit 5 hours 25%, resets \d\d:\d\d · 7 days 47%", limit), remove_view.text()
+    # ^ `a` counts the first agent of the 7 days, `claude`: only halt-me's 0.03 USD.
+    os.write(remove_master, b"a")
+    wait_for(lambda: "All projects Today $0.03" in remove_view.text(), "a did not count one agent", seconds=60)
     os.write(remove_master, b"q")
     wait_for(lambda: "All projects" not in remove_view.text(), "q did not close the Tasks view", seconds=60)
     remove_from_tui("halt-me", b"H")

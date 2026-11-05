@@ -300,6 +300,37 @@ pub fn add_spend(account: &str, day_ms: u64, micro_usd: u64) -> Result<u64> {
     Ok(spent)
 }
 
+/// The largest `rate_limit_info` kept; a bigger one is not Claude's and is not written.
+const RATE_LIMIT_BYTES: u64 = 16 * 1024;
+/// A rate limit record this old is stale past every window Claude reports, and is removed.
+const RATE_LIMIT_KEEP_MS: u64 = 8 * 24 * 3_600_000;
+
+/// Keep `account`'s newest `rate_limit_info` as the agent sent it, with when it came: one file
+/// per account, rewritten. ref: docs/tasks.md "Usage"
+pub fn note_rate_limit(account: &str, info: &serde_json::Value, now_ms: u64) -> Result<()> {
+    let path = account_file(account, ".rate.json")?;
+    let bytes = serde_json::json!({ "unix_ms": now_ms, "info": info }).to_string();
+    if !info.is_object() || bytes.len() as u64 > RATE_LIMIT_BYTES {
+        bail!("no rate limit info");
+    }
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    write_atomic(&path, bytes.as_bytes())
+}
+
+/// `account`'s newest rate limit record (`{unix_ms, info}`). One older than 8 days is removed.
+pub fn rate_limit(account: &str, now_ms: u64) -> Option<serde_json::Value> {
+    let path = account_file(account, ".rate.json").ok()?;
+    let bytes = read_bounded_if_exists(&path, RATE_LIMIT_BYTES + 64).ok()??;
+    let record = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
+    if record["unix_ms"].as_u64()? + RATE_LIMIT_KEEP_MS < now_ms {
+        let _ = fs::remove_file(&path);
+        return None;
+    }
+    Some(record)
+}
+
 /// A backoff that starts within this time after the last limit ended continues its row: a
 /// limit with no reset time that keeps coming back becomes one long limit.
 /// ref: docs/tasks.md "Agents"

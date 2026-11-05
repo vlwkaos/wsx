@@ -16,7 +16,7 @@ use wsx_core::config::global::GlobalConfig;
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::TaskWorkflow;
 use wsx_core::task::view::clip;
-use wsx_core::task::{now_unix_ms, worker_result_schema, TaskRecord, TurnUsage};
+use wsx_core::task::{now_unix_ms, store, worker_result_schema, TaskRecord, TurnUsage};
 
 const PROGRESS_CHARS: usize = 160;
 /// Variables a worker keeps from the host. Everything else, `WSX_*` included, is dropped.
@@ -378,7 +378,12 @@ impl ClaudeAgent {
         let stdin = child.stdin.take().context("claude has no stdin")?;
         let stdout = child.stdout.take().context("claude has no stdout")?;
         std::thread::spawn(move || {
-            read_stream(stdout, cost_base, |line| {
+            // ^ The account's newest limit state, for the usage views; a failed write only
+            // leaves the last one. ref: docs/tasks.md "Usage"
+            let limit = |info: &Value| {
+                let _ = store::note_rate_limit("claude", info, now_unix_ms());
+            };
+            read_stream(stdout, cost_base, limit, |line| {
                 events.send(wrap(Some(line))).is_ok()
             });
             let _ = events.send(wrap(None));
@@ -478,11 +483,12 @@ fn claude_args(launch: &Launch, session: &str, resume: bool) -> Vec<std::ffi::Os
     args
 }
 
-/// Read one process's stdout to its end, handing each parsed line to `send` (false stops).
-/// The reader thread and `stream_tests.rs` both run this.
+/// Read one process's stdout to its end, handing each parsed line to `send` (false stops)
+/// and each `rate_limit_info` to `limit`. The reader thread and `stream_tests.rs` both run this.
 pub(super) fn read_stream(
     stdout: impl Read,
     cost_base: u64,
+    mut limit: impl FnMut(&Value),
     mut send: impl FnMut(AgentLine) -> bool,
 ) {
     let mut turns = Turns {
@@ -490,6 +496,9 @@ pub(super) fn read_stream(
         ..Turns::default()
     };
     read_json_lines(stdout, |value| {
+        if value["type"] == "rate_limit_event" {
+            limit(&value["rate_limit_info"]);
+        }
         parse_line(&value, &mut turns).is_none_or(&mut send)
     });
 }
@@ -692,6 +701,7 @@ fn turn_usage(value: &Value, turns: &mut Turns) -> TurnUsage {
             .take()
             .unwrap_or_else(|| value.get("usage").map_or(0, context_of)),
         model: std::mem::take(&mut turns.model),
+        adapter: "claude".into(),
         calls: std::mem::take(&mut turns.calls),
     }
 }

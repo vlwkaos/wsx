@@ -477,6 +477,9 @@ pub struct TurnUsage {
     /// The model of the turn's last model call.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub model: String,
+    /// The adapter that ran the turn (`claude`, `pi`); empty on a line from before it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub adapter: String,
     /// Main-conversation model calls in the turn (distinct `assistant` message ids).
     #[serde(skip_serializing_if = "is_zero")]
     pub calls: u32,
