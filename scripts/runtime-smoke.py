@@ -2037,7 +2037,7 @@ subprocess.run(["git", "init", "-q", "-b", "main", str(BAD)], check=True, env=en
 PANEL_SCRIPTS = PROJECT / "scripts"
 PANEL_SCRIPTS.mkdir()
 for script, body in {
-    "device-status.sh": "echo x >> ok.log\nprintf '\\033[32mdevice ok\\033[0m\\r\\n'\npwd -P\n",
+    "device-status.sh": "echo x >> ok.log\nprintf '\\033[32mdevice-ok\\033[0m\\r\\n'\npwd -P\n",
     "fail.sh": "echo boom\necho oops >&2\nexit 3\n",
     "big.sh": "i=0\nwhile [ $i -lt 3000 ]; do echo \"line $i padding padding padding\"; i=$((i+1)); done\n",
     "slow.sh": "echo $$ > slow.pid\necho started\nsleep 30\n",
@@ -2088,7 +2088,7 @@ assert [item["name"] for item in listed["data"]["panels"]] == ["ok", "fail", "bi
 # Exit 0: the output as written, ANSI and CR stripped, in the main checkout, found by its relative path.
 shown = panel_finished("ok")
 assert shown["run"]["status"] == "ok" and shown["run"]["exit"] == 0, shown
-assert shown["run"]["output"] == f"device ok\n{os.path.realpath(PROJECT)}\n", shown["run"]["output"]
+assert shown["run"]["output"] == f"device-ok\n{os.path.realpath(PROJECT)}\n", shown["run"]["output"]
 # A non-zero exit: the output and what the command wrote to stderr, with the exit code.
 failed = panel_finished("fail")
 assert failed["run"]["status"] == "failed" and failed["run"]["exit"] == 3, failed
@@ -2173,12 +2173,18 @@ panel_tui, panel_master, panel_screen = tui_over_pty([("smoke", PROJECT)])
 try:
     wait_for(lambda: b"WORKSPACE" in panel_screen, "the TUI did not start", 20)
     os.write(panel_master, b"v")
-    wait_for(lambda: b"smoke panels" in panel_screen and b"device ok" in panel_screen,
-             "the TUI did not show the panel's output", 20)
-    wait_for(lambda: b"ok, updated" in panel_screen and b"on open" in panel_screen, "the TUI did not show the state")
+    # ^ ratatui writes only changed cells: a plain space over a blank cell is skipped, so each
+    # asserted string is one word or one run in a single style.
+    try:
+        wait_for(lambda: b"smoke panels" in panel_screen and b"device-ok" in panel_screen,
+                 "the TUI did not show the panel's output", 20)
+    except AssertionError:
+        print("screen tail:", re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"|", bytes(panel_screen))[-1500:].decode("utf8", "replace"))
+        raise
+    wait_for(lambda: b"updated" in panel_screen and b"open" in panel_screen, "the TUI did not show the state")
     assert b"\x1b[32mdevice" not in panel_screen.split(b"smoke panels", 1)[1], "ANSI reached the screen"
     os.write(panel_master, b"\t")
-    wait_for(lambda: b"failed (exit 3)" in panel_screen and b"boom" in panel_screen,
+    wait_for(lambda: b"failed" in panel_screen and b"(exit" in panel_screen and b"boom" in panel_screen,
              "the TUI did not show the failing panel with its exit code", 20)
     os.write(panel_master, b"\x1b")
     wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the panels")
