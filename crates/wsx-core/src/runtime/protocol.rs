@@ -76,7 +76,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // separate asched process, and imports asched's store once (docs/tasks.md "Routines").
 // Revision 42 stores a routine's `findings_exit` codes and gives a run that exits with one the
 // status `findings` (docs/tasks.md "Routines").
-pub const DAEMON_REVISION: u32 = 42;
+// Revision 43 runs a project's panels (the `panel` request) and keeps their last output
+// (docs/panels.md).
+pub const DAEMON_REVISION: u32 = 43;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -254,6 +256,10 @@ pub enum Request {
     Routine {
         project: PathBuf,
         action: crate::routine::Action,
+    },
+    Panel {
+        project: PathBuf,
+        action: crate::panel::Action,
     },
     Snapshot,
     Poll {
@@ -687,6 +693,7 @@ pub enum Response {
         revision: u64,
     },
     Routine(crate::routine::Response),
+    Panel(crate::panel::Response),
     Error(ApiError),
 }
 

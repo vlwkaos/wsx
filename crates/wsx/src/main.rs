@@ -6,6 +6,7 @@ mod app;
 mod cli;
 mod event;
 mod follow;
+mod panel_view;
 mod repo_scan;
 mod review;
 mod runtime_util;

@@ -8,6 +8,7 @@ pub mod input;
 pub mod integration_manager;
 pub mod layout;
 pub mod notice;
+pub mod panels;
 pub mod plugin_sidecar;
 pub mod preview;
 pub mod review;
@@ -540,6 +541,7 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
                 }
             }
         }
+        Mode::Panels { view } => panels::render(frame, area, view),
         Mode::Tasks { list } => match (&list.overview, &list.chat) {
             (Some(overview), _) => tasks::render_overview(frame, area, &list.project, overview),
             (None, Some(chat)) => task_chat::render(frame, area, chat),
@@ -700,6 +702,14 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             theme::ModeBadge::Info,
             vec!["(j/k)scroll".into(), "Esc: close".into()],
         ),
+        Mode::Panels { view } => {
+            let mut hints = vec!["(j/k)scroll".to_string()];
+            if view.panels.as_ref().is_some_and(|panels| panels.len() > 1) {
+                hints.push("(tab)next".into());
+            }
+            hints.extend(["(R)un".into(), "Esc: close".into()]);
+            ("PANELS", theme::ModeBadge::Info, hints)
+        }
         Mode::Tasks { list } if list.overview.is_some() => (
             "OVERVIEW",
             theme::ModeBadge::Info,
@@ -954,7 +964,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
 
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     let width = area.width.clamp(40, 64);
-    let height = area.height.clamp(12, 40);
+    let height = area.height.clamp(12, 41);
     let popup = popup_center(area, width, height);
 
     frame.render_widget(Clear, popup);
@@ -973,6 +983,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  d             Unregister project (H: also halt its sessions)",
         "  e             View/edit wsx.config.yml",
         "  t             Tasks (Enter: detail, m: chat, S: shell)",
+        "  v             Panels (Tab: next, R: run now)",
         "",
         " Worktree",
         "  w             Add worktree (branch: prompt)",

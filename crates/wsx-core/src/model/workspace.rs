@@ -54,6 +54,8 @@ pub struct ProjectConfig {
     pub branch_prefix: String,
     pub default_session: Option<DefaultSessionConfig>,
     pub tasks: TaskConfig,
+    /// `panels:` of `wsx.config.yml` (docs/panels.md).
+    pub panels: Vec<crate::panel::PanelConfig>,
     /// Migration or parse feedback for the TUI; never affects worktree behavior.
     pub notice: Option<String>,
 }

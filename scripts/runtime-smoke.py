@@ -2028,6 +2028,175 @@ finally:
     os.close(remove_master)
 shutdown(cursor_daemon)
 
+# docs/panels.md: a project's panels run in wsxd; the clients only ask. A real project config
+# with panel scripts, the daemon's one runner and cache, then the TUI over a PTY.
+panel_daemon = start()
+BAD = WORK / "bad-panel"
+subprocess.run(["git", "init", "-q", "-b", "main", str(BAD)], check=True, env=env)
+(BAD / "wsx.config.yml").write_text("panels:\n  - name: Bad Name\n    command: [true]\n")
+PANEL_SCRIPTS = PROJECT / "scripts"
+PANEL_SCRIPTS.mkdir()
+for script, body in {
+    "device-status.sh": "echo x >> ok.log\nprintf '\\033[32mdevice ok\\033[0m\\r\\n'\npwd -P\n",
+    "fail.sh": "echo boom\necho oops >&2\nexit 3\n",
+    "big.sh": "i=0\nwhile [ $i -lt 3000 ]; do echo \"line $i padding padding padding\"; i=$((i+1)); done\n",
+    "slow.sh": "echo $$ > slow.pid\necho started\nsleep 30\n",
+    "tick.sh": "echo x >> tick.log\nsleep 1\necho tick\n",
+}.items():
+    (PANEL_SCRIPTS / script).write_text("#!/bin/sh\n" + body)
+    (PANEL_SCRIPTS / script).chmod(0o755)
+(PROJECT / "wsx.config.yml").write_text(
+    "panels:\n"
+    "  - name: ok\n    command: [scripts/device-status.sh]\n"
+    "  - name: fail\n    command: [scripts/fail.sh]\n"
+    "  - name: big\n    command: [scripts/big.sh]\n"
+    "  - name: slow\n    command: [scripts/slow.sh]\n    timeout: 2\n"
+    "  - name: tick\n    command: [scripts/tick.sh]\n    refresh: 10\n"
+)
+assert call("synchronize_projects", {"projects": [
+    {"path": str(PROJECT), "name": "smoke", "worktrees": [{"path": str(PROJECT), "branch": "main"}]},
+    {"path": str(BAD), "name": "bad", "worktrees": [{"path": str(BAD), "branch": "main"}]},
+]})["type"] == "ack"
+
+
+def panel_call(project, action):
+    answer = call("panel", {"project": str(project), "action": action})
+    assert answer["type"] == "panel", answer
+    return answer["data"]
+
+
+def panel_get(name, run=False):
+    answer = panel_call(PROJECT, {"action": "get", "name": name, "run": run})
+    assert answer["kind"] == "panel", answer
+    return answer["data"]
+
+
+def panel_finished(name, run=True):
+    panel_get(name, run)
+    wait_for(lambda: panel_get(name)["run"]["status"] != "pending" and not panel_get(name)["running"],
+             f"the panel {name} did not finish", 15)
+    return panel_get(name)
+
+
+def log_lines(name):
+    path = PROJECT / name
+    return len(path.read_text().splitlines()) if path.exists() else 0
+
+
+listed = panel_call(PROJECT, {"action": "list"})
+assert [item["name"] for item in listed["data"]["panels"]] == ["ok", "fail", "big", "slow", "tick"], listed
+# Exit 0: the output as written, ANSI and CR stripped, in the main checkout, found by its relative path.
+shown = panel_finished("ok")
+assert shown["run"]["status"] == "ok" and shown["run"]["exit"] == 0, shown
+assert shown["run"]["output"] == f"device ok\n{os.path.realpath(PROJECT)}\n", shown["run"]["output"]
+# A non-zero exit: the output and what the command wrote to stderr, with the exit code.
+failed = panel_finished("fail")
+assert failed["run"]["status"] == "failed" and failed["run"]["exit"] == 3, failed
+assert "boom" in failed["run"]["output"] and "oops" in failed["run"]["output"], failed
+# Over 16 KiB: the last 16 KiB stay.
+big = panel_finished("big")["run"]
+assert len(big["output"].encode()) <= 16 * 1024 and big["truncated"] and "line 2999 " in big["output"], big["truncated"]
+# A timeout (the panel's `timeout: 2`) stops the command and its children.
+began = time.monotonic()
+slow = panel_finished("slow")["run"]
+assert slow["status"] == "timed_out" and slow["output"].endswith("stopped after 2 s"), slow
+assert time.monotonic() - began < 10, "the timeout did not stop the command"
+slow_pid = int((PROJECT / "slow.pid").read_text())
+try:
+    os.kill(slow_pid, 0)
+    raise AssertionError("the timed out command still runs")
+except ProcessLookupError:
+    pass
+# One run at a time: five opens while one runs make one run.
+for _ in range(5):
+    panel_get("tick", True)
+panel_finished("tick", False)
+assert log_lines("tick.log") == 1, f"five opens made {log_lines('tick.log')} runs"
+# A reopen shows the last output at once, with its age, while the new run goes.
+again = panel_get("ok", True)
+assert again["run"]["status"] == "ok" and again["running"] and again["age_ms"] >= 0, again
+panel_finished("ok", False)
+assert log_lines("ok.log") == 2
+# Nothing asks, so nothing runs: `tick` (refresh 10) stays at one run, and `ok` (refresh 0)
+# does not run again when asked without `run`.
+time.sleep(11)
+assert log_lines("tick.log") == 1, "a panel ran while no client showed it"
+assert not panel_get("ok")["running"] and log_lines("ok.log") == 2, "refresh 0 ran again"
+# A client that shows it asks again after `refresh`: the cache comes at once, a run starts.
+due = panel_get("tick")
+assert due["running"] and due["run"]["status"] == "ok", due
+panel_finished("tick", False)
+assert log_lines("tick.log") == 2
+assert not panel_get("tick")["running"], "a fresh result started a run"
+# A project wsxd does not manage runs nothing; a bad panel in a config shows as its notice.
+assert call("panel", {"project": str(WORK), "action": {"action": "list"}})["data"]["kind"] == "error"
+bad = panel_call(BAD, {"action": "list"})["data"]
+assert bad["panels"] == [] and "panels[0].name" in bad["notice"], bad
+print("panels in wsxd: PASS", flush=True)
+
+
+def tui_over_pty(registry):
+    # ^ The TUI reads this registry, and its screen is the bytes it wrote.
+    (CONFIG_DIR / "config-v2.toml").write_text(
+        "resume_agents_on_restore = false\n" + "".join(
+            f'[[projects]]\nname = "{name}"\npath = {json.dumps(str(path))}\n' for name, path in registry))
+    master, slave = os.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    process = subprocess.Popen([str(WSX)], cwd=PROJECT, env={k: v for k, v in env.items() if k != "WSX_PANE_ID"},
+                               stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+    os.close(slave)
+    screen = bytearray()
+
+    def read_all():
+        try:
+            while chunk := os.read(master, 65536):
+                screen.extend(chunk)
+        except OSError:
+            pass
+
+    threading.Thread(target=read_all, daemon=True).start()
+    return process, master, screen
+
+
+# The TUI shows a bad panel where it shows every config problem: the project notice.
+bad_tui, bad_master, bad_screen = tui_over_pty([("bad", BAD)])
+try:
+    wait_for(lambda: b"panels[0].name" in bad_screen, "the TUI did not show the bad panel's notice", 20)
+finally:
+    bad_tui.terminate()
+    bad_tui.wait(timeout=5)
+    os.close(bad_master)
+
+# `v` on the project opens its panels; Tab shows the next; Esc goes back.
+panel_tui, panel_master, panel_screen = tui_over_pty([("smoke", PROJECT)])
+try:
+    wait_for(lambda: b"WORKSPACE" in panel_screen, "the TUI did not start", 20)
+    os.write(panel_master, b"v")
+    wait_for(lambda: b"smoke panels" in panel_screen and b"device ok" in panel_screen,
+             "the TUI did not show the panel's output", 20)
+    wait_for(lambda: b"ok, updated" in panel_screen and b"on open" in panel_screen, "the TUI did not show the state")
+    assert b"\x1b[32mdevice" not in panel_screen.split(b"smoke panels", 1)[1], "ANSI reached the screen"
+    os.write(panel_master, b"\t")
+    wait_for(lambda: b"failed (exit 3)" in panel_screen and b"boom" in panel_screen,
+             "the TUI did not show the failing panel with its exit code", 20)
+    os.write(panel_master, b"\x1b")
+    wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the panels")
+finally:
+    panel_tui.terminate()
+    panel_tui.wait(timeout=5)
+    os.close(panel_master)
+(CONFIG_DIR / "config-v2.toml").write_text(
+    "resume_agents_on_restore = false\n"
+    "[[projects]]\n"
+    "name = \"smoke\"\n"
+    f"path = {json.dumps(str(PROJECT))}\n"
+)
+shutil.rmtree(PANEL_SCRIPTS)
+for leftover in ("wsx.config.yml", "ok.log", "tick.log", "slow.pid"):
+    (PROJECT / leftover).unlink(missing_ok=True)
+shutdown(panel_daemon)
+print("panels in the TUI: PASS", flush=True)
+
 # docs/daemon-live-upgrade.md: an install replaces wsx and wsxd under a running daemon with
 # live sessions. The source is a released build when WSX_SMOKE_RELEASED_DIR names a folder
 # with its wsx and wsxd (for example v0.31.0), else a copy of this build.

@@ -47,6 +47,7 @@ mod exchange;
 mod lease;
 mod lifetime;
 mod live_handoff;
+mod panel;
 mod recovery;
 mod routine;
 mod scanners;

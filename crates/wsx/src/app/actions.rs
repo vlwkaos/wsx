@@ -504,6 +504,28 @@ impl App {
         };
     }
 
+    /// `v`: the selected project's panels (docs/panels.md).
+    pub(super) fn action_panels(&mut self) {
+        let project = match self.current_selection() {
+            Selection::Project(pi)
+            | Selection::Worktree(pi, _)
+            | Selection::Session(pi, _, _)
+            | Selection::Pane(pi, _, _, _)
+            | Selection::RoutinesHeader(pi)
+            | Selection::Routine(pi, _) => &self.workspace.projects[pi],
+            Selection::None => {
+                self.set_status("Select a project first");
+                return;
+            }
+        };
+        self.mode = Mode::Panels {
+            view: Box::new(crate::panel_view::PanelsView::new(
+                project.name.clone(),
+                project.path.clone(),
+            )),
+        };
+    }
+
     pub(super) fn action_add_routine(&mut self) -> Result<()> {
         let pi = match self.current_selection() {
             Selection::Project(pi)

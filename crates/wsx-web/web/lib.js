@@ -28,6 +28,7 @@ const ICONS = {
   reply: "M8.5 5.5 4 10l4.5 4.5M4.5 10H12a4 4 0 0 1 4 4v1",
   overview: "M5 3.5h7l3 3v10H5zM12 3.5v3h3M7.5 10h5M7.5 13h5",
   routines: "M10 4.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11ZM10 7v3.2l2 1.3",
+  panel: "M3.5 4.5h13v9h-13zM7 16.5h6M10 13.5v3",
   land: "M10 4v9M6 9.5l4 4 4-4M4.5 16h11",
   terminal: "M3.5 4.5h13v11h-13zM6.5 8l2.5 2-2.5 2M10.5 12.5h3",
 };
