@@ -1918,26 +1918,23 @@ def project_sessions(name):
 
 def remove_from_tui(name, key):
     # ^ `[` goes up to the first project, then each `]` down one; `d` asks about the project under
-    # the cursor, and Esc leaves the others alone.
+    # the cursor, and `q` leaves a question about another project. Keys reach the TUI in order, so
+    # no sleep is needed between them; only the question is waited for, and for long: a loaded
+    # host answers late, and a late question must not meet the next key (Esc followed at once by
+    # `]` would also read as Alt-`]`).
     os.write(remove_master, b"[" * 6)
-    time.sleep(0.5)
-    for _ in range(5):
+    asked = re.compile(rb"Unregister project '([^']+)'")
+    for _ in range(8):
         mark = len(remove_screen)
         os.write(remove_master, b"d")
-        try:
-            wait_for(lambda: b"Unregister project '" in remove_screen[mark:], "no project question", seconds=2)
-            if f"Unregister project '{name}'".encode() in remove_screen[mark:]:
-                assert b"halt" in remove_screen[mark:], bytes(remove_screen[mark:][-400:])
-                os.write(remove_master, key)
-                return
-        except AssertionError as failure:
-            if "no project question" not in str(failure):
-                raise
-        os.write(remove_master, b"\x1b")
-        time.sleep(0.3)
-        os.write(remove_master, b"]")
-        time.sleep(0.3)
-    raise AssertionError(f"the TUI never asked about {name}: {bytes(remove_screen[-600:])}")
+        wait_for(lambda: asked.search(remove_screen, mark), "the TUI asked no project question", seconds=60)
+        shown = asked.findall(remove_screen, mark)[-1].decode()
+        if shown == name:
+            wait_for(lambda: b"halt" in remove_screen[mark:], "the question does not offer halting", seconds=10)
+            os.write(remove_master, key)
+            return
+        os.write(remove_master, b"q]")
+    raise AssertionError(f"the cursor never reached {name}: {bytes(remove_screen[-600:])}")
 
 
 def config_names():
