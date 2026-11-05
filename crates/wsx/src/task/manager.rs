@@ -300,8 +300,8 @@ fn instructions(
          task per fix. With \
          `--plan` the worker writes a short plan and the task waits on `plan`; read it with \
          `wsx task show <n> --json` and continue with `wsx task add <n> \"go\"` or what to \
-         change. Never ask the owner to wait. Never restate a plan, promise or wait already said: open with \
-         `> message <id>` and add only what is new. `wsx task add` or \
+         change. Never ask the owner to wait. Never restate a plan, promise or wait: open with \
+         `> message <id>`, then only what is new. `wsx task add` or \
          `wsx task steer` changes a running task. \
          A ready task waits for your review when you created it, or the owner did while the \
          ledger's `auto_land` is true and checks ran. Read its diff (`git -C <working copy> \
@@ -360,7 +360,7 @@ fn instructions(
          one git command that writes: when a land refuses because the main checkout has the \
          owner's uncommitted changes, name those files and ask; only after the owner says \
          yes, commit exactly those files in the main checkout (`git commit -m \"<message \
-         that names them>\" -- <files>`) and land again. {skills}Use subagents; check rather than guess. \
+         that names them>\" -- <files>`) and land again. {skills}Use the skills and subagents that fit; check rather than guess. \
          When the owner decides a rule, a preference or a choice, append one line \
          `- <YYYY-MM-DD> <decision>` to {decisions} at once. Every new conversation of yours \
          starts with that file and {context}. wsx adds each \
