@@ -2095,6 +2095,8 @@ if ((await text(".timeline > .fold-head")).join() !== "History" || !history.incl
 await shot("task-landed");
 
 // --- #4: a pending approval in the sentence and its buttons. Deny, then answer through the manager.
+// ^ Opened from the chat: its close is history back, and from #2's sheet it would return to #2.
+await go(chat);
 await go(page(4));
 await until("!!document.querySelector('.task-next button[aria-label=\"Approve discard #4\"]')", "#4 shows no pending approval");
 // ^ The story says what an action is for; its row holds the buttons alone.
@@ -3376,6 +3378,8 @@ if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${
   const shown = JSON.parse(execFileSync(cli.wsx, ["task", "show", "1", "--json", "-p", "plans"], { env: cli.env, cwd: cli.cwd, stdio: "pipe" }));
   fs.writeFileSync(path.join(path.dirname(path.dirname(shown.log)), "overview.md"), "# plans\n" + "a line of the overview\n".repeat(69));
 }
+// ^ Opened from plans' chat: the close is history back, which from ui's chat would return there.
+await go(`#/p/${plansArg}`);
 await go(`#/p/${plansArg}/page`);
 await until("!!document.querySelector('dialog.task-sheet[open] .project-page .over-limit')", "the over-cap overview shows no note", 60);
 const cut = await evaluate("({ lines: (document.querySelector('.project-page .task-body').textContent.match(/a line of the overview/g) ?? []).length, note: document.querySelector('.over-limit').textContent })");
