@@ -2950,9 +2950,9 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   await go(`#/p/${plansArg}`);
   await until("!document.querySelector('dialog.task-sheet')", "the scenario wait's sheet did not close");
   await openReservoir();
-  await until(`!!${rowOf(`#${behind}`)}`, "the scenario wait has no Running row");
-  const slotRow = (await rows()).find((row) => row[0] === `#${behind}`);
-  if (!slotRow[2].startsWith(shownStatus.label)) await fail(`the scenario wait's row reads ${JSON.stringify(slotRow)}`);
+  // ^ The server publishes the overview on its next watch step, up to 2 s after the wait began.
+  await until(`${rowOf(`#${behind}`)}?.querySelector('.row-context').textContent.startsWith(${JSON.stringify(shownStatus.label)}) ?? false`,
+    `the scenario wait's Running row does not read "${shownStatus.label}"`, 10);
   fs.writeFileSync(gate, "go");
   for (const task of [scenario, behind]) {
     await stateIs(task, "ready", 120);
