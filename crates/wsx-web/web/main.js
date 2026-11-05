@@ -85,7 +85,7 @@ const Tabs = ({ current, rail }) => {
     const root = document.documentElement.style;
     const measure = () => root.setProperty("--tabbar-space", `${node.offsetHeight}px`);
     const observer = new ResizeObserver(measure);
-    observer.observe(node);
+    observer.observe(node, { box: "border-box" }); // ^ padding (the safe area) is outside the default content box
     measure();
     return () => { observer.disconnect(); root.removeProperty("--tabbar-space"); };
   }, [rail]);
