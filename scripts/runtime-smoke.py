@@ -2161,7 +2161,8 @@ def tui_over_pty(registry):
 # The TUI shows a bad panel where it shows every config problem: the project notice.
 bad_tui, bad_master, bad_screen = tui_over_pty([("bad", BAD)])
 try:
-    wait_for(lambda: b"panels[0].name" in bad_screen, "the TUI did not show the bad panel's notice", 20)
+    # ^ The toast is 48 columns by 3 lines: it shows the start; wsxd's list above proves the cause text.
+    wait_for(lambda: b"Could not parse" in bad_screen, "the TUI did not show the bad panel's notice", 20)
 finally:
     bad_tui.terminate()
     bad_tui.wait(timeout=5)
