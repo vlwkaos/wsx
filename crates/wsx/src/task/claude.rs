@@ -2,16 +2,15 @@
 //! ref: docs/tasks.md "Claude adapter"; knowledge "Headless Worker Transport"
 
 use super::agent::{
-    read_json_lines, thinking_chars, turn_text, AgentLine, Launch, TurnResult, UsageLimit,
+    end_stream, read_json_lines, thinking_chars, turn_text, AgentLine, AgentProcess, Launch,
+    TurnResult, UsageLimit,
 };
 use super::boundary::Boundary;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant};
 use wsx_core::config::global::GlobalConfig;
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::TaskWorkflow;
@@ -46,8 +45,7 @@ const KEPT_ENV: &[&str] = &[
 ];
 
 pub struct ClaudeAgent {
-    child: Child,
-    stdin: ChildStdin,
+    process: AgentProcess,
     /// Control requests sent, for their ids.
     requests: u64,
 }
@@ -345,52 +343,26 @@ impl ClaudeAgent {
         events: Sender<E>,
         wrap: impl Fn(Option<AgentLine>) -> E + Send + 'static,
     ) -> Result<Self> {
-        // ^ The host's boundary confines the agent; the adapter only adds its own argv.
-        let mut command = launch.boundary.command("claude")?;
-        command.args(claude_args(launch, session, resume));
-        command.env_clear();
-        for name in KEPT_ENV {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
-        if let Some(prefix) = &launch.path_prefix {
-            let mut paths = vec![prefix.clone()];
-            paths.extend(
-                std::env::var_os("PATH")
-                    .iter()
-                    .flat_map(std::env::split_paths),
-            );
-            command.env("PATH", std::env::join_paths(paths)?);
-        }
-        for (name, value) in &launch.env {
-            command.env(name, value);
-        }
-        // ^ No terminal to edit in: `git rebase --continue` and `git commit` keep their message.
-        command.env("GIT_EDITOR", "true");
-        let mut child = command
-            .current_dir(&launch.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("cannot start claude; is it on PATH?")?;
-        let stdin = child.stdin.take().context("claude has no stdin")?;
-        let stdout = child.stdout.take().context("claude has no stdout")?;
+        let (process, stdout) = AgentProcess::spawn(
+            launch,
+            "claude",
+            claude_args(launch, session, resume),
+            KEPT_ENV,
+            &[],
+        )?;
         std::thread::spawn(move || {
             // ^ The account's newest limit state, for the usage views; a failed write only
             // leaves the last one. ref: docs/tasks.md "Usage"
             let limit = |info: &Value| {
                 let _ = store::note_rate_limit("claude", info, now_unix_ms());
             };
-            read_stream(stdout, cost_base, limit, |line| {
+            let read = read_stream(stdout, cost_base, limit, |line| {
                 events.send(wrap(Some(line))).is_ok()
             });
-            let _ = events.send(wrap(None));
+            end_stream(&events, &wrap, read);
         });
         Ok(Self {
-            child,
-            stdin,
+            process,
             requests: 0,
         })
     }
@@ -416,29 +388,7 @@ impl ClaudeAgent {
     }
 
     fn write(&mut self, value: &Value) -> Result<()> {
-        let mut line = serde_json::to_vec(value)?;
-        line.push(b'\n');
-        self.stdin
-            .write_all(&line)
-            .and_then(|()| self.stdin.flush())
-            .context("cannot write to claude")
-    }
-
-    /// Interrupt, then kill if it does not end within a few seconds.
-    pub fn stop(mut self) {
-        let pid = self.child.id() as libc::pid_t;
-        // SAFETY: signalling our own child.
-        unsafe { libc::kill(pid, libc::SIGINT) };
-        drop(self.stdin);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if matches!(self.child.try_wait(), Ok(Some(_))) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.process.write(value)
     }
 }
 
@@ -490,7 +440,7 @@ pub(super) fn read_stream(
     cost_base: u64,
     mut limit: impl FnMut(&Value),
     mut send: impl FnMut(AgentLine) -> bool,
-) {
+) -> std::io::Result<()> {
     let mut turns = Turns {
         cost_base,
         ..Turns::default()
@@ -500,7 +450,7 @@ pub(super) fn read_stream(
             limit(&value["rate_limit_info"]);
         }
         parse_line(&value, &mut turns).is_none_or(&mut send)
-    });
+    })
 }
 
 /// What the reader keeps across the lines of one process.
