@@ -54,6 +54,10 @@ const SESSION_LOOK: Duration = Duration::from_secs(2);
 const RECAP_REQUEST: &str = "The project has been quiet. Write the owner a short recap, at most 8 lines: \
 what landed and is live, what runs, and what waits for the owner and why. Read the ledger for it. Start no \
 task and change nothing. Name a task by its number and what it does.";
+/// The follow-up when a turn thought far more than it said. A turn about events may hold
+/// nothing for the owner: it answers `-`. ref: docs/tasks.md "Reply text"
+const THOUGHT_ASKED: &str = "Your answer to the owner was only in your thinking. Write it now as \
+reply text, or reply - if it held nothing for the owner.";
 /// ref: docs/tasks.md "Project overview"
 fn overview_too_long(lines: usize, chars: usize) -> String {
     format!(
@@ -217,6 +221,8 @@ struct Manager {
     overview_asked: bool,
     /// Like `overview_asked`, for the request to compact `context.md`.
     context_asked: bool,
+    /// Like `overview_asked`, for the request to write an answer that sat in thinking.
+    thought_asked: bool,
     /// Ping turns since the last real turn, and whether the running turn is one.
     /// ref: docs/tasks.md "Manager"
     pings: u32,
@@ -468,6 +474,7 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         leaving: false,
         overview_asked: false,
         context_asked: false,
+        thought_asked: false,
         pings: 0,
         pinging: false,
     };
@@ -1323,6 +1330,7 @@ impl Manager {
         self.last_activity = Instant::now();
         self.overview_asked &= from != Author::Owner;
         self.context_asked &= from != Author::Owner;
+        self.thought_asked &= from != Author::Owner;
         self.enqueue(id, from, text);
         Ok(id)
     }
@@ -2437,6 +2445,7 @@ impl Manager {
             "reply {id}: {}",
             result.text.lines().next().unwrap_or_default()
         ));
+        let in_thinking = result.answered_in_thinking();
         let asks = asks_owner(&result.text);
         let quiet = self.turn_events && !asks && quiet_reply(&result.text);
         self.log(ManagerEvent::Reply {
@@ -2454,6 +2463,19 @@ impl Manager {
         self.report(runtime::AgentState::Done);
         self.check_overview();
         self.check_context();
+        self.check_thought(in_thinking);
+    }
+
+    /// A turn whose words are far less than its thinking gets one follow-up, and no second one
+    /// until the owner writes again: it ends the loop when the follow-up thinks just as much.
+    /// ref: docs/tasks.md "Reply text"
+    fn check_thought(&mut self, in_thinking: bool) {
+        if in_thinking && !self.thought_asked {
+            self.thought_asked = true;
+            if let Err(error) = self.accept(Author::Recap, THOUGHT_ASKED.into()) {
+                self.say(&format!("cannot ask for the answer in thinking: {error:#}"));
+            }
+        }
     }
 
     /// The manager writes the overview with its own tools: after a turn, a file over the cap

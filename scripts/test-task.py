@@ -2189,6 +2189,26 @@ def run(wsx, wsxd, work, owned):
     silent = js('task', 'say', 'BLOCKS -|TOOL|-')
     silent_reply = reply_to(silent['id'])
     assert silent_reply['text'].strip() in ('', '-'), silent_reply
+    # ^ A turn whose thinking holds far more than its words gets one follow-up that asks for the
+    # answer as reply text (docs/tasks.md "Reply text"); a `-` answer to it stays quiet and starts
+    # no third turn; short thinking asks nothing.
+    def thinking_asks(after):
+        return [e for e in chat() if e['kind'] == 'message' and e['from'] == 'recap'
+                and e['id'] > after and 'only in your thinking' in e['text']]
+    draft = 'The rewritten Q1 draft, written as thinking only: ' + 'a full answer in prose. ' * 6
+    thought = js('task', 'say', 'BLOCKS THINK %s|TOOL|Saved as a rule.' % draft)
+    assert reply_to(thought['id'])['text'] == 'Saved as a rule.'
+    ask = wait(lambda: thinking_asks(thought['id']), 'the follow-up for the answer in thinking')[0]
+    assert 'or reply - if it held nothing for the owner' in ask['text'], ask
+    assert reply_to(ask['id'])['text'] == draft, chat()[-3:]
+    nothing = js('task', 'say', 'BLOCKS THINK nothing for the owner, only notes about events and tasks that I read: %s|TOOL|-' % ('x ' * 40))
+    nothing_ask = wait(lambda: thinking_asks(nothing['id']), 'the follow-up after a quiet turn')[0]
+    dash = reply_to(nothing_ask['id'])
+    assert dash['text'].strip() in ('', '-') and dash.get('quiet') is True, dash
+    short = js('task', 'say', 'BLOCKS THINK a short thought|TOOL|Hi there.')
+    assert reply_to(short['id'])['text'] == 'Hi there.'
+    time.sleep(4)
+    assert len(thinking_asks(thought['id'])) == 2 and not thinking_asks(short['id']), thinking_asks(0)
     for n in (first, second, unseen):
         js('task', 'close', n, '--discard')
     # 21b. Memo (docs/tasks.md "Memo"): each task that leaves brings its worker's memo to the
@@ -4136,6 +4156,12 @@ def run(wsx, wsxd, work, owned):
                and e['text'].startswith('pi answers: ') for e in chat()), chat()[-4:]
     manager_state = lambda: json.loads((manager_log.parent / 'state.json').read_text())
     assert manager_state()['agent']['name'] == 'fake-pi', manager_state()
+    # ^ The Pi adapter counts `thinking` content too: the same follow-up asks for the answer once.
+    pi_thought = js('task', 'say', 'PITHINK on the fallback')
+    assert reply_to(pi_thought['id'])['text'].startswith('pi answers: ')
+    pi_ask = wait(lambda: next((e for e in chat() if e['kind'] == 'message' and e['from'] == 'recap' and e['id'] > pi_thought['id']
+                                and 'only in your thinking' in e['text']), None), 'the Pi follow-up')
+    assert reply_to(pi_ask['id'])['text'].startswith('pi answers: '), chat()[-3:]
     # ^ The Pi manager hears the same instructions, the owner's-words rule included (pi.rs `--append-system-prompt`).
     assert any(t.get('launch') and t.get('talk_rule') and not t.get('worker') and not t['no_tools'] for t in traces() if t.get('adapter') == 'pi'), 'no talk rule on the pi manager launch'
     # ^ The size limit follows the adapter that runs now (docs/tasks.md "Manager"): unset, the
