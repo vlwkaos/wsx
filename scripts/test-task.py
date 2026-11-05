@@ -1830,8 +1830,9 @@ def run(wsx, wsxd, work, owned):
     reply_to(js('task', 'say', 'what is %s' % shown_word)['id'])
     assert 'Notes that match' not in turn_with('what is %s' % shown_word)['message']
     # ^ Memo lines: one line of at most 240 characters, no 60-line cap, and past 32 KiB the
-    # oldest go to context-archive.md, which the fresh conversation is told about.
-    (notes / 'context.md').write_text('# memos\n' + ''.join('- #%d: short memo %d\n' % (n, n) for n in range(100, 175)))
+    # oldest go to context-archive.md, which the fresh conversation is told about. The file starts
+    # with # stubborn so a compaction request still in flight leaves it alone.
+    (notes / 'context.md').write_text('# stubborn\n' + ''.join('- #%d: short memo %d\n' % (n, n) for n in range(100, 175)))
     long_memo = 'x' * 400
     long_task = js('task', 'new', 'WORK long.txt MEMO ' + long_memo)['id']
     assert wait_state(long_task, 'ready', 'failed')['state'] == 'ready'
