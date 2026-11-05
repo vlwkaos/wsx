@@ -73,3 +73,37 @@ flowchart LR
 Steps 3 and 4 may land as one instruction change, so the manager pays for the change once. The retrospect kinds still measure them apart. A warm conversation gets it as a message, and a cold one rotates once (`manager.rs:2210-2219`). The instructions are 1672 words (`manager.rs:256-388`). Steps 3 and 4 add about 120 words, under 10%, read from cache on each call.
 
 Bench: `scripts/bench-manager.py` has five synthetic turns (`turns()`, `bench-manager.py:146`) and `ROTATE_TOKENS = 150000` (`:32`), where Claude's default is 400000. Step 3 adds cases copied from the logged batches: a fresh start with 2284 plus events 2282 and 2283, then 2312, then 2326 and 2327. Each case lists the owner ids its reply must answer. One sonnet call judges them, in the same way as `retrospect.py:160`. Compare `--mode before` against `--mode after`. This spends real money (about $1-3 a run).
+
+## Results of steps 1 to 4 (2026-11-05)
+
+Steps 1 to 4 landed as one instruction change. Words are counted on the rendered text; `instructions()` includes `presentation.md`.
+
+| Text | Before | After |
+|---|---|---|
+| `instructions()` | 1619 words | 1695 (+76, +4.7%) |
+| `worker_instructions` literals | 461 | 488 (+27; 15 of them only for Claude) |
+| `PLAN_REQUEST` (first plan turn) | 80 | 58 (the Explore sentence moved to the Claude-only worker sentence) |
+
+Offsets: the overview's "keep it under the cap" (wsx enforces the cap), "(decisions are in ...)", `-p <project>` in the check-in command, and one shorter `waiting` sentence.
+
+Bench: `bench-manager.py --cases logged --runs 1`, opus, `before` = instructions at 9543a8de. Each run cost $0.51 to $0.55, and the judge cost $0.05. The logged ledger has no working copies, so neither run could review a diff.
+
+| Owner id | Before | After |
+|---|---|---|
+| 2284 (fresh start, with events 2282 and 2283) | answered | answered; also defines wsxd and asched |
+| 2312 (answer that, and improve this) | answered | answered |
+| 2326 (all adapters; how review starts) | answered | answered |
+| 2327 (is it polled) | not answered (A): "Do you want me to find out" | answered: "not by me; unchecked inside wsx" |
+
+| Turn | Before: cost, cache write, cache read | After |
+|---|---|---|
+| 1 fresh | $0.185, 15.4k, 172k | $0.192, 15.5k, 172k |
+| 2 fresh | $0.136, 9.9k, 121k | $0.144, 10.0k, 121k |
+| 3 fresh | $0.170, 10.6k, 177k | $0.186, 10.9k, 233k (2 more tool calls) |
+| 4 | $0.017, 0.5k, 29k | $0.032, 1.0k, 58k (1 more tool call) |
+
+The new text adds about 155 tokens to a fresh start's cache write. Most of the +9% total comes from the extra checks in turns 3 and 4, not from the larger prefix. One run per mode is a small sample.
+
+The change itself: each manager and role takes the new instructions once. A warm conversation (under 100k context, active within 60 min) gets them as one message of about 2.3k tokens. Any other conversation rotates once, which is a fresh start (the logged one, 2286, cost $0.82).
+
+Retrospect after step 2, on a copy of the wsx log since 11-04 09:23 (sonnet, $0.08): 4 of 20 replies turned down, A 2, C 1, E 1. All 3 changes it named were instruction text. This is the baseline for the counts per kind.

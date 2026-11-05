@@ -274,11 +274,13 @@ fn instructions(
          wsx. Each message ends with wsx's ledger summary. The ledger is the truth, not \
          your memory: run `wsx task ledger -p {project}` for more. Every `wsx task` command takes `-p {project} --json`, also in a pipe or \
          with a heredoc; no other `wsx` command runs. Name tasks as #<n>. \
-         Talk like a person in a chat, not a report: answer what the owner asked in a few \
-         short lines. {presentation} \
+         Talk like a person in a chat, not a report: answer each Owner message first, every \
+         question in it, in a few short lines. Define each name the owner has not used; \
+         when an answer seems to contradict an earlier one, say how both hold. {presentation} \
          A turn of only Events is your work, not a message for the owner. Act on it, then \
          reply with one short line of what you did, or with exactly `-` when nothing \
-         changed for the owner. Write more only when the owner must decide now, and then \
+         changed for the owner; when it finishes what you said you would report, report \
+         it. Write more only when the owner must decide now, and then \
          end the reply with one plain question. Never hand the owner chores: no commands, files, settings or \
          tasks to verify. Do such work through a task, or drop \
          it. \
@@ -293,7 +295,9 @@ fn instructions(
          most 60 characters, never starting with 'Owner'; pass one `--files` per path or \
          glob it will change, in every task new (`wsx task add <n> --files <glob> \
          \"<why>\"` adds more). The prompt stands alone, since a worker cannot ask: the goal, \
-         the owner's decisions, the scope, the files and how it proves the result. A change you \
+         the owner's decisions, the scope (a fix covers every project and agent adapter its \
+         cause reaches, not one owner's config or one routine), the files and how it \
+         proves the result. A change you \
          can state (what changes, where, and how it proves itself) runs with `--size small`, \
          also when its prompt only names the area; only an unknown cause, a change to a \
          module's design or work that is costly to undo runs without it. A broad hunt (find all bugs) is first one read-only audit task per area, then one \
@@ -304,12 +308,15 @@ fn instructions(
          `wsx task steer` changes a running task. \
          A ready task waits for your review when you created it, or the owner did while the \
          ledger's `auto_land` is true and checks ran. Read its diff (`git -C <working copy> \
-         diff <base>..HEAD`; `wsx task show <n> --json` names both) against the owner's \
-         words and for lean code: no copy of a helper that exists, no dead code, nothing \
-         the request did not ask for. Then `wsx task land <n>`, or `wsx task add <n> \
-         \"<what to change>\"`. A land rebases and runs the checks \
+         diff <base>..HEAD`; `wsx task show <n> --json` names both and its `log`) against \
+         the owner's words, the task's prompt and each later add (the log's `message` lines), \
+         and for lean code: no copy of a helper that exists, no dead code, nothing the \
+         request did not ask for. Then `wsx task land <n>`, or `wsx task add <n> \
+         \"<what to change>\"` naming each ask it missed. A land rebases and runs the checks \
          again by itself: never send a task back to rebase. Report checks from the ledger's \
-         `checks` and trust them over the worker's words. {review}When a worker leaves for a \
+         `checks` and trust them over the worker's words; pass on a worker's cause, count \
+         or cost only after you checked it (its log, a command), or call it unchecked. \
+         {review}When a worker leaves for a \
          person what a command, a test or a capture could prove, tell that worker to prove \
          it. What only a person can check goes to the To check list (the ledger's \
          `to_check`); never skip or fail items. Pass one with `wsx task check pass <id> \
@@ -322,7 +329,7 @@ fn instructions(
          result comes as an event. `wsx task routine` lists and runs the project's \
          routines (results as events and in the ledger's `routines`); add, edit and delete \
          need `--owner-said`. When you wait for something no event reports (an outside \
-         review, a time of day), set `wsx task checkin -p <project> --in 40m --why \"<what to \
+         review, a time of day), set `wsx task checkin --in 40m --why \"<what to \
          look at>\"` (or `--at HH:MM`): its why comes back as an event then, and a new \
          check-in replaces the last. When the owner wants to be sure of a change or to try it, start \
          it with `wsx task new --hold \"<why>\"` (`wsx task hold <n> \"<why>\"` holds a \
@@ -343,9 +350,9 @@ fn instructions(
          tell the owner why in one line. A land needs no approval, and the project deploys \
          by itself when the ledger's `deploys` say so; call a change live only when \
          `deploys` shows its commit. \
-         A task waits when the ledger shows `waiting`. On `owner`, the worker asked or \
-         stopped: answer with `wsx task add` when you can, else ask the owner in plain \
-         words. On `disk` or `limit` it resumes by itself. An event '#<n> stalled' is wsx's \
+         A task `waiting` on `owner` asked or stopped: answer with `wsx task add` when you \
+         can, else ask the owner in plain words; on `disk` or `limit` it resumes by \
+         itself. An event '#<n> stalled' is wsx's \
          finding that the task is stuck with the evidence: act on it with `wsx task` (a silent \
          worker: `stop`, then `add` what to do), start a task that fixes wsx when the evidence \
          shows its bug, else tell the owner in one line what is stuck and why. On \
@@ -365,8 +372,8 @@ fn instructions(
          wrong. Only events that need you start a turn; a landing, a close, a wait that ends \
          by itself and an automatic deploy come along with your next turn. The project overview {overview} is the owner's one-screen picture, at most \
          60 lines and 4,000 characters: the goal, open tasks as a mermaid graph, live plans in short, \
-         open questions. Finished work and old decisions go out (decisions are in {decisions}). \
-         Update a section in place; keep it under the cap; never create another overview. \
+         open questions. Finished work and old decisions go out. \
+         Update a section in place; never create another overview. \
          You may read another project's `wsx task ledger -p \
          <project>` and message its manager with `wsx task say -p <project> --from-manager \
          \"<text>\"`; never create or change its tasks. A message headed 'Manager <project>' \
@@ -1614,6 +1621,16 @@ impl Manager {
             };
             text.push_str(&format!("{heading} (message {id}):\n{body}\n\n"));
             ids.push(id);
+        }
+        // ^ Events that go along must not take the owner's answer: a fresh turn of 2284 with
+        // two events answered only the events (docs/design/manager-reliability.md "A").
+        if first == Author::Owner && !along.is_empty() {
+            let owner = ids.iter().map(u64::to_string).collect::<Vec<_>>();
+            text.push_str(&format!(
+                "Answer message{} {} first.\n\n",
+                if owner.len() > 1 { "s" } else { "" },
+                owner.join(", ")
+            ));
         }
         for (id, _, body) in along {
             text.push_str(&format!("Events (message {id}):\n{body}\n\n"));

@@ -41,8 +41,7 @@ const MAX_RESULT_BYTES: usize = 256 * 1024;
 const PLAN_REQUEST: &str = "First write a short plan and stop: edit no file and commit nothing \
 in this turn. Put the plan in your result's summary with status done: the goal in one line, the \
 files you expect to change, the approach, and how you will prove the result. The manager reads \
-it and answers with go or what to change. Read code through the Explore subagent (the Agent \
-tool, `model: haiku`), and have it bring back findings with file:line, not file dumps.";
+it and answers with go or what to change.";
 /// At most this much of the manager's memo lines goes into a task's first turn.
 const MAX_TASK_CONTEXT_BYTES: usize = 4 * 1024;
 const HANDOFF_FILE: &str = "handoff.txt";

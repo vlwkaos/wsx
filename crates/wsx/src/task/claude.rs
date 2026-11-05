@@ -214,11 +214,14 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
         false => String::new(),
     };
     // ^ 42% of worker spend is reads, one call at a time, each paying for the whole context
-    // again (docs/design/manager-efficiency.md). Only Claude has subagents here.
+    // again (docs/design/manager-efficiency.md). Only Claude has subagents here. The
+    // foreground: a background subagent's result came after a plan's result
+    // (docs/design/manager-reliability.md "F").
     let search = match record.adapter.as_str() {
         "claude" => {
-            "A search across many files goes to a subagent (the Agent tool, type Explore, \
-             `model: sonnet`), and only its findings come back to you. "
+            "A search across many files, and the code reading of a plan, goes to a subagent in \
+             the foreground (the Agent tool, type Explore, `model: haiku`, \
+             `run_in_background: false`), and only its findings, with file:line, come back to you. "
         }
         _ => "",
     };
@@ -233,7 +236,8 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
          ends. Wait for or stop each background job before your result: one that ends after \
          it starts another turn. \
          Prove what you can: each check a command, a test or a capture shows goes to \
-         `evidence` with that command or the capture's path. Anything a test, an assert or a \
+         `evidence` with that command or the capture's path, and a number or a cause in the \
+         summary names its source. Anything a test, an assert or a \
          capture can show is yours to prove, also a state you must stage in a fixture (a \
          dirty checkout, a failed deploy, an error); never put a command in `human_verify`. \
          `human_verify` keeps only how it looks or feels, and an item about a screen comes \
