@@ -2181,6 +2181,13 @@ await until(`!!(${pastedLink}) || !!document.querySelector('.composer .error')`,
 const sentText = await evaluate(`(${pastedLink})?.href ? fetch((${pastedLink}).href).then((response) => response.text()) : ''`);
 if (sentText !== longPaste) await fail(`the attached file holds ${JSON.stringify(sentText.slice(0, 60))}, not the pasted text`);
 if (await count(".composer .chips li")) await fail("the sent pasted text stayed in the composer");
+// ^ The manager answers the sent paste while the viewer would be open: its bubble moves the log
+// after the place was read. The viewer starts when the log has stopped growing.
+for (let last = -1, same = 0; same < 4; await pause(500)) {
+  const height = await evaluate("document.querySelector('.log').scrollHeight + (document.querySelector('.log .typing') ? 1e6 : 0)");
+  same = height === last ? same + 1 : 0;
+  last = height;
+}
 const chatImages = ".log .bubble[data-side=out] .attachments a[data-view]";
 await viewImages("chat-images", chatImages);
 
