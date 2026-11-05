@@ -2400,6 +2400,20 @@ def run(wsx, wsxd, work, owned):
     assert after == before and len(relaunch) == 1 and relaunch[0]['resume'], (before, after, relaunch)
     assert not (Path(show(r)['log']).parent / 'handoff.txt').exists()
     js('task', 'close', r, '--discard')
+    # A ready task has no agent turn to follow a deploy at, so its land is the next start: the
+    # host execs the replaced file before it takes the land, and the caller's retry gets the
+    # new host's answer. The replacement is a script that marks its start, then runs wsx.
+    l = json.loads(subprocess.run([str(moved / 'wsx'), 'task', 'new', 'WORK follow3.txt', '--json'], cwd=project,
+                                  env=env, capture_output=True, text=True, timeout=60).stdout)['id']
+    assert wait_state(l, 'ready', 'failed')['state'] == 'ready'
+    marker = moved / 'started'
+    (moved / 'wsx.new').write_text('#!/bin/sh\necho started >> %s\nexec %s "$@"\n' % (marker, wsx))
+    os.chmod(moved / 'wsx.new', 0o755)
+    os.replace(moved / 'wsx.new', moved / 'wsx')
+    landed = js('task', 'land', l)
+    assert landed['state'] == 'landed', landed
+    assert marker.read_text().splitlines() == ['started'], 'the host execs once, before the land'
+    assert (project / 'follow3.txt').exists()
 
     # 27. The worker runs the checks itself through its host's broker, in its host's queue and
     mark('27')
