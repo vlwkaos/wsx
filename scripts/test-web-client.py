@@ -4135,7 +4135,7 @@ merge_seconds = 3
         assert len(pushed) == 1 and 'memory is fine' in pushed[0]['body'] and pushed[0]['tag'] == 'wsx-owner-manager', pushed
         post('rss 9 GB\nsecond line\n', '--title', 'memory guard', '--level', 'warn', '--key', 'mem')
         (warned,) = replies_of('memory guard')
-        assert warned['level'] == 'warn' and warned['usage'] is None, warned
+        assert warned['level'] == 'warn' and warned.get('usage') is None, warned
         alert = new_pushes('manager', 'the push of a warn post')
         assert len(alert) == 1, alert
         assert {k: v for k, v in alert[0].items() if k != 'badge'} == {
