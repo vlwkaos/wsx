@@ -3341,6 +3341,37 @@ await closeSheet("the page", `#/p/${plansArg}`);
   let shape = await barShape();
   if (!equal(shape) || !shape.stacked || shape.highlight.join() !== "Sessions" || !shape.pill || !shape.frame) await fail(`the bottom bar is ${JSON.stringify(shape)}`);
   await shot("tabbar");
+  // ^ The bar floats (docs/web-client.md "Screens"): on a notched phone the nav is transparent and takes no
+  // pointer, content scrolled under the gap beside the pill is what a point there hits, and a list scrolled to
+  // its end rests above the pill by --tabbar-space (the nav's measured height, safe area included).
+  await send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 47, bottom: 34 } });
+  const floating = async (hash) => {
+    await go(hash);
+    await until("document.querySelectorAll('.tabbar a').length === 3", `${hash}: the bar is gone`);
+    // A list long enough to scroll: copies of the screen's own first block (the page is re-rendered on the next change).
+    await evaluate(`(() => { const list = document.querySelector('.screen > .page > .scroll'); const first = list.firstElementChild;
+      for (let copy = 0; copy < 40; copy += 1) {
+        const clone = first.cloneNode(true);
+        for (const node of [clone, ...clone.querySelectorAll('[id], [name]')]) { node.removeAttribute('id'); node.removeAttribute('name'); }
+        list.append(clone);
+      } })()`);
+    const measure = (scroll) => evaluate(`(() => { const list = document.querySelector('.screen > .page > .scroll'); list.scrollTop = ${scroll};
+      const nav = document.querySelector('.tabbar'); const pill = document.querySelector('.tabbar-pill').getBoundingClientRect();
+      const gap = document.elementFromPoint(pill.left / 2, (pill.top + pill.bottom) / 2);
+      const last = list.lastElementChild.getBoundingClientRect();
+      return { overflow: list.scrollHeight > list.clientHeight, space: getComputedStyle(document.documentElement).getPropertyValue('--tabbar-space'),
+        navHeight: nav.offsetHeight, navBackground: getComputedStyle(nav).backgroundColor, pillBottom: Math.round(pill.bottom), height: innerHeight,
+        gapHits: gap && gap !== list && list.contains(gap) && !nav.contains(gap), lastBottom: Math.round(last.bottom), pillTop: Math.round(pill.top),
+        padding: getComputedStyle(list).paddingBottom }; })()`);
+    const middle = await measure(300);
+    const end = await measure(1e6);
+    if (!middle.overflow || middle.navBackground !== "rgba(0, 0, 0, 0)" || !middle.gapHits || middle.space !== `${middle.navHeight}px` || middle.padding !== middle.space
+      || middle.pillBottom > middle.height - 34 || end.lastBottom > end.pillTop) await fail(`${hash}: the bar does not float: ${JSON.stringify({ middle, end })}`);
+  };
+  for (const hash of ["#/sessions", "#/settings", "#/settings/ui"]) await floating(hash);
+  await evaluate("document.querySelector('.screen > .page > .scroll').scrollTop = 300");
+  for (const scheme of ["light", "dark"]) { await inScheme(scheme); await shot(`tabbar-floating-${scheme}`); }
+  await send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, bottom: 0 } });
   await go("#/settings/ui");
   await until("document.querySelectorAll('.options input[name^=tab-]').length === 3", "Settings > UI does not list the three tabs");
   if ((await text(".subtabs a")).join() !== "General,UI,Usage" || (await text(".subtabs a[aria-current=page]")).join() !== "UI") await fail(`the settings sections are ${await text(".subtabs a")}`);

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Web: the phone's bottom tab pill really floats. The nav around it is transparent and takes no pointer, so content scrolled behind the corners and margins shows through; a scrolled list still ends above the pill, by padding each top screen's scroll area with the bar's measured height (`--tabbar-space`, safe area included). Screens without the bar are unchanged ([docs/web-client.md](docs/web-client.md) "Screens").
+
 ### Added
 
 - Tasks: every manager, role and worker puts content that fits the reply in the reply; only detail that does not fit goes in a markdown file the reply links, and no HTML page unless the reader asks. The shared presentation text grew by 36 characters (manager instructions 9,647 to 9,683, measured with `instructions()` of `scripts/bench-manager.py`, no model call).
