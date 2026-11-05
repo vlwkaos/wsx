@@ -205,9 +205,7 @@ pub(super) fn read_stream(
         cost_base,
         ..Run::default()
     };
-    read_json_lines(stdout, |value| {
-        run.parse(&value).is_none_or(|line| send(line))
-    });
+    read_json_lines(stdout, |value| run.parse(&value).is_none_or(&mut send));
 }
 
 /// What the reader keeps over one run, from `agent_start` to `agent_settled`.
