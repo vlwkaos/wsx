@@ -2057,8 +2057,8 @@ def run(wsx, wsxd, work, owned):
             '--arg=true', ok=False)
     # ^ The TUI chat shows a link's words and opens it (docs/tasks.md "TUI"): `S` makes sure the
     # project shell lives; a post links to it as the session news does. `[` selects the newest
-    # link, Enter enters that session and the workspace key comes back to the chat; two `[` reach
-    # the board's file, which Enter shows in place of the chat and Esc closes. A routine's post
+    # link, Enter enters that session and the workspace key comes back to the chat on that link; the next `[`
+    # reaches the board's file (an older quote link is not one `[` further), which Enter shows in place of the chat and Esc closes. A routine's post
     # (any `wsx task post`, here the retrospect's) has its bar in the secondary colour.
     tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'MANAGER', b'S'), (r'(?m)\$ *$', b'')])
@@ -2072,7 +2072,7 @@ def run(wsx, wsxd, work, owned):
         (r'\(\[/\]\)link', b'['),
         (r'(?m)^ MANAGER +Enter: open +\(\[/\]\)link +Esc: clear +\(i\)message', b'\r'),
         (r'(?m)\$ *$', b'\x01w'),
-        (r'(?m)^ MANAGER ', b'[['),
+        (r'(?m)^ MANAGER ', b'['),
         (r'(?m)^ MANAGER +Enter: open', b'\r'),
         (r'(?s)files/routine-out/board.html +\d+/\d+\n.*<p>board</p>', b'\x1b'),
         (r'(?m)^ MANAGER +Enter: open', b'\x1b'),
