@@ -3052,6 +3052,8 @@ await closeSheet("the page", `#/p/${plansArg}`);
   const plansMark = "Compare plans #1 with #1 here";
   execFileSync(cli.wsx, ["task", "post", "-p", "ui", "--title", "task mentions"], { env: cli.env, cwd: cli.cwd, input: plansMark, stdio: "pipe" });
   const fromPlans = "Peer note: #1 waits for you";
+  // ^ The chip reads "plans #1" there, so the bubble is found by the words after it.
+  const peerWords = "waits for you";
   const pageModule = (name) => `import(new URL(${JSON.stringify(name)}, [...document.scripts].find((script) => script.type === 'module').src))`;
   // ^ plans' manager says it to ui's; the say route limits a burst, so a refused message goes again.
   let asked = 0;
@@ -3065,13 +3067,13 @@ await closeSheet("the page", `#/p/${plansArg}`);
   const chipsIn = (needle) => evaluate(`(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(needle)}));
     return bubble && { author: bubble.dataset.speaker, text: bubble.querySelector('.bubble-body').textContent.trim().replace(/\\s+/g, ' '),
       chips: [...bubble.querySelectorAll('a.task-chip')].map((chip) => ({ href: chip.getAttribute('href'), text: chip.textContent.trim(), label: chip.getAttribute('aria-label') })) }; })()`);
-  for (const [what, needle] of [["the post of wsx task post", plansMark], ["plans' manager's note", fromPlans]]) {
+  for (const [what, needle] of [["the post of wsx task post", plansMark], ["plans' manager's note", peerWords]]) {
     await until(`[...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes(${JSON.stringify(needle)}))`, `${what} did not reach ui's chat`, 1200);
   }
   const own = await chipsIn(plansMark);
   if (own.chips.length !== 2 || own.chips[0].href !== `#/p/${plansArg}/t/1` || !/^plans #1$/.test(own.chips[0].text)
     || own.chips[1].href !== `#/p/${project}/t/1` || own.chips[1].text !== "#1") await fail(`ui's own reply reads ${JSON.stringify(own)}`);
-  const theirs = await chipsIn(fromPlans);
+  const theirs = await chipsIn(peerWords);
   if (theirs.author !== "peer" || theirs.chips.length !== 1 || theirs.chips[0].href !== `#/p/${plansArg}/t/1` || !/^plans #1$/.test(theirs.chips[0].text)) await fail(`plans' message reads ${JSON.stringify(theirs)}`);
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).scrollIntoView({ block: 'center' })`);
   await shot("task-mentions");
@@ -3090,7 +3092,7 @@ await closeSheet("the page", `#/p/${plansArg}`);
   // ^ plans is not granted (taken out of the live store): its manager's bare #1 is text, no link.
   await evaluate(`(async () => { const { state, update } = await ${pageModule("store.js")}; globalThis.mentionKept = state.projects;
     update({ projects: state.projects.filter((other) => other.name !== 'plans') }); })()`);
-  await until(`(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(fromPlans)}));
+  await until(`(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(peerWords)}));
     return bubble && !bubble.querySelector('a.task-chip') && bubble.textContent.includes('#1 waits for you'); })()`, "an ungranted sender's bare #1 is not plain text", 60);
   await evaluate(`(async () => { const { update } = await ${pageModule("store.js")}; update({ projects: globalThis.mentionKept }); })()`);
 }
