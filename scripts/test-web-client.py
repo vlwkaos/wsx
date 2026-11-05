@@ -3406,6 +3406,9 @@ merge_seconds = 3
             status, headers, body = site.request('POST', '/api/pair', {'code': code.lower(), 'name': name}, raw=True)
             assert status == 200, body
             site.cookie = headers['set-cookie'].split(';')[0]
+        if args.browser:
+            Relay(ports['relay'], ports['owner'], work / 'relay')
+            # ^ The owner's public origin is the relay's: every browser check of it goes through it, the panels check too.
         owner, viewer, plain = sites['owner'], sites['viewer'], sites['plain']
         # ^ The browser check restarts the owner's server under another name (a new build).
         owner_name = 'owner'
@@ -3876,7 +3879,6 @@ merge_seconds = 3
             # ^ Settings saves the browser's subscription: the local receiver's endpoint and keys.
             os.environ['WSX_PUSH_FIXTURE'] = json.dumps({'endpoint': push_origin + '/push/browser',
                                                          'keys': {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}})
-            Relay(ports['relay'], ports['owner'], work / 'relay')
             # ^ Routines screen (docs/web-client-tasks.md "Routines"): one enabled that ran and succeeded, one disabled that exited 1, a findings code ("found something", not failed), one that never ran.
             # ^ weekly posts nothing to the chat (`--no-post`): the rows show it.
             for name, cron, code in (('nightly', '0 6 * * *', '0'), ('weekly', '0 6 * * 1', '1')):
