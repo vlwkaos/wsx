@@ -143,7 +143,8 @@ jobs:
   web-scenario:
     name: web scenario
     if: ${{ startsWith(github.ref_name, 'wsx-scenario/web/') }}
-    runs-on: ubuntu-24.04
+    # ^ macOS, where the scenario runs today; Ubuntu is not proven (t243 probe never reached it).
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - name: Check out repository
