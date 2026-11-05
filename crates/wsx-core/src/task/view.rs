@@ -92,13 +92,17 @@ pub fn digest_lines(project_id: &str, after_ms: u64) -> Vec<String> {
     lines
 }
 
-/// The first line of `text`, at most `chars` characters with an ellipsis when cut.
+/// The first line of `text`, at most `chars` characters in all: a longer line keeps
+/// `chars - 1` of them, without trailing space, and an ellipsis.
 pub fn clip(text: &str, chars: usize) -> String {
     let line = text.lines().next().unwrap_or_default();
-    if line.chars().count() <= chars {
-        line.to_string()
-    } else {
-        line.chars().take(chars).collect::<String>() + "…"
+    match line.chars().count() <= chars {
+        true => line.to_string(),
+        false if chars == 0 => String::new(),
+        false => {
+            let cut: String = line.chars().take(chars - 1).collect();
+            format!("{}…", cut.trim_end())
+        }
     }
 }
 

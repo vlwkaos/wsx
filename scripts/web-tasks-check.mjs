@@ -163,6 +163,8 @@ const story = () => evaluate(`({ summary: document.querySelector('.story-summary
   next: document.querySelector('.story-next')?.textContent.trim() ?? '', steps: document.querySelectorAll('.story-steps').length })`);
 // The muted lines, folded runs opened first (a closed one is opened, an open one stays).
 const statusLines = "(document.querySelectorAll('.log .fold-toggle[aria-expanded=\"false\"]').forEach((node) => node.click()), [...document.querySelectorAll('.status-line')])";
+// The chat route's rows of a project (wsx-core `chat_rows`): what the page renders.
+const chatRows = (of = project) => evaluate(`fetch('api/tasks/${of}/chat').then((r) => r.json()).then((data) => data.rows)`);
 // A muted line that names task n as `word` ("#7 done").
 const statusSays = (n, word) => `${statusLines}.some((node) => node.textContent.includes('#${n} ${word}'))`;
 // The sheet's action buttons, under its top.
@@ -1120,6 +1122,11 @@ const askBubble = await evaluate(`({ tags: ${askTags}.length, own: ${asking}.dat
 const accentColor = await evaluate("(() => { const s = document.createElement('i'); s.style.color = 'var(--color-accent)'; document.body.append(s); const c = getComputedStyle(s).color; s.remove(); return c; })()");
 if (askBubble.tags !== 1 || askBubble.own !== "" || !/Asks you/.test(askBubble.label) || askBubble.icon || askBubble.border !== accentColor || askBubble.normal === accentColor) await fail(`a reply that asks reads ${JSON.stringify(askBubble)}`);
 if ((await overviewAsks()) !== true) await fail("the overview does not say the manager asks");
+const askRow = async () => (await chatRows()).findLast((row) => row.text.includes("Should I land it now?"));
+{
+  const row = await askRow();
+  if (row?.kind !== "message" || row.author !== "manager" || row.asks !== true || row.post) await fail(`the asking reply's row is ${JSON.stringify(row)}`);
+}
 await entered();
 await shot("asks-you", ".composer-send");
 // ^ A later report does not drop the mark: plans' manager asks ui's, whose answer is a reply that
@@ -1143,6 +1150,7 @@ await click(".composer-send");
 await until(`${askTags}.length === 0`, "the owner's message did not clear Asks you", 30);
 await until(answeredOpen, "no reply after the question", 300);
 if ((await overviewAsks()) !== false) await fail("the overview still says the manager asks");
+if ((await askRow())?.asks) await fail("the asking reply's row still asks after the owner wrote");
 await entered();
 await shot("asks-you-answered", ".composer-send");
 await go("#/");
@@ -1157,6 +1165,13 @@ await until(`!${rowOf("Approve land #3")} && !${rowOf("#3")}`, "the reservoir ke
 // ^ The approval and the landing are muted lines.
 await until(`${statusLines}.some((node) => /Approved land #3/.test(node.textContent))`, "the approval left no muted line", 300);
 await until(statusSays(3, "done"), "the landing of #3 left no muted line", 300);
+// ^ The rows carry the short form the host wrote with each event, and its task: the page reads no event text.
+{
+  const lines = (await chatRows()).filter((row) => row.kind === "line");
+  const landed = lines.findLast((row) => row.task === 3);
+  const approved = lines.findLast((row) => row.text === "Approved land #3");
+  if (landed?.text !== "#3 done" || !approved || approved.task != null) await fail(`the event rows of #3 are ${JSON.stringify({ landed, approved })}`);
+}
 await until(`(${rowOf("#1")}?.querySelector('.need-action')?.title ?? '') === 'Land'`, "#1 is not ready to land after its answer", 300);
 moved = await clearRow("#1", "Land");
 // ^ A bubble that arrives with the landing sticks the chat to its end one frame later: on a
@@ -1999,8 +2014,8 @@ async function readAndReply(where) {
   await click(".composer-send");
   const sentReply = `${sentReplies}.findLast((node) => !${sentBefore}.includes(node.dataset.key))`;
   await until(`!!${sentReply} && ${sentReply}.querySelector('.prose').textContent === 'my answer' && !document.querySelector('.composer .reply-quote')`, `${where}: the reply was not sent with its quote`, 60);
-  const stored = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => data.entries.filter((entry) => entry.kind === 'message' && entry.from === 'owner').map((entry) => entry.text).at(-1))`);
-  if (stored !== "> Five columns:\n\nmy answer") await fail(`${where}: the manager got ${JSON.stringify(stored)}`);
+  const stored = (await chatRows()).filter((row) => row.kind === "message" && row.author === "owner").at(-1);
+  if (stored?.quoted !== "Five columns:" || stored.text !== "my answer") await fail(`${where}: the manager got ${JSON.stringify(stored)}`);
   // (f) A tap on the quote goes to the quoted message.
   await evaluate("document.querySelector('.log').scrollTop = 0");
   await pause(300);
@@ -3111,6 +3126,10 @@ await go(chat);
   const retro = await evaluate(`(() => { const last = [...document.querySelectorAll('.bubble[data-routine]')].at(-1); return { text: last.textContent, border: getComputedStyle(last.querySelector('.bubble-box')).borderTopColor }; })()`);
   const digest = await look();
   if (!retro.text.includes("Since the last post") || retro.border !== digest.secondary) await fail(`the retrospect post is ${JSON.stringify(retro)}, not bordered in ${digest.secondary}`);
+  // ^ `post` is the host's flag on what `post()` wrote, not a guess from the reply's fields.
+  const replies = (await chatRows(plansArg)).filter((row) => row.author === "manager" && row.kind === "message");
+  const posted = replies.filter((row) => row.post);
+  if (!posted.at(-1)?.text.includes("Since the last post") || posted.length < 2 || posted.length === replies.length) await fail(`plans' post rows are ${JSON.stringify(posted.map((row) => row.text.slice(0, 40)))} of ${replies.length} replies`);
   await shot("routine-message-retrospect");
   // ^ A post with a level (`wsx task post --level warn|bad`) says it in its tag and sets its border
   // in the attention or danger colour, in both schemes (docs/web-client-tasks.md "Task notifications").
@@ -3177,7 +3196,7 @@ const sayAgain = async (words) => {
 };
 await sayAgain("the plan is on the overview");
 await until("[...document.querySelectorAll('.log .bubble[data-side=out]')].some((node) => node.textContent.includes('the plan is on the overview'))", "the message to be quoted did not show");
-const planId = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => data.entries.filter((entry) => entry.kind === 'message' && entry.from === 'owner' && entry.text === 'the plan is on the overview').at(-1).id)`);
+const planId = (await chatRows()).filter((row) => row.kind === "message" && row.author === "owner" && row.text === "the plan is on the overview").at(-1).id;
 await sayAgain(`QUOTE ${planId} still waiting on #8`);
 await until("!!document.querySelector('.log .bubble[data-side=in] button.quote') && !document.querySelector('.log .typing')", "the manager's quote did not show", 120);
 const quoted = await evaluate(`(() => { const button = [...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1);
@@ -3191,6 +3210,22 @@ await shot("manager-quote", ".composer-send");
 const jumped = await evaluate(`(() => { [...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1).click();
   return document.querySelector('.log .bubble[data-found]')?.textContent.trim() ?? null; })()`);
 if (!jumped?.includes("the plan is on the overview")) await fail(`a tap on the manager's quote marks ${JSON.stringify(jumped)}`);
+// ^ One cut of a quote, by characters (wsx-core `quote_of`): a line of emoji past 120 characters
+// is cut the same in the row, on the page and in the manager's quote, so a tap finds its message.
+{
+  const wide = `${"🦀".repeat(70)} ${"x".repeat(60)}`;
+  const cut = `${[...wide].slice(0, 119).join("").trimEnd()}…`;
+  await sayAgain(wide);
+  await until(`[...document.querySelectorAll('.log .bubble[data-side=out]')].some((node) => node.textContent.includes(${JSON.stringify("x".repeat(60))}))`, "the emoji message did not show");
+  const row = (await chatRows()).findLast((row) => row.kind === "message" && row.author === "owner" && row.text === wide);
+  const shown = row && await evaluate(`document.querySelector('.log > .bubble[data-key=${JSON.stringify(row.key)}]')?.dataset.quote ?? null`);
+  if (row?.quote !== cut || shown !== cut) await fail(`the emoji message's quote is ${JSON.stringify({ row: row?.quote, shown })}, not ${JSON.stringify(cut)}`);
+  await sayAgain(`QUOTE ${row.id} about the crabs`);
+  await until(`[...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1)?.textContent === ${JSON.stringify(cut)} && !document.querySelector('.log .typing')`, "the manager's quote of the emoji message did not show", 120);
+  const found = await evaluate(`(() => { [...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1).click();
+    return document.querySelector('.log .bubble[data-found]')?.dataset.key ?? null; })()`);
+  if (found !== row.key) await fail(`a tap on the quote of the emoji message marks ${JSON.stringify(found)}, not ${row.key}`);
+}
 await toLatest("390 px");
 // A ready task the manager created waits for the manager's review: under Running, with those words and a calm dot.
 // ^ The say route limits a burst: a refused message waits and goes again.

@@ -946,7 +946,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
 }
 
 /// The registered project by name, by the current folder, or the only one.
-fn project_entry(name: Option<&str>) -> Result<(String, PathBuf)> {
+pub(crate) fn project_entry(name: Option<&str>) -> Result<(String, PathBuf)> {
     let config = load_config()?;
     let projects = &config.projects;
     if let Some(name) = name {
@@ -1513,14 +1513,10 @@ fn fix_title(check: &str) -> String {
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
-    let title = format!("Fix: {}", words.trim());
-    let limit = wsx_core::task::view::MAX_TITLE_CHARS;
-    if title.chars().count() <= limit {
-        return title;
-    }
-    let mut short: String = title.chars().take(limit - 1).collect();
-    short.push('…');
-    short
+    wsx_core::task::view::clip(
+        &format!("Fix: {}", words.trim()),
+        wsx_core::task::view::MAX_TITLE_CHARS,
+    )
 }
 
 fn wait_for_host(dir: &TaskDir) -> Option<HostResponse> {
@@ -2612,7 +2608,16 @@ fn say(
     let role = role.filter(|role| *role != "manager");
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
     let sent = from.is_some().then(|| text.clone());
-    let response = owner::say(&name, &main, &exe, role, launch_manager(&main), text, from)?;
+    let response = owner::say(
+        &name,
+        &main,
+        &exe,
+        role,
+        launch_manager(&main),
+        text,
+        from,
+        Vec::new(),
+    )?;
     // ^ A manager's or a role's message always answers in JSON: its host logs `sent` from
     // the `text` (broker.rs). ref: docs/tasks.md "Managers talk"
     if json || sent.is_some() {
@@ -2650,7 +2655,7 @@ fn chat(project: Option<&str>, role: Option<&str>, after: Option<u64>, json: boo
     }
     for entry in entries {
         match &entry.event {
-            ManagerEvent::Message { id, from, text } => println!("[{id}] {from:?}: {text}"),
+            ManagerEvent::Message { id, from, text, .. } => println!("[{id}] {from:?}: {text}"),
             ManagerEvent::Reply { id, text, .. } => println!("[{id}] manager: {text}"),
             ManagerEvent::Rotated {
                 reason: Some(reason),

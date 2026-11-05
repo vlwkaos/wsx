@@ -7,7 +7,6 @@ use crate::{
 };
 use std::{
     cell::Cell,
-    collections::HashSet,
     io::Read as _,
     path::{Path, PathBuf},
     sync::mpsc,
@@ -16,10 +15,10 @@ use std::{
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::{
     call_socket,
+    chat::{chat_rows, ChatRow, Names, RowKind},
     checks::{self, CheckItem, CheckState},
     manager::{
-        activity, chat_window, pending_approvals, quote_of, says_nothing, split_quote, Author,
-        Level, ManagerEvent, ManagerRequest, ManagerResponse, CHAT_ENTRIES,
+        activity, chat_window, pending_approvals, ManagerRequest, ManagerResponse, CHAT_ENTRIES,
     },
     owner,
     store::{self, ManagerDir, Stamp},
@@ -29,35 +28,6 @@ use wsx_core::task::{
 const CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// The host answers its status at once; a slow answer counts as not running.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Who {
-    Owner,
-    Manager,
-    /// Another project's manager (docs/tasks.md "Managers talk").
-    Peer(String),
-}
-
-/// One entry of the conversation: a message with its author and time, or one muted line
-/// (an event, a quiet reply, a new conversation, a stop).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Row {
-    Said {
-        who: Who,
-        unix_ms: u64,
-        text: String,
-        /// A manager reply that asks the owner, before the owner wrote again.
-        asks: bool,
-        /// A post of wsx, not an agent turn (`is_post`): its bar is the secondary color.
-        routine: bool,
-        /// A post with `--level warn|bad`: the heading and the bar show it.
-        level: Option<Level>,
-    },
-    Line(String),
-    /// A muted line about the manager: the chat puts its shown name before the words
-    /// ("plans paused: usage limit, resumes at 07:45"), as the web does.
-    Manager(String),
-}
 
 /// What a link of the chat opens (docs/tasks.md "Session news", "Routines"): a session, as `S`
 /// enters one, or a file of the main checkout in the chat's file view.
@@ -134,25 +104,22 @@ pub fn parts(text: &str) -> Vec<Part<'_>> {
 
 /// The links of the conversation, oldest first: the message's time, the link's place in it and
 /// what it opens. The time and place name a link while rows come and go.
-pub fn links(rows: &[Row]) -> Vec<(u64, usize, Target)> {
+pub fn links(rows: &[ChatRow]) -> Vec<(u64, usize, Target)> {
     let mut found = Vec::new();
-    for row in rows {
-        if let Row::Said { unix_ms, text, .. } = row {
-            // ^ The quote is link 0 of its message; `chat_lines` counts the same way.
-            let (quote, body) = split_quote(text);
-            let quoted = quote.map(|line| Target::Quote(line.to_string()));
-            let targets = parts(body).into_iter().filter_map(|part| match part {
-                Part::Link { target, .. } => Some(target),
-                Part::Text(_) => None,
-            });
-            found.extend(
-                quoted
-                    .into_iter()
-                    .chain(targets)
-                    .enumerate()
-                    .map(|(nth, target)| (*unix_ms, nth, target)),
-            );
-        }
+    for row in rows.iter().filter(|row| row.kind == RowKind::Message) {
+        // ^ The quote is link 0 of its message; `chat_lines` counts the same way.
+        let quoted = row.quoted.clone().map(Target::Quote);
+        let targets = parts(&row.text).into_iter().filter_map(|part| match part {
+            Part::Link { target, .. } => Some(target),
+            Part::Text(_) => None,
+        });
+        found.extend(
+            quoted
+                .into_iter()
+                .chain(targets)
+                .enumerate()
+                .map(|(nth, target)| (row.unix_ms, nth, target)),
+        );
     }
     found
 }
@@ -239,7 +206,9 @@ pub enum Focus {
 }
 
 struct View {
-    rows: Vec<Row>,
+    rows: Vec<ChatRow>,
+    /// The other side's shown name: the manager's (`manager_shown_name`), or the role's.
+    name: String,
     items: Vec<Item>,
     activity: Option<String>,
     /// The manager's agent in use, as `view::agent_label` writes it; none for a role.
@@ -258,12 +227,11 @@ pub struct ManagerChat {
     pub project: String,
     /// The role this chat talks to; none is the manager.
     pub role: Option<String>,
-    /// The manager's name as the owner reads it (`TaskConfig::manager_shown_name`), as the
-    /// web shows it.
-    manager: String,
     main: PathBuf,
     store: String,
-    pub rows: Vec<Row>,
+    pub rows: Vec<ChatRow>,
+    /// The other side's shown name, read with the rows.
+    name: String,
     pub items: Vec<Item>,
     pub selected: usize,
     pub loaded: bool,
@@ -311,14 +279,17 @@ type Answer = (String, bool, Option<String>);
 impl ManagerChat {
     pub fn new(project: String, main: PathBuf, role: Option<String>) -> Self {
         let store = store::project_id(&project, &main);
-        let manager = load_task_config(&main)
-            .unwrap_or_default()
-            .manager_shown_name(&project)
-            .to_string();
+        // ^ The shown name before the first read, which reads it again.
+        let name = role.clone().unwrap_or_else(|| {
+            load_task_config(&main)
+                .unwrap_or_default()
+                .manager_shown_name(&project)
+                .to_string()
+        });
         let mut chat = Self {
+            name,
             project,
             role,
-            manager,
             main,
             store,
             rows: Vec::new(),
@@ -358,7 +329,7 @@ impl ManagerChat {
         let (tx, rx) = mpsc::sync_channel(1);
         let (store, last, role) = (self.store.clone(), self.stamp.clone(), self.role.clone());
         let whole = self.whole;
-        let main = self.main.clone();
+        let (main, project) = (self.main.clone(), self.project.clone());
         self.pending = Some(rx);
         self.last_check = Instant::now();
         std::thread::spawn(move || {
@@ -375,8 +346,8 @@ impl ManagerChat {
             });
             let now = store::stamp(&store);
             let view = (last.as_ref() != Some(&now)).then(|| {
-                let view =
-                    read(&store, &main, dir.as_ref(), whole).map_err(|error| format!("{error:#}"));
+                let view = read(&project, &store, &main, dir.as_ref(), whole)
+                    .map_err(|error| format!("{error:#}"));
                 (now, view)
             });
             let _ = tx.send(Read {
@@ -444,6 +415,7 @@ impl ManagerChat {
                     .unwrap_or(self.selected)
                     .min(self.items.len().saturating_sub(1));
                 self.rows = view.rows;
+                self.name = view.name;
                 if self.reveal_due {
                     self.reveal();
                 }
@@ -463,9 +435,9 @@ impl ManagerChat {
         changed
     }
 
-    /// The name the chat shows for the other side: the role's, or `Manager`.
+    /// The name the chat shows for the other side: the role's, or the manager's shown name.
     pub fn who(&self) -> &str {
-        self.role.as_deref().unwrap_or(&self.manager)
+        &self.name
     }
 
     pub fn selected_item(&self) -> Option<&Item> {
@@ -524,6 +496,7 @@ impl ManagerChat {
                         crate::task::launch_manager(&main),
                         text.clone(),
                         None,
+                        Vec::new(),
                     )
                 });
             match said {
@@ -599,109 +572,61 @@ impl ManagerChat {
     }
 }
 
-/// The conversation as rows, the open items then the waiting approvals, and the manager's
-/// last step. No manager folder yet is an empty chat.
-fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyhow::Result<View> {
+/// The conversation as rows (`chat_rows`), the open items then the waiting approvals, and
+/// the manager's last step. No manager folder yet is an empty chat.
+fn read(
+    project: &str,
+    store: &str,
+    main: &Path,
+    dir: Option<&ManagerDir>,
+    whole: bool,
+) -> anyhow::Result<View> {
     let log = match dir {
         Some(dir) => dir.read_log()?,
         None => Vec::new(),
     };
     let limit = if whole { usize::MAX } else { CHAT_ENTRIES };
     let (entries, _) = chat_window(&log, None, limit);
-    let mut rows = Vec::new();
-    // ^ The ids of the events messages: a reply to them with no usage is a post (`is_post`).
-    let mut events = HashSet::new();
-    for entry in entries {
-        let said = |who, text: &str| Row::Said {
-            who,
-            unix_ms: entry.unix_ms,
-            text: text.trim().to_string(),
-            asks: false,
-            routine: false,
-            level: None,
-        };
-        match &entry.event {
-            ManagerEvent::Message { id, from, text } => match from {
-                // ^ A reply asks until the owner writes after it (docs/tasks.md "Manager").
-                Author::Owner => {
-                    for row in &mut rows {
-                        if let Row::Said { asks, .. } = row {
-                            *asks = false;
-                        }
-                    }
-                    rows.push(said(Who::Owner, text))
-                }
-                // ^ wsx's recap request is not shown, only the manager's answer to it.
-                Author::Recap => {}
-                Author::Manager { project, .. } => {
-                    rows.push(said(Who::Peer(project.clone()), text))
-                }
-                // ^ In a role's chat the manager is a peer too, by its own word.
-                Author::Role { name, .. } => rows.push(said(
-                    Who::Peer(match name.as_str() {
-                        "manager" => "Manager".into(),
-                        name => name.into(),
-                    }),
-                    text,
-                )),
-                Author::Events => {
-                    events.insert(*id);
-                    rows.extend(
-                        text.lines()
-                            .filter(|line| !line.trim().is_empty())
-                            .map(|line| Row::Line(event_line(line))),
+    let settings = load_task_config(main).unwrap_or_default();
+    let manager = settings.manager_shown_name(project).to_string();
+    let role = dir.and_then(|dir| dir.role.clone());
+    let name = role.clone().unwrap_or_else(|| manager.clone());
+    // ^ Another registered project's manager by its set name (docs/tasks.md "Config"), each
+    // project's config read once.
+    let names = std::cell::RefCell::new(std::collections::HashMap::<String, String>::new());
+    let peer = |other: &str| {
+        names
+            .borrow_mut()
+            .entry(other.to_string())
+            .or_insert_with(|| {
+                crate::task::project_entry(Some(other))
+                    .ok()
+                    .and_then(|(_, main)| load_task_config(&main).ok())
+                    .map_or_else(
+                        || other.to_string(),
+                        |config| config.manager_shown_name(other).to_string(),
                     )
-                }
-            },
-            // ^ A quiet `-` or empty reply says nothing changed: it shows nothing, as on the web.
-            ManagerEvent::Reply {
-                text, quiet: true, ..
-            } if says_nothing(text) => {}
-            ManagerEvent::Reply {
-                text, quiet: true, ..
-            } => rows.push(Row::Line(text.trim().to_string())),
-            ManagerEvent::Reply {
-                to,
-                text,
-                usage,
-                asks,
-                provisional,
-                level,
-                ..
-            } => rows.push(Row::Said {
-                who: Who::Manager,
-                unix_ms: entry.unix_ms,
-                text: match provisional {
-                    Some(name) => format!("Stand-in {name}, not checked: {}", text.trim()),
-                    None => text.trim().to_string(),
-                },
-                asks: *asks,
-                routine: is_post(usage.is_none(), to, &events),
-                level: *level,
-            }),
-            // ^ An empty `sent` (older hosts logged one without --json) shows nothing.
-            ManagerEvent::Sent { text, .. } if text.trim().is_empty() => {}
-            ManagerEvent::Sent { to, text, .. } => {
-                let to = to.strip_prefix("role:").unwrap_or(to);
-                rows.push(said(Who::Manager, &format!("To {to}: {text}")))
-            }
-            ManagerEvent::Rotated { .. } => rows.push(Row::Line("New conversation".into())),
-            ManagerEvent::Stopped { reason } => {
-                rows.push(Row::Manager(format!("stopped: {reason}")))
-            }
-            ManagerEvent::Limit { until: Some(until) } => rows.push(Row::Manager(format!(
-                "paused: usage limit, resumes at {until}"
-            ))),
-            ManagerEvent::Limit { until: None } => rows.push(Row::Manager("resumed".into())),
-            ManagerEvent::Delivered { .. }
-            | ManagerEvent::Agent { .. }
-            | ManagerEvent::Ping { .. } => {}
-        }
-    }
+            })
+            .clone()
+    };
     // ^ To check items and approvals are the manager's (docs/tasks.md "Roles").
-    if dir.is_some_and(|dir| dir.role.is_some()) {
+    let approvals = match role {
+        Some(_) => Vec::new(),
+        None => store::read_approvals(store)?,
+    };
+    let rows = chat_rows(
+        &entries,
+        &pending_approvals(&approvals),
+        &Names {
+            own: &name,
+            manager: &manager,
+            peer: &peer,
+        },
+    );
+    if role.is_some() {
         return Ok(View {
             rows,
+            name,
             items: Vec::new(),
             activity: activity(&log).map(str::to_string),
             agent: None,
@@ -711,7 +636,6 @@ fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyh
         .into_iter()
         .map(Item::Check)
         .collect();
-    let approvals = store::read_approvals(store)?;
     items.extend(
         pending_approvals(&approvals)
             .into_iter()
@@ -722,26 +646,14 @@ fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyh
     );
     Ok(View {
         rows,
+        name,
         items,
         activity: activity(&log).map(str::to_string),
         // ^ A fallback's while one runs (docs/tasks.md "Agents").
-        agent: dir.and_then(|dir| {
-            let settings = load_task_config(main).unwrap_or_default();
-            view::agent_label(&view::manager_agent(dir, &settings))
-        }),
+        agent: dir
+            .map(|dir| view::manager_agent(dir, &settings))
+            .and_then(|agent| view::agent_label(&agent)),
     })
-}
-
-/// A post of wsx, not an agent turn: a reply with no usage to events messages only, as the
-/// digest, `wsx task post` and the session news are written (docs/tasks.md "Routines").
-/// The web's `conversation` in bubbles.js reads the same rule.
-fn is_post(no_usage: bool, to: &[u64], events: &HashSet<u64>) -> bool {
-    no_usage && !to.is_empty() && to.iter().all(|id| events.contains(id))
-}
-
-/// An event line written by wsx in short form: its first clause, `#3 ready r2: <title>`.
-fn event_line(line: &str) -> String {
-    line.split("; ").next().unwrap_or(line).trim().to_string()
 }
 
 impl ManagerChat {
@@ -848,8 +760,7 @@ impl ManagerChat {
         };
         self.link = Some((*ms, *nth));
         let (width, _) = self.area.get();
-        let (lines, line) =
-            crate::ui::task_chat::chat_lines(&self.rows, self.who(), width, self.link);
+        let (lines, line) = crate::ui::task_chat::chat_lines(&self.rows, width, self.link);
         if let Some(line) = line {
             self.center(line, lines.len());
         }
@@ -885,13 +796,13 @@ impl ManagerChat {
         let Some(from) = self.link.and_then(|(ms, _)| {
             self.rows
                 .iter()
-                .position(|row| matches!(row, Row::Said { unix_ms, .. } if *unix_ms == ms))
+                .position(|row| row.kind == RowKind::Message && row.unix_ms == ms)
         }) else {
             return;
         };
         let found = self.rows[..from]
             .iter()
-            .rposition(|row| matches!(row, Row::Said { text, .. } if quote_of(text) == line));
+            .rposition(|row| row.quote.as_deref() == Some(line));
         let Some(at) = found else {
             self.notice = Some((
                 "That message is no longer in the conversation shown here.".into(),
@@ -900,12 +811,7 @@ impl ManagerChat {
             return;
         };
         let (width, _) = self.area.get();
-        let who = self.who().to_string();
-        let lines = |rows: &[Row]| {
-            crate::ui::task_chat::chat_lines(rows, &who, width, None)
-                .0
-                .len()
-        };
+        let lines = |rows: &[ChatRow]| crate::ui::task_chat::chat_lines(rows, width, None).0.len();
         // ^ A message starts after the blank line that parts it from the one before.
         self.center(
             lines(&self.rows[..at]) + usize::from(at > 0),
@@ -946,7 +852,7 @@ impl ManagerChat {
     /// The matches of the find as the last frame drew the chat: (line, byte range).
     pub fn matches(&self) -> Vec<(usize, std::ops::Range<usize>)> {
         let (width, _) = self.area.get();
-        let lines = crate::ui::task_chat::chat_lines(&self.rows, self.who(), width, self.link).0;
+        let lines = crate::ui::task_chat::chat_lines(&self.rows, width, self.link).0;
         crate::ui::task_chat::find_in(&lines, self.find.value())
     }
 
@@ -969,10 +875,9 @@ impl ManagerChat {
         };
         self.reveal_due = false;
         self.found = self.found.min(last);
-        let total =
-            crate::ui::task_chat::chat_lines(&self.rows, self.who(), self.area.get().0, self.link)
-                .0
-                .len();
+        let total = crate::ui::task_chat::chat_lines(&self.rows, self.area.get().0, self.link)
+            .0
+            .len();
         self.center(matches[self.found].0, total);
     }
 

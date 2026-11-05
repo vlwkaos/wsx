@@ -5,7 +5,7 @@ import { bytes, elapsed, html, Icon, keepIn, readMap, useCoalescedLoad, useEffec
 import { can, shows, stateOf, state, touch, useEventLoad } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { FindBar } from "./find.js";
-import { QuoteChip, Quoted, quoteOf, useReply, withQuote } from "./reply.js";
+import { QuoteChip, Quoted, useReply, withQuote } from "./reply.js";
 
 // Unsent text, attachments, files that still upload and the message that is not in the
 // saved conversation yet, per session. Kept outside the view so a route change does not
@@ -725,14 +725,14 @@ export function Chat({ session, onModel, finding = false, onFindClose }) {
           : block.kind === "notice" ? html`<p key=${block.id} class="note chat-notice" role="status">${block.text}</p>`
           : html`
             <article key=${block.id} class=${block.kind === "user" ? "message message-user" : "message"} data-kind=${block.kind}
-              data-key=${block.id} data-at=${block.at_unix_ms} data-in=${block.kind === "assistant" ? "" : null} data-quote=${block.text ? quoteOf(block.text) : null}>
+              data-key=${block.id} data-at=${block.at_unix_ms} data-in=${block.kind === "assistant" ? "" : null} data-quote=${block.quote ?? null}>
               ${block.text && (block.kind === "user" ? html`<${Quoted} text=${block.text} />`
                 : html`<${Markdown} text=${block.text} files=${block.attachments} />`)}
               <${Attachments} files=${block.attachments} />
               ${block === lastUserBlock && delivery && !sent.length ? html`<p class="note" role="status">${delivery}</p>` : null}
             </article>`)}
         ${sent.map((queued) => html`
-          <article key=${`sent-${queued.id}`} class="message message-user" data-pending data-key=${`sent-${queued.id}`} data-quote=${queued.text ? quoteOf(queued.text) : null}>
+          <article key=${`sent-${queued.id}`} class="message message-user" data-pending data-key=${`sent-${queued.id}`} data-quote=${queued.quote ?? null}>
             ${queued.text && html`<${Quoted} text=${queued.text} />`}
             <${Attachments} files=${queued.attachments} />
             ${queued.text && html`<${CopyText} text=${queued.text} label="Copy the sent message" />`}

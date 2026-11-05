@@ -109,11 +109,13 @@ pub enum ManagerEvent {
         id: u64,
         from: Author,
         text: String,
+        /// An events message's lines as the chat shows them, one per event, written where each
+        /// event is made; none for an owner's or a peer's message (docs/tasks.md "Manager").
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        short: Vec<Short>,
     },
     /// These messages went to the agent in one turn.
-    Delivered {
-        ids: Vec<u64>,
-    },
+    Delivered { ids: Vec<u64> },
     Reply {
         id: u64,
         to: Vec<u64>,
@@ -137,6 +139,10 @@ pub enum ManagerEvent {
         /// pushes it at once. Info is none. ref: docs/tasks.md "Routines"
         #[serde(default, skip_serializing_if = "Option::is_none")]
         level: Option<Level>,
+        /// wsx posted this with no agent turn (`wsx task post`, the digest, the session news):
+        /// the chat sets it off in the secondary color (docs/tasks.md "Routines").
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        post: bool,
     },
     /// This manager's message to another project's manager (`say --from-manager`).
     Sent {
@@ -146,9 +152,7 @@ pub enum ManagerEvent {
         reply: bool,
     },
     /// A command or other step of the agent, in short form.
-    Agent {
-        text: String,
-    },
+    Agent { text: String },
     /// A ping turn kept the prompt cache warm while a task works: no reply, not in the chat.
     /// ref: docs/tasks.md "Manager"
     Ping {
@@ -169,9 +173,35 @@ pub enum ManagerEvent {
         until: Option<String>,
     },
     /// The agent process ended outside a reply.
-    Stopped {
-        reason: String,
-    },
+    Stopped { reason: String },
+}
+
+/// One event as the chat shows it, written where the event is made: `#3 done`,
+/// `Approved land #5`. `task`: its leading task, which the web shows as a chip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Short {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<u32>,
+}
+
+impl Short {
+    /// A line's first clause, before `; `: the short form of an event with no words of its own
+    /// (a deploy, a routine, a session) and of a line logged before `short`.
+    pub fn plain(line: &str) -> Self {
+        Self {
+            text: line.split("; ").next().unwrap_or(line).trim().to_string(),
+            task: None,
+        }
+    }
+
+    /// A task's event: `#<task> <words>`.
+    pub fn task(task: u32, words: &str) -> Self {
+        Self {
+            text: format!("#{task} {words}"),
+            task: Some(task),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,13 +257,13 @@ pub fn asks_owner(text: &str) -> bool {
             .ends_with(['?', '？'])
 }
 
-/// The longest quoted line, as long as the web's (`QUOTE_CHARS` in web/reply.js).
+/// The longest quoted line, its ellipsis included.
 const QUOTE_CHARS: usize = 120;
 /// A reply that opens with this and a message id quotes that message.
 pub const QUOTE_REF: &str = "> message ";
 
 /// A message split into its leading owner-format quote (`> <line>` and an empty line) and the
-/// words after it. ref: `splitQuote` in web/reply.js
+/// words after it. The web's composer writes this format (`withQuote` in web/reply.js).
 pub fn split_quote(text: &str) -> (Option<&str>, &str) {
     let Some((line, rest)) = text.strip_prefix("> ").and_then(|t| t.split_once('\n')) else {
         return (None, text);
@@ -242,7 +272,7 @@ pub fn split_quote(text: &str) -> (Option<&str>, &str) {
 }
 
 /// A message's first line without its own quote, cut to 120 characters: the line a quote of it
-/// carries. ref: `quoteOf` in web/reply.js
+/// carries, and the only cut of it (the web reads `quote` of a chat row).
 pub fn quote_of(text: &str) -> String {
     let line = split_quote(text)
         .1
@@ -250,13 +280,7 @@ pub fn quote_of(text: &str) -> String {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .unwrap_or_default();
-    match line.chars().count() > QUOTE_CHARS {
-        true => {
-            let cut: String = line.chars().take(QUOTE_CHARS - 1).collect();
-            format!("{}…", cut.trim_end())
-        }
-        false => line.to_string(),
-    }
+    super::view::clip(line, QUOTE_CHARS)
 }
 
 /// A manager reply that opens with `> message <id>` quotes that message in the owner's format
@@ -277,6 +301,7 @@ pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<String
                 id: found,
                 from: Author::Owner | Author::Manager { .. } | Author::Role { .. },
                 text,
+                ..
             } if *found == id => Some(text),
             ManagerEvent::Reply {
                 id: found,
@@ -343,7 +368,7 @@ pub const CHAT_ENTRIES: usize = 200;
 /// The chat after message `after` (all of it when `after` is none or unknown): messages,
 /// replies, rotations and stops, the newest `limit` of them (`CHAT_ENTRIES` for a view, no
 /// cap for a find over the whole history), and how many older ones were left out.
-/// `Delivered` and `Agent` entries are not conversation.
+/// `Delivered`, `Agent` and `Ping` entries are not conversation, so pings use no room.
 pub fn chat_window(
     log: &[ManagerEntry],
     after: Option<u64>,
@@ -357,7 +382,9 @@ pub fn chat_window(
         .filter(|entry| {
             !matches!(
                 entry.event,
-                ManagerEvent::Delivered { .. } | ManagerEvent::Agent { .. }
+                ManagerEvent::Delivered { .. }
+                    | ManagerEvent::Agent { .. }
+                    | ManagerEvent::Ping { .. }
             )
         })
         .collect();
@@ -618,6 +645,9 @@ pub enum ManagerRequest {
         /// Another project's manager; none is the owner.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<Author>,
+        /// The chat's short form of an events message (`ManagerEvent::Message::short`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        short: Vec<Short>,
     },
     /// wsx writes to the owner with no manager turn: `event` as a delivered events message and
     /// `text` as the reply to it, with no usage. Refused while a turn runs: a reply after that
