@@ -79,7 +79,7 @@ export function RoutinesPage({ project, onClose, grip }) {
                 <button type="button" class="routine" aria-expanded=${open === row.name} onClick=${() => setOpen(open === row.name ? null : row.name)}>
                   <span class="routine-name">${row.name}</span>
                   <span class="routine-state" data-on=${row.enabled ? "" : null}>${row.enabled ? "On" : "Off"}</span>
-                  <span class="routine-when">${schedule(row.trigger)}${row.post === false ? ", no chat post" : ""}</span>
+                  <span class="routine-when">${schedule(row.trigger)}${row.post === false ? ", not told to you" : ""}</span>
                   <span class="routine-next">${row.next_run_unix_ms ? `next ${clock(row.next_run_unix_ms)}` : "no next run"}</span>
                   <span class="routine-last" data-failed=${failedRun(row.last) ? "" : null} data-found=${foundRun(row.last) ? "" : null}>${lastRun(row.last, now)}</span>
                 </button>

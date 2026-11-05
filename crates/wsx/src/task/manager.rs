@@ -280,7 +280,8 @@ fn instructions(
          A turn of only Events is your work, not a message for the owner. Act on it, then \
          reply with one short line of what you did, or with exactly `-` when nothing \
          changed for the owner; when it finishes what you said you would report, report \
-         it. Write more only when the owner must decide now, and then \
+         it. A routine line marked 'for the owner' is answered with a short message to the \
+         owner, never `-`. Write more only when the owner must decide now, and then \
          end the reply with one plain question. Never hand the owner chores: no commands, files, settings or \
          tasks to verify. Do such work through a task, or drop \
          it. \
@@ -898,12 +899,12 @@ impl Manager {
             .unwrap_or(0)
     }
 
-    /// Post each routine run that ended to the chat, with no turn, unless the routine opts out;
-    /// a failure, and the output of a routine that does not post, is also an event line. A
-    /// success that printed nothing to stdout posts nothing and costs no turn.
-    /// ref: docs/tasks.md "Routines"
+    /// Make an event of each routine run that ended: for a routine that posts, one the manager
+    /// answers to the owner in a turn of its own ([`routine_event`]); for one that does not, the
+    /// end of its output for the manager's work. A success that printed nothing to stdout is no
+    /// event and costs no turn. ref: docs/tasks.md "Routines"
     fn watch_routines(&mut self) {
-        // ^ A post inside a turn would read as its end: the runs wait for the turn to end.
+        // ^ An event inside a running turn would read as its end: the runs wait for the turn.
         if self.turn.is_some() {
             return;
         }
@@ -928,31 +929,17 @@ impl Manager {
                 .map(|routine| routine.name)
                 .collect(),
         };
-        let mut posted = false;
         for run in runs {
             self.observed_routines = run.finished_epoch.unwrap_or_default();
-            let succeeded = run.status == RunStatus::Succeeded;
-            if succeeded && stdout_empty(&run) {
+            if run.status == RunStatus::Succeeded && stdout_empty(&run) {
                 continue;
             }
-            let posts = !quiet.contains(&run.routine);
-            if posts {
-                self.post(
-                    format!("routine {}", run.routine),
-                    routine_post(&run, &self.main),
-                );
-                posted = true;
-            }
-            if !succeeded || !posts {
-                self.pending_events.push(routine_line(&run));
-                self.last_event = Some(Instant::now());
-            }
-        }
-        // ^ Waiting events save the mark when they are logged; with none, a restart must not
-        // post these runs again.
-        if posted && self.pending_events.is_empty() {
-            self.state.routines_seen = Some(self.observed_routines);
-            self.save();
+            self.pending_events
+                .push(match quiet.contains(&run.routine) {
+                    true => routine_line(&run),
+                    false => routine_event(&run, &self.main),
+                });
+            self.last_event = Some(Instant::now());
         }
     }
 
@@ -1577,6 +1564,7 @@ impl Manager {
         // ^ Events that need no judgment go along with a turn that runs anyway, after its
         // own messages.
         let mut along = Vec::new();
+        let mut for_owner = false;
         if first != Author::Events {
             while let Some(at) = self.queue.iter().position(|(_, author, text)| {
                 *author == Author::Events && !self.wakes(author, text)
@@ -1631,6 +1619,7 @@ impl Manager {
                     }
                 }
             };
+            for_owner |= author == Author::Events && body.lines().any(routine_for_owner);
             text.push_str(&format!("{heading} (message {id}):\n{body}\n\n"));
             ids.push(id);
         }
@@ -1693,7 +1682,9 @@ impl Manager {
         let mut turn = held.map(|hold| hold.ids).unwrap_or_default();
         turn.extend(ids);
         self.turn = Some(turn);
-        self.turn_events = events_only;
+        // ^ A routine event for the owner gets a normal message, not a quiet line; the model
+        // choice stays with the events.
+        self.turn_events = events_only && !for_owner;
         self.report(runtime::AgentState::Working);
     }
 
@@ -2645,34 +2636,48 @@ fn routine_line(run: &RunRecord) -> String {
     format!("{}{}", routine_result(run), output_ends(&run.final_output))
 }
 
-/// The most of a run's output a chat post shows: its end.
-const POST_OUTPUT_CHARS: usize = 1500;
-/// The most files a chat post links.
-const POST_LINKS: usize = 3;
+/// The most of a run's output the owner event holds: its end.
+const EVENT_OUTPUT_CHARS: usize = 1500;
+/// The most files an owner event links.
+const EVENT_LINKS: usize = 3;
+/// The second clause of an owner event line (`routine_event`), which `routine_for_owner` reads.
+const FOR_OWNER: &str = "for the owner";
 
-/// A routine run's chat post: `succeeded after 4 s` or `failed (exit 3)`, the end of its output
-/// as written, and a link to each file of the main checkout the output names, which the web
-/// opens in its files page (docs/web-client.md "Files"). ref: docs/tasks.md "Routines"
-fn routine_post(run: &RunRecord, main: &Path) -> String {
-    let result = routine_result(run);
-    let head = format!("routine {} ", run.routine);
-    let mut text = result.strip_prefix(&head).unwrap_or(&result).to_string();
+/// A routine run's event for the owner, on one line, since the chat shows an event line only to
+/// its first `; `: `routine nightly succeeded after 4 s; for the owner; output ends: <the last
+/// 1,500 characters, newlines as ⏎>; files: [board.html](files/<path>) …`, a link to each file of
+/// the main checkout the output names, which the web opens in its files page
+/// (docs/web-client.md "Files"). ref: docs/tasks.md "Routines"
+fn routine_event(run: &RunRecord, main: &Path) -> String {
+    let mut line = format!("{}; {FOR_OWNER}", routine_result(run));
     let output = run.final_output.trim();
     if !output.is_empty() {
-        let skip = output.chars().count().saturating_sub(POST_OUTPUT_CHARS);
-        let end: String = output.chars().skip(skip).collect();
-        let fence = match end.contains("```") {
-            true => "````",
-            false => "```",
-        };
+        let skip = output.chars().count().saturating_sub(EVENT_OUTPUT_CHARS);
         let cut = if skip > 0 { "…" } else { "" };
-        text.push_str(&format!("\n{fence}text\n{cut}{end}\n{fence}"));
+        let end: String = output.chars().skip(skip).collect();
+        line.push_str(&format!(
+            "; output ends: {cut}{}",
+            end.lines().collect::<Vec<_>>().join(" ⏎ ")
+        ));
     }
-    for path in named_files(output, main) {
-        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
-        text.push_str(&format!("\n[{name}](files/{})", link_path(&path)));
+    let links: Vec<String> = named_files(output, main)
+        .iter()
+        .map(|path| {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            format!("[{name}](files/{})", link_path(path))
+        })
+        .collect();
+    if !links.is_empty() {
+        line.push_str(&format!("; files: {}", links.join(" ")));
     }
-    text
+    line
+}
+
+/// Whether an events line is a routine run's event for the owner (`routine_event`): the manager
+/// answers its turn with a message, not a quiet line. An output line never matches, since
+/// `routine_event` holds the output in one line.
+fn routine_for_owner(line: &str) -> bool {
+    line.starts_with("routine ") && line.split("; ").nth(1) == Some(FOR_OWNER)
 }
 
 /// The files of the main checkout that `output` names, as paths relative to it: a word with a
@@ -2709,7 +2714,7 @@ fn named_files(output: &str, main: &Path) -> Vec<String> {
             continue;
         }
         found.push(text.to_string());
-        if found.len() == POST_LINKS {
+        if found.len() == EVENT_LINKS {
             break;
         }
     }

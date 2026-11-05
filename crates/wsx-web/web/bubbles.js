@@ -42,7 +42,7 @@ export function conversation(entries, resolutions, approvals = [], checks = [], 
   // ^ wsx's recap request is not shown; the manager's answer to it is tagged Recap
   // (docs/tasks.md "Recap").
   const recaps = new Set(entries.filter((entry) => entry.kind === "message" && entry.from === "recap").map((entry) => entry.id));
-  // ^ A reply with no usage to events messages only is what wsx posted (a routine's run, the digest,
+  // ^ A reply with no usage to events messages only is what wsx posted (the digest,
   // `wsx task post`, the session news), not an agent turn: its bubble gets the secondary accent
   // border. The TUI reads the same rule (`is_post` in task_chat.rs, docs/tasks.md "Routines").
   const events = new Set(entries.filter((entry) => entry.kind === "message" && entry.from === "events").map((entry) => entry.id));
@@ -178,7 +178,7 @@ const peerColor = (project) => {
   return hash % PEER_COLORS + 1;
 };
 
-// A relative link in a reply opens a page: `files/<path>` (a routine's post) the project's files
+// A relative link in a reply opens a page: `files/<path>` (the session news, a manager's message about a routine) the project's files
 // page at that file, for a reader who may read files; `session/<id>` (a session that needs the
 // owner, docs/tasks.md "Session news") that session. One function per project, so the parse is reused.
 const relatives = new Map();

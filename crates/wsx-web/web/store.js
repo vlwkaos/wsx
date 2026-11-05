@@ -159,7 +159,7 @@ export function parseRoute(hash) {
   if (first === "p" && Number(second) && third === "routines") return { screen: "task", id: Number(second), task: null, routines: true };
   if (first === "p" && Number(second) && third === "r" && fourth) return { screen: "role", id: Number(second), role: decodeURIComponent(fourth) };
   if (first === "p" && Number(second)) {
-    // ^ `#/p/<project>/files/<path>` opens that file (a routine's chat post links it).
+    // ^ `#/p/<project>/files/<path>` opens that file (a manager's message about a routine links it).
     if (third === "files" && fourth) {
       try {
         return { screen: "files", id: Number(second), file: hash.split("/").slice(4).map(decodeURIComponent).join("/") };
