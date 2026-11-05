@@ -2975,7 +2975,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   await open(disk);
   await until("document.querySelector('.task-sheet .bar-state')?.textContent === 'closed'", "a closed task's top row has no stage");
   const closed = await top();
-  if (closed.health || await count(".task-sheet .progress") || closed.next !== "Closed without landing.") await fail(`a finished task's top reads ${JSON.stringify(closed)}`);
+  if (closed.health || await count(".task-sheet .progress") || closed.next !== show(disk).status.sentence) await fail(`a finished task's top reads ${JSON.stringify(closed)}`);
   await shot("progress-finished");
   await go(chat);
 }

@@ -241,7 +241,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
             "closed",
             "Closed",
             None,
-            "closed without landing",
+            "it ended without landing",
             "",
             now_ms,
         ),
