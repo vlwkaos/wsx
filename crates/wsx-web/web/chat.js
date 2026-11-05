@@ -133,7 +133,8 @@ export async function uploadFiles(picked, files, changed, fail) {
       fail(`${item.name} is larger than ${bytes(state.site.max_file_bytes)}.`);
     } else {
       try {
-        files.attachments.push(await api("api/media", { method: "PUT", query: { name: item.name }, body: item }));
+        const stored = await api("api/media", { method: "PUT", query: { name: item.name }, body: item });
+        files.attachments.push(original.pasted ? { ...stored, pasted: original.pasted } : stored);
       } catch (failure) {
         fail(`${item.name}: ${failure.message}`);
       }
@@ -143,27 +144,58 @@ export async function uploadFiles(picked, files, changed, fail) {
   }
 }
 
-// onPaste for a text box: pasted files go where the attach button sends them; a paste
-// without files stays a native text paste. A pasted screenshot comes as "image.png" or with
-// no name, so it gets a name with the time and the extension of its type.
+// A text paste longer than this becomes a file (docs/web-client-tasks.md "Composer"). The
+// server keeps a text file up to 1 MiB (src/media.rs MAX_TEXT_BYTES); a longer paste stays a
+// native paste, which a message cannot carry either.
+const LONG_PASTE = { chars: 2000, lines: 30, bytes: 1024 * 1024 };
+const lineCount = (text) => text.split(/\r\n|\r|\n/).length;
+const isLongPaste = (text) => (text.length > LONG_PASTE.chars || lineCount(text) > LONG_PASTE.lines)
+  && new TextEncoder().encode(text).length <= LONG_PASTE.bytes;
+
+// onPaste for a text box: pasted files go where the attach button sends them, and so does a
+// long text paste, as `pasted-<time>.txt` (`pasted`: what its chip says). A short text paste
+// stays a native paste. A pasted screenshot comes as "image.png" or with no name, so it gets
+// a name with the time and the extension of its type.
 export const pasteFiles = (onFiles) => can("media_upload") ? (event) => {
   const clipboard = event.clipboardData;
   let picked = [...(clipboard?.files ?? [])];
   if (!picked.length) picked = [...(clipboard?.items ?? [])].filter((item) => item.kind === "file").map((item) => item.getAsFile()).filter(Boolean);
-  if (!picked.length) return;
-  event.preventDefault();
   const time = new Date().toISOString().slice(0, 19).replace(/\D/g, "");
+  if (!picked.length) {
+    const text = clipboard?.getData("text/plain") ?? "";
+    if (!isLongPaste(text)) return;
+    event.preventDefault();
+    const file = new File([text], `pasted-${time}.txt`, { type: "text/plain" });
+    file.pasted = { lines: lineCount(text), first: text.trimStart().split(/\r\n|\r|\n/)[0].slice(0, 80) };
+    onFiles([file]);
+    return;
+  }
+  event.preventDefault();
   onFiles(picked.map((file, index) => file.name && !/^image\.\w+$/.test(file.name) ? file
     : new File([file], `pasted-${time}${index ? `-${index}` : ""}.${(file.type.split("/")[1] ?? "").split("+")[0] || "bin"}`, { type: file.type })));
 } : null;
 
+// Put a pasted-text attachment back into the text box at the caret and drop the file; the
+// caller saves the draft. It throws when the stored text cannot be read.
+export async function inlinePasted(item, node, files) {
+  const response = await fetch(resolve(item.url), { credentials: "same-origin" });
+  if (!response.ok) throw new Error("The pasted text could not be read. Remove it and paste again.");
+  node.setRangeText(await response.text(), node.selectionStart, node.selectionEnd, "end");
+  files.attachments = files.attachments.filter((other) => other !== item);
+  grow(node);
+}
+
 // The files a message will carry, an image as its thumbnail and another file as its name, each
-// with its remove (×), and the ones still uploading.
-export const FileChips = ({ files, onRemove }) => files.attachments.length || files.uploads.length ? html`
+// with its remove (×), and the ones still uploading. A pasted text shows its size in lines and
+// its first line, and "Paste as text" (`onInline`) turns it back into text in the field.
+export const FileChips = ({ files, onRemove, onInline }) => files.attachments.length || files.uploads.length ? html`
   <ul class="chips" aria-label="Files to send">
     ${files.attachments.map((item) => html`
       <li key=${item.hash}>
-        ${item.image ? html`<img src=${resolve(item.url)} alt=${item.name} />` : html`<span>${item.name} (${bytes(item.size)})</span>`}
+        ${item.image ? html`<img src=${resolve(item.url)} alt=${item.name} />`
+          : item.pasted ? html`<span data-pasted>Pasted text · ${item.pasted.lines} ${item.pasted.lines === 1 ? "line" : "lines"} · ${item.pasted.first}</span>`
+          : html`<span>${item.name} (${bytes(item.size)})</span>`}
+        ${item.pasted && html`<button class="link-action" type="button" onClick=${() => onInline(item)}>Paste as text</button>`}
         <button class="icon-button" type="button" title="Remove" aria-label=${`Remove ${item.name}`} onClick=${() => onRemove(item)}><${Icon} name="fail" /></button>
       </li>`)}
     ${files.uploads.map((item) => html`<li data-uploading><span>${item.name}</span><span class="note" role="status">Uploading…</span></li>`)}
@@ -410,6 +442,8 @@ function Composer({ session, working, reply, onReply, onSent }) {
     setError("");
     uploadFiles(files, draft, () => { keepDraft(session.id); renew((count) => count + 1); }, setError);
   };
+  const inline = (item) => inlinePasted(item, field.current, draft)
+    .then(() => changed(field.current.value), (failure) => setError(failure.message));
   const keydown = (event) => {
     if (event.isComposing || event.keyCode === 229) return;
     if (listOpen) {
@@ -448,7 +482,7 @@ function Composer({ session, working, reply, onReply, onSent }) {
   };
   return html`
     <div class="composer" data-shell=${shellMode ? "" : null}>
-      <${FileChips} files=${draft}
+      <${FileChips} files=${draft} onInline=${inline}
         onRemove=${(item) => { draft.attachments = draft.attachments.filter((other) => other !== item); keepDraft(session.id); renew((count) => count + 1); }} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
       <${QuoteChip} quote=${reply} onRemove=${() => onReply(null)} />

@@ -1223,6 +1223,26 @@ const carried = await evaluate("window.sentBodies");
 if (carried.length !== 1 || JSON.stringify(carried[0].attachments) !== JSON.stringify([pasted.hash])) await fail(`Send carried ${JSON.stringify(carried)}, not ${pasted.hash}`);
 await until("!document.querySelector('.chips li')", "the sent pasted image stayed in the composer");
 
+// A long text paste attaches as pasted-<time>.txt and the field stays empty; Send carries its hash,
+// the stored file holds exactly the text, and "Paste as text" puts the text back in the field.
+const longPaste = Array.from({ length: 60 }, (_, index) => `line ${index + 1} of a long pasted note, with words to fill it`).join("\n");
+if (!(await pasteInto(".composer-field", "a short paste ".repeat(14)))) await fail("a 200 character paste was cancelled");
+await pause(300);
+if (await evaluate("document.querySelectorAll('.chips li').length")) await fail("a 200 character paste became a file");
+await typeInto("");
+if (await pasteInto(".composer-field", longPaste)) await fail("a 3,000 character paste was left to the text box");
+await until("document.querySelectorAll('.chips li').length === 1 && !document.querySelector('.chips [data-uploading]')", "the long paste did not upload", 100);
+const longChip = await evaluate(`({ field: document.querySelector('.composer-field').value, chip: document.querySelector('.chips [data-pasted]')?.textContent ?? '',
+  saved: JSON.parse(localStorage.getItem('wsx-drafts'))['${ids.done}'].attachments[0] })`);
+if (longChip.field || longChip.chip !== "Pasted text · 60 lines · line 1 of a long pasted note, with words to fill it" || !/^pasted-\d{14}\.txt$/.test(longChip.saved.name) || !longChip.saved.url.endsWith(".txt")) {
+  await fail(`the pasted text chip reads ${JSON.stringify(longChip)}`);
+}
+if ((await evaluate(`fetch(new URL(${JSON.stringify(longChip.saved.url)}, document.baseURI)).then((response) => response.text())`)) !== longPaste) await fail("the stored file is not the pasted text");
+await evaluate("document.querySelector('.chips .link-action').click()");
+await until("!document.querySelector('.chips li') && document.querySelector('.composer-field').value.length > 0", "Paste as text did not put the text back");
+if ((await evaluate("document.querySelector('.composer-field').value")) !== longPaste) await fail("Paste as text changed the text");
+await typeInto("");
+
 // A sent message shows from the send's own answer, before the chat is read again; a read that
 // fails is tried again by itself, since no other change may come (docs/web-client-chat.md "Queue and Stop").
 await send("Network.setBlockedURLs", { urls: ["*/timeline*"] });

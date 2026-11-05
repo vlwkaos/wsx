@@ -6,7 +6,7 @@ import { api } from "./api.js";
 import { html, Icon, keepIn, readMap, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, leaveFor, shows, state, touch, update, useEventLoad, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
-import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
+import { AttachButton, FileChips, grow, inlinePasted, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
 import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
 import { FindBar, FindButton } from "./find.js";
 import { QuoteChip, useReply, withQuote } from "./reply.js";
@@ -616,6 +616,7 @@ function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent
     send();
   };
   const upload = (picked) => { setError(""); uploadFiles(picked, files, filesChanged, setError); };
+  const inline = (item) => inlinePasted(item, field.current, files).then(() => { changed(); filesChanged(); }, (failure) => setError(failure.message));
   const focusField = (event) => {
     if (event.target.closest("button, textarea, input")) return;
     event.preventDefault();
@@ -623,7 +624,7 @@ function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent
   };
   return html`
     <div class="composer">
-      <${FileChips} files=${files} onRemove=${(item) => { files.attachments = files.attachments.filter((other) => other !== item); filesChanged(); }} />
+      <${FileChips} files=${files} onInline=${inline} onRemove=${(item) => { files.attachments = files.attachments.filter((other) => other !== item); filesChanged(); }} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
       <${QuoteChip} quote=${reply} onRemove=${() => onReply(null)} />
       ${listOpen && html`<${Suggestions} label=${LIST_LABELS[mark]} active=${active} onHover=${setActive} onPick=${pick}

@@ -2153,6 +2153,34 @@ const sentWithFile = "[...document.querySelectorAll('.log .bubble[data-side=out]
 await until(`${sentWithFile} || !!document.querySelector('.composer .error')`, "the sent message shows no attachment", 100);
 if (!(await evaluate(sentWithFile))) await fail(`the message with a file was not sent: ${await evaluate("document.querySelector('.composer .error')?.textContent ?? ''")}; bubbles ${JSON.stringify(await bubbles())}`);
 if (await count(".composer .chips li")) await fail("the sent file stayed in the composer");
+
+// A long text paste (over 2,000 characters or 30 lines) becomes a pasted-<time>.txt attachment, not
+// text in the field; a short one stays the browser's. "Paste as text" puts it back in the field.
+const longPaste = Array.from({ length: 60 }, (_, index) => `line ${index + 1} of a long pasted note, with words to fill it`).join("\n");
+const shortPaste = "a short paste ".repeat(14);
+if (!(await pasteInto(".composer-field", shortPaste))) await fail("a 200 character paste was cancelled in the manager chat");
+await pause(300);
+if (await count(".composer .chips li")) await fail("a 200 character paste became a file in the manager chat");
+if (await pasteInto(".composer-field", longPaste)) await fail("a 3,000 character paste was left to the manager's text box");
+await until("document.querySelectorAll('.composer .chips li').length === 1 && !document.querySelector('.composer .chips [data-uploading]')", "the long paste did not upload in the manager chat", 100);
+const pastedChip = await evaluate(`({ field: document.querySelector('.composer-field').value, chip: document.querySelector('.composer .chips [data-pasted]')?.textContent ?? '',
+  inline: [...document.querySelectorAll('.composer .chips button')].map((node) => node.textContent) })`);
+if (pastedChip.field || pastedChip.chip !== "Pasted text · 60 lines · line 1 of a long pasted note, with words to fill it" || !pastedChip.inline.includes("Paste as text")) {
+  await fail(`the pasted text chip reads ${JSON.stringify(pastedChip)}`);
+}
+await shot("manager-pasted-text", ".composer-send");
+await click(".composer .chips .link-action");
+await until("document.querySelector('.composer-field').value.length > 0 && !document.querySelector('.composer .chips li')", "Paste as text did not put the text back");
+if ((await evaluate("document.querySelector('.composer-field').value")) !== longPaste) await fail("Paste as text changed the text");
+await typeInto(".composer-field", "");
+if (await pasteInto(".composer-field", longPaste)) await fail("the second long paste was left to the manager's text box");
+await until("document.querySelectorAll('.composer .chips li').length === 1 && !document.querySelector('.composer .chips [data-uploading]')", "the second long paste did not upload", 100);
+await click(".composer-send");
+const pastedLink = "[...document.querySelectorAll('.log .bubble[data-side=out] .attachments a')].find((link) => /^pasted-\\d{14}\\.txt /.test(link.textContent))";
+await until(`!!(${pastedLink}) || !!document.querySelector('.composer .error')`, "the sent pasted text shows no attachment", 100);
+const sentText = await evaluate(`(${pastedLink})?.href ? fetch((${pastedLink}).href).then((response) => response.text()) : ''`);
+if (sentText !== longPaste) await fail(`the attached file holds ${JSON.stringify(sentText.slice(0, 60))}, not the pasted text`);
+if (await count(".composer .chips li")) await fail("the sent pasted text stayed in the composer");
 const chatImages = ".log .bubble[data-side=out] .attachments a[data-view]";
 await viewImages("chat-images", chatImages);
 
