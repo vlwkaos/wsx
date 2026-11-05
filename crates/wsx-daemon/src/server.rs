@@ -54,7 +54,6 @@ pub(crate) fn new_state(persisted: Persisted) -> State {
         handoff_started: None,
         last_handoff_error: None,
         stop_reason: None,
-        persistence_dirty: false,
         recovery_in_progress: false,
         deliveries_in_flight: 0,
         stopping: false,
@@ -104,7 +103,7 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
         started_unix_ms: unix_time_millis(),
         recovered_from_backup,
         next_runtime_generation: AtomicU64::new(1),
-        state_path,
+        saver: state_store::Saver::spawn(state_path, write_state)?,
         lifecycle_path: lifecycle_marker_path(&socket),
     });
 
@@ -187,7 +186,6 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     let mut handed_off = false;
 
     while !advance_replacement(&daemon) {
-        retry_dirty_persistence(&daemon);
         // ^ docs/agent-reporting.md: retain staged publication after an
         // irreversible commit and retry only while this daemon owns the runtime.
         if reporter.is_some() && Instant::now() >= reporter_retry_at {
@@ -392,8 +390,8 @@ pub(crate) fn expire_agent_presence(daemon: &Daemon, now: Instant) {
     if changed.is_empty() {
         return;
     }
-    if save_state(&daemon.state_path, &state.persisted).is_err() {
-        state.persistence_dirty = true;
+    if let Err(error) = submit_state(&daemon.saver, &state.persisted) {
+        eprintln!("wsxd could not save expired agent presence: {error}");
     }
     for (pane_id, revision) in changed {
         publish(
@@ -403,13 +401,6 @@ pub(crate) fn expire_agent_presence(daemon: &Daemon, now: Instant) {
             "agent.presence_expired",
             pane_id.0,
         );
-    }
-}
-
-pub(crate) fn retry_dirty_persistence(daemon: &Daemon) {
-    let mut state = lock(&daemon.state);
-    if state.persistence_dirty && save_state(&daemon.state_path, &state.persisted).is_ok() {
-        state.persistence_dirty = false;
     }
 }
 
@@ -520,7 +511,7 @@ pub(crate) fn cleanup(daemon: &Daemon, socket: &Path) {
         let reason = state.stop_reason.unwrap_or(StopReason::Unexpected);
         let preserve_runtimes = reason == StopReason::Handoff;
         if !preserve_runtimes {
-            let _ = save_state(&daemon.state_path, &state.persisted);
+            let _ = submit_state(&daemon.saver, &state.persisted);
         }
         daemon.changed.notify_all();
         daemon.plugin_changed.notify_all();
@@ -539,6 +530,7 @@ pub(crate) fn cleanup(daemon: &Daemon, socket: &Path) {
         (runtimes, marker, preserve_runtimes)
     };
     if !preserve_runtimes {
+        let _ = daemon.saver.flush();
         for runtime in runtimes.into_values() {
             runtime.terminate();
         }

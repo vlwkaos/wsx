@@ -110,11 +110,15 @@ pub(crate) fn perform_live_handoff(
     let mut source_ownership = Vec::<(Arc<TerminalRuntime>, libc::pid_t)>::new();
     let mut step = "export";
     let result = (|| {
+        // ^ docs/daemon-state-store.md "Live handoff": the file is current, then this daemon
+        // writes nothing more unless the handoff rolls back.
+        daemon.saver.hold();
         let (persisted, generations) = {
             let state = lock(&daemon.state);
-            save_state(&daemon.state_path, &state.persisted)?;
+            submit_state(&daemon.saver, &state.persisted)?;
             (state.persisted.clone(), state.runtime_generations.clone())
         };
+        daemon.saver.flush_held()?;
         let export = |pane_id: &PaneId, runtime: &TerminalRuntime| {
             runtime
                 .handoff_state()
@@ -238,6 +242,7 @@ pub(crate) fn rollback_handoff(
     error: &io::Error,
 ) {
     let mut failures = vec![error.to_string()];
+    daemon.saver.release();
     if let Err(rebind_error) = rebind_listener(socket, listener) {
         failures.push(format!("bind the socket again: {rebind_error}"));
     }

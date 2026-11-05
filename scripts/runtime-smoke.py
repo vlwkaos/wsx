@@ -1568,6 +1568,15 @@ assert replacement["type"] == "replacement", replacement
 assert replacement["data"]["disposition"] == "deferred", replacement
 assert replacement["data"]["live_runtimes"] >= 1, replacement
 assert call("snapshot")["type"] == "snapshot"
+# ^ docs/daemon-state-store.md: a reply comes after the save, so a SIGKILL right after it
+# keeps the change.
+killed_session = next(item for item in call("snapshot")["data"]["sessions"] if item["id"] == recovery_session_id)
+renamed = call("session_rename", {
+    "session_id": recovery_session_id,
+    "label": "saved-before-kill",
+    "expected_revision": killed_session["revision"],
+})
+assert renamed["type"] == "ack", renamed
 process.kill()
 process.wait(timeout=5)
 # ^ As start() does: the killed wsxd's lock can outlive it for a moment.
@@ -1589,7 +1598,7 @@ assert recovered.returncode == 0, (
 )
 assert recovered.stdout, recovered
 snapshot = call("snapshot")["data"]
-assert next(item for item in snapshot["sessions"] if item["id"] == recovery_session_id)
+assert next(item for item in snapshot["sessions"] if item["id"] == recovery_session_id)["label"] == "saved-before-kill", snapshot
 
 # docs/daemon-live-upgrade.md: a stop ends running programs, so live sessions need --force.
 live_before_stop = call("lifecycle_status")["data"]

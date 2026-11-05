@@ -835,7 +835,12 @@ pub(crate) fn record_terminal_exit(daemon: &Daemon, state: &mut State, pane_id: 
     );
     state.push_event(Event::Exited { revision, pane_id });
     state.push_plugin_event("terminal.exited", revision, pane_id.0);
-    state.persistence_dirty = true;
+    if let Err(error) = submit_state(&daemon.saver, &state.persisted) {
+        eprintln!(
+            "wsxd could not save the exit of pane {}: {error}",
+            pane_id.0
+        );
+    }
     daemon.changed.notify_all();
     daemon.plugin_changed.notify_one();
 }

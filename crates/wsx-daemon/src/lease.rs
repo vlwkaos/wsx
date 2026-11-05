@@ -205,15 +205,7 @@ pub(crate) fn resize_terminal(
     {
         recipe.rows = rows;
         recipe.cols = cols;
-        if let Err(error) = save_state(&daemon.state_path, &state.persisted) {
-            state.persistence_dirty = true;
-            return Err(api(
-                "durability_degraded",
-                format!(
-                    "terminal resized but its recovery dimensions are not yet durable: {error}"
-                ),
-            ));
-        }
+        submit_state(&daemon.saver, &state.persisted).map_err(io_api)?;
     }
     Ok(Response::Ack {
         revision: state.revision,
