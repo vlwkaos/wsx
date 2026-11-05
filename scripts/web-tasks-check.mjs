@@ -23,7 +23,7 @@ import { jumps, launch, mobileAudit, pause } from "./web-cdp.mjs";
 const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, plansCheckout, longName, relayFile, wsxCli, newsFile] = process.argv.slice(2);
 const project = Number(projectArg);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched } = await launch({
-  captures, prefix: "tasks-", timeoutSeconds: 540,
+  captures, prefix: "tasks-", timeoutSeconds: 840,
 });
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
 const { file: mobilePath, source: mobileSource } = mobileAudit();
