@@ -3034,8 +3034,12 @@ const planId = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.
 await sayAgain(`QUOTE ${planId} still waiting on #8`);
 await until("!!document.querySelector('.log .bubble[data-side=in] button.quote') && !document.querySelector('.log .typing')", "the manager's quote did not show", 120);
 const quoted = await evaluate(`(() => { const button = [...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1);
-  return { quote: button.textContent, body: button.closest('.bubble-body').textContent.trim(), blockquote: !!button.closest('.bubble-body').querySelector('blockquote') }; })()`);
-if (quoted.quote !== "the plan is on the overview" || !quoted.body.endsWith("still waiting on #8") || quoted.blockquote) await fail(`the manager's quote shows ${JSON.stringify(quoted)}`);
+  // ^ Muted words after an accent edge, the owner's quote look: each colour read back from a probe that names the token.
+  const paint = (name) => { const probe = document.createElement('span'); probe.style.color = 'var(--' + name + ')'; document.body.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; };
+  const style = getComputedStyle(button);
+  return { quote: button.textContent, body: button.closest('.bubble-body').textContent.trim(), blockquote: !!button.closest('.bubble-body').querySelector('blockquote'),
+    muted: style.color === paint('color-muted'), accentEdge: style.borderLeftColor === paint('color-accent') && parseFloat(style.borderLeftWidth) > 0, oneLine: style.whiteSpace === 'nowrap' && button.offsetHeight < 40 }; })()`);
+if (quoted.quote !== "the plan is on the overview" || !quoted.body.endsWith("still waiting on #8") || quoted.blockquote || !quoted.muted || !quoted.accentEdge || !quoted.oneLine) await fail(`the manager's quote shows ${JSON.stringify(quoted)}`);
 await shot("manager-quote", ".composer-send");
 const jumped = await evaluate(`(() => { [...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1).click();
   return document.querySelector('.log .bubble[data-found]')?.textContent.trim() ?? null; })()`);
