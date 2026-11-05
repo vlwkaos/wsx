@@ -3081,8 +3081,8 @@ await closeSheet("the page", `#/p/${plansArg}`);
   // ^ A tap moves to plans' chat with #1's sheet over it; Back returns to ui's chat.
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).querySelector('a.task-chip').click()`);
   await until(`location.hash === '#/p/${plansArg}/t/1' && !!document.querySelector('dialog.task-sheet[open]')`, "plans #1 did not open from ui's chat", 60);
-  const sheet = await evaluate("document.querySelector('dialog.task-sheet[open] .bar-label, dialog.task-sheet[open] .row-title')?.textContent ?? ''");
-  if (!sheet.includes("#1") || !/jump between projects/.test(await evaluate("document.querySelector('dialog.task-sheet[open]').textContent"))) await fail(`the sheet is not plans' #1: ${sheet}`);
+  // ^ The sheet shows "#1" until the task's detail is read; plans' #1 is the one that mentions "jump between projects".
+  await until("/jump between projects/.test(document.querySelector('dialog.task-sheet[open]')?.textContent ?? '')", "the sheet is not plans' #1", 100);
   await evaluate("history.back()");
   await until(`location.hash === '${chat}' || location.hash === '#/p/${project}'`, "Back did not return to ui's chat", 60);
   // ^ The own project's bare #1 opens ui's #1.
