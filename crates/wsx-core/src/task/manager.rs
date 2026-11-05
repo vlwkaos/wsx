@@ -205,6 +205,78 @@ pub fn asks_owner(text: &str) -> bool {
             .ends_with(['?', '？'])
 }
 
+/// The longest quoted line, as long as the web's (`QUOTE_CHARS` in web/reply.js).
+const QUOTE_CHARS: usize = 120;
+/// A reply that opens with this and a message id quotes that message.
+pub const QUOTE_REF: &str = "> message ";
+
+/// A message split into its leading owner-format quote (`> <line>` and an empty line) and the
+/// words after it. ref: `splitQuote` in web/reply.js
+pub fn split_quote(text: &str) -> (Option<&str>, &str) {
+    let Some((line, rest)) = text.strip_prefix("> ").and_then(|t| t.split_once('\n')) else {
+        return (None, text);
+    };
+    (Some(line), rest.strip_prefix('\n').unwrap_or(rest))
+}
+
+/// A message's first line without its own quote, cut to 120 characters: the line a quote of it
+/// carries. ref: `quoteOf` in web/reply.js
+pub fn quote_of(text: &str) -> String {
+    let line = split_quote(text)
+        .1
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    match line.chars().count() > QUOTE_CHARS {
+        true => {
+            let cut: String = line.chars().take(QUOTE_CHARS - 1).collect();
+            format!("{}…", cut.trim_end())
+        }
+        false => line.to_string(),
+    }
+}
+
+/// A manager reply that opens with `> message <id>` quotes that message in the owner's format
+/// (`> <its first line>` and an empty line), so the chat needs no second format. Only a
+/// message the chat shows as a bubble can be quoted: the owner's, another manager's, a role's
+/// or a reply that says something. A bad or unknown id drops the line: the reply still
+/// stands, and the note says why.
+pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<String>) {
+    let text = text.trim_start();
+    let Some(line) = text.strip_prefix(QUOTE_REF) else {
+        return (text.to_string(), None);
+    };
+    let (line, rest) = line.split_once('\n').unwrap_or((line, ""));
+    let rest = rest.trim_start_matches('\n');
+    let said = line.trim().parse::<u64>().ok().and_then(|id| {
+        log.iter().find_map(|entry| match &entry.event {
+            ManagerEvent::Message {
+                id: found,
+                from: Author::Owner | Author::Manager { .. } | Author::Role { .. },
+                text,
+            } if *found == id => Some(text),
+            ManagerEvent::Reply {
+                id: found,
+                text,
+                quiet: false,
+                ..
+            } if *found == id && !says_nothing(text) => Some(text),
+            _ => None,
+        })
+    });
+    match said
+        .map(|said| quote_of(said))
+        .filter(|quote| !quote.is_empty())
+    {
+        Some(quote) => (format!("> {quote}\n\n{rest}"), None),
+        None => (
+            rest.to_string(),
+            Some(format!("no message {} to quote: line dropped", line.trim())),
+        ),
+    }
+}
+
 /// Whether the manager's last reply asks the owner and no owner message came after it, a later
 /// report or not: the web's Home row and the TUI's Workspace row show it in the accent.
 /// ref: docs/tasks.md "Manager"
@@ -360,6 +432,10 @@ pub struct ManagerState {
     /// The newest owner message a `minimal` agent has answered.
     #[serde(skip_serializing_if = "is_zero")]
     pub provisional_to: u64,
+    /// The id of the manager's newest reply that says something: the turn text names it, since
+    /// a reply quotes a message by id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_reply: Option<u64>,
     /// A provisional reply the manager's agent has not been told of yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub provisional: bool,

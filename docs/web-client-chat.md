@@ -66,7 +66,7 @@ Each device keeps, per chat (`wsx-read` in local storage, the newest 200 chats),
 
 # Replies
 
-Both chats: a swipe right on a message (64 px, on a touch screen), or a long press (450 ms) or a right click and **Reply**, puts its first line (its own quote left out, at most 120 characters) over the composer with × to remove it. The menu also has **Copy**, since a long press on a message does not select its text on a touch screen. The sent message starts with `> <that line>` and an empty line. The page shows such a message's quote as one muted line; a tap on it scrolls to the newest message above it that starts with that line, or says that the message is no longer in the conversation shown. `#` and `@` stay in the manager chat only (`web/reply.js`).
+Both chats: a swipe right on a message (64 px, on a touch screen), or a long press (450 ms) or a right click and **Reply**, puts its first line (its own quote left out, at most 120 characters) over the composer with × to remove it. The menu also has **Copy**, since a long press on a message does not select its text on a touch screen. The sent message starts with `> <that line>` and an empty line. The page shows such a message's quote as one muted line; a tap on it scrolls to the newest message above it that starts with that line, or says that the message is no longer in the conversation shown. `#` and `@` stay in the manager chat only (`web/reply.js`). The manager quotes the same way (docs/tasks.md "Manager"): its bubble starts with the quote as the same muted button, then its words as markdown, and a tap goes to the quoted message as for the person's own quote (`Quote` in `web/reply.js`).
 
 # Markdown
 

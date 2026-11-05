@@ -221,7 +221,10 @@ pub fn overview(scope: &Scope) -> Value {
     let last_reply = tail.iter().rev().find_map(|entry| match &entry.event {
         ManagerEvent::Reply {
             text, quiet: false, ..
-        } => Some((entry.unix_ms, view::clip(text.trim(), LAST_REPLY_CHARS))),
+        } => Some((
+            entry.unix_ms,
+            view::clip(task::manager::split_quote(text).1.trim(), LAST_REPLY_CHARS),
+        )),
         _ => None,
     });
     // ^ A reply asks the owner and no owner message came after it, a later report or not: the home
@@ -758,7 +761,10 @@ fn role_contacts(scope: &Scope) -> Vec<Value> {
                 .rev()
                 .find_map(|entry| match entry.event {
                     ManagerEvent::Reply { text, .. } => {
-                        Some(view::clip(text.lines().next().unwrap_or_default(), LAST_REPLY_CHARS))
+                        Some(view::clip(
+                            task::manager::split_quote(&text).1.lines().next().unwrap_or_default(),
+                            LAST_REPLY_CHARS,
+                        ))
                     }
                     _ => None,
                 });

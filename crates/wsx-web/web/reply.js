@@ -16,7 +16,7 @@ const SLOP_PX = 10;
 const OWN = "a, button, input, textarea, summary, pre, .table-wrap, .diagram";
 
 // The text after a leading quote line, and that line (or null).
-function splitQuote(text) {
+export function splitQuote(text) {
   const quoted = /^> (.*)\n\n?/.exec(text ?? "");
   return quoted ? [quoted[1], text.slice(quoted[0].length)] : [null, text ?? ""];
 }
@@ -29,9 +29,8 @@ export function quoteOf(text) {
 
 export const withQuote = (quote, body) => quote ? `> ${quote}\n\n${body}` : body;
 
-// A sent message: its quote as a button that goes to the quoted message, then its words.
-export function Quoted({ text, words }) {
-  const [quote, rest] = splitQuote(text);
+// A quote as a button that goes to the quoted message.
+export function Quote({ quote }) {
   const go = (event) => {
     const row = event.currentTarget.closest("[data-quote]");
     // ^ The newest message above this one that starts with the quoted line.
@@ -46,8 +45,14 @@ export function Quoted({ text, words }) {
     target.dataset.found = "";
     setTimeout(() => delete target.dataset.found, 2000);
   };
+  return html`<button class="quote" type="button" aria-label=${`Go to the quoted message: ${quote}`} onClick=${go}>${quote}</button>`;
+}
+
+// A sent message: its quote, then its words.
+export function Quoted({ text, words }) {
+  const [quote, rest] = splitQuote(text);
   return html`
-    ${quote != null && html`<button class="quote" type="button" aria-label=${`Go to the quoted message: ${quote}`} onClick=${go}>${quote}</button>`}
+    ${quote != null && html`<${Quote} quote=${quote} />`}
     ${rest && html`<p class="prose">${words ? words(rest) : rest}</p>`}`;
 }
 

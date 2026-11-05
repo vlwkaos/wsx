@@ -18,8 +18,8 @@ use wsx_core::task::{
     call_socket,
     checks::{self, CheckItem, CheckState},
     manager::{
-        activity, chat_window, pending_approvals, says_nothing, Author, ManagerEvent,
-        ManagerRequest, ManagerResponse, CHAT_ENTRIES,
+        activity, chat_window, pending_approvals, quote_of, says_nothing, split_quote, Author,
+        ManagerEvent, ManagerRequest, ManagerResponse, CHAT_ENTRIES,
     },
     owner,
     store::{self, ManagerDir, Stamp},
@@ -60,6 +60,9 @@ pub enum Row {
 pub enum Target {
     Session(u64),
     File(String),
+    /// A quote at the head of a message (`split_quote`): it goes to the quoted message, the
+    /// newest one above with that first line.
+    Quote(String),
 }
 
 /// A piece of a message: plain words, or a link `[label](session/<id>)` / `[label](files/<path>)`.
@@ -130,12 +133,17 @@ pub fn links(rows: &[Row]) -> Vec<(u64, usize, Target)> {
     let mut found = Vec::new();
     for row in rows {
         if let Row::Said { unix_ms, text, .. } = row {
-            let targets = parts(text).into_iter().filter_map(|part| match part {
+            // ^ The quote is link 0 of its message; `chat_lines` counts the same way.
+            let (quote, body) = split_quote(text);
+            let quoted = quote.map(|line| Target::Quote(line.to_string()));
+            let targets = parts(body).into_iter().filter_map(|part| match part {
                 Part::Link { target, .. } => Some(target),
                 Part::Text(_) => None,
             });
             found.extend(
-                targets
+                quoted
+                    .into_iter()
+                    .chain(targets)
                     .enumerate()
                     .map(|(nth, target)| (*unix_ms, nth, target)),
             );
@@ -851,8 +859,42 @@ impl ManagerChat {
                 }
                 Err(error) => self.notice = Some((format!("files/{path}: {error}"), true)),
             },
+            Some(Target::Quote(line)) => self.show_quoted(&line),
             None => self.link = None,
         }
+    }
+
+    /// Scroll to the newest message above the selected one whose first line is `line`.
+    fn show_quoted(&mut self, line: &str) {
+        let Some(from) = self.link.and_then(|(ms, _)| {
+            self.rows
+                .iter()
+                .position(|row| matches!(row, Row::Said { unix_ms, .. } if *unix_ms == ms))
+        }) else {
+            return;
+        };
+        let found = self.rows[..from]
+            .iter()
+            .rposition(|row| matches!(row, Row::Said { text, .. } if quote_of(text) == line));
+        let Some(at) = found else {
+            self.notice = Some((
+                "That message is no longer in the conversation shown here.".into(),
+                true,
+            ));
+            return;
+        };
+        let (width, _) = self.area.get();
+        let who = self.who().to_string();
+        let lines = |rows: &[Row]| {
+            crate::ui::task_chat::chat_lines(rows, &who, width, None)
+                .0
+                .len()
+        };
+        // ^ A message starts after the blank line that parts it from the one before.
+        self.center(
+            lines(&self.rows[..at]) + usize::from(at > 0),
+            lines(&self.rows),
+        );
     }
 
     fn close_file(&mut self) {

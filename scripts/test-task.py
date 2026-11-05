@@ -1423,7 +1423,7 @@ def run(wsx, wsxd, work, owned):
                  'stands alone, since a worker cannot ask', 'in every task new', 'With `--plan` the worker',
                  'Before `wsx task new`, compare the request', 'Never ask the owner to wait',
                  'for lean code', 'never send a task back to rebase', 'trust them over the worker',
-                 'Check the fixture rule.', 'runs with `--size small`', 'Only events that need you start a turn',
+                 'Check the fixture rule.', 'runs with `--size small`', 'open with `> message <id>`', 'Only events that need you start a turn',
                  'tell that worker to prove it', 'never skip or fail items', 'only when the owner\'s message of this turn says',
                  'A release refuses while items are open, unless the owner', '`wsx task trial <n>`',
                  '`--owner-said <id>`', 'never name a message that did not ask',
@@ -1515,6 +1515,32 @@ def run(wsx, wsxd, work, owned):
     replies = [e for e in manager_entries() if e['kind'] == 'reply']
     assert usage['input_tokens'] + usage['cache_read_tokens'] == 200000 and usage['context_tokens'] == 50000, usage
     assert usage['model'] == 'fake-manager', usage
+    # Quotes (docs/tasks.md "Manager"): a reply that opens with `> message <id>` is stored with
+    # that message's first line in the owner's quote format; a bad or unknown id drops the line and
+    # the reply stands. The next turn names the id of the manager's last reply.
+    promise = reply_to(js('task', 'say', 'STATUS promise')['id'])
+    own = reply_to(js('task', 'say', 'QUOTE %d still waiting on #8' % promise['id'])['id'])
+    assert own['text'] == '> %s\n\nstill waiting on #8' % promise['text'].splitlines()[0], own
+    assert 'Your last reply: %d.' % promise['id'] in turn_with('QUOTE %d still' % promise['id'])['message']
+    heard = js('task', 'say', 'QUOTE OWNER_SAID noted')
+    assert reply_to(heard['id'])['text'] == '> QUOTE OWNER_SAID noted\n\nnoted'
+    # ^ A quote of a quote is the words of that reply, not its quote line.
+    again = reply_to(js('task', 'say', 'QUOTE %d and again' % own['id'])['id'])
+    assert again['text'] == '> still waiting on #8\n\nand again', again
+    for bad in ('abc', '0', '99999999', '99999999999999999999', '-3'):
+        dropped = reply_to(js('task', 'say', 'QUOTE %s words stay' % bad)['id'])
+        assert dropped['text'] == 'words stay', (bad, dropped)
+    # ^ The TUI shows the quote as one line; `[` selects it and Enter goes to the quoted message,
+    # the owner's first one, far above.
+    first = reply_to(js('task', 'say', 'QUOTE 1 jump')['id'])
+    assert first['text'] == '> STATUS\n\njump', first
+    jumped = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
+        (r'(?m)^   \u258e STATUS$', b'['),
+        (r'(?m)^ MANAGER +Enter: open', b'\r'),
+        (r'(?m)^ You +\d\d:\d\d\n   STATUS$', b'\x1b'),
+        (r'(?m)^ MANAGER +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+    assert 'jump' in jumped[2] and 'jump' not in jumped[4], jumped[4]
     assert not any(e['kind'] == 'rotated' for e in manager_entries()), 'four 50k calls do not rotate'
     assert len(replies) > 3 and {e['usage']['cost_micro_usd'] for e in replies} == {1000}, replies
     # Event-only turns run on tasks.manager.eventModel unless a ready task the manager created
@@ -1722,7 +1748,7 @@ def run(wsx, wsxd, work, owned):
     assert rotated[-1].get('reason') == "the manager's instructions changed", rotated
     opened = turn_with('STATUS after the change')['message']
     # ^ The notes come first, then the handover.
-    assert opened.startswith("The owner's decisions") and '\n\nHandover (this is a new conversation' in opened and 'You: noted events' in opened, opened
+    assert opened.startswith("The owner's decisions") and '\n\nHandover (this is a new conversation' in opened and re.search(r'You \(reply \d+\): noted events', opened) and 'Owner (message ' in opened, opened
     # ^ The three failures before the rotation are one line: the newest and how many.
     routines = opened.split('\nRoutine results (')[1].split('\n\n')[0].split('\n')[1:]
     assert routines == ['routine nightly failed (exit 3); 3 failures, never succeeded'], opened

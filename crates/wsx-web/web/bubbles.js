@@ -4,7 +4,7 @@
 import { clock, firstSentence, html, Icon, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
-import { Quoted, quoteOf } from "./reply.js";
+import { Quote, Quoted, quoteOf, splitQuote } from "./reply.js";
 import { ChatApprovals, TaskChip, withChips } from "./tasks.js";
 import { CheckRow } from "./checks.js";
 import { can, sessionLink, shows } from "./store.js";
@@ -207,7 +207,9 @@ export function Bubble({ project, row, words: home, names, fresh }) {
   if (out) {
     body = html`<div class="bubble-body" id=${id}><${Quoted} text=${row.entry.text} words=${words} /></div><${Attachments} files=${row.entry.attachments} />`;
   } else {
-    body = html`<div class="bubble-body" id=${id}><${Markdown} text=${row.entry.text} words=${words} relative=${relativeOf(project)} prose /></div>
+    // ^ The manager quotes an earlier message in the owner's format (docs/tasks.md "Manager").
+    const [quote, rest] = splitQuote(row.entry.text);
+    body = html`<div class="bubble-body" id=${id}>${quote != null && html`<${Quote} quote=${quote} />`}<${Markdown} text=${rest} words=${words} relative=${relativeOf(project)} prose /></div>
       ${row.approvals && html`<${ChatApprovals} project=${project} items=${row.approvals} />`}`;
   }
   return html`
