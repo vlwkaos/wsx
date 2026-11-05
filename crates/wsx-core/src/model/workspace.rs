@@ -197,10 +197,10 @@ pub struct TaskPreview {
     pub local: bool,
 }
 
-/// The effort levels both Claude Code (`--effort`) and Pi (`--thinking`) take.
 /// How long a task the manager must act on may wait with no action: 30 minutes.
 pub const DEFAULT_MANAGER_REVIEW_SECS: u64 = 30 * 60;
 
+/// The effort levels both Claude Code (`--effort`) and Pi (`--thinking`) take.
 pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// The effort of a `task new --size small` task: high on every model, never lower.
 pub const SMALL_EFFORT: &str = "high";
