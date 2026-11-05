@@ -1847,7 +1847,9 @@ def run(wsx, wsxd, work, owned):
     big_task = js('task', 'new', 'WORK big.txt MEMO the newest memo')['id']
     assert wait_state(big_task, 'ready', 'failed')['state'] == 'ready'
     js('task', 'close', big_task, '--discard')
-    archive = wait(lambda: (notes / 'context-archive.md').exists() and notes / 'context-archive.md', 'the archive')
+    # ^ The archive is written first and context.md after it: wait for the file read next.
+    archive = notes / 'context-archive.md'
+    wait(lambda: '- #%d: the newest memo' % big_task in (notes / 'context.md').read_text(), 'the newest memo in context.md')
     kept = (notes / 'context.md').read_text()
     moved = archive.read_text()
     assert len(kept.encode()) <= 32 * 1024 and '- #1: ' not in kept and moved.startswith('- #1: ') and '- #%d: the newest memo' % big_task in kept, (len(kept), moved[:40])
