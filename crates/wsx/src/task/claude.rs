@@ -234,7 +234,9 @@ fn worker_instructions(record: &TaskRecord, workflow: &TaskWorkflow, skills: boo
          and reads you already know you need in one message, not one after another, and read \
          line ranges, not whole files. {search}Never poll: a background job tells you when it \
          ends. Wait for or stop each background job before your result: one that ends after \
-         it starts another turn. \
+         it starts another turn. Stop a job only by the pid or process group you started, \
+         never with `pkill -f` or `killall`: the boundary lets you signal only your own \
+         processes. \
          Prove what you can: each check a command, a test or a capture shows goes to \
          `evidence` with that command or the capture's path, and a number or a cause in the \
          summary names its source. Anything a test, an assert or a \

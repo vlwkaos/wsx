@@ -2,7 +2,8 @@
 //! manager host to the whole agent process tree (Bash, file tools, MCP servers, hooks), so any
 //! adapter runs in its own no-prompt mode inside it. A deny-list: reads and writes are open
 //! except what other tasks, wsx and the owner's secrets own; network, loopback and PTYs stay
-//! open. ref: docs/tasks.md "Permissions"
+//! open. A signal reaches only a process of the same sandbox, so one agent's `pkill` cannot
+//! end another agent, the manager, wsxd or the owner's processes. ref: docs/tasks.md "Permissions"
 // ^ Claude Code (https://code.claude.com/docs/en/sandboxing) and Codex
 // (https://developers.openai.com/codex/security) confine commands the same way on macOS:
 // `sandbox-exec -p <profile>` with a generated Seatbelt profile.
@@ -96,8 +97,13 @@ impl Boundary {
     }
 
     /// The Seatbelt profile: allow everything, then the denials, then the role's own paths.
-    fn profile(&self) -> String {
-        let mut profile = String::from("(version 1)\n(allow default)\n");
+    // ^ Each `sandbox-exec` is its own sandbox, so `same-sandbox` keeps an agent's signals to
+    // its own tree (daemonised children included) though every worker shares this text.
+    // Incident 2026-11-05: one worker's `pkill -f` ended three other workers.
+    pub(super) fn profile(&self) -> String {
+        let mut profile = String::from(
+            "(version 1)\n(allow default)\n(deny signal)\n(allow signal (target same-sandbox))\n",
+        );
         let mut rule = |verb: &str, filter: String| profile += &format!("({verb} {filter})\n");
         for path in &self.deny_read {
             rule("deny file-read*", subpath(path));

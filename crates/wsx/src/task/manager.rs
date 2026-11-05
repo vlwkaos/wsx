@@ -411,6 +411,18 @@ fn role_preamble(role: &str, project: &str, brief: &str) -> String {
     )
 }
 
+/// The manager's boundary profile as text. ref: scripts/test-manager-boundary.py
+pub fn print_profile(project_id: &str) -> Result<()> {
+    let (project, main) = super::project_by_id(project_id)?;
+    let dir = ManagerDir::open(project_id)?;
+    let overview = store::ensure_overview(project_id, &project)?;
+    print!(
+        "{}",
+        Boundary::manager(&main, &dir.path, &overview)?.profile()
+    );
+    Ok(())
+}
+
 pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
     let (project, main) = super::project_by_id(project_id)?;
     let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
