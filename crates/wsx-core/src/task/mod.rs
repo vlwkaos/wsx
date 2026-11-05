@@ -296,6 +296,9 @@ pub enum LogEvent {
         step: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trigger: Option<TurnTrigger>,
+        /// The turn came through a deploy re-exec: `trigger` is still its real cause.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reexec: bool,
     },
     Checks {
         results: Vec<CheckResult>,

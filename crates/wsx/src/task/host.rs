@@ -29,8 +29,9 @@ use wsx_core::task::{
     owner::HOST_TIMEOUT,
     report,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
-    view, Actor, CheckResult, HostRequest, HostResponse, HumanVerify, LogEvent, MessageKind,
-    TaskRecord, TaskState, TurnTrigger, WaitOn, Waiting, WorkerResult, MAX_MESSAGE_BYTES,
+    view, Actor, CheckResult, Evidence, HostRequest, HostResponse, HumanVerify, LogEvent,
+    MessageKind, TaskRecord, TaskState, TurnTrigger, WaitOn, Waiting, WorkerResult,
+    MAX_MESSAGE_BYTES,
 };
 
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
@@ -45,6 +46,8 @@ it and answers with go or what to change.";
 /// At most this much of the manager's memo lines goes into a task's first turn.
 const MAX_TASK_CONTEXT_BYTES: usize = 4 * 1024;
 const HANDOFF_FILE: &str = "handoff.txt";
+/// The first line of a handoff names the trigger of the turn it carries.
+const HANDOFF_TRIGGER: &str = "trigger: ";
 const MAX_HANDOFF_BYTES: u64 = 4 * 1024 * 1024;
 /// Turns a failed check starts by itself before the task fails; an owner's message resets it.
 const MAX_CHECK_RETRIES: u32 = 2;
@@ -124,7 +127,14 @@ struct CheckRun {
     /// to the worker as a turn after its result, never to a client that waits.
     queued: bool,
     /// The answer of a queued run that ended before the result: the result gets it as a turn.
-    answer: Option<String>,
+    answer: Option<CheckAnswer>,
+}
+
+/// A check-run's answer to the worker, and the proof the host keeps when the run passed on
+/// an unchanged tree: a pass that comes after the worker's last result needs no turn.
+struct CheckAnswer {
+    text: String,
+    proof: Option<Evidence>,
 }
 
 /// What a `check-run` that queues for the check slot answers at once: a background job of
@@ -142,6 +152,10 @@ struct Host {
     turn_active: bool,
     /// Adds sent during a turn or a check, delivered when it ends.
     pending: VecDeque<String>,
+    /// Land notices: they join a turn that starts anyway and never start one.
+    notices: Vec<String>,
+    /// The running turn came through a deploy re-exec: its `result` logs it.
+    carried: bool,
     stop_requested: bool,
     /// The result of the latest turn, until its checks end.
     last_result: Option<WorkerResult>,
@@ -220,6 +234,8 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         generation: 0,
         turn_active: false,
         pending: VecDeque::new(),
+        notices: Vec::new(),
+        carried: false,
         stop_requested: false,
         last_result: None,
         last_denials: Vec::new(),
@@ -307,9 +323,10 @@ impl Host {
             self.record.working_copy.display()
         ));
         // ^ A host that exec'd its replaced binary starts the turn the old one handed over.
-        if let Some(text) = self.take_handoff() {
+        if let Some((text, trigger)) = self.take_handoff() {
             self.say("restarted with the replaced wsx binary");
-            self.start_turn(&text, TurnTrigger::Restart);
+            self.carried = true;
+            self.start_turn(&text, trigger);
         } else {
             self.resume_state()?;
         }
@@ -422,6 +439,7 @@ impl Host {
                     for reply in run.iter().flat_map(|run| &run.replies) {
                         let _ = reply.send(response.clone());
                     }
+                    let tree_kept = stored.is_some();
                     if let Some((tree, ran)) = stored {
                         match &mut self.stored_checks {
                             Some((on, results)) if *on == tree => results.extend(ran),
@@ -430,15 +448,22 @@ impl Host {
                     }
                     self.log(LogEvent::CheckRun { results });
                     // ^ The worker finishes with the proof it asked for, then the checks run.
-                    let answer = format!(
-                        "Your check-run ended. Its answer:\n{}\nPut it in your result's \
-                         evidence (fix what fails in code you changed) and return your \
-                         result again.",
-                        response.stdout.trim_end()
-                    );
+                    let answer = CheckAnswer {
+                        text: format!(
+                            "Your check-run ended. Its answer:\n{}\nPut it in your result's \
+                             evidence (fix what fails in code you changed) and return your \
+                             result again.",
+                            response.stdout.trim_end()
+                        ),
+                        proof: (response.code == 0 && tree_kept).then(|| Evidence {
+                            check: "wsx task check-run (recorded by the host)".into(),
+                            proof: response.stdout.trim_end().into(),
+                        }),
+                    };
                     match run {
-                        Some(run) if run.result_waits || run.queued && !self.turn_active => {
-                            self.send_check_answer(answer)
+                        Some(run) if run.result_waits => self.answer_check_run(answer, true),
+                        Some(run) if run.queued && !self.turn_active => {
+                            self.answer_check_run(answer, false)
                         }
                         // ^ The worker still works after `queued`: its result gets the answer.
                         Some(run) if run.queued => {
@@ -466,14 +491,22 @@ impl Host {
             && self.binary.as_ref().is_some_and(hosting::Binary::replaced)
     }
 
-    fn take_handoff(&self) -> Option<String> {
+    /// The turn a replaced host handed over, and what started it. A file from an older host
+    /// has no trigger line: it reads as `Restart`.
+    fn take_handoff(&self) -> Option<(String, TurnTrigger)> {
         let bytes = self
             .dir
             .read_file(HANDOFF_FILE, MAX_HANDOFF_BYTES)
             .ok()
             .flatten()?;
         let _ = std::fs::remove_file(self.dir.file(HANDOFF_FILE));
-        Some(String::from_utf8_lossy(&bytes).into_owned())
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let named = text.strip_prefix(HANDOFF_TRIGGER).and_then(|rest| {
+            let (name, text) = rest.split_once('\n')?;
+            let trigger = serde_json::from_value(serde_json::Value::String(name.into())).ok()?;
+            Some((text.to_string(), trigger))
+        });
+        Some(named.unwrap_or((text, TurnTrigger::Restart)))
     }
 
     fn resume_state(&mut self) -> Result<()> {
@@ -617,8 +650,8 @@ impl Host {
     }
 
     /// Another task's land changed files this one shares. The text joins the worker's next
-    /// turn, at its step boundary; a task with no turn to come (ready, checking, failed)
-    /// gets nothing, as its own land rebases it. ref: docs/tasks.md "Landing"
+    /// turn, at its step boundary, and starts none; a task with no turn to come (ready,
+    /// checking, failed) gets nothing, as its own land rebases it. ref: docs/tasks.md "Landing"
     fn notice(&mut self, text: String) -> Result<String> {
         check_message(&text)?;
         if !self.turn_active && self.record.state != TaskState::Waiting {
@@ -632,7 +665,7 @@ impl Host {
             mode: MessageKind::Add,
             text: text.clone(),
         });
-        self.pending.push_back(text);
+        self.notices.push(text);
         Ok("queued for the worker's next turn".into())
     }
 
@@ -922,6 +955,16 @@ impl Host {
             return;
         }
         self.reported = None;
+        let carried;
+        let text = if self.notices.is_empty() {
+            text
+        } else {
+            carried = format!(
+                "{text}\n\n{}",
+                self.notices.drain(..).collect::<Vec<_>>().join("\n\n")
+            );
+            carried.as_str()
+        };
         if let Err(error) = self.try_start_turn(text, trigger) {
             let reason = format!("cannot start the agent: {error:#}");
             self.say(&reason);
@@ -987,7 +1030,12 @@ impl Host {
         if self.must_follow_binary() {
             // ^ Every turn gets the replaced binary's launch: this host hands the turn over
             // and execs it once the caller has its answer; the new host resumes the agent.
-            self.dir.write_file(HANDOFF_FILE, text.as_bytes())?;
+            let header = serde_json::to_value(trigger)?;
+            let handoff = format!(
+                "{HANDOFF_TRIGGER}{}\n{text}",
+                header.as_str().unwrap_or("restart")
+            );
+            self.dir.write_file(HANDOFF_FILE, handoff.as_bytes())?;
             self.reexec = true;
             self.set_state(TaskState::Working);
             self.say("the wsx binary was replaced: the host restarts with it");
@@ -1271,6 +1319,7 @@ impl Host {
         if turn.is_error && result.status == "done" {
             result.status = "failed".into();
         }
+        let reexec = std::mem::take(&mut self.carried);
         self.log(LogEvent::Result {
             status: result.status.clone(),
             summary: result.summary.clone(),
@@ -1282,6 +1331,7 @@ impl Host {
                 .get(self.record.step as usize)
                 .map(|step| step.name.clone()),
             trigger: Some(self.trigger),
+            reexec,
         });
         self.say(&format!(
             "result {}: {}",
@@ -1296,13 +1346,22 @@ impl Host {
         if let Some(run) = &mut self.check_run {
             if let Some(answer) = run.answer.take() {
                 self.check_run = None;
-                self.send_check_answer(answer);
+                self.answer_check_run(answer, true);
                 return;
             }
             run.result_waits = true;
             self.say("the result waits for its check-run");
             return;
         }
+        self.settle_result();
+    }
+
+    /// What follows the worker's result, held in `last_result`: the block, plan and step
+    /// rules, then the checks.
+    fn settle_result(&mut self) {
+        let Some(result) = self.last_result.clone() else {
+            return;
+        };
         // ^ Claude's own turn (a background task's notice) can answer while the checks of an
         // earlier result run: those checks answer it, never a second run beside them.
         if let Some((_, newer)) = &mut self.gate {
@@ -1311,7 +1370,7 @@ impl Host {
         // ^ Only the worker's own word blocks a task. Denials it worked around are evidence.
         if result.status == "blocked" {
             self.log(LogEvent::Blocked {
-                denials: turn.denials,
+                denials: self.last_denials.clone(),
             });
             self.wait(WaitOn::Owner, first_line(&result.summary).to_string());
             // ^ A worker stopped by a full disk continues once there is space again.
@@ -2141,6 +2200,29 @@ impl Host {
         });
     }
 
+    /// A check-run that ended after the worker's last result. A pass on an unchanged tree
+    /// starts no turn: on the last step the host records it as evidence in the held result,
+    /// on an earlier one the next step's prompt carries it. Else (a failure, a result that is
+    /// not `done`) the worker gets it as a turn. ref: docs/tasks.md "Check-run"
+    fn answer_check_run(&mut self, answer: CheckAnswer, held: bool) {
+        let done = self
+            .last_result
+            .as_ref()
+            .is_some_and(|result| result.status == "done");
+        let (true, true, Some(proof)) = (held, done, answer.proof) else {
+            return self.send_check_answer(answer.text);
+        };
+        if (self.record.step as usize) + 1 < self.record.steps.len() {
+            self.pending.push_back(answer.text);
+        } else if let Some(mut result) = self.last_result.take() {
+            result.evidence.push(proof);
+            self.write_result(&result, &[]);
+            self.last_result = Some(result);
+        }
+        self.say("check-run passed after the result: no turn for its answer");
+        self.settle_result();
+    }
+
     /// A check-run's answer goes to the worker as one turn, after its current turn if any.
     fn send_check_answer(&mut self, answer: String) {
         self.say("check-run: its answer goes to the worker");
@@ -2323,6 +2405,8 @@ impl Host {
             }
         }
         self.deliver_pending(TurnTrigger::Message);
+        // ^ No turn came: the land rebases this task, a notice would only wake the worker.
+        self.notices.clear();
     }
 
     /// Whether the project lands ready tasks by itself (`tasks.land.auto`).

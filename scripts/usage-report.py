@@ -118,7 +118,7 @@ def task_turns(task, events):
             turns.append({"ms": e["unix_ms"], "step": "ping", "u": u, "status": None,
                           "after_rotation": False, "after_limit": False,
                           "gap": start - last_end if last_end is not None else None,
-                          "logged": True, "trigger": "ping"})
+                          "logged": True, "trigger": "ping", "reexec": False})
             last_end = e["unix_ms"]
         elif kind == "result":
             u = e.get("usage") or {}
@@ -132,7 +132,7 @@ def task_turns(task, events):
             turns.append({"ms": e["unix_ms"], "step": step, "u": u, "status": e.get("status"),
                           "after_rotation": rot_next, "after_limit": limit_next,
                           "gap": start - last_end if last_end is not None else None,
-                          "logged": "trigger" in e,
+                          "logged": "trigger" in e, "reexec": bool(e.get("reexec")),
                           "trigger": trigger or "no event (result retry, limit resume)"})
             last_end, trigger = e["unix_ms"], None
             rot_next, limit_next = False, limit
@@ -296,6 +296,12 @@ def main():
           "during any step; older lines replay steps from task.json, after = check retries, adds, conflicts)")
     group(lambda t: (t["u"].get("model") or "unrecorded").replace("claude-", ""), "Per worker model")
     group(lambda t: t["trigger"], "What started each turn (logged `trigger`)", [t for t in all_turns if t["logged"]])
+    # ^ A turn a deploy re-exec carried keeps its real trigger (`reexec` on the result); only
+    # lines from before that logged `restart`, which was the label of any of them.
+    carried = [t for t in all_turns if t["reexec"]]
+    if carried:
+        print(f"\n{len(carried)} turns came through a deploy re-exec, ${usd(sum(map(cost, carried)))}; "
+              "they are in the table above under their own trigger")
     group(lambda t: t["trigger"], "What started each `after` turn on older lines (latest event since the task's previous turn)",
           [t for t in all_turns if t["step"] == "after"])
     group(lambda t: "limit hit" if t["step"] == "limit hit" else "after rotation" if t["after_rotation"]
