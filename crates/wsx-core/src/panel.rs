@@ -176,7 +176,7 @@ pub fn request(
     match client.call(&request) {
         Ok(crate::runtime::Response::Panel(Response::Error(message))) => Err(message),
         Ok(crate::runtime::Response::Panel(response)) => Ok(response),
-        // ^ A wsxd from before revision 42 refuses the request.
+        // ^ A wsxd from before panels (revision 43) refuses the request.
         Ok(crate::runtime::Response::Error(error)) => Err(format!(
             "wsxd has no panels ({}); run `wsx daemon restart`",
             error.message
@@ -292,7 +292,11 @@ pub fn run(panel: &PanelConfig, cwd: &Path) -> PanelRun {
     };
     // ^ Let the readers take what is left in the pipes; a child that left the group may keep
     // them open, and then what was read so far is the output.
-    std::thread::sleep(STREAM_GRACE.min(Duration::from_millis(if timed_out { 300 } else { 50 })));
+    std::thread::sleep(if timed_out {
+        STREAM_GRACE
+    } else {
+        Duration::from_millis(50)
+    });
     let exit = status.and_then(|status| status.code());
     let status = match (timed_out, exit) {
         (true, _) => PanelStatus::TimedOut,
