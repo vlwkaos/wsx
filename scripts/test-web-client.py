@@ -4024,7 +4024,7 @@ merge_seconds = 3
         def line(n, what, project='demo'):
             row = next(row for row in steady(owner, 'GET', '/api/tasks/%d' % ids[project])[1]['tasks'] if row['id'] == n)
             what = row['status']['label'] if what == 'asks' else what
-            title = row['title'] if len(row['title']) <= 60 else row['title'][:60] + '…'  # cut as the push cuts it
+            title = row['title'] if len(row['title']) <= 60 else row['title'][:59].rstrip() + '…'  # cut as view::clip cuts it: 60 in all
             return '#%d %s: %s' % (n, title, what)
 
         def manager_push(wrote=None):
