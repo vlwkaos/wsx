@@ -49,7 +49,8 @@ tasks:
       the first check-run, search scripts/test-*.py and scripts/*-check.mjs for each UI string,
       label, menu item or route the diff adds, renames or removes, and update those asserts. Run
       `task` for task code (crates/*/src/task, scripts/test-task.py): `task` and `web` run on
-      GitHub Actions and answer `queued`; their captures come back to .work/web-captures. After
+      GitHub Actions and answer `queued`; their captures come back to .work/web-captures. Name
+      all of them in one check-run (`wsx task check-run web smoke`): they run at once. After
       a rebase or a conflict fix run no check-run: the host's checks follow. Never commit knowledge/: it is
       git-ignored.
     # ^ When session notes are newer than the last idle task, the manager host starts one task
