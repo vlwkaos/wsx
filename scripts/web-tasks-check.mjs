@@ -3286,20 +3286,28 @@ await closeSheet("the page", `#/p/${plansArg}`);
   await click("input[name=bar][value=top]");
 
   // Usage: the all-projects total equals the sum of the projects' own usage.
-  const sums = await evaluate(`fetch('api/tasks').then((r) => r.json())
-    .then((all) => Promise.all(all.map((view) => fetch('api/tasks/' + view.project + '/usage').then((r) => r.json()))))
-    .then((each) => ({ projects: each.filter((usage) => usage.total.cost_micro_usd > 0).length,
-      week: each.reduce((sum, usage) => sum + usage.total.cost_micro_usd, 0), turns: each.reduce((sum, usage) => sum + usage.total.turns, 0) }))`);
-  if (!(sums.week > 0) || sums.projects < 2) await fail(`the fixture projects have little usage: ${JSON.stringify(sums)}`);
+  // ^ The manager may still log a turn between the fetch and the page's own read: a mismatch is read again
+  // after a reload, up to five times, and fails when it stays.
   const usd = (micro) => `$${(micro / 1e6).toFixed(2)}`;
-  await go("#/settings/usage");
-  await until("!!document.querySelector('.usage[data-scope=all] [data-chart=cost] .usage-total .usage-cost')", "Settings > Usage shows no total");
-  if ((await text(".subtabs a[aria-current=page]")).join() !== "Usage") await fail("Usage is not the current section");
-  const cost = await text(".usage[data-scope=all] [data-chart=cost] .usage-total .usage-cost");
-  const cells = await text("table[aria-label='Token use and cost'] tbody tr:first-child td");
-  const turns = await text("table[aria-label='Token use and cost'] tbody tr:last-child td");
-  if (cost[0] !== usd(sums.week) || cells.join() !== usd(sums.week) || Number(turns[0]) !== sums.turns) {
-    await fail(`the usage total is ${cost} ${cells} ${turns}, the projects' sum ${JSON.stringify(sums)}`);
+  let sums, shown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    sums = await evaluate(`fetch('api/tasks').then((r) => r.json())
+      .then((all) => Promise.all(all.map((view) => fetch('api/tasks/' + view.project + '/usage').then((r) => r.json()))))
+      .then((each) => ({ projects: each.filter((usage) => usage.total.cost_micro_usd > 0).length,
+        week: each.reduce((sum, usage) => sum + usage.total.cost_micro_usd, 0), turns: each.reduce((sum, usage) => sum + usage.total.turns, 0) }))`);
+    if (!(sums.week > 0) || sums.projects < 2) await fail(`the fixture projects have little usage: ${JSON.stringify(sums)}`);
+    await go("#/settings");
+    await go("#/settings/usage");
+    await until("!!document.querySelector('.usage[data-scope=all] [data-chart=cost] .usage-total .usage-cost')", "Settings > Usage shows no total");
+    if ((await text(".subtabs a[aria-current=page]")).join() !== "Usage") await fail("Usage is not the current section");
+    shown = {
+      cost: await text(".usage[data-scope=all] [data-chart=cost] .usage-total .usage-cost"),
+      cells: await text("table[aria-label='Token use and cost'] tbody tr:first-child td"),
+      turns: await text("table[aria-label='Token use and cost'] tbody tr:last-child td"),
+    };
+    if (shown.cost[0] === usd(sums.week) && shown.cells.join() === usd(sums.week) && Number(shown.turns[0]) === sums.turns) break;
+    if (attempt === 4) await fail(`the usage total is ${shown.cost} ${shown.cells} ${shown.turns}, the projects' sum ${JSON.stringify(sums)}`);
+    await new Promise((done) => setTimeout(done, 2000));
   }
   const perProject = await evaluate(`fetch('api/tasks/usage').then((r) => r.json()).then((usage) => ({ rows: usage.projects, days: usage.days.length }))`);
   const rowsWeek = perProject.rows.reduce((sum, row) => sum + row.cost_micro_usd, 0);
