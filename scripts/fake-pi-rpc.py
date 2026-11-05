@@ -76,7 +76,8 @@ def main():
         emit({'type': 'agent_start'})
         words = text.split()
         # ^ A handover quotes earlier messages: only this message's own words steer the fake.
-        own = text.rsplit('Owner (message', 1)[-1].split()
+        # ^ So are the notes the host attaches, which carry earlier messages with their ids.
+        own = text.split('\n\nNotes that match this message', 1)[0].rsplit('Owner (message', 1)[-1].split()
         if 'PIERROR' in own:
             with open(own[own.index('PIERROR') + 1]) as refusal:
                 error = refusal.read().strip()
