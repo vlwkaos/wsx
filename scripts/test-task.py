@@ -1417,7 +1417,9 @@ def run(wsx, wsxd, work, owned):
     # send-backs; one housekeeping task after a request lands; the owner's word; memory.
     for rule in ('Talk like a person in a chat, not a report', 'The reader sees one screen',
                  'A turn of only Events is your work', 'or with exactly `-` when nothing',
-                 'Never hand the owner chores', 'Start a request for work at once', 'with a mermaid diagram',
+                 'Never hand the owner chores', 'A request for work starts at once',
+                 "Judge from the owner's words whether the owner wants to talk it over", 'Start no task, `add` or `steer` for them',
+                 'one `wsx task new` (or one `wsx task add`) with all', 'Events still get handled', 'with a mermaid diagram',
                  'stands alone, since a worker cannot ask', 'in every task new', 'With `--plan` the worker',
                  'Before `wsx task new`, compare the request', 'Never ask the owner to wait',
                  'for lean code', 'never send a task back to rebase', 'trust them over the worker',
@@ -4077,6 +4079,8 @@ def run(wsx, wsxd, work, owned):
                and e['text'].startswith('pi answers: ') for e in chat()), chat()[-4:]
     manager_state = lambda: json.loads((manager_log.parent / 'state.json').read_text())
     assert manager_state()['agent']['name'] == 'fake-pi', manager_state()
+    # ^ The Pi manager hears the same instructions, the owner's-words rule included (pi.rs `--append-system-prompt`).
+    assert any(t.get('launch') and t.get('talk_rule') and not t.get('worker') and not t['no_tools'] for t in traces() if t.get('adapter') == 'pi'), 'no talk rule on the pi manager launch'
     # ^ The size limit follows the adapter that runs now (docs/tasks.md "Manager"): unset, the
     # Pi fallback rotates at 150000, where the own Claude agent keeps its conversation to 400000.
     big_fallback = js('task', 'say', 'PICTX 200000 STATUS big on the fallback')

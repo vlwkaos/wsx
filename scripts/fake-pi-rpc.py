@@ -61,7 +61,7 @@ def main():
     instructions = ' '.join(value for flag, value in zip(argv, argv[1:]) if flag == '--append-system-prompt')
     worker = 'You are a task worker' in instructions
     trace({'launch': True, 'session': session, 'model': option(argv, '--model'), 'cwd': os.getcwd(),
-           'worker': worker, 'rpc': '--mode' in argv and option(argv, '--mode') == 'rpc',
+           'worker': worker, 'talk_rule': "Judge from the owner's words" in instructions, 'rpc': '--mode' in argv and option(argv, '--mode') == 'rpc',
            'no_tools': '--no-tools' in argv, 'no_session': '--no-session' in argv,
            'thinking': option(argv, '--thinking')})
     for line in sys.stdin:
