@@ -148,7 +148,7 @@ def fixture(base):
 
 def turns(copy, tip):
     """The synthetic conversation: (handover, turns); a turn is (blocks of (author, id, text), change
-    to the fixture before it, review due, owner ids its reply answers)."""
+    to the fixture before it, review due). A reply answers the turn's Owner messages."""
     def started(state):
         state['tasks'].append({'id': 7, 'open': True, 'row': {
             'id': 7, 'title': state.get('created') or 'Add a --version flag', 'state': 'working', 'revision': 0},
@@ -171,7 +171,7 @@ def turns(copy, tip):
         ('Events', '#7 ready r1: Add a --version flag; checks 1 of 1 passed; worker says: added --version with '
                    'the commit', ready, True),
     ]
-    return [([], [([(author, n, text)], change, due, [n] if author == 'Owner' else [])
+    return [([], [([(author, n, text)], change, due)
                   for n, (author, text, change, due) in enumerate(rows, 1)])]
 
 
@@ -215,15 +215,15 @@ def logged(state):
     return [
         (list(first), [([('Owner', 2284, 'waiting fir the managers review means what?'),
                          ('Events', 2282, landed), ('Events', 2283, 'deploy of 1e580514cf94 succeeded after 1014 s')],
-                        None, False, [2284])]),
+                        None, False)]),
         (list(review), [([('Owner', 2312, 'here I think my question for waiting for managers review was ignored '
                                           'due new session?\ncan you answer that\nand also improve this\n\n'
                                           '[attached image: the chat, your reply above under my question]')],
-                         None, False, [2312])]),
+                         None, False)]),
         (list(gaps), [([('Owner', 2326, 'yes. but remember wsx is not only for claude.\nalso what I was curious '
                                         'was that when it is waiting for mamagers review it sends you message '
-                                        'back? like how do you know or when to review')], None, False, [2326]),
-                      ([('Owner', 2327, 'is it polled etc')], None, False, [2327])]),
+                                        'back? like how do you know or when to review')], None, False),
+                      ([('Owner', 2327, 'is it polled etc')], None, False)]),
     ]
 
 
@@ -346,7 +346,7 @@ def run_once(mode, number, out, cases):
     rows, index = [], 0
     for history, conversation in conversations:
         agent, baseline = None, None
-        for blocks, change, review_due, answers in conversation:
+        for blocks, change, review_due in conversation:
             index += 1
             state = json.loads(state_file.read_text())
             if change:
@@ -373,11 +373,12 @@ def run_once(mode, number, out, cases):
                 agent.set_model(model)
             text_summary, baseline = summary(state, baseline)
             result = agent.turn(message + '\n\n' + text_summary.rstrip())
+            earlier = history[-4:]
             history += ['Owner: ' + text for author, _, text in blocks if author == 'Owner']
             history.append('You: ' + ' '.join(result['reply'].split())[:600])
             rotated = (result['last_context'] or result['summed_context']) > ROTATE_TOKENS
             row = {'mode': mode, 'run': number, 'turn': index, 'authors': sorted({a for a, _, _ in blocks}),
-                   'owner_ids': owner, 'answers': answers, 'message': message, 'review_due': review_due,
+                   'owner_ids': owner, 'earlier': earlier, 'message': message, 'review_due': review_due,
                    'fresh': fresh, 'rotated': rotated, **result}
             rows.append(row)
             out.write(json.dumps(row) + '\n')
@@ -397,8 +398,8 @@ def run_once(mode, number, out, cases):
 JUDGE_PROMPT = """You judge a software project manager agent's chat replies to its owner. The input JSON has
 `turns`; each holds the exchanges before it (`earlier`), the turn's message (owner messages with
 their ids, and events from the tool wsx) and the manager's `reply`. Return one item for every id
-of every `answers` list. Decide `answered`: the reply answers every question and ask of that owner message, and an ask to
-improve something is met with a concrete step. In `missing`, say in at most 15 words what was left
+of every `answers` list. Decide `answered`: the reply answers every question and ask of that
+owner message, and an ask to improve something is met with a concrete step. In `missing`, say in at most 15 words what was left
 out; leave it empty when answered. In `kinds`, list each failure that applies, also when
 answered: A a question of the owner left unanswered; C a fix narrower than the owner's words (one
 agent adapter, one config); E a name the owner has not used left undefined, or an answer that
@@ -411,9 +412,8 @@ JUDGE_SCHEMA = {'type': 'object', 'required': ['answers'], 'properties': {'answe
 
 def judge(rows):
     """One sonnet call, as scripts/retrospect.py judges: each owner id answered or not."""
-    data = {'turns': [{'earlier': [r2['reply'][:600] for r2 in rows[:i] if r2['run'] == r['run']][-2:],
-                       'message': r['message'], 'reply': r['reply'], 'answers': r['answers']}
-                      for i, r in enumerate(rows) if r['answers']]}
+    data = {'turns': [{'earlier': r['earlier'], 'message': r['message'], 'reply': r['reply'],
+                       'answers': r['owner_ids']} for r in rows if r['owner_ids']]}
     run = subprocess.run(['claude', '-p', '--model', 'sonnet', '--effort', 'high', '--output-format', 'json',
                           '--no-session-persistence', '--tools', '', '--system-prompt', JUDGE_PROMPT,
                           '--json-schema', json.dumps(JUDGE_SCHEMA)],
@@ -423,7 +423,7 @@ def judge(rows):
     if answer.get('is_error') or not isinstance(answer.get('structured_output'), dict):
         raise RuntimeError('the judge call failed: %s' % str(answer.get('result'))[:200])
     answers = answer['structured_output']['answers']
-    missing = {n for r in rows for n in r['answers']} - {a['id'] for a in answers}
+    missing = {n for r in rows for n in r['owner_ids']} - {a['id'] for a in answers}
     if missing:
         raise RuntimeError('the judge left out %s' % sorted(missing))
     return answers, answer.get('total_cost_usd', 0.0)
