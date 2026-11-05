@@ -49,7 +49,11 @@ pub fn spawn(app: Arc<App>) {
 fn observe(app: Arc<App>) {
     let app = &app;
     let mut revision = 0;
+    // ^ The first look after a connect: the poll answers at once and wsxd's version is read.
     let mut first = true;
+    // ^ Whether this server has taken one full look. A reconnect after a failed poll is not a
+    // start: the remembered `states` still tell what changed while wsxd was away.
+    let mut started = false;
     let mut available = true;
     let mut last_upgrade_check = Instant::now();
     let mut states: HashMap<u64, AgentState> = HashMap::new();
@@ -67,7 +71,7 @@ fn observe(app: Arc<App>) {
     // Sessions whose agent began to need the owner, for "An agent needs me".
     let mut agents: Pending<u64> = Pending::default();
     let mut last_revoked_check = Instant::now();
-    let mut alive_before: Vec<u64> = Vec::new();
+    let mut listed_before: Vec<u64> = Vec::new();
     // ^ docs/daemon-live-upgrade.md: wsxd takes a poll without presence for an old TUI
     // and defers every upgrade. This server reconnects by itself, so it says at which
     // protocol. The identity is this executable's; the server never replaces wsxd.
@@ -160,7 +164,7 @@ fn observe(app: Arc<App>) {
                 }) {
                     if exchange_revisions.insert(exchange.id.0, exchange.revision)
                         != Some(exchange.revision)
-                        && !first
+                        && started
                     {
                         publish(app, message("exchange", exchange_view(exchange)));
                     }
@@ -179,14 +183,15 @@ fn observe(app: Arc<App>) {
                 .insert(session, state)
                 .is_some_and(|previous| previous != state);
             // A transition is the only trigger: the first sight of a session, or a
-            // server restart, never notifies. An agent that finished never does.
-            if transition && !first && chat::needs_owner(target).is_some() {
+            // server restart, never notifies. An agent that finished never does. A session
+            // that blocked while wsxd was away is a transition from its remembered state.
+            if transition && started && chat::needs_owner(target).is_some() {
                 agents.add(session);
             }
             let mut history_changed = transition;
             history_changed |= app
                 .chat
-                .follow_conversation(app, target, &mut attached, first);
+                .follow_conversation(app, target, &mut attached, !started);
             if app.events.receiver_count() > 0 {
                 let stamp = chat::history_stamp(target.pane);
                 history_changed |= stamps
@@ -248,16 +253,26 @@ fn observe(app: Arc<App>) {
                 push.devices(&paired);
             }
         }
-        let alive: Vec<u64> = targets.iter().map(|target| target.session_id.0).collect();
-        if alive != alive_before {
-            if let Some(push) = &app.push {
-                push.retain_muted(&alive);
+        // ^ docs/web-client-chat.md "Queue and Stop": only a session wsxd no longer lists is forgotten. What
+        // the grant reaches is not asked: a config that does not parse grants nothing for a
+        // moment, and that must not delete the queue. A snapshot of a fresh connection, or one
+        // without sessions, may be wsxd still starting, so it prunes nothing.
+        let listed: Vec<u64> = snapshot
+            .sessions
+            .iter()
+            .map(|session| session.id.0)
+            .collect();
+        if !first && !listed.is_empty() {
+            if listed != listed_before {
+                if let Some(push) = &app.push {
+                    push.retain_muted(&listed);
+                }
+                listed_before = listed.clone();
             }
-            alive_before = alive.clone();
+            app.queue.retain(&listed);
         }
-        app.queue.retain(&alive);
-        activities.retain(|session, _| alive.contains(session));
         states.retain(|session, _| targets.iter().any(|target| target.session_id.0 == *session));
+        activities.retain(|session, _| states.contains_key(session));
         watching = app.events.receiver_count() > 0
             && states
                 .values()
@@ -266,6 +281,7 @@ fn observe(app: Arc<App>) {
         attached.retain(|session, _| states.contains_key(session));
         questions.retain(|session, _| states.contains_key(session));
         first = false;
+        started = true;
     }
 }
 

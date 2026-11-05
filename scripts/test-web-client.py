@@ -232,6 +232,8 @@ def turn(text):
  elif 'quit now' in body:
   report('working'); os._exit(3)
  elif 'ask me' in body:
+  # "ask me later" works until the test opens the `ask` gate, so a test can freeze wsxd first.
+  if 'later' in body: gate('ask')
   # A dialog as a provider draws it: numbered choices, a cursor mark, answered with keys.
   global dialog
   call = 'ask-'+str(sequence + 1)
@@ -1222,8 +1224,12 @@ public_origin = "http://127.0.0.1:{ports['work']}"
 panels = ["chat", "terminal"]
 [access]
 projects = {{ profile = "work" }}
-capabilities = ["chat_send", "session_start", "task_view", "task_act", "terminal_view", "terminal_input"]
+capabilities = ["chat_send", "session_start", "task_view", "task_act", "terminal_view", "terminal_input", "push"]
 agent_command = ["/bin/sh", "-c", {json.dumps('printf %s "$CLAUDE_CONFIG_DIR" > ' + str(work / 'profile-agent.txt'))}]
+[push]
+subject = "mailto:owner@example.invalid"
+private_key = "{private_key}"
+service_origins = ["{push_origin}"]
 '''),
             # Watch-only terminal: terminal_view without terminal_input.
             'viewer': site_file('viewer', f'''id = "viewer"
@@ -2511,6 +2517,38 @@ capabilities = ["terminal_view"]
         wait(lambda: work_projects() == ['project2', 'project3'], 'project3 joins the profile site')
         ok('profile site: exactly its profile\'s projects, a project that joins later, agents and skills under its config root')
 
+        # --- A wsx config that does not parse grants a profile site nothing for a moment. The
+        # queue, the remembered conversation and the push mutes of its sessions stay
+        # (docs/web-client-chat.md "Queue and Stop").
+        settle('family')
+        fam_chat = '/api/chat/%d' % sessions['family']
+        assert steady(work_site, 'POST', fam_chat + '/send', {'text': 'use tool'})[0] == 200
+        wait(lambda: steady(work_site, 'GET', fam_chat + '/timeline')[1]['working'], 'profile session works')
+        status, held = steady(work_site, 'POST', fam_chat + '/send', {'text': 'keep this one'})
+        assert status == 200 and held['queued']['text'] == 'keep this one', held
+        subscription = {'endpoint': push_origin + '/push/device-work', 'keys': {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}, 'expirationTime': None}
+        assert work_site.request('POST', '/api/push', {'subscription': subscription, 'choices': {'manager': False, 'agents': False}})[0] == 200
+        assert work_site.request('POST', '/api/push/mute', {'session': sessions['family'], 'muted': True})[1]['muted'] == [sessions['family']]
+        work_state = work / 'state/wsx/web/work'
+        good_config = registry.read_text()
+        registry.write_text('[[projects\nthis is not toml\n')
+        # ^ The site's project list empties on the first tick that cannot read the config; two more ticks follow.
+        wait(lambda: work_projects() == [], 'a profile site with an unreadable config reaches nothing')
+        time.sleep(5)
+        registry.write_text(good_config)
+        wait(lambda: work_projects() == ['project2', 'project3'], 'the profile site reaches its projects again')
+        time.sleep(3)
+        queue_text = (work_state / 'queue.json').read_text()
+        assert 'keep this one' in queue_text, queue_text
+        assert [item['text'] for item in steady(work_site, 'GET', fam_chat + '/timeline')[1]['queue']] == ['keep this one']
+        assert json.loads((work_state / 'push.json').read_text())[0]['muted'] == [sessions['family']]
+        assert steady(work_site, 'DELETE', fam_chat + '/queue/%d' % held['queued']['id'])[0] == 200
+        assert work_site.request('DELETE', '/api/push')[0] == 200
+        for gate_name in ('result', 'answer'):
+            (work / ('family.' + gate_name)).write_text('')
+        settle('family')
+        ok('profile site: a config that does not parse for several ticks keeps the queued message and the push mute')
+
         # --- The project's shell (docs/web-client-tasks.md "Project screen"): the header icon
         # opens one shell session in the main checkout, the same while it lives, a new one
         # once it exited.
@@ -2924,6 +2962,34 @@ capabilities = ["terminal_view"]
         wait(lambda: owner.request('GET', '/api/push')[1]['muted'] == [], 'mute forgotten with its session')
         ok('a muted session is forgotten with its session')
 
+        # --- An agent that blocks while wsxd does not answer is news after the reconnect: the
+        # server compares with the state it remembered. wsxd is frozen, the agent draws its
+        # question, wsxd runs again.
+        settle('owner')
+        assert steady(owner, 'POST', chat + '/send', {'text': 'ask me later'})[0] == 200
+        wait(lambda: timeline()['working'], 'working turn before the freeze')
+        pushed = len(pushes())
+        del events.seen[:]
+        os.kill(daemon.pid, signal.SIGSTOP)
+        try:
+            events.expect('daemon', lambda data: data['available'] is False, timeout=20)
+            (work / 'owner.ask').write_text('')
+            time.sleep(1.5)
+        finally:
+            os.kill(daemon.pid, signal.SIGCONT)
+        events.expect('daemon', lambda data: data['available'] is True, timeout=20)
+        reconnected = wait(lambda: len(pushes()) == pushed + 1 and pushes()[pushed], 'blocked push after the reconnect', timeout=20)['payload']
+        assert reconnected['body'] == 'Needs your input: Which option should I take for the login redirect?' and reconnected['session_id'] == sessions['owner'], reconnected
+        events.expect('workspace', lambda data: data['sessions'][0]['agent']['state'] == 'blocked')
+        interrupt = Terminal(owner, sessions['owner'])
+        interrupt.control('replay')
+        interrupt.send(b'\x03')
+        events.expect('workspace', lambda data: data['sessions'][0]['agent']['state'] == 'idle')
+        interrupt.drop()
+        lease_free(sessions['owner'])
+        settle('owner')
+        ok('agent push: a session that blocked while wsxd did not answer is pushed after the reconnect')
+
         # --- Per-device rate limit, then revocation.
         codes = [owner.request('GET', '/api/session')[0] for _ in range(140)]
         assert codes[0] == 200 and 429 in codes and codes.index(429) >= 60, codes.index(429) if 429 in codes else codes[-1]
@@ -2941,7 +3007,7 @@ capabilities = ["terminal_view"]
         cli('session', 'send-text', sessions['owner'], 'after revoke')
         wait(lambda: traces('owner')[-1] == 'after revoke', 'post-revoke turn')
         time.sleep(1.0)
-        assert len(pushes()) == 3, 'a revoked device was notified'
+        assert len(pushes()) == pushed + 1, 'a revoked device was notified'
         wait(lambda: json.loads(stored.read_text()) == [], 'subscription of the revoked device removed')
         tries = [owner.request('POST', '/api/pair', {'code': 'BBBBB-BBBB%d' % index})[0] for index in range(6)]
         assert tries[-1] == 429 and set(tries[:3]) == {403}, tries
