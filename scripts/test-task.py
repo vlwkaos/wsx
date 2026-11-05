@@ -3288,7 +3288,7 @@ def run(wsx, wsxd, work, owned):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
     assert kinds(passed, 'result', 'check_run', 'checks') == ['result', 'check_run', 'checks'], log(passed)
     assert [e['trigger'] for e in log(passed) if e['kind'] == 'result'] == ['step'], log(passed)
-    proof = [e for e in show(passed)['result']['evidence'] if 'check-run' in e['check']]
+    proof = [e for e in show(passed)['result']['result']['evidence'] if 'check-run' in e['check']]
     assert len(proof) == 1 and ': exit 0' in proof[0]['proof'] and str(pass_gate) in proof[0]['proof'], show(passed)['result']
     assert not [t for t in traces() if 'Your check-run ended' in t.get('message', '') and str(pass_gate) in t['message']]
     assert [e['trigger'] for e in log(failed) if e['kind'] == 'result'] == ['step', 'check_run'], log(failed)
