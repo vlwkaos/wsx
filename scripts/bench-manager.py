@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Benchmark one manager conversation against the real claude CLI (it spends real money).
 
-  python3 -B scripts/bench-manager.py --mode before|after|after-nof [--cases synthetic|logged] [--runs 3] [--out DIR]
+  python3 -B scripts/bench-manager.py --mode before|after|after-nof [--cases synthetic|logged|discussion] [--model sonnet] [--runs 3] [--out DIR]
 
 It plays the manager host of docs/tasks.md "Manager" for a throwaway project: a fixture repo,
 a fake `wsx` on PATH that serves a fixture ledger, and fixed turns. `synthetic` is five turns
@@ -14,6 +14,8 @@ crates/wsx/src/task/manager.rs: `before` reads them at BEFORE_COMMIT and its tur
 rotate on the last call's context and use eventModel for event-only turns. `after-nof` is
 `after` with every turn on the manager model. It prints one JSON line per turn; the host itself
 is tested by scripts/test-task.py.
+`discussion` is two owner turns (review points one by one, then 'agreed on A and C, do them') and checks
+the tool calls: no `wsx task new`/`add`/`steer` in the first turn, exactly one new or add in the second.
 Bash runs with bypassPermissions here, so no auto-mode classifier call adds to the measured
 cost; the real manager runs in auto mode.
 """
@@ -175,6 +177,23 @@ def turns(copy, tip):
                   for n, (author, text, change, due) in enumerate(rows, 1)])]
 
 
+def discussion():
+    """Review points one by one, then the owner's go (docs/tasks.md "Manager": talk it over or work)."""
+    points = ("A: src/cli.py does not check for an empty name. B: the README has no usage section. "
+              "C: the CLI has no test.")
+    return [([], [([('Owner', 1, "let's go through these three review points one by one: " + points)], None, False),
+                  ([('Owner', 2, 'agreed on A and C, do them')], None, False)])]
+
+
+def check_discussion(rows):
+    """The calls of the two turns, by the fake wsx's tool names."""
+    edits = ('wsx new', 'wsx add', 'wsx steer')
+    first = {k: n for k, n in rows[0]['tools'].items() if k in edits}
+    second = {k: n for k, n in rows[1]['tools'].items() if k in edits}
+    if first or sum(second.values()) != 1 or not ({'wsx new', 'wsx add'} & set(second)):
+        raise AssertionError('discussion calls: turn 1 %s, turn 2 %s' % (first, second))
+
+
 def logged(state):
     """The logged batches (docs/design/manager-reliability.md "A", "C", "E"), clipped as the
     events are, with the ledger they met; the 2312 screenshot is a line of text."""
@@ -326,7 +345,8 @@ def tool_kind(block):
 def run_once(mode, number, out, cases):
     base = Path(tempfile.mkdtemp(prefix='bench-%s-%d-' % (mode, number), dir=os.environ.get('TMPDIR')))
     project, copy, tip, state = fixture(base)
-    conversations = turns(copy, tip) if cases == 'synthetic' else logged(state)
+    conversations = {'synthetic': lambda: turns(copy, tip), 'logged': lambda: logged(state),
+                     'discussion': discussion}[cases]()
     notes = base / 'manager/notes'
     notes.mkdir(parents=True)
     page = base / 'overview.md'
@@ -392,6 +412,8 @@ def run_once(mode, number, out, cases):
         if agent:
             agent.stop()
     shutil.rmtree(base, ignore_errors=True)
+    if cases == 'discussion':
+        check_discussion(rows)
     return rows
 
 
@@ -432,10 +454,14 @@ def judge(rows):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', required=True, choices=['before', 'after', 'after-nof'])
-    parser.add_argument('--cases', default='synthetic', choices=['synthetic', 'logged'])
+    parser.add_argument('--cases', default='synthetic', choices=['synthetic', 'logged', 'discussion'])
+    parser.add_argument('--model', help='the model of every turn, to bound the cost')
     parser.add_argument('--runs', type=int, default=3)
     parser.add_argument('--out', default=os.environ.get('TMPDIR', '.'))
     options = parser.parse_args()
+    if options.model:
+        global MAIN_MODEL, EVENT_MODEL
+        MAIN_MODEL = EVENT_MODEL = options.model
     Path(options.out).mkdir(parents=True, exist_ok=True)
     path = Path(options.out) / ('bench-%s-%s.jsonl' % (options.cases, options.mode))
     spent = 0.0
