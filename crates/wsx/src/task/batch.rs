@@ -186,10 +186,15 @@ fn land(dir: &TaskDir, batch_tree: Option<String>) -> Result<()> {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<()> {
-    let output = wsx_core::git::git_cmd(repo)
-        .args(args)
-        .output()
-        .context("cannot run git")?;
+    let (output, cleared) =
+        wsx_core::git::run_clearing_stale_lock(repo, args).context("cannot run git")?;
+    if let Some(lock) = cleared {
+        println!(
+            "lock_cleared: {} was {} s old with no holder",
+            lock.path.display(),
+            lock.age_s
+        );
+    }
     if !output.status.success() {
         bail!(
             "git {} failed: {}",
