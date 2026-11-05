@@ -24,10 +24,13 @@ tasks:
   # against the 11-04 baseline ($2.38, 5.5 turns). The manager passes --model opus for large work.
   agent: { rotateTokens: 200000, model: sonnet }
   # ^ The end-to-end scripts, for a worker to run by name (`wsx task check-run web`) outside its
-  # boundary in the check slot; never after a result. Each builds the binaries it runs first.
+  # boundary; never after a result. Each builds the binaries it runs first. A `ci:` one runs on
+  # GitHub Actions without the check slot (scripts/ci-scenario.py, ci.yml); by hand, run its
+  # job's command locally: `cargo build -p wsx -p wsx-daemon && python3 -B
+  # scripts/test-web-client.py --browser` (docs/tasks.md "Scenarios").
   scenarios:
-    task: "ci: GitHub Actions job task-scenario runs it for task paths and release tags"
-    web: cargo build -p wsx -p wsx-daemon && python3 -B scripts/test-web-client.py --browser
+    task: "ci: python3 -B scripts/ci-scenario.py task"
+    web: "ci: python3 -B scripts/ci-scenario.py web"
     smoke: cargo build -p wsx -p wsx-daemon && python3 -B scripts/runtime-smoke.py
     boundary: cargo build -p wsx -p wsx-daemon && python3 -B scripts/test-manager-boundary.py
   # ^ Workers get the owner's skills; the project's words for each stage (docs/tasks.md "Workflow").
@@ -44,8 +47,9 @@ tasks:
       for the daemon or terminal. When it answers `queued`, return your result: its answer
       comes as your next turn; then fix what fails, also an assert your change made stale. Before
       the first check-run, search scripts/test-*.py and scripts/*-check.mjs for each UI string,
-      label, menu item or route the diff adds, renames or removes, and update those asserts. The
-      `task` scenario (task code, scripts/test-task.py) runs on GitHub Actions, not here. After
+      label, menu item or route the diff adds, renames or removes, and update those asserts. Run
+      `task` for task code (crates/*/src/task, scripts/test-task.py): `task` and `web` run on
+      GitHub Actions and answer `queued`; their captures come back to .work/web-captures. After
       a rebase or a conflict fix run no check-run: the host's checks follow. Never commit knowledge/: it is
       git-ignored.
     # ^ When session notes are newer than the last idle task, the manager host starts one task
