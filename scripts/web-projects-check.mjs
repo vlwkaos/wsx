@@ -50,6 +50,8 @@ if (await evaluate("!!document.querySelector('dialog.sheet[open]')")) await fail
 
 // Remove: slide, then the button, then the sheet that asks. Cancel leaves the row; the folder stays.
 const askRemove = async (project) => {
+  // ^ A closed sheet leaves the page when its `close` event has been handled, a moment after it stops being open.
+  await until("!document.querySelector('dialog.sheet')", "the earlier sheet stayed in the page");
   await slide(project);
   await until(`${rowOf(project)}.hasAttribute('data-open')`, "the row did not open its Remove");
   await evaluate(`${rowOf(project)}.querySelector('.row-remove').click()`);
