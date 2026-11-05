@@ -1177,6 +1177,18 @@ enum Key {
     /// A reply the manager or a role started on its own: its line `<name> wrote to you`, or the
     /// lines of one wsx wrote, and the chat it opens.
     Wrote(String, String),
+    /// A post with a level (`wsx task post --level warn|bad`): a push of its own, with the
+    /// reply's id.
+    Alert(Alert),
+}
+
+/// The text of an alert push, as `wrote` cut it, and the chat it opens.
+#[derive(Clone, PartialEq, Eq)]
+struct Alert {
+    reply: u64,
+    title: String,
+    body: String,
+    url: String,
 }
 
 /// An item that waits on the owner: a task that waits on them, an approval request, or the
@@ -1287,6 +1299,12 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
                 _ => false,
             })
         };
+        let event_of = |id: &u64| {
+            log.iter().find_map(|entry| match &entry.event {
+                ManagerEvent::Message { id: of, text, .. } if of == id => Some(text.as_str()),
+                _ => None,
+            })
+        };
         let key = (scope.project, dir.name().to_string());
         // ^ A chat seen for the first time, as at a server start, notifies nothing.
         let last = watch.replies.get(&key).copied();
@@ -1302,6 +1320,7 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
                 quiet,
                 text,
                 usage,
+                level,
                 ..
             } = &entry.event
             else {
@@ -1309,9 +1328,22 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
             };
             if last.is_some_and(|last| *id > last) && !quiet && !to.is_empty() && to.iter().all(own)
             {
-                match usage {
-                    Some(_) => news = true,
-                    None => watch
+                match (usage, level) {
+                    (Some(_), _) => news = true,
+                    // ^ Push text is written by wsx: `<project>: <title>` over the first line.
+                    (None, Some(_)) => {
+                        let title = to.first().and_then(event_of).unwrap_or_default();
+                        watch.pending.add((
+                            scope.project,
+                            Key::Alert(Alert {
+                                reply: *id,
+                                title: view::clip(&format!("{}: {title}", scope.name), 60),
+                                body: view::clip(text.trim(), 160),
+                                url: url.clone(),
+                            }),
+                        ));
+                    }
+                    (None, None) => watch
                         .pending
                         .add((scope.project, Key::Wrote(text.clone(), url.clone()))),
                 }
@@ -1328,7 +1360,8 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
     }
 }
 
-/// Once the merge window of new items passed: one "Manager needs me" push that names every
+/// Once the merge window of new items passed: one push of its own for each post with a level
+/// (`wsx task post --level warn|bad`), and one "Manager needs me" push that names every
 /// open item, replacing the one before (its tag). A device whose page shows the project of
 /// every new item is skipped. `badge` is what needs the owner now, for the app badge.
 pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
@@ -1336,6 +1369,24 @@ pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
     let Some(new) = watch.pending.due(merge) else {
         return;
     };
+    let (alerts, new): (Vec<_>, Vec<_>) = new
+        .into_iter()
+        .partition(|(_, key)| matches!(key, Key::Alert(_)));
+    for (project, key) in alerts {
+        let Key::Alert(alert) = key else { continue };
+        let showing = app.showing(project);
+        let payload = json!({
+            "kind": "manager",
+            "title": alert.title,
+            "body": alert.body,
+            "url": alert.url,
+            "tag": format!("wsx-{}-alert-{project}-{}", app.site.id, alert.reply),
+            "badge": badge,
+        });
+        crate::events::deliver(app, crate::push::Switch::Manager, |device| {
+            (!showing.contains(&device.device_id)).then(|| payload.clone())
+        });
+    }
     // ^ An item answered within the window is no news.
     let new: Vec<(u64, Key)> = new
         .into_iter()

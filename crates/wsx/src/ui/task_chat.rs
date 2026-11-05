@@ -11,6 +11,7 @@ use ratatui::{
     Frame,
 };
 use std::ops::Range;
+use wsx_core::task::manager::Level;
 
 /// Below this width a To check row drops where to look.
 const WHERE_MIN_WIDTH: usize = 100;
@@ -285,6 +286,7 @@ pub fn chat_lines(
                 text,
                 asks,
                 routine,
+                level,
             } => {
                 if index > 0 {
                     lines.push(Line::raw(""));
@@ -295,18 +297,30 @@ pub fn chat_lines(
                     Who::Peer(project) => (project.clone(), theme::IDLE),
                 };
                 // ^ A reply that asks is set off like a thin border: a bar in the accent; a post of wsx (the digest, `wsx task post`) has its bar in the secondary color, unless it asks. Its name keeps the speaker's color, as the accent is the owner's.
+                // A level of a post (`--level warn|bad`) names itself in the heading and colours the
+                // bar: warning, error.
+                let level_color = level.map(|level| match level {
+                    Level::Warn => theme::WARNING,
+                    Level::Bad => theme::ERROR,
+                });
                 let bar = if *asks {
                     Some(theme::ACCENT)
                 } else {
-                    routine.then_some(theme::SECONDARY)
+                    level_color.or_else(|| routine.then_some(theme::SECONDARY))
                 };
-                let heading = vec![
+                let mut heading = vec![
                     Span::styled(name, Style::default().fg(color).bold()),
                     Span::styled(
                         format!("  {}", clock(*unix_ms)),
                         Style::default().fg(theme::TEXT_SUBTLE),
                     ),
                 ];
+                if let Some((level, color)) = level.zip(level_color) {
+                    heading.push(Span::styled(
+                        format!("  {}", level.word()),
+                        Style::default().fg(color).bold(),
+                    ));
+                }
                 lines.push(Line::from(heading));
                 // ^ A leading quote is one compact line, link 0 of the message: Enter goes to the
                 // quoted message. ref: `links`
