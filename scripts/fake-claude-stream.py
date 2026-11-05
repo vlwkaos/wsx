@@ -22,6 +22,7 @@ Each user message is a small script of words:
   CHECKRUN_AFTER  after WORK's commit run `wsx task check-run` and trace its answer
   CHECKRUN_WITH <a,b>  run `wsx task check-run a b`, then a bare `wsx task check-run`, and trace both
   CHECKRUN_LATE <a>  start `wsx task check-run a` in the background and finish before its answer
+  CHECKRUN_LATER <a>  like CHECKRUN_LATE, but after WORK's commit: the run is on a clean tree
   BGRESULT     return the result while a background job still runs
   REPEAT       return the result again 1 s later, as Claude's own turn for a background notice
   LIMIT <s>    (once per process) end the turn as Claude's usage limit does, resetting in <s> s;
@@ -562,6 +563,10 @@ def main():
                 # ^ On the committed tree the result's checks then run on.
                 ran = subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True)
                 trace({'check_run_after': [ran.returncode, ran.stdout + ran.stderr]})
+            if 'CHECKRUN_LATER' in words:
+                subprocess.Popen(['wsx', 'task', 'check-run', words[words.index('CHECKRUN_LATER') + 1]],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(1)
         if not blocked and 'LINE' in words:
             at = words.index('LINE')
             name, number = words[at + 1], int(words[at + 2])

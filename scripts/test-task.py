@@ -2562,6 +2562,9 @@ def run(wsx, wsxd, work, owned):
     relaunch = launches_in(r)[launches:]
     assert after == before and len(relaunch) == 1 and relaunch[0]['resume'], (before, after, relaunch)
     assert not (Path(show(r)['log']).parent / 'handoff.txt').exists()
+    # ^ The turn the old host handed over logs its real cause, and that it came through the exec.
+    carried = [e for e in log(r) if e['kind'] == 'result'][-1]
+    assert carried['trigger'] == 'message' and carried.get('reexec') is True, carried
     js('task', 'close', r, '--discard')
     # A ready task has no agent turn to follow a deploy at, so its land is the next start: the
     # host execs the replaced file before it takes the land, and the caller's retry gets the
@@ -3252,6 +3255,32 @@ def run(wsx, wsxd, work, owned):
     answers = [t['message'] for t in traces() if 'Your check-run ended. Its answer' in t.get('message', '') and str(late_gate) in t['message']]
     assert len(answers) == 1 and 'check 2 `while [ ! -e' in answers[0] and ': exit 0' in answers[0], answers
     js('task', 'close', late, '--discard')
+    # 32t2. A check-run that ended after the worker's last result and passed on a clean tree
+    # starts no turn: the host records it as evidence in the result. A failure starts a turn.
+    mark('32t2')
+    pass_gate, fail_gate = base / 'pass-gate', base / 'fail-gate'
+    configure(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n'
+              '    slowfail: while [ ! -e %s ]; do sleep 0.2; done; exit 1\n' % (pass_gate, fail_gate), 'late scenarios')
+    passed = js('task', 'new', 'CHECKRUN_LATER slow WORK later.txt')['id']
+    failed = js('task', 'new', 'CHECKRUN_LATER slowfail WORK laterfail.txt')['id']
+    for n in (passed, failed):
+        wait(lambda: kinds(n, 'result'), 'the result before the answer', 30)
+    time.sleep(1)
+    assert not kinds(passed, 'check_run') and not kinds(failed, 'check_run'), (log(passed), log(failed))
+    pass_gate.touch()
+    fail_gate.touch()
+    for n in (passed, failed):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    assert kinds(passed, 'result', 'check_run', 'checks') == ['result', 'check_run', 'checks'], log(passed)
+    assert [e['trigger'] for e in log(passed) if e['kind'] == 'result'] == ['step'], log(passed)
+    proof = [e for e in show(passed)['result']['evidence'] if 'check-run' in e['check']]
+    assert len(proof) == 1 and ': exit 0' in proof[0]['proof'] and str(pass_gate) in proof[0]['proof'], show(passed)['result']
+    assert not [t for t in traces() if 'Your check-run ended' in t.get('message', '') and str(pass_gate) in t['message']]
+    assert [e['trigger'] for e in log(failed) if e['kind'] == 'result'] == ['step', 'check_run'], log(failed)
+    sent = [t for t in traces() if 'Your check-run ended' in t.get('message', '') and str(fail_gate) in t['message']]
+    assert len(sent) == 1 and ': exit 1' in sent[0]['message'], sent
+    for n in (passed, failed):
+        js('task', 'close', n, '--discard')
     # 32v. Two lanes (docs/tasks.md "Check slot"): a scenario check-run holds the scenarios lane, a
     # task's result checks still run at once in the checks lane, and a second scenario run waits
     # with the scenarios reason.
