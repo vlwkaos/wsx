@@ -3186,8 +3186,8 @@ await closeSheet("the page", `#/p/${plansArg}`);
   if ((await text(".subtabs a[aria-current=page]")).join() !== "Usage") await fail("Usage is not the current section");
   await evaluate("document.querySelector('.usage-tokens').open = true");
   const cost = await text(".usage[data-scope=all] [data-chart=cost] .usage-total .usage-cost");
-  const cells = await text(".usage tbody tr:first-child td");
-  const turns = await text(".usage tbody tr:last-child td");
+  const cells = await text("table[aria-label='Token use and cost'] tbody tr:first-child td");
+  const turns = await text("table[aria-label='Token use and cost'] tbody tr:last-child td");
   if (cost[0] !== usd(sums.week) || cells.join() !== sums.cells.map(usd).join() || Number(turns[2]) + Number(turns[3]) !== sums.turns) {
     await fail(`the usage total is ${cost} ${cells} ${turns}, the projects' sum ${JSON.stringify(sums)}`);
   }
