@@ -994,8 +994,10 @@ def run(wsx, wsxd, work, owned):
         (captures / ('manager-%d.ans' % cols)).write_bytes(frames[2])
         # ^ The footer keeps `(S)hell` and `Esc: close` at both widths.
         assert re.search(r'(?m)^ TASKS +\(j/k\)move +\(enter\)detail +\(m\)anager +\(S\)hell +Esc: close ', hinted[1]), hinted[1]
-        # ^ `(u)sage` is the last hint: it fits at 120 columns and goes first at 80.
-        assert bool(re.search(r'Esc: close +\(u\)sage', hinted[1])) == (cols == 120), hinted[1]
+        # ^ The footer line by its content: `(u)sage` follows `(a)gent`, fits at 120 columns and
+        # goes before `(o)verview` at 80 (ui/mod.rs `status_bar`).
+        footer = re.search(r'(?m)^ TASKS .*$', hinted[1]).group(0)
+        assert bool(re.search(r'\(a\)gent +\(u\)sage', footer)) == (cols == 120), footer
         assert re.search(r'(?m)^ MANAGER +\(i\)message +\(/\)find +\(S\)hell +Esc: back +\(j/k\)scroll ', hinted[2]), hinted[2]
     # ^ Open tasks of earlier steps sort above a working one (task_list.rs `rows`): move to
     # its row, and its detail shows it is the one.
@@ -2459,7 +2461,7 @@ def run(wsx, wsxd, work, owned):
                           + ''.join('Open question %d.\n' % n for n in range(1, 61)))
     seen = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'),
-        (r'(?m)^ TASKS +\(j/k\)move.*Esc: close +(?:\(u\)sage +)?\(o\)verview', b'o'),
+        (r'(?m)^ TASKS +\(j/k\)move.*Esc: close +(?:\(a\)gent +)?(?:\(u\)sage +)?\(o\)verview', b'o'),
         (r'(?m)^ OVERVIEW +\(j/k\)scroll +Esc: back', b'jjjjj'),
         (r'(?m)^ Overview demo +6-\d+/\d+$', b'\x1b[6~\x1b[6~\x1b[6~'),
         (r'Open question 60\.', b'\x1b'),
