@@ -1824,7 +1824,7 @@ impl Manager {
         if asked.is_empty() {
             return;
         }
-        let recent = recent_exchanges(&log);
+        let recent = recent_exchanges(&log, HANDOVER_ENTRIES);
         // ^ The manager's own next summary must still name what changed since its last turn.
         let seen = self.state.turn_seen.clone();
         let ledger = self.ledger_summary();
@@ -2511,7 +2511,7 @@ impl Manager {
             else {
                 return Vec::new();
             };
-            let mut lines = exchanges(&tail[..rotated], usize::MAX);
+            let mut lines = recent_exchanges(&tail[..rotated], usize::MAX);
             lines.truncate(lines.len().saturating_sub(HANDOVER_ENTRIES));
             lines
         })
@@ -2542,7 +2542,7 @@ impl Manager {
     /// The last exchanges of the log, so a fresh conversation knows what was just said.
     fn handover(&self) -> String {
         let log = self.dir.read_log().unwrap_or_default();
-        let lines = recent_exchanges(&log);
+        let lines = recent_exchanges(&log, HANDOVER_ENTRIES);
         // ^ A routine's result may not have been acted on before the rotation.
         let replied = log
             .iter()
@@ -2787,12 +2787,8 @@ fn handover_routines(mut runs: Vec<RunRecord>, replied: i64) -> Vec<String> {
     lines
 }
 
-fn recent_exchanges(log: &[ManagerEntry]) -> Vec<String> {
-    exchanges(log, HANDOVER_ENTRIES)
-}
-
 /// The last `limit` owner messages and replies, oldest first, each on one line.
-fn exchanges(log: &[ManagerEntry], limit: usize) -> Vec<String> {
+fn recent_exchanges(log: &[ManagerEntry], limit: usize) -> Vec<String> {
     let mut lines: Vec<String> = log
         .iter()
         .rev()
