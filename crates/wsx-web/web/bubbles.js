@@ -57,7 +57,7 @@ export function conversation(entries, resolutions, approvals = [], checks = [], 
     } else if (entry.kind === "message" && entry.from === "recap") {
       return;
     } else if (entry.kind === "reply") {
-      rows.push({ kind: "bubble", at, key, author: "manager", entry, quiet: entry.quiet, asks: entry.asks && index > answered, routine: !entry.usage && entry.to?.length > 0 && entry.to.every((id) => events.has(id)), tag: entry.to?.some((id) => recaps.has(id)) ? "Recap" : null });
+      rows.push({ kind: "bubble", at, key, author: "manager", entry, quiet: entry.quiet, asks: entry.asks && index > answered, routine: !entry.usage && entry.to?.length > 0 && entry.to.every((id) => events.has(id)), level: entry.level ?? null, tag: entry.to?.some((id) => recaps.has(id)) ? "Recap" : null });
     } else if (entry.kind === "message" && /^(manager|role)(-reply)?:/.test(entry.from ?? "")) {
       // ^ Another project's manager wrote (docs/tasks.md "Managers talk"), or a role or the
       // manager of this one (`role:<name>`, docs/tasks.md "Roles").
@@ -200,7 +200,8 @@ export function Bubble({ project, row, words: home, names, fresh }) {
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
   const words = peer != null && !peer.startsWith("role:") ? withChips(project, peer) : home;
   const id = `bubble-${row.key}`;
-  const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${names.peers[row.to]}` : row.tag;
+  // ^ A post with a level (`wsx task post --level warn|bad`) says it in its tag (docs/web-client-tasks.md "Task notifications").
+  const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${names.peers[row.to]}` : row.level ? (row.level === "bad" ? "Bad" : "Warn") : row.tag;
   // ^ In a chat's small space the stand-in mark is an icon; an asking reply is set off by its border, and its words are in the aria-label.
   const mark = row.entry.provisional ? ["unchecked", "Stand-in, not checked"] : null;
   let body;
@@ -217,8 +218,8 @@ export function Bubble({ project, row, words: home, names, fresh }) {
       data-peer=${peer == null ? null : peerColor(peer)} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}
       data-at=${row.pending ? null : row.at} data-key=${row.key} data-in=${out || row.pending ? null : ""}
       data-quote=${quoteOf(row.entry.text) || null}
-      data-pending=${row.pending ? "" : null} data-asks=${row.asks ? "" : null} data-routine=${row.routine ? "" : null}
-      aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}${row.asks ? ", Asks you" : row.routine ? ", Routine" : ""}`}>
+      data-pending=${row.pending ? "" : null} data-asks=${row.asks ? "" : null} data-routine=${row.routine ? "" : null} data-level=${row.level}
+      aria-label=${`${authorName(row.author, names)}, ${clock(row.at)}${row.asks ? ", Asks you" : row.level ? `, ${tag}` : row.routine ? ", Routine" : ""}`}>
       ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${authorName(row.author, names)}</p>`}
       <div class="bubble-box">${mark && html`<p class="bubble-tag" role="img" aria-label=${mark[1]} title=${mark[1]}><${Icon} name=${mark[0]} /></p>`}${tag && html`<p class="bubble-tag">${tag}</p>`}${body}</div>
       ${row.last && html`<p class="bubble-time" aria-hidden="true">${row.pending ? "Sending…" : clock(row.at)}</p>`}

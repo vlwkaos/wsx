@@ -33,8 +33,8 @@ use wsx_core::git::output_with_timeout_tail;
 use wsx_core::task::checks::{self, CheckItem, CheckState};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
 use wsx_core::task::manager::{
-    chat_window, ApprovalAction, ApprovalLine, Author, ManagerEntry, ManagerEvent, ManagerRequest,
-    ManagerResponse, CHAT_ENTRIES,
+    chat_window, ApprovalAction, ApprovalLine, Author, Level, ManagerEntry, ManagerEvent,
+    ManagerRequest, ManagerResponse, CHAT_ENTRIES,
 };
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::roles;
@@ -338,6 +338,13 @@ pub enum TaskCmd {
         /// The chat's line above the text
         #[arg(long, default_value = "routine")]
         title: String,
+        /// `warn` or `bad` shows the level in the chat and pushes to the owner's phone at once
+        #[arg(long, default_value = "info", value_parser = ["info", "warn", "bad"])]
+        level: String,
+        /// Drop a post with this key (1-64 of A-Z a-z 0-9 . _ -) when one was kept in the last
+        /// 10 minutes; prints `deduped: <key>`
+        #[arg(long, value_parser = post_key)]
+        key: Option<String>,
     },
     /// The project's scheduled routines: `wsx routine` (docs/tasks.md "Routines")
     Routine {
@@ -811,7 +818,12 @@ pub fn run(command: TaskCmd) -> Result<()> {
         ),
         TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
         TaskCmd::Digest { project, since } => digest(project.as_deref(), since),
-        TaskCmd::Post { project, title } => post(project.as_deref(), &title),
+        TaskCmd::Post {
+            project,
+            title,
+            level,
+            key,
+        } => post(project.as_deref(), &title, &level, key.as_deref()),
         TaskCmd::Checkin {
             project,
             after,
@@ -2386,7 +2398,7 @@ fn digest(project: Option<&str>, since: Option<u64>) -> Result<()> {
         },
         |seconds| seconds.saturating_mul(1000),
     );
-    post_when_free(&project_id, &name, DIGEST_EVENT, || {
+    post_when_free(&project_id, &name, DIGEST_EVENT, None, || {
         digest_lines(&project_id, after_ms)
     })
 }
@@ -2394,14 +2406,36 @@ fn digest(project: Option<&str>, since: Option<u64>) -> Result<()> {
 /// The most of stdin `post` reads.
 const POST_BYTES: u64 = 16 * 1024;
 
-/// `wsx task post`: stdin's lines to the chat, as the digest posts its own.
-fn post(project: Option<&str>, title: &str) -> Result<()> {
+/// A post's `--key` is 1-64 characters of `[A-Za-z0-9._-]`.
+fn post_key(key: &str) -> Result<String, String> {
+    let fits = (1..=64).contains(&key.len())
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte));
+    match fits {
+        true => Ok(key.to_string()),
+        false => Err("a key is 1-64 characters of A-Z a-z 0-9 . _ -".into()),
+    }
+}
+
+/// The same key within this long of the last kept post is dropped.
+const POST_KEY_WINDOW_SECS: u64 = 10 * 60;
+
+/// `wsx task post`: stdin's lines to the chat, as the digest posts its own. It needs only the
+/// state folder (`HOME` or `XDG_STATE_HOME`) and the running manager host, no `WSX_*`
+/// variable. ref: docs/tasks.md "Routines"
+fn post(project: Option<&str>, title: &str, level: &str, key: Option<&str>) -> Result<()> {
     use std::io::Read;
     let (name, main) = project_entry(project)?;
     let title = title.trim();
     if title.is_empty() || title.contains('\n') {
         bail!("--title must be one line");
     }
+    let level = match level {
+        "warn" => Some(Level::Warn),
+        "bad" => Some(Level::Bad),
+        _ => None,
+    };
     let mut bytes = Vec::new();
     std::io::stdin()
         .take(POST_BYTES)
@@ -2410,9 +2444,18 @@ fn post(project: Option<&str>, title: &str) -> Result<()> {
     // ^ The cut at POST_BYTES may split a character.
     let text = String::from_utf8_lossy(&bytes);
     let lines: Vec<String> = text.trim().lines().map(str::to_string).collect();
-    post_when_free(&store::project_id(&name, &main), &name, title, || {
-        lines.clone()
-    })
+    let project_id = store::project_id(&name, &main);
+    let send = || post_when_free(&project_id, &name, title, level, || lines.clone());
+    match key {
+        Some(key) if !lines.is_empty() => {
+            let now = now_unix_ms() / 1000;
+            if !store::post_once(&project_id, key, now, POST_KEY_WINDOW_SECS, send)? {
+                println!("deduped: {key}");
+            }
+            Ok(())
+        }
+        _ => send(),
+    }
 }
 
 /// Post `lines()` as wsx's `event` message to the chat, with no manager turn: none when it is
@@ -2422,6 +2465,7 @@ fn post_when_free(
     project_id: &str,
     name: &str,
     event: &str,
+    level: Option<Level>,
     mut lines: impl FnMut() -> Vec<String>,
 ) -> Result<()> {
     // ^ The manager's own command runs inside the turn it would wait for.
@@ -2435,7 +2479,7 @@ fn post_when_free(
         if lines.is_empty() {
             return Ok(());
         }
-        let response = owner::post(project_id, event.into(), lines.join("\n"))
+        let response = owner::post(project_id, event.into(), lines.join("\n"), level)
             .with_context(|| format!("the manager host of {name} is not running"))?;
         if response.ok {
             return Ok(());

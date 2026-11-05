@@ -2083,6 +2083,28 @@ def run(wsx, wsxd, work, owned):
     assert re.search(r'(?m)^ MANAGER ', linked[5]) and 'shell in main exited' in linked[5], linked[5]
     assert re.search(r'(?m)^ \u2502 shell in main exited', linked[2]), linked[2]
     assert re.search(r'38;2;184;140;240[;0-9]*m\u2502', frames[2].decode('utf-8', 'replace')), 'a wsx post has no secondary bar'
+    # ^ A post with a level (`wsx task post --level warn|bad`, docs/tasks.md "Routines") shows the word in its
+    # heading and the bar in the warning or error colour; `--key` drops a repeat with exit 0.
+    for level, text in (('warn', 'rss over 8 GB'), ('bad', 'rss over 12 GB')):
+        subprocess.run([str(wsx), 'task', 'post', '-p', 'demo', '--title', 'guard ' + level, '--level', level,
+                        '--key', 'guard-' + level], env=env, cwd=project, input=text + '\n', text=True, check=True)
+    repeat = subprocess.run([str(wsx), 'task', 'post', '-p', 'demo', '--title', 'guard warn', '--level', 'warn',
+                             '--key', 'guard-warn'], env=env, cwd=project, input='again\n', text=True,
+                            capture_output=True, check=True)
+    assert repeat.stdout.strip() == 'deduped: guard-warn', repeat.stdout
+    bad_level = subprocess.run([str(wsx), 'task', 'post', '-p', 'demo', '--level', 'loud'], env=env, cwd=project,
+                               input='x\n', text=True, capture_output=True)
+    assert bad_level.returncode == 2, bad_level
+    leveled = []
+    shown = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
+        (r'(?s)rss over 8 GB.*rss over 12 GB', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], raw=leveled)
+    assert re.search(r'(?m)\d\d:\d\d +warn *$', shown[2]) and re.search(r'(?m)\d\d:\d\d +bad *$', shown[2]), shown[2]
+    assert 'again' not in shown[2], shown[2]
+    colored = leveled[2].decode('utf-8', 'replace')
+    for rgb, word in (('224;151;91', 'warn'), ('234;105;126', 'bad')):
+        assert re.search(r'38;2;%s[;0-9]*m(?:\x1b\[[;0-9]*m)*  %s' % (rgb, word), colored), 'the %s word has no colour' % word
+        assert re.search(r'38;2;%s[;0-9]*m\u2502' % rgb, colored), 'the %s post has no coloured bar' % word
     board.unlink()
     board.parent.rmdir()
     for name in ('closed', 'retrospect', 'checkin', 'board', 'hushed', 'silent', 'found', 'broke', 'clean'):

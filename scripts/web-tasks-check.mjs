@@ -3080,6 +3080,22 @@ await go(chat);
   const digest = await look();
   if (!retro.text.includes("Since the last post") || retro.border !== digest.secondary) await fail(`the retrospect post is ${JSON.stringify(retro)}, not bordered in ${digest.secondary}`);
   await shot("routine-message-retrospect");
+  // ^ A post with a level (`wsx task post --level warn|bad`) says it in its tag and sets its border
+  // in the attention or danger colour, in both schemes (docs/web-client-tasks.md "Task notifications").
+  for (const [level, word, role] of [["warn", "Warn", "color-attention"], ["bad", "Bad", "color-danger"]]) {
+    execFileSync(cli.wsx, ["task", "post", "-p", "plans", "--title", `guard ${level}`, "--level", level], { env: cli.env, cwd: cli.cwd, input: `memory over the limit (${level})\n`, stdio: "pipe" });
+    await until(`!!document.querySelector('.bubble[data-level=${level}]')`, `the ${level} post has no level mark`, 30);
+    for (const scheme of ["dark", "light"]) {
+      await inScheme(scheme);
+      const seen = await evaluate(`(() => { const node = Object.assign(document.createElement('i'), {}); node.style.color = 'var(--${role})'; document.body.append(node);
+        const want = getComputedStyle(node).color; node.remove(); const bubble = document.querySelector('.bubble[data-level=${level}]');
+        return { want, border: getComputedStyle(bubble.querySelector('.bubble-box')).borderTopColor, tagColor: getComputedStyle(bubble.querySelector('.bubble-tag')).color,
+          tag: bubble.querySelector('.bubble-tag').textContent, label: bubble.getAttribute('aria-label'), text: bubble.textContent }; })()`);
+      if (seen.border !== seen.want || seen.tagColor !== seen.want || seen.tag !== word || !seen.label.endsWith(`, ${word}`) || !seen.text.includes(`memory over the limit (${level})`)) await fail(`the ${level} post in the ${scheme} scheme: ${JSON.stringify(seen)}`);
+    }
+    await shot(`post-level-${level}`);
+  }
+  await inScheme("dark");
 }
 
 const defects = problems.filter((problem) => !/status of 401/.test(problem) && !/status of 404.*\/api\/tasks\/999999\/routines/.test(problem) && !/status of 403.*\/api\/files\?project=\d+&path=$/.test(problem));

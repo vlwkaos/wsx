@@ -29,8 +29,8 @@ use wsx_core::task::manager::{
     resolve_quote, says_nothing, ApprovalLine, QUOTE_REF,
 };
 use wsx_core::task::manager::{
-    Author, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
-    ManagerState, Seen,
+    Author, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
+    ManagerResponse, ManagerState, Seen,
 };
 use wsx_core::task::session_news;
 use wsx_core::task::stall;
@@ -628,7 +628,7 @@ impl Manager {
                     },
                 }
             }
-            ManagerRequest::Post { event, text } => {
+            ManagerRequest::Post { event, text, level } => {
                 let refusal = match (busy, text.trim().is_empty(), text.len() > MAX_MESSAGE_BYTES) {
                     (true, ..) => Some("a manager turn runs"),
                     (_, true, _) => Some("the text is empty"),
@@ -636,7 +636,7 @@ impl Manager {
                     _ => None,
                 };
                 if refusal.is_none() {
-                    self.post(event, text);
+                    self.post(event, text, level);
                 }
                 ManagerResponse {
                     ok: refusal.is_none(),
@@ -651,7 +651,7 @@ impl Manager {
     /// Write to the owner with no turn: a delivered events message, so that no restart hands it
     /// to the agent, and the reply to it, which the web pushes like the manager's own. The reply
     /// has no usage, and only the agent's replies have one.
-    fn post(&mut self, event: String, text: String) {
+    fn post(&mut self, event: String, text: String, level: Option<Level>) {
         let id = self.next_id();
         self.log(ManagerEvent::Message {
             id,
@@ -668,6 +668,7 @@ impl Manager {
             quiet: false,
             asks: false,
             provisional: None,
+            level,
         });
     }
 
@@ -949,7 +950,7 @@ impl Manager {
         let found = session_news::attention(&snapshot, &self.main);
         let (fresh, keep) = session_news::unposted(found, self.state.sessions_seen.as_ref());
         for news in fresh {
-            self.post(news.event, news.text);
+            self.post(news.event, news.text, None);
         }
         if self.state.sessions_seen.as_ref() != Some(&keep) {
             self.state.sessions_seen = Some(keep);
@@ -1925,6 +1926,7 @@ impl Manager {
                     quiet: false,
                     asks: false,
                     provisional: Some(name),
+                    level: None,
                 });
                 self.state.provisional_to = answered;
                 self.state.provisional = true;
@@ -2465,6 +2467,7 @@ impl Manager {
             quiet,
             asks,
             provisional: None,
+            level: None,
         });
         if context > self.rotate_limit() {
             self.rotate(context, None);

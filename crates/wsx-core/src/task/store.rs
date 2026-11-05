@@ -257,6 +257,39 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     .with_context(|| format!("cannot write {}", path.display()))
 }
 
+/// The most `wsx task post --key` remembers a key.
+const POST_KEY_KEEP_SECS: u64 = 24 * 60 * 60;
+
+/// Run `post` unless a post with the same `key` was kept in the last `window_secs` of this
+/// project: false then, and nothing runs. The time of a kept post is saved in
+/// `post-keys.json` of the project's folder after `post` succeeded, so a dropped post never
+/// renews the window; keys older than a day are dropped from the file. A file that cannot be
+/// read counts as empty. ref: docs/tasks.md "Routines"
+pub fn post_once(
+    project_id: &str,
+    key: &str,
+    now_secs: u64,
+    window_secs: u64,
+    post: impl FnOnce() -> Result<()>,
+) -> Result<bool> {
+    let path = ensure_project_dir(project_id)?.join("post-keys.json");
+    let mut keys: std::collections::BTreeMap<String, u64> = fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    if keys
+        .get(key)
+        .is_some_and(|last| now_secs.saturating_sub(*last) < window_secs)
+    {
+        return Ok(false);
+    }
+    post()?;
+    keys.retain(|_, last| now_secs.saturating_sub(*last) < POST_KEY_KEEP_SECS);
+    keys.insert(key.to_string(), now_secs);
+    write_atomic(&path, &serde_json::to_vec(&keys)?)?;
+    Ok(true)
+}
+
 /// Replace a note of the manager's notes folder.
 pub fn write_note(path: &Path, text: &str) -> Result<()> {
     write_atomic(path, text.as_bytes())

@@ -4112,6 +4112,59 @@ merge_seconds = 3
         js('task', 'say', '--role', 'notes', 'RUN wsx task new "NOOP TABLE" -p demo --json', '-p', 'demo')
         roled = new_pushes('manager', 'the push of a reply a role started', timeout=60)
         assert len(roled) == 1 and says(roled[0], 'notes wrote to you'), roled
+        # ^ `wsx task post --level warn|bad` (docs/tasks.md "Routines"): a script with no WSX_* variable and
+        # outside any project folder posts; the chat entry has its level and each post pushes once, in a
+        # push of its own, `<project>: <title>` over the first line; info pushes as before; the same
+        # key within 10 minutes posts nothing.
+        bare = {key: value for key, value in env.items() if not key.startswith('WSX_')}
+
+        def post(text, *flags, expect=0):
+            result = subprocess.run([str(wsx), 'task', 'post', '-p', 'demo', *flags], input=text, env=bare, cwd=tmp,
+                                    capture_output=True, text=True, timeout=120)
+            assert result.returncode == expect, (flags, result.returncode, result.stdout, result.stderr)
+            return result
+
+        def replies_of(title):
+            entries = js('task', 'chat', '-p', 'demo')['entries']
+            asked = {e['id'] for e in entries if e['kind'] == 'message' and e['from'] == 'events' and e['text'] == title}
+            return [e for e in entries if e['kind'] == 'reply' and asked & set(e['to'])]
+        post('memory is fine\n', '--title', 'guard info')
+        (plain,) = replies_of('guard info')
+        assert 'level' not in plain, plain
+        pushed = new_pushes('manager', 'the push of an info post')
+        assert len(pushed) == 1 and 'memory is fine' in pushed[0]['body'] and pushed[0]['tag'] == 'wsx-owner-manager', pushed
+        post('rss 9 GB\nsecond line\n', '--title', 'memory guard', '--level', 'warn', '--key', 'mem')
+        (warned,) = replies_of('memory guard')
+        assert warned['level'] == 'warn' and warned['usage'] is None, warned
+        alert = new_pushes('manager', 'the push of a warn post')
+        assert len(alert) == 1, alert
+        assert {k: v for k, v in alert[0].items() if k != 'badge'} == {
+            'kind': 'manager', 'title': 'demo: memory guard', 'body': 'rss 9 GB', 'url': '#/p/%d' % ids['demo'],
+            'tag': 'wsx-owner-alert-%d-%d' % (ids['demo'], warned['id'])}, alert
+        again = post('rss 9 GB\n', '--title', 'memory guard', '--level', 'warn', '--key', 'mem')
+        assert again.stdout.strip() == 'deduped: mem', again.stdout
+        post('', '--title', 'memory guard', '--level', 'warn', '--key', 'empty')
+        time.sleep(5)
+        assert len(replies_of('memory guard')) == 1 and len(pushes('manager')) == baselines['manager'], 'a deduped or empty post posted'
+        post('rss 12 GB\n', '--title', 'memory runaway', '--level', 'bad', '--key', 'oom')
+        (bad,) = replies_of('memory runaway')
+        assert bad['level'] == 'bad', bad
+        assert new_pushes('manager', 'the push of a bad post')[0]['title'] == 'demo: memory runaway'
+        # A key kept 11 minutes ago posts again; a key older than a day leaves the file.
+        (keys_file,) = (state / 'wsx/tasks').glob('demo-*/post-keys.json')
+        kept = json.loads(keys_file.read_text())
+        assert set(kept) == {'mem', 'oom'}, kept
+        keys_file.write_text(json.dumps(dict(kept, mem=int(time.time()) - 660, old=int(time.time()) - 2 * 86400)))
+        post('rss 10 GB\n', '--title', 'memory guard', '--level', 'warn', '--key', 'mem')
+        assert len(replies_of('memory guard')) == 2
+        assert set(json.loads(keys_file.read_text())) == {'mem', 'oom'}, keys_file.read_text()
+        new_pushes('manager', 'the push of a warn post after the window')
+        for flags in (['--level', 'loud'], ['--key', ''], ['--key', 'a b'], ['--key', 'x' * 65], ['--key', 'é']):
+            post('x\n', '--title', 'nope', *flags, expect=2)
+        assert not replies_of('nope')
+        post('x\n', '--title', 'long key', '--level', 'warn', '--key', 'A' * 64)
+        new_pushes('manager', 'the push of a post with a 64 character key')
+        ok('post levels: a warn or bad `wsx task post` from a bare environment (no WSX_*) logs its level and pushes once, in a push of its own (`<project>: <title>` over its first line); info pushes as before; a repeated key within 10 minutes, an empty post and bad inputs (exit 2) post nothing; the key file keeps kept keys and drops day-old ones')
         ok('manager push: waiting merged in one, a new To check item, an approval, a reply the manager started (not one to the owner); each names every open item and replaces the one before; ready and failed do not push; the shown project skipped for that device; presence ends with the stream; manager needs task_view')
 
         # A project's digest is its routine (docs/tasks.md "Routines"): demo has one, ui has none.

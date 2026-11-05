@@ -88,10 +88,15 @@ pub fn say(
 
 /// Ask the running manager host to write to the owner with no turn. It never starts a host: an
 /// error when none answers, `ok: false` with `busy` while a turn runs.
-pub fn post(project_id: &str, event: String, text: String) -> Result<ManagerResponse> {
+pub fn post(
+    project_id: &str,
+    event: String,
+    text: String,
+    level: Option<super::manager::Level>,
+) -> Result<ManagerResponse> {
     call_socket(
         &ManagerDir::open(project_id)?.socket_path(),
-        &ManagerRequest::Post { event, text },
+        &ManagerRequest::Post { event, text, level },
         HOST_TIMEOUT,
     )
 }

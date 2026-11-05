@@ -722,6 +722,11 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .bubble[data-asks] .bubble-box { border-color: var(--color-accent); }
 /* A message wsx posted (the digest, `wsx task post`; no agent turn): the secondary accent border, apart from the asks-you accent. */
 .bubble[data-routine]:not([data-asks]) .bubble-box { border-color: var(--color-secondary); }
+/* A post with a level (`wsx task post --level warn|bad`): its border and tag in the attention (warn) or danger (bad) color. */
+.bubble[data-level="warn"]:not([data-asks]) .bubble-box { border-color: var(--color-attention); }
+.bubble[data-level="warn"] .bubble-tag { color: var(--color-attention); }
+.bubble[data-level="bad"]:not([data-asks]) .bubble-box { border-color: var(--color-danger); }
+.bubble[data-level="bad"] .bubble-tag { color: var(--color-danger); }
 /* Each speaker's color on its name only, never on its box; the name stays (docs/web-themes.md). */
 [data-speaker="manager"] { --speaker: var(--color-text); }
 .bubble[data-peer="1"] { --speaker: var(--color-peer-1); }

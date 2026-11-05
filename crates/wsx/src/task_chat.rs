@@ -19,7 +19,7 @@ use wsx_core::task::{
     checks::{self, CheckItem, CheckState},
     manager::{
         activity, chat_window, pending_approvals, quote_of, says_nothing, split_quote, Author,
-        ManagerEvent, ManagerRequest, ManagerResponse, CHAT_ENTRIES,
+        Level, ManagerEvent, ManagerRequest, ManagerResponse, CHAT_ENTRIES,
     },
     owner,
     store::{self, ManagerDir, Stamp},
@@ -50,6 +50,8 @@ pub enum Row {
         asks: bool,
         /// A post of wsx, not an agent turn (`is_post`): its bar is the secondary color.
         routine: bool,
+        /// A post with `--level warn|bad`: the heading and the bar show it.
+        level: Option<Level>,
     },
     Line(String),
 }
@@ -605,6 +607,7 @@ fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyh
             text: text.trim().to_string(),
             asks: false,
             routine: false,
+            level: None,
         };
         match &entry.event {
             ManagerEvent::Message { id, from, text } => match from {
@@ -652,6 +655,7 @@ fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyh
                 usage,
                 asks,
                 provisional,
+                level,
                 ..
             } => rows.push(Row::Said {
                 who: Who::Manager,
@@ -662,6 +666,7 @@ fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyh
                 },
                 asks: *asks,
                 routine: is_post(usage.is_none(), to, &events),
+                level: *level,
             }),
             // ^ An empty `sent` (older hosts logged one without --json) shows nothing.
             ManagerEvent::Sent { text, .. } if text.trim().is_empty() => {}

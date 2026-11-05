@@ -7,6 +7,24 @@ use super::{TaskRecord, TaskState, TurnUsage};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// How urgent a post of `wsx task post` is, besides the default info (no level).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Level {
+    Warn,
+    Bad,
+}
+
+impl Level {
+    /// The word the chat shows.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Warn => "warn",
+            Self::Bad => "bad",
+        }
+    }
+}
+
 /// Who wrote a message the manager receives: `owner`, `events`, `manager:<project>` or, for
 /// an answer to a message this manager sent, `manager-reply:<project>`; inside a project,
 /// `role:<name>` and `role-reply:<name>` (the manager is the role `manager`).
@@ -115,6 +133,10 @@ pub enum ManagerEvent {
         /// (docs/tasks.md "Agents").
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provisional: Option<String>,
+        /// A post of `wsx task post --level warn|bad`: the chat shows the level and the web
+        /// pushes it at once. Info is none. ref: docs/tasks.md "Routines"
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        level: Option<Level>,
     },
     /// This manager's message to another project's manager (`say --from-manager`).
     Sent {
@@ -603,6 +625,8 @@ pub enum ManagerRequest {
     Post {
         event: String,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        level: Option<Level>,
     },
 }
 
