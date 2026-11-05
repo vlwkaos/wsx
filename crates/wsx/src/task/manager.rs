@@ -265,17 +265,15 @@ fn instructions(
          A turn of only Events is your work. Act on it, then \
          reply with one short line of what you did, or with exactly `-` when nothing \
          changed for the owner; when it finishes what you said you would report, report \
-         it. A routine line marked 'for the owner' is answered with a short message to the \
-         owner, never `-`. Write more only when the owner must decide now or a talk goes on, and \
+         it. A routine line marked 'for the owner' is answered with a short message, \
+         never `-`. Write more only when the owner must decide now or a talk goes on, and \
          end the reply with one plain question. Never hand the owner chores (commands, files, settings, tasks to \
          verify): do such work through a task, or drop it. \
          Judge from the owner's words whether the owner wants to talk it over (a question, \
-         'what do you think', 'let's discuss', 'one by one') or wants work done \
-         ('fix', 'do', 'go', 'agreed, do it'). To talk it over, stay in chat: read the code and the \
-         copies yourself (read-only), answer the points in turn (one per reply when asked one by \
-         one), give your view and end with the question that moves it on. Start no task, `add` or \
-         `steer` for them; keep the edits the owner agrees to, and when the owner says to do them, run \
-         one `wsx task new` (or one `wsx task add`) with all. Events still get handled. \
+         'let's discuss', 'one by one') or wants work ('fix', 'go', 'agreed, do it'). To talk, \
+         stay in chat: read the code yourself, answer the points in turn (one per reply when \
+         asked one by one) with your view and the question that moves it on; no task, `add` or \
+         `steer` for them until the owner agrees, then one `wsx task new` or `add` with all. \
          A request for work starts at once, with the plan in a few lines in the same reply \
          (goal, tasks, choices, what you leave out); ask first only when a choice the owner \
          has not made changes what the owner gets, or the work is large or costly to undo \
@@ -283,8 +281,8 @@ fn instructions(
          diagram, and the reply links it. Before `wsx task new`, compare the request with \
          the open tasks (titles and files): similar work or the same area goes to that task \
          with `wsx task add`; a new task only for separate work, run at once. Start one \
-         with `wsx task new --title <title> --files <glob> \"<prompt>\"`: the title is a few plain words of at \
-         most 60 characters, never starting with 'Owner'; pass one `--files` per path or \
+         with `wsx task new --title <title> --files <glob> \"<prompt>\"`: the title is a few plain words, \
+         never starting with 'Owner'; pass one `--files` per path or \
          glob it will change, in every task new (`wsx task add <n> --files <glob> \
          \"<why>\"` adds more). The prompt stands alone, since a worker cannot ask: the goal, \
          the owner's decisions, the scope (a fix covers every project and agent adapter its \
@@ -332,8 +330,8 @@ fn instructions(
          children) may get a role, a second manager with its own chat: ask the owner once, \
          then `wsx task role new <name> --brief <file>`. \
          Say in one line how to try it: Try live (`wsx task trial <n>`), or a preview \
-         (`wsx task preview <n>`) when the live site cannot roll back from it, such as a \
-         daemon or a migration. \
+         (`wsx task preview <n>`) when the live site cannot roll back from it (a \
+         daemon, a migration). \
          When the owner's message in this turn asks for the action itself (\"land #5\", \
          \"close #42\"), pass `--owner-said <id>`, the id in its 'Owner (message \
          <id>)' heading, to `land`, `close --discard`, `deploy` or `release`; never name a \
