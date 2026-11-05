@@ -1588,7 +1588,7 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
     let mut summary = task_summary(dir, &record);
     // ^ The words every view shows; one task, so it asks whether it is stuck too.
     let approvals = store::read_approvals(&dir.project_id).unwrap_or_default();
-    let now = wsx_core::task::now_unix_ms();
+    let now = now_unix_ms();
     let stuck = wsx_core::task::stall::stuck(dir, &record, now);
     let facts = wsx_core::task::status::Facts {
         approvals: &wsx_core::task::manager::pending_approvals(&approvals),
