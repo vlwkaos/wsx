@@ -3,8 +3,9 @@
 //! every `SWEEP` and reports each stall once. ref: docs/tasks.md "Manager" (Stalls)
 
 use super::store::{self, TaskDir, LOG_FILE};
-use super::{call_host, view, HostRequest, TaskRecord, TaskState, WaitOn};
+use super::{call_host, view, HostRequest, LogEvent, TaskRecord, TaskState, WaitOn};
 use crate::config::project::load_task_config;
+use crate::model::workspace::DEFAULT_MANAGER_REVIEW_SECS;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -32,6 +33,54 @@ pub struct Stall {
 
 /// The stall of an open task, if it has one now.
 pub fn find(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
+    running(dir, record, now_ms).or_else(|| manager_wait(dir, record, now_ms))
+}
+
+/// A task the manager must act on (ready for its review, or waiting on `plan`) that has had
+/// no action of the manager (`add`, a steer, `hold`, `check-run`; a land or a close ends the
+/// wait) for `tasks.manager.reviewMinutes` since it entered the state. An owner wait is none.
+/// ref: docs/tasks.md "Manager" (Stalls)
+fn manager_wait(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
+    let settings = load_task_config(&record.project_path).ok();
+    let limit_ms = settings
+        .as_ref()
+        .map_or(DEFAULT_MANAGER_REVIEW_SECS, |s| s.manager_review_secs)
+        * 1000;
+    if limit_ms == 0 || !record.manager_reviews(settings.map_or(true, |s| s.land_auto)) {
+        return None;
+    }
+    let entered = record.state_unix_ms.max(record.created_unix_ms);
+    let acted = dir
+        .last_entry(|entry| {
+            matches!(
+                entry.event,
+                LogEvent::Message { .. } | LogEvent::CheckRun { .. } | LogEvent::Hold { .. }
+            )
+            .then_some(entry.unix_ms)
+        })
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    (now_ms.saturating_sub(entered.max(acted)) >= limit_ms).then(|| {
+        let state = match &record.waiting {
+            Some(w) if record.state == TaskState::Waiting => {
+                format!("waiting on {}", w.on.as_str())
+            }
+            _ => record.state.as_str().to_string(),
+        };
+        Stall {
+            marker: format!("manager {entered}"),
+            words: format!(
+                "{state} for {}; the manager has not reviewed it",
+                span(now_ms.saturating_sub(entered))
+            ),
+            why: "the manager has not reviewed it".into(),
+        }
+    })
+}
+
+/// The stall of an open task the host runs or queues (a disk or limit wait), if it has one now.
+fn running(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
     let waiting = record.waiting.as_ref();
     let hosted = match record.state {
         TaskState::Working | TaskState::Checking => true,
@@ -118,7 +167,7 @@ pub fn find(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
 /// write and past a limit's reset, as a read has no sweep that saw it before.
 /// ref: docs/web-client-tasks.md "Task sheet"
 pub fn stuck(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<String> {
-    let stall = find(dir, record, now_ms)?;
+    let stall = running(dir, record, now_ms)?;
     let until = record.waiting.as_ref().and_then(|waiting| waiting.until_ms);
     let settled = progress_ms(dir).max(until.unwrap_or(0));
     (now_ms.saturating_sub(settled) > GRACE.as_millis() as u64).then_some(stall.why)

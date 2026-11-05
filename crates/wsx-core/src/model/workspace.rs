@@ -140,6 +140,10 @@ pub struct TaskConfig {
     /// Quiet seconds after which the manager writes the owner a recap; 0 is off. The config
     /// says minutes (`recapMinutes`, a fraction allowed). ref: docs/tasks.md "Recap"
     pub manager_recap_secs: u64,
+    /// Seconds a task the manager must act on (ready for its review, or waiting on `plan`) may
+    /// wait with no action before it is a stall; 0 is off. The config says minutes
+    /// (`reviewMinutes`, a fraction allowed). ref: docs/tasks.md "Manager" (Stalls)
+    pub manager_review_secs: u64,
     /// `tasks.roles.max`: open roles besides the manager. ref: docs/tasks.md "Roles"
     pub roles_max: usize,
     /// `tasks.roles.closeDays` in seconds: a role with no turn for this long is closed.
@@ -194,6 +198,9 @@ pub struct TaskPreview {
 }
 
 /// The effort levels both Claude Code (`--effort`) and Pi (`--thinking`) take.
+/// How long a task the manager must act on may wait with no action: 30 minutes.
+pub const DEFAULT_MANAGER_REVIEW_SECS: u64 = 30 * 60;
+
 pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// The effort of a `task new --size small` task: high on every model, never lower.
 pub const SMALL_EFFORT: &str = "high";
@@ -266,6 +273,7 @@ impl Default for TaskConfig {
             manager_event_model: None,
             manager_rotate_tokens: None,
             manager_recap_secs: 0,
+            manager_review_secs: DEFAULT_MANAGER_REVIEW_SECS,
             roles_max: 2,
             // ^ A role is for work over weeks, and its parent task may wait on the owner for
             // more than a week: two weeks of no turn means the work is over.
