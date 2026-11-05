@@ -22,6 +22,13 @@ def trace(record):
         out.write(json.dumps(dict(record, adapter='pi')) + '\n')
 
 
+def leak(session):
+    # ^ LEAK: two tool processes left running, one in the agent's process group and one in a
+    # session of its own, as Claude's Bash tool starts its shells. Both keep its environment.
+    kids = [subprocess.Popen(['sleep', '600'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=own) for own in (False, True)]
+    trace({'leak': [kid.pid for kid in kids], 'agent': os.getpid(), 'session': session})
+
 # ^ The fields the real Pi writes on an assistant message, as recorded in
 # crates/wsx/tests/fixtures/agent-streams/pi (docs/tasks.md "Agent stream recordings"); the
 # scenario's own values stay. crates/wsx/tests/agent_stream_fakes.rs fails when this drifts.
@@ -92,6 +99,8 @@ def main():
         cost = float(own[own.index('PICOST') + 1]) if 'PICOST' in own else 0.001
         context = int(own[own.index('PICTX') + 1]) if 'PICTX' in own else 100
         if worker:
+            if 'LEAK' in words:
+                leak(session)
             if 'WORK' in words:
                 name = words[words.index('WORK') + 1]
                 with open(name, 'w') as out:
