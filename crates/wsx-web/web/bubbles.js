@@ -5,7 +5,7 @@ import { clock, firstSentence, html, Icon, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { Quoted, quoteOf } from "./reply.js";
-import { ChatApprovals, TaskChip } from "./tasks.js";
+import { ChatApprovals, TaskChip, withChips } from "./tasks.js";
 import { CheckRow } from "./checks.js";
 import { can, sessionLink, shows } from "./store.js";
 
@@ -193,10 +193,12 @@ const relativeOf = (project) => {
   return relatives.get(project);
 };
 
-// One message. `words` turns its text runs into task chips.
-export function Bubble({ project, row, words, names, fresh }) {
+// One message. `home` turns its text runs into task chips; a message of another project's
+// manager (not a role) reads its bare `#n` as that project's task.
+export function Bubble({ project, row, words: home, names, fresh }) {
   const out = row.author === "owner";
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
+  const words = peer != null && !peer.startsWith("role:") ? withChips(project, peer) : home;
   const id = `bubble-${row.key}`;
   const tag = row.to != null ? `${row.entry.reply ? "Reply to" : "To"} ${names.peers[row.to]}` : row.tag;
   // ^ In a chat's small space the stand-in mark is an icon; an asking reply is set off by its border, and its words are in the aria-label.

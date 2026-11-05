@@ -3043,6 +3043,56 @@ const cut = await evaluate("({ lines: (document.querySelector('.project-page .ta
 if (cut.lines > 59 || !/Over the size limit/.test(cut.note)) await fail(`the over-cap overview is not cut: ${JSON.stringify(cut)}`);
 await closeSheet("the page", `#/p/${plansArg}`);
 
+// --- A task mention of another project (docs/web-client-tasks.md "Project screen"): ui and plans
+// both have a #1. "plans #1" in ui's own reply and a bare #1 in plans' manager's message open plans'
+// #1 in plans' chat; a bare #1 in ui's reply opens ui's #1; a sender the site does not grant leaves a
+// bare #1 as text.
+{
+  const cli = JSON.parse(fs.readFileSync(wsxCli));
+  const plansMark = "Compare plans #1 with #1 here";
+  execFileSync(cli.wsx, ["task", "post", "-p", "ui", "--title", "task mentions"], { env: cli.env, cwd: cli.cwd, input: plansMark, stdio: "pipe" });
+  const fromPlans = "Peer note: #1 waits for you";
+  const pageModule = (name) => `import(new URL(${JSON.stringify(name)}, [...document.scripts].find((script) => script.type === 'module').src))`;
+  // ^ plans' manager says it to ui's; the say route limits a burst, so a refused message goes again.
+  let asked = 0;
+  for (let attempt = 0; attempt < 20 && asked !== 200; attempt++) {
+    asked = await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: ${JSON.stringify(`RUN wsx task say -p ui --from-manager "${fromPlans}" --json`)} }) }).then((response) => response.status)`);
+    if (asked !== 200) await pause(1000);
+  }
+  if (asked !== 200) await fail(`plans' manager was not asked to write to ui's: ${asked}`);
+  await go(chat);
+  const chipsIn = (needle) => evaluate(`(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(needle)}));
+    return bubble && { author: bubble.dataset.speaker, text: bubble.querySelector('.bubble-body').textContent.trim().replace(/\\s+/g, ' '),
+      chips: [...bubble.querySelectorAll('a.task-chip')].map((chip) => ({ href: chip.getAttribute('href'), text: chip.textContent.trim(), label: chip.getAttribute('aria-label') })) }; })()`);
+  await until(`[...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes(${JSON.stringify(fromPlans)})) && [...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes(${JSON.stringify(plansMark)}))`, "the mention messages did not reach the chat", 300);
+  const own = await chipsIn(plansMark);
+  if (own.chips.length !== 2 || own.chips[0].href !== `#/p/${plansArg}/t/1` || !/^plans #1$/.test(own.chips[0].text)
+    || own.chips[1].href !== `#/p/${project}/t/1` || own.chips[1].text !== "#1") await fail(`ui's own reply reads ${JSON.stringify(own)}`);
+  const theirs = await chipsIn(fromPlans);
+  if (theirs.author !== "peer" || theirs.chips.length !== 1 || theirs.chips[0].href !== `#/p/${plansArg}/t/1` || !/^plans #1$/.test(theirs.chips[0].text)) await fail(`plans' message reads ${JSON.stringify(theirs)}`);
+  await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).scrollIntoView({ block: 'center' })`);
+  await shot("task-mentions");
+  // ^ A tap moves to plans' chat with #1's sheet over it; Back returns to ui's chat.
+  await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).querySelector('a.task-chip').click()`);
+  await until(`location.hash === '#/p/${plansArg}/t/1' && !!document.querySelector('dialog.task-sheet[open]')`, "plans #1 did not open from ui's chat", 60);
+  const sheet = await evaluate("document.querySelector('dialog.task-sheet[open] .bar-label, dialog.task-sheet[open] .row-title')?.textContent ?? ''");
+  if (!sheet.includes("#1") || !/jump between projects/.test(await evaluate("document.querySelector('dialog.task-sheet[open]').textContent"))) await fail(`the sheet is not plans' #1: ${sheet}`);
+  await evaluate("history.back()");
+  await until(`location.hash === '${chat}' || location.hash === '#/p/${project}'`, "Back did not return to ui's chat", 60);
+  // ^ The own project's bare #1 opens ui's #1.
+  await until(`[...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes(${JSON.stringify(plansMark)}))`, "ui's chat did not come back", 60);
+  await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).querySelectorAll('a.task-chip')[1].click()`);
+  await until(`location.hash === '#/p/${project}/t/1' && !!document.querySelector('dialog.task-sheet[open]')`, "ui #1 did not open from a bare #1", 60);
+  await closeSheet("ui #1", chat);
+  // ^ plans is not granted (taken out of the live store): its manager's bare #1 is text, no link.
+  await evaluate(`(async () => { const { state, update } = await ${pageModule("store.js")}; globalThis.mentionKept = state.projects;
+    update({ projects: state.projects.filter((other) => other.name !== 'plans') }); })()`);
+  await until(`(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(fromPlans)}));
+    return bubble && !bubble.querySelector('a.task-chip') && bubble.textContent.includes('#1 waits for you'); })()`, "an ungranted sender's bare #1 is not plain text", 60);
+  await evaluate(`(async () => { const { update } = await ${pageModule("store.js")}; update({ projects: globalThis.mentionKept }); })()`);
+}
+
 console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass in a bubble that stays in place, Skip, the fix task's line), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Roles (the ⋯ contact with its unread dot, its chat at #/p/<project>/r/<role> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await cleanup();
 process.exit(0);
