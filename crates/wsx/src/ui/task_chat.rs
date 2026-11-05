@@ -294,7 +294,7 @@ pub fn chat_lines(
                     Who::Manager => (other.to_string(), theme::DONE),
                     Who::Peer(project) => (project.clone(), theme::IDLE),
                 };
-                // ^ A reply that asks is set off like a thin border: a bar in the accent; a post of wsx (a routine's run) has its bar in the secondary color, unless it asks. Its name keeps the speaker's color, as the accent is the owner's.
+                // ^ A reply that asks is set off like a thin border: a bar in the accent; a post of wsx (the digest, `wsx task post`) has its bar in the secondary color, unless it asks. Its name keeps the speaker's color, as the accent is the owner's.
                 let bar = if *asks {
                     Some(theme::ACCENT)
                 } else {

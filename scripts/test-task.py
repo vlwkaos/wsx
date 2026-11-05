@@ -1595,7 +1595,8 @@ def run(wsx, wsxd, work, owned):
     assert '-> 0 ' in text, text
     text = reply_to(js('task', 'say', 'RUN wsx task routine run nightly -p demo --json')['id'])['text']
     assert '-> 0 ' in text, text
-    wait(lambda: events_with('routine nightly failed (exit 3); its output ends:\n    boom'), 'the routine event')
+    # ^ A failure of a routine that posts is an event for the owner: one line, the output in it.
+    wait(lambda: events_with('routine nightly failed (exit 3); for the owner; output ends: boom'), 'the routine event')
     # ^ Two more failures: the handover after the rotation below folds all three in one line.
     for count in (2, 3):
         text = reply_to(js('task', 'say', 'RUN wsx task routine run nightly -p demo --json')['id'])['text']
@@ -1851,9 +1852,10 @@ def run(wsx, wsxd, work, owned):
     assert report.startswith('Since ') and 'You asked 3 times: "RUN wsx task routine run nightly -p demo --json"' in report, report
     assert 'not judged (--no-model)' in report and Path(report.split('Detail: ')[1].strip()).is_file(), report
     assert not events_with('routine retrospect'), 'the retrospect prints nothing'
-    # ^ A run's end posts to the chat by default, with no turn and no event: its result, its
-    # output as written and a link to each file of the main checkout it names. `--no-post`
-    # keeps it an event only; a success that prints nothing posts nothing.
+    # ^ A run's end is an event for the owner by default, and the manager answers it with a
+    # message: the result, the end of its output and a link to each file of the main checkout it
+    # names. `--no-post` keeps it an event for the manager's own work; a success that prints
+    # nothing gives nothing.
     board = project / 'routine-out' / 'board.html'
     board.parent.mkdir(exist_ok=True)
     board.write_text('<p>board</p>\n')
@@ -1863,39 +1865,53 @@ def run(wsx, wsxd, work, owned):
     js('task', 'routine', 'add', 'silent', '-p', 'demo', '--cron', '0 5 * * *', '--arg=true')
     rows = {r['name']: r for r in js('task', 'ledger')['routines']}
     assert rows['board']['post'] is True and rows['hushed']['post'] is False, rows
-    for name in ('board', 'hushed', 'silent'):
+    js('task', 'routine', 'run', 'board', '-p', 'demo')
+    event_message = wait(lambda: events_with('routine board succeeded after ', '; for the owner; output ends: '),
+                         'the board routine event', 60)[0]
+    event = next(line for line in event_message['text'].split('\n') if line.startswith('routine board'))
+    assert '{"ok": true}' in event and '\n' not in event, event
+    assert '; files: [board.html](files/routine-out/board.html)' in event and 'none.html]' not in event, event
+    message = reply_to(event_message['id'])
+    assert 'usage' in message and not message.get('quiet') and len(message['text']) < 200, message
+    assert message['text'].endswith('[board.html](files/routine-out/board.html)'), message
+    for name in ('hushed', 'silent'):
         js('task', 'routine', 'run', name, '-p', 'demo')
-    post = wait(lambda: posted('routine board'), 'the board routine post', 60)[0]['text']
-    assert post.startswith('succeeded after ') and '{"ok": true}' in post, post
-    assert '[board.html](files/routine-out/board.html)' in post and 'none.html]' not in post, post
-    wait(lambda: events_with('routine hushed succeeded after', 'hushed words'), 'the --no-post event', 60)
+    hushed = wait(lambda: events_with('routine hushed succeeded after', 'hushed words'), 'the --no-post event', 60)[0]
+    assert 'for the owner' not in hushed['text'], hushed
+    assert reply_to(hushed['id']).get('quiet'), 'a --no-post event is the manager\'s own work'
     wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger')['routines']
                      if r['name'] in ('board', 'hushed', 'silent')), 'the three routines ran', 60)
     time.sleep(3)
-    assert len(posted('routine board')) == 1 and not events_with('routine board succeeded'), 'one post, no event'
+    assert len(events_with('routine board')) == 1 and not posted('routine board'), 'one event, no raw post'
     assert not posted('routine hushed') and not posted('routine silent') and not events_with('routine silent'), \
-        'a --no-post routine and an empty success post nothing'
-    # ^ --findings-exit 1,2 (docs/tasks.md "Routines"): exit 1 is `findings`, shown as attention in
-    # a post and an event; exit 3 stays `failed`; exit 0 `succeeded`. All three print one line.
-    for name, code in (('found', 1), ('broke', 3), ('clean', 0)):
+        'a --no-post routine and an empty success give no post'
+    # ^ --findings-exit 1,2 (docs/tasks.md "Routines"): exit 1 is `findings`, exit 3 stays `failed`,
+    # exit 0 `succeeded`. Each is an event for the owner, not a post; a findings run with no stdout
+    # is no empty success: it gives the event too.
+    names = ('found', 'broke', 'clean', 'scan')
+    for name, code in (('found', 1), ('broke', 3), ('clean', 0), ('scan', 2)):
+        output = '' if name == 'scan' else 'echo %s output; ' % name
         js('task', 'routine', 'add', name, '-p', 'demo', '--cron', '0 5 * * *', '--findings-exit', '1,2',
-           '--arg=sh', '--arg=-c', '--arg=echo %s output; exit %d' % (name, code))
+           '--arg=sh', '--arg=-c', '--arg=%sexit %d' % (output, code))
     rows = {r['name']: r for r in js('task', 'ledger')['routines']}
     assert rows['found']['findings_exit'] == [1, 2] and 'findings_exit' not in rows['board'], rows
-    for name in ('found', 'broke', 'clean'):
+    for name in names:
         js('task', 'routine', 'run', name, '-p', 'demo')
     wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger')['routines']
-                     if r['name'] in ('found', 'broke', 'clean')), 'the three exit routines ran', 60)
-    last = {r['name']: r['last'] for r in js('task', 'ledger')['routines'] if r['name'] in ('found', 'broke', 'clean')}
-    assert [(n, last[n]['status'], last[n]['exit']) for n in ('found', 'broke', 'clean')] == [
-        ('found', 'findings', 1), ('broke', 'failed', 3), ('clean', 'succeeded', 0)], last
-    post = wait(lambda: posted('routine found'), 'the findings routine post', 60)[0]['text']
-    assert post.startswith('found something (exit 1)') and 'found output' in post, post
-    wait(lambda: events_with('routine found found something (exit 1); its output ends:\n    found output'),
+                     if r['name'] in names), 'the exit routines ran', 60)
+    last = {r['name']: r['last'] for r in js('task', 'ledger')['routines'] if r['name'] in names}
+    assert [(n, last[n]['status'], last[n]['exit']) for n in names] == [
+        ('found', 'findings', 1), ('broke', 'failed', 3), ('clean', 'succeeded', 0), ('scan', 'findings', 2)], last
+    wait(lambda: events_with('routine found found something (exit 1); for the owner; output ends: found output'),
          'the findings event', 60)
-    wait(lambda: events_with('routine broke failed (exit 3); its output ends:\n    broke output'), 'the failed event', 60)
-    assert posted('routine broke')[0]['text'].startswith('failed (exit 3)')
+    wait(lambda: events_with('routine broke failed (exit 3); for the owner; output ends: broke output'),
+         'the failed event', 60)
+    scan = wait(lambda: events_with('routine scan found something (exit 2)'), 'the findings event without output', 60)[0]
+    assert next(l for l in scan['text'].split('\n') if l.startswith('routine scan')) \
+        == 'routine scan found something (exit 2); for the owner', scan
     assert not events_with('routine found failed') and not events_with('routine clean found something')
+    time.sleep(3)
+    assert not any(posted('routine ' + n) for n in names), 'no raw post of a run'
     for bad in ('0', '256', '1,x'):
         cli('task', 'routine', 'add', 'bad', '-p', 'demo', '--cron', '0 5 * * *', '--findings-exit', bad,
             '--arg=true', ok=False)

@@ -708,8 +708,8 @@ fn read(store: &str, main: &Path, dir: Option<&ManagerDir>, whole: bool) -> anyh
     })
 }
 
-/// A post of wsx, not an agent turn: a reply with no usage to events messages only, as a routine's
-/// run, the digest, `wsx task post` and the session news are written (docs/tasks.md "Routines").
+/// A post of wsx, not an agent turn: a reply with no usage to events messages only, as the
+/// digest, `wsx task post` and the session news are written (docs/tasks.md "Routines").
 /// The web's `conversation` in bubbles.js reads the same rule.
 fn is_post(no_usage: bool, to: &[u64], events: &HashSet<u64>) -> bool {
     no_usage && !to.is_empty() && to.iter().all(|id| events.contains(id))

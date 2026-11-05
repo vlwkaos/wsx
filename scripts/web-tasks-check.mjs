@@ -1250,7 +1250,7 @@ await closeSheet("the usage sheet", chat);
     when: row.querySelector('.routine-when').textContent, last: row.querySelector('.routine-last').textContent, next: row.querySelector('.routine-next').textContent,
     tone: row.querySelector('.routine-last').dataset.found !== undefined ? 'found' : row.querySelector('.routine-last').dataset.failed !== undefined ? 'failed' : null }))`);
   const by = Object.fromEntries(rows.map((row) => [row.name, row]));
-  if (rows.length !== 3 || by.idle?.last !== "never run" || by.nightly?.state !== "On" || by.weekly?.state !== "Off" || by.nightly.when !== "daily 06:00" || by.weekly.when !== "Mondays 06:00, no chat post"
+  if (rows.length !== 3 || by.idle?.last !== "never run" || by.nightly?.state !== "On" || by.weekly?.state !== "Off" || by.nightly.when !== "daily 06:00" || by.weekly.when !== "Mondays 06:00, not told to you"
     || !/^succeeded( now|\b.* ago)$/.test(by.nightly.last) || !/^found something \(exit 1\)/.test(by.weekly.last) || by.weekly.tone !== "found" || by.nightly.tone || !/^next /.test(by.nightly.next)) await fail(`the routine rows are ${JSON.stringify(rows)}`);
   await click(".routine");
   await until("document.querySelector('.routine-argv')?.textContent === '/bin/sh -c exit 0'", "a tap on a routine did not show its command");

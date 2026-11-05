@@ -317,6 +317,11 @@ def manager_turn(text, project, page):
         return '-'
     if text.startswith('Events') and asks:
         return 'Should I land it now?'
+    owner_routine = re.search(r'^(routine \S+ [^;\n]*); for the owner(?:; .*?; files: (\[[^\]]*\]\([^)]*\)))?', text, re.M) \
+        if text.startswith('Events') else None
+    if owner_routine:
+        # ^ A routine event for the owner: a short message with the first link, never quiet.
+        return 'About %s%s' % (owner_routine[1], ': ' + owner_routine[2] if owner_routine[2] else '')
     if text.startswith('Events'):
         # ^ A land gets a reply of two sentences, with a task number inside one: the web shows its
         # first sentence and More (docs/web-client-tasks.md "Project screen").
