@@ -4116,10 +4116,12 @@ merge_seconds = 3
         # outside any project folder posts; the chat entry has its level and each post pushes once, in a
         # push of its own, `<project>: <title>` over the first line; info pushes as before; the same
         # key within 10 minutes posts nothing.
-        bare = {key: value for key, value in env.items() if not key.startswith('WSX_')}
+        # ^ A LaunchAgent's environment: PATH, HOME and TMPDIR, plus the config and state folders the fixture's
+        # manager uses in place of HOME's defaults. No WSX_*, SHELL, TERM or LANG.
+        bare = {key: env[key] for key in ('PATH', 'HOME', 'TMPDIR', 'XDG_STATE_HOME', 'XDG_CONFIG_HOME')}
 
-        def post(text, *flags, expect=0):
-            result = subprocess.run([str(wsx), 'task', 'post', '-p', 'demo', *flags], input=text, env=bare, cwd=tmp,
+        def post(text, *flags, expect=0, environ=bare):
+            result = subprocess.run([str(wsx), 'task', 'post', '-p', 'demo', *flags], input=text, env=environ, cwd=tmp,
                                     capture_output=True, text=True, timeout=120)
             assert result.returncode == expect, (flags, result.returncode, result.stdout, result.stderr)
             return result
@@ -4162,9 +4164,13 @@ merge_seconds = 3
         for flags in (['--level', 'loud'], ['--key', ''], ['--key', 'a b'], ['--key', 'x' * 65], ['--key', 'é']):
             post('x\n', '--title', 'nope', *flags, expect=2)
         assert not replies_of('nope')
+        # Without the host's TMPDIR the CLI looks in another socket folder: exit 1, nothing posted.
+        lost = post('x\n', '--title', 'no tmpdir', '--level', 'warn', expect=1,
+                    environ={key: value for key, value in bare.items() if key != 'TMPDIR'})
+        assert 'not running' in lost.stderr and not replies_of('no tmpdir'), lost.stderr
         post('x\n', '--title', 'long key', '--level', 'warn', '--key', 'A' * 64)
         new_pushes('manager', 'the push of a post with a 64 character key')
-        ok('post levels: a warn or bad `wsx task post` from a bare environment (no WSX_*) logs its level and pushes once, in a push of its own (`<project>: <title>` over its first line); info pushes as before; a repeated key within 10 minutes, an empty post and bad inputs (exit 2) post nothing; the key file keeps kept keys and drops day-old ones')
+        ok('post levels: a warn or bad `wsx task post` from a LaunchAgent-like environment (PATH, HOME, TMPDIR, no WSX_*; exit 1 without the TMPDIR of the host) logs its level and pushes once, in a push of its own (`<project>: <title>` over its first line); info pushes as before; a repeated key within 10 minutes, an empty post and bad inputs (exit 2) post nothing; the key file keeps kept keys and drops day-old ones')
         ok('manager push: waiting merged in one, a new To check item, an approval, a reply the manager started (not one to the owner); each names every open item and replaces the one before; ready and failed do not push; the shown project skipped for that device; presence ends with the stream; manager needs task_view')
 
         # A project's digest is its routine (docs/tasks.md "Routines"): demo has one, ui has none.
