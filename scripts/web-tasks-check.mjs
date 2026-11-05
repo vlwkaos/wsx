@@ -3195,7 +3195,7 @@ await toLatest("390 px");
 // A ready task the manager created waits for the manager's review: under Running, with those words and a calm dot.
 // ^ The say route limits a burst: a refused message waits and goes again.
 let asked = 0;
-for (let attempt = 0; attempt < 20 && asked !== 200; attempt++) { asked = await say('RUN wsx task new "WORK z.txt" -p ui --json'); if (asked !== 200) await pause(1000); }
+for (let attempt = 0; attempt < 20 && asked !== 200; attempt++) { asked = await say('RUN wsx task new "WORK z.txt" -p ui'); if (asked !== 200) await pause(1000); }
 if (asked !== 200) await fail(`the manager was not asked for a task: ${asked}`);
 await openReservoir();
 await until(`!![...document.querySelectorAll('.reservoir-list[aria-label=Running] .need')].find((row) => /waiting for the manager's review/.test(row.textContent))`, "a manager-created ready task is not under Running with the review words", 300);
