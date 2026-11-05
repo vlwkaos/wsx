@@ -2,6 +2,7 @@
 import atexit
 import codecs
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -2013,6 +2014,21 @@ try:
             assert created["type"] == "created", created
         assert sorted(project_sessions(name)) == ["shell", "task-manager"], project_sessions(name)
     wait_for(lambda: "halt-me" in remove_view.text(), "the TUI did not list halt-me", seconds=60)
+    # The TUI's Tasks view (`t`) sums the usage of every project (docs/tasks.md "TUI"): two
+    # projects with a manager reply each, 0.03 and 0.012 USD today, show as $0.04 in one line.
+    # ^ The store id is `<name>-<first 8 hex of sha256(path)>` (wsx-core task/store.rs `project_id`).
+    for name, micro in (("halt-me", 30000), ("keep-me", 12000)):
+        manager = STATE / "wsx" / "tasks" / f"{name}-{hashlib.sha256(str(removal[name]).encode()).hexdigest()[:8]}" / "manager"
+        manager.mkdir(parents=True, mode=0o700)
+        (manager / "log.jsonl").write_text(json.dumps(
+            {"unix_ms": int(time.time() * 1000), "kind": "reply", "id": 1, "to": [], "text": "ok",
+             "usage": {"cost_micro_usd": micro, "turns": 1}}) + "\n")
+    os.write(remove_master, b"[t")
+    wait_for(lambda: "All projects" in remove_view.text(), "the Tasks view showed no all-projects usage", seconds=60)
+    all_projects = next(row.strip() for row in remove_view.text().splitlines() if "All projects" in row)
+    assert re.search(r"All projects Today \$0\.04 \(manager \$0\.04\) · 7 days \$0\.04 \(manager \$0\.04\)", all_projects), all_projects
+    os.write(remove_master, b"q")
+    wait_for(lambda: "All projects" not in remove_view.text(), "q did not close the Tasks view", seconds=60)
     remove_from_tui("halt-me", b"H")
     wait_for(lambda: "halt-me" not in config_names(), "H did not unregister halt-me")
     wait_for(lambda: project_sessions("halt-me") == [], "H did not halt the sessions of halt-me")
