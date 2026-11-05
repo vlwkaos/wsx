@@ -8,7 +8,7 @@ wsx task list -p <project> [--all] --json
 wsx task show <n> -p <project> --json            # record, result.json, report path, host_running, socket
 wsx task steer <n> "<text>" --json               # into the running turn
 wsx task add <n> "<text>" [--files <glob>]... --json   # after the turn (queued while one runs)
-wsx task stop <n> --json                         # interrupt; the next add resumes the conversation
+wsx task stop <n> --json                         # interrupt, and nothing else wakes it (see Host, Stop); the next add resumes the conversation
 wsx task land <n> [--tried] [--owner-said <id>] --json   # rebase, check, fast-forward (see Landing)
 wsx task hold <n> "<why>" | --off --json         # the owner tries it before it lands; see Hold and trial
 wsx task trial <n> [--end] --json                # its revision on the live site before it lands
@@ -98,6 +98,8 @@ A slot holder of another project reads `pizzahouse #34`, and a holder that is no
 3. serves its control socket (see Store): one JSON request per connection (`status`, `steer`, `add`, `stop`, `land`, `hold`, `trial`, `hand`, `handback`, `close`), one JSON answer `{ok, state, message}`;
 4. reports its pane through `AgentReport` with provider `task`: working and checking as Working, waiting on the owner as Blocked, ready as Done, failed as Error, waiting on disk or hands as Idle;
 5. keeps running through `wsx daemon restart` (live handoff), because it is a pane process.
+
+**Stop.** `wsx task stop <n>` (an open task that is not worked by hand) kills the agent, drops queued adds and logs `stopped`; the task waits on `owner` until an `add` or `steer` from the manager or the owner. Nothing else starts a worker turn for it, on any adapter: a limit or disk wait that ends, a rotation, a ping, a held result, a check retry and a land notice do not. The stop also drops the agent's late output, the disk and limit waits and the checks that run (their results go to the log only). A worker's `check-run` that was started before the stop still ends: its `check_run` entry and kept result are written, and its answer joins the prompt of the turn the next `add` starts. A wake and a stop in the same second end stopped. A second `stop` answers "already stopped". A host restart keeps the wait on `owner`.
 
 A host restarted by a cold daemon start or `wsx session restart task-<n>` logs `stopped` for a running turn and waits on the owner; the next add resumes. A host restarted while it was checking runs the checks again on the worker's last result, with the project's current checks. A new task's host starts the first turn with the prompt.
 

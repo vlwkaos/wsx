@@ -59,7 +59,8 @@ enum Event {
     Request(HostRequest, Sender<HostResponse>),
     /// `None` when the agent process of that generation ended.
     Agent(u64, Option<AgentLine>),
-    ChecksDone(Vec<CheckResult>),
+    /// The results of the checks started under that `checks_epoch`.
+    ChecksDone(u64, Vec<CheckResult>),
     /// The worker's `wsx task check-run` through the broker, and its results to log; the
     /// last part is what to store when the tree stayed clean and unchanged during the run.
     CheckRun(Vec<String>, Sender<broker::Response>),
@@ -160,6 +161,12 @@ struct Host {
     /// The running turn came through a deploy re-exec: its `result` logs it.
     carried: bool,
     stop_requested: bool,
+    /// `wsx task stop` ran and no add or steer came since: nothing else starts a turn.
+    /// ref: docs/tasks.md "Stop"
+    stopped: bool,
+    /// Counts check runs and stops: the results of an older run (one a stop left running) are
+    /// logged and nothing more.
+    checks_epoch: u64,
     /// The result of the latest turn, until its checks end.
     last_result: Option<WorkerResult>,
     /// Tool calls denied in that turn.
@@ -240,6 +247,8 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         notices: Vec::new(),
         carried: false,
         stop_requested: false,
+        stopped: false,
+        checks_epoch: 0,
         last_result: None,
         last_denials: Vec::new(),
         check_retries: 0,
@@ -432,7 +441,7 @@ impl Host {
                     self.on_agent(line)
                 }
                 Event::Agent(..) => {}
-                Event::ChecksDone(results) => self.on_checks(results),
+                Event::ChecksDone(epoch, results) => self.on_checks(epoch, results),
                 Event::CheckRun(argv, reply) => self.check_run(&argv, reply),
                 Event::Reported(text, reply) => {
                     let _ = reply.send(self.reported(text));
@@ -467,6 +476,13 @@ impl Host {
                         }),
                     };
                     match run {
+                        // ^ A stopped task's answer joins the turn an add starts: no turn now.
+                        Some(_) if self.stopped => {
+                            self.say(
+                                "check-run ended while stopped: its answer joins the next turn",
+                            );
+                            self.notices.push(answer.text);
+                        }
                         Some(run) if run.result_waits => self.answer_check_run(answer),
                         Some(run) if run.queued && !self.turn_active => {
                             self.send_check_answer(answer.text)
@@ -797,6 +813,7 @@ impl Host {
 
     fn deliver_or_queue(&mut self, text: String) -> String {
         self.check_retries = 0;
+        self.stopped = false;
         if self.turn_active || self.record.state == TaskState::Checking {
             self.pending.push_back(text);
             "queued until the current turn ends".into()
@@ -810,15 +827,39 @@ impl Host {
     }
 
     fn stop(&mut self) -> Result<String> {
-        let Some(agent) = self.agent.take() else {
-            bail!("the agent is not running");
-        };
-        self.stop_requested = true;
-        agent.stop();
+        if self.stopped {
+            return Ok("already stopped; the next add resumes the same conversation".into());
+        }
+        if !self.record.state.is_open() || self.record.waits_on(WaitOn::Hand) {
+            bail!(
+                "task t{} is {}; only an open task that is not worked by hand is stopped",
+                self.record.id,
+                self.state_words()
+            );
+        }
+        self.stopped = true;
+        if let Some(agent) = self.agent.take() {
+            self.stop_requested = true;
+            agent.stop();
+        }
+        // ^ The killed process may still have lines in the channel: they belong to no turn.
+        // Every source that would start work by itself ends here, so a wake in the same second
+        // cannot outlive the stop. A `check_run` stays to record its answer.
+        self.generation += 1;
         self.turn_active = false;
         self.limit_wait = None;
         self.limit_queue = None;
+        self.limit_slot = None;
+        self.disk_wait = None;
+        self.disk_queue = None;
+        self.rotating = None;
+        self.after_ping = None;
+        self.after_rebase = None;
         self.background_wait = None;
+        self.reported = None;
+        self.result_asked = false;
+        self.gate = None;
+        self.checks_epoch += 1;
         let dropped = self.pending.len();
         self.pending.clear();
         self.log(LogEvent::Stopped {
@@ -856,6 +897,7 @@ impl Host {
             self.stop_requested = true;
             agent.stop();
         }
+        self.stopped = false;
         self.turn_active = false;
         self.end_trial("the owner took it by hand");
         let dropped = self.pending.len() as u32;
@@ -957,6 +999,12 @@ impl Host {
         // ^ Every path that starts a turn ends here: none runs while the owner works by hand.
         if self.record.waits_on(WaitOn::Hand) {
             self.say("by hand: no agent turn starts until handback");
+            return;
+        }
+        // ^ A stopped task starts no turn but an add's (which clears `stopped`): the text joins it.
+        if self.stopped {
+            self.say("stopped: no agent turn starts until the next add");
+            self.notices.push(text.to_string());
             return;
         }
         self.reported = None;
@@ -1105,6 +1153,7 @@ impl Host {
             || self.check_run.as_ref().is_some_and(|run| run.queued);
         // ^ Claude's cache lives 1 hour; Pi's default lives 5 minutes, which no ping keeps.
         if !waits
+            || self.stopped
             || self.record.adapter != "claude"
             || self.turn_active
             || self.pings >= KEEP_WARM_PINGS
@@ -2147,6 +2196,8 @@ impl Host {
         }
         self.follow_checks();
         self.set_state(TaskState::Checking);
+        self.checks_epoch += 1;
+        let epoch = self.checks_epoch;
         self.gate = Some((head(&self.record.working_copy), false));
         let priority = match self.after_rebase {
             Some(AfterRebase::Land { .. }) => (Lane::Checks, Priority::Land),
@@ -2158,13 +2209,13 @@ impl Host {
         let (_, mut stored, to_run) = self.kept_checks(&checks);
         if to_run.is_empty() {
             self.say("every check already ran on this tree");
-            let _ = events.send(Event::ChecksDone(stored.into_values().collect()));
+            let _ = events.send(Event::ChecksDone(epoch, stored.into_values().collect()));
             return;
         }
         let indexes: Vec<usize> = to_run.iter().map(|(index, _)| *index).collect();
         self.spawn_checks(Some(priority), "check", to_run, move |results| {
             stored.extend(indexes.into_iter().zip(results));
-            let _ = events.send(Event::ChecksDone(stored.into_values().collect()));
+            let _ = events.send(Event::ChecksDone(epoch, stored.into_values().collect()));
         });
     }
 
@@ -2292,7 +2343,12 @@ impl Host {
         }
     }
 
-    fn on_checks(&mut self, results: Vec<CheckResult>) {
+    fn on_checks(&mut self, epoch: u64, results: Vec<CheckResult>) {
+        // ^ A run a stop left running: its output is logged, it decides nothing.
+        if epoch != self.checks_epoch {
+            self.log(LogEvent::Checks { results });
+            return;
+        }
         // ^ A result that came during the checks: a block keeps its wait, a turn that runs
         // gives the next result, and a new commit runs them once more.
         // ref: docs/tasks.md "Checks, revisions and report"
