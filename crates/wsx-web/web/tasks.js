@@ -972,8 +972,9 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
   // ^ A read rebuilds every row from the entries it keeps: a row whose fields are the ones it was
   // drawn with gives back the same node, which Preact does not render again (docs/web-client-chat.md
   // "Long chats"). What every row reads besides its own fields starts the rows over, also a new
-  // day: a row's time says its day once it is not today's (lib.js `clock`).
-  const context = `${id} ${finding} ${names.manager} ${JSON.stringify(names.peers ?? null)} ${new Date().toDateString()}`;
+  // day: a row's time says its day once it is not today's (lib.js `clock`); the project names are
+  // what `<project> #n` reads (`withChips`).
+  const context = `${id} ${finding} ${names.manager} ${JSON.stringify(names.peers ?? null)} ${store.projects.map((other) => `${other.id}:${other.name}`)} ${new Date().toDateString()}`;
   if (drawn.current?.context !== context || drawn.current.rows.size > rows.length + 200) drawn.current = { context, rows: new Map() };
   const show = (row) => {
     const isNew = fresh.current.has(row.key);
