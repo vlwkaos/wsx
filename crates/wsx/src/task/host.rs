@@ -461,9 +461,9 @@ impl Host {
                         }),
                     };
                     match run {
-                        Some(run) if run.result_waits => self.answer_check_run(answer, true),
+                        Some(run) if run.result_waits => self.answer_check_run(answer),
                         Some(run) if run.queued && !self.turn_active => {
-                            self.answer_check_run(answer, false)
+                            self.send_check_answer(answer.text)
                         }
                         // ^ The worker still works after `queued`: its result gets the answer.
                         Some(run) if run.queued => {
@@ -503,8 +503,7 @@ impl Host {
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let named = text.strip_prefix(HANDOFF_TRIGGER).and_then(|rest| {
             let (name, text) = rest.split_once('\n')?;
-            let trigger = serde_json::from_value(serde_json::Value::String(name.into())).ok()?;
-            Some((text.to_string(), trigger))
+            Some((text.to_string(), serde_json::from_str(name).ok()?))
         });
         Some(named.unwrap_or((text, TurnTrigger::Restart)))
     }
@@ -1030,10 +1029,9 @@ impl Host {
         if self.must_follow_binary() {
             // ^ Every turn gets the replaced binary's launch: this host hands the turn over
             // and execs it once the caller has its answer; the new host resumes the agent.
-            let header = serde_json::to_value(trigger)?;
             let handoff = format!(
                 "{HANDOFF_TRIGGER}{}\n{text}",
-                header.as_str().unwrap_or("restart")
+                serde_json::to_string(&trigger)?
             );
             self.dir.write_file(HANDOFF_FILE, handoff.as_bytes())?;
             self.reexec = true;
@@ -1346,7 +1344,7 @@ impl Host {
         if let Some(run) = &mut self.check_run {
             if let Some(answer) = run.answer.take() {
                 self.check_run = None;
-                self.answer_check_run(answer, true);
+                self.answer_check_run(answer);
                 return;
             }
             run.result_waits = true;
@@ -2200,24 +2198,24 @@ impl Host {
         });
     }
 
-    /// A check-run that ended after the worker's last result. A pass on an unchanged tree
+    /// A check-run that ended after the worker's result, which is held. A pass on an unchanged tree
     /// starts no turn: on the last step the host records it as evidence in the held result,
     /// on an earlier one the next step's prompt carries it. Else (a failure, a result that is
     /// not `done`) the worker gets it as a turn. ref: docs/tasks.md "Check-run"
-    fn answer_check_run(&mut self, answer: CheckAnswer, held: bool) {
+    fn answer_check_run(&mut self, answer: CheckAnswer) {
         let done = self
             .last_result
-            .as_ref()
-            .is_some_and(|result| result.status == "done");
-        let (true, true, Some(proof)) = (held, done, answer.proof) else {
+            .as_mut()
+            .filter(|result| result.status == "done");
+        let (Some(proof), Some(result)) = (answer.proof, done) else {
             return self.send_check_answer(answer.text);
         };
         if (self.record.step as usize) + 1 < self.record.steps.len() {
             self.pending.push_back(answer.text);
-        } else if let Some(mut result) = self.last_result.take() {
+        } else {
             result.evidence.push(proof);
-            self.write_result(&result, &[]);
-            self.last_result = Some(result);
+            let held = result.clone();
+            self.write_result(&held, &[]);
         }
         self.say("check-run passed after the result: no turn for its answer");
         self.settle_result();
