@@ -3158,25 +3158,40 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', timed, '--discard')
     configure(LAND_CONFIG, 'untimed checks')
     # 32x. A land tells each open task that shares its files to rebase: the message names the
-    # landed commit and the files and joins the next turn; a task with no turn to come gets
+    # landed commit and the files and joins a turn that starts anyway; it never starts one: a
+    # worker that ends its turn gets no turn for it, and a task with no turn to come gets
     # nothing, as its own land rebases it (docs/tasks.md "Landing").
     mark('32x')
     notice_gate = base / 'notice-gate'
+    carry_gate = base / 'carry-gate'
     busy = js('task', 'new', 'WAIT %s' % notice_gate, '--files', 'shared.txt')['id']
+    carry = js('task', 'new', 'WAIT %s' % carry_gate, '--files', 'shared.txt')['id']
     idle = js('task', 'new', 'WORK idle.txt', '--files', 'shared.txt')['id']
     lander = js('task', 'new', 'WORK shared.txt')['id']
     for n in (idle, lander):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
-    wait(lambda: show(busy)['record']['agent_session'], 't%s works' % busy)
+    for n in (busy, carry):
+        wait(lambda: show(n)['record']['agent_session'], 't%s works' % n)
     assert land(lander)['state'] == 'landed'
     tip = git('rev-parse', 'main')
     heard = lambda n: [e['text'] for e in log(n) if e['kind'] == 'message' and 'landed on main' in e['text']]
     wait(lambda: heard(busy), 't%s hears the land' % busy)
     assert tip in heard(busy)[0] and 'shared.txt' in heard(busy)[0] and 'Run no `wsx task check-run`' in heard(busy)[0], heard(busy)
     assert not heard(idle) and kinds(idle, 'result') == ['result'], log(idle)
+    wait(lambda: heard(carry), 't%s hears the land' % carry)
+    # ^ An add queued in the turn starts the next one at its end: the notice rides in it.
+    assert js('task', 'add', carry, 'WORK carried.txt')['ok']
+    carry_gate.write_text('go')
+    wait(lambda: any(tip in t.get('message', '') and 'WORK carried.txt' in t.get('message', '') for t in traces()),
+         'the notice joins the add turn', 30)
+    assert wait_state(carry, 'ready', 'failed')['state'] == 'ready', log(carry)
+    # ^ A worker whose turn ends gets no turn for the notice: one result, the land rebases it.
     notice_gate.write_text('go')
-    wait(lambda: any(tip in t.get('message', '') for t in traces()), 'the notice reaches the worker', 30)
-    for n in (busy, idle):
+    assert wait_state(busy, 'ready', 'failed')['state'] == 'ready', log(busy)
+    time.sleep(1)
+    assert kinds(busy, 'result') == ['result'], log(busy)
+    assert sum(tip in t.get('message', '') for t in traces()) == 1, [t.get('message') for t in traces()]
+    for n in (busy, carry, idle):
         js('task', 'close', n, '--discard')
     wait_closed(lander)
     # 32y. A batch land: ready tasks stack on main in order, the checks run once on the
