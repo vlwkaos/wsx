@@ -93,14 +93,14 @@ pub fn thinking_chars(content: &[Value]) -> usize {
 impl TurnResult {
     /// The turn thought far more than it said (twice its words, at least `THOUGHT_MIN_CHARS`;
     /// a `-` or empty reply has none): the answer may be in the thinking. Both adapters count
-    /// the thinking, so one rule serves both. ref: docs/tasks.md "Reply text"
+    /// the thinking, so one rule serves both; an error result is judged before (`on_result`). ref: docs/tasks.md "Reply text"
     pub fn answered_in_thinking(&self) -> bool {
         let said = if wsx_core::task::manager::says_nothing(&self.text) {
             0
         } else {
             self.text.trim().chars().count()
         };
-        !self.is_error && self.thought >= THOUGHT_MIN_CHARS && self.thought >= 2 * said
+        self.thought >= THOUGHT_MIN_CHARS && self.thought >= 2 * said
     }
 
     /// No result and no model call: the agent's own turn for a background-task notification
