@@ -328,7 +328,6 @@ struct State {
     /// The last rolled-back handoff, for the lifecycle status.
     last_handoff_error: Option<HandoffError>,
     stop_reason: Option<StopReason>,
-    persistence_dirty: bool,
     recovery_in_progress: bool,
     stopping: bool,
     /// Exchange rounds that the PTY is taking now. A live handoff waits for none.
@@ -336,9 +335,10 @@ struct State {
 }
 
 impl State {
-    /// Saves `persisted`, then makes it the in-memory copy. A failed save changes nothing.
-    fn persist(&mut self, path: &Path, persisted: Persisted) -> io::Result<()> {
-        save_state(path, &persisted)?;
+    /// Submits `persisted` for saving, then makes it the in-memory copy. An invalid state
+    /// changes nothing; the write itself happens after the caller drops the lock.
+    fn persist(&mut self, saver: &state_store::Saver, persisted: Persisted) -> io::Result<()> {
+        submit_state(saver, &persisted)?;
         self.persisted = persisted;
         Ok(())
     }
@@ -431,7 +431,7 @@ struct Daemon {
     started_unix_ms: u64,
     recovered_from_backup: bool,
     next_runtime_generation: AtomicU64,
-    state_path: PathBuf,
+    saver: state_store::Saver,
     lifecycle_path: PathBuf,
 }
 
@@ -495,8 +495,26 @@ fn load_state(path: &Path) -> io::Result<Persisted> {
     load_state_with_status(path).map(|(state, _)| state)
 }
 
+#[cfg(test)]
 fn save_state(path: &Path, state: &Persisted) -> io::Result<()> {
     state_store::save(path, state, validate_persisted)
+}
+
+fn write_state(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    state_store::write(path, bytes, validate_persisted)
+}
+
+thread_local! {
+    /// The save of this thread's last state change. `handle` waits for it before the reply.
+    static SAVE_TICKET: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Validates and serializes `persisted` under the caller's state lock, and hands the bytes
+/// to the saver thread (docs/daemon-state-store.md).
+fn submit_state(saver: &state_store::Saver, persisted: &Persisted) -> io::Result<()> {
+    let bytes = state_store::encode(persisted, validate_persisted)?;
+    SAVE_TICKET.set(saver.submit(bytes));
+    Ok(())
 }
 
 fn epoch() -> u64 {

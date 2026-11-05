@@ -106,8 +106,8 @@ pub(crate) fn recover_runtimes(daemon: &Arc<Daemon>, resume_agents: bool) -> io:
             )?;
         }
     }
-    let state = lock(&daemon.state);
-    save_state(&daemon.state_path, &state.persisted)
+    submit_state(&daemon.saver, &lock(&daemon.state).persisted)?;
+    daemon.saver.flush()
 }
 
 pub(crate) fn prepare_recovery_attempts(
@@ -171,7 +171,7 @@ pub(crate) fn prepare_recovery_attempts(
             launch,
         });
     }
-    state.persist(&daemon.state_path, persisted)?;
+    state.persist(&daemon.saver, persisted)?;
     Ok(attempts)
 }
 
@@ -228,7 +228,7 @@ pub(crate) fn clear_pending_recovery_agent(daemon: &Daemon, pane_id: PaneId) -> 
     if let Some(pane) = persisted.panes.iter_mut().find(|pane| pane.id == pane_id) {
         pane.agent = None;
     }
-    state.persist(&daemon.state_path, persisted)?;
+    state.persist(&daemon.saver, persisted)?;
     Ok(())
 }
 
@@ -256,7 +256,7 @@ pub(crate) fn replace_timed_out_recovery_with_shell(
         };
         pane.agent = None;
         pane.exited = true;
-        state.persist(&daemon.state_path, persisted)?;
+        state.persist(&daemon.saver, persisted)?;
         state.runtimes.remove(&pane_id);
         state.runtime_generations.remove(&pane_id);
     }
@@ -270,7 +270,7 @@ pub(crate) fn replace_timed_out_recovery_with_shell(
     let mut persisted = state.persisted.clone();
     if let Some(pane) = persisted.panes.iter_mut().find(|pane| pane.id == pane_id) {
         pane.exited = replacement.exited();
-        if let Err(error) = state.persist(&daemon.state_path, persisted) {
+        if let Err(error) = state.persist(&daemon.saver, persisted) {
             state.runtime_generations.remove(&pane_id);
             drop(state);
             replacement.terminate();

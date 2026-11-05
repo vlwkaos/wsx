@@ -57,7 +57,6 @@ fn agent_test_daemon(persisted: Persisted) -> (Arc<Daemon>, PathBuf) {
             handoff_started: None,
             last_handoff_error: None,
             stop_reason: None,
-            persistence_dirty: false,
             recovery_in_progress: false,
             deliveries_in_flight: 0,
             stopping: false,
@@ -72,7 +71,7 @@ fn agent_test_daemon(persisted: Persisted) -> (Arc<Daemon>, PathBuf) {
         started_unix_ms: 1,
         recovered_from_backup: false,
         next_runtime_generation: AtomicU64::new(1),
-        state_path: path.clone(),
+        saver: state_store::Saver::spawn(path.clone(), write_state).unwrap(),
         lifecycle_path: path.with_extension("lifecycle"),
     });
     (daemon, path)
@@ -1302,6 +1301,7 @@ fn legacy_agent_report_promotes_conversation_id_to_session_ref() {
     assert_eq!(agent.session_ref.as_ref().unwrap().value, "legacy-id");
     assert!(agent.capabilities.resume);
     drop(state);
+    daemon.saver.flush().unwrap();
     let persisted = load_state(&path).unwrap();
     let agent = persisted.panes[0].agent.as_ref().unwrap();
     assert_eq!(agent.conversation_id.as_deref(), Some("legacy-id"));
@@ -1363,6 +1363,7 @@ fn resident_presence_expires_without_erasing_resume_identity_or_event_only_agent
     .unwrap();
     let generation = lock(&daemon.state).runtime_generations[&pane_id].clone();
     let revision = lock(&daemon.state).revision;
+    daemon.saver.flush().unwrap();
     let persisted_bytes = fs::read(&path).unwrap();
     assert!(
         matches!(renew_agent_presence(&daemon, pane_id, generation.clone(), id.into()),
@@ -1409,6 +1410,7 @@ fn resident_presence_expires_without_erasing_resume_identity_or_event_only_agent
     assert!(!state.agent_wake_leases.contains_key(&pane_id));
     assert!(state.revision > revision);
     drop(state);
+    daemon.saver.flush().unwrap();
     assert!(
         !load_state(&path).unwrap().panes[0]
             .agent
@@ -1532,6 +1534,7 @@ fn simultaneous_presence_expiry_detaches_each_pane_in_saved_snapshot() {
         .iter()
         .all(|pane| !pane.agent.as_ref().unwrap().attached));
     drop(state);
+    daemon.saver.flush().unwrap();
     assert!(load_state(&path).unwrap().panes.iter().all(|pane| !pane
         .agent
         .as_ref()
@@ -1563,21 +1566,21 @@ fn expired_presence_retries_failed_persistence_without_restoring_working() {
         },
     )
     .unwrap();
+    daemon.saver.flush().unwrap();
     fs::remove_file(&path).unwrap();
     fs::create_dir(&path).unwrap();
     let renewed_at = lock(&daemon.state).agent_presence_leases[&pane_id];
     expire_agent_presence(&daemon, renewed_at + AGENT_PRESENCE_TTL);
     {
         let state = lock(&daemon.state);
-        assert!(state.persistence_dirty);
         let agent = state.persisted.panes[0].agent.as_ref().unwrap();
         assert!(!agent.attached);
         assert_eq!(agent.state, AgentState::Unknown);
         assert_eq!(agent.conversation_id.as_deref(), Some("saved"));
     }
+    assert!(daemon.saver.flush().is_err());
     fs::remove_dir(&path).unwrap();
-    retry_dirty_persistence(&daemon);
-    assert!(!lock(&daemon.state).persistence_dirty);
+    daemon.saver.flush().unwrap();
     let persisted = load_state(&path).unwrap();
     let agent = persisted.panes[0].agent.as_ref().unwrap();
     assert!(!agent.attached);
@@ -1802,31 +1805,6 @@ fn agent_clear_rotates_runtime_authority_before_shell_fallback() {
 }
 
 #[test]
-fn synchronization_save_failure_publishes_no_state_or_event() {
-    let (daemon, path) = agent_test_daemon(agent_test_persisted());
-    fs::create_dir(&path).unwrap();
-    let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
-    let result = synchronize_projects(
-        &daemon,
-        vec![ProjectSpec {
-            path: PathBuf::from("/"),
-            name: "root".into(),
-            worktrees: vec![WorktreeSpec {
-                path: PathBuf::from("/"),
-                branch: "main".into(),
-            }],
-        }],
-    );
-    assert!(result.is_err());
-    let state = lock(&daemon.state);
-    assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
-    assert_eq!(state.revision, 7);
-    assert!(state.events.is_empty());
-    drop(state);
-    fs::remove_dir(path).unwrap();
-}
-
-#[test]
 fn a_session_on_a_removed_worktree_moves_to_the_main_checkout() {
     // ^ A worktree removed outside wsx left its session on a folder that is gone, and a chat
     // to it failed with "cannot resolve worktree".
@@ -1890,61 +1868,6 @@ fn a_session_on_a_removed_worktree_moves_to_the_main_checkout() {
 }
 
 #[test]
-fn create_save_failure_publishes_no_session_or_event() {
-    let (daemon, path) = agent_test_daemon(agent_test_persisted());
-    fs::create_dir(&path).unwrap();
-    let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
-    let result = create_session(
-        &daemon,
-        WorktreeId(2),
-        "new".into(),
-        vec!["/bin/cat".into()],
-        None,
-        10,
-        20,
-    );
-    assert!(result.is_err());
-    let state = lock(&daemon.state);
-    assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
-    assert_eq!(state.revision, 7);
-    assert!(state.events.is_empty());
-    drop(state);
-    fs::remove_dir(path).unwrap();
-}
-
-#[test]
-fn durable_mutation_save_failure_publishes_no_state_or_event() {
-    let (daemon, path) = agent_test_daemon(agent_test_persisted());
-    fs::create_dir(&path).unwrap();
-    let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
-    let result = mutate(&daemon, |persisted, _revision| {
-        session_mut(persisted, SessionId(3))?.label = "changed".into();
-        Ok(("session.renamed", 3))
-    });
-    assert!(result.is_err());
-    let state = lock(&daemon.state);
-    assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
-    assert_eq!(state.revision, 7);
-    assert!(state.events.is_empty());
-    drop(state);
-    fs::remove_dir(path).unwrap();
-}
-
-#[test]
-fn close_save_failure_keeps_session_and_runtime_maps_untouched() {
-    let (daemon, path) = agent_test_daemon(agent_test_persisted());
-    fs::create_dir(&path).unwrap();
-    let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
-    assert!(close_session(&daemon, SessionId(3), 7).is_err());
-    let state = lock(&daemon.state);
-    assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
-    assert_eq!(state.revision, 7);
-    assert!(state.events.is_empty());
-    drop(state);
-    fs::remove_dir(path).unwrap();
-}
-
-#[test]
 fn runtime_exit_stays_truthful_and_retries_durability() {
     let (daemon, path) = agent_test_daemon(agent_test_persisted());
     fs::create_dir(&path).unwrap();
@@ -1975,42 +1898,13 @@ fn runtime_exit_stays_truthful_and_retries_durability() {
             agent.conversation_id.as_deref(),
             Some("/absolute/retained-conversation")
         );
-        assert!(state.persistence_dirty);
     }
+    assert!(daemon.saver.flush().is_err());
     fs::remove_dir(&path).unwrap();
-    retry_dirty_persistence(&daemon);
-    assert!(!lock(&daemon.state).persistence_dirty);
+    daemon.saver.flush().unwrap();
     assert!(path.is_file());
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(path.with_extension("json.backup"));
-}
-
-#[test]
-fn agent_clear_save_failure_preserves_agent_and_runtime_generation() {
-    let (daemon, path) = agent_test_daemon(agent_test_persisted());
-    fs::create_dir(&path).unwrap();
-    let before = {
-        let state = lock(&daemon.state);
-        (
-            serde_json::to_value(&state.persisted).unwrap(),
-            state.runtime_generations.clone(),
-        )
-    };
-
-    assert!(agent_clear(
-        &daemon,
-        PaneId(4),
-        "0000000000000001:0000000000000001".into(),
-        "0000000000000001:0000000000000002".into(),
-    )
-    .is_err());
-    let state = lock(&daemon.state);
-    assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before.0);
-    assert_eq!(state.runtime_generations, before.1);
-    assert_eq!(state.revision, 7);
-    assert!(state.events.is_empty());
-    drop(state);
-    fs::remove_dir(path).unwrap();
 }
 
 fn report_agent(daemon: &Arc<Daemon>, state: AgentState) -> Result<Response, ApiError> {
@@ -2023,24 +1917,6 @@ fn report_agent(daemon: &Arc<Daemon>, state: AgentState) -> Result<Response, Api
         None,
         AgentCapabilities::default(),
     )
-}
-
-#[test]
-fn agent_report_save_failure_keeps_live_state_unchanged() {
-    let (daemon, path) = agent_test_daemon(agent_test_persisted());
-    fs::create_dir(&path).unwrap();
-    let before = {
-        let state = lock(&daemon.state);
-        serde_json::to_value(&state.persisted).unwrap()
-    };
-
-    assert!(report_agent(&daemon, AgentState::Working).is_err());
-    let state = lock(&daemon.state);
-    assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
-    assert_eq!(state.revision, 7);
-    assert!(state.events.is_empty());
-    drop(state);
-    fs::remove_dir(&path).unwrap();
 }
 
 fn current_agent_authority(daemon: &Daemon) -> RuntimeAgentAuthority {
@@ -2614,49 +2490,6 @@ fn ambiguous_or_stale_terminal_evidence_cannot_override_claude_event_state() {
 }
 
 #[test]
-fn failed_claude_reconciliation_preserves_event_state_and_wake_lease() {
-    let (daemon, path) = agent_test_daemon(agent_test_persisted());
-    let pane_id = PaneId(4);
-    agent_report(
-        &daemon,
-        current_agent_authority(&daemon),
-        "claude".into(),
-        AgentState::Working,
-        None,
-        None,
-        claude_capabilities(),
-    )
-    .unwrap();
-    let event_at = lock(&daemon.state).claude_reconciliations[&pane_id].event_at;
-    let generation = current_agent_authority(&daemon).generation.unwrap();
-    request_claude_reconcile(&daemon, pane_id, true);
-    fs::remove_file(&path).unwrap();
-    fs::create_dir(&path).unwrap();
-
-    assert!(apply_claude_terminal_observation(
-        &daemon,
-        pane_id,
-        &generation,
-        claude_observation(2, "✳ task", "❯ "),
-        event_at + claude_status::WORKING_EVENT_LEAD,
-    )
-    .is_err());
-
-    let state = lock(&daemon.state);
-    assert_eq!(
-        state.persisted.panes[0].agent.as_ref().unwrap().state,
-        AgentState::Working
-    );
-    assert_eq!(
-        state.claude_reconciliations[&pane_id].terminal_revision,
-        None
-    );
-    assert!(state.agent_wake_leases.contains_key(&pane_id));
-    drop(state);
-    fs::remove_dir(path).unwrap();
-}
-
-#[test]
 fn ctrl_c_key_requests_an_agent_reconcile() {
     let mut key = terminal_key(KeyCode::Text);
     key.text = "c".into();
@@ -2748,6 +2581,7 @@ fn working_activity_survives_state_reload() {
     let (daemon, path) = agent_test_daemon(agent_test_persisted());
     report_agent(&daemon, AgentState::Working).unwrap();
 
+    daemon.saver.flush().unwrap();
     let reloaded = load_state(&path).unwrap();
     assert!(reloaded.projects[0].last_agent_active_unix_ms.is_some());
     fs::remove_file(path).unwrap();
@@ -2966,50 +2800,6 @@ fn restart_revives_an_exited_pane_and_fences_its_old_stream() {
     drop(state);
     stop_restarted_runtime(&daemon, pane_id);
     let _ = fs::remove_file(path);
-}
-
-#[test]
-fn restart_save_failure_leaves_no_runtime_authority() {
-    let (daemon, path) = exited_pane_daemon();
-    let pane_id = PaneId(4);
-    let before = {
-        let state = lock(&daemon.state);
-        (
-            state
-                .persisted
-                .panes
-                .iter()
-                .find(|pane| pane.id == pane_id)
-                .expect("pane exists")
-                .revision,
-            serde_json::to_value(&state.persisted).unwrap(),
-            state.revision,
-        )
-    };
-    let _ = fs::remove_file(&path);
-    fs::create_dir(&path).unwrap();
-    assert!(
-        restart_session(&daemon, pane_id, before.0).is_err(),
-        "an unwritable state store must fail the restart"
-    );
-    let state = lock(&daemon.state);
-    let pane = state
-        .persisted
-        .panes
-        .iter()
-        .find(|pane| pane.id == pane_id)
-        .expect("pane kept");
-    assert!(pane.exited, "a failed restart must leave the pane exited");
-    assert_eq!(pane.revision, before.0);
-    assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before.1);
-    assert_eq!(state.revision, before.2);
-    assert!(
-        !state.runtime_generations.contains_key(&pane_id),
-        "a failed restart must not leave a generation that can authorize agent reports"
-    );
-    assert!(!state.runtimes.contains_key(&pane_id));
-    drop(state);
-    fs::remove_dir(&path).unwrap();
 }
 
 #[test]
@@ -4403,6 +4193,7 @@ fn exchange_takes_terminal_lease_only_on_takeover_and_cold_recovery_interrupts_d
         );
     }
     assert_eq!(exchange.write_claims, [worktree_path]);
+    daemon.saver.flush().unwrap();
     let restored = load_state(&path).unwrap();
     assert_eq!(
         restored.agent_exchanges[0].state,
@@ -4480,6 +4271,7 @@ fn session_reorder_is_daemon_owned_and_persists_by_stable_identity() {
             .collect::<Vec<_>>(),
         [SessionId(6), SessionId(3), SessionId(7)]
     );
+    daemon.saver.flush().unwrap();
     let reloaded = load_state(&path).unwrap();
     assert_eq!(
         reloaded
@@ -4536,10 +4328,9 @@ fn session_reorder_rejects_stale_and_cross_worktree_targets_without_mutation() {
 }
 
 #[test]
-fn session_reorder_save_failure_preserves_live_order_and_revision() {
+fn a_failed_save_answers_durability_degraded_and_the_saver_retries() {
     let (daemon, path) = agent_test_daemon(reorder_test_persisted());
     fs::create_dir(&path).unwrap();
-    let before = serde_json::to_value(&lock(&daemon.state).persisted).unwrap();
 
     let response = handle(
         &daemon,
@@ -4551,13 +4342,24 @@ fn session_reorder_save_failure_preserves_live_order_and_revision() {
         },
     );
 
-    assert!(matches!(response, Response::Error(ApiError { code, .. }) if code == "io"));
-    let state = lock(&daemon.state);
-    assert_eq!(serde_json::to_value(&state.persisted).unwrap(), before);
-    assert_eq!(state.revision, 7);
-    assert!(state.events.is_empty());
-    drop(state);
-    fs::remove_dir(path).unwrap();
+    assert!(
+        matches!(&response, Response::Error(ApiError { code, .. }) if code == "durability_degraded"),
+        "{response:?}"
+    );
+    let order = |persisted: &Persisted| {
+        persisted
+            .sessions
+            .iter()
+            .map(|session| session.id)
+            .collect::<Vec<_>>()
+    };
+    let applied = order(&lock(&daemon.state).persisted);
+    assert_eq!(lock(&daemon.state).revision, 8);
+    fs::remove_dir(&path).unwrap();
+    daemon.saver.flush().unwrap();
+    assert_eq!(order(&load_state(&path).unwrap()), applied);
+    let _ = fs::remove_file(path.with_extension("json.backup"));
+    let _ = fs::remove_file(path);
 }
 
 #[test]

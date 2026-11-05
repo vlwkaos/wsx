@@ -2,10 +2,22 @@
 
 use super::*;
 
+/// Answers a request after its state change is on disk. The wait runs outside the state and
+/// mutation locks, so other clients never wait for this save (docs/daemon-state-store.md).
 pub(crate) fn handle(daemon: &Arc<Daemon>, request: Request) -> Response {
-    match handle_inner(daemon, request) {
-        Ok(response) => response,
-        Err(error) => Response::Error(error),
+    SAVE_TICKET.set(0);
+    let response = handle_inner(daemon, request);
+    let saved = match SAVE_TICKET.take() {
+        0 => Ok(()),
+        ticket => daemon.saver.wait(ticket),
+    };
+    match (response, saved) {
+        (Ok(response), Ok(())) => response,
+        (Ok(_), Err(error)) => Response::Error(api(
+            "durability_degraded",
+            format!("the change is applied but not yet saved: {error}; wsxd keeps retrying"),
+        )),
+        (Err(error), _) => Response::Error(error),
     }
 }
 

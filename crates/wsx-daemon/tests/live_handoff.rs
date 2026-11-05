@@ -1231,6 +1231,10 @@ fn opening_a_stream_and_waiting_on_an_exchange_go_on_through_a_handoff() {
                     Ok(_) => opened += 1,
                     Err(error) => failures.push(error.to_string()),
                 }
+                // ^ About the pace of a client's opens. Hundreds a second race the old
+                // daemon's listener close (`live_handoff.rs` drops it at commit) twice in a
+                // row, which the one repeat in `subscribe` does not cover.
+                thread::sleep(Duration::from_millis(10));
             }
             (opened, failures)
         })

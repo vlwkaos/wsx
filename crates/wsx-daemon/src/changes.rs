@@ -2,14 +2,14 @@
 
 use super::*;
 
-/// The clone-mutate-save-assign tail: the durable file first, then the in-memory copy, so a
-/// failed save leaves `state.persisted` as it was. The fsync stays under the caller's lock.
+/// The clone-mutate-save-assign tail: validate and submit for saving, then assign, so an
+/// invalid state leaves `state.persisted` as it was. `handle` waits for the write.
 pub(crate) fn commit_persisted(
     daemon: &Daemon,
     state: &mut State,
     persisted: Persisted,
 ) -> Result<(), ApiError> {
-    state.persist(&daemon.state_path, persisted).map_err(io_api)
+    state.persist(&daemon.saver, persisted).map_err(io_api)
 }
 
 /// `commit_persisted`, then publish the change under `revision`.
