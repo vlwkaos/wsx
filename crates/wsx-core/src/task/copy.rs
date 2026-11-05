@@ -60,7 +60,16 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
 fn git_clearing_lock(repo: &Path, args: &[&str]) -> Result<(String, Option<LockCleared>)> {
     let (output, cleared) = run_clearing_stale_lock(repo, args)
         .with_context(|| format!("cannot run git {}", args.join(" ")))?;
-    Ok((finished(args, output)?, cleared))
+    let text = finished(args, output).map_err(|error| match &cleared {
+        // ^ The caller never sees `cleared` of a step that failed: say it here.
+        Some(lock) => anyhow::anyhow!(
+            "{error:#}; wsx had removed the stale {} ({} s old) first",
+            lock.path.display(),
+            lock.age_s
+        ),
+        None => error,
+    })?;
+    Ok((text, cleared))
 }
 
 fn finished(args: &[&str], output: std::process::Output) -> Result<String> {
