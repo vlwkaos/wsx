@@ -486,7 +486,7 @@ pub(super) fn read_stream(
         ..Turns::default()
     };
     read_json_lines(stdout, |value| {
-        parse_line(&value, &mut turns).is_none_or(|line| send(line))
+        parse_line(&value, &mut turns).is_none_or(&mut send)
     });
 }
 
