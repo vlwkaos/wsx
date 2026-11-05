@@ -289,6 +289,11 @@ def manager_turn(text, project, page):
             done = subprocess.run(line[4:], shell=True, capture_output=True, text=True)
             replies.append('ran: %s -> %d %s' % (line[4:], done.returncode, (done.stdout + done.stderr).strip()[:300]))
     for line in text.splitlines():
+        if line.startswith('QUOTE '):
+            # ^ A reply that quotes by id: `QUOTE <id|OWNER_SAID> <words>` (docs/tasks.md "Manager").
+            _, ref, words = line.split(' ', 2)
+            replies.insert(0, '> message %s\n\n%s' % (ref.replace('OWNER_SAID', said), words))
+    for line in text.splitlines():
         if line.startswith('PAGE '):
             _, section, words = line.split(' ', 2)
             edit_page(page, section, words)

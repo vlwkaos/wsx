@@ -308,8 +308,29 @@ pub fn chat_lines(
                     ),
                 ];
                 lines.push(Line::from(heading));
+                // ^ A leading quote is one compact line, link 0 of the message: Enter goes to the
+                // quoted message. ref: `links`
+                let (quote, body) = wsx_core::task::manager::split_quote(text);
                 let mut nth = 0;
-                for paragraph in text.lines() {
+                if let Some(quote) = quote {
+                    let on = selected == Some((*unix_ms, 0));
+                    let style = match on {
+                        true => Style::default()
+                            .fg(theme::ACCENT)
+                            .add_modifier(Modifier::UNDERLINED | Modifier::REVERSED),
+                        false => Style::default().fg(theme::TEXT_SUBTLE),
+                    };
+                    if on {
+                        selected_line = Some(lines.len());
+                    }
+                    let shown = truncate_to_width(quote, width.saturating_sub(4).max(1));
+                    lines.push(Line::from(vec![
+                        Span::styled("  ▎ ", Style::default().fg(theme::TEXT_SUBTLE)),
+                        Span::styled(shown, style),
+                    ]));
+                    nth = 1;
+                }
+                for paragraph in body.lines() {
                     // ^ Each char with the link it belongs to, so a link that wraps stays one.
                     let mut cells: Vec<(char, Option<usize>)> = Vec::new();
                     for part in parts(paragraph) {

@@ -26,7 +26,7 @@ use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::runtime;
 use wsx_core::task::manager::{
     asks_owner, decided_request, event_wakes, instructions_digest, pending_approvals, quiet_reply,
-    ApprovalLine,
+    resolve_quote, says_nothing, ApprovalLine, QUOTE_REF,
 };
 use wsx_core::task::manager::{
     Author, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
@@ -300,7 +300,8 @@ fn instructions(
          task per fix. With \
          `--plan` the worker writes a short plan and the task waits on `plan`; read it with \
          `wsx task show <n> --json` and continue with `wsx task add <n> \"go\"` or what to \
-         change. Never ask the owner to wait. `wsx task add` or \
+         change. Never ask the owner to wait. Never restate a plan, promise or wait already said: open with \
+         `> message <id>` and add only what is new. `wsx task add` or \
          `wsx task steer` changes a running task. \
          A ready task waits for your review when you created it, or the owner did while the \
          ledger's `auto_land` is true and checks ran. Read its diff (`git -C <working copy> \
@@ -359,16 +360,15 @@ fn instructions(
          one git command that writes: when a land refuses because the main checkout has the \
          owner's uncommitted changes, name those files and ask; only after the owner says \
          yes, commit exactly those files in the main checkout (`git commit -m \"<message \
-         that names them>\" -- <files>`) and land again. {skills}Use the skills and \
-         subagents that fit; check rather than guess. \
+         that names them>\" -- <files>`) and land again. {skills}Use subagents; check rather than guess. \
          When the owner decides a rule, a preference or a choice, append one line \
          `- <YYYY-MM-DD> <decision>` to {decisions} at once. Every new conversation of yours \
-         starts with that file and {context}, your lean project context. wsx adds each \
+         starts with that file and {context}. wsx adds each \
          finished task's memo to {context}; fix or merge a line there only when you see it is \
          wrong. Only events that need you start a turn; a landing, a close, a wait that ends \
          by itself and an automatic deploy come along with your next turn. The project overview {overview} is the owner's one-screen picture, at most \
          60 lines and 4,000 characters: the goal, open tasks as a mermaid graph, live plans in short, \
-         open questions. Finished work and old decisions go out. \
+         open questions. \
          Update a section in place; never create another overview. \
          You may read another project's `wsx task ledger -p \
          <project>` and message its manager with `wsx task say -p <project> --from-manager \
@@ -1654,6 +1654,11 @@ impl Manager {
             Some(_) => text = format!("{LIMIT_CONTINUE}\n\n{text}"),
             None => {}
         }
+        // ^ The id of its last reply: a quote names a message by id, and the agent never sees
+        // the ids of its own replies. Older ones: `wsx task chat`.
+        if let (false, Some(id)) = (events_only, self.state.last_reply) {
+            text.push_str(&format!("Your last reply: {id}.\n\n"));
+        }
         if std::mem::take(&mut self.state.provisional) {
             text = self.provisional_note() + &text;
         }
@@ -2446,12 +2451,17 @@ impl Manager {
             result.text.lines().next().unwrap_or_default()
         ));
         let in_thinking = result.answered_in_thinking();
-        let asks = asks_owner(&result.text);
-        let quiet = self.turn_events && !asks && quiet_reply(&result.text);
+        let text = self.quoted(result.text);
+        let asks = asks_owner(&text);
+        let quiet = self.turn_events && !asks && quiet_reply(&text);
+        if !quiet && !says_nothing(&text) {
+            self.state.last_reply = Some(id);
+            self.save();
+        }
         self.log(ManagerEvent::Reply {
             id,
             to,
-            text: result.text,
+            text,
             usage: Some(result.usage),
             quiet,
             asks,
@@ -2476,6 +2486,19 @@ impl Manager {
                 self.say(&format!("cannot ask for the answer in thinking: {error:#}"));
             }
         }
+    }
+
+    /// A reply that opens with `> message <id>` quotes that message. ref: `resolve_quote`
+    fn quoted(&self, text: String) -> String {
+        if !text.trim_start().starts_with(QUOTE_REF) {
+            return text;
+        }
+        let log = self.dir.read_log().unwrap_or_default();
+        let (text, note) = resolve_quote(&text, &log);
+        if let Some(note) = note {
+            self.say(&note);
+        }
+        text
     }
 
     /// The manager writes the overview with its own tools: after a turn, a file over the cap
@@ -2820,21 +2843,27 @@ fn recent_exchanges(log: &[ManagerEntry], limit: usize) -> Vec<String> {
         .rev()
         .filter_map(|entry| match &entry.event {
             ManagerEvent::Message {
+                id,
                 from: Author::Owner,
                 text,
-                ..
-            } => Some(format!("Owner: {}", one_line(text))),
+            } => Some(format!("Owner (message {id}): {}", one_line(text))),
             ManagerEvent::Reply {
+                id,
                 text,
                 provisional: Some(name),
                 ..
-            } => Some(format!("Stand-in {name}: {}", one_line(text))),
+            } => Some(format!("Stand-in {name} (reply {id}): {}", one_line(text))),
             // ^ Only a post (`wsx task post`, the digest) is a reply with no usage: the owner
             // saw it, the manager did not write it.
             ManagerEvent::Reply {
-                text, usage: None, ..
-            } => Some(format!("Posted: {}", one_line(text))),
-            ManagerEvent::Reply { text, .. } => Some(format!("You: {}", one_line(text))),
+                id,
+                text,
+                usage: None,
+                ..
+            } => Some(format!("Posted (reply {id}): {}", one_line(text))),
+            ManagerEvent::Reply { id, text, .. } => {
+                Some(format!("You (reply {id}): {}", one_line(text)))
+            }
             _ => None,
         })
         .take(limit)

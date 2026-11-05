@@ -3020,6 +3020,21 @@ await pause(300);
 const shifted = (await rowAt(reading.key)) - reading.down;
 if (Math.abs(shifted) > 2) await fail(`Show earlier moved the row in view by ${shifted} px`);
 await toLatest("390 px");
+// --- The manager quotes an earlier message by id (docs/tasks.md "Manager"): its reply shows the
+// quote as one line over its words, and a tap goes to the quoted message.
+await say("the plan is on the overview");
+await until("[...document.querySelectorAll('.log .bubble[data-side=out]')].some((node) => node.textContent.includes('the plan is on the overview'))", "the message to be quoted did not show");
+const planId = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => data.entries.filter((entry) => entry.kind === 'message' && entry.from === 'owner' && entry.text === 'the plan is on the overview').at(-1).id)`);
+await say(`QUOTE ${planId} still waiting on #8`);
+await until("!!document.querySelector('.log .bubble[data-side=in] button.quote') && !document.querySelector('.log .typing')", "the manager's quote did not show", 120);
+const quoted = await evaluate(`(() => { const button = [...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1);
+  return { quote: button.textContent, body: button.closest('.bubble-body').textContent.trim(), blockquote: !!button.closest('.bubble-body').querySelector('blockquote') }; })()`);
+if (quoted.quote !== "the plan is on the overview" || !quoted.body.endsWith("still waiting on #8") || quoted.blockquote) await fail(`the manager's quote shows ${JSON.stringify(quoted)}`);
+await shot("manager-quote", ".composer-send");
+const jumped = await evaluate(`(() => { [...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1).click();
+  return document.querySelector('.log .bubble[data-found]')?.textContent.trim() ?? null; })()`);
+if (!jumped?.includes("the plan is on the overview")) await fail(`a tap on the manager's quote marks ${JSON.stringify(jumped)}`);
+await toLatest("390 px");
 // A ready task the manager created waits for the manager's review: under Running, with those words and a calm dot.
 // ^ The say route limits a burst: a refused message waits and goes again.
 let asked = 0;
