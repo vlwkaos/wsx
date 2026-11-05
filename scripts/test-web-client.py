@@ -3806,7 +3806,7 @@ merge_seconds = 3
                        for field in ('cost_micro_usd', 'turns', 'input_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'output_tokens'))
             return (overviews, everything) if same else None
         overviews, everything = wait(usage_pair, 'all-projects usage equals the sum of the projects\' usage', timeout=30)
-        assert len(overviews) >= 2 and everything['week']['workers']['cost_micro_usd'] > 0 and len(everything['days']) == 7, everything
+        assert len(overviews) >= 2 and everything['week']['workers']['turns'] > 0 and everything['week']['manager']['cost_micro_usd'] > 0 and len(everything['days']) == 7, everything
         assert sum(day['usage']['cost_micro_usd'] for day in everything['days']) == sum(
             usage_sum(overviews, 'week', who, 'cost_micro_usd') for who in ('workers', 'manager')), everything['days']
         weeks = [row['week_micro_usd'] for row in everything['projects']]
