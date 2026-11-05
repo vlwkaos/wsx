@@ -3134,7 +3134,7 @@ def run(wsx, wsxd, work, owned):
     git('commit', '-q', '-m', 'main moves')
     assert 'checks run on the new revision' in land(moved)['message']
     assert wait_state(moved, 'landed', 'failed')['state'] == 'landed' and len(kinds(moved, 'checks')) == ran + 1, log(moved)
-    assert not kinds(moved, 'land_stopped') and '"status": "done"' in (Path(show(moved)['report']).parent / 'result.json').read_text(), log(moved)
+    assert not kinds(moved, 'land_stopped') and json.loads((Path(show(moved)['report']).parent / 'result.json').read_text())['result']['status'] == 'done', log(moved)
     wait_closed(moved)
     # 32w. Each check's result has its run time and its run's wait for the check slot (ms), in
     # show and the ledger; the checks after a result answer from a check-run on the same clean
