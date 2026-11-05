@@ -386,6 +386,18 @@ impl Host {
             };
             let Some(event) = event else { break };
             match event {
+                Event::Request(HostRequest::Land { .. }, reply)
+                    if self.record.state == TaskState::Ready && self.must_follow_binary() =>
+                {
+                    // ^ Only a ready task lands, and has no agent turn to follow a deploy at, so its land
+                    // would run the old code. The request is dropped unanswered: the caller
+                    // sends it again (`call_host_waiting`, 3 s) and the new host lands it.
+                    drop(reply);
+                    self.reexec = true;
+                    self.say(
+                        "the wsx binary was replaced: the host restarts with it before the land",
+                    );
+                }
                 Event::Request(request, reply) => {
                     let close = matches!(request, HostRequest::Close { .. });
                     let response = self.handle(request);
@@ -443,6 +455,15 @@ impl Host {
             }
         }
         Ok(())
+    }
+
+    /// Whether this host must exec the wsx file that replaced it before it starts more work:
+    /// not while a check-run waits or owes its answer (the exec would drop the run), nor
+    /// before the turn after a limit (the exec would drop the limit slot).
+    fn must_follow_binary(&self) -> bool {
+        self.check_run.is_none()
+            && self.limit_slot.is_none()
+            && self.binary.as_ref().is_some_and(hosting::Binary::replaced)
     }
 
     fn take_handoff(&self) -> Option<String> {
@@ -963,10 +984,7 @@ impl Host {
         // ^ Not while a check-run waits or owes its answer: the exec would drop the run. Not for
         // the turn after a limit either: the exec would drop the limit slot before the agent
         // answers, so the next task in the limit queue would go first; the next turn follows.
-        if self.check_run.is_none()
-            && self.limit_slot.is_none()
-            && self.binary.as_ref().is_some_and(hosting::Binary::replaced)
-        {
+        if self.must_follow_binary() {
             // ^ Every turn gets the replaced binary's launch: this host hands the turn over
             // and execs it once the caller has its answer; the new host resumes the agent.
             self.dir.write_file(HANDOFF_FILE, text.as_bytes())?;
