@@ -75,12 +75,26 @@ function followViewport() {
 // The bar is a floating pill of equal-width tabs, an icon over its label, the current one on a
 // highlight; the count is on the icon (`data-count`, drawn by app.css, so the name stays the label).
 // The wide rail lists every tab: it switches the list beside it.
-const Tabs = ({ current, rail }) => rail ? html`
+// ^ --tabbar-space is the bar's measured height (its safe area included) while the bar is shown;
+// it is removed with the bar, so a screen without the bar pads nothing (app.css ".tabbar").
+const Tabs = ({ current, rail }) => {
+  const bar = useRef(null);
+  useEffect(() => {
+    const node = bar.current;
+    if (!node) return;
+    const root = document.documentElement.style;
+    const measure = () => root.setProperty("--tabbar-space", `${node.offsetHeight}px`);
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    measure();
+    return () => { observer.disconnect(); root.removeProperty("--tabbar-space"); };
+  }, [rail]);
+  return rail ? html`
   <nav class="rail-tabs" aria-label="Screens">
     ${tabs().map(([name, href, label]) => html`
       <a href=${href} aria-current=${current === name ? "page" : null}>${label}</a>`)}
   </nav>` : html`
-  <nav class="tabbar" aria-label="Screens">
+  <nav class="tabbar" aria-label="Screens" ref=${bar}>
     <div class="tabbar-pill">
       ${shownTabs().map(([name, href, label, icon, count]) => html`
         <a key=${name} href=${href} aria-current=${current === name ? "page" : null}
@@ -90,6 +104,7 @@ const Tabs = ({ current, rail }) => rail ? html`
         </a>`)}
     </div>
   </nav>`;
+};
 
 function Screen({ route }) {
   if (route.screen === "session") return html`<${Session} key=${route.id} id=${route.id} tab=${route.tab} />`;
