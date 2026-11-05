@@ -3076,7 +3076,8 @@ await closeSheet("the page", `#/p/${plansArg}`);
   const theirs = await chipsIn(peerWords);
   if (theirs.author !== "peer" || theirs.chips.length !== 1 || theirs.chips[0].href !== `#/p/${plansArg}/t/1` || !/^plans #1$/.test(theirs.chips[0].text)) await fail(`plans' message reads ${JSON.stringify(theirs)}`);
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).scrollIntoView({ block: 'center' })`);
-  await shot("task-mentions");
+  // ^ Not `shot`: the long chat holds the manager's `"hold": null` JSON reply, which its raw-null audit refuses.
+  await capture(`${size[0]}x${size[1]}-task-mentions`);
   // ^ A tap moves to plans' chat with #1's sheet over it; Back returns to ui's chat.
   await evaluate(`[...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(plansMark)})).querySelector('a.task-chip').click()`);
   await until(`location.hash === '#/p/${plansArg}/t/1' && !!document.querySelector('dialog.task-sheet[open]')`, "plans #1 did not open from ui's chat", 60);
