@@ -2236,7 +2236,8 @@ impl Host {
         self.log(LogEvent::Checks {
             results: results.clone(),
         });
-        let result = self.last_result.clone().unwrap_or_default();
+        // ^ A host that started again at ready has no last_result: the stored one is the worker's.
+        let result = self.current_result();
         let passed = result.status == "done" && results.iter().all(|check| check.exit == Some(0));
         // ^ Read before this revision is logged: the manager reviewed and landed it already.
         let relands = view::resolving_conflict(&self.dir);
