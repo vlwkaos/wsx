@@ -432,7 +432,10 @@ pub enum TaskCmd {
     /// Prints the manager's Seatbelt profile; scripts/test-manager-boundary.py starts a second
     /// sandbox with it.
     #[command(hide = true)]
-    BoundaryProfile { project_id: String },
+    BoundaryProfile {
+        #[arg(short, long)]
+        project: Option<String>,
+    },
     #[command(hide = true)]
     ManagerHost {
         project_id: String,
@@ -916,7 +919,10 @@ pub fn run(command: TaskCmd) -> Result<()> {
             preview::host(&project_id, store::parse_task_number(&task)?)
         }
         TaskCmd::ManagerHost { project_id, role } => manager::run(&project_id, role.as_deref()),
-        TaskCmd::BoundaryProfile { project_id } => manager::print_profile(&project_id),
+        TaskCmd::BoundaryProfile { project } => {
+            let (name, main) = project_entry(project.as_deref())?;
+            manager::print_profile(&name, &main)
+        }
         TaskCmd::Host { project_id, task } => {
             host::run(&project_id, store::parse_task_number(&task)?)
         }

@@ -97,7 +97,7 @@ def run(wsx, wsxd, claude, model, work, owned):
     config_before = (project / '.git/config').read_text()
     # ^ Two targets for the manager's signals: a process outside any sandbox, and one in another
     # sandbox-exec with the manager's own profile text. The profile is printed by a hidden command.
-    profile = subprocess.run([str(wsx), 'task', 'boundary-profile', 'demo'], cwd=project, env=env,
+    profile = subprocess.run([str(wsx), 'task', 'boundary-profile', '-p', 'demo'], cwd=project, env=env,
                              capture_output=True, text=True, timeout=60, check=True).stdout
     outside = subprocess.Popen(['sleep', '600'])
     owned['targets'] = [outside]
