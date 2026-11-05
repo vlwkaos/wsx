@@ -161,7 +161,7 @@ export function ChecksPage({ project, onClose, onMention, grip }) {
           : !items.length ? html`<p class="empty">Nothing to check.</p>`
           : html`
             <ul class="check-list" aria-label="Items to check">
-              ${items.map((item) => html`<${CheckRow} key=${item.id} project=${project} item=${item} onChanged=${read} onMention=${onMention && ((task, words) => { onClose(); onMention(task, words); })} />`)}
+              ${items.map((item) => html`<${CheckRow} key=${item.id} project=${project} item=${item} onChanged=${read} onMention=${onMention} />`)}
             </ul>`}
       </div>
     </div>`;

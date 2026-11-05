@@ -262,6 +262,11 @@ export function goBack(fallback) {
 // without a new history entry, so Back leaves the section instead of walking through the taps.
 export function replaceRoute(event, hash) {
   event.preventDefault();
+  leaveFor(hash);
+}
+// Go to `hash` without a new entry: Back when the previous entry is `hash`, else replace this
+// entry, so the next Back does not return to the screen left.
+export function leaveFor(hash) {
   if (previous() === hash) history.back();
   else replaceHash(hash);
 }
