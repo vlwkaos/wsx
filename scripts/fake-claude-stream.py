@@ -278,7 +278,8 @@ def manager_turn(text, project, page):
         # ^ Events that come along with the turn follow the owner's message: they are no script.
         script = ('\n' + text).split('\nSCRIPT\n', 1)[1].split('\n\nEvents (message ', 1)[0]
         # ^ The notes the host attaches to an owner message are no part of the script.
-        script = script.split('\n\nNotes that match this message', 1)[0]
+        script = script.split('\n\nNotes that match this message', 1)[0].split('\n\nYour last reply: ', 1)[0]
+        # ^ The host's line with the id of the manager's last reply ends the turn text.
         done = subprocess.run(script, shell=True, capture_output=True, text=True)
         return 'script -> %d %s' % (done.returncode, (done.stdout + done.stderr).strip()[:600])
     said = next((line.split('(message ', 1)[1].split(')', 1)[0] for line in text.splitlines()
