@@ -57,7 +57,7 @@ pub fn digest_lines(project_id: &str, after_ms: u64) -> Vec<String> {
     let mut lines = Vec::new();
     for (dir, record) in project_tasks(project_id).unwrap_or_default() {
         let Ok(record) = record else { continue };
-        if record.updated_unix_ms <= after_ms {
+        if record.updated_unix_ms <= after_ms || !REPORTED_STATES.contains(&record.state) {
             continue;
         }
         let what = match record.state {
