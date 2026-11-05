@@ -47,6 +47,7 @@
 
 ### Fixed
 
+- Terminal: a pane keeps 10,000 scrollback rows, as intended. Ghostty reads its scrollback limit in bytes, and wsx passed `10_000`, so a pane kept 250 to 1,300 rows (measured with 20,000 lines at 40 to 300 columns). The limit is now 48 pages of 400 KiB: the 47 pages that hold 10,000 rows up to 215 columns, plus one for the active area, at most 18.75 MiB per pane and only once it fills; wider panes keep fewer rows (about 7,900 at 300 columns). Each OSC 7 working-directory report no longer adds to a list nothing read, which grew a daemon without bound. `runtime-smoke.py` prints 20,000 lines and checks the newest 10,000 stay, and sends 200,000 OSC 7 reports and checks wsxd's RSS stays flat ([docs/design/daemon-health-audit.md](docs/design/daemon-health-audit.md) findings 4 and 5).
 - Web: a role is unread by the project's rule. The server sends `news` per role (the newest reply that is not quiet), and the ⋯ menu compares it with what this device read in the role's chat. A ping, a quiet reply or your own message no longer marks it, and a role chat never opened here is not unread. The device's `wsx-roles-seen` list is gone.
 - Web: "Since you left" lists the tasks that became ready or failed, as the routine digest does. One list of reported task states (`REPORTED_STATES`) serves the digest, that line and the manager's events.
 - Web: idle pages stop ticking. Home renews its ages each second only while a task or session works, else each minute, and a task sheet's age timer runs only while the age shows (a ready or failed task shows none).

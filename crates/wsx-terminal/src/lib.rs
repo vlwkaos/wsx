@@ -34,7 +34,17 @@ use wsx_core::runtime::{
     TerminalFrame, TerminalId, TerminalRowPatch, TerminalSelectionRange, TerminalUpdate,
 };
 
-const MAX_SCROLLBACK_ROWS: usize = 10_000;
+// ^ Ghostty reads `max_scrollback` as BYTES, rounded down to a page (vendor Screen.zig:282),
+// although the C header says lines. A page holds 215 rows up to 215 columns and fewer rows
+// beyond that (`std_capacity`, page.zig). Measured size of a page is about 383 KB; 400 KiB
+// rounds up. 10,000 rows = ceil(10,000 / 215) = 47 pages, plus 1 for the active area:
+// 48 x 400 KiB = 18.75 MiB per pane at most, taken only as the pane fills. Panes wider than
+// 215 columns hold fewer rows (about 7,900 at 300). Test: scripts/runtime-smoke.py scrollback.
+const SCROLLBACK_ROWS: usize = 10_000;
+const SCROLLBACK_PAGE_ROWS: usize = 215;
+const SCROLLBACK_PAGE_BYTES: usize = 400 * 1024;
+const MAX_SCROLLBACK_BYTES: usize =
+    (SCROLLBACK_ROWS.div_ceil(SCROLLBACK_PAGE_ROWS) + 1) * SCROLLBACK_PAGE_BYTES;
 const MAX_ROWS: u16 = 1_000;
 const MAX_COLS: u16 = 1_000;
 const MAX_CELLS: usize = 100_000;
@@ -521,7 +531,7 @@ fn make_emulator(
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     error: Arc<Mutex<Option<String>>>,
 ) -> Result<Emulator, TerminalError> {
-    let mut terminal = ghostty::Terminal::new(cols, rows, MAX_SCROLLBACK_ROWS)?;
+    let mut terminal = ghostty::Terminal::new(cols, rows, MAX_SCROLLBACK_BYTES)?;
     // ^ The callback runs inside `terminal.write` with the emulator lock held, on the reader
     // thread. A blocking PTY write there deadlocks with a child that stopped reading its input
     // and blocks on its output: the reader cannot drain, the child cannot read. One thread

@@ -46,6 +46,7 @@ A program that stops reading its input fills the PTY's input queue. A stream's i
 
 ## Not covered
 
+- Scrollback is 10,000 rows up to 215 columns (`MAX_SCROLLBACK_BYTES` in `wsx-terminal/src/lib.rs`: Ghostty counts bytes, 48 pages of 400 KiB). A wider pane keeps fewer rows.
 - The kitty keyboard protocol state is not in the replay. xterm.js 5.5 does not implement it; input uses legacy key encoding.
 - While the alternate screen is active, a replay does not carry the primary screen or its scrollback.
 - The pen (current SGR), scroll region and character sets are not in the replay. A full-screen program sets them again when it redraws.

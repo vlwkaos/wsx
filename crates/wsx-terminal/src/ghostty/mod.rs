@@ -302,7 +302,6 @@ const MAX_PENDING_CLIPBOARD_WRITES: usize = 64;
 struct TerminalCallbackState {
     write_pty: Option<Box<WritePtyCallback>>,
     bell_count: u16,
-    pwd_changes: Vec<Vec<u8>>,
     clipboard_writes: VecDeque<Vec<u8>>,
     size_report: ffi::GhosttySizeReportSize,
 }
@@ -450,30 +449,6 @@ unsafe fn borrowed_bytes<'a>(value: ffi::GhosttyString) -> Option<&'a [u8]> {
     }
 }
 
-unsafe extern "C" fn pwd_changed_trampoline(terminal: ffi::GhosttyTerminal, userdata: *mut c_void) {
-    if terminal.is_null() || userdata.is_null() {
-        return;
-    }
-    let mut pwd = ffi::GhosttyString::default();
-    let result = unsafe {
-        ffi::ghostty_terminal_get(
-            terminal,
-            ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_PWD,
-            (&mut pwd as *mut ffi::GhosttyString).cast(),
-        )
-    };
-    if result != ffi::GhosttyResult_GHOSTTY_SUCCESS || (pwd.ptr.is_null() && pwd.len != 0) {
-        return;
-    }
-    let bytes = if pwd.len == 0 {
-        Vec::new()
-    } else {
-        unsafe { slice::from_raw_parts(pwd.ptr, pwd.len) }.to_vec()
-    };
-    let state = unsafe { &mut *(userdata.cast::<TerminalCallbackState>()) };
-    state.pwd_changes.push(bytes);
-}
-
 pub fn encode_paste(data: &[u8], bracketed: bool) -> Result<Vec<u8>, Error> {
     let mut input = data.to_vec();
     let mut required = 0usize;
@@ -518,12 +493,12 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn new(cols: u16, rows: u16, max_scrollback: usize) -> Result<Self, Error> {
+    pub fn new(cols: u16, rows: u16, max_scrollback_bytes: usize) -> Result<Self, Error> {
         let mut raw = ptr::null_mut();
         let options = ffi::GhosttyTerminalOptions {
             cols,
             rows,
-            max_scrollback,
+            max_scrollback: max_scrollback_bytes,
         };
         // SAFETY: valid out pointer and options, null allocator means default allocator.
         unsafe {
@@ -571,12 +546,6 @@ impl Terminal {
                 terminal.raw,
                 ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_BELL,
                 (bell_trampoline as *const ()).cast(),
-            )
-            .into_result()?;
-            ffi::ghostty_terminal_set(
-                terminal.raw,
-                ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_PWD_CHANGED,
-                (pwd_changed_trampoline as *const ()).cast(),
             )
             .into_result()?;
             ffi::ghostty_terminal_set(

@@ -1338,6 +1338,65 @@ while True:
     output += bytes(message["data"])
 assert output.endswith(b"[bye]"), output
 raw_close(second)
+
+
+def close_session(session_id):
+    item = next(item for item in call("snapshot")["data"]["sessions"] if item["id"] == session_id)
+    assert call("session_close", {"session_id": session_id,
+                                  "expected_revision": item["revision"]})["type"] == "ack"
+
+
+def pane_session(command):
+    created = call("session_create", {"worktree_id": worktree_id, "label": "scrollback-check",
+                                      "command": command, "rows": 24, "cols": 80})
+    assert created["type"] == "created", created
+    session_id = created["data"]["id"]
+    return session_id, next(item for item in call("snapshot")["data"]["sessions"]
+                            if item["id"] == session_id)["focused_pane"]
+
+
+# ^ Ghostty reads max_scrollback as bytes, not lines (crates/wsx-terminal/src/lib.rs
+# MAX_SCROLLBACK_BYTES): with 10,000 passed as rows a pane kept about 1,000 of them. 20,000
+# numbered lines must leave the newest 10,000 in the raw replay's scrollback.
+scrollback_session, scrollback_pane = pane_session(
+    ["/bin/sh", "-lc", "seq 1 20000; echo scrollback-done; sleep 60"])
+wait_for(lambda: "scrollback-done" in pane_text(scrollback_pane), "20,000 lines were not written", 30)
+scrollback_client, response = raw_subscribe(scrollback_pane, 70, False, 24, 80)
+assert response["type"] == "ack", response
+replay = recv_line(scrollback_client)
+assert replay["type"] == "replay" and not replay["data"]["truncated"], replay["type"]
+kept = {int(n) for n in re.findall(rb"\b\d{5}\b", bytes(replay["data"]["ansi"]))}
+missing = [n for n in range(10_001, 20_001) if n not in kept]
+assert not missing, f"scrollback lost {len(missing)} of the newest 10,000 lines, first {missing[:3]}"
+raw_close(scrollback_client)
+close_session(scrollback_session)
+
+
+def daemon_rss_kb():
+    return int(subprocess.check_output(["ps", "-o", "rss=", "-p", str(process.pid)]))
+
+
+# ^ Each OSC 7 (working directory report) once pushed its path onto a list nothing read.
+# A shell reports at every prompt: 200,000 reports must not grow wsxd.
+osc_script = (
+    "import sys,time\n"
+    "def burst(count, tag):\n"
+    "    for start in range(0, count, 1000):\n"
+    "        sys.stdout.write(''.join(f'\\x1b]7;file://host/tmp/{tag}{i % 997}/dir\\x07'"
+    " for i in range(start, start + 1000)))\n"
+    "        sys.stdout.flush()\n"
+    "burst(20000, 'warm'); print('osc-warm', flush=True)\n"
+    "time.sleep(2)\n"
+    "burst(200000, 'load'); print('osc-load', flush=True)\n"
+    "time.sleep(60)\n"
+)
+osc_session, osc_pane = pane_session([sys.executable, "-c", osc_script])
+wait_for(lambda: "osc-warm" in pane_text(osc_pane), "OSC 7 warm-up did not finish", 60)
+osc_before = daemon_rss_kb()
+wait_for(lambda: "osc-load" in pane_text(osc_pane), "OSC 7 load did not finish", 120)
+osc_growth = daemon_rss_kb() - osc_before
+assert osc_growth < 4096, f"wsxd RSS grew {osc_growth} kB over 200,000 OSC 7 reports"
+close_session(osc_session)
 raw_done.set()
 raw_session = next(
     item for item in call("snapshot")["data"]["sessions"] if item["id"] == raw_session_id
