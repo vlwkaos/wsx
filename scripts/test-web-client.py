@@ -3809,16 +3809,14 @@ merge_seconds = 3
             os.environ['WSX_PUSH_FIXTURE'] = json.dumps({'endpoint': push_origin + '/push/browser',
                                                          'keys': {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}})
             Relay(ports['relay'], ports['owner'], work / 'relay')
-            # ^ Routines screen (docs/web-client-tasks.md "Routines"): one enabled that ran and succeeded, one disabled that failed, one that never ran.
+            # ^ Routines screen (docs/web-client-tasks.md "Routines"): one enabled that ran and succeeded, one disabled that exited 1, a findings code ("found something", not failed), one that never ran.
             # ^ weekly posts nothing to the chat (`--no-post`): the rows show it.
-            # ^ scan exits 1, a findings code: its row says "found something" in the attention color, not failed.
-            for name, cron, code in (('nightly', '0 6 * * *', '0'), ('weekly', '0 6 * * 1', '1'), ('scan', '0 6 * * 2', '1')):
+            for name, cron, code in (('nightly', '0 6 * * *', '0'), ('weekly', '0 6 * * 1', '1')):
                 js('task', 'routine', 'add', name, '-p', 'ui', '--cron', cron, '--arg=/bin/sh', '--arg=-c', '--arg=exit ' + code,
-                   *(['--no-post'] if name != 'nightly' else []), *(['--findings-exit', '1'] if name == 'scan' else []))
+                   *(['--no-post', '--findings-exit', '1'] if name == 'weekly' else []))
                 js('task', 'routine', 'run', name, '-p', 'ui')
             wait(lambda: all(r['last'] and not r['running'] for r in js('task', 'ledger', '-p', 'ui')['routines'] if r['name'] != 'idle'), 'the ui routines ran', 60)
             js('task', 'routine', 'disable', 'weekly', '-p', 'ui')
-            js('task', 'routine', 'disable', 'scan', '-p', 'ui')
             js('task', 'routine', 'add', 'idle', '-p', 'ui', '--cron', '0 7 * * *', '--arg=/bin/true')  # never run
             # ^ The page stages tasks in `plans` with the fixture's own wsx (scripts/web-tasks-check.mjs "Progress").
             (work / 'wsx-cli.json').write_text(json.dumps({'wsx': str(wsx), 'env': env, 'cwd': str(plans)}))
