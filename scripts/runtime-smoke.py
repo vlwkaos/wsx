@@ -2183,6 +2183,13 @@ try:
         raise
     wait_for(lambda: b"updated" in panel_screen and b"open" in panel_screen, "the TUI did not show the state")
     assert b"\x1b[32mdevice" not in panel_screen.split(b"smoke panels", 1)[1], "ANSI reached the screen"
+    # ^ The capture of this screen for the review: its bytes drawn by the web client's xterm.js.
+    CAPTURES = ROOT / ".work" / "web-captures"
+    (WORK / "panels-tui.bytes").write_bytes(bytes(panel_screen))
+    if shutil.which("node"):
+        drawn = subprocess.run(["node", str(ROOT / "scripts/render-ansi.mjs"), str(WORK / "panels-tui.bytes"), str(CAPTURES),
+                                "panels-tui", "120", "40"], capture_output=True, text=True, timeout=90)
+        print("panels TUI capture:", "written" if drawn.returncode == 0 else "not drawn: " + drawn.stderr.strip()[-300:], flush=True)
     os.write(panel_master, b"\t")
     wait_for(lambda: b"failed" in panel_screen and b"(exit" in panel_screen and b"boom" in panel_screen,
              "the TUI did not show the failing panel with its exit code", 20)
