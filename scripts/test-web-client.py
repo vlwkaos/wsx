@@ -1811,6 +1811,11 @@ capabilities = ["terminal_view"]
         assert note['mime'].startswith('text/plain') and not note['image']
         status, headers, _ = owner.request('GET', '/' + note['url'], raw=True)
         assert headers['content-disposition'].startswith('attachment') and headers['x-content-type-options'] == 'nosniff'
+        # A long pasted text is uploaded as a .txt file; the store keeps exactly its bytes.
+        paste = ''.join('line %d of a long pasted note, with words to fill it\n' % number for number in range(60)).encode()
+        pasted = owner.request('PUT', '/api/media?name=pasted-20261105120000.txt', paste)[1]
+        assert pasted['name'] == 'pasted-20261105120000.txt' and pasted['mime'].startswith('text/plain') and pasted['url'].endswith('.txt'), pasted
+        assert (work / 'state/wsx/web/owner/media' / (pasted['hash'] + '.txt')).read_bytes() == paste
         settle('owner')
         status, sent = owner.request('POST', chat + '/send', {'text': 'look at this', 'attachments': [digest]})
         assert status == 200, sent
