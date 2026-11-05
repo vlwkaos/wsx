@@ -57,7 +57,7 @@ Detail: <state dir>/retrospect/1793745316931.md
 
 | Result | Stored | Shown to the owner | In the manager's context |
 |---|---|---|---|
-| Run end | run record and stdout file; `post` in the routine | the chat by default (result, output end, file links), the ledger, the routine preview | a failure, or the output of a `--no-post` routine, as an event line; a posted run as `Posted:` in the handover, and every run by `handover_routines` |
+| Run end | run record and stdout file; `post` in the routine | the manager's message to the owner by default (a `for the owner` event with the result, output end and file links; docs/tasks.md "Routines"), the ledger, the routine preview | an event line: `for the owner` for a routine that posts, the end of the output for a `--no-post` routine; every run by `handover_routines` |
 | `wsx task post` (and the digest) | `manager/log.jsonl`: `message{from: events, text: <title>}` and a reply with no usage | the chat, with no turn | built: the handover lists it as `Posted: <text>`, not as the manager's `You:`. Not built: delivery at the next turn |
 
 Next-turn delivery, the design: the manager host keeps the posts since the last turn (title and the first 300 characters each, the newest 3, held in `state.json` so a restart keeps them). The next turn that runs anyway opens with `Shown to the owner since your last turn: <title>: <text>` and clears them. A post starts no turn, so it costs no turn; it costs only those input tokens. The handover covers a rotation, since it reads the log.
