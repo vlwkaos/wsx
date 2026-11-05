@@ -50,6 +50,9 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   PAGE <section> <words>  replace that section of the project overview (its instructions name it)
   OVERLONG <n>   write an overview of n lines (over the cap when n > 60); the host's follow-up leaves it
   STATUS         answer from `wsx task ledger`
+  (the host's request "<path>/context.md is <n> lines / <n> bytes ...") compact that file to its
+                 project section, its lines that name Claude.app and its last 5 memos, unless its
+                 first line is "# stubborn"
   BLOCKS <a>|<b>|...  (a line) say each part as its own assistant line, a part `TOOL` as a tool call;
                  the result holds only the last text, as Claude's does
   NOTIFY         first end a 0-token turn with no result, as Claude's own turn for a notification
@@ -287,6 +290,17 @@ def manager_turn(text, project, page):
             with open(page, 'w') as out:
                 out.write('# overlong\n' + 'a line of the overview\n' * (int(line.split()[1]) - 1))
             replies.append('I wrote a long overview.')
+    compact = re.search(r'^(\S+context\.md) is \d+ lines / \d+ bytes', text, re.M)
+    if compact:
+        with open(compact.group(1)) as notes:
+            lines = notes.read().splitlines()
+        if lines[:1] != ['# stubborn']:
+            memos = [line for line in lines if line.startswith('- #')]
+            keep = [line for line in lines if not line.startswith('- #')]
+            keep += [line for line in memos if 'Claude.app' in line or line in memos[-5:]]
+            with open(compact.group(1), 'w') as notes:
+                notes.write('\n'.join(keep) + '\n')
+        replies.append('I compacted context.md.')
     # ^ This turn's own words, not the ledger summary's titles or a handover's earlier messages.
     asks = re.search(r'^(ASK\b|#\d+ ready r\d+: NOOP ASK\b)', text, re.M)
     if asks:

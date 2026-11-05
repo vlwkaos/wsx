@@ -1749,7 +1749,112 @@ def run(wsx, wsxd, work, owned):
     opened = turn_with('NOTES BUDGET')['message']
     head = opened.split('\n\nHandover')[0]
     assert 'PROJECT-SECTION line' in head and '- #30: memo 30' in head and '- decision 199' in head, head
-    assert '- decision 000' not in head and len(head.encode()) < 8 * 1024 + 300, len(head)
+    assert '- decision 000' not in head and len(head.encode()) < 10 * 1024 + 600, len(head)
+    # ^ The decisions it left out are named, with their lines and the file's absolute path.
+    assert re.search(r'NOT SHOWN: decisions\.md lines 1-\d+ of 200 .*Read /\S+/notes/decisions\.md', head), head
+    assert 'NOT SHOWN: context.md' not in head, head
+    # 21a. Notes budget (docs/tasks.md "Notes budget"): a context.md over what a fresh conversation
+    # shows is never cut silently. The fixture is pizzahouse's: 60 lines, about 15 KB, and the
+    # fact the manager got wrong sits among the oldest memos.
+    mark('21a')
+
+    def pizza(first_line):
+        def word(n):
+            return 'qz' + ''.join(chr(97 + n // 26 ** k % 26) for k in range(4))
+        fact = '- #7: restarted Claude.app with open -g -a Claude from the Background session on 2026-10-31'
+        memos = [fact if n == 7 else '- #%d: %s notes %s %s' % (n, word(n), 'fixture detail ' * 15, word(n + 100))
+                 for n in range(1, 58)]
+        return first_line + '\n\nPizzahouse sells pizza.\n' + '\n'.join(memos) + '\n'
+
+    asked_compact = lambda: len([t for t in traces() if t.get('manager') and 'Compact it now to under' in str(t.get('message', ''))])
+    (notes / 'decisions.md').write_text('- 2026-10-22 keep the store in sqlite\n')
+    (notes / 'context.md').unlink(missing_ok=True)
+    reply_to(js('task', 'say', 'ZEBRAFISH quarterly')['id'])
+    edit_state(instructions=None)
+    (notes / 'context.md').write_text(pizza('# pizzahouse'))
+    fixture = (notes / 'context.md').read_text().splitlines()
+    assert len(fixture) == 60 and 14000 < len('\n'.join(fixture)) < 17000, len(fixture)
+    before = asked_compact()
+    reply_to(js('task', 'say', 'NOTES PIZZA')['id'])
+    first_turn = turn_with('NOTES PIZZA')['message']
+    reply_to(js('task', 'say', 'STATUS ordinary')['id'])
+    ordinary_turn = turn_with('STATUS ordinary')['message']
+    print('MEASURE first turn %d bytes, ordinary turn %d bytes (~%d and ~%d tokens)' % (
+        len(first_turn.encode()), len(ordinary_turn.encode()), len(first_turn.encode()) // 4, len(ordinary_turn.encode()) // 4))
+    notice = re.search(r'NOT SHOWN: context\.md lines ([0-9, -]+) of 60 .*Read (/\S+/notes/context\.md) for them', first_turn)
+    assert notice, first_turn
+    # ^ Every line of the file is in the first message or inside a named range.
+    hidden = set()
+    for part in notice.group(1).split(', '):
+        low, _, high = part.partition('-')
+        hidden |= set(range(int(low), int(high or low) + 1))
+    head_text = first_turn.split('Your project context (context.md):')[1].split('NOT SHOWN')[0]
+    for number, line in enumerate(fixture, 1):
+        assert line.strip() == '' or line in head_text or number in hidden, (number, line)
+        assert not (line.startswith('- #') and line in head_text and number in hidden), number
+    assert fixture[9] not in head_text and 10 in hidden and len(hidden) > 10, (sorted(hidden), first_turn)
+    # ^ The notice names the file, whose path is absolute and is the one the manager reads.
+    assert notice.group(2) == str((notes / 'context.md').resolve()) or notice.group(2).endswith('/manager/notes/context.md'), notice.group(2)
+    # ^ The first message holds at most the 10 KiB budget of the notes.
+    assert len(head_text.encode()) < 10 * 1024 + 400, len(head_text)
+    # ^ Over the cap, the manager gets one request to compact it, which keeps what it did and
+    # what the owner decided; the fake compacts, so the file ends within the target.
+    wait(lambda: asked_compact() == before + 1, 'the compaction request')
+    request = [t for t in traces() if t.get('manager') and 'Compact it now to under' in str(t.get('message', ''))][-1]['message']
+    assert 'Keep every fact about what you did and what the owner decided' in request and 'never drop them' in request, request
+    paths = re.search(r'(/\S+/notes/context\.md) is 60 lines / \d+ bytes; the cap is 6144 bytes.*moves the oldest memo lines to (/\S+/notes/context-archive\.md)', request, re.S)
+    assert paths, request
+    wait(lambda: len((notes / 'context.md').read_text().encode()) < 4096, 'the compacted context.md')
+    time.sleep(3)
+    assert asked_compact() == before + 1 and 'Claude.app' in (notes / 'context.md').read_text()
+    # ^ A manager that leaves it over the cap is asked once, not again until the owner writes.
+    (notes / 'context.md').write_text(pizza('# stubborn'))
+    reply_to(js('task', 'say', 'STUBBORN one')['id'])
+    wait(lambda: asked_compact() == before + 2, 'the second request')
+    time.sleep(4)
+    assert asked_compact() == before + 2
+    # ^ A fresh conversation, an owner message whose key word matches a line it did not show:
+    # that line is attached, and nothing else of the notes. A message with no such word gets none.
+    edit_state(instructions=None)
+    (notes / 'context.md').write_text(pizza('# stubborn'))
+    attached = js('task', 'say', 'Did you restart Claude.app yesterday?')
+    reply_to(attached['id'])
+    matched = turn_with('Did you restart Claude.app yesterday?')['message']
+    block = matched.split('Notes that match this message')[1].split('\n\n')[0]
+    assert 'context.md:10: - #7: restarted Claude.app with open -g -a Claude' in block, matched
+    assert block.count('\n- ') <= 5 and len(block.split('):\n', 1)[1].encode()) <= 1024, block
+    assert '/notes/context.md' in block.split('\n')[0] and 'qz' not in block, block
+    reply_to(js('task', 'say', 'GLOBETROTTER plain')['id'])
+    assert 'Notes that match' not in turn_with('GLOBETROTTER plain')['message']
+    shown_word = fixture[-1].split()[2]
+    reply_to(js('task', 'say', 'what is %s' % shown_word)['id'])
+    assert 'Notes that match' not in turn_with('what is %s' % shown_word)['message']
+    # ^ Memo lines: one line of at most 240 characters, no 60-line cap, and past 32 KiB the
+    # oldest go to context-archive.md, which the fresh conversation is told about.
+    (notes / 'context.md').write_text('# memos\n' + ''.join('- #%d: short memo %d\n' % (n, n) for n in range(100, 175)))
+    long_memo = 'x' * 400
+    long_task = js('task', 'new', 'WORK long.txt MEMO ' + long_memo)['id']
+    assert wait_state(long_task, 'ready', 'failed')['state'] == 'ready'
+    js('task', 'close', long_task, '--discard')
+    folded = wait(lambda: [l for l in (notes / 'context.md').read_text().splitlines() if l.startswith('- #%d: ' % long_task)], 'the long memo')[0]
+    lines_now = (notes / 'context.md').read_text().splitlines()
+    assert folded == '- #%d: %s…' % (long_task, 'x' * 240) and len(lines_now) == 77, (folded, len(lines_now))
+    assert not (notes / 'context-archive.md').exists()
+    (notes / 'context.md').write_text('# stubborn\n' + ''.join('- #%d: %s %d\n' % (n, 'y' * 230, n) for n in range(1, 140)))
+    big_task = js('task', 'new', 'WORK big.txt MEMO the newest memo')['id']
+    assert wait_state(big_task, 'ready', 'failed')['state'] == 'ready'
+    js('task', 'close', big_task, '--discard')
+    archive = wait(lambda: (notes / 'context-archive.md').exists() and notes / 'context-archive.md', 'the archive')
+    kept = (notes / 'context.md').read_text()
+    moved = archive.read_text()
+    assert len(kept.encode()) <= 32 * 1024 and '- #1: ' not in kept and moved.startswith('- #1: ') and '- #%d: the newest memo' % big_task in kept, (len(kept), moved[:40])
+    assert len(kept.splitlines()) + len(moved.splitlines()) == 141, (len(kept.splitlines()), len(moved.splitlines()))
+    edit_state(instructions=None)
+    reply_to(js('task', 'say', 'STATUS after the archive')['id'])
+    opened_archive = turn_with('STATUS after the archive')['message']
+    assert re.search(r'in (/\S+/notes/context-archive\.md)\.', opened_archive) and 'NOT SHOWN: context.md' in opened_archive, opened_archive
+    (notes / 'context-archive.md').unlink()
+    (notes / 'context.md').write_text('PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
     # ^ Idle past 60 min with a context over 60k: a fresh conversation, with the reason logged.
     edit_state(last_reply_ms=int((time.time() - 7200) * 1000), context_tokens=70000)
     idle_message = js('task', 'say', 'IDLE LARGE')
@@ -1758,6 +1863,10 @@ def run(wsx, wsxd, work, owned):
     assert rotated[-1].get('reason') == 'idle over 60 min with 70k context', rotated
     idle_launch = [t for t in traces() if t.get('launch') and t.get('manager')][-1]
     assert not idle_launch['resume'] and 'Handover' in turn_with('IDLE LARGE')['message']
+    # ^ An exchange of the conversation before the rotation, older than the handover's, matches too.
+    reply_to(js('task', 'say', 'ZEBRAFISH revisit')['id'])
+    earlier = turn_with('ZEBRAFISH revisit')['message']
+    assert 'earlier conversation: Owner: ZEBRAFISH quarterly' in earlier, earlier
     # ^ Warm and small, with other instructions: the same conversation, the new ones as a message.
     rotations = len([e for e in manager_entries() if e['kind'] == 'rotated'])
     edit_state(instructions='stale-digest')

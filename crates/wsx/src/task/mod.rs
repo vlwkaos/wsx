@@ -11,6 +11,7 @@ mod hosting;
 mod ledger;
 pub(crate) mod limit;
 pub mod manager;
+mod notes;
 mod pi;
 mod preview;
 mod slot;

@@ -11,7 +11,7 @@ use super::agent::{
 };
 use super::boundary::Boundary;
 use super::claude::{account_env, config_root, skills_plugin, SKILLS_PLUGIN_NAME};
-use super::{broker, hosting, limit};
+use super::{broker, hosting, limit, notes};
 use crate::cli::existing_daemon_snapshot;
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -85,8 +85,6 @@ const STAND_IN_RETRY_MS: u64 = 5 * 60_000;
 const STAND_IN_LOOK: Duration = Duration::from_secs(10);
 /// Agent errors in a row after which the conversation itself may be the cause.
 const ERROR_ROTATE_ATTEMPTS: u32 = 3;
-/// The longest `manager/notes/context.md` gets from memos.
-const MAX_CONTEXT_LINES: usize = 60;
 /// An idle task runs at most this often.
 const IDLE_EVERY_MS: u64 = 24 * 3_600_000;
 /// The title of the task `tasks.workflow.idle` starts.
@@ -105,6 +103,8 @@ fn one_line(text: &str) -> String {
 
 /// The handover of a fresh conversation: this many last messages and replies, each clipped.
 const HANDOVER_ENTRIES: usize = 4;
+/// How much of the log's end a notes search reads for the earlier conversation's exchanges.
+const EARLIER_TAIL_BYTES: u64 = 1024 * 1024;
 const HANDOVER_CHARS: usize = 600;
 const EVENT_SUMMARY_CHARS: usize = 160;
 /// A failed deploy's event carries this many last lines of its output.
@@ -215,6 +215,8 @@ struct Manager {
     leaving: bool,
     /// The host asked for a shorter overview since the last owner message or in-cap result.
     overview_asked: bool,
+    /// Like `overview_asked`, for the request to compact `context.md`.
+    context_asked: bool,
     /// Ping turns since the last real turn, and whether the running turn is one.
     /// ref: docs/tasks.md "Manager"
     pings: u32,
@@ -225,11 +227,7 @@ struct Manager {
 /// The manager's lean project context in its notes folder. ref: docs/tasks.md "Memo"
 pub(super) const CONTEXT_FILE: &str = "context.md";
 /// The owner's decisions, one line each, appended by the manager as they are made.
-const DECISIONS_FILE: &str = "decisions.md";
-/// The most of both files a fresh conversation's first message carries.
-const MAX_NOTES_BYTES: usize = 8 * 1024;
-/// Each notes file's own share of that budget; one that is short leaves the rest to the other.
-const NOTES_HALF: usize = MAX_NOTES_BYTES / 2;
+pub(super) const DECISIONS_FILE: &str = "decisions.md";
 /// A conversation idle this long lost Claude's prompt cache (1 hour): past `IDLE_ROTATE_TOKENS`
 /// of context, a fresh conversation costs less than the cold resume.
 const IDLE_ROTATE_MS: u64 = 60 * 60_000;
@@ -238,19 +236,6 @@ const IDLE_ROTATE_TOKENS: u64 = 60_000;
 const INSTRUCTION_MESSAGE_TOKENS: u64 = 100_000;
 // ^ The agent writes the notes: a link or a huge file must not reach the host's read.
 const MAX_NOTES_READ: u64 = 256 * 1024;
-
-/// The leading lines of `lines` that fit in `budget` bytes (a newline each), and their size.
-fn fit<'a>(lines: impl Iterator<Item = &'a String>, budget: usize) -> (Vec<&'a String>, usize) {
-    let mut used = 0;
-    let kept: Vec<&String> = lines
-        .take_while(|line| {
-            used += line.len() + 1;
-            used <= budget
-        })
-        .collect();
-    let size = kept.iter().map(|line| line.len() + 1).sum();
-    (kept, size)
-}
 
 /// ref: docs/tasks.md "Manager", "Memo"
 fn instructions(
@@ -478,6 +463,7 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         roles_swept: None,
         leaving: false,
         overview_asked: false,
+        context_asked: false,
         pings: 0,
         pinging: false,
     };
@@ -1123,28 +1109,12 @@ impl Manager {
             .unwrap_or_default()
     }
 
-    /// Add a finished task's memo to `notes/context.md` as one line, unless it is there. Past
-    /// `MAX_CONTEXT_LINES` the oldest memo lines go; the manager's own lines stay.
-    /// ref: docs/tasks.md "Memo"
+    /// Add a finished task's memo to `notes/context.md`. ref: docs/tasks.md "Memo"
     fn fold_memo(&self, task: u32, memo: &str) {
         let Ok(notes) = self.dir.notes() else {
             return;
         };
-        let path = notes.join(CONTEXT_FILE);
-        let text = read_note(&path);
-        let mut lines: Vec<&str> = text.lines().collect();
-        if lines.iter().any(|line| line.contains(memo)) {
-            return;
-        }
-        let added = format!("- #{task}: {memo}");
-        lines.push(&added);
-        while lines.len() > MAX_CONTEXT_LINES {
-            let Some(oldest) = lines.iter().position(|line| line.starts_with("- #")) else {
-                break;
-            };
-            lines.remove(oldest);
-        }
-        if let Err(error) = store::write_note(&path, &(lines.join("\n") + "\n")) {
+        if let Err(error) = notes::fold_memo(&notes, task, memo) {
             self.say(&format!("cannot add the memo: {error:#}"));
         }
     }
@@ -1348,6 +1318,7 @@ impl Manager {
         })?;
         self.last_activity = Instant::now();
         self.overview_asked &= from != Author::Owner;
+        self.context_asked &= from != Author::Owner;
         self.enqueue(id, from, text);
         Ok(id)
     }
@@ -1561,6 +1532,7 @@ impl Manager {
             .map_or(Author::Owner, |(_, author, _)| author.clone());
         let mut ids = Vec::new();
         let mut text = String::new();
+        let mut said = String::new();
         // ^ Events that need no judgment go along with a turn that runs anyway, after its
         // own messages.
         let mut along = Vec::new();
@@ -1621,7 +1593,14 @@ impl Manager {
             };
             for_owner |= author == Author::Events && body.lines().any(routine_for_owner);
             text.push_str(&format!("{heading} (message {id}):\n{body}\n\n"));
+            if author == Author::Owner {
+                said.push_str(&body);
+                said.push('\n');
+            }
             ids.push(id);
+        }
+        if !said.is_empty() {
+            text.push_str(&self.notes_matching(&said));
         }
         // ^ Events that go along must not take the owner's answer: a fresh turn of 2284 with
         // two events answered only the events (docs/design/manager-reliability.md "A").
@@ -2470,6 +2449,7 @@ impl Manager {
         }
         self.report(runtime::AgentState::Done);
         self.check_overview();
+        self.check_context();
     }
 
     /// The manager writes the overview with its own tools: after a turn, a file over the cap
@@ -2494,6 +2474,49 @@ impl Manager {
         }
     }
 
+    /// `context.md` over its cap gets one request to compact it, like the overview; no second
+    /// one until the owner writes again. ref: docs/tasks.md "Notes budget"
+    fn check_context(&mut self) {
+        if self.dir.role.is_some() {
+            return;
+        }
+        let Ok(notes) = self.dir.notes() else {
+            return;
+        };
+        match notes::over_cap(&notes) {
+            None => self.context_asked = false,
+            Some((lines, bytes)) if !self.context_asked => {
+                self.context_asked = true;
+                if let Err(error) =
+                    self.accept(Author::Recap, notes::too_long(&notes, bytes, lines))
+                {
+                    self.say(&format!("cannot ask for a shorter context.md: {error:#}"));
+                }
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// The notes lines and the earlier conversations' exchanges that match an owner message.
+    fn notes_matching(&self, said: &str) -> String {
+        let Ok(notes) = self.dir.notes() else {
+            return String::new();
+        };
+        notes::matching(&notes, said, || {
+            // ^ Before the last rotation, and not the last few: the handover shows those.
+            let tail = self.dir.read_tail(EARLIER_TAIL_BYTES).unwrap_or_default();
+            let Some(rotated) = tail
+                .iter()
+                .rposition(|entry| matches!(entry.event, ManagerEvent::Rotated { .. }))
+            else {
+                return Vec::new();
+            };
+            let mut lines = exchanges(&tail[..rotated], usize::MAX);
+            lines.truncate(lines.len().saturating_sub(HANDOVER_ENTRIES));
+            lines
+        })
+    }
+
     /// End the conversation; the next turn starts a fresh one with a short handover.
     /// ^ The ledger carries the state; a fresh conversation loses nothing it needs.
     fn rotate(&mut self, tokens: u64, reason: Option<String>) {
@@ -2508,53 +2531,12 @@ impl Manager {
         self.log(ManagerEvent::Rotated { tokens, reason });
     }
 
-    /// The owner's decisions (newest lines) and the project context (its first lines, then its
-    /// newest memo lines), each within its half of 8 KiB, more when the other is short: every
-    /// fresh conversation starts knowing them. ref: docs/tasks.md "Memo"
+    /// The owner's decisions and the project context, within 10 KiB, with what is left out
+    /// named: every fresh conversation starts knowing them. ref: docs/tasks.md "Notes budget"
     fn notes_preamble(&self) -> String {
-        let Ok(notes) = self.dir.notes() else {
-            return String::new();
-        };
-        let read = |name: &str| read_note(&notes.join(name));
-        let decisions: Vec<String> = read(DECISIONS_FILE)
-            .lines()
-            .rev()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(str::to_string)
-            .collect();
-        let context = read(CONTEXT_FILE);
-        let size = |lines: &[String]| lines.iter().map(|line| line.len() + 1).sum::<usize>();
-        // ^ The first lines are the project section the manager wrote, which says what the
-        // project is; the memo lines (`- #<n>: ...`) are appended and the oldest go first.
-        let (memos, section): (Vec<String>, Vec<String>) = context
-            .lines()
-            .map(str::to_string)
-            .partition(|line| line.starts_with("- #"));
-        let decisions_budget = MAX_NOTES_BYTES - NOTES_HALF.min(size(&section) + size(&memos));
-        let context_budget = MAX_NOTES_BYTES - NOTES_HALF.min(size(&decisions));
-        let mut out = String::new();
-        let decisions = fit(decisions.iter(), decisions_budget).0;
-        if !decisions.is_empty() {
-            out.push_str("The owner's decisions (decisions.md, newest first):\n");
-            for line in decisions {
-                out.push_str(line);
-                out.push('\n');
-            }
-            out.push('\n');
-        }
-        let (section, used) = fit(section.iter(), context_budget / 2);
-        let (mut memos, _) = fit(memos.iter().rev(), context_budget - used);
-        memos.reverse();
-        if !section.is_empty() || !memos.is_empty() {
-            out.push_str("Your project context (context.md):\n");
-            for line in section.into_iter().chain(memos) {
-                out.push_str(line);
-                out.push('\n');
-            }
-            out.push('\n');
-        }
-        out
+        self.dir
+            .notes()
+            .map_or_else(|_| String::new(), |notes| notes::preamble(&notes))
     }
 
     /// The last exchanges of the log, so a fresh conversation knows what was just said.
@@ -2805,8 +2787,12 @@ fn handover_routines(mut runs: Vec<RunRecord>, replied: i64) -> Vec<String> {
     lines
 }
 
-/// The last owner messages and replies, oldest first, each on one line.
 fn recent_exchanges(log: &[ManagerEntry]) -> Vec<String> {
+    exchanges(log, HANDOVER_ENTRIES)
+}
+
+/// The last `limit` owner messages and replies, oldest first, each on one line.
+fn exchanges(log: &[ManagerEntry], limit: usize) -> Vec<String> {
     let mut lines: Vec<String> = log
         .iter()
         .rev()
@@ -2829,7 +2815,7 @@ fn recent_exchanges(log: &[ManagerEntry]) -> Vec<String> {
             ManagerEvent::Reply { text, .. } => Some(format!("You: {}", one_line(text))),
             _ => None,
         })
-        .take(HANDOVER_ENTRIES)
+        .take(limit)
         .collect();
     lines.reverse();
     lines
