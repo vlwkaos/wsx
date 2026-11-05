@@ -2,14 +2,14 @@
 //! ref: docs/tasks.md "Pi adapter"; Pi docs rpc.md, rpc-commands.md, json.md
 
 use super::agent::{
-    read_json_lines, thinking_chars, turn_text, AgentLine, Launch, TurnResult, UsageLimit,
+    end_stream, read_json_lines, thinking_chars, turn_text, AgentLine, AgentProcess, Launch,
+    TurnResult, UsageLimit,
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::io::{Read, Write};
-use std::process::{Child, ChildStdin, Stdio};
+use std::io::Read;
 use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use wsx_core::task::view::clip;
 use wsx_core::task::TurnUsage;
 
@@ -41,8 +41,7 @@ const KEPT_ENV: &[&str] = &[
 ];
 
 pub struct PiAgent {
-    child: Child,
-    stdin: ChildStdin,
+    process: AgentProcess,
     requests: u64,
 }
 
@@ -56,52 +55,27 @@ impl PiAgent {
         events: Sender<E>,
         wrap: impl Fn(Option<AgentLine>) -> E + Send + 'static,
     ) -> Result<Self> {
-        let mut command = launch.boundary.command("pi")?;
-        command.args(pi_args(launch, session));
-        command.env_clear();
-        for name in KEPT_ENV {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
-        if let Some(prefix) = &launch.path_prefix {
-            let mut paths = vec![prefix.clone()];
-            paths.extend(
-                std::env::var_os("PATH")
-                    .iter()
-                    .flat_map(std::env::split_paths),
-            );
-            command.env("PATH", std::env::join_paths(paths)?);
-        }
-        for (name, value) in &launch.env {
-            command.env(name, value);
-        }
-        command.env("GIT_EDITOR", "true");
         // ^ A worker's check or a manager's quiet hour outlasts Pi's default 5-minute cache, and
         // then the whole context is written again. ref: docs/design/manager-efficiency.md
-        command.env("PI_CACHE_RETENTION", "long");
-        let mut child = command
-            .current_dir(&launch.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("cannot start pi; is it on PATH?")?;
-        let stdin = child.stdin.take().context("pi has no stdin")?;
-        let stdout = child.stdout.take().context("pi has no stdout")?;
+        let (process, stdout) = AgentProcess::spawn(
+            launch,
+            "pi",
+            pi_args(launch, session),
+            KEPT_ENV,
+            &[("PI_CACHE_RETENTION", "long")],
+        )?;
         let init = session.to_string();
         std::thread::spawn(move || {
             if events.send(wrap(Some(AgentLine::Init(init)))).is_err() {
                 return;
             }
-            read_stream(stdout, cost_base, |line| {
+            let read = read_stream(stdout, cost_base, |line| {
                 events.send(wrap(Some(line))).is_ok()
             });
-            let _ = events.send(wrap(None));
+            end_stream(&events, &wrap, read);
         });
         Ok(Self {
-            child,
-            stdin,
+            process,
             requests: 0,
         })
     }
@@ -123,28 +97,13 @@ impl PiAgent {
     fn request(&mut self, mut value: Value) -> Result<()> {
         self.requests += 1;
         value["id"] = json!(format!("wsx-{}", self.requests));
-        let mut line = serde_json::to_vec(&value)?;
-        line.push(b'\n');
-        self.stdin
-            .write_all(&line)
-            .and_then(|()| self.stdin.flush())
-            .context("cannot write to pi")
+        self.process.write(&value)
     }
 
-    /// Abort the run, close stdin (Pi's orderly shutdown), then kill if it does not end
-    /// within a few seconds.
+    /// Queue `abort` without waiting for Pi to read it, then stop: the kill timer starts at
+    /// once, so a hung Pi cannot hold the host.
     pub fn stop(mut self) {
         let _ = self.request(json!({ "type": "abort" }));
-        drop(self.stdin);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if matches!(self.child.try_wait(), Ok(Some(_))) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
@@ -202,12 +161,12 @@ pub(super) fn read_stream(
     stdout: impl Read,
     cost_base: u64,
     mut send: impl FnMut(AgentLine) -> bool,
-) {
+) -> std::io::Result<()> {
     let mut run = Run {
         cost_base,
         ..Run::default()
     };
-    read_json_lines(stdout, |value| run.parse(&value).is_none_or(&mut send));
+    read_json_lines(stdout, |value| run.parse(&value).is_none_or(&mut send))
 }
 
 /// What the reader keeps over one run, from `agent_start` to `agent_settled`.

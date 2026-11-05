@@ -26,6 +26,7 @@ fn run(adapter: &str, name: &str, cost_base: u64) -> (Vec<AgentLine>, TurnResult
         "claude" => super::claude::read_stream(stream.as_slice(), cost_base, |_| (), keep),
         _ => super::pi::read_stream(stream.as_slice(), cost_base, keep),
     }
+    .expect("a recorded stream reads");
     let mut results = lines
         .iter()
         .enumerate()

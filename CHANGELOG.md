@@ -47,6 +47,7 @@
 
 ### Fixed
 
+- Tasks: a stopped agent takes its whole process tree. Each worker, manager and role agent leads its own process group and carries `WSX_AGENT_TREE`; close, stop, rotation, switch, discard, re-exec and the end of its output (also a read error) send SIGTERM to the group and to the processes that hold the mark, wait 5 s, send SIGKILL and reap the agent. Before, only the agent's pid got a signal, so its Bash children, dev servers, test runs and MCP servers kept running (Claude's Bash tool starts each shell in a session of its own), and an agent that ended by itself stayed a zombie. A thread writes the agent's stdin, so a hung agent no longer freezes its host; Pi's stop no longer waits to write `abort` before its kill timer starts ([docs/tasks.md](docs/tasks.md) "Agents", process tree).
 - Web: a role is unread by the project's rule. The server sends `news` per role (the newest reply that is not quiet), and the ⋯ menu compares it with what this device read in the role's chat. A ping, a quiet reply or your own message no longer marks it, and a role chat never opened here is not unread. The device's `wsx-roles-seen` list is gone.
 - Web: "Since you left" lists the tasks that became ready or failed, as the routine digest does. One list of reported task states (`REPORTED_STATES`) serves the digest, that line and the manager's events.
 - Web: idle pages stop ticking. Home renews its ages each second only while a task or session works, else each minute, and a task sheet's age timer runs only while the age shows (a ready or failed task shows none).
