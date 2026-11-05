@@ -1,6 +1,6 @@
 // Home with task_view: one row per granted project, what needs the owner first
 // (docs/web-client-tasks.md "Home"). A row opens the project's manager chat.
-import { ago, html, Icon, Loading, READ_EVENT, readUpTo, useEffect, useFlip, useNow, useRef, useState } from "./lib.js";
+import { ago, html, Icon, Loading, READ_EVENT, unreadNews, useEffect, useFlip, useNow, useRef, useState } from "./lib.js";
 import { api } from "./api.js";
 import { isAgent, listedSessions, stateOf, useStore } from "./store.js";
 import { needTone, needWords } from "./tasks.js";
@@ -74,9 +74,7 @@ function statusLine({ overview, first, agents }, now) {
 // item), while this device has not read the chat that far: the same mark as the chat's own
 // "↓ N new" (lib.js `useFollowEnd`). A chat never opened on this device has nothing new.
 function newsOf(project, overview) {
-  const news = overview?.news;
-  const read = readUpTo(`project-${project}`);
-  return news && read != null && news.unix_ms > read ? news.text.split("\n")[0] : null;
+  return unreadNews(`project-${project}`, overview?.news)?.text.split("\n")[0] ?? null;
 }
 
 // ^ A sheet with one path field registers a git repository of the host, as the TUI's `p` does
@@ -170,7 +168,12 @@ export function Home({ rail }) {
     changed();
     return () => removeEventListener(READ_EVENT, changed);
   }, []);
-  const now = useNow(true);
+  const sessions = listedSessions(store.sessions).filter(isAgent);
+  // ^ Only a working task or session shows an age that moves by the second; any other row's age
+  // (`ago`, in minutes) is renewed each minute.
+  const live = Object.values(store.tasks).some((overview) => overview?.working > 0)
+    || sessions.some((session) => stateOf(session).key === "working");
+  const now = useNow(true, live ? 1000 : 60_000);
   const [, kind, open] = location.hash.split("/");
   const list = useRef();
   useFlip(list);
@@ -184,7 +187,7 @@ export function Home({ rail }) {
   else {
     body = html`
       <ul class="rows home-rows" aria-label="Projects" ref=${list}>
-        ${homeOrder(store.projects, store.tasks, listedSessions(store.sessions).filter(isAgent), rail && kind === "p" && document.visibilityState === "visible" ? Number(open) : null).map((row) => {
+        ${homeOrder(store.projects, store.tasks, sessions, rail && kind === "p" && document.visibilityState === "visible" ? Number(open) : null).map((row) => {
           const status = statusLine(row, now);
           const count = row.needs.length;
           const working = row.overview?.working ?? 0;

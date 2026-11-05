@@ -3,7 +3,7 @@
 // task's or the project overview's sheet over the chat (docs/web-client-tasks.md). Fixed actions
 // go straight to wsx.
 import { api } from "./api.js";
-import { html, Icon, keepIn, readMap, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
+import { html, Icon, keepIn, readMap, unreadNews, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, leaveFor, shows, state, touch, update, useEventLoad, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, inlinePasted, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
@@ -689,7 +689,7 @@ const readLeft = () => readMap(LEFT_KEY);
 const noteLeft = (project) => keepIn(LEFT_KEY, project, Date.now());
 // Shorter absences are a glance away, not an absence.
 const AWAY_MS = 60_000;
-const SINCE_WORDS = [["landed", "landed"], ["blocked", "blocked"], ["conflict", "conflicted"], ["revised", "got a new revision"], ["started", "started"]];
+const SINCE_WORDS = [["landed", "landed"], ["ready", "ready"], ["failed", "failed"], ["blocked", "blocked"], ["conflict", "conflicted"], ["revised", "got a new revision"], ["started", "started"]];
 
 // "Since you left": what the task logs say happened while this device was away from the
 // project, on opening it or on coming back to it. Nothing runs while away. It goes by itself
@@ -736,10 +736,6 @@ function SinceLine({ project, reply, sent }) {
 }
 
 // The top row's ⋯: the project overview, sessions and files.
-// When this device last read each role's chat, by `<project>/<role>`: a contact with something
-// newer is unread.
-const ROLES_SEEN_KEY = "wsx-roles-seen";
-
 // The project's one shell in its main checkout, the one the TUI's `S` opens: the live one,
 // else a new one (docs/web-client-tasks.md "Project screen").
 function ProjectShell({ project }) {
@@ -761,7 +757,6 @@ function ProjectShell({ project }) {
 
 function More({ project, roles }) {
   const files = shows("files") && can("files_read");
-  const seen = readMap(ROLES_SEEN_KEY);
   return html`
     <${MoreMenu}>
       <a role="menuitem" href=${`#/p/${project.id}/page`}>Overview</a>
@@ -772,7 +767,7 @@ function More({ project, roles }) {
       ${roles?.length > 0 && html`
         <p class="more-heading" aria-hidden="true">Roles</p>
         ${roles.map((role) => {
-          const unread = role.last_unix_ms > (seen[`${project.id}/${role.name}`] ?? 0);
+          const unread = Boolean(unreadNews(`project-${project.id}-r-${role.name}`, role.news));
           return html`<a role="menuitem" class="role-contact" key=${role.name} href=${`#/p/${project.id}/r/${encodeURIComponent(role.name)}`}
             aria-label=${`Role ${role.name}${unread ? ", unread" : ""}`}>
             <span class="role-name">${role.name}${unread && html`<span class="news-mark" aria-hidden="true"></span>`}</span>
@@ -886,7 +881,6 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
       setFailure("");
       return;
     }
-    if (role) keepIn(ROLES_SEEN_KEY, `${id}/${role}`, Date.now());
     // ^ A rotation or a stop has no id, so every read after the last id returns it again
     // until the next message: it joins once.
     const known = (entry) => entry.id == null

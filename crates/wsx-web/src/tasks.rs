@@ -20,7 +20,7 @@ use wsx_core::task::{
     self, call_host_waiting, call_socket, checks, copy, ledger,
     manager::{
         activity, chat_window, decided_request, pending_approvals, ApprovalLine, Author,
-        ManagerEvent, ManagerRequest, ManagerResponse, CHAT_ENTRIES,
+        ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, CHAT_ENTRIES,
     },
     owner, stall,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
@@ -218,15 +218,7 @@ pub fn overview(scope: &Scope) -> Value {
         .flatten()
         .and_then(|dir| dir.read_tail(MANAGER_TAIL_BYTES).ok())
         .unwrap_or_default();
-    let last_reply = tail.iter().rev().find_map(|entry| match &entry.event {
-        ManagerEvent::Reply {
-            text, quiet: false, ..
-        } => Some((
-            entry.unix_ms,
-            view::clip(task::manager::split_quote(text).1.trim(), LAST_REPLY_CHARS),
-        )),
-        _ => None,
-    });
+    let last_reply = newest_news(&tail);
     // ^ A reply asks the owner and no owner message came after it, a later report or not: the home
     // row shows the chat's "Asks you" tag (docs/web-client-tasks.md "Home").
     let asks = task::manager::tail_asks(&tail);
@@ -746,15 +738,31 @@ pub fn chat(
     }))
 }
 
-/// The open roles as contacts: name, the first line of the last reply and when the role
-/// last had anything in its chat (docs/web-client-tasks.md "Roles").
+/// The newest reply of a chat that counts as news (when, text): one that is not quiet. A ping and
+/// the owner's own message are none. The project's home row and a role's contact both use it
+/// (docs/web-client-tasks.md "Home", "Roles").
+fn newest_news(tail: &[ManagerEntry]) -> Option<(u64, String)> {
+    tail.iter().rev().find_map(|entry| match &entry.event {
+        ManagerEvent::Reply {
+            text, quiet: false, ..
+        } => Some((
+            entry.unix_ms,
+            view::clip(task::manager::split_quote(text).1.trim(), LAST_REPLY_CHARS),
+        )),
+        _ => None,
+    })
+}
+
+/// The open roles as contacts: name, the first line of the last reply and `news` (as a
+/// project's: `{unix_ms, text}` of the newest reply that is news, or `null`)
+/// (docs/web-client-tasks.md "Roles").
 fn role_contacts(scope: &Scope) -> Vec<Value> {
     task::roles::open_roles(&scope.store)
         .iter()
         .map(|dir| {
-            let last = dir
-                .read_tail(MANAGER_TAIL_BYTES)
-                .unwrap_or_default()
+            let tail = dir.read_tail(MANAGER_TAIL_BYTES).unwrap_or_default();
+            let news = newest_news(&tail).map(|(unix_ms, text)| json!({ "unix_ms": unix_ms, "text": text }));
+            let last = tail
                 .into_iter()
                 .rev()
                 .find_map(|entry| match entry.event {
@@ -770,7 +778,7 @@ fn role_contacts(scope: &Scope) -> Vec<Value> {
                 "name": dir.name(),
                 "brief": task::roles::brief(dir).lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default(),
                 "last_reply": last,
-                "last_unix_ms": task::roles::last_active_ms(dir),
+                "news": news,
             })
         })
         .collect()
@@ -807,8 +815,9 @@ pub fn routines(scope: &Scope) -> Value {
     }
 }
 
-/// What happened since `after` (ms): the tasks that started, landed, blocked, conflicted
-/// or got a new revision, and the manager's replies.
+/// What happened since `after` (ms): the tasks that started, blocked, conflicted or got a new
+/// revision, those that entered a reported state (`view::REPORTED_STATES`: ready, failed,
+/// landed), and the manager's replies.
 pub fn since(scope: &Scope, after: u64) -> Value {
     let mut found: HashMap<&'static str, Vec<u32>> = HashMap::new();
     for (dir, record) in view::project_tasks(&scope.store).unwrap_or_default() {
@@ -818,13 +827,15 @@ pub fn since(scope: &Scope, after: u64) -> Value {
             continue;
         }
         let mut kinds: HashSet<&'static str> = HashSet::new();
+        if view::REPORTED_STATES.contains(&record.state) && record.state_unix_ms > after {
+            kinds.insert(record.state.as_str());
+        }
         for entry in dir.read_log().unwrap_or_default() {
             if entry.unix_ms <= after {
                 continue;
             }
             match entry.event {
                 LogEvent::Created { .. } => kinds.insert("started"),
-                LogEvent::Landed { .. } => kinds.insert("landed"),
                 LogEvent::Blocked { .. } => kinds.insert("blocked"),
                 LogEvent::Conflict { .. } => kinds.insert("conflict"),
                 LogEvent::Revision { .. } => kinds.insert("revised"),

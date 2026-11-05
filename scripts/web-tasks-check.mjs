@@ -492,6 +492,42 @@ async function plainWorktree(where) {
 // Home's order below the needs (docs/web-client-tasks.md "Home"): a project with an unread message
 // sorts above a read one that is newer by activity, and a message arriving while its chat is open
 // leaves it read. The page's own store is driven through its modules, as `motion` does.
+// The page's repeating timers up to 30 s, by delay, from here on: the ones a component has
+// started and not cleared. A timer made before this call is not counted.
+const trackTimers = () => evaluate(`(() => {
+  if (window.__timers) return;
+  const timers = (window.__timers = new Map()), start = window.setInterval.bind(window), stop = window.clearInterval.bind(window);
+  window.setInterval = (callback, delay, ...rest) => { const id = start(callback, delay, ...rest); if (delay <= 30000) timers.set(id, delay); return id; };
+  window.clearInterval = (id) => { timers.delete(id); return stop(id); };
+})()`);
+const timers = (delay) => evaluate(`[...window.__timers.values()].filter((delay) => delay === ${delay}).length`);
+
+// Home ticks each second only while a row shows a live age (a working task or session): with
+// only ready tasks it has no such timer. ^ Home mounts again so its timer is the tracked one.
+async function homeTimers() {
+  await trackTimers();
+  const pageModule = (name) => `import(new URL(${JSON.stringify(name)}, [...document.scripts].find((script) => script.type === 'module').src))`;
+  const mounted = async (stage) => {
+    await go(chat);
+    await until("!!document.querySelector('.composer-field')", "the chat did not open for the home timers");
+    await go("#/");
+    await until("!!document.querySelector('.home-row') && !document.querySelector('.composer-field')", "home did not replace the chat for the home timers");
+    return evaluate(`(async () => {
+      const { state, update } = await ${pageModule("store.js")};
+      const kept = { tasks: state.tasks, sessions: state.sessions };
+      update(${stage});
+      await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+      const ticking = [...window.__timers.values()].filter((delay) => delay === 1000).length;
+      update(kept);
+      return ticking;
+    })()`);
+  };
+  const working = await mounted("{ tasks: Object.fromEntries(Object.entries(state.tasks).map(([id, tasks]) => [id, { ...tasks, working: 1 }])) }");
+  const ready = await mounted("{ sessions: [], tasks: Object.fromEntries(Object.entries(state.tasks).map(([id, tasks]) => [id, { ...tasks, working: 0 }])) }");
+  if (working < 1 || ready >= working) await fail(`Home ticks each second ${working} times with working tasks and ${ready} times with only ready ones`);
+  await go("#/");
+}
+
 async function homeUnread() {
   const pageModule = (name) => `import(new URL(${JSON.stringify(name)}, [...document.scripts].find((script) => script.type === 'module').src))`;
   const result = await evaluate(`(async () => {
@@ -560,6 +596,7 @@ await motion();
 await homeUnread();
 await resize([390, 844, 2]);
 await go("#/");
+await homeTimers();
 // Sessions, one tap from home: the session inbox, without task workers and the manager, with
 // the plain worktree's session.
 await click(".tabbar a[href='#/sessions']");
@@ -622,7 +659,8 @@ async function comeBack() {
   }
   if (!still) await fail(`the newest reply does not stay out of view at the top of the chat: ${await evaluate(sinceState)}`);
   await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 })); document.dispatchEvent(new Event('visibilitychange'))`);
-  const shown = "/Since you left: .*#1 #2 #3 #4.* started.* repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')";
+  // ^ A task that is ready is listed like the digest lists it (`view::REPORTED_STATES`).
+  const shown = "/Since you left: .*#\\d+ (#\\d+ )*ready.*#1 #2 #3 #4.* started.* repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')";
   for (let attempt = 0; attempt < 100 && !(await evaluate(shown)); attempt++) await pause(100);
   if (!(await evaluate(shown))) await fail(`no since-you-left line: ${await evaluate(sinceState)}`);
 }
@@ -2837,10 +2875,13 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   // Working: step 2 of 3 is current, the age is near now, and the sentence is the worker's last
   // words although its newest log line is a Bash call.
   const working = taskNew("NOOP");
+  await trackTimers();
   await open(working);
   const workingTop = { health: "working", steps: "+plan >build review", said: "Now I change it." };
   await until(`document.querySelector('.progress-said')?.textContent === 'Now I change it.'`, "the sheet never shows the worker's last sentence", 60);
   await shows(working, "working", { ...workingTop, age: /^(now|\dm ago)$/ });
+  // ^ The age is renewed by a timer of 30 s that runs only while the age shows.
+  if ((await timers(30000)) < 1) await fail("a working task's sheet has no age timer");
   await shot("progress-working", ".composer-send");
   // ^ The word's color moves by a transition: measured once it has settled.
   const signal = () => evaluate(`(async () => { const word = document.querySelector('.progress-health'); await Promise.allSettled(word.getAnimations().map((animation) => animation.finished)); const mark = document.querySelector('.progress-head .mark'), takeOver = [...document.querySelectorAll('.task-sheet button')].find((node) => node.textContent.trim() === 'Take over')?.getBoundingClientRect();
@@ -2867,6 +2908,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   fs.writeFileSync(release, "go");
   await stateIs(working, "ready");
   await shows(working, "ready", { health: "ready to land", steps: "+plan +build +review", age: "", said: "" });
+  if (await timers(30000)) await fail("a ready task's sheet still has an age timer");
 
   // Running checks, and a second task that waits for the machine's one checks slot. Neither has
   // workflow steps, so neither has a step row.
@@ -2941,7 +2983,8 @@ for (const wide of [false, true]) {
   await until("!!document.querySelector('.composer-field')", "the chat did not open for Roles");
   await click(".more-button");
   await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lists no role");
-  if (!wide && !(await count(".role-contact .news-mark"))) await fail("an unread role shows no dot");
+  // ^ The role's reply is news, but this device never opened its chat: as for a project, nothing is new.
+  if (!wide && (await count(".role-contact .news-mark"))) await fail("a role chat never opened on this device shows unread");
   if (!(await text(".role-contact .role-line"))[0].startsWith("open: ")) await fail(`the contact's line is not its last reply: ${await text(".role-contact")}`);
   await shot(`roles-menu${wide ? "-wide" : ""}`);
   await click(".more-menu .role-contact");
@@ -2962,6 +3005,34 @@ await click(".more-button");
 await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lost the role");
 if (await count(".role-contact .news-mark")) await fail("a role read on this device still shows unread");
 await key("Escape", 27);
+
+// Role unread is the server's `news` (the newest reply that is not quiet), read against what this
+// device read: a ping, a quiet reply and the owner's own message are no news; a reply is.
+{
+  const state = JSON.parse(fs.readFileSync(wsxCli)).env.XDG_STATE_HOME;
+  const found = fs.readdirSync(state, { recursive: true }).find((file) => file.endsWith(path.join("roles", "billing", "log.jsonl")));
+  if (!found) await fail(`no log of the billing role under ${state}`);
+  let id = 9000;
+  const append = (entry) => fs.appendFileSync(path.join(state, found), `${JSON.stringify({ unix_ms: Date.now(), ...entry })}\n`);
+  const marked = async () => {
+    await go("#/");
+    await until("!!document.querySelector('.home-row') && !document.querySelector('.composer-field')", "home did not replace the chat for the role dot");
+    await go(chat);
+    await until("!!document.querySelector('.composer-field')", "the chat did not open for the role dot");
+    await click(".more-button");
+    await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lost the role");
+    const dots = await count(".role-contact .news-mark");
+    await key("Escape", 27);
+    return dots;
+  };
+  await pause(50);
+  append({ kind: "ping" });
+  append({ kind: "message", id: ++id, from: "owner", text: "later" });
+  append({ kind: "reply", id: ++id, to: [], text: "-", quiet: true });
+  if (await marked()) await fail("a ping, the owner's message or a quiet reply marks the role unread");
+  append({ kind: "reply", id: ++id, to: [], text: "billing has an answer" });
+  if (!(await marked())) await fail("a role's reply that is news shows no dot");
+}
 
 // --- Session news: the host's post for a session that needs the owner links to that session
 // (docs/tasks.md "Session news"). The fixture's host posts it when this file is written.

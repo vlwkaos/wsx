@@ -129,13 +129,16 @@ const AGE_EVERY_MS = 30_000;
 function Progress({ detail, words }) {
   const [, setTick] = useState(0);
   const health = taskHealth(detail);
-  useEffect(() => {
-    const timer = setInterval(() => setTick((tick) => tick + 1), AGE_EVERY_MS);
-    return () => clearInterval(timer);
-  }, []);
   const { steps, step, stuck, last_unix_ms: last, said } = detail.progress;
   const working = ["working", "checking"].includes(detail.state);
   const ended = ["ready", "failed"].includes(detail.state);
+  // ^ The timer runs only while the age shows.
+  const aged = !ended && last > 0;
+  useEffect(() => {
+    if (!aged) return undefined;
+    const timer = setInterval(() => setTick((tick) => tick + 1), AGE_EVERY_MS);
+    return () => clearInterval(timer);
+  }, [aged]);
   // ^ Checks run after the last step's result, so every step is done by then.
   const current = detail.state === "checking" || detail.state === "ready" ? steps.length : step;
   const sentence = (working || stuck) && said ? lastSentence(said) : "";
@@ -145,7 +148,7 @@ function Progress({ detail, words }) {
         <span class="mark" data-tone=${health[1]} data-running=${running(detail) && working && !stuck ? "" : null} aria-hidden="true"></span>
         <span class="progress-health" data-tone=${health[1]}>${health[0]}</span>
         ${agentWords(detail.agent) && html`<span class="progress-model" title="Model">${agentWords(detail.agent)}</span>`}
-        ${!ended && last > 0 && html`<span class="progress-age">${ago(Date.now() - last)}</span>`}
+        ${aged && html`<span class="progress-age">${ago(Date.now() - last)}</span>`}
       </p>
       ${steps.length > 0 && html`
         <ol class="progress-steps" aria-label="Workflow steps">
