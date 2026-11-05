@@ -2104,7 +2104,16 @@ def run(wsx, wsxd, work, owned):
     colored = leveled[2].decode('utf-8', 'replace')
     for rgb, word in (('224;151;91', 'warn'), ('234;105;126', 'bad')):
         assert re.search(r'38;2;%s[;0-9]*m(?:\x1b\[[;0-9]*m)*  %s' % (rgb, word), colored), 'the %s word has no colour' % word
-        assert re.search(r'38;2;%s[;0-9]*m\u2502' % rgb, colored), 'the %s post has no coloured bar' % word
+    # ^ The terminal output sets a colour only when it changes, so a bar after the heading in the same colour has
+    # no escape of its own: the colour of a bar is the last one set before it.
+    bars, last = set(), None
+    for token in re.finditer(r'38;2;(\d+;\d+;\d+)|\u2502', colored):
+        if token.group(1):
+            last = token.group(1)
+        elif last:
+            bars.add(last)
+    for rgb, word in (('224;151;91', 'warn'), ('234;105;126', 'bad')):
+        assert rgb in bars, 'the %s post has no coloured bar: %s' % (word, bars)
     board.unlink()
     board.parent.rmdir()
     for name in ('closed', 'retrospect', 'checkin', 'board', 'hushed', 'silent', 'found', 'broke', 'clean'):
