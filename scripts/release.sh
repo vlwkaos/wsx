@@ -38,7 +38,7 @@ git merge-base --is-ancestor "$origin_main" "$commit" 2>/dev/null \
 echo "release $tag of $commit over origin/main $origin_main"
 
 # ^ The live handoff from the last installed release (docs/daemon-live-upgrade.md), which a task
-# cannot run inside wsx's boundary. It opens PTYs and daemons, so it takes the scenarios slot.
+# cannot run inside wsx's boundary. It opens PTYs and daemons, so it takes the scenario test slot.
 step "handoff from the installed release"
 cellar=$(brew --cellar wsx 2>/dev/null || true)
 older=$( { [ -n "$cellar" ] && ls "$cellar" 2>/dev/null || true; } | grep -Fvx "$version" \

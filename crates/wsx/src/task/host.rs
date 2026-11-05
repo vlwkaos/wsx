@@ -1388,7 +1388,7 @@ impl Host {
         // add. ref: docs/tasks.md "Workflow"
         if self.record.plan {
             self.record.plan = false;
-            self.wait(WaitOn::Plan, "its plan waits for the manager".into());
+            self.wait(WaitOn::Plan, "the worker wrote its plan".into());
             return;
         }
         // ^ A done step that is not the last starts the next one, with any queued message.
@@ -1705,7 +1705,7 @@ impl Host {
         });
         self.log(LogEvent::DiskWait { free_mb, min_gb });
         let reason = disk_full(free_mb, min_gb);
-        self.say(&reason);
+        self.say(&format!("waiting for disk space: {reason}"));
         self.wait(WaitOn::Disk, reason);
         true
     }
@@ -2035,7 +2035,10 @@ impl Host {
             return;
         }
         if let Some((free_mb, min_gb)) = self.low_disk() {
-            return refuse(disk_full(free_mb, min_gb));
+            return refuse(format!(
+                "not run, disk space is low: {}",
+                disk_full(free_mb, min_gb)
+            ));
         }
         self.check_run = Some(CheckRun {
             indexes,
@@ -2314,7 +2317,7 @@ impl Host {
             self.wait_for_disk(DiskWait::Checks);
             if self.disk_wait.is_none() {
                 self.disk_wait = Some(DiskWait::Checks);
-                self.wait(WaitOn::Disk, "Disk full: a check ran out of space".into());
+                self.wait(WaitOn::Disk, "a check ran out of disk space".into());
             }
             return;
         }
@@ -3036,10 +3039,10 @@ impl Host {
     }
 }
 
-/// "Disk full: 3.2 GB free of the 5 GB a task needs".
+/// "3.2 GB free of the 5 GB a task needs".
 fn disk_full(free_mb: u64, min_gb: u64) -> String {
     format!(
-        "Disk full: {:.1} GB free of the {min_gb} GB a task needs",
+        "{:.1} GB free of the {min_gb} GB a task needs",
         free_mb as f64 / 1024.0
     )
 }

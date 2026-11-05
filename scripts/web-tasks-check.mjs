@@ -572,12 +572,12 @@ await until(`[...document.querySelectorAll('.home-row .row-label')].map((node) =
 const homeRows = await evaluate(`[...document.querySelectorAll('.home-row')].map((row) => ({ name: row.querySelector('.row-label').textContent,
   count: row.querySelector('.count')?.textContent ?? '', status: row.querySelector('.row-context').textContent, state: row.querySelector('.row-state').textContent }))`);
 const uiRow = homeRows.find((row) => row.name === "ui");
-if (uiRow.count !== "6" || uiRow.status !== "#1 needs an answer" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
+if (uiRow.count !== "6" || uiRow.status !== "#1 Waiting for your answer" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
 const calmRow = homeRows.at(-1);
 if (calmRow.name !== "calm" || calmRow.count || calmRow.status !== "No tasks yet" || calmRow.state) await fail(`the calm row reads ${JSON.stringify(calmRow)}`);
 const plansRow = homeRows.find((row) => row.name === "plans");
 // ^ #1 waits for an answer; #2 is ready to land.
-if (plansRow?.status !== "#1 needs an answer" || plansRow.count !== "2") await fail(`the plans row reads ${JSON.stringify(plansRow)}`);
+if (plansRow?.status !== "#1 Waiting for your answer" || plansRow.count !== "2") await fail(`the plans row reads ${JSON.stringify(plansRow)}`);
 // Projects with agent sessions and no task: the sessions in words, and the time of the newest.
 // ^ `quiet` went done while the fixture was built, which can take over a minute.
 const sessionRows = { busy: /^2 working$/, quiet: /^claude in main done (just now|\d+m ago)$/, gone: /^claude in main exited$/ };
@@ -902,8 +902,8 @@ const rowWords = listedRows.map((row) => `${row[0]} ${row[3]}`);
 // ^ Running is first and stays at the top; what waits for the owner and To check scroll under it.
 const expectedRows = ["#6 ", "#1 Answer", "#4 Answer", " Deny+Approve", " Deny+Approve", "#2 Land", "#3 Land", " "];
 if (rowWords.join("|") !== expectedRows.join("|")) await fail(`the reservoir rows are ${JSON.stringify(listedRows)}`);
-if (listedRows[1][2] !== "needs an answer" || listedRows[3][1] !== "Approve land #3" || listedRows[4][1] !== "Approve discard #4" || listedRows[3][2] !== "did: WORK b.txt"
-  || listedRows[5][2] !== "ready to land" || listedRows[7][1] !== "2 to check") await fail(`the reservoir rows read ${JSON.stringify(listedRows)}`);
+if (listedRows[1][2] !== "Waiting for your answer" || listedRows[3][1] !== "Approve land #3" || listedRows[4][1] !== "Approve discard #4" || listedRows[3][2] !== "did: WORK b.txt"
+  || listedRows[5][2] !== "Ready, waiting for you to land it" || listedRows[7][1] !== "2 to check") await fail(`the reservoir rows read ${JSON.stringify(listedRows)}`);
 if (!/^keep a worker busy WAIT /.test(listedRows[0][1])) await fail(`the running task's title is ${listedRows[0][1]}`);
 // ^ Every row of the open list, its labels and its context, is the closed line's small size.
 const sizes = await evaluate("[...document.querySelectorAll('.reservoir-body :is(.row-label, .row-context, .reservoir-label)')].map((node) => getComputedStyle(node).fontSize)");
@@ -2019,8 +2019,8 @@ await readAndReply("390 px");
 await go(page(2));
 await until("document.querySelectorAll('dialog.task-sheet[open] .task-fold').length >= 4", "the task sheet did not show the folded report");
 let told = await story();
-if (told.steps || !/^did: WORK a\.txt HV\s*Decided: fake choice \(fixture\)\.$/.test(told.summary) || told.next !== "Land it to put it on main.") await fail(`the top of a ready task reads ${JSON.stringify(told)}`);
-if (await sheetState() !== "ready to land") await fail(`a ready task's state reads ${await sheetState()}`);
+if (told.steps || !/^did: WORK a\.txt HV\s*Decided: fake choice \(fixture\)\.$/.test(told.summary) || !/^Ready, waiting for you to land it for [^:]+: checks 1 of 1 passed\. Land it to put it on main\.$/.test(told.next)) await fail(`the top of a ready task reads ${JSON.stringify(told)}`);
+if (await sheetState() !== "Ready, waiting for you to land it") await fail(`a ready task's state reads ${await sheetState()}`);
 // ^ The top row reads the title first, then the number, small and muted.
 const sheetTitle = await evaluate("(() => { const title = document.querySelector('.task-sheet .bar .row-title'); return title && [title.firstElementChild.className, title.querySelector('.task-number').textContent]; })()");
 if (!sheetTitle || sheetTitle[0] !== "row-label" || sheetTitle[1] !== "#2") await fail(`the sheet's top row reads ${JSON.stringify(sheetTitle)}`);
@@ -2071,7 +2071,7 @@ await until("!!document.querySelector('.task-next button[aria-label=\"Approve di
 // ^ The story says what an action is for; its row holds the buttons alone.
 if ((await text(".task-next p")).length) await fail(`an action row repeats the story: ${await text(".task-next p")}`);
 told = await story();
-if (told.next !== "The manager asks: Approve discard #4." || await sheetState() !== "needs you") await fail(`the top of a blocked task with an approval reads ${JSON.stringify(told)}`);
+if (!/^Waiting for your approval for [^:]+: the manager asks: Approve discard #4\. It goes on when you approve or deny it\.$/.test(told.next) || await sheetState() !== "Waiting for your approval") await fail(`the top of a blocked task with an approval reads ${JSON.stringify(told)}`);
 // ^ No Shared files outside a conflict.
 if ((await openSections()).includes("Shared files")) await fail("a task that is not in conflict shows Shared files");
 await shot("task-blocked", ".composer-send");
@@ -2083,7 +2083,7 @@ await resize([390, 844, 2]);
 await clickNext("Deny");
 await until("!document.querySelector('.task-next button[aria-label=\"Approve discard #4\"]')", "the denied approval stayed", 300);
 told = await story();
-if (told.next !== "The worker waits for your answer.") await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
+if (!/^Waiting for your answer for [^:]+: .+ Answer the manager; the worker goes on then\.$/.test(told.next)) await fail(`the story of a blocked task reads ${JSON.stringify(told)}`);
 if (await count(".task-sheet textarea, .task-message, .task-steer")) await fail("the sheet still has a message field");
 // ^ Opened from another place, with Home under it: its Answer goes to the project's chat, and the
 // draft is there.
@@ -2100,7 +2100,7 @@ await shot("answer-from-sheet", ".composer-send");
 await typeInto(".composer-field", `see the logs #4\nRUN wsx task add 4 "WORK answered4.txt" -p ui --json`);
 await click(".composer-send");
 await go(page(4));
-await until("document.querySelector('.story-next')?.textContent === 'Land it to put it on main.'", "#4 did not resume after the manager's add", 300);
+await until("/^Ready, waiting for you to land it for [^:]+: .+\\. Land it to put it on main\\.$/.test(document.querySelector('.story-next')?.textContent ?? '')", "#4 did not resume after the manager's add", 300);
 await until("document.querySelectorAll('.task-talk .bubble').length === 1", "the manager's add is not in the sheet's messages", 60);
 if ((await nextButtons()).includes("Answer")) await fail("a ready task's sheet offers Answer");
 
@@ -2146,7 +2146,7 @@ await pause(3000);
 await clickNext("Hand back");
 await until("[...document.querySelectorAll('.notice')].some((node) => /^#4: /.test(node.textContent))", "Hand back of #4 showed no outcome", 60);
 await until("!document.querySelector('.notice')", "the outcome did not clear itself", 80);
-await until("document.querySelector('.story-next')?.textContent === 'Land it to put it on main.'", "#4 did not come back ready after Hand back", 300);
+await until("/^Ready, waiting for you to land it for [^:]+: .+\\. Land it to put it on main\\.$/.test(document.querySelector('.story-next')?.textContent ?? '')", "#4 did not come back ready after Hand back", 300);
 await closeSheet("#4 again");
 
 // --- The manager chat attaches files as a session's chat does, and shows another project's
@@ -2604,12 +2604,12 @@ if (costly.length) await fail(`a read with no new message rendered bubbles again
 await openReservoir();
 await until(`!!${rowOf("#1")}`, "the waiting task has no reservoir row");
 const waitRow = (await rows()).find((row) => row[0] === "#1");
-if (waitRow[2] !== "needs an answer" || waitRow[3] !== "Answer") await fail(`the waiting row reads ${JSON.stringify(waitRow)}`);
+if (waitRow[2] !== "Waiting for your answer" || waitRow[3] !== "Answer") await fail(`the waiting row reads ${JSON.stringify(waitRow)}`);
 await evaluate(`${rowOf("#1")}.querySelector('.row-open').click()`);
 await until("!!document.querySelector('dialog.task-sheet[open] .story')", "the waiting task's sheet did not open");
 await lean("the waiting sheet");
 told = await story();
-if (told.next !== "The worker waits for your answer.") await fail(`the top of a waiting task reads ${JSON.stringify(told)}`);
+if (!/^Waiting for your answer for [^:]+: .+ Answer the manager; the worker goes on then\.$/.test(told.next)) await fail(`the top of a waiting task reads ${JSON.stringify(told)}`);
 await shot("waiting-sheet", ".composer-send");
 await resize([1280, 800, 1]);
 await until("!!document.querySelector('dialog.task-sheet[open] .task-next button[aria-label^=\"Answer #1\"]')", "the waiting sheet has no Answer at 1280 px");
@@ -2635,7 +2635,7 @@ await click(".composer-send");
 await go(`#/p/${plans}/t/1`);
 await until("document.querySelectorAll('.task-talk .bubble').length === 1", "the answer is not a bubble", 60);
 if (await evaluate("document.querySelector('.task-talk .bubble').dataset.side") !== "out") await fail("the answer is not the owner's bubble");
-await until(`(document.querySelector('.task-sheet .progress-health')?.textContent ?? '') === 'ready to land' && ${hasNext("Land")}`, "#1 did not get ready after the answer", 120);
+await until(`(document.querySelector('.task-sheet .progress-health')?.textContent ?? '') === 'Ready, waiting for you to land it' && ${hasNext("Land")}`, "#1 did not get ready after the answer", 120);
 await closeSheet("the waiting sheet", `#/p/${plans}`);
 // ^ Closing the sheet gives the composer the focus.
 await until("document.activeElement?.classList.contains('composer-field') && !document.activeElement.closest('dialog')", "closing the sheet did not focus the composer");
@@ -2877,7 +2877,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   const working = taskNew("NOOP");
   await trackTimers();
   await open(working);
-  const workingTop = { health: "working", steps: "+plan >build review", said: "Now I change it." };
+  const workingTop = { health: "Working on build (2 of 3)", steps: "+plan >build review", said: "Now I change it." };
   await until(`document.querySelector('.progress-said')?.textContent === 'Now I change it.'`, "the sheet never shows the worker's last sentence", 60);
   await shows(working, "working", { ...workingTop, age: /^(now|\dm ago)$/ });
   // ^ The age is renewed by a timer of 30 s that runs only while the age shows.
@@ -2896,7 +2896,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   fs.utimesSync(log, hourAgo, hourAgo);
   await go(`#/p/${plansArg}`);
   await open(working);
-  await shows(working, "stuck", { ...workingTop, health: "stuck", age: "1h ago", next: "No output for 1 h 0 min." });
+  await shows(working, "stuck", { ...workingTop, health: "Stuck", age: "1h ago", next: "Stuck: no output for 1 h 0 min. The manager hears of the stall and decides what to do." });
   // ^ A stuck task stands out from a working one: its own color, no pulse, Take over on the screen.
   const stuckSignal = await signal();
   const [red, green] = stuckSignal.color.match(/\d+/g).map(Number);
@@ -2907,19 +2907,20 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   // Ready: every step is done, and neither age nor sentence shows.
   fs.writeFileSync(release, "go");
   await stateIs(working, "ready");
-  await shows(working, "ready", { health: "ready to land", steps: "+plan +build +review", age: "", said: "" });
+  await shows(working, "ready", { health: "Ready, waiting for you to land it", steps: "+plan +build +review", age: "", said: "" });
   if (await timers(30000)) await fail("a ready task's sheet still has an age timer");
 
-  // Running checks, and a second task that waits for the machine's one checks slot. Neither has
+  // Running checks, and a second task that waits for the machine's one check slot. Neither has
   // workflow steps, so neither has a step row.
   const holder = taskNew("--no-steps", "WORK hold-checks.txt");
   await stateIs(holder, "checking");
   await open(holder);
-  await shows(holder, "running checks", { health: "running checks", steps: "" });
+  await shows(holder, "running checks", { health: "Running checks", steps: "" });
   await shot("progress-checks", ".composer-send");
   const queued = taskNew("--no-steps", "WORK hold-checks.txt");
   await open(queued);
-  await shows(queued, "check slot", { health: "waiting for the checks slot", steps: "", next: new RegExp(`^Queued for the checks slot behind plans t${holder}`) });
+  await shows(queued, "check slot", { health: "Waiting for the check slot", steps: "",
+    next: new RegExp(`^Waiting for the check slot for [^:]+: #${holder} runs its checks now\\. Its checks start when the slot is free\\.$`) });
   await shot("progress-check-slot", ".composer-send");
   for (const task of [holder, queued]) {
     await stateIs(task, "checking");
@@ -2927,6 +2928,36 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
     await stateIs(task, "ready");
     wsx("task", "close", task, "--discard");
   }
+
+  // A worker's scenario run that waits for another's: the row and the sheet show wsx-core's
+  // status words, the same as `wsx task show` (docs/tasks.md "Status").
+  const gate = path.join(path.dirname(wsxCli), "scenario-gate");
+  fs.writeFileSync(config, fs.readFileSync(config, "utf8").replace("tasks:\n", `tasks:\n  scenarios:\n    slow: "while [ ! -e ${gate} ]; do sleep 0.2; done"\n`));
+  const scenario = taskNew("--no-steps", "CHECKRUN_LATE slow WORK scenario1.txt");
+  for (let waited = 0; !show(scenario).log || !fs.readFileSync(show(scenario).log, "utf8").includes('"kind":"result"') && waited < 30_000; waited += 200) await pause(200);
+  const behind = taskNew("--no-steps", "CHECKRUN_LATE slow WORK scenario2.txt");
+  const slotWords = new RegExp(`^Waiting for the scenario test slot for [^:]+: #${scenario} runs its scenario tests now\\. Its scenario tests start when the slot is free\\.$`);
+  for (let waited = 0; show(behind).status?.label !== "Waiting for the scenario test slot"; waited += 200) {
+    if (waited > 60_000) await fail(`plans #${behind} never waited for the scenario test slot: ${JSON.stringify(show(behind).status)}`);
+    await pause(200);
+  }
+  const shownStatus = show(behind).status;
+  if (!slotWords.test(shownStatus.sentence)) await fail(`wsx task show says ${JSON.stringify(shownStatus)}`);
+  await open(behind);
+  await shows(behind, "scenario test slot", { health: shownStatus.label, steps: "", next: slotWords });
+  await shot("progress-scenario-slot", ".composer-send");
+  await go(`#/p/${plansArg}`);
+  await until("!document.querySelector('dialog.task-sheet')", "the scenario wait's sheet did not close");
+  await openReservoir();
+  await until(`!!${rowOf(`#${behind}`)}`, "the scenario wait has no Running row");
+  const slotRow = (await rows()).find((row) => row[0] === `#${behind}`);
+  if (!slotRow[2].startsWith(shownStatus.label)) await fail(`the scenario wait's row reads ${JSON.stringify(slotRow)}`);
+  fs.writeFileSync(gate, "go");
+  for (const task of [scenario, behind]) {
+    await stateIs(task, "ready", 120);
+    wsx("task", "close", task, "--discard");
+  }
+  fs.writeFileSync(config, before.replace('"test ! -e broken.txt"', '"while test -e hold-checks.txt; do sleep 0.2; done"').replace("tasks:\n", `tasks:\n${steps}`));
   wsx("task", "close", working, "--discard");
 
   // Waiting for disk: a free space no volume has, and the host resumes by itself.
@@ -2934,7 +2965,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   const disk = taskNew("NOOP");
   await stateIs(disk, "waiting");
   await open(disk);
-  await shows(disk, "waiting for disk", { health: "waiting for disk", next: /It goes on by itself once there is space\.$/ });
+  await shows(disk, "disk space", { health: "Waiting for disk space", next: /^Waiting for disk space for [^:]+: [\d.]+ GB free of the 100000 GB a task needs\. It goes on by itself once there is space\.$/ });
   await shot("progress-waiting", ".composer-send");
   fs.writeFileSync(config, before);
   wsx("task", "close", disk, "--discard");
@@ -3170,6 +3201,24 @@ await until(`!![...document.querySelectorAll('.reservoir-list[aria-label=Running
 const reviewed = await evaluate(`(() => { const row = [...document.querySelectorAll('.reservoir-list[aria-label=Running] .need')].find((row) => /waiting for the manager's review/.test(row.textContent));
   return { running: row.querySelector('.mark').hasAttribute('data-running'), needs: !!document.querySelector('.reservoir-list[aria-label="Needs you"]')?.contains(row) } })()`);
 if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${JSON.stringify(reviewed)}`);
+// ^ The row shows wsx-core's label and the sheet its sentence, as the task's JSON has them (docs/tasks.md "Status").
+{
+  const id = Number((await evaluate(`[...document.querySelectorAll('.reservoir-list[aria-label=Running] .need')].find((row) => /waiting for the manager's review/.test(row.textContent)).querySelector('.task-number').textContent`)).replace("#", ""));
+  const rowWords = (await rows()).find((row) => row[0] === `#${id}`)[2];
+  await go(`#/p/${project}/t/${id}`);
+  await until("!!document.querySelector('dialog.task-sheet[open] .story-next')", "the review-waiting sheet did not open");
+  const sheetWords = await story();
+  const json = await evaluate(`fetch('api/tasks/${project}/t/${id}').then((r) => r.json()).then((view) => view.status)`);
+  const minutes = (text) => text.replace(/ for [^:]+:/, ":");
+  if (json.label !== "Ready, waiting for the manager's review" || !rowWords.startsWith(json.label) || await sheetState() !== json.label
+    || minutes(sheetWords.next) !== minutes(json.sentence)
+    || !/^Ready, waiting for the manager's review for [^:]+: (checks \d+ of \d+ passed|no checks prove it)\. The manager reads the diff, then lands it or asks for changes\.$/.test(sheetWords.next)) {
+    await fail(`the review-waiting task reads ${JSON.stringify({ rowWords, sheetWords, json })}`);
+  }
+  await shot("review-sheet", ".composer-send");
+  await go(`#/p/${project}`);
+  await until("!document.querySelector('dialog.task-sheet')", "the review-waiting sheet did not close");
+}
 // --- An overview over the cap: the sheet cuts it to 60 lines and 4,000 characters and says so.
 // ^ The file is written in `plans`' task folder, where no manager runs: the page only reads it.
 {

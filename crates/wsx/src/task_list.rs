@@ -67,8 +67,8 @@ pub struct TaskRow {
     pub id: u64,
     pub title: String,
     pub state: String,
-    /// What it waits for, or a role's brief; empty when nothing.
-    pub waits: String,
+    /// The status label (wsx-core `task::status`), or a role's brief; empty when nothing.
+    pub status: String,
     pub section: Section,
 }
 
@@ -358,14 +358,18 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         id: task["id"].as_u64().unwrap_or_default(),
         title: task["title"].as_str().unwrap_or_default().to_string(),
         state: task["state"].as_str().unwrap_or_default().to_string(),
-        waits: waits(task),
+        // ^ The words of wsx-core `task::status` (docs/tasks.md "Status").
+        status: task["status"]["label"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
         section,
     };
     let role = |role: &Value| TaskRow {
         id: 0,
         title: role["name"].as_str().unwrap_or_default().to_string(),
         state: role["state"].as_str().unwrap_or_default().to_string(),
-        waits: role["brief"].as_str().unwrap_or_default().to_string(),
+        status: role["brief"].as_str().unwrap_or_default().to_string(),
         section: Section::Roles,
     };
     open.iter()
@@ -373,20 +377,4 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         .chain(list("roles").iter().map(role))
         .chain(list("recent").iter().map(|task| row(task, Section::Recent)))
         .collect()
-}
-
-/// What a task waits for, in a few words: `owner: <reason>` or the reason it is held.
-pub fn waits(task: &Value) -> String {
-    if let Some(on) = task["waiting"]["on"].as_str() {
-        let reason = task["waiting"]["reason"].as_str().unwrap_or_default();
-        return if reason.is_empty() {
-            on.to_string()
-        } else {
-            format!("{on}: {reason}")
-        };
-    }
-    task["hold"]
-        .as_str()
-        .map(|hold| format!("try first: {hold}"))
-        .unwrap_or_default()
 }

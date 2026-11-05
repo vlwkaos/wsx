@@ -2,6 +2,7 @@
 //! A state change is an event already; this finds what produces none. The manager host looks
 //! every `SWEEP` and reports each stall once. ref: docs/tasks.md "Manager" (Stalls)
 
+use super::status::{self, span};
 use super::store::{self, TaskDir, LOG_FILE};
 use super::{call_host, view, HostRequest, LogEvent, TaskRecord, TaskState, WaitOn};
 use crate::config::project::load_task_config;
@@ -142,7 +143,7 @@ fn running(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
             .map(|until_ms| format!("its usage limit reset {} ago", span(now_ms - until_ms))),
         _ => None,
     };
-    match queued_behind(&waiting.reason) {
+    match status::queue(&waiting.reason).and_then(|queue| status::task_label(queue.holder)) {
         Some((project, id)) => {
             let holder = holder_stall(&record.project_id, project, id, now_ms)?;
             let queued = format!("queued behind {project} t{id}, {holder}");
@@ -225,18 +226,6 @@ fn holder_record(own_project_id: &str, project: &str, id: u32) -> Option<(TaskDi
     })
 }
 
-/// The holder a slot's reason names: "queued for disk behind demo t3 and 2 more".
-/// ref: crates/wsx/src/task/slot.rs `try_take`
-fn queued_behind(reason: &str) -> Option<(&str, u32)> {
-    let (_, holder) = reason.split_once(" behind ")?;
-    let holder = match holder.rsplit_once(" and ") {
-        Some((holder, more)) if more.ends_with(" more") => holder,
-        _ => holder,
-    };
-    let (project, id) = holder.rsplit_once(" t")?;
-    Some((project, id.parse().ok()?))
-}
-
 fn host_answers(dir: &TaskDir) -> bool {
     call_host(&dir.socket_path(), &HostRequest::Status, PROBE).is_ok()
 }
@@ -293,15 +282,4 @@ fn tail_line(path: &Path) -> Option<String> {
         .rev()
         .find(|line| !line.trim().is_empty())
         .map(str::to_string)
-}
-
-/// "45 min", "3 h 10 min", "2 d 4 h".
-fn span(ms: u64) -> String {
-    let minutes = ms / 60_000;
-    match minutes {
-        0 => "less than a minute".into(),
-        1..60 => format!("{minutes} min"),
-        60..1440 => format!("{} h {} min", minutes / 60, minutes % 60),
-        _ => format!("{} d {} h", minutes / 1440, minutes % 1440 / 60),
-    }
 }

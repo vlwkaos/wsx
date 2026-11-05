@@ -4,7 +4,7 @@
 import { api } from "./api.js";
 import { ago, firstSentence, html, Icon, lastSentence, short, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
-import { agentWords, running, taskHealth } from "./tasks.js";
+import { agentWords, running, statusTone } from "./tasks.js";
 
 const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 // `refs/heads/main` reads as `main`, `refs/remotes/origin/main` as `origin/main`.
@@ -74,48 +74,6 @@ function toEnd(event) {
   if (event.currentTarget.open) pre.scrollTop = pre.scrollHeight;
 }
 
-const capital = (text) => `${text[0].toUpperCase()}${text.slice(1)}`;
-
-// What the owner should know next, in one sentence, or nothing while the agents just work.
-function nextWords(detail) {
-  const main = detail.default_branch ?? "the default branch";
-  const asked = detail.approvals?.[0];
-  if (asked) return `The manager asks: ${asked.label}.`;
-  if (detail.progress?.stuck) return `${capital(detail.progress.stuck)}.`;
-  switch (detail.state) {
-    case "waiting": switch (detail.waiting?.on) {
-      case "disk": return `${detail.waiting.reason}. It goes on by itself once there is space.`;
-      case "limit": return `${capital(detail.waiting.reason)}. It goes on by itself.`;
-      case "hand": return "You work on it by hand in its session. Commit, then hand it back: its checks run and it lands as usual.";
-      default: return detail.waiting?.reason === "stopped by request"
-        ? "The worker stopped. Tell the manager to resume it." : "The worker waits for your answer.";
-    }
-    case "failed": {
-      // ^ A check is a shell command; Evidence names them, this sentence only counts them.
-      const failed = (detail.checks ?? []).filter((check) => check.exit !== 0).length;
-      return failed
-        ? `${failed === 1 ? "A check" : `${failed} checks`} failed after the worker's retries. Tell the manager, so the worker fixes ${failed === 1 ? "it" : "them"}.`
-        : "The worker could not finish. Tell the manager what to do next.";
-    }
-    case "ready": {
-      const reason = detail.land_reason ?? "";
-      if (reason.startsWith("could not land: ")) return `It could not land: ${reason.slice(16)} Land it again when that is fixed.`;
-      if (reason === "the manager reviews it") return `The manager reviews the work, then lands it on ${main} or sends it back.`;
-      if (reason.startsWith("no checks")) return `No checks prove it, so it waits for you. Land it to put it on ${main}.`;
-      return `Land it to put it on ${main}.`;
-    }
-    case "working": case "checking":
-      if (detail.conflict) return `The worker resolves a conflict with ${main}; it lands when its checks pass.`;
-      return detail.waiting?.on === "check_slot" ? `${capital(detail.waiting.reason)}.` : "";
-    case "landed": case "closed": {
-      if (detail.state === "closed" && !detail.landed_commit) return "Closed without landing.";
-      if (!detail.deploy?.configured || detail.deploy.deployed) return `On ${main}.`;
-      return `On ${main}; the last deploy does not have it yet.`;
-    }
-    default: return "";
-  }
-}
-
 // A summary is the current word on a task only while no new work runs after it: the worker's
 // answer or result, not an older revision's.
 export const summaryIsCurrent = (detail) => ["ready", "failed", "landed", "closed"].includes(detail.state)
@@ -128,7 +86,7 @@ const AGE_EVERY_MS = 30_000;
 // workflow steps and the worker's last sentence (docs/web-client-tasks.md "Task sheet").
 function Progress({ detail, words }) {
   const [, setTick] = useState(0);
-  const health = taskHealth(detail);
+  const health = [detail.status.label, statusTone(detail)];
   const { steps, step, stuck, last_unix_ms: last, said } = detail.progress;
   const working = ["working", "checking"].includes(detail.state);
   const ended = ["ready", "failed"].includes(detail.state);
@@ -170,7 +128,8 @@ export function TaskStory({ detail, words, children }) {
   const sentence = firstSentence(summary);
   const decisions = detail.result?.decisions ?? [];
   const longer = summary !== sentence || decisions.length > 0;
-  const next = nextWords(detail);
+  // ^ What it waits for, why, how long and what comes next (docs/tasks.md "Status").
+  const next = detail.status?.sentence ?? "";
   if (!detail.progress && !sentence && !next && !children) return null;
   return html`
     <section class="story" aria-label="Where this task stands">

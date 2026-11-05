@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a command in the host-wide scenarios slot that a task's scenario check-run takes, so it never
+"""Run a command in the host-wide scenario test slot that a task's scenario check-run takes, so it never
 runs beside another scenario: an flock on tasks/scenario-slot/slot.lock (crates/wsx/src/task/slot.rs).
 Usage: python3 -B scripts/check-slot.py <command> [<arg>...]"""
 import fcntl
@@ -17,7 +17,7 @@ slot = open(os.path.join(folder, "slot.lock"), "a")
 try:
     fcntl.flock(slot, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError:
-    print("waiting for the scenarios slot", flush=True)
+    print("waiting for the scenario test slot", flush=True)
     fcntl.flock(slot, fcntl.LOCK_EX)
 # ^ Its own label, as a task host writes one (slot.rs): a stale task label would read as a holder
 # that holds without running (docs/tasks.md "Manager", Stalls).

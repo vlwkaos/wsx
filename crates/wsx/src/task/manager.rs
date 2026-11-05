@@ -1030,11 +1030,19 @@ impl Manager {
                     0 => format!("{recorded}{worker}"),
                     total => format!("checks {passed} of {total} passed; {recorded}{worker}"),
                 };
+                // ^ `waits on <on>` is the record's key, which `event_wakes` tests; the
+                // sentence is the words every view shows (docs/tasks.md "Status").
                 if let Some(waiting) = &record.waiting {
+                    let status = wsx_core::task::status::status(
+                        &dir,
+                        &record,
+                        &Default::default(),
+                        wsx_core::task::now_unix_ms(),
+                    );
                     summary = format!(
                         "waits on {}: {}; {summary}",
                         waiting.on.as_str(),
-                        waiting.reason
+                        status.sentence
                     );
                 }
                 let children: Vec<u32> = ready_children

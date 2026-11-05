@@ -15,6 +15,7 @@ pub mod report;
 pub mod roles;
 pub mod session_news;
 pub mod stall;
+pub mod status;
 pub mod store;
 pub mod usage;
 pub mod view;
