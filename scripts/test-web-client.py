@@ -3232,11 +3232,12 @@ def task_journey(args):
             # where a landing says `done`.
             words = 'done' if state == 'landed' else state
             logged('events', '#%d %s r1: %s' % (task, state, title), reply, short=[{'text': '#%d %s' % (task, words), 'task': task}])
-        for task, state, title, reply in ((89, 'ready', 'Fold the events', 'Landing #89.'), (89, 'landed', 'Fold the events', '#89 is on main.'),
+        # ^ Not `for task, state, ...`: `state` is the state directory of this journey.
+        for fields in ((89, 'ready', 'Fold the events', 'Landing #89.'), (89, 'landed', 'Fold the events', '#89 is on main.'),
                                           (91, 'ready', 'Chat chips', "I'm landing #91. It touches the chat, so I read its captures first."),
                                           (88, 'ready', 'Since line', 'Landing #88.'), (91, 'landed', 'Chat chips', '#91 is on main.'),
                                           (88, 'landed', 'Since line', '#88 is on main.')):
-            event(task, state, title, reply)
+            event(*fields)
         logged('owner', 'Keep going.', 'On it.', quiet=False)
         event(92, 'ready', 'Short run', 'Landing #92.')
         logged('owner', 'Thanks.', 'Noted.', quiet=False)
