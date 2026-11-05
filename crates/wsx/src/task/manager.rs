@@ -37,9 +37,7 @@ use wsx_core::task::stall;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
-use wsx_core::task::{
-    checks, ledger, now_unix_ms, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
-};
+use wsx_core::task::{checks, ledger, now_unix_ms, TaskRecord, TaskState, MAX_MESSAGE_BYTES};
 use wsx_core::task::{owner, roles, usage};
 
 use wsx_core::task::owner::ACTOR_ENV;
@@ -116,15 +114,6 @@ const DEPLOY_EVENT_LINES: usize = 10;
 /// The ledger summary at the end of a turn's message: at most this many task lines.
 const SUMMARY_ROWS: usize = 12;
 const SUMMARY_TITLE_CHARS: usize = 60;
-
-/// Task states the manager hears about: not a task the owner works on by hand.
-fn is_event(record: &TaskRecord) -> bool {
-    match record.state {
-        TaskState::Waiting => !record.waits_on(WaitOn::Hand),
-        TaskState::Ready | TaskState::Failed | TaskState::Landed | TaskState::Closed => true,
-        _ => false,
-    }
-}
 
 pub(super) enum Event {
     Request(ManagerRequest, Sender<ManagerResponse>),
@@ -1011,7 +1000,7 @@ impl Manager {
                 continue;
             }
             self.observed.insert(record.id, now);
-            if !is_event(&record) {
+            if !view::is_event(&record) {
                 continue;
             }
             let title = view::title(&dir, &record).unwrap_or_default();

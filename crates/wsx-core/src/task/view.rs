@@ -2,7 +2,7 @@
 //! ref: docs/tasks.md "Ledger", docs/web-client-tasks.md
 
 use super::store::{self, TaskDir, RESULT_FILE};
-use super::{DeployKind, LogEvent, TaskRecord, TaskState};
+use super::{DeployKind, LogEvent, TaskRecord, TaskState, WaitOn};
 use crate::model::workspace::TaskConfig;
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -35,6 +35,21 @@ pub fn task_line(task: u32, title: &str, what: &str) -> String {
 }
 const NOTICE_CHARS: usize = 160;
 
+/// The states a task is reported in: the routine digest and the web's "Since you left" line
+/// list each task that entered one. `Landed` is the last.
+pub const REPORTED_STATES: [TaskState; 3] =
+    [TaskState::Ready, TaskState::Failed, TaskState::Landed];
+
+/// Task states the manager hears about: the reported ones, a closed task and a task that waits
+/// for anyone but the owner's hand (not a task the owner works on by hand).
+pub fn is_event(record: &TaskRecord) -> bool {
+    match record.state {
+        TaskState::Waiting => !record.waits_on(WaitOn::Hand),
+        TaskState::Closed => true,
+        state => REPORTED_STATES.contains(&state),
+    }
+}
+
 /// What a project's digest says since `after_ms`: each task that became ready, failed or
 /// landed, in its latest state (`failed` names the first check that did not pass), and the
 /// last deploy and release (docs/tasks.md "Routines").
@@ -55,8 +70,7 @@ pub fn digest_lines(project_id: &str, after_ms: u64) -> Vec<String> {
                 })
                 .unwrap_or_else(|| "failed".into()),
             TaskState::Ready => "ready for review".into(),
-            TaskState::Landed => "landed".into(),
-            _ => continue,
+            _ => "landed".into(),
         };
         let title = readable_title(&dir, &record).unwrap_or_default();
         lines.push(task_line(record.id, &title, &what));

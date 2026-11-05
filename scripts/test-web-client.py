@@ -3659,7 +3659,7 @@ merge_seconds = 3
         assert role_chat['manager'] == {'name': 'notes'} and role_chat['roles'] is None and role_chat['running'], role_chat
         contacts = steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['roles']
         assert [(c['name'], c['brief']) for c in contacts] == [('notes', 'Keep the notes.')], contacts
-        assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['last_unix_ms'] > 0, contacts
+        assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['news']['text'].startswith('open: ') and contacts[0]['news']['unix_ms'] > 0, contacts
         assert steady(owner, 'GET', '/api/tasks/%d/chat?role=nobody' % demo)[0] == 404
         status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'hi', 'role': 'nobody'})
         assert status >= 400 and 'no open role nobody' in json.dumps(body), (status, body)
@@ -3722,6 +3722,8 @@ merge_seconds = 3
         assert steady(owner, 'GET', '/api/tasks/%d/mentions' % 999999)[0] == 404
         since = steady(owner, 'GET', '/api/tasks/%d/since?after=1' % demo)[1]
         assert since['tasks']['landed'] == [2, 3] and since['tasks']['started'] == [1, 2, 3, 4] and since['replies'] >= 3, since
+        # ^ The routine digest's states: a ready task is listed too (view::REPORTED_STATES).
+        assert 1 in since['tasks']['ready'], since
         # What was settled, newest first, one line each; the home row's last reply and activity.
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         settled = [row['text'] for row in overview['resolutions']]

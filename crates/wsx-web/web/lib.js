@@ -156,15 +156,15 @@ export function useCoalescedLoad(step, fail, deps) {
   }, []);
 }
 
-// The present time, renewed every second while `active` is true.
-export function useNow(active) {
+// The present time, renewed every `every` ms (a second) while `active` is true.
+export function useNow(active, every = 1000) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!active) return undefined;
     setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    const timer = setInterval(() => setNow(Date.now()), every);
     return () => clearInterval(timer);
-  }, [active]);
+  }, [active, every]);
   return now;
 }
 
@@ -183,8 +183,14 @@ function keepRead(name, entry) {
 }
 // ^ The time of the newest message of a chat this device read, or null before it first opened
 // there; READ_EVENT fires when it changes (home.js marks a project's new message with it).
-export const readUpTo = (name) => readMap(READ_KEY)[name]?.read ?? null;
+const readUpTo = (name) => readMap(READ_KEY)[name]?.read ?? null;
 export const READ_EVENT = "wsx-read";
+// ^ A server `news` ({unix_ms, text}) this device has not read in chat `name`, else null: the one
+// rule of a project's home row and a role's contact. A chat never opened here has nothing new.
+export function unreadNews(name, news) {
+  const read = readUpTo(name);
+  return news && read != null && news.unix_ms > read ? news : null;
+}
 
 // A conversation log that keeps its reader at the end only while the reader is at the end,
 // and otherwise keeps the row the reader reads where it is on the screen
