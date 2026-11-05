@@ -36,7 +36,7 @@ The owner renamed routine `usage` to `retrospect` (msg 2095; same cron `0 6 * * 
 | Owner messages asking the same again: word 3-gram Jaccard >= 0.4, groups of 3 or more, paths, links and code removed | code |
 | Phrases the manager repeated: word 8-grams in 5 or more replies, merged per set of replies | code |
 | Reply + the owner's next message within 30 min (at most 40 pairs) | code |
-| Which of those the owner turned down (also implicitly), and up to 3 product changes | one `claude -p --model sonnet --effort high --json-schema` call, prompt `scripts/retrospect-prompt.md` |
+| Which of those the owner turned down (also implicitly), of which kind (A-F of `manager-reliability.md`), and up to 3 changes, text preferred over a feature | one `claude -p --model sonnet --effort high --json-schema` call, prompt `scripts/retrospect-prompt.md` |
 
 Repeats count over 7 days and are news when one is new. The script posts with `wsx task post --title retrospect`, writes the whole report to `<state dir>/retrospect/<unix ms>.md` (the newest 14 stay) and prints nothing. `--no-model` counts only.
 

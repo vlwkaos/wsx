@@ -1423,7 +1423,10 @@ def run(wsx, wsxd, work, owned):
                  'only after the owner says yes, commit', 'also in a pipe or with a heredoc',
                  'the Skill tool as `owner:<name>`', 'check rather than guess',
                  '/manager/notes/decisions.md', '/manager/notes/context.md', "wsx adds each finished task's memo",
-                 'Update a section in place',
+                 'Update a section in place', 'answer each Owner message first, every question in it',
+                 'Define each name the owner has not used', 'say how both hold', 'what you said you would report',
+                 'every project and agent adapter', "the task's prompt and each later add", 'naming each ask it missed',
+                 'or call it unchecked',
                  '--from-manager --reply', 'use it and do not answer it', "'@<project>'"):
         assert rule in launch['instructions'], rule
     # ^ Only `role new` takes a brief (docs/tasks.md "Roles").
@@ -2055,7 +2058,9 @@ def run(wsx, wsxd, work, owned):
     assert not any(e['kind'] == 'reply' and last_close['id'] in e['to'] for e in chat()), chat()[-2:]
     along = js('task', 'say', 'STATUS after the closes')
     assert last_close['id'] in reply_to(along['id'])['to'], chat()[-2:]
-    assert 'closed r1' in turn_with('STATUS after the closes')['message']
+    along_turn = turn_with('STATUS after the closes')['message']
+    # ^ The owner's message comes first and the turn says so (docs/tasks.md "Manager").
+    assert 'closed r1' in along_turn and 'Answer message %d first.' % along['id'] in along_turn, along_turn
 
     # 22. Approvals: what the manager may not do alone becomes a request the owner decides.
     mark('22')

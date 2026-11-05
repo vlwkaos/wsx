@@ -8,8 +8,9 @@ the run costs no manager turn, and posts its lines with `wsx task post`:
 
 Code counts: spend, owner messages that ask the same again, phrases the manager repeats, and
 each reply the owner answered within 30 minutes. One model call (sonnet, high effort, the
-owner's rule) judges only those pairs: which replies the owner turned down, and which product
-changes the repeats point to (scripts/retrospect-prompt.md). The whole report goes to
+owner's rule) judges only those pairs: which replies the owner turned down, of which kind (A-F of
+docs/design/manager-reliability.md), and which text or product changes the repeats point to
+(scripts/retrospect-prompt.md). The whole report goes to
 <state dir>/retrospect/<unix ms>.md; the newest 14 stay.
 """
 import argparse
@@ -34,13 +35,14 @@ PHRASE_WORDS, PHRASE_REPLIES = 8, 5
 REACTION_MS = 30 * 60 * 1000     # the owner's next message within this is the reaction
 PAIRS, PAIR_CHARS, SHOWN, REPORTS = 40, 600, 3, 14
 MODEL, EFFORT = "sonnet", "high"
+KINDS = ["A", "B", "C", "D", "E", "F", "other", ""]
 SCHEMA = {
     "type": "object", "required": ["pairs", "changes"],
     "properties": {
         "pairs": {"type": "array", "items": {
             "type": "object", "required": ["reply", "rejected", "wanted"],
             "properties": {"reply": {"type": "integer"}, "rejected": {"type": "boolean"},
-                           "wanted": {"type": "string"}}}},
+                           "wanted": {"type": "string"}, "kind": {"enum": KINDS}}}},
         "changes": {"type": "array", "maxItems": SHOWN, "items": {
             "type": "object", "required": ["change", "evidence"],
             "properties": {"change": {"type": "string"},
@@ -158,8 +160,8 @@ def reactions(events, after):
 
 
 def judge(folder, pairs, asked, repeated):
-    """One model call over the pairs and the counts. Returns (rejected {id: wanted}, changes,
-    cost in USD) or raises RuntimeError."""
+    """One model call over the pairs and the counts. Returns (rejected {id: (wanted, kind)},
+    changes, cost in USD) or raises RuntimeError."""
     with open(os.path.join(HERE, "retrospect-prompt.md"), encoding="utf-8") as f:
         prompt = f.read()
     data = {
@@ -181,7 +183,8 @@ def judge(folder, pairs, asked, repeated):
     if answer.get("is_error") or not isinstance(answer.get("structured_output"), dict):
         raise RuntimeError(f"the model call failed: {one_line(str(answer.get('result')), 200)}")
     out = answer["structured_output"]
-    rejected = {p["reply"]: one_line(p.get("wanted", ""), 100) for p in out.get("pairs", []) if p.get("rejected")}
+    rejected = {p["reply"]: (one_line(p.get("wanted", ""), 100), p.get("kind") or "other")
+                for p in out.get("pairs", []) if p.get("rejected")}
     changes = [(one_line(c["change"], 200), c.get("evidence", [])) for c in out.get("changes", [])][:SHOWN]
     return rejected, changes, answer.get("total_cost_usd", 0.0)
 
@@ -223,8 +226,10 @@ def summary(state_dir, after, asked, repeated, pairs, judged):
     if isinstance(judged, tuple):
         rejected, changes, cost = judged
         if rejected:
-            shown = "; ".join(f"r{i} (wanted {w})" for i, w in list(rejected.items())[:SHOWN])
-            lines.append(f"You turned down {len(rejected)} of {len(pairs)} replies you answered: {shown}")
+            kinds = [k for _, k in rejected.values()]
+            counted = ", ".join(f"{k} {kinds.count(k)}" for k in KINDS if k in kinds)
+            shown = "; ".join(f"r{i} ({k}, wanted {w})" for i, (w, k) in list(rejected.items())[:SHOWN])
+            lines.append(f"You turned down {len(rejected)} of {len(pairs)} replies you answered ({counted}): {shown}")
         lines += [f"Change {n}: {c} ({ids('', ev)})" for n, (c, ev) in enumerate(changes, 1)]
         lines.append(f"Judged by {MODEL} ({EFFORT}): ${cost:.2f}")
     elif pairs:
@@ -241,7 +246,8 @@ def write_report(folder, now, lines, asked, repeated, pairs, judged):
     text += [f"- {len(r['ids'])} replies: \"{r['text']}\" ({ids('r', r['ids'])})" for r in repeated]
     text += ["", "## Replies and the owner's next message", ""]
     for p in pairs:
-        verdict = f"turned down, wanted {rejected[p['reply']['id']]}" if p["reply"]["id"] in rejected else "kept"
+        wanted, kind = rejected.get(p["reply"]["id"], (None, None))
+        verdict = f"turned down ({kind}), wanted {wanted}" if kind else "kept"
         text.append(f"- r{p['reply']['id']} ({verdict}): {one_line(p['reply']['text'], 300)}")
         text.append(f"  - m{p['next']['id']}: {one_line(p['next']['text'], 300)}")
     path = os.path.join(folder, f"{now}.md")
