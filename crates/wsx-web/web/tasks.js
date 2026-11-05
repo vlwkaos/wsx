@@ -100,14 +100,16 @@ const taskLink = (project, task) => `#/p/${project}/t/${task}`;
 export const running = (task) => task?.stage === "working";
 
 // `#12` in any text: the number and a state dot, the state in its accessible name and the
-// title on hover. The title shows in the sheet and the reservoir, not in the text.
-export function TaskChip({ project, id }) {
+// title on hover. The title shows in the sheet and the reservoir, not in the text. Another
+// project's task (`name`) shows its project too: "pizzahouse #34".
+export function TaskChip({ project, id, name = "" }) {
   const store = useStore();
   const task = store.tasks[project]?.tasks.find((candidate) => candidate.id === id);
-  if (!task) return html`<a class="task-chip" href=${taskLink(project, id)}>#${id}</a>`;
+  const label = `${name}${name && " "}#${id}`;
+  if (!task) return html`<a class="task-chip" href=${taskLink(project, id)}>${label}</a>`;
   return html`
-    <a class="task-chip" href=${taskLink(project, id)} title=${task.title} aria-label=${`#${id}, ${taskStage(task)[0]}`}>
-      <${StateMark} task=${task} />#${id}
+    <a class="task-chip" href=${taskLink(project, id)} title=${task.title} aria-label=${`${label}, ${taskStage(task)[0]}`}>
+      <${StateMark} task=${task} />${label}
     </a>`;
 }
 
@@ -126,16 +128,49 @@ function StateMark({ task }) {
 export const TaskTitle = ({ title, id, state }) => html`
   <span class="row-title"><span class="row-label">${title}</span><span class="task-number">#${id}</span>${state && html`<span class="visually-hidden">, ${state}</span>`}</span>`;
 
-// One text-to-nodes function per project, so the markdown of a message is parsed once:
-// `#n` becomes a chip, and "project overview" a link to it.
+// One text-to-nodes function per project and sender, so the markdown of a message is parsed
+// once: `#n` becomes a chip, "<project> #n" a chip of that granted project's task, and "project
+// overview" a link to it. `source` is the project whose manager wrote the text: its bare `#n`
+// is that project's task, and plain text when the site does not grant it
+// (docs/web-client-tasks.md "Project screen").
 const chipWords = new Map();
-export function withChips(project) {
-  if (!chipWords.has(project)) {
-    chipWords.set(project, (text) => text.split(/(#\d+\b|\bproject overview\b)/i).map((part) =>
-      /^#\d+$/.test(part) ? html`<${TaskChip} project=${project} id=${Number(part.slice(1))} />`
-        : /^project overview$/i.test(part) ? html`<a class="page-link" href=${`#/p/${project}/page`}>${part}</a>` : part));
+const escaped = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export function withChips(project, source = null) {
+  const named = state.projects.filter((other) => other.name).sort((left, right) => right.name.length - left.name.length);
+  const key = `${project}/${source}/${named.map((other) => `${other.id}:${other.name}`)}`;
+  if (!chipWords.has(key)) {
+    // ^ Whose a bare `#n` is: this project's, the sender's, or none (a sender the site does not grant).
+    const bareOwner = source == null ? project : named.find((other) => other.name === source)?.id;
+    const find = new RegExp(`${named.length ? `(${named.map((other) => escaped(other.name)).join("|")})[ \\t]+#(\\d+)\\b` : "(?!)()()"}|#(\\d+)\\b|\\bproject overview\\b`, "gi");
+    const chip = (owner, id) => html`<${TaskChip} project=${owner} id=${Number(id)} name=${owner === project ? "" : named.find((other) => other.id === owner).name} />`;
+    chipWords.set(key, (text) => {
+      const nodes = [];
+      let from = 0;
+      find.lastIndex = 0;
+      for (let found; (found = find.exec(text));) {
+        const [word, name, mentioned, bare] = found;
+        // ^ A name inside a longer word ("unpizzahouse #3") names nothing: the `#n` after it is bare.
+        if (name && /[\w-]/.test(text[found.index - 1] ?? "")) {
+          find.lastIndex = found.index + name.length;
+          continue;
+        }
+        nodes.push(text.slice(from, found.index));
+        from = found.index + word.length;
+        if (mentioned) {
+          const owner = named.find((other) => other.name.toLowerCase() === name.toLowerCase()).id;
+          if (owner === project) nodes.push(word.slice(0, word.indexOf("#")));
+          nodes.push(chip(owner, mentioned));
+        } else if (bare) {
+          nodes.push(bareOwner == null ? word : chip(bareOwner, bare));
+        } else {
+          nodes.push(html`<a class="page-link" href=${`#/p/${project}/page`}>${word}</a>`);
+        }
+      }
+      nodes.push(text.slice(from));
+      return nodes.filter((node) => node !== "");
+    });
   }
-  return chipWords.get(project);
+  return chipWords.get(key);
 }
 
 // What a waiting task waits for, in words: "waits for disk
