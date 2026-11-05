@@ -90,10 +90,12 @@ Bench: `bench-manager.py --cases logged --runs 1`, opus, `before` = instructions
 
 | Owner id | Before | After |
 |---|---|---|
-| 2284 (fresh start, with events 2282 and 2283) | answered | answered; also defines wsxd and asched |
+| 2284 (fresh start, with events 2282 and 2283) | answered | answered; defines wsxd and asched, and the judge still marks one undefined name (E) |
 | 2312 (answer that, and improve this) | answered | answered |
 | 2326 (all adapters; how review starts) | answered | answered |
-| 2327 (is it polled) | not answered (A): "Do you want me to find out" | answered: "not by me; unchecked inside wsx" |
+| 2327 (is it polled) | not answered (A): "Do you want me to find out" | not answered (A, E): "not by me; unchecked inside wsx", then an offer to check |
+
+The judge gets each case's own handover as `earlier`. In the first judgment, a bench bug gave it the replies of the other cases, and after scored 4 of 4. So one run and one judge cannot separate the two texts: each answers 3 of 4. 2327 cannot be fully answered in the bench, because the fixture repo has no wsx source to read. The visible change is in how the replies read: after defines new names and calls an unchecked claim unchecked. The retrospect kinds over the following days are the measure that counts (table "Steps").
 
 | Turn | Before: cost, cache write, cache read | After |
 |---|---|---|
