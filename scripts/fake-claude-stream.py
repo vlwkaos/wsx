@@ -510,9 +510,10 @@ def main():
             continue
         if 'HUGE' in words:
             emit({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'x' * (5 << 20)}]}})
-        if 'LEAK' in words or 'LEAKEXIT' in words:
+        # ^ Workers only: a manager's event lines carry task titles.
+        if project is None and ('LEAK' in words or 'LEAKEXIT' in words):
             leak(session)
-        if 'LEAKEXIT' in words:
+        if project is None and 'LEAKEXIT' in words:
             # ^ The agent ends by itself during the turn: its host must reap it and its tree.
             os._exit(3)
         steers = []
