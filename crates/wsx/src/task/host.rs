@@ -13,6 +13,7 @@ use super::hosting;
 use super::limit;
 use super::slot::{self, Lane, Priority};
 use super::trial;
+use super::RECORDED_BY_HOST;
 use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
@@ -128,6 +129,8 @@ struct CheckRun {
     queued: bool,
     /// The answer of a queued run that ended before the result: the result gets it as a turn.
     answer: Option<CheckAnswer>,
+    /// The checks it runs, for the evidence name: scenario names and check numbers.
+    label: String,
 }
 
 /// A check-run's answer to the worker, and the proof the host keeps when the run passed on
@@ -436,6 +439,9 @@ impl Host {
                 }
                 Event::CheckRunDone(results, response, stored) => {
                     let run = self.check_run.take();
+                    let label = run
+                        .as_ref()
+                        .map_or_else(String::new, |run| run.label.clone());
                     for reply in run.iter().flat_map(|run| &run.replies) {
                         let _ = reply.send(response.clone());
                     }
@@ -456,7 +462,7 @@ impl Host {
                             response.stdout.trim_end()
                         ),
                         proof: (response.code == 0 && tree_kept).then(|| Evidence {
-                            check: "wsx task check-run (recorded by the host)".into(),
+                            check: format!("wsx task check-run {label} passed {RECORDED_BY_HOST}"),
                             proof: response.stdout.trim_end().into(),
                         }),
                     };
@@ -2037,6 +2043,14 @@ impl Host {
             result_waits: false,
             queued: false,
             answer: None,
+            label: picked
+                .iter()
+                .map(|(index, _)| match index.checked_sub(checks) {
+                    Some(at) => scenarios.keys().nth(at).cloned().unwrap_or_default(),
+                    None => (index + 1).to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
         });
         // ^ A run of checks that only format or compile is light: it takes no slot. One that
         // names a scenario takes the scenarios lane, else the checks lane.

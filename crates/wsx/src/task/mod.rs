@@ -51,6 +51,9 @@ use wsx_core::task::{
 };
 use wsx_core::{ops, runtime};
 
+/// Ends the evidence name of a check-run pass the host recorded in a held result; the
+/// manager's ready event repeats it. ref: docs/tasks.md "Check-run"
+const RECORDED_BY_HOST: &str = "(recorded by the host)";
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
 const DAY_MS: u64 = 24 * 3600 * 1000;

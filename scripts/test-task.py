@@ -3339,6 +3339,12 @@ def run(wsx, wsxd, work, owned):
     proof = [e for e in show(passed)['result']['result']['evidence'] if 'check-run' in e['check']]
     assert len(proof) == 1 and ': exit 0' in proof[0]['proof'] and str(pass_gate) in proof[0]['proof'], show(passed)['result']
     assert not [t for t in traces() if 'Your check-run ended' in t.get('message', '') and str(pass_gate) in t['message']]
+    # ^ The manager hears the pass in the ready event: the worker's own words (written while the
+    # run was pending) come after it. The task whose run failed has no such line.
+    heard = wait(lambda: events_with('#%d ready r1' % passed, 'check-run slow passed (recorded by the host); worker says'),
+                 'the ready event with the recorded check-run', 30)
+    assert len(heard) == 1 and len(events_with('#%d ready' % passed)) == 1, manager_entries()[-6:]
+    assert not events_with('#%d ready' % failed, 'recorded by the host'), events_with('#%d ready' % failed)
     assert [e['trigger'] for e in log(failed) if e['kind'] == 'result'] == ['step', 'check_run'], log(failed)
     sent = [t for t in traces() if 'Your check-run ended' in t.get('message', '') and str(fail_gate) in t['message']]
     assert len(sent) == 1 and ': exit 1' in sent[0]['message'], sent
