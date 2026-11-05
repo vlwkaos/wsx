@@ -2,7 +2,7 @@
 // now, the messages that wait for it, and the composer (docs/web-client-chat.md).
 import { api, resolve } from "./api.js";
 import { bytes, elapsed, html, Icon, keepIn, readMap, useCoalescedLoad, useEffect, useExit, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
-import { can, shows, stateOf, state, touch, useEventLoad } from "./store.js";
+import { can, replaceRoute, shows, stateOf, state, touch, useEventLoad } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { FindBar } from "./find.js";
 import { QuoteChip, Quoted, useReply, withQuote } from "./reply.js";
@@ -561,7 +561,7 @@ function Question({ session, question, onAnswered }) {
         ${ANSWER_KEYS.map(([key, label, name]) => html`
           <button key=${key} class="button question-keycap" type="button" aria-label=${name} disabled=${waiting} onClick=${() => answer(key)}>${label}</button>`)}
         <button class="link-action" type="button" aria-expanded=${typing} onClick=${() => setTyping(!typing)}>Type an answer</button>
-        ${shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${session.id}/terminal`}>Open terminal</a>`}
+        ${shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${session.id}/terminal`} onClick=${(event) => replaceRoute(event, `#/s/${session.id}/terminal`)}>Open terminal</a>`}
       </div>
     </section>`;
 }
@@ -700,7 +700,7 @@ export function Chat({ session, onModel, finding = false, onFindClose }) {
   const lastUserBlock = list.findLast?.((block) => block.kind === "user");
   const firstNew = since == null ? null : list.find((block) => block.kind === "assistant" && block.at_unix_ms > since);
   const [recent, earlier] = useRecent(`session-${id}`, list, firstNew, { keyOf: (block) => block.id, all: finding, away });
-  const terminalLink = shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`}>Open terminal</a>`;
+  const terminalLink = shows("terminal") && can("terminal_view") && html`<a class="link-action" href=${`#/s/${id}/terminal`} onClick=${(event) => replaceRoute(event, `#/s/${id}/terminal`)}>Open terminal</a>`;
   // A hold the chat cannot name: the server sends the rows above the agent's editor, closed
   // until asked for (docs/web-client-chat.md "Timeline").
   const held = data?.screen?.length ? html`

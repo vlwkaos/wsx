@@ -316,6 +316,12 @@ async function viewImages(name, links, many = 2, saves = false) {
     else await key("ArrowLeft", 37);
     await at(0);
   }
+  if (phone() && await count(".viewer-zoom .time")) {
+    // ^ The page never zooms, but a pinch in the viewer zooms its image.
+    await pinch(await evaluate("(() => { const box = document.querySelector('.viewer-stage').getBoundingClientRect(); return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) }; })()"));
+    await until("parseInt(document.querySelector('.viewer-zoom .time').textContent) > 100", `${what}: a pinch did not zoom the image`);
+    if (await evaluate("visualViewport.scale") !== 1) await fail(`${what}: a pinch in the viewer zoomed the page`);
+  }
   await key("Escape", 27);
   await closed("Escape");
   await open();
@@ -1921,6 +1927,13 @@ async function reopen(where) {
   await pause(500);
 }
 // A touch swipe from `from` by `dx` px to the right, or a press held for `hold` ms.
+// A two-finger pinch out around `at`: the fingers move from 20 px to 220 px apart.
+async function pinch(at) {
+  const points = (gap) => [{ x: at.x - gap / 2, y: at.y, id: 1 }, { x: at.x + gap / 2, y: at.y, id: 2 }];
+  await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: points(20) });
+  for (let step = 1; step <= 10; step++) await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: points(20 + step * 20) });
+  await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+}
 async function touch(from, dx, hold = 0) {
   await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: from.x, y: from.y }] });
   if (hold) await pause(hold);
@@ -2507,6 +2520,102 @@ const taskReads = await evaluate(`performance.getEntriesByType('resource').map((
 if (taskReads.length !== 1 || !taskReads[0].endsWith("/api/tasks")) await fail(`a load read the tasks as ${JSON.stringify(taskReads)}`);
 await evaluate("history.back()");
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Back after a deep link did not close the sheet");
+// ^ The chat is the first entry: its Back replaces it with Home, no entry is added, and
+// history.back() then leaves the page, as two history.back() calls from the deep link do.
+const deepLength = await evaluate("history.length");
+await click(".manager > .bar > a.icon-button");
+await until("location.hash === '#/' && !!document.querySelector('.home-row')", "Back on the first entry did not go to Home");
+const deepHome = await evaluate("({ length: history.length, depth: history.state?.depth })");
+if (deepHome.length !== deepLength || deepHome.depth !== 0) await fail(`Back on the first entry pushed: ${JSON.stringify(deepHome)}, was length ${deepLength}`);
+await evaluate("history.back()");
+await until("location.href === 'about:blank'", "history.back() after Back on the first entry did not leave the page");
+await send("Page.navigate", { url: `${siteUrl}#/p/${project}/t/3` });
+await until("!!document.querySelector('dialog.task-sheet[open] .story') && !!document.querySelector('.composer-field')", "the deep link did not open again");
+await evaluate("history.back()");
+await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "history.back() after the deep link did not close the sheet");
+await evaluate("history.back()");
+await until("location.href === 'about:blank'", "a second history.back() after the deep link did not leave the page");
+await send("Page.navigate", { url: `${siteUrl}#/` });
+await until("!!document.querySelector('.home-row')", "the page did not open again on Home");
+
+// --- Back in a top row or a sheet and the system's swipe back (history.back()) lead to the same
+// place with the same scroll (docs/web-client.md "Screens"): each screen opens the normal way
+// twice, left once by its Back and once by history.back(). A list's scroll comes back too.
+await resize([390, 560, 2]);
+const where = () => evaluate("JSON.stringify({ hash: location.hash, length: history.length, depth: history.state?.depth, scroll: [...document.querySelectorAll('#main > .page > .scroll, #main .log')].map((node) => Math.round(node.scrollTop)) })");
+const topBack = "#main > .page > .bar > a.icon-button";
+const sheetBack = "dialog.task-sheet[open] .bar button[aria-label='Back to the chat']";
+async function sameBack(name, open, back) {
+  await pause(400);
+  const before = await where();
+  for (const how of ["Back", "history.back()"]) {
+    await open();
+    await pause(400);
+    if (how === "Back") await click(back);
+    else await evaluate("history.back()");
+    await until(`location.hash === ${JSON.stringify(JSON.parse(before).hash)} && !document.querySelector('dialog.task-sheet')`, `${name}: ${how} did not return`);
+    await pause(400);
+    const after = await where();
+    if (after !== before) await fail(`${name}: after ${how} the page is ${after}, was ${before}`);
+  }
+}
+const opens = (selector, ready, what) => async () => {
+  await click(selector);
+  await until(ready, `${what} did not open`);
+};
+const fromMenu = (selector, ready, what) => async () => {
+  await click(".manager > .bar .more-button");
+  await opens(`.more-menu ${selector}`, ready, what)();
+};
+await evaluate("document.querySelector('#main > .page > .scroll').scrollTop = 120");
+if (!(JSON.parse(await where()).scroll[0] > 0)) await fail("Home does not scroll at 390 × 560: the scroll place is not checked");
+await sameBack("a project's chat", opens(`a.home-row[href="${chat}"]`, "!!document.querySelector('.composer-field')", "the chat"), topBack);
+await go(chat);
+await until("!!document.querySelector('.composer-field')", "the chat did not open");
+const sheetOpen = (part) => `!!document.querySelector('dialog.task-sheet[open]') && location.hash.startsWith(${JSON.stringify(chat + part)})`;
+await sameBack("the overview", opens(`.manager > .bar a[href="${chat}/page"]`, sheetOpen("/page"), "the overview"), sheetBack);
+await sameBack("the task sheet", opens(`.log a.task-chip[href^="${chat}/t/"]`, sheetOpen("/t/"), "the task sheet"), sheetBack);
+await sameBack("the usage sheet", fromMenu(`a[href="${chat}/usage"]`, sheetOpen("/usage"), "the usage sheet"), sheetBack);
+await sameBack("the routines sheet", fromMenu(`a[href="${chat}/routines"]`, sheetOpen("/routines"), "the routines sheet"), sheetBack);
+await sameBack("the project's sessions", fromMenu(`a[href="${chat}/sessions"]`, "!!document.querySelector('#main .worktree')", "the project's sessions"), topBack);
+await go("#/sessions");
+await until("[...document.querySelectorAll('a[href*=\"#/s/\"]')].some((node) => node.textContent.includes('old chat'))", "the inbox does not list old chat");
+const oldChat = await evaluate("[...document.querySelectorAll('a[href*=\"#/s/\"]')].find((node) => node.textContent.includes('old chat')).getAttribute('href')");
+await sameBack("a session", opens(`a[href="${oldChat}"]`, "!!document.querySelector('.session .bar')", "the session"), topBack);
+// ^ Tabs and Settings sections replace the entry: Back leaves the section, not the taps.
+await go(chat);
+await until("!!document.querySelector('.composer-field')", "the chat did not open");
+await go("#/");
+await until("!!document.querySelector('.tabbar')", "Home has no tab bar");
+const tabbed = await evaluate("({ length: history.length, depth: history.state?.depth })");
+for (const href of ["#/sessions", "#/settings", "#/"]) {
+  await click(`.tabbar a[href="${href}"]`);
+  await until(`location.hash === ${JSON.stringify(href)}`, `the ${href} tab did not open`);
+}
+await click('.tabbar a[href="#/settings"]');
+await until("!!document.querySelector('.subtabs')", "Settings has no sections");
+await click('.subtabs a[href="#/settings/ui"]');
+await until("location.hash === '#/settings/ui'", "the UI section did not open");
+const afterTabs = await evaluate("({ length: history.length, depth: history.state?.depth })");
+if (JSON.stringify(afterTabs) !== JSON.stringify(tabbed)) await fail(`tab and section taps added entries: ${JSON.stringify(afterTabs)}, was ${JSON.stringify(tabbed)}`);
+await evaluate("history.back()");
+await until(`location.hash === ${JSON.stringify(chat)}`, "history.back() after the tabs did not leave the section");
+
+// --- The page never zooms (docs/web-client.md "Zoom"): a two-finger pinch on the chat and a tap
+// on the composer leave the visual viewport at scale 1.
+await resize([390, 844, 2]);
+await until("!!document.querySelector('.composer-field')", "the chat did not come back");
+await pinch({ x: 195, y: 400 });
+await pause(300);
+if (await evaluate("visualViewport.scale") !== 1) await fail(`a pinch zoomed the chat to ${await evaluate("visualViewport.scale")}`);
+const field = await evaluate("(() => { const box = document.querySelector('.composer-field').getBoundingClientRect(); return [Math.round(box.left + box.width / 2), Math.round(box.top + box.height / 2)]; })()");
+await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: field[0], y: field[1] }] });
+await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+await until("document.activeElement === document.querySelector('.composer-field')", "a tap did not focus the composer");
+await pause(300);
+const focusZoom = await evaluate("({ scale: visualViewport.scale, font: getComputedStyle(document.querySelector('.composer-field')).fontSize })");
+if (focusZoom.scale !== 1 || parseFloat(focusZoom.font) < 16) await fail(`the focused composer reads ${JSON.stringify(focusZoom)}`);
+await evaluate("document.activeElement.blur()");
 
 // --- A task that waits for the owner's answer: in plans' chat its manager reads "plans" and
 // ui's "Atlas". #1's reservoir row with Answer, whose chip opens its sheet: the story asks for

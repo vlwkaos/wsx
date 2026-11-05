@@ -3,8 +3,8 @@
 // Wide (900 px and more): a left rail with the home list (the inbox or the projects without
 // task_view), the rest beside it.
 import { api, openEvents, pageId, QUIET_MS } from "./api.js";
-import { html, Icon, render, useEffect, useRef, useState } from "./lib.js";
-import { can, events, noteBuild, parseRoute, shownTabs, shows, stackUnder, state, tabs, trackHistory, update, useRoute, useStore } from "./store.js";
+import { html, Icon, render, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
+import { can, events, noteBuild, parseRoute, replaceRoute, restorePlace, shownTabs, shows, stackUnder, state, tabs, trackHistory, update, useRoute, useStore } from "./store.js";
 import { Home } from "./home.js";
 import { applyBar, applyScheme, applyTabs, Notices, toast } from "./ui.js";
 import { Pair } from "./pair.js";
@@ -92,12 +92,12 @@ const Tabs = ({ current, rail }) => {
   return rail ? html`
   <nav class="rail-tabs" aria-label="Screens">
     ${tabs().map(([name, href, label]) => html`
-      <a href=${href} aria-current=${current === name ? "page" : null}>${label}</a>`)}
+      <a href=${href} aria-current=${current === name ? "page" : null} onClick=${(event) => replaceRoute(event, href)}>${label}</a>`)}
   </nav>` : html`
   <nav class="tabbar" aria-label="Screens" ref=${bar}>
     <div class="tabbar-pill">
       ${shownTabs().map(([name, href, label, icon, count]) => html`
-        <a key=${name} href=${href} aria-current=${current === name ? "page" : null}
+        <a key=${name} href=${href} aria-current=${current === name ? "page" : null} onClick=${(event) => replaceRoute(event, href)}
           aria-label=${count ? `${label}, ${count} ${count === 1 ? "needs" : "need"} you` : null}>
           <span class="tab-icon" data-count=${count ? (count > 99 ? "99+" : count) : null}><${Icon} name=${icon} /></span>
           <span class="tab-label">${label}</span>
@@ -135,6 +135,7 @@ function App() {
     const project = ["project", "sessions", "task", "role"].includes(route.screen) && state.projects.find((candidate) => candidate.id === route.id);
     document.title = `${session ? session.label : project ? project.name : titles[route.screen] ?? "Session"} - ${state.site.name}`;
   });
+  useLayoutEffect(restorePlace);
   if (!wide) {
     return html`
       <div class="app">
@@ -306,6 +307,9 @@ applyScheme();
 applyBar();
 applyTabs();
 followViewport();
+// ^ iOS ignores user-scalable=no and starts a pinch with WebKit's gesture events: refused here,
+// so the page never zooms. The viewer reads pointers, which these do not stop.
+for (const name of ["gesturestart", "gesturechange"]) document.addEventListener(name, (event) => event.preventDefault(), { passive: false });
 trackHistory();
 viewImageLinks();
 boot();

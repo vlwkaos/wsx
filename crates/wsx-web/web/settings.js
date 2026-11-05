@@ -2,7 +2,7 @@
 // Every setting here is kept per device.
 import { api } from "./api.js";
 import { html, useEffect, useState } from "./lib.js";
-import { can, loadPush, pageBuild, reloadForBuild, setMuted, state, tabs, update, useStore } from "./store.js";
+import { can, loadPush, pageBuild, reloadForBuild, replaceRoute, setMuted, state, tabs, update, useStore } from "./store.js";
 import { confirmDialog, hasDarkScheme, scheme, setBar, setScheme, setTabHidden } from "./ui.js";
 import { AllUsage } from "./usage.js";
 
@@ -184,8 +184,10 @@ export function Settings({ sub }) {
     <div class="page">
       <h1 class="title">Settings</h1>
       <nav class="subtabs" aria-label="Settings sections">
-        ${subs.map(([name, label]) => html`
-          <a key=${name} href=${name === "general" ? "#/settings" : `#/settings/${name}`} aria-current=${current === name ? "page" : null}>${label}</a>`)}
+        ${subs.map(([name, label]) => {
+          const href = name === "general" ? "#/settings" : `#/settings/${name}`;
+          return html`<a key=${name} href=${href} aria-current=${current === name ? "page" : null} onClick=${(event) => replaceRoute(event, href)}>${label}</a>`;
+        })}
       </nav>
       <div class="scroll settings">
         ${current === "general" ? html`<${General} />` : current === "ui" ? html`<${Interface} />` : html`<${AllUsage} />`}

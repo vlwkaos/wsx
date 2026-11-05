@@ -5,9 +5,11 @@
    No gradient, glass, glow, shadow on rows, or card around peer rows. */
 
 * { box-sizing: border-box; }
+/* The page never zooms (docs/web-client.md "Zoom"): pan-x pan-y leaves pinch and double-tap
+   zoom out; the image viewer's stage (touch-action: none) zooms its image itself. */
 html {
   font-family: var(--font-body); font-size: var(--font-size-md); line-height: var(--line-height);
-  overflow: hidden; overscroll-behavior: none; -webkit-text-size-adjust: 100%;
+  overflow: hidden; overscroll-behavior: none; -webkit-text-size-adjust: 100%; touch-action: pan-x pan-y;
 }
 /* The page is pinned to the visual viewport and never scrolls: each screen has one
    scroll container inside it, and a composer or key row sits on the on-screen keyboard
@@ -1116,10 +1118,10 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 
 /* Hook: .terminal, .terminal-notice, .terminal-key, .terminal-pad — the live terminal.
    It fills the session below the top row, edge to edge, and is dark in either scheme
-   (data-scheme on .terminal). touch-action rules out double-tap zoom: the screen and the
-   pad handle every gesture themselves, the key row may pan sideways, the rest only taps. */
+   (data-scheme on .terminal). The page's touch-action rules out zoom; the screen and the
+   pad handle every gesture themselves, and the key row may pan sideways. */
 .terminal-mount { flex: 1; min-height: 0; min-width: 0; display: flex; }
-.terminal { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--color-bg); color: var(--color-text); touch-action: manipulation; }
+.terminal { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--color-bg); color: var(--color-text); }
 /* The notice lies over the top of the screen: showing it must not resize the pane. */
 .terminal-notice {
   position: absolute; inset: 0 0 auto 0; z-index: 1; height: var(--size-control);
