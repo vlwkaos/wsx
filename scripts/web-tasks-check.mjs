@@ -1367,21 +1367,23 @@ await closeSheet("the usage sheet", chat);
       danger: getComputedStyle(document.documentElement).getPropertyValue('--color-danger').trim(), href: node.getAttribute('href') }; })()`);
   };
   const reload = async (ready) => { await send("Page.reload"); await until(ready, "the page did not come back after a reload"); };
+  // ^ The button says "Routines" alone until the routines have loaded; each reload here has one on.
+  const loaded = `/^Routines: /.test(document.querySelector('a.icon-button[href$="/routines"]')?.getAttribute('aria-label') ?? '')`;
   try {
     let item = await chip();
     if (item.text !== "Routines: 2 routines, ok" || item.tone || item.title !== item.text || !item.icon || item.words) await fail(`the Routines button with nightly and idle on is ${JSON.stringify(item)}`);
     routine("disable", "idle");
     await chip();
-    await reload(`!!document.querySelector('a.icon-button[href$="/routines"]')`);
+    await reload(loaded);
     item = await evaluate(`({ text: document.querySelector('a.icon-button[href$="/routines"]').getAttribute('aria-label'), tone: document.querySelector('a.icon-button[href$="/routines"]').dataset.tone ?? null })`);
     if (!/^Routines: nightly .*\d{1,2}:\d{2}.* ok$/.test(item.text) || item.tone) await fail(`the Routines button with nightly alone is ${JSON.stringify(item)}`);
     await shot("routine-item-ok");
     routine("enable", "weekly");
-    await reload(`!!document.querySelector('a.icon-button[href$="/routines"]')`);
+    await reload(loaded);
     item = await evaluate(`({ text: document.querySelector('a.icon-button[href$="/routines"]').getAttribute('aria-label'), tone: document.querySelector('a.icon-button[href$="/routines"]').dataset.tone ?? null })`);
     if (item.text !== "Routines: 2 routines, 1 found something" || item.tone !== "attention") await fail(`the Routines button with a run that found something among two is ${JSON.stringify(item)}`);
     routine("disable", "nightly");
-    await reload(`!!document.querySelector('a.icon-button[href$="/routines"]')`);
+    await reload(loaded);
     item = await chip();
     if (!/^Routines: weekly .* found something$/.test(item.text) || item.tone !== "attention" || item.color !== (await evaluate(`(() => { const probe = Object.assign(document.createElement('i'), {}); probe.style.color = 'var(--color-attention)'; document.body.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; })()`))) {
       await fail(`the Routines button of a run that found something is ${JSON.stringify(item)}`);
