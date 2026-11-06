@@ -1802,7 +1802,10 @@ def run(wsx, wsxd, work, owned):
     manager_host = next(int(line.split()[0]) for line in leftovers('task manager-host %s' % host_id)
                         if line.endswith('task manager-host %s' % host_id))
     os.kill(manager_host, 9)
-    os.kill([t for t in traces() if t.get('launch') and t.get('manager')][-1]['pid'], 9)
+    try:  # ^ The host's death may already have stopped the agent tree.
+        os.kill([t for t in traces() if t.get('launch') and t.get('manager')][-1]['pid'], 9)
+    except ProcessLookupError:
+        pass
     cli('session', 'delete', 'task-manager', '-p', 'demo')
     assert js('task', 'manager')['state'] == 'started'
     reply_to(hung['id'])
