@@ -519,14 +519,25 @@ pub fn move_branch(
 const REMOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 fn remote_git(main: &Path, args: &[&str]) -> Result<String> {
-    let output = crate::git::output_with_timeout(git_cmd(main).args(args), REMOTE_TIMEOUT)
-        .with_context(|| {
+    let (mut command, refused) = crate::git::remote_cmd(main);
+    let output =
+        crate::git::output_with_timeout(command.args(args), REMOTE_TIMEOUT).with_context(|| {
             format!(
                 "git {} did not end within {} s",
                 args.join(" "),
                 REMOTE_TIMEOUT.as_secs()
             )
         })?;
+    // ^ OpenSSH's words when no offered key is taken: say which agent was asked, or none.
+    let words = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() && words.contains("Permission denied (publickey") {
+        bail!(
+            "git {} exited {}: {}; {refused}",
+            args.join(" "),
+            output.status,
+            words.trim()
+        );
+    }
     finished(args, output)
 }
 
