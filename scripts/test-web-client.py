@@ -3439,7 +3439,7 @@ service_origins = ["{push_origin}"]
 merge_seconds = 3
 ''')
             files[name].chmod(0o600)
-            servers[name] = start(work, [str(wsx), 'web', 'serve', '--site', str(files[name])], env=env, cwd=project,
+            servers[name] = start(work, [str(wsx), 'web', 'serve', '--site', str(files[name])], env={**env, 'WSX_TRACE_READ_LOG': '1'}, cwd=project,
                                   stdout=subprocess.DEVNULL, stderr=(work / (name + '.log')).open('a'))
             sites[name] = Site(ports[name], '', origin=public[name])
         for site in sites.values():
@@ -3694,6 +3694,48 @@ merge_seconds = 3
         assert status == 200, body
         watcher.expect('tasks', lambda data: data['project'] == demo and data['busy'], timeout=20)
         watcher.expect('tasks', lambda data: data['project'] == demo and not data['busy'], timeout=20)
+        # --- The overview and the chat read little (docs/design/web-server-health-audit.md findings 4, 5): the
+        # server traces each whole-log read on stderr (WSX_TRACE_READ_LOG).
+        def full_reads(suffix=''):
+            return sum(1 for line in (work / 'owner.log').read_text().splitlines()
+                       if line.startswith('wsx-trace read_log ') and line.endswith(suffix))
+
+        def observer_idle():
+            seen = full_reads()
+            time.sleep(2.5)
+            return full_reads() == seen
+        wait(observer_idle, 'no whole-log read for 2.5 s', timeout=40)
+        chat_route = '/api/tasks/%d/chat' % demo
+        manager_reads = full_reads('/manager')
+        whole_chat = steady(owner, 'GET', chat_route)[1]
+        assert full_reads('/manager') == manager_reads + 1, 'a chat call without after reads the whole log'
+        last_id = max(row['id'] for row in whole_chat['rows'] if row.get('id') is not None)
+        warm = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
+        reads = full_reads()
+        for _ in range(3):
+            assert steady(owner, 'GET', '/api/tasks/%d' % demo)[1] == warm
+        steady(owner, 'GET', '/api/tasks')
+        assert steady(owner, 'GET', chat_route + '?after=%d' % last_id)[1]['rows'] == []
+        assert full_reads() == reads, 'unchanged stamp: no whole-log read for the overview or a chat with a recent after'
+        # A manager line changes the overview and the chat; the answers equal a cold build.
+        posted = subprocess.run([str(wsx), 'task', 'post', '-p', 'demo'], input='cache check line', env=env, cwd=project,
+                                capture_output=True, text=True, timeout=60)
+        assert posted.returncode == 0, (posted.stdout, posted.stderr)
+        watcher.expect('manager', lambda data: data == {'project': demo}, timeout=20)
+        wait(observer_idle, 'no whole-log read for 2.5 s after the line', timeout=40)
+        manager_reads = full_reads('/manager')
+        tail_chat = steady(owner, 'GET', chat_route + '?after=%d' % last_id)[1]
+        assert full_reads('/manager') == manager_reads, 'a chat with a recent after reads the log tail only'
+        whole_chat = steady(owner, 'GET', chat_route)[1]
+        seen = [row.get('id') for row in whole_chat['rows']].index(last_id)
+        assert tail_chat['rows'] == whole_chat['rows'][seen + 1:] and 'cache check line' in json.dumps(tail_chat['rows']), tail_chat
+        # ^ The viewer's server is another process with its own cache: its answer is built from the files.
+        for attempt in range(3):
+            cached, cold = (steady(site, 'GET', '/api/tasks/%d' % demo)[1] for site in (owner, viewer))
+            if cached == cold:
+                break
+        assert cached == cold and cached != warm and 'cache check line' in cached['last_reply'], (cached, cold)
+        ok('overview and chat: no whole-log read for an unchanged stamp or a chat with a recent after; after a manager line both equal a cold build')
         # ^ A quiet stream pings every 10 s, so a page can tell a silent dead stream from a quiet one.
         watcher.expect('ping', timeout=15)
         # Streams a phone left behind cannot lock the device out (docs/web-client.md "Limits"):

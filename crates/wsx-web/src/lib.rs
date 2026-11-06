@@ -60,6 +60,8 @@ pub(crate) struct App {
     pages: Mutex<HashMap<String, Page>>,
     /// Approvals whose action runs now, as `<store>/<id>`; a second tap is refused.
     approving: Mutex<std::collections::HashSet<String>>,
+    /// Each project's last built task overview (`tasks::overview`).
+    overviews: Mutex<tasks::Overviews>,
     /// When this server started, shown in Settings with the build.
     started_unix: u64,
     /// Why the upgrade of the running wsxd into this build failed, while it is still that
@@ -120,6 +122,7 @@ pub fn serve(named: Option<&str>) -> Result<()> {
         workspace: Mutex::new(None),
         streams: Mutex::new(HashMap::new()),
         approving: Mutex::new(Default::default()),
+        overviews: Mutex::new(HashMap::new()),
         pages: Mutex::new(HashMap::new()),
         started_unix: devices::now_unix(),
         upgrade_failed: Mutex::new(None),

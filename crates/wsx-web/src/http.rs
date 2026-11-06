@@ -1079,7 +1079,11 @@ async fn tasks_overview(
     UrlPath(project): UrlPath<u64>,
 ) -> Outcome<Json<Value>> {
     tasks_allowed(&app, false)?;
-    with_scope(&app, project, |scope| Ok(crate::tasks::overview(scope))).map(Json)
+    let shared = app.clone();
+    with_scope(&app, project, move |scope| {
+        Ok(crate::tasks::overview(&shared, &scope))
+    })
+    .map(Json)
 }
 
 #[derive(Deserialize)]
