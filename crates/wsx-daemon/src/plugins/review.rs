@@ -86,7 +86,7 @@ pub fn invoke(
         Command::new(&plugin.command[0]).args(&plugin.command[1..]),
         &input,
         cancelled,
-        Duration::from_secs(3),
+        super::TIMEOUT,
     )?;
     let response: ReviewResponse = serde_json::from_slice(&output)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
