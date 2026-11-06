@@ -17,7 +17,9 @@ use wsx_core::runtime::{
 
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_PLUGINS: usize = 64;
-const TIMEOUT: Duration = Duration::from_secs(3);
+// ^ Unit tests run real plugin processes on a busy host, where a first exec can wait seconds;
+// they check the payload, and `review::tests` checks the deadline with its own timeout.
+const TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 30 } else { 3 });
 const MAX_VIEW_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_VIEW_ROWS: usize = 512;
 const MAX_VIEW_TEXT_BYTES: usize = 4096;

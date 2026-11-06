@@ -116,18 +116,8 @@ pub(super) fn write<T>(
 where
     T: DeserializeOwned,
 {
-    let temporary = path.with_extension(format!(
-        "json.tmp.{}.{}",
-        std::process::id(),
-        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
+    let (temporary, mut file) = create_temporary(path, "tmp")?;
     let result = (|| {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&temporary)?;
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
         file.write_all(bytes)?;
         sync_before_rename(&file)?;
@@ -151,18 +141,8 @@ where
         }
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         if !had_primary {
-            let backup_temporary = path.with_extension(format!(
-                "json.backup.tmp.{}.{}",
-                std::process::id(),
-                TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-            ));
+            let (backup_temporary, mut backup_file) = create_temporary(path, "backup.tmp")?;
             let backup_result = (|| {
-                let mut backup_file = fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .custom_flags(libc::O_NOFOLLOW)
-                    .open(&backup_temporary)?;
                 backup_file.write_all(bytes)?;
                 sync_before_rename(&backup_file)?;
                 fs::rename(&backup_temporary, &backup)
@@ -387,6 +367,33 @@ impl Shared {
     }
 }
 
+/// Creates a new owner-only `<path>.json.<kind>.<pid>.<sequence>` file. A name an earlier
+/// process with the same pid left, as one killed mid-save does, takes the next sequence.
+fn create_temporary(path: &Path, kind: &str) -> io::Result<(PathBuf, File)> {
+    for _ in 0..16 {
+        let temporary = path.with_extension(format!(
+            "json.{kind}.{}.{}",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&temporary)
+        {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no free temporary name beside the state file",
+    ))
+}
+
 fn load_one<T>(path: &Path, validate: fn(&T) -> io::Result<()>) -> Result<T, LoadFailure>
 where
     T: DeserializeOwned,
@@ -514,6 +521,38 @@ mod tests {
             load_one::<Fixture>(&backup_path(&path), valid).unwrap(),
             Fixture { value: 1 }
         );
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(backup_path(&path));
+    }
+
+    #[test]
+    fn a_temporary_a_killed_save_left_does_not_fail_the_next_save() {
+        // A test cancelled mid-save leaves its temporaries; a later process gets its pid.
+        let path = path("stale-temporary");
+        let next = TEMP_SEQUENCE.load(Ordering::Relaxed);
+        let stale = (next..next + 2)
+            .flat_map(|sequence| {
+                ["tmp", "backup.tmp"].map(|kind| {
+                    path.with_extension(format!("json.{kind}.{}.{sequence}", std::process::id()))
+                })
+            })
+            .collect::<Vec<_>>();
+        for file in &stale {
+            fs::write(file, b"left by a killed save").unwrap();
+        }
+        save(&path, &Fixture { value: 1 }, valid).unwrap();
+        assert_eq!(
+            load_one::<Fixture>(&path, valid).unwrap(),
+            Fixture { value: 1 }
+        );
+        assert_eq!(
+            load_one::<Fixture>(&backup_path(&path), valid).unwrap(),
+            Fixture { value: 1 }
+        );
+        for file in stale {
+            assert_eq!(fs::read(&file).unwrap(), b"left by a killed save");
+            fs::remove_file(file).unwrap();
+        }
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(backup_path(&path));
     }

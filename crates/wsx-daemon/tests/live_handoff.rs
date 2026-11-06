@@ -51,11 +51,10 @@ impl Fixture {
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         // Handoff binaries have their own namespace: XDG_STATE_HOME/wsx is a directory.
         fs::create_dir(root.join("bin")).unwrap();
-        fs::copy(
-            PathBuf::from(env!("CARGO_BIN_EXE_wsxd")).with_file_name("wsx"),
-            root.join("bin/wsx"),
-        )
-        .expect("build adjacent wsx/wsxd before running daemon lifecycle scenarios");
+        link_binary(
+            &PathBuf::from(env!("CARGO_BIN_EXE_wsxd")).with_file_name("wsx"),
+            &root.join("bin/wsx"),
+        );
         let socket = root.join("d.sock");
         Self {
             root,
@@ -66,10 +65,10 @@ impl Fixture {
 
     fn wsxd(&self) -> PathBuf {
         // ^ The daemon re-validates the handoff executable by device, inode, size and mtime
-        // after the deferral. Another task's build can relink the shared target/debug/wsxd in
-        // that window, so each test hands off its own copy.
+        // after the deferral. A build can relink target/debug/wsxd in that window, so each
+        // test hands off its own link, which keeps the file the build replaced.
         let binary = self.root.join("bin/wsxd");
-        fs::copy(env!("CARGO_BIN_EXE_wsxd"), &binary).unwrap();
+        link_binary(Path::new(env!("CARGO_BIN_EXE_wsxd")), &binary);
         binary
     }
 
@@ -108,6 +107,17 @@ impl Drop for Fixture {
     }
 }
 
+/// Hard-links `source` at `destination`, or copies it to another file system.
+fn link_binary(source: &Path, destination: &Path) {
+    // ^ macOS checks a new executable file at its first exec, one file at a time for the whole
+    // machine: under load ten fresh copies wait up to 15 s before main. A link shares the file
+    // the build already ran. A rebuild writes a new file, so the link keeps the old one.
+    if fs::hard_link(source, destination).is_err() {
+        fs::copy(source, destination)
+            .expect("build adjacent wsx/wsxd before running daemon lifecycle scenarios");
+    }
+}
+
 fn prepare_handoff(target_binary_id: String, executable: PathBuf, restart: bool) -> Request {
     Request::PrepareHandoff {
         target_binary_id,
@@ -122,13 +132,15 @@ fn prepare_handoff(target_binary_id: String, executable: PathBuf, restart: bool)
 /// Spawns the source wsxd of `fixture` and returns a client of it.
 fn start(fixture: &mut Fixture, binary: &Path) -> Client {
     fixture.source = Some(fixture.command(binary).spawn().unwrap());
-    wait_for_socket(&fixture.socket);
+    wait_for_socket(&fixture.socket, fixture.source.as_mut().unwrap());
     Client::new(fixture.socket.clone())
 }
 
-fn wait_for_socket(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
+/// Waits for the owner-only socket at `path` while `daemon` runs.
+fn wait_for_socket(path: &Path, daemon: &mut Child) {
+    // ^ A generous bound: under load a daemon start alone can take seconds.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline && daemon.try_wait().unwrap().is_none() {
         // ^ wsxd binds the socket, then restricts it to its owner: a client that connects
         // between the two steps is refused (client.rs `validate_socket`). Wait for the
         // restricted socket, as a client that retries would.
