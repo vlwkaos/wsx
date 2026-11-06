@@ -2524,18 +2524,20 @@ await evaluate("history.back()");
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "Back after a deep link did not close the sheet");
 // ^ The chat is the first entry: its Back replaces it with Home, no entry is added, and
 // history.back() then leaves the page, as two history.back() calls from the deep link do.
+// ^ A history.back() that leaves the page runs after the evaluate returns: a navigation during it
+// closes the evaluate's context.
 const deepLength = await evaluate("history.length");
 await click(".manager > .bar > a.icon-button");
 await until("location.hash === '#/' && !!document.querySelector('.home-row')", "Back on the first entry did not go to Home");
 const deepHome = await evaluate("({ length: history.length, depth: history.state?.depth })");
 if (deepHome.length !== deepLength || deepHome.depth !== 0) await fail(`Back on the first entry pushed: ${JSON.stringify(deepHome)}, was length ${deepLength}`);
-await evaluate("history.back()");
+await evaluate("setTimeout(() => history.back())");
 await until("location.href === 'about:blank'", "history.back() after Back on the first entry did not leave the page");
 await send("Page.navigate", { url: `${siteUrl}#/p/${project}/t/3` });
 await until("!!document.querySelector('dialog.task-sheet[open] .story') && !!document.querySelector('.composer-field')", "the deep link did not open again");
 await evaluate("history.back()");
 await until(`location.hash === ${JSON.stringify(chat)} && !document.querySelector('dialog.task-sheet')`, "history.back() after the deep link did not close the sheet");
-await evaluate("history.back()");
+await evaluate("setTimeout(() => history.back())");
 await until("location.href === 'about:blank'", "a second history.back() after the deep link did not leave the page");
 await send("Page.navigate", { url: `${siteUrl}#/` });
 await until("!!document.querySelector('.home-row')", "the page did not open again on Home");
