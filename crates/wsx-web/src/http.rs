@@ -1132,7 +1132,7 @@ async fn tasks_overview(
     tasks_allowed(&app, false)?;
     let shared = app.clone();
     with_scope(&app, project, move |scope| {
-        Ok(crate::tasks::overview(&shared, &scope))
+        Ok(crate::tasks::overview(&shared, scope))
     })
     .map(Json)
 }
