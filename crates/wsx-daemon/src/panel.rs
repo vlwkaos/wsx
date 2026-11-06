@@ -48,6 +48,7 @@ pub(crate) fn handle(daemon: &Daemon, project: &Path, action: Action) -> Respons
                     .map(|panel| PanelInfo {
                         name: panel.name.clone(),
                         refresh: panel.refresh,
+                        scope: panel.scope,
                     })
                     .collect(),
                 notice: config.notice,

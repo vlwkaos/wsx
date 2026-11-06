@@ -1,4 +1,5 @@
-//! The TUI's panel view: a project's panels, one at a time, read from wsxd off the UI thread.
+//! The TUI's panel view: a project's panels, or every project's machine panels, one at a time,
+//! read from wsxd off the UI thread.
 //! It asks for a run on open, on `R`, and when the result is older than the panel's `refresh`.
 //! ref: docs/panels.md
 use std::{
@@ -7,7 +8,7 @@ use std::{
     sync::mpsc,
     time::{Duration, Instant},
 };
-use wsx_core::panel::{self, Action, PanelInfo, PanelStatus, Response};
+use wsx_core::panel::{self, Action, PanelInfo, PanelScope, PanelStatus};
 
 /// A view read while a run is in flight is read again this often.
 const RUNNING_POLL: Duration = Duration::from_secs(1);
@@ -16,11 +17,26 @@ const RETRY: Duration = Duration::from_secs(10);
 /// The age on screen is drawn again this often.
 const REDRAW: Duration = Duration::from_secs(1);
 
-pub struct PanelsView {
+/// One panel and the project that declares it.
+pub struct Entry {
     pub project: String,
     path: PathBuf,
+    pub info: PanelInfo,
+}
+
+/// What a finished read brings.
+enum Answer {
+    List(Vec<Entry>, Option<String>),
+    Panel(panel::PanelView),
+}
+
+pub struct PanelsView {
+    pub title: String,
+    /// The projects to list, and whether only their machine panels count (`M`).
+    sources: Vec<(String, PathBuf)>,
+    pub machine: bool,
     /// None until wsxd answered the list.
-    pub panels: Option<Vec<PanelInfo>>,
+    pub panels: Option<Vec<Entry>>,
     pub notice: Option<String>,
     pub selected: usize,
     pub shown: Option<panel::PanelView>,
@@ -28,7 +44,7 @@ pub struct PanelsView {
     pub scroll: u16,
     /// ^ The furthest scroll and the height of the last frame, which `j` uses.
     pub max_scroll: Cell<u16>,
-    pending: Option<mpsc::Receiver<Result<Response, String>>>,
+    pending: Option<mpsc::Receiver<Result<Answer, String>>>,
     /// The next read starts a run.
     run_next: bool,
     read_at: Instant,
@@ -37,10 +53,21 @@ pub struct PanelsView {
 }
 
 impl PanelsView {
+    /// One project's panels.
     pub fn new(project: String, path: PathBuf) -> Self {
+        Self::open(format!("{project} panels"), vec![(project, path)], false)
+    }
+
+    /// The machine panels of these projects.
+    pub fn machine(sources: Vec<(String, PathBuf)>) -> Self {
+        Self::open("Machine panels".into(), sources, true)
+    }
+
+    fn open(title: String, sources: Vec<(String, PathBuf)>, machine: bool) -> Self {
         let mut view = Self {
-            project,
-            path,
+            title,
+            sources,
+            machine,
             panels: None,
             notice: None,
             selected: 0,
@@ -54,22 +81,57 @@ impl PanelsView {
             last_poll: Instant::now(),
             drawn: Instant::now(),
         };
-        view.fetch(Action::List);
+        view.fetch_list();
         view
     }
 
-    fn fetch(&mut self, action: Action) {
+    fn fetch(&mut self, job: impl FnOnce() -> Result<Answer, String> + Send + 'static) {
         let (tx, rx) = mpsc::sync_channel(1);
-        let path = self.path.clone();
         self.pending = Some(rx);
         self.last_poll = Instant::now();
         std::thread::spawn(move || {
-            let client = wsx_core::runtime::Client::local();
-            let _ = tx.send(panel::request(&client, &path, action));
+            let _ = tx.send(job());
         });
     }
 
-    fn current(&self) -> Option<&PanelInfo> {
+    /// Ask wsxd for the panels of every source; a machine view keeps the machine-scoped ones.
+    /// A source that fails is skipped, unless none answered.
+    fn fetch_list(&mut self) {
+        let sources = self.sources.clone();
+        let machine = self.machine;
+        self.fetch(move || {
+            let client = wsx_core::runtime::Client::local();
+            let (mut entries, mut notice, mut failure) = (Vec::new(), None, None);
+            for (project, path) in sources {
+                match panel::request(&client, &path, Action::List) {
+                    Ok(panel::Response::Panels {
+                        panels,
+                        notice: found,
+                    }) => {
+                        notice = notice.or(found.filter(|_| !machine));
+                        entries.extend(
+                            panels
+                                .into_iter()
+                                .filter(|info| !machine || info.scope == PanelScope::Machine)
+                                .map(|info| Entry {
+                                    project: project.clone(),
+                                    path: path.clone(),
+                                    info,
+                                }),
+                        );
+                    }
+                    Ok(_) => failure = failure.or(Some("unexpected wsxd answer".to_string())),
+                    Err(message) => failure = failure.or(Some(message)),
+                }
+            }
+            match failure {
+                Some(message) if entries.is_empty() => Err(message),
+                _ => Ok(Answer::List(entries, notice)),
+            }
+        });
+    }
+
+    fn current(&self) -> Option<&Entry> {
         self.panels.as_ref()?.get(self.selected)
     }
 
@@ -95,23 +157,23 @@ impl PanelsView {
                     self.pending = None;
                     changed = true;
                     match answer {
-                        Ok(Response::Panels { panels, notice }) => {
-                            self.panels = Some(panels);
+                        Ok(Answer::List(entries, notice)) => {
+                            self.panels = Some(entries);
                             self.notice = notice;
                             self.error = None;
                         }
-                        Ok(Response::Panel(view)) => {
+                        Ok(Answer::Panel(view)) => {
                             self.shown = Some(view);
                             self.read_at = Instant::now();
                             self.error = None;
                         }
-                        Ok(Response::Error(message)) | Err(message) => self.error = Some(message),
+                        Err(message) => self.error = Some(message),
                     }
                 }
             }
         }
         if self.pending.is_none() {
-            if let Some(info) = self.current().cloned() {
+            if let Some((path, info)) = self.current().map(|e| (e.path.clone(), e.info.clone())) {
                 let waited = self.last_poll.elapsed();
                 let (run, due) = match &self.shown {
                     None => (true, self.error.is_none() || waited >= RETRY),
@@ -126,9 +188,19 @@ impl PanelsView {
                 };
                 if due {
                     self.run_next = false;
-                    self.fetch(Action::Get {
-                        name: info.name,
-                        run,
+                    self.fetch(move || {
+                        let client = wsx_core::runtime::Client::local();
+                        match panel::request(
+                            &client,
+                            &path,
+                            Action::Get {
+                                name: info.name,
+                                run,
+                            },
+                        )? {
+                            panel::Response::Panel(view) => Ok(Answer::Panel(view)),
+                            _ => Err("unexpected wsxd answer".into()),
+                        }
                     });
                 }
             }

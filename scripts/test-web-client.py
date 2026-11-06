@@ -3143,11 +3143,13 @@ PANEL_CONFIG = '''panels:
   - name: device
     command: [scripts/device.sh]
     refresh: 10
+    scope: machine
   - name: broken
     command: [scripts/broken.sh]
   - name: gauges
     command: [scripts/gauges.sh]
     format: json
+    scope: machine
   - name: badjson
     command: [scripts/badjson.sh]
     format: json
@@ -3524,17 +3526,19 @@ def task_journey(args):
         push_origin = 'http://127.0.0.1:%d' % receiver['port']
         vapid = cli('web', 'vapid').stdout
         private_key = next(line.split('"')[1] for line in vapid.splitlines() if line.startswith('private_key'))
-        ports = {name: free_port() for name in ('owner', 'viewer', 'plain', 'admin', 'relay')}
+        ports = {name: free_port() for name in ('owner', 'viewer', 'plain', 'admin', 'scoped', 'relay')}
         # ^ The browser reaches the owner's site through `Relay`, so its public origin is the relay's.
-        public = {name: 'http://127.0.0.1:%d' % ports['relay' if name == 'owner' else name] for name in ('owner', 'viewer', 'plain', 'admin')}
+        public = {name: 'http://127.0.0.1:%d' % ports['relay' if name == 'owner' else name] for name in ('owner', 'viewer', 'plain', 'admin', 'scoped')}
         grants = {
             'owner': ('"all"', '"task_view", "task_act", "push", "media_upload", "media_download"'),
             'viewer': (json.dumps([str(project)]), '"task_view", "push"'),
             'plain': (json.dumps([str(other)]), '"chat_send", "push"'),
             # ^ Adds and removes projects (docs/web-client.md "Projects"): every project and a terminal that takes input.
             'admin': ('"all"', '"task_view", "terminal_view", "terminal_input", "push"'),
+            # ^ Reads panels, but only of `other`, which declares none (docs/panels.md "Machine panels").
+            'scoped': (json.dumps([str(other)]), '"task_view", "terminal_view", "terminal_input", "push"'),
         }
-        panels = {'admin': '"chat", "terminal"'}
+        panels = {'admin': '"chat", "terminal"', 'scoped': '"chat", "terminal"'}
         files, sites, servers = {}, {}, {}
         for name, (projects_value, capabilities) in grants.items():
             files[name] = work / (name + '.toml')
@@ -3585,6 +3589,16 @@ merge_seconds = 3
             assert steady(admin, 'GET', '/api/projects/999999/panels')[0] == 404
             listed_panels = steady(admin, 'GET', panel_url)[1]
             assert [p['name'] for p in listed_panels['panels']] == ['device', 'broken', 'gauges', 'badjson'] and listed_panels['notice'] is None, listed_panels
+
+            # ^ docs/panels.md "Machine panels": the `scope: machine` panels of the granted projects,
+            # for the right to run commands only.
+            machine_url = '/api/machine/panels'
+            status, machine = steady(admin, 'GET', machine_url)
+            assert status == 200 and machine == {'projects': [{'id': calm_id, 'name': 'calm', 'panels': [
+                {'name': 'device', 'refresh': 10, 'scope': 'machine'}, {'name': 'gauges', 'refresh': 0, 'scope': 'machine'}]}]}, machine
+            assert steady(owner, 'GET', machine_url)[0] == 403 and steady(viewer, 'GET', machine_url)[0] == 403
+            assert steady(sites['scoped'], 'GET', machine_url) == (200, {'projects': []}), steady(sites['scoped'], 'GET', machine_url)
+            assert steady(sites['scoped'], 'GET', panel_url)[0] == 404, 'a project outside the grant answered'
 
             def panel_shown(name, run=False, done=True):
                 asked = [run]

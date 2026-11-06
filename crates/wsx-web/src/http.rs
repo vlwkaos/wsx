@@ -71,6 +71,7 @@ pub fn router(app: Shared) -> Router {
             .route("/api/projects", post(project_add))
             .route("/api/projects/{project}", delete(project_remove))
             .route("/api/projects/{project}/shell", post(project_shell))
+            .route("/api/machine/panels", get(machine_panels))
             .route("/api/projects/{project}/panels", get(project_panels))
             .route("/api/projects/{project}/panels/{name}", get(project_panel))
             .route("/api/chat/{session}/timeline", get(timeline))
@@ -901,6 +902,10 @@ async fn project_shell(
             .map_err(|error| Fault::new(409, "shell_unavailable", format!("{error:#}")))?;
         Ok(Json(json!({ "session_id": session.0 })))
     })
+}
+
+async fn machine_panels(State(app): State<Shared>, Paired(_): Paired) -> Outcome<Json<Value>> {
+    crate::panels::machine(&app).map(Json)
 }
 
 async fn project_panels(

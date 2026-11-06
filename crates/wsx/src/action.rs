@@ -44,6 +44,7 @@ pub enum Action {
     GroupManager,
     Tasks,
     Panels,
+    MachinePanels,
     Overview,
     Shell,
     InputChar(char),

@@ -5,7 +5,7 @@
 // is done and when the panel's `refresh` is due.
 import { api } from "./api.js";
 import { html, Icon, Loading, useEffect, useNow, useState } from "./lib.js";
-import { can, goBack } from "./store.js";
+import { can, goBack, shows, state, update, useStore } from "./store.js";
 import { SheetBar } from "./ui.js";
 
 const url = (project, name = "", run = false) => `api/projects/${project}/panels${name ? `/${encodeURIComponent(name)}` : ""}${run ? "?run=1" : ""}`;
@@ -147,6 +147,35 @@ export function PanelsPage({ project, onClose, grip }) {
                   ${panels.map((panel) => html`<button type="button" role="tab" key=${panel.name} aria-selected=${open === panel.name} onClick=${() => setOpen(panel.name)}>${panel.name}</button>`)}
                 </div>`}
                 ${open && html`<${Panel} key=${open} project=${project} name=${open} />`}`}`}
+      </div>
+    </div>`;
+}
+
+// The machine panels of the granted projects (docs/panels.md "Machine panels"): read at the start,
+// after a missed event and when the project list changes. A failed read keeps the last list.
+export async function loadMachine() {
+  if (!can("terminal_input") || !shows("terminal")) return;
+  try {
+    const { projects } = await api("api/machine/panels");
+    if (JSON.stringify(projects) !== JSON.stringify(state.machine)) update({ machine: projects });
+  } catch { /* the tab keeps what it had */ }
+}
+
+// The Machine tab: every machine panel, its name over the project's, each with its own run and refresh.
+export function MachineScreen() {
+  const { machine, loaded } = useStore();
+  useEffect(() => { loadMachine(); }, []);
+  const panels = machine.flatMap((project) => project.panels.map((panel) => ({ project, panel })));
+  return html`
+    <div class="page">
+      <h1 class="title">Machine</h1>
+      <div class="scroll panels">
+        ${!panels.length ? html`<p class="empty">${loaded ? "No machine panels" : ""}</p>`
+          : panels.map(({ project, panel }) => html`
+            <section class="machine-panel" key=${`${project.id}/${panel.name}`} aria-label=${panel.name}>
+              <h2 class="machine-name">${panel.name}<small>${project.name}</small></h2>
+              <${Panel} project=${project.id} name=${panel.name} />
+            </section>`)}
       </div>
     </div>`;
 }

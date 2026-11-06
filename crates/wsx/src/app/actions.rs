@@ -533,6 +533,16 @@ impl App {
         };
     }
 
+    /// `M`: the machine panels of every project (docs/panels.md "Machine panels").
+    pub(super) fn action_machine_panels(&mut self) {
+        let sources = (self.workspace.projects.iter())
+            .map(|project| (project.name.clone(), project.path.clone()))
+            .collect();
+        self.mode = Mode::Panels {
+            view: Box::new(crate::panel_view::PanelsView::machine(sources)),
+        };
+    }
+
     pub(super) fn action_add_routine(&mut self) -> Result<()> {
         let pi = match self.current_selection() {
             Selection::Project(pi)
