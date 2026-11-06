@@ -3730,11 +3730,13 @@ merge_seconds = 3
         seen = [row.get('id') for row in whole_chat['rows']].index(last_id)
         assert tail_chat['rows'] == whole_chat['rows'][seen + 1:] and 'cache check line' in json.dumps(tail_chat['rows']), tail_chat
         # ^ The viewer's server is another process with its own cache: its answer is built from the files.
-        for attempt in range(3):
-            cached, cold = (steady(site, 'GET', '/api/tasks/%d' % demo)[1] for site in (owner, viewer))
-            if cached == cold:
-                break
-        assert cached == cold and cached != warm and 'cache check line' in cached['last_reply'], (cached, cold)
+        # ^ A status sentence counts minutes ("for 1 min"): the cache keeps it up to 60 s, so it is left out of the comparison.
+        def without_sentences(value):
+            if isinstance(value, dict):
+                return {key: without_sentences(item) for key, item in value.items() if key != 'sentence'}
+            return [without_sentences(item) for item in value] if isinstance(value, list) else value
+        cached, cold = (steady(site, 'GET', '/api/tasks/%d' % demo)[1] for site in (owner, viewer))
+        assert without_sentences(cached) == without_sentences(cold) and cached != warm and 'cache check line' in cached['last_reply'], (cached, cold)
         ok('overview and chat: no whole-log read for an unchanged stamp or a chat with a recent after; after a manager line both equal a cold build')
         # ^ A quiet stream pings every 10 s, so a page can tell a silent dead stream from a quiet one.
         watcher.expect('ping', timeout=15)
