@@ -96,8 +96,11 @@ await until("[...document.querySelectorAll('.tabbar a')].map((tab) => tab.textCo
 await capture("390x844-machine-hidden");
 await evaluate("document.querySelector('input[name=tab-machine]').click()");
 await until("[...document.querySelectorAll('.tabbar a')].some((tab) => tab.textContent === 'Machine')", "the Machine tab did not return");
-await send("Page.navigate", { url: `${adminUrl}#/p/${project}` });
-await until("!!document.querySelector('a[aria-label=\"Panels\"]')", "the project screen lost its Panels icon");
+// The project screen still lists its machine panels with the others.
+await send("Page.navigate", { url: `${adminUrl}#/p/${project}/panels` });
+await until("document.querySelectorAll('.panel-tabs [role=tab]').length === 4", "the project's panels page lost a panel");
+await tab("gauges");
+await until("document.querySelectorAll('.panel-doc .panel-card').length === 2", "the json panel did not come back on the project's page");
 await viewport(1280, 800, 1);
 await capture("1280x800-panel-json");
 await tab("broken");
