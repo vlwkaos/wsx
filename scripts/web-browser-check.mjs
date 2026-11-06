@@ -166,7 +166,9 @@ if (mode === "restart") {
   await evaluate("document.querySelector('.build-pill').click()");
   await until(`new URL(document.querySelector('script[type=module]')?.src ?? location.href).pathname.includes('/${buildB}/') && !!document.querySelector('.app')`, "Reload did not load the new build", 300);
   if (await count(".build-pill")) await fail("the new build still offers a reload");
-  if ((await evaluate("document.querySelector('.composer-field')?.value")) !== "typed before the new build") await fail("the draft did not survive the reload");
+  // ^ The new build's app opens before the chat draws its composer; its draft is set as it opens.
+  await until("!!document.querySelector('.composer-field')", "the chat's composer did not open after the reload");
+  if ((await evaluate("document.querySelector('.composer-field').value")) !== "typed before the new build") await fail("the draft did not survive the reload");
   await go("#/settings");
   await until("!!document.querySelector('.facts')", "Settings shows no version");
   const facts = await evaluate("Object.fromEntries([...document.querySelectorAll('.facts dt')].map((dt) => [dt.textContent, dt.nextElementSibling.textContent]))");
