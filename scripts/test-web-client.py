@@ -4072,9 +4072,8 @@ merge_seconds = 3
             news_file = work / 'post-news'
 
             def post_news():
+                # ^ No exit when the owner's server is down: restart_owner replaces it, and a thread that saw the gap never posted.
                 while not news_file.exists():
-                    if servers['owner'].poll() is not None:
-                        return
                     time.sleep(0.2)
                 line = '[claude in old-work](session/%d) needs input' % plain_session
                 subprocess.run([str(wsx), 'task', 'post', '-p', 'ui', '--title', 'session claude in old-work'], input=line,
