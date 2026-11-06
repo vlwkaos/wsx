@@ -111,6 +111,7 @@ pub fn action_name(action: ApprovalAction) -> &'static str {
         ApprovalAction::Release => "release",
         ApprovalAction::Discard => "close --discard",
         ApprovalAction::Role => "role new",
+        ApprovalAction::Push => "push",
     }
 }
 
@@ -119,7 +120,12 @@ pub fn action_name(action: ApprovalAction) -> &'static str {
 /// ref: docs/web-client-tasks.md
 pub fn approval_label(request: &ApprovalLine) -> String {
     let ApprovalLine::Request {
-        action, task, role, ..
+        action,
+        task,
+        role,
+        commit,
+        lease,
+        ..
     } = request
     else {
         return String::new();
@@ -127,12 +133,17 @@ pub fn approval_label(request: &ApprovalLine) -> String {
     let verb = match action {
         ApprovalAction::Discard => "discard",
         ApprovalAction::Role => "role",
+        ApprovalAction::Push if lease.is_some() => "force push",
         other => action_name(*other),
     };
-    match (task, role) {
-        (Some(task), _) => format!("Approve {verb} #{task}"),
-        (None, Some(role)) => format!("Approve {verb} {role}"),
-        (None, None) => format!("Approve {verb}"),
+    match (task, role, action, commit) {
+        (Some(task), ..) => format!("Approve {verb} #{task}"),
+        (None, Some(role), ..) => format!("Approve {verb} {role}"),
+        // ^ A push names the commit the owner approves: "Approve force push 1a2b3c4d5e6f".
+        (None, None, ApprovalAction::Push, Some(commit)) => {
+            format!("Approve {verb} {}", commit.get(..12).unwrap_or(commit))
+        }
+        _ => format!("Approve {verb}"),
     }
 }
 
@@ -194,6 +205,7 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
         commit,
         role,
         brief,
+        lease,
         ..
     } = find_request(&lines, id)?.clone()
     else {
@@ -234,6 +246,13 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
             "--discard".into(),
         ]),
         ApprovalAction::Role => unreachable!("a role is created above"),
+        ApprovalAction::Push => {
+            argv.extend(["push".into(), "--commit".into(), commit.unwrap_or_default()]);
+            // ^ The owner approved a rewrite over the origin tip the request saw, no other.
+            if let Some(lease) = lease {
+                argv.extend(["--force".into(), format!("--lease={lease}")]);
+            }
+        }
         ApprovalAction::Deploy | ApprovalAction::Release => {
             argv.push(action_name(action).into());
             if let Some(commit) = commit {

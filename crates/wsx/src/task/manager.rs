@@ -336,7 +336,7 @@ fn instructions(
          daemon, a migration). \
          When the owner's message in this turn asks for the action itself (\"land #5\", \
          \"close #42\"), pass `--owner-said <id>`, the id in its 'Owner (message \
-         <id>)' heading, to `land`, `close --discard`, `deploy` or `release`; never name a \
+         <id>)' heading, to `land`, `close --discard`, `deploy`, `release` or `push`; never name a \
          message that did not ask for that action. When a command says the owner was asked, \
          say so. An event 'approval <id> (...) dropped': \
          tell the owner why in one line. A land needs no approval, and the project deploys \
@@ -355,7 +355,11 @@ fn instructions(
          one git command that writes: when a land refuses because the main checkout has the \
          owner's uncommitted changes, name those files and ask; only after the owner says \
          yes, commit exactly those files in the main checkout (`git commit -m \"<message \
-         that names them>\" -- <files>`) and land again. {skills}Use the skills and subagents that fit; check rather than guess. \
+         that names them>\" -- <files>`) and land again. Never `git push` or move the default \
+         branch yourself: `wsx task push` puts it on origin after the owner's approval, as a \
+         fast-forward; for a rewrite the owner asked for (a squash), a task makes the commit on \
+         its branch and `wsx task push --commit <sha> --force` sets the default branch to it. \
+         {skills}Use the skills and subagents that fit; check rather than guess. \
          When the owner decides a rule, a preference or a choice, append one line \
          `- <YYYY-MM-DD> <decision>` to {decisions} at once. Every new conversation of yours \
          starts with that file and {context}. wsx adds each \

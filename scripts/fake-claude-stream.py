@@ -566,9 +566,10 @@ def main():
             worked_around = words[words.index('DENIED') + 1]
             denials.append({'tool_name': 'Bash', 'tool_use_id': 'y', 'tool_input': {'command': worked_around}})
         if 'CHECKRUN' in words:
-            # ^ Through the task host's broker (WSX_TASK_BROKER); any other command is refused.
+            # ^ Through the task host's broker (WSX_TASK_BROKER); any other command is refused,
+            # a push of the default branch too (docs/tasks.md "Push").
             ran = subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True)
-            other = subprocess.run(['wsx', 'task', 'list'], capture_output=True, text=True)
+            other = subprocess.run(['wsx', 'task', 'push', '--json'], capture_output=True, text=True)
             trace({'check_run': [ran.returncode, ran.stdout + ran.stderr], 'check_run_other': [other.returncode, other.stderr]})
         if 'CHECKRUN_AGAIN' in words:
             # ^ A client that gives up (a Bash timeout) and asks again joins the run it left.

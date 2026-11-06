@@ -1,7 +1,7 @@
 //! The land's fast-forward meets `index.lock` in the checkout that has the default branch:
 //! a stale one (over 5 minutes, no holder) is cleared and the merge runs again; a fresh one,
 //! or one a live process holds open, refuses naming the lock, its age and the pid. Real git
-//! in a scratch repository, the real `copy::fast_forward` the host's land calls.
+//! in a scratch repository, the real `copy::move_branch` the host's land calls.
 //! ref: docs/tasks.md "Landing"
 
 use std::{
@@ -62,7 +62,7 @@ fn a_stale_lock_is_cleared_and_the_land_goes_on() {
     fs::write(&lock, "").unwrap();
     fs::write(&other, "").unwrap();
     age(&lock, 600);
-    let cleared = copy::fast_forward(&root, "main", &tip, &commit)
+    let cleared = copy::move_branch(&root, "main", &tip, &commit, false)
         .unwrap()
         .expect("the stale lock is reported");
     assert_eq!(cleared.path, lock);
@@ -77,7 +77,7 @@ fn a_fresh_lock_refuses_and_stays() {
     let lock = root.join(".git/index.lock");
     fs::write(&lock, "").unwrap();
     age(&lock, 240);
-    let error = copy::fast_forward(&root, "main", &tip, &commit)
+    let error = copy::move_branch(&root, "main", &tip, &commit, false)
         .unwrap_err()
         .to_string();
     assert!(error.contains(&lock.display().to_string()), "{error}");
@@ -102,7 +102,7 @@ fn an_old_lock_a_live_process_holds_refuses_with_its_pid() {
         ))
         .spawn()
         .unwrap();
-    let error = copy::fast_forward(&root, "main", &tip, &commit)
+    let error = copy::move_branch(&root, "main", &tip, &commit, false)
         .unwrap_err()
         .to_string();
     holder.kill().unwrap();
@@ -132,7 +132,7 @@ fn a_stale_lock_is_cleared_in_a_checkout_with_the_owners_changes() {
     let lock = root.join(".git/index.lock");
     fs::write(&lock, "").unwrap();
     age(&lock, 600);
-    let cleared = copy::fast_forward(&root, "main", &tip, &commit).unwrap();
+    let cleared = copy::move_branch(&root, "main", &tip, &commit, false).unwrap();
     assert!(cleared.is_some() && !lock.exists());
     assert_eq!(git(&root, &["rev-parse", "main"]), commit);
 }
@@ -158,7 +158,7 @@ fn a_lock_a_watcher_takes_after_the_clearing_is_waited_for() {
             fs::remove_file(&lock).unwrap();
         })
     };
-    let cleared = copy::fast_forward(&root, "main", &tip, &commit)
+    let cleared = copy::move_branch(&root, "main", &tip, &commit, false)
         .unwrap()
         .expect("the stale lock is reported");
     watcher.join().unwrap();
