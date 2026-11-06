@@ -22,7 +22,7 @@ Changes outside a request (pane exit, presence expiry, cold recovery, a resize s
 
 ## The write
 
-The file is written as `state.json.tmp.<pid>.<n>` with mode 0600 and `O_NOFOLLOW`, then renamed over the primary. The old primary becomes `state.json.backup`. A primary that does not load is never rotated over the backup. `load` reads the backup when the primary is missing or invalid, and moves an invalid primary to `state.json.corrupt.<ms>`.
+The file is written as `state.json.tmp.<pid>.<n>` with mode 0600 and `O_NOFOLLOW`, then renamed over the primary. The name must be new: one that a process killed mid-save left behind under a reused pid takes the next `<n>`. The old primary becomes `state.json.backup`. A primary that does not load is never rotated over the backup. `load` reads the backup when the primary is missing or invalid, and moves an invalid primary to `state.json.corrupt.<ms>`.
 
 ## Syncs
 
