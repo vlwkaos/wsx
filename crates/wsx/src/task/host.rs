@@ -26,7 +26,9 @@ use wsx_core::task::view::checked_files;
 use wsx_core::task::{
     build, call_host, checks,
     copy::{self, Rebase},
-    now_unix_ms,
+    failure::{self, NO_SPACE},
+    manager::{Author, Short},
+    now_unix_ms, owner,
     owner::HOST_TIMEOUT,
     report,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
@@ -35,6 +37,8 @@ use wsx_core::task::{
     MAX_MESSAGE_BYTES,
 };
 
+/// A shared failure is posted once in this long (the store keeps a key for a day).
+const SHARED_WINDOW_SECS: u64 = 24 * 60 * 60;
 const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 pub(super) const CHECK_OUTPUT_BYTES: usize = 8 * 1024;
 const MAX_RESULT_BYTES: usize = 256 * 1024;
@@ -108,7 +112,6 @@ const DISK_POLL: Duration = Duration::from_secs(30);
 /// space its turn takes before it resumes.
 const DISK_SETTLE: Duration = Duration::from_secs(60);
 /// What a check prints when the disk is full: the check then waits instead of failing.
-const NO_SPACE: &str = "No space left on device";
 /// The handoff notes a worker writes before its conversation rotates, in its task folder.
 const ROTATE_NOTES: &str = "rotate-notes.md";
 /// At most this much of the notes goes into the fresh conversation's first turn.
@@ -457,7 +460,11 @@ impl Host {
                 Event::Reported(text, reply) => {
                     let _ = reply.send(self.reported(text));
                 }
-                Event::CheckRunDone(results, response, stored) => {
+                Event::CheckRunDone(results, mut response, stored) => {
+                    let shared = self.shared_failures(&results);
+                    if !shared.is_empty() {
+                        response.stdout = format!("{}\n{shared}", response.stdout.trim_end());
+                    }
                     let run = self.check_run.take();
                     let label = run
                         .as_ref()
@@ -2433,6 +2440,7 @@ impl Host {
         self.log(LogEvent::Checks {
             results: results.clone(),
         });
+        self.shared_failures(&results);
         // ^ A host that started again at ready has no last_result: the stored one is the worker's.
         let result = self.current_result();
         let passed = result.status == "done" && results.iter().all(|check| check.exit == Some(0));
@@ -3107,6 +3115,58 @@ impl Host {
         if let Err(error) = self.dir.write_record(&self.record) {
             self.say(&format!("cannot write the task record: {error:#}"));
         }
+    }
+
+    /// The failures of `results` that other tasks of the project show too: each is posted to
+    /// the manager once, as one event that wakes a turn; returns the sentences for the worker
+    /// whose run it was. ref: docs/tasks.md "Checks, revisions and report"
+    fn shared_failures(&self, results: &[CheckResult]) -> String {
+        let now = now_unix_ms();
+        let found = failure::shared_failures(&self.record.project_id, self.record.id, results, now);
+        let (project, main) = (
+            self.record.project.clone(),
+            self.record.project_path.clone(),
+        );
+        let project_id = self.record.project_id.clone();
+        for failure in &found {
+            let (failure, project, main, project_id) = (
+                failure.clone(),
+                project.clone(),
+                main.clone(),
+                project_id.clone(),
+            );
+            // ^ The manager starts if it does not run, and a busy host takes a while to answer.
+            std::thread::spawn(move || {
+                let Ok(exe) = std::env::current_exe() else {
+                    return;
+                };
+                let _ = store::post_once(
+                    &project_id,
+                    &failure.key(),
+                    now / 1000,
+                    SHARED_WINDOW_SECS,
+                    || {
+                        let sent = owner::say(
+                            &project,
+                            &main,
+                            &exe,
+                            None,
+                            super::launch_manager(&main),
+                            failure.event(),
+                            Some(Author::Events),
+                            vec![Short::plain(&failure.event())],
+                        )?;
+                        anyhow::ensure!(sent.ok, "{}", sent.message);
+                        Ok(())
+                    },
+                );
+            });
+        }
+        found
+            .iter()
+            .map(|failure| failure.sentence(self.record.id))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn log(&self, event: LogEvent) {
