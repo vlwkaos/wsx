@@ -2615,7 +2615,9 @@ capabilities = ["terminal_view"]
         status, sent = family.request('POST', '/api/chat/%d/send' % sessions['family'], {'text': 'build me a page'})
         sent = sent['exchange']
         assert status == 200 and sent['access'] == 'read_only', sent
-        assert wait(lambda: traces('family')[family_before[0]:], 'family delivery')[0].startswith('[wsx exchange %d, round 1, read-only]\n' % sent['id'])
+        # ^ The profile journey's exchange may still be open, so this can be a later round of it.
+        delivered_text = wait(lambda: traces('family')[family_before[0]:], 'family delivery')[0]
+        assert delivered_text.startswith('[wsx exchange %d, round ' % sent['id']) and 'build me a page' in delivered_text, (delivered_text, sent)
         assert len(traces('owner')) == before
         wait(lambda: len(messages(family, sessions['family'])['messages']) == family_before[1] + 2, 'family history')
         assert family.request('GET', '/' + uploaded['url'])[0] == 404  # media stores are per site
