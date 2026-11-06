@@ -2557,7 +2557,8 @@ capabilities = ["terminal_view"]
         assert session['site']['panels'] == ['chat'] and 'agent_write' not in session['site']['capabilities']
         family_events = Events(family, shape='stripped')
         streams.append(family_events)
-        assert [s['id'] for s in family_events.expect('workspace')['sessions']] == [sessions['family']]
+        # ^ The project shell closed just above is project2's too: the first workspace may still list it, the next does not.
+        family_events.expect('workspace', lambda data: [s['id'] for s in data['sessions']] == [sessions['family']])
         for method, target, body in (('GET', '/api/files?project=1&path=', None), ('GET', '/api/file?project=1&path=notes.txt', None),
                                      ('PUT', '/api/file', write),
                                      ('GET', '/api/push', None),
