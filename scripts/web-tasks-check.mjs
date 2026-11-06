@@ -2545,7 +2545,8 @@ await until("!!document.querySelector('.home-row')", "the page did not open agai
 // --- Back in a top row or a sheet and the system's swipe back (history.back()) lead to the same
 // place with the same scroll (docs/web-client.md "Screens"): each screen opens the normal way
 // twice, left once by its Back and once by history.back(). A list's scroll comes back too.
-await resize([390, 560, 2]);
+// ^ Short enough that Home's seven rows scroll.
+await resize([390, 400, 2]);
 const where = () => evaluate("JSON.stringify({ hash: location.hash, length: history.length, depth: history.state?.depth, scroll: [...document.querySelectorAll('#main > .page > .scroll, #main .log')].map((node) => Math.round(node.scrollTop)) })");
 const topBack = "#main > .page > .bar > a.icon-button";
 const sheetBack = "dialog.task-sheet[open] .bar button[aria-label='Back to the chat']";
@@ -2572,7 +2573,7 @@ const fromMenu = (selector, ready, what) => async () => {
   await opens(`.more-menu ${selector}`, ready, what)();
 };
 await evaluate("document.querySelector('#main > .page > .scroll').scrollTop = 120");
-if (!(JSON.parse(await where()).scroll[0] > 0)) await fail("Home does not scroll at 390 × 560: the scroll place is not checked");
+if (!(JSON.parse(await where()).scroll[0] > 0)) await fail("Home does not scroll at 390 × 400: the scroll place is not checked");
 await sameBack("a project's chat", opens(`a.home-row[href="${chat}"]`, "!!document.querySelector('.composer-field')", "the chat"), topBack);
 await go(chat);
 await until("!!document.querySelector('.composer-field')", "the chat did not open");
