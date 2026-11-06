@@ -3457,7 +3457,7 @@ def run(wsx, wsxd, work, owned):
     assert kinds(again, 'result', 'check_run', 'checks') == ['result', 'check_run', 'result', 'result', 'checks'], log(again)
     turns = [(e['step'], e['trigger']) for e in log(again) if e['kind'] == 'result']
     assert turns == [('build', 'step'), ('build', 'check_run'), ('review', 'step')], turns
-    answers = [t['message'] for t in traces() if t.get('message', '').startswith('Your check-run ended. Its answer:')]
+    answers = [t['message'] for t in traces() if t.get('message', '').startswith('Your check-run ended. Its answer')]
     assert len(answers) == 1 and ': exit 0' in answers[0], answers
     # ^ One start for the check-run and one for the checks after the result.
     starts = [line for line in spans.read_text().splitlines() if line.startswith(copy_name(again) + ' start')]
@@ -3739,6 +3739,31 @@ def run(wsx, wsxd, work, owned):
     assert len(proof) == 1 and 'ci-passed' in proof[0]['proof'], done['result']
     for n in (plain, again):
         js('task', 'close', n, '--discard')
+    # 32t4. A check-run joins a pending run only on the same commit (docs/tasks.md "Check-run"):
+    # one on a newer commit answers `queued` and starts when the pending run ends, the held
+    # result waits for it, and each answer names its own commit, as the run's own output does.
+    mark('32t4')
+    two_gate = base / 'two-commits-gate'
+    configure(LAND_CONFIG + '  scenarios:\n    oncommit: "ci: while [ ! -e %s ]; do sleep 0.2; done; '
+              'echo ran-on-$(git rev-parse --short=12 HEAD); exit 1"\n' % two_gate, 'a ci scenario per commit')
+    two = js('task', 'new', 'CHECKRUN_LATER oncommit WORK first.txt')['id']
+    wait(lambda: kinds(two, 'result'), 'the result before the first answer', 30)
+    js('task', 'add', two, 'WORK second.txt CHECKRUN_LATER oncommit')
+    held = wait(lambda: len(kinds(two, 'result')) == 2 and (current := show(two))['record'].get('waiting') and current,
+                'the result after the second commit waits', 30)
+    assert held['record']['waiting']['on'] == 'check_run' and not kinds(two, 'check_run'), log(two)
+    copy = held['record']['working_copy']
+    first, second = (git('rev-parse', '--short=12', ref, cwd=copy) for ref in ('HEAD~1', 'HEAD'))
+    two_gate.touch()
+    assert wait_state(two, 'ready', 'failed')['state'] == 'ready', log(two)
+    assert kinds(two, 'result', 'check_run', 'checks') == ['result', 'result', 'check_run', 'check_run', 'result', 'checks'], log(two)
+    assert [e['trigger'] for e in log(two) if e['kind'] == 'result'] == ['step', 'message', 'check_run'], log(two)
+    sent = [t['message'] for t in traces() if 'Your check-run ended' in t.get('message', '') and 'ran-on-' in t['message']]
+    assert len(sent) == 1, sent
+    newer, older = sent[0].split('Your check-run ended. Its answer, on commit ')[1:]
+    assert newer.startswith(second + ':') and 'ran-on-' + second in newer and first not in newer, sent[0]
+    assert older.startswith(first + ':') and 'ran-on-' + first in older and second not in older, sent[0]
+    js('task', 'close', two, '--discard')
     # 32v. Two lanes (docs/tasks.md "Check slot"): a scenario check-run holds the scenarios lane, a
     # task's result checks still run at once in the checks lane, and a second scenario run waits
     # with the scenarios reason.
