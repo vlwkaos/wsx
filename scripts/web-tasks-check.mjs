@@ -3353,11 +3353,12 @@ await closeSheet("the page", `#/p/${plansArg}`);
   const floating = async (hash) => {
     await go(hash);
     await until("document.querySelectorAll('.tabbar a').length === 3", `${hash}: the bar is gone`);
-    // A list long enough to scroll: copies of the screen's own first block (the page is re-rendered on the next change).
+    // A list long enough to scroll: copies of the screen's own first block, removed again after the measure.
     await evaluate(`(() => { const list = document.querySelector('.screen > .page > .scroll'); const first = list.firstElementChild;
       for (let copy = 0; copy < 40; copy += 1) {
         const clone = first.cloneNode(true);
         for (const node of [clone, ...clone.querySelectorAll('[id], [name]')]) { node.removeAttribute('id'); node.removeAttribute('name'); }
+        clone.dataset.floatingCopy = '';
         list.append(clone);
       } })()`);
     const measure = (scroll) => evaluate(`(() => { const list = document.querySelector('.screen > .page > .scroll'); list.scrollTop = ${scroll};
@@ -3370,6 +3371,8 @@ await closeSheet("the page", `#/p/${plansArg}`);
         padding: getComputedStyle(list).paddingBottom }; })()`);
     const middle = await measure(300);
     const end = await measure(1e6);
+    // ^ Preact keeps nodes it did not render, so the copies go before the next screen reuses this list.
+    await evaluate("document.querySelectorAll('[data-floating-copy]').forEach((node) => node.remove())");
     if (!middle.overflow || middle.navBackground !== "rgba(0, 0, 0, 0)" || !middle.gapHits || middle.space !== `${middle.navHeight}px` || middle.padding !== middle.space
       || middle.pillBottom > middle.height - 34 || end.lastBottom > end.pillTop) await fail(`${hash}: the bar does not float: ${JSON.stringify({ middle, end })}`);
   };
