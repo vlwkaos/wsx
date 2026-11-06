@@ -32,6 +32,18 @@ pub enum Window<'a> {
     Find(&'a str),
 }
 
+impl<'a> Window<'a> {
+    /// The window of a chat request: a find when it has words, else after `after`, else the
+    /// tail. The web, the TUI and `wsx task chat` ask with these two.
+    pub fn new(find: Option<&'a str>, after: Option<u64>) -> Self {
+        match (find.filter(|words| !words.trim().is_empty()), after) {
+            (Some(words), _) => Self::Find(words),
+            (None, Some(after)) => Self::After(after),
+            (None, None) => Self::Tail,
+        }
+    }
+}
+
 /// The entries a chat needs from the log's end: its window and the manager's last step
 /// (`activity`). The open questions are `asking`'s.
 pub fn read_chat(dir: &ManagerDir, window: &Window) -> Result<Vec<ManagerEntry>> {

@@ -706,11 +706,7 @@ pub fn chat(
         manager: &project_manager,
         peer: &peer,
     };
-    let window = match (find.filter(|words| !words.trim().is_empty()), after) {
-        (Some(words), _) => task::chat::Window::Find(words),
-        (None, Some(after)) => task::chat::Window::After(after),
-        (None, None) => task::chat::Window::Tail,
-    };
+    let window = task::chat::Window::new(find, after);
     let now = task::now_unix_ms();
     let log = task::chat::read_chat(&dir, &window).map_err(internal)?;
     let activity = activity(&log).map(str::to_string);

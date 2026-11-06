@@ -633,10 +633,7 @@ fn read(
     dir: Option<&ManagerDir>,
     searched: &str,
 ) -> anyhow::Result<View> {
-    let window = match searched.is_empty() {
-        true => Window::Tail,
-        false => Window::Find(searched),
-    };
+    let window = Window::new(Some(searched), None);
     let now = wsx_core::task::now_unix_ms();
     let (log, asks) = match dir {
         Some(dir) => (chat::read_chat(dir, &window)?, chat::asking(dir, now)?),
