@@ -173,7 +173,10 @@ fn a_push_moves_origin_only_as_asked() {
             !output.status.success() && stderr.contains(words),
             "{args:?}: {output:?}"
         );
-        assert!(stderr.contains("Nothing was pushed"), "{stderr}");
+        assert!(
+            stderr.to_lowercase().contains("nothing was pushed"),
+            "{stderr}"
+        );
     };
 
     // ^ The owner's push of a new commit is a fast-forward of origin.
