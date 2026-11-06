@@ -3374,14 +3374,14 @@ await closeSheet("the page", `#/p/${plansArg}`);
       || middle.pillBottom > middle.height - 34 || end.lastBottom > end.pillTop) await fail(`${hash}: the bar does not float: ${JSON.stringify({ middle, end })}`);
   };
   for (const hash of ["#/sessions", "#/settings", "#/settings/ui"]) await floating(hash);
-  // ^ The count badge (tab bar pseudo-element and Home row .count) shares --size-badge: 16 px high, a circle for one digit, "99+" wider and uncut.
+  // ^ The count badge (tab bar pseudo-element and Home row .count) shares --size-badge: 16 px high, a circle for one digit, "99+" wider and uncut. The row is measured by layout size: its pop animation scales the bounding box.
   const badges = await evaluate(`(() => { const out = {}; const icon = document.querySelector('.tab-icon');
     const read = (label, style, text) => { out[label] = { height: parseFloat(style.height), width: parseFloat(style.width), text }; };
     for (const text of ['2', '99+']) { icon.setAttribute('data-count', text); read('tab ' + text, getComputedStyle(icon, '::after'), text); }
     icon.removeAttribute('data-count');
     const host = document.querySelector('.screen > .page > .scroll');
     for (const text of ['2', '99+']) { const node = document.createElement('span'); node.className = 'count'; node.textContent = text; node.style.cssText = 'position:absolute;top:0;left:0';
-      host.append(node); const box = node.getBoundingClientRect(); out['row ' + text] = { height: box.height, width: box.width, text, cut: node.scrollWidth > node.clientWidth }; node.remove(); }
+      host.append(node); out['row ' + text] = { height: node.offsetHeight, width: node.offsetWidth, text, cut: node.scrollWidth > node.clientWidth }; node.remove(); }
     out.token = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--size-badge'));
     return out; })()`);
   const roundOne = ["tab 2", "row 2"].every((key) => badges[key].height === 16 && badges[key].width === badges[key].height);
