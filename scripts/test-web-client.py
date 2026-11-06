@@ -508,9 +508,10 @@ print('keys-done')
 }
 
 
-def png(size, shade):
-    """A valid, deterministic PNG of roughly size*size*3 raw bytes."""
-    raw = b''.join(b'\x00' + bytes((shade + x * 7 + y * 13) % 256 for x in range(size * 3)) for y in range(size))
+def png(size, shade, rgb=None):
+    """A valid, deterministic PNG of roughly size*size*3 raw bytes; one colour with `rgb`."""
+    raw = b''.join(b'\x00' + (bytes(rgb) * size if rgb else bytes((shade + x * 7 + y * 13) % 256 for x in range(size * 3)))
+                   for y in range(size))
     def chunk(kind, data):
         return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
     return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0))
@@ -1008,6 +1009,13 @@ def web_journey(args):
         (project / 'escape').symlink_to(work / 'home')
         (project / '.env').write_text('KEY=fixture-secret\n')
         (project / 'out/api-token.txt').write_text('fixture-secret\n')
+        # An HTML page with a relative image, for the page view (docs/web-client.md "Files").
+        (project / 'report/thumbs').mkdir(parents=True)
+        (project / 'report/board.html').write_text('<!doctype html><title>board</title><img src="thumbs/dot.png">\n')
+        (project / 'report/thumbs/dot.png').write_bytes(png(4, 30))
+        (project / 'report/notes.txt').write_text('not a page type\n')
+        (project / 'report/link.html').symlink_to(outside)
+        (project / 'report/link.png').symlink_to(outside)
         chart = work / 'chart-source.png'
         chart.write_bytes(png(12, 40))
         actor = work / 'actor.py'
@@ -1377,7 +1385,7 @@ capabilities = ["terminal_view"]
             # Markdown and diagrams did not loosen the policy: this is the whole header.
             assert headers['content-security-policy'] == (
                 "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src 'self'; font-src 'self'; "
-                "connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"), headers
+                "connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-src 'self'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"), headers
             assert headers['x-content-type-options'] == 'nosniff' and headers['x-frame-options'] == 'DENY'
             status, manifest = owner.request('GET', '/manifest.webmanifest', shape=shape)
             assert status == 200 and manifest['id'] == manifest['scope'] == manifest['start_url'] == '/app/owner/'
@@ -1561,7 +1569,12 @@ capabilities = ["terminal_view"]
         kept['pairings'] = []
         store.write_text(json.dumps(kept))
         ok('pairing code from a paired device: a second client pairs with it once, 403 without terminal_input, 401 unpaired')
+        page_of = '/api/file/page?project=%d&path=' % projects['project']
+        revoked = fresh.request('GET', page_of + 'report/board.html')[1]['token']
+        assert fresh.request('GET', '/view/%s/board.html' % revoked, cookie=False)[0] == 200
         fresh.request('POST', '/api/logout', {})
+        # A logged-out device's open page view stops at once.
+        assert fresh.request('GET', '/view/%s/board.html' % revoked, cookie=False)[0] == 404
 
         # --- One event stream per page; chat round trip through the exchange broker.
         events = Events(owner)
@@ -2420,7 +2433,7 @@ capabilities = ["terminal_view"]
         file_of = '/api/file?project=%d&path=' % projects['project']
         status, listing = steady(owner, 'GET', files_of)
         # .git is never listed, read or written: its config can run commands on the host.
-        assert [(e['name'], e['directory']) for e in listing['entries']] == [('out', True), ('sub', True), ('.env', False), ('notes.txt', False)]
+        assert [(e['name'], e['directory']) for e in listing['entries']] == [('out', True), ('report', True), ('sub', True), ('.env', False), ('notes.txt', False)]
         assert 'escape' not in [e['name'] for e in listing['entries']]  # symlinks are not listed
         assert steady(owner, 'GET', file_of + 'sub/deep.txt', shape='stripped')[1]['text'] == 'deep\n'
         for bad, status in (('../outside.png', 400), ('/etc/hosts', 400), ('sub/../../x', 400), ('.git/config', 400),
@@ -2446,6 +2459,34 @@ capabilities = ["terminal_view"]
             assert steady(owner, 'GET', '/api/file?project=%d&path=notes.txt' % foreign)[0] == 404
             assert steady(owner, 'PUT', '/api/file', dict(write, project=foreign))[0] == 404
         assert steady(owner, 'GET', '/api/files?path=')[0] == 400  # the project is required
+        # An HTML file opens as a page: a token for its folder, no cookie needed, sandboxed, no script.
+        for bad, status in (('notes.txt', 400), ('report/missing.html', 404), ('../outside.html', 400), ('report/link.html', 403)):
+            assert steady(owner, 'GET', page_of + bad)[0] == status, bad
+        token = steady(owner, 'GET', page_of + 'report/board.html')[1]['token']
+        assert re.fullmatch('[0-9a-f]{64}', token) and steady(owner, 'GET', page_of + 'report/board.html')[1]['token'] != token
+        for shape in ('prefixed', 'stripped'):
+            status, headers, body = owner.request('GET', '/view/%s/board.html' % token, shape=shape, cookie=False, raw=True)
+            assert status == 200 and body == (project / 'report/board.html').read_bytes(), (status, body)
+            prefix = '%s/app/owner/view/%s/' % (owner.origin, token)
+            assert headers['content-type'] == 'text/html; charset=utf-8' and headers['x-content-type-options'] == 'nosniff', headers
+            assert headers['content-security-policy'] == (
+                "sandbox allow-popups allow-popups-to-escape-sandbox; default-src 'none'; img-src %s data:; style-src %s 'unsafe-inline'; "
+                "font-src %s data:; media-src %s; frame-src %s; form-action 'none'; base-uri 'none'; frame-ancestors %s"
+                % (prefix, prefix, prefix, prefix, prefix, owner.origin)), headers['content-security-policy']
+            assert 'x-frame-options' not in headers and headers['cross-origin-resource-policy'] == 'cross-origin', headers
+            status, headers, body = owner.request('GET', '/view/%s/thumbs/dot.png' % token, shape=shape, cookie=False, raw=True)
+            assert status == 200 and headers['content-type'] == 'image/png' and body == png(4, 30)
+        # Off the folder, another type, a symlink, a bad token: refused, with a sandboxed text.
+        for bad, status in (('../out/leak.png', 400), ('%2e%2e/out/leak.png', 400), ('..%2fsub%2fdeep.png', 400), ('notes.txt', 404),
+                            ('link.png', 403), ('thumbs/missing.png', 404)):
+            status_seen, headers, body = owner.request('GET', '/view/%s/%s' % (token, bad), cookie=False, raw=True)
+            assert status_seen == status and headers['content-security-policy'].startswith('sandbox;'), (bad, status_seen, body)
+        status, headers, body = owner.request('GET', '/view/%s/board.html' % ('0' * 64), cookie=False, raw=True)
+        assert status == 404 and body == b'This view expired. Open the file again.' and headers['content-type'].startswith('text/plain')
+        # The frame's own requests are cross-site from an opaque origin: the API refuses them even with a cookie.
+        assert owner.request('GET', '/api/session', headers={'Sec-Fetch-Site': 'cross-site'})[0] == 403
+        assert owner.request('POST', '/api/logout', {}, headers={'Origin': 'null'})[0] == 403
+        ok('page view: a folder token loads the page and its image without a cookie, sandboxed; off the folder, other types and bad tokens refused')
         # The terminal types into the agent's pane like a keyboard does.
         settle('owner')
         typing = Terminal(owner, sessions['owner'], '&rows=12&cols=100')
@@ -2765,6 +2806,7 @@ capabilities = ["terminal_view"]
         # ^ The project shell closed just above is project2's too: the first workspace may still list it, the next does not.
         family_events.expect('workspace', lambda data: [s['id'] for s in data['sessions']] == [sessions['family']])
         for method, target, body in (('GET', '/api/files?project=1&path=', None), ('GET', '/api/file?project=1&path=notes.txt', None),
+                                     ('GET', '/api/file/page?project=1&path=report/board.html', None),
                                      ('PUT', '/api/file', write),
                                      ('GET', '/api/push', None),
                                      ('POST', '/api/sessions', {'project': projects['project2'], 'label': 'new'}),
@@ -2901,6 +2943,13 @@ capabilities = ["terminal_view"]
             (design / 'README.md').write_text('# design\n\nA fixture project for the browser check.\n')
             (design / 'src').mkdir()
             (design / 'src/main.rs').write_text('fn main() {\n    println!("hello");\n}\n')
+            # A page whose script would paint it red: the frame shows the image and stays white.
+            (design / 'report/thumbs').mkdir(parents=True)
+            (design / 'report/thumbs/dot.png').write_bytes(png(16, 0, rgb=(30, 140, 200)))
+            (design / 'report/board.html').write_text(
+                '<!doctype html><html><body style="margin:0;background:#fff">'
+                '<img src="thumbs/dot.png" width="120" height="120" style="display:block">'
+                '<script>document.body.style.background = "rgb(255, 0, 0)"; fetch("../../../api/session");</script></body></html>\n')
             m2 = sites['m2']
             _, m2_cookie = pair(m2, 'm2')
             m2.cookie = m2_cookie.split(';')[0]

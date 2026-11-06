@@ -452,7 +452,7 @@ div.steps .steps-summary { cursor: default; }
   .steps .icon { transition: transform var(--motion-duration) var(--motion-easing); }
   /* Purposeful motion (docs/web-client.md "Motion"): something arrives, changes or leaves.
      Reduced motion keeps the static page; script-driven motion (lib.js `motion`) is off too. */
-  .scroll > :is(.rows, .group, .check-list, .task-body, .file-markdown, .file-source), .project-page > .task-body { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
+  .scroll > :is(.rows, .group, .check-list, .task-body, .file-markdown, .file-page, .file-source), .project-page > .task-body { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
     .skeleton { background-image: linear-gradient(90deg, transparent, var(--color-raised), transparent); background-size: 200% 100%; animation: shimmer calc(var(--motion-duration) * 10) linear infinite; }
   .row-context[data-loading] { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
   .row-context { animation: arrive var(--motion-duration) var(--motion-easing); }
@@ -1067,6 +1067,8 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 }
 .file-body .actions { border-top: var(--border-width) solid var(--color-hairline); }
 .file-markdown { padding: var(--space-4); container-type: inline-size; }
+/* ^ A page without a background of its own expects the browser's white canvas. */
+.file-page { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; }
 .file-source { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 /* Hook: .options, .facts, .pair-form, .sheet, .notice — settings, pairing, dialog, notices. */
