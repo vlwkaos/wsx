@@ -281,9 +281,15 @@ async function inbox() {
       return { scrolled: Math.round(row.scrollLeft), left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height), name: row.querySelector(".row-remove").getAttribute("aria-label"), filled: row.hasAttribute("data-open") }; })()`);
     const closed = await removeBox();
     if (closed.scrolled !== 0 || closed.left < size[0] || closed.filled) await fail(`Remove shows before a slide: ${JSON.stringify(closed)}`);
-    const start = await evaluate("(() => { const r = document.querySelector('.scroll .row-slide').getBoundingClientRect(); return [r.right - 40, r.top + r.height / 2]; })()");
+    // The slide starts on the row only once the row is in view and nothing covers that point.
+    const aim = `(() => { const row = document.querySelector('.scroll .row-slide'); const r = row.getBoundingClientRect(); const [x, y] = [r.right - 40, r.top + r.height / 2];
+      return r.top >= 0 && r.bottom <= innerHeight && row.contains(document.elementFromPoint(x, y)) ? [x, y] : null; })()`;
+    await until(`!!${aim}`, "the first row is not in view to slide");
+    const start = await evaluate(aim);
+    await evaluate("window.wsxSlid = document.querySelector('.scroll .row-slide')");
     await send("Input.synthesizeScrollGesture", { x: start[0], y: start[1], xDistance: -160, yDistance: 0, gestureSourceType: "touch", speed: 800 });
-    await until("document.querySelector('.scroll .row-slide').scrollLeft > 0", "a slide did not move the row");
+    const slide = "(() => { const row = document.querySelector('.scroll .row-slide'); return { left: row.scrollLeft, same: row === window.wsxSlid, top: Math.round(row.getBoundingClientRect().top), page: document.querySelector('.scroll').scrollTop }; })()";
+    await until(`${slide}.left > 0`, `a slide did not move the row (from ${JSON.stringify(start)}: ${JSON.stringify(await evaluate(slide))})`);
     await pause(400);
     const open = await removeBox();
     if (open.right !== size[0] || open.height < 44 || !open.filled || !/^Remove session /.test(open.name)) await fail(`a slide did not show Remove at the edge: ${JSON.stringify(open)}`);
