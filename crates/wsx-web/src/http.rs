@@ -1790,32 +1790,24 @@ async fn view_get(
     let Some(kind) = views::content_type(&relative) else {
         return refused(404, "Not found.");
     };
-    let read = blocking(|| {
-        // ^ The device and the grant are checked on each file: a revoked device or a project
-        // that left the grant stops its open views at once.
-        let paired = app
-            .devices
-            .list()
-            .is_ok_and(|devices| devices.iter().any(|device| device.id == view.device));
-        if !paired || !app.site.shows(Panel::Files) || !app.site.allows(Capability::FilesRead) {
-            return Err(None);
-        }
-        project_root(&app, view.project)
-            .map_err(|_| None)?
-            .read(&relative, views::MAX_BYTES)
-            .map_err(Some)
-    });
-    let bytes = match read {
+    // ^ The device and the grant are checked on each file: a revoked device or a project
+    // that left the grant stops its open views at once.
+    let paired = blocking(|| app.devices.list())
+        .is_ok_and(|devices| devices.iter().any(|device| device.id == view.device));
+    if !paired || !app.site.shows(Panel::Files) || !app.site.allows(Capability::FilesRead) {
+        return refused(404, expired);
+    }
+    let Ok(root) = blocking(|| project_root(&app, view.project)) else {
+        return refused(404, expired);
+    };
+    let bytes = match blocking(|| root.read(&relative, views::MAX_BYTES)) {
         Ok(bytes) => bytes,
-        Err(None) => return refused(404, expired),
-        Err(Some(SandboxError::InvalidPath)) => {
+        Err(SandboxError::InvalidPath) => {
             return refused(400, "Use a path inside the page's folder.")
         }
-        Err(Some(SandboxError::TooLarge)) => {
-            return refused(413, "The file is larger than 16 MiB.")
-        }
-        Err(Some(SandboxError::NotFound)) => return refused(404, "Not found."),
-        Err(Some(_)) => return refused(403, "This path is not allowed."),
+        Err(SandboxError::TooLarge) => return refused(413, "The file is larger than 16 MiB."),
+        Err(SandboxError::NotFound) => return refused(404, "Not found."),
+        Err(_) => return refused(403, "This path is not allowed."),
     };
     let prefix = format!(
         "{}{}view/{token}/",

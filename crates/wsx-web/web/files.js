@@ -39,12 +39,12 @@ const isPage = (path) => /\.html?$/i.test(path);
 // A markdown or HTML file opens rendered; Source shows the text and the editor, which stays
 // mounted so a draft survives the switch (docs/web-client.md "Files"). An HTML file is a page
 // in a frame with no script and an opaque origin, so it never reaches the site or its API.
-function FileView({ project, path, text, page, sourceError, source }) {
+function FileView({ project, path, text, pageToken, sourceError, source }) {
   const [saved, setSaved] = useState(text);
   const name = path.split("/").pop();
   return html`
-    ${!source && (page
-      ? html`<iframe class="file-page" src=${`view/${page}/${encodeURIComponent(name)}`} title=${name}
+    ${!source && (pageToken
+      ? html`<iframe class="file-page" src=${`view/${pageToken}/${encodeURIComponent(name)}`} title=${name}
           sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>`
       : html`<div class="file-markdown"><${Markdown} text=${saved} /></div>`)}
     <div class="file-source" hidden=${!source}>${sourceError ? html`<p class="error" role="alert">${sourceError}</p>`
@@ -66,12 +66,12 @@ export function Files({ project, file: linked }) {
       const query = { project, path: target };
       const read = api(file ? "api/file" : "api/files", { query });
       // ^ A page over the 1 MiB text limit still shows; only its Source says why it cannot.
-      const page = file && isPage(target);
+      const asPage = file && isPage(target);
       const [data, token] = await Promise.all([
-        page ? read.catch((failure) => ({ sourceError: failure.message })) : read,
-        page ? api("api/file/page", { query }).then((answer) => answer.token) : null,
+        asPage ? read.catch((failure) => ({ sourceError: failure.message })) : read,
+        asPage ? api("api/file/page", { query }).then((answer) => answer.token) : null,
       ]);
-      setView({ file, page: token, ...data });
+      setView({ file, pageToken: token, ...data });
     } catch (failure) {
       setView({ error: failure.message });
     }
@@ -80,11 +80,11 @@ export function Files({ project, file: linked }) {
 
   const parts = path ? path.split("/") : [];
   let body = html`<${Loading} />`;
-  const rendering = Boolean(view?.file && !view.binary && (isMarkdown(path) || view.page));
+  const rendering = Boolean(view?.file && !view.binary && (isMarkdown(path) || view.pageToken));
   if (view?.error) body = html`<p class="error" role="alert">${view.error}</p>`;
   else if (view?.file) {
     body = view.binary ? html`<p class="empty">This file is not text and cannot be shown here.</p>`
-      : html`<${FileView} key=${path} project=${project} path=${path} text=${view.text} page=${view.page} sourceError=${view.sourceError} source=${!(rendering && rendered)} />`;
+      : html`<${FileView} key=${path} project=${project} path=${path} text=${view.text} pageToken=${view.pageToken} sourceError=${view.sourceError} source=${!(rendering && rendered)} />`;
   } else if (view) {
     body = html`
       ${view.entries.length ? html`
