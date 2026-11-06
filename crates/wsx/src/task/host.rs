@@ -2751,11 +2751,12 @@ impl Host {
     fn fast_forward(&mut self, tried: bool) -> Result<String> {
         let tip = self.default_tip()?;
         let head = copy::resolve_commit(&self.record.working_copy, "HEAD")?;
-        let cleared = copy::fast_forward(
+        let cleared = copy::move_branch(
             &self.record.project_path,
             &self.record.default_branch,
             &tip,
             &head,
+            false,
         )?;
         if let Some(lock) = cleared {
             self.log(LogEvent::LockCleared {

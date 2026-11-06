@@ -2452,6 +2452,63 @@ def run(wsx, wsxd, work, owned):
     wait_closed(ap)
     js('task', 'close', keep, '--discard')
 
+    # 22a. Push (docs/tasks.md "Push"): the manager's push asks; a denied one leaves origin, an
+    # approved one runs in the host and moves it. A rewrite (a squash) leases the origin tip it
+    # saw and names the open tasks on the old main. A worker's push is refused (part 27's
+    # CHECKRUN trace).
+    mark('22a')
+
+    def git(*args):
+        return subprocess.run(['git', '-c', 'user.name=o', '-c', 'user.email=o@example.invalid', *args],
+                              cwd=project, env=env, check=True, capture_output=True, text=True).stdout.strip()
+
+    origin = work / 'origin.git'
+    git('init', '-q', '--bare', '--template=', str(origin))
+    git('remote', 'add', 'origin', str(origin))
+    tip = git('rev-parse', 'main')
+    git('push', '-q', 'origin', 'main~1:refs/heads/main')
+    before = git('rev-parse', 'main~1')
+
+    def origin_tip():
+        return git('--git-dir', str(origin), 'rev-parse', 'main')
+
+    def ask_push(argv):
+        text = reply_to(js('task', 'say', 'RUN wsx task push %s-p demo --json' % argv)['id'])['text']
+        return re.search(r'push needs the owner.s approval; the owner was asked \((a\d+)\)', text).group(1), text
+
+    denied, _ = ask_push('')
+    assert [(p['id'], p['action'], p['commit']) for p in js('task', 'ledger')['approvals']] == [(denied, 'push', tip)]
+    js('task', 'deny', denied)
+    wait(lambda: events_with('approval %s (push) denied' % denied), 'the push deny event')
+    assert origin_tip() == before
+    approved, _ = ask_push('')
+    assert origin_tip() == before
+    done = js('task', 'approve', approved)
+    assert done['ok'] and done['result']['pushed'] and done['result']['forced'] is False, done
+    assert origin_tip() == tip
+    wait(lambda: events_with('approval %s (push) approved; done: pushed main to origin: %s' % (approved, tip[:12])),
+         'the push approve event')
+    # ^ A rewrite with no --force refuses before it asks; nothing waits on the owner.
+    on_old = js('task', 'new', 'WORK on-old.txt')['id']
+    assert wait_state(on_old, 'ready', 'failed')['state'] == 'ready'
+    squash = git('commit-tree', 'main^{tree}', '-m', 'squash')
+    text = reply_to(js('task', 'say', 'RUN wsx task push --commit %s -p demo --json' % squash)['id'])['text']
+    assert 'a rewrite needs --force' in text and 'owner was asked' not in text, text
+    forced, _ = ask_push('--commit %s --force ' % squash)
+    pending = js('task', 'ledger')['approvals']
+    assert [(p['id'], p['lease']) for p in pending] == [(forced, tip)], pending
+    done = js('task', 'approve', forced)
+    message = done['result']['message']
+    assert done['ok'] and 'forced over %s' % tip[:12] in message, done
+    assert 'open tasks on the old main: #%d' % on_old in message, message
+    assert origin_tip() == squash and git('rev-parse', 'main') == squash
+    # ^ The owner pushes the old main back by hand: no request, the same rewrite.
+    back = js('task', 'push', '--commit', tip, '--force')
+    assert back['pushed'] and origin_tip() == tip and git('rev-parse', 'main') == tip, back
+    assert js('task', 'ledger')['approvals'] == []
+    js('task', 'close', on_old, '--discard')
+    git('remote', 'remove', 'origin')
+
     # 22b. The TUI's manager chat (`t`, then `m`; docs/tasks.md "TUI"): the conversation, the
     # open To check item and the waiting approval; a message goes to the manager's log, `p`
     # passes the item and `n` then `y` denies the request; 80 columns still show the message.

@@ -1,7 +1,7 @@
 //! A failed deploy keeps the end of its output, and `wsx task deployed` shows it once its
-//! detached run ends
-//! (docs/tasks.md "Deploy and release"). Drives the public CLI on an isolated HOME and
-//! state; a deploy needs no wsxd.
+//! detached run ends (docs/tasks.md "Deploy and release"); `wsx task push` moves origin's
+//! default branch only as asked (docs/tasks.md "Push"). Drives the public CLI on an isolated
+//! HOME and state, with a local bare repository as origin; neither needs wsxd.
 
 use serde_json::Value;
 use std::{
@@ -150,4 +150,76 @@ fn a_failed_deploy_shows_the_end_of_its_output() {
             .count(),
         1
     );
+}
+
+#[test]
+fn a_push_moves_origin_only_as_asked() {
+    let fixture = Fixture::new("true");
+    let origin = fixture.root.join("origin.git");
+    let origin = origin.to_str().expect("UTF-8 path");
+    fixture.git(&["init", "-q", "--bare", "--template=", "-b", "main", origin]);
+    fixture.git(&["remote", "add", "origin", origin]);
+    fixture.git(&["push", "-q", "origin", "main"]);
+    let first = fixture.git(&["rev-parse", "main"]);
+    let origin_tip = || fixture.git(&["--git-dir", origin, "rev-parse", "main"]);
+    let answer = |output: &Output| -> Value {
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice(&output.stdout).expect("push JSON")
+    };
+    let refused = |args: &[&str], words: &str| {
+        let output = fixture.wsx(args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success() && stderr.contains(words),
+            "{args:?}: {output:?}"
+        );
+        assert!(stderr.contains("Nothing was pushed"), "{stderr}");
+    };
+
+    // ^ The owner's push of a new commit is a fast-forward of origin.
+    fs::write(fixture.root.join("project/a.txt"), "a\n").expect("write a.txt");
+    fixture.git(&["add", "a.txt"]);
+    fixture.git(&["commit", "-q", "-m", "a"]);
+    let tip = fixture.git(&["rev-parse", "main"]);
+    let pushed = answer(&fixture.wsx(&["task", "push", "-p", "demo", "--json"]));
+    assert_eq!(pushed["commit"], tip.as_str(), "{pushed}");
+    assert_eq!(pushed["forced"], false, "{pushed}");
+    assert_eq!(origin_tip(), tip);
+
+    // ^ A squash: one commit with main's tree and no parent. Without --force it refuses.
+    let squash = fixture.git(&["commit-tree", "main^{tree}", "-m", "squash"]);
+    let rewrite = ["task", "push", "-p", "demo", "--commit", &squash];
+    refused(&rewrite, "a rewrite needs --force");
+    // ^ A lease on a tip origin no longer has: the owner approved another state.
+    let stale_lease = format!("--lease={first}");
+    refused(
+        &[&rewrite[..], &["--force", &stale_lease]].concat(),
+        "since the push was asked",
+    );
+    assert_eq!(origin_tip(), tip);
+    assert_eq!(fixture.git(&["rev-parse", "main"]), tip);
+
+    // ^ The owner's uncommitted change to a file the move rewrites refuses it, before origin.
+    fs::write(fixture.root.join("project/a.txt"), "mine\n").expect("edit a.txt");
+    let other = fixture.git(&["commit-tree", &format!("{first}^{{tree}}"), "-m", "other"]);
+    refused(
+        &["task", "push", "-p", "demo", "--commit", &other, "--force"],
+        "uncommitted changes in a.txt",
+    );
+    assert_eq!(origin_tip(), tip);
+    fixture.git(&["checkout", "-q", "--", "a.txt"]);
+
+    // ^ With the lease seen, both origin's and the local main are rewritten; the working tree
+    // stays (git reset --keep).
+    let lease = format!("--lease={tip}");
+    let forced = answer(&fixture.wsx(&[&rewrite[..], &["--force", &lease, "--json"]].concat()));
+    assert_eq!(forced["forced"], true, "{forced}");
+    let message = forced["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains(&format!("forced over {}", &tip[..12])),
+        "{forced}"
+    );
+    assert_eq!(origin_tip(), squash);
+    assert_eq!(fixture.git(&["rev-parse", "main"]), squash);
+    assert_eq!(fixture.git(&["status", "--porcelain"]), "");
 }

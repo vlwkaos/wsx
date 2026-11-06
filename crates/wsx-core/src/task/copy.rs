@@ -429,21 +429,11 @@ fn checkout_of(main: &Path, branch: &str) -> Result<Option<PathBuf>> {
         .map(|worktree| worktree.path))
 }
 
-/// Files `checkout` has changed (tracked or new) that the commits from its HEAD to `commit`
-/// change too: a fast-forward would overwrite them. Other changes stay as they are.
-/// ref: docs/tasks.md "Landing"
-fn overlapping_changes(checkout: &Path, commit: &str) -> Result<Vec<String>> {
-    // ^ Three dots: from where `commit` left HEAD, so a task that still needs its rebase
-    // shows the files its own commits change.
-    let landing = git(
-        checkout,
-        &[
-            "diff",
-            "--name-only",
-            "--no-renames",
-            &format!("HEAD...{commit}"),
-        ],
-    )?;
+/// Files `checkout` has changed (tracked or new) that `landing` (a `git diff` range from its
+/// HEAD) changes too: moving the checkout there would overwrite them. Other changes stay as
+/// they are. ref: docs/tasks.md "Landing"
+fn overlapping_changes(checkout: &Path, landing: &str) -> Result<Vec<String>> {
+    let landing = git(checkout, &["diff", "--name-only", "--no-renames", landing])?;
     let landing: std::collections::HashSet<&str> = landing.lines().collect();
     let tracked = git(checkout, &["diff", "--name-only", "--no-renames", "HEAD"])?;
     let new = git(checkout, &["ls-files", "--others", "--exclude-standard"])?;
@@ -460,48 +450,117 @@ fn overlapping_changes(checkout: &Path, commit: &str) -> Result<Vec<String>> {
 /// it overlaps, or none when the branch is not checked out. ref: docs/tasks.md "Ledger"
 pub fn land_blockers(main: &Path, default_branch: &str, commit: &str) -> Result<Vec<String>> {
     match checkout_of(main, default_branch)? {
-        Some(checkout) => overlapping_changes(&checkout, commit),
+        // ^ Three dots: from where `commit` left HEAD, so a task that still needs its rebase
+        // shows the files its own commits change.
+        Some(checkout) => overlapping_changes(&checkout, &format!("HEAD...{commit}")),
         None => Ok(Vec::new()),
     }
 }
 
-/// Move `default_branch` from `old_tip` to `commit`, fast-forward only. Where the branch is
-/// checked out, its changed files that the move also changes refuse it; other changes stay
-/// (`git merge --ff-only` keeps them). Elsewhere the ref moves with `old_tip` as guard, so a
+/// The checkout's changed files that moving `branch` to `commit` would overwrite: what
+/// differs between its HEAD and `commit`. None when the branch is not checked out.
+pub fn move_blockers(main: &Path, branch: &str, commit: &str) -> Result<Vec<String>> {
+    match checkout_of(main, branch)? {
+        Some(checkout) => overlapping_changes(&checkout, &format!("HEAD..{commit}")),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Move `branch` from `old_tip` to `commit`: a fast-forward, or any commit with `force` (a
+/// push that rewrites the default branch). Where the branch is checked out, its changed
+/// files that the move also changes refuse it; other changes stay (`git merge --ff-only` and
+/// `git reset --keep` keep them). Elsewhere the ref moves with `old_tip` as guard, so a
 /// branch that moved meanwhile is never overwritten. Nothing stashes or commits the owner's
 /// files. Gives back the stale index lock it cleared, if any. ref: docs/tasks.md "Landing"
-pub fn fast_forward(
+pub fn move_branch(
     main: &Path,
-    default_branch: &str,
+    branch: &str,
     old_tip: &str,
     commit: &str,
+    force: bool,
 ) -> Result<Option<LockCleared>> {
-    match checkout_of(main, default_branch)? {
+    match checkout_of(main, branch)? {
         Some(checkout) => {
-            let blocked = overlapping_changes(&checkout, commit)?;
+            let blocked = overlapping_changes(&checkout, &format!("HEAD..{commit}"))?;
             if !blocked.is_empty() {
+                let what = if force { "push" } else { "land" };
                 // ^ Words first: a path at the start of the line lost its `/` when the owner
                 // copied the message from the page (2026-10-25).
                 bail!(
-                    "{default_branch} has uncommitted changes in {} that this land changes too; commit or stash them in {}, then land again",
+                    "{branch} has uncommitted changes in {} that this {what} changes too; commit or stash them in {}, then {what} again",
                     blocked.join(", "),
-                    checkout.display()
+                    checkout.display(),
                 );
             }
-            git_clearing_lock(&checkout, &["merge", "--ff-only", "--quiet", commit])
-                .map(|(_, cleared)| cleared)
+            let step: &[&str] = if force {
+                &["reset", "--keep", "--quiet", commit]
+            } else {
+                &["merge", "--ff-only", "--quiet", commit]
+            };
+            git_clearing_lock(&checkout, step).map(|(_, cleared)| cleared)
         }
         None => git(
             main,
             &[
                 "update-ref",
-                &format!("refs/heads/{default_branch}"),
+                &format!("refs/heads/{branch}"),
                 commit,
                 old_tip,
             ],
         )
         .map(|_| None),
     }
+}
+
+/// How long a call to the remote may take: ssh can wait on a passphrase or a host key that
+/// nobody answers. ref: docs/tasks.md "Push"
+const REMOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn remote_git(main: &Path, args: &[&str]) -> Result<String> {
+    let output = crate::git::output_with_timeout(git_cmd(main).args(args), REMOTE_TIMEOUT)
+        .with_context(|| {
+            format!(
+                "git {} did not end within {} s",
+                args.join(" "),
+                REMOTE_TIMEOUT.as_secs()
+            )
+        })?;
+    finished(args, output)
+}
+
+/// `branch`'s tip on `remote`, or none when the remote has no such branch.
+pub fn remote_tip(main: &Path, remote: &str, branch: &str) -> Result<Option<String>> {
+    let text = remote_git(
+        main,
+        &[
+            "ls-remote",
+            "--heads",
+            remote,
+            &format!("refs/heads/{branch}"),
+        ],
+    )?;
+    Ok(text
+        .lines()
+        .find_map(|line| line.split_whitespace().next())
+        .map(str::to_string))
+}
+
+/// Push `commit` to `remote`'s `branch`. With `lease` the push may rewrite the branch, but
+/// only while the remote still has that tip (empty: no such branch): `--force-with-lease`.
+pub fn push(
+    main: &Path,
+    remote: &str,
+    branch: &str,
+    commit: &str,
+    lease: Option<&str>,
+) -> Result<()> {
+    let target = format!("refs/heads/{branch}");
+    let lease = lease.map(|tip| format!("--force-with-lease={target}:{tip}"));
+    let refspec = format!("{commit}:{target}");
+    let mut args = vec!["push", "--quiet"];
+    args.extend(lease.as_deref());
+    args.extend([remote, refspec.as_str()]);
+    remote_git(main, &args).map(|_| ())
 }
 
 /// Commits on `branch` that `target` does not have.

@@ -295,6 +295,24 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Push the default branch, or one commit, to origin's default branch and move the local one there (the manager asks the owner first)
+    Push {
+        /// Commit, tag or branch to push; default: the default branch tip
+        #[arg(long, value_name = "REF")]
+        commit: Option<String>,
+        /// Rewrite origin's default branch (a squash): --force-with-lease on the tip seen now
+        #[arg(long)]
+        force: bool,
+        /// The origin tip an approved request saw; the push refuses when origin moved since
+        #[arg(long, hide = true, requires = "force", value_name = "COMMIT")]
+        lease: Option<String>,
+        #[command(flatten)]
+        said: OwnerSaid,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the bounded project state a manager reads first (JSON, at most 16 KiB)
     Ledger {
         #[arg(short, long)]
@@ -517,6 +535,7 @@ impl TaskCmd {
             | Self::Close { json, .. }
             | Self::Deploy { json, .. }
             | Self::Release { json, .. }
+            | Self::Push { json, .. }
             | Self::Deployed { json, .. }
             | Self::Preview { json, .. } => *json,
             Self::Role { action } => match action {
@@ -711,6 +730,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     Some(&record),
                     None,
                     None,
+                    None,
                     said.owner_said,
                     json,
                 )?
@@ -770,6 +790,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
                     Some(&dir.read_record()?),
                     None,
                     None,
+                    None,
                     said.owner_said,
                     json,
                 )?
@@ -826,6 +847,21 @@ pub fn run(command: TaskCmd) -> Result<()> {
             false,
             None,
             run.run_locked,
+            said.owner_said,
+            json,
+        ),
+        TaskCmd::Push {
+            commit,
+            force,
+            lease,
+            said,
+            project,
+            json,
+        } => push(
+            project.as_deref(),
+            commit.as_deref(),
+            force,
+            lease.as_deref(),
             said.owner_said,
             json,
         ),
@@ -2026,6 +2062,144 @@ fn delete_revision_refs(main: &Path, id: u32) {
     }
 }
 
+/// The remote a push goes to.
+const PUSH_REMOTE: &str = "origin";
+
+/// Push the default branch tip, or `commit`, to origin's default branch, then move the local
+/// default branch there. A fast-forward of both, unless `force`: then it may rewrite them, with
+/// `--force-with-lease` on origin's tip seen when it was asked (`lease`). The manager always
+/// asks the owner (or names the owner's message); its broker runs this in the manager host,
+/// outside the boundary, so the owner's ssh setup applies. ref: docs/tasks.md "Push"
+fn push(
+    project: Option<&str>,
+    commit: Option<&str>,
+    force: bool,
+    lease: Option<&str>,
+    owner_said: Option<u64>,
+    json: bool,
+) -> Result<()> {
+    not_for_roles("push")?;
+    let (project_name, main) = project_entry(project)?;
+    let project_id = store::project_id(&project_name, &main);
+    let default = default_ref(&main);
+    let branch = default.trim_start_matches("refs/heads/").to_string();
+    let refuse = |error: anyhow::Error| anyhow::anyhow!("{error:#}; nothing was pushed");
+    if lease.is_some_and(|tip| !tip.is_empty() && !tip.bytes().all(|b| b.is_ascii_hexdigit())) {
+        bail!("--lease takes a commit id; nothing was pushed");
+    }
+    let local = copy::resolve_commit(&main, &default).map_err(refuse)?;
+    let target = copy::resolve_commit(&main, commit.unwrap_or(&local)).map_err(refuse)?;
+    let remote = copy::remote_tip(&main, PUSH_REMOTE, &branch).map_err(refuse)?;
+    let short = |commit: &str| commit.get(..12).unwrap_or(commit).to_string();
+    let contains =
+        |ancestor: &str, commit: &str| copy::is_ancestor(&main, ancestor, commit).unwrap_or(false);
+    // ^ A request leases what it saw; when origin moved since, the owner approved another state.
+    if let Some(seen) = lease.filter(|seen| *seen != remote.as_deref().unwrap_or_default()) {
+        bail!(
+            "{PUSH_REMOTE} {branch} moved from {} to {} since the push was asked; ask again. Nothing was pushed",
+            if seen.is_empty() { "none".into() } else { short(seen) },
+            remote.as_deref().map_or("none".into(), short)
+        );
+    }
+    let remote_ff = remote.as_deref().is_none_or(|tip| contains(tip, &target));
+    if !force && !remote_ff {
+        bail!(
+            "{} is not a fast-forward of {PUSH_REMOTE} {branch} ({}); a rewrite needs --force. Nothing was pushed",
+            short(&target),
+            remote.as_deref().map_or_else(String::new, short)
+        );
+    }
+    // ^ Local main moves to the pushed commit unless it has it already (lands since the ask).
+    let local_moves = !contains(&target, &local);
+    let local_ff = contains(&local, &target);
+    if local_moves && !local_ff && !force {
+        bail!(
+            "local {branch} ({}) is not an ancestor of {}; a rewrite needs --force. Nothing was pushed",
+            short(&local),
+            short(&target)
+        );
+    }
+    if local_moves {
+        let blocked = copy::move_blockers(&main, &branch, &target).map_err(refuse)?;
+        if !blocked.is_empty() {
+            bail!(
+                "{branch} has uncommitted changes in {} that this push changes too; commit or stash them in {}, then push again. Nothing was pushed",
+                blocked.join(", "),
+                main.display()
+            );
+        }
+    }
+    let seen = remote.clone().unwrap_or_default();
+    let lease = force.then(|| lease.unwrap_or(&seen).to_string());
+    if acting_as_manager()
+        && ask_owner(
+            &project_id,
+            ApprovalAction::Push,
+            None,
+            Some(&target),
+            None,
+            lease.as_deref(),
+            owner_said,
+            json,
+        )?
+    {
+        return Ok(());
+    }
+    // ^ A rewrite leaves open tasks on commits the new branch lacks: name them.
+    let rewrite = !local_ff && local_moves;
+    let mut old_base = Vec::new();
+    if rewrite {
+        for id in store::task_numbers(&project_id)? {
+            let Ok(record) = TaskDir::open(&project_id, id).and_then(|dir| dir.read_record())
+            else {
+                continue;
+            };
+            if record.state.is_open()
+                && record.default_branch == branch
+                && !contains(&record.base, &target)
+            {
+                old_base.push(id);
+            }
+        }
+    }
+    copy::push(&main, PUSH_REMOTE, &branch, &target, lease.as_deref()).map_err(refuse)?;
+    if local_moves {
+        copy::move_branch(&main, &branch, &local, &target, !local_ff).map_err(|error| {
+            anyhow::anyhow!(
+                "pushed {} to {PUSH_REMOTE} {branch}, but local {branch} stayed at {}: {error:#}",
+                short(&target),
+                short(&local)
+            )
+        })?;
+    }
+    let mut message = format!("pushed {branch} to {PUSH_REMOTE}: {}", short(&target));
+    if let Some(was) = remote.as_deref().filter(|was| !contains(was, &target)) {
+        message += &format!(" (forced over {})", short(was));
+    }
+    if rewrite {
+        message += &format!("; local {branch} was {}", short(&local));
+    }
+    if !old_base.is_empty() {
+        let tasks: Vec<String> = old_base.iter().map(|id| format!("#{id}")).collect();
+        message += &format!("; open tasks on the old {branch}: {}", tasks.join(", "));
+    }
+    if json {
+        return print_json(&json!({
+            "pushed": true,
+            "remote": PUSH_REMOTE,
+            "branch": branch,
+            "commit": target,
+            "remote_was": remote,
+            "local_was": local,
+            "forced": force,
+            "old_base_tasks": old_base,
+            "message": message,
+        }));
+    }
+    println!("{message}");
+    Ok(())
+}
+
 /// Run the project's deploy or release command in a temporary copy of one commit.
 /// ^ Never from a task's working copy: what runs is always a default-branch commit.
 /// `if_new`: skip a commit that is already deployed, so the deploys that follow quick lands
@@ -2084,7 +2258,16 @@ fn deploy(
     if approve
         && run_locked.is_none()
         && acting_as_manager()
-        && ask_owner(&project_id, action, None, commit, None, owner_said, json)?
+        && ask_owner(
+            &project_id,
+            action,
+            None,
+            commit,
+            None,
+            None,
+            owner_said,
+            json,
+        )?
     {
         return Ok(());
     }
@@ -2767,6 +2950,7 @@ fn role(action: RoleCmd) -> Result<()> {
                     None,
                     None,
                     Some((&name, &brief)),
+                    None,
                     said.owner_said,
                     json,
                 )?
@@ -2860,12 +3044,14 @@ fn actor() -> Actor {
 /// The manager's action that needs the owner: approved by the owner's message `owner_said`
 /// of its running turn (recorded; false: run it), else a request (true: the owner was asked).
 /// ref: docs/tasks.md "Approvals"
+#[allow(clippy::too_many_arguments)]
 fn ask_owner(
     project_id: &str,
     action: ApprovalAction,
     task: Option<&TaskRecord>,
     commit: Option<&str>,
     role: Option<(&str, &str)>,
+    lease: Option<&str>,
     owner_said: Option<u64>,
     json: bool,
 ) -> Result<bool> {
@@ -2878,6 +3064,7 @@ fn ask_owner(
         commit: commit.map(str::to_string),
         role: role.map(|(name, _)| name.to_string()),
         brief: role.map(|(_, brief)| brief.to_string()),
+        lease: lease.map(str::to_string),
         unix_ms: now_unix_ms(),
     };
     if let Some(said) = owner_said {

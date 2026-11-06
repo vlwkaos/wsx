@@ -499,6 +499,8 @@ pub enum ApprovalAction {
     Discard,
     /// `role new`: the manager asks once for a role (docs/tasks.md "Roles").
     Role,
+    /// `push`: the default branch to origin, run by the host (docs/tasks.md "Push").
+    Push,
 }
 
 /// One line of `approvals.jsonl`.
@@ -519,6 +521,10 @@ pub enum ApprovalLine {
         role: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         brief: Option<String>,
+        /// A forced push: origin's tip the request saw, which the push leases (empty: origin
+        /// had no such branch).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease: Option<String>,
         unix_ms: u64,
     },
     Decision {

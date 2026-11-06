@@ -65,7 +65,7 @@ flowchart LR
 |---|---|---|
 | Create | Any open task becomes a parent when a child names it. `--into` holds p when it is not held ("parent of #n"), so p never lands by itself or by review | `hold` (docs/tasks.md "Hold and trial") |
 | Child | `task new --into <p>`: base is p's tip, `default_branch = wsx/t<p>`, `parent: p` in `task.json`. Its boundary denies p's branch ref | `--from`, `record.default_branch`, `boundary.rs:37` |
-| Child land | Refused while p is `working`, `checking` or by hand ("parent #p is busy"); the child stays `ready` and the manager lands it again on p's next event. Otherwise rebase onto p's tip and fast-forward in p's working copy | `land_on_tip`, `copy::fast_forward`, manager events |
+| Child land | Refused while p is `working`, `checking` or by hand ("parent #p is busy"); the child stays `ready` and the manager lands it again on p's next event. Otherwise rebase onto p's tip and fast-forward in p's working copy | `land_on_tip`, `copy::move_branch`, manager events |
 | Parent after a child land | p's host makes a new revision of those commits and runs checks, as `handback` does. Without this, `host.rs:1682` would fast-forward main with an unchecked HEAD | `handback` path (`host.rs:651`) |
 | Child follow-ups | `close` as today (it compares with `wsx/t<p>`). No `deploy --if-new`, because main did not move | `after_landing` (`host.rs:1881`) |
 | To check | A child's items join the project list at p's land into main, read from its landed children's `result.json`. A release waits for them only after that | `collect_verify` |
