@@ -13,7 +13,7 @@ import { Project, Projects, ProjectSessions } from "./projects.js";
 import { loadTasks, Manager, noteDecisions } from "./tasks.js";
 import { Session } from "./session.js";
 import { Files } from "./files.js";
-import { PanelsScreen } from "./panels.js";
+import { loadMachine, MachineScreen, PanelsScreen } from "./panels.js";
 import { Settings } from "./settings.js";
 import { viewImageLinks } from "./viewer.js";
 
@@ -120,6 +120,7 @@ function Screen({ route }) {
   if (route.screen === "sessions") return html`<${ProjectSessions} key=${route.id} id=${route.id} />`;
   if (route.screen === "settings") return html`<${Settings} sub=${route.sub} />`;
   if (route.screen === "projects") return html`<${Projects} />`;
+  if (route.screen === "machine") return html`<${MachineScreen} />`;
   if (route.screen === "inbox" || !can("task_view")) return html`<${Inbox} />`;
   return html`<${Home} />`;
 }
@@ -132,7 +133,7 @@ function App() {
   const top = tabs().some(([name]) => name === route.screen) || (route.screen === "inbox" && !can("task_view"));
   useEffect(() => {
     const titles = { home: can("task_view") ? "Home" : "Inbox", inbox: can("task_view") ? "Sessions" : "Inbox",
-      projects: "Projects", settings: "Settings", files: "Files" };
+      projects: "Projects", machine: "Machine", settings: "Settings", files: "Files" };
     const session = route.screen === "session" && state.sessions.find((candidate) => candidate.id === route.id);
     const project = ["project", "sessions", "task", "role"].includes(route.screen) && state.projects.find((candidate) => candidate.id === route.id);
     document.title = `${session ? session.label : project ? project.name : titles[route.screen] ?? "Session"} - ${state.site.name}`;
@@ -214,6 +215,7 @@ const relay = (name, detail = {}) => events.dispatchEvent(new CustomEvent(name, 
 // An event without a session or a project is for every one.
 function reread() {
   relay("history");
+  loadMachine();
   if (!can("task_view")) return;
   loadTasks();
   for (const name of ["manager", "task", "page"]) relay(name);
@@ -227,7 +229,10 @@ function start(session) {
   const resume = openEvents({
     ...Object.fromEntries(["history", "exchange", "task", "manager", "page"].map((name) => [name, (data) => relay(name, data)])),
     workspace: (data) => {
+      // ^ A project added or removed changes whose machine panels there are.
+      const changed = data.projects.map((project) => project.id).join() !== state.projects.map((project) => project.id).join();
       update({ projects: data.projects, sessions: data.sessions, loaded: true, daemon: true });
+      if (changed) loadMachine();
       noteBuild(data.build);
     },
     daemon: (data) => {

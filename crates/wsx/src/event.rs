@@ -530,6 +530,9 @@ fn translate_key(key: KeyEvent) -> Action {
         (KeyModifiers::NONE, KeyCode::Char('/')) => Action::SearchStart,
         (KeyModifiers::NONE, KeyCode::Char('t')) => Action::Tasks,
         (KeyModifiers::NONE, KeyCode::Char('v')) => Action::Panels,
+        (KeyModifiers::SHIFT, KeyCode::Char('M')) | (KeyModifiers::NONE, KeyCode::Char('M')) => {
+            Action::MachinePanels
+        }
         (KeyModifiers::NONE, KeyCode::Char('o')) => Action::Overview,
         (KeyModifiers::SHIFT, KeyCode::Char('S')) | (KeyModifiers::NONE, KeyCode::Char('S')) => {
             Action::Shell

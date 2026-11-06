@@ -40,6 +40,16 @@ pub struct PanelConfig {
     /// Seconds before the command is stopped.
     pub timeout: u64,
     pub format: PanelFormat,
+    pub scope: PanelScope,
+}
+
+/// Whose state a panel shows: one project's, or the machine's (the web's Machine tab, the TUI's `M`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelScope {
+    #[default]
+    Project,
+    Machine,
 }
 
 /// How a panel's output is read: as text, or as a JSON document drawn as a UI.
@@ -60,6 +70,7 @@ pub(crate) struct PanelFile {
     refresh: u64,
     timeout: Option<u64>,
     format: Option<String>,
+    scope: Option<String>,
 }
 
 /// The `panels:` list checked: the error names the entry and the rule it breaks.
@@ -112,12 +123,22 @@ pub(crate) fn validate(files: Vec<PanelFile>) -> Result<Vec<PanelConfig>, String
                 return Err(format!("{at}.format must be text or json, not {other:?}"));
             }
         };
+        let scope = match file.scope.as_deref() {
+            None | Some("project") => PanelScope::Project,
+            Some("machine") => PanelScope::Machine,
+            Some(other) => {
+                return Err(format!(
+                    "{at}.scope must be project or machine, not {other:?}"
+                ));
+            }
+        };
         panels.push(PanelConfig {
             name,
             command: file.command,
             refresh: file.refresh,
             timeout,
             format,
+            scope,
         });
     }
     Ok(panels)
@@ -393,6 +414,9 @@ pub enum Action {
 pub struct PanelInfo {
     pub name: String,
     pub refresh: u64,
+    /// ^ Absent from a wsxd before revision 45: then `Project`.
+    #[serde(default)]
+    pub scope: PanelScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

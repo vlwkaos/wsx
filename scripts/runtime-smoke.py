@@ -2294,6 +2294,9 @@ panel_daemon = start()
 BAD = WORK / "bad-panel"
 subprocess.run(["git", "init", "-q", "-b", "main", str(BAD)], check=True, env=env)
 (BAD / "wsx.config.yml").write_text("panels:\n  - name: Bad Name\n    command: [true]\n")
+BADSCOPE = WORK / "bad-scope"
+subprocess.run(["git", "init", "-q", "-b", "main", str(BADSCOPE)], check=True, env=env)
+(BADSCOPE / "wsx.config.yml").write_text("panels:\n  - name: mac\n    command: [true]\n    scope: world\n")
 PANEL_SCRIPTS = PROJECT / "scripts"
 PANEL_SCRIPTS.mkdir()
 # ^ The `format: json` panels print these files (docs/panels.md "JSON panels"): every kind, an
@@ -2332,6 +2335,7 @@ for script, body in {
     "json.sh": "cat scripts/json.json\n",
     "badjson.sh": "echo '{oops'\n",
     "limits.sh": "cat scripts/limits.json\n",
+    "machine.sh": "echo machine-ok\n",
 }.items():
     (PANEL_SCRIPTS / script).write_text("#!/bin/sh\n" + body)
     (PANEL_SCRIPTS / script).chmod(0o755)
@@ -2345,10 +2349,12 @@ for script, body in {
     "  - name: slow\n    command: [scripts/slow.sh]\n    timeout: 2\n"
     "  - name: tick\n    command: [scripts/tick.sh]\n    refresh: 10\n"
     "  - name: limits\n    command: [scripts/limits.sh]\n    format: json\n"
+    "  - name: machine\n    command: [scripts/machine.sh]\n    scope: machine\n"
 )
 assert call("synchronize_projects", {"projects": [
     {"path": str(PROJECT), "name": "smoke", "worktrees": [{"path": str(PROJECT), "branch": "main"}]},
     {"path": str(BAD), "name": "bad", "worktrees": [{"path": str(BAD), "branch": "main"}]},
+    {"path": str(BADSCOPE), "name": "badscope", "worktrees": [{"path": str(BADSCOPE), "branch": "main"}]},
 ]})["type"] == "ack"
 
 
@@ -2377,7 +2383,10 @@ def log_lines(name):
 
 
 listed = panel_call(PROJECT, {"action": "list"})
-assert [item["name"] for item in listed["data"]["panels"]] == ["ok", "fail", "json", "badjson", "big", "slow", "tick", "limits"], listed
+assert [item["name"] for item in listed["data"]["panels"]] == ["ok", "fail", "json", "badjson", "big", "slow", "tick", "limits", "machine"], listed
+# ^ The scope is in the list: only `machine` is machine-scoped (docs/panels.md "Machine panels").
+assert {item["name"]: item["scope"] for item in listed["data"]["panels"]}["machine"] == "machine", listed
+assert [item["name"] for item in listed["data"]["panels"] if item["scope"] == "machine"] == ["machine"], listed
 # Exit 0: the output as written, ANSI and CR stripped, in the main checkout, found by its relative path.
 shown = panel_finished("ok")
 assert shown["run"]["status"] == "ok" and shown["run"]["exit"] == 0, shown
@@ -2448,6 +2457,8 @@ assert not panel_get("tick")["running"], "a fresh result started a run"
 assert call("panel", {"project": str(WORK), "action": {"action": "list"}})["data"]["kind"] == "error"
 bad = panel_call(BAD, {"action": "list"})["data"]
 assert bad["panels"] == [] and "panels[0].name" in bad["notice"], bad
+bad_scope = panel_call(BADSCOPE, {"action": "list"})["data"]
+assert bad_scope["panels"] == [] and "panels[0].scope" in bad_scope["notice"], bad_scope
 print("panels in wsxd: PASS", flush=True)
 
 
@@ -2528,6 +2539,14 @@ try:
              "the TUI did not show the broken json panel's text and notice", 20)
     os.write(panel_master, b"\x1b")
     wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the panels")
+    # `M` opens the machine panels of every project: only the one declared `scope: machine`.
+    mark = len(panel_screen)
+    os.write(panel_master, b"M")
+    wait_for(lambda: b"Machine panels" in panel_screen[mark:] and b"machine-ok" in panel_screen[mark:],
+             "M did not open the machine panel with its output", 20)
+    assert b"device-ok" not in panel_screen[mark:], "a project panel showed in the machine view"
+    os.write(panel_master, b"\x1b")
+    wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the machine panels")
 finally:
     panel_tui.terminate()
     panel_tui.wait(timeout=5)

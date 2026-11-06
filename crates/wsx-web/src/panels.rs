@@ -9,7 +9,7 @@ use crate::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use wsx_core::panel::{self, Action, Response};
+use wsx_core::panel::{self, Action, PanelScope, Response};
 
 fn allowed(app: &App) -> Outcome<()> {
     if !app.site.shows(Panel::Terminal) || !app.site.allows(Capability::TerminalInput) {
@@ -57,4 +57,31 @@ pub fn get(app: &App, project: u64, name: String, query: GetQuery) -> Outcome<Va
         Response::Panel(view) => Ok(serde_json::to_value(view).unwrap_or(Value::Null)),
         _ => Err(Fault::new(502, "panel_unavailable", "unexpected answer")),
     }
+}
+
+/// `GET api/machine/panels`: the machine panels (`scope: machine`) of the granted projects,
+/// for the Machine tab. A project whose list fails shows none; a project outside the grant
+/// is never asked.
+pub fn machine(app: &App) -> Outcome<Value> {
+    allowed(app)?;
+    blocking(|| {
+        let snapshot = chat::snapshot(&app.client)?;
+        let projects: Vec<Value> = chat::projects(&snapshot, &app.site.access)
+            .into_iter()
+            .filter_map(|project| {
+                let Ok(Response::Panels { panels, .. }) =
+                    panel::request(&app.client, &project.path, Action::List)
+                else {
+                    return None;
+                };
+                let panels: Vec<_> = panels
+                    .into_iter()
+                    .filter(|info| info.scope == PanelScope::Machine)
+                    .collect();
+                (!panels.is_empty())
+                    .then(|| json!({ "id": project.id.0, "name": project.name, "panels": panels }))
+            })
+            .collect();
+        Ok(json!({ "projects": projects }))
+    })
 }

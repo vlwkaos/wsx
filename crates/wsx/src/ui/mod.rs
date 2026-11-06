@@ -649,6 +649,8 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             .map(str::to_string)
             .collect::<Vec<_>>();
             hints.extend(SESSION_ITERATION_HINTS.map(str::to_string));
+            // ^ Last, so a narrow footer drops it first.
+            hints.push("(M)achine".into());
             ("WORKSPACE", theme::ModeBadge::Navigation, hints)
         }
         Mode::Terminal { .. } => (
@@ -985,7 +987,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  d             Unregister project (H: also halt its sessions)",
         "  e             View/edit wsx.config.yml",
         "  t             Tasks (Enter: detail, m: chat, S: shell)",
-        "  v             Panels (Tab: next, R: run now)",
+        "  v / M         Panels (M: machine panels of all projects)",
         "",
         " Worktree",
         "  w             Add worktree (branch: prompt)",

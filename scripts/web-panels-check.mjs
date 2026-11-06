@@ -4,7 +4,8 @@
 //   web-panels-check.mjs <admin-url> <admin-code> <owner-url> <owner-code> <capture-dir> <project id>
 // The admin site types into a terminal (so runs commands); the owner site has no terminal_input.
 // The project declares `device` (refresh 10, prints "device run <n>"), `broken` (exit 2), `gauges`
-// (format json: every kind, a bad level and an unknown kind) and `badjson` (not a document).
+// (format json: every kind, a bad level and an unknown kind) and `badjson` (not a document);
+// `device` and `gauges` are `scope: machine` (the Machine tab, docs/panels.md "Machine panels").
 import { launch } from "./web-cdp.mjs";
 
 const [adminUrl, adminCode, ownerUrl, ownerCode, captures, project] = process.argv.slice(2);
@@ -25,6 +26,13 @@ await send("Page.navigate", { url: `${ownerUrl}#/p/${project}` });
 await until("!!document.querySelector('.bar-tools')", "the project screen did not render on the owner site");
 await new Promise((resolve) => setTimeout(resolve, 1500));
 if (await evaluate("!!document.querySelector('[aria-label=\"Panels\"]')")) await fail("a site without terminal_input shows the Panels icon");
+
+// ... and no Machine tab.
+await send("Page.navigate", { url: `${ownerUrl}#/` });
+await until("document.querySelectorAll('.tabbar a').length > 0", "the owner site's bottom bar did not render");
+await new Promise((resolve) => setTimeout(resolve, 1500));
+const labels = () => evaluate("[...document.querySelectorAll('.tabbar a')].map((tab) => tab.querySelector('.tab-label').textContent).join()");
+if ((await labels()) !== "Home,Sessions,Settings") await fail(`a site without terminal_input has the bar ${await labels()}`);
 
 await open(adminUrl, adminCode);
 await send("Page.navigate", { url: `${adminUrl}#/p/${project}` });
@@ -69,6 +77,27 @@ await until("/oops/.test(document.querySelector('.panel-output')?.textContent ??
 await capture("390x844-panel-badjson");
 await tab("gauges");
 await until("document.querySelectorAll('.panel-doc .panel-card').length === 2", "the json panel did not come back");
+// The Machine tab: the machine panels of every granted project, no project opened.
+await send("Page.navigate", { url: `${adminUrl}#/` });
+await until("[...document.querySelectorAll('.tabbar a')].some((tab) => tab.textContent === 'Machine')", "the bottom bar has no Machine tab");
+if ((await labels()) !== "Home,Sessions,Machine,Settings") await fail(`the bar with a machine panel is ${await labels()}`);
+await evaluate("[...document.querySelectorAll('.tabbar a')].find((tab) => tab.textContent === 'Machine').click()");
+await until("document.querySelectorAll('.machine-panel .panel').length === 2 && document.querySelectorAll('.machine-panel .panel-card').length === 2", "the Machine screen shows no panel and no cards");
+const machine = await evaluate(`({ names: [...document.querySelectorAll('.machine-name')].map((name) => name.firstChild.textContent + '/' + name.querySelector('small').textContent).join(),
+  current: document.querySelector('.tabbar a[aria-current=page]')?.textContent, output: /device run \\d+/.test(document.querySelector('.panel-output')?.textContent ?? ''),
+  meter: !!document.querySelector('[role=meter]'), wide: document.documentElement.scrollWidth > innerWidth, hash: location.hash })`);
+if (machine.names !== "device/calm,gauges/calm" || machine.current !== "Machine" || !machine.output || !machine.meter || machine.wide || machine.hash !== "#/machine") await fail(`the Machine screen: ${JSON.stringify(machine)}`);
+await capture("390x844-machine");
+// Settings > UI hides the tab; the screen stays reachable by its link.
+await send("Page.navigate", { url: `${adminUrl}#/settings/ui` });
+await until("!!document.querySelector('input[name=tab-machine]')", "Settings > UI has no Machine switch");
+await evaluate("document.querySelector('input[name=tab-machine]').click()");
+await until("[...document.querySelectorAll('.tabbar a')].map((tab) => tab.textContent).join() === 'Home,Sessions,Settings'", "hiding Machine left it in the bar");
+await capture("390x844-machine-hidden");
+await evaluate("document.querySelector('input[name=tab-machine]').click()");
+await until("[...document.querySelectorAll('.tabbar a')].some((tab) => tab.textContent === 'Machine')", "the Machine tab did not return");
+await send("Page.navigate", { url: `${adminUrl}#/p/${project}` });
+await until("!!document.querySelector('a[aria-label=\"Panels\"]')", "the project screen lost its Panels icon");
 await viewport(1280, 800, 1);
 await capture("1280x800-panel-json");
 await tab("broken");
@@ -76,6 +105,6 @@ await until("/failed \\(exit 2\\)/.test(document.querySelector('.panel-state[dat
 await capture("1280x800-panel-failed");
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`page problems: ${defects.join("; ")}`);
-console.log(`panels page: the icon only with terminal_input, output as written (first run ${first}), refreshes by itself, a failing command shows its exit code, a json panel draws cards, bars and level words`);
+console.log(`panels page: the icon and the Machine tab only with terminal_input, the Machine screen lists both machine panels, Settings > UI hides the tab, output as written (first run ${first}), refreshes by itself, a failing command shows its exit code, a json panel draws cards, bars and level words`);
 await cleanup();
 process.exit(0);

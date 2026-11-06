@@ -257,17 +257,23 @@ pub fn render(frame: &mut Frame, area: Rect, view: &PanelsView) {
     };
     let width = inner.width as usize;
     let mut head = vec![Span::styled(
-        format!("{} panels", view.project),
+        view.title.clone(),
         Style::default().add_modifier(Modifier::BOLD),
     )];
-    for (index, info) in view.panels.iter().flatten().enumerate() {
+    for (index, entry) in view.panels.iter().flatten().enumerate() {
         let style = if index == view.selected {
             Style::default().add_modifier(Modifier::REVERSED)
         } else {
             Style::default()
         };
         head.push(Span::raw("  "));
-        head.push(Span::styled(info.name.clone(), style));
+        // ^ The machine view lists several projects: each name carries its project.
+        let label = if view.machine {
+            format!("{}: {}", entry.project, entry.info.name)
+        } else {
+            entry.info.name.clone()
+        };
+        head.push(Span::styled(label, style));
     }
     let mut lines = vec![Line::from(head)];
     let muted = |text: &str| {
@@ -287,7 +293,11 @@ pub fn render(frame: &mut Frame, area: Rect, view: &PanelsView) {
     }
     match (&view.panels, &view.shown, &view.error) {
         (None, _, None) => lines.push(muted("Loading panels")),
-        (Some(panels), _, _) if panels.is_empty() => lines.push(muted("No panels")),
+        (Some(panels), _, _) if panels.is_empty() => lines.push(muted(if view.machine {
+            "No machine panels"
+        } else {
+            "No panels"
+        })),
         _ => {}
     }
     if let Some(message) = &view.error {
