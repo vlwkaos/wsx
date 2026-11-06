@@ -1874,7 +1874,8 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', long_task, '--discard')
     folded = wait(lambda: [l for l in (notes / 'context.md').read_text().splitlines() if l.startswith('- #%d: ' % long_task)], 'the long memo')[0]
     lines_now = (notes / 'context.md').read_text().splitlines()
-    assert folded == '- #%d: %s…' % (long_task, 'x' * 240) and len(lines_now) == 77, (folded, len(lines_now))
+    # ^ `view::clip` counts the ellipsis: 239 characters and `…` make the 240.
+    assert folded == '- #%d: %s…' % (long_task, 'x' * 239) and len(lines_now) == 77, (folded, len(lines_now))
     assert not (notes / 'context-archive.md').exists()
     (notes / 'context.md').write_text('# stubborn\n' + ''.join('- #%d: %s %d\n' % (n, 'y' * 230, n) for n in range(1, 140)))
     big_task = js('task', 'new', 'WORK big.txt MEMO the newest memo')['id']
