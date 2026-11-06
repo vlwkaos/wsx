@@ -63,7 +63,7 @@ private_key = "<base64url>"
 | `chat_answer` | answer a blocked agent's dialog from the chat with keys; needs `chat_send` | chat |
 | `agent_write` | exchanges are created as `writer` instead of `read-only` | chat |
 | `session_start` | start a new session: a login shell with `agent_command` typed into it, or with `terminal_input` a plain shell | chat |
-| `files_read`, `files_write` | browse and read text; replace an existing text file | files |
+| `files_read`, `files_write` | browse, read text and open an HTML file as a page; replace an existing text file | files |
 | `terminal_view` | watch a session's live terminal at the pane's own size | terminal |
 | `terminal_input` | type, paste, resize the pane, take control from another wsx window; read a project's panels ([panels.md](panels.md)); with `projects = "all"`, add and remove projects ("Screens", *Projects*) | terminal |
 | `media_upload`, `media_download` | attach files to a prompt; receive agent-produced files | any |

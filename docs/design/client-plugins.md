@@ -11,7 +11,7 @@ Status: design, 2026-11-03. No code yet. Extends the executable plugins of [plug
 | Workspace | `api/events` (`workspace`, `history`, `exchange`, `daemon`, `resync`), `api/session` | paired device | daemon snapshot: projects, worktrees, sessions, agent state |
 | Chat | `api/chat/<session>/{timeline,send,commands,cancel,answer,queue}` | `chat_send`, `chat_answer`, `agent_write` | the terminal; no chat |
 | Sessions | `POST api/sessions`, `DELETE api/sessions/<id>` | `session_start` | daemon session commands |
-| Files | `api/files`, `api/file` (main checkout, `O_NOFOLLOW`) | `files_read`, `files_write` | none |
+| Files | `api/files`, `api/file`, `api/file/page` with `view/<token>/` (main checkout, `O_NOFOLLOW`) | `files_read`, `files_write` | none |
 | Terminal | `api/terminal/<session>/ws` (raw stream) | `terminal_view`, `terminal_input` | the pane itself |
 | Tasks | `api/tasks/...` ([web-client-tasks.md](../web-client-tasks.md)) | `task_view`, `task_act` | `wsx task` CLI |
 | Media, push | `api/media`, `media/<file>`, `api/push` | `media_*`, `push` | none |
