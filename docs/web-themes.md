@@ -9,7 +9,7 @@ theme = "/abs/path/to/my-theme"   # a theme directory, or the path of a theme .t
 
 ## Tokens
 
-`crates/wsx-web/web/themes/default/theme.toml` is the complete list: 74 tokens, 16 of them the terminal palette. A theme must define every token, directly or through `extends`. A token becomes the CSS variable `--<token>`.
+`crates/wsx-web/web/themes/default/theme.toml` is the complete list: 75 tokens, 16 of them the terminal palette. A theme must define every token, directly or through `extends`. A token becomes the CSS variable `--<token>`.
 
 | Group | Tokens | Value |
 |---|---|---|
