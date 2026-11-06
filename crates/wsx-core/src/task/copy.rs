@@ -529,16 +529,12 @@ fn remote_git(main: &Path, args: &[&str]) -> Result<String> {
             )
         })?;
     // ^ OpenSSH's words when no offered key is taken: say which agent was asked, or none.
-    let words = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() && words.contains("Permission denied (publickey") {
-        bail!(
-            "git {} exited {}: {}; {refused}",
-            args.join(" "),
-            output.status,
-            words.trim()
-        );
-    }
-    finished(args, output)
+    let keys_refused = !output.status.success()
+        && String::from_utf8_lossy(&output.stderr).contains("Permission denied (publickey");
+    finished(args, output).map_err(|error| match keys_refused {
+        true => anyhow::anyhow!("{error}; {refused}"),
+        false => error,
+    })
 }
 
 /// `branch`'s tip on `remote`, or none when the remote has no such branch.
