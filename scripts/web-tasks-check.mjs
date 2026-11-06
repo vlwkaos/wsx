@@ -22,7 +22,7 @@ import { jumps, launch, mobileAudit, pause } from "./web-cdp.mjs";
 
 const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, plansCheckout, longName, relayFile, wsxCli, newsFile] = process.argv.slice(2);
 const project = Number(projectArg);
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched } = await launch({
+const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched, setMotion } = await launch({
   captures, prefix: "tasks-", timeoutSeconds: 840,
 });
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
@@ -459,7 +459,7 @@ async function motion() {
   await pause(60);
   await capture(`${w}-motion-home-toast`);
   // Reduced motion: the same states, no animation and no script-driven motion.
-  await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+  await setMotion("reduce");
   const still = await evaluate(`(async () => {
     const { state, update } = await ${pageModule("store.js")};
     const calm = state.projects.find((project) => project.name === 'calm');
@@ -476,7 +476,7 @@ async function motion() {
     if (seen.some((item) => item !== "none")) await fail(`motion at ${w}px: ${selector} animates with reduced motion: ${JSON.stringify(seen)}`);
   }
   await capture(`${w}-motion-home-reduced`);
-  await send("Emulation.setEmulatedMedia", { features: [] });
+  await setMotion("no-preference");
   await evaluate("document.querySelectorAll('body > div:not(.app):not(#app)').forEach((node) => node.remove())");
   await until("!document.querySelector('.notice')", "the toast did not clear itself", 120);
 }
@@ -622,9 +622,9 @@ const inboxMarks = () => evaluate(`[...document.querySelectorAll('.rows .row .ro
     animated: getComputedStyle(mark).animationName !== 'none' }; })`);
 const moving = await inboxMarks();
 if (moving.filter((mark) => mark.working).length < 2 || moving.some((mark) => mark.running !== mark.working || mark.animated !== mark.working)) await fail(`only working inbox marks pulse: ${JSON.stringify(moving)}`);
-await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+await setMotion("reduce");
 const still = await inboxMarks();
-await send("Emulation.setEmulatedMedia", { features: [] });
+await setMotion("no-preference");
 if (still.some((mark) => mark.animated) || !still.some((mark) => mark.running)) await fail(`an inbox mark moves under reduced motion: ${JSON.stringify(still)}`);
 await shot("sessions");
 // A project's worktrees are in its chat's ⋯ menu; the plain worktree is listed like any
@@ -865,7 +865,7 @@ if ((await slot()) !== held) await fail("the running slot turned while it had th
 await evaluate("document.querySelector('.reservoir-head').blur()");
 if (!(await evaluate("!!document.querySelector('.reservoir-words .tick')"))) await fail("the counts do not tick");
 // Reduced motion: no animation, the newest task and the count of the others.
-await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+await setMotion("reduce");
 await go("#/");
 await go(chat);
 await until("!!document.querySelector('.reservoir-head')", "the chat did not come back for reduced motion");
@@ -879,7 +879,7 @@ const calmNow = await evaluate(`({ slot: document.querySelector('.reservoir-head
   mark: getComputedStyle(document.querySelector('.reservoir-head .mark')).transitionDuration, pulse: getComputedStyle(document.querySelector('.reservoir-head .mark[data-running]')).animationName })`);
 if (calmSlot !== "#92" || calmNow.slot !== "#92" || calmNow.more !== "+2 more") await fail(`under reduced motion the slot reads ${JSON.stringify({ calmSlot, ...calmNow })}`);
 if (calmNow.item !== "none" || calmNow.tick !== "none" || calmNow.mark !== "0s" || calmNow.pulse !== "none") await fail(`reduced motion still animates: ${JSON.stringify(calmNow)}`);
-await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "no-preference" }] });
+await setMotion("no-preference");
 await restored();
 await until("!document.querySelector('.reservoir-more')", "the closed line kept the extra tasks");
 

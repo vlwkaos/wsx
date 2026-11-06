@@ -13,7 +13,7 @@ const [mode, siteUrl, code, ...rest] = process.argv.slice(2);
 const [emptyUrl, emptyCode, sessionsJson, captures, auditPath] = mode === "tour" ? rest
   : mode === "restart" ? [null, null, "{}", rest[0], rest[2]] : [null, null, "{}", ...rest];
 const ids = JSON.parse(sessionsJson);
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched } = await launch({
+const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched, setMotion } = await launch({
   captures, prefix: "", timeoutSeconds: mode === "tour" ? 420 : 100,
 });
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
@@ -1026,11 +1026,11 @@ await until("!!document.querySelector('.app')", "the app did not open after the 
 if (await evaluate("location.href.includes('pair=')")) await fail("the address holds the pairing code after pairing");
 console.log("pairing: General shows a code and a link at 390 px; a fresh browser opening the link pairs with one tap and keeps no #pair");
 
-await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+await setMotion("reduce");
 await openSession("working");
 await until("!!document.querySelector('.pulse')", "the working row did not show");
 if ((await evaluate("getComputedStyle(document.querySelector('.pulse')).animationName")) !== "none") await fail("reduced motion is not respected");
-await send("Emulation.setEmulatedMedia", { features: [] });
+await setMotion("no-preference");
 
 // Slash commands: `/` opens the agent's list, typing filters it, the arrows move, Escape
 // closes, Tab or a tap picks. One pick is sent, and the agent gets exactly "/compact".

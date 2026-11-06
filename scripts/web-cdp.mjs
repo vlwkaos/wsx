@@ -117,6 +117,10 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
   const { targetId } = await send("Target.createTarget", { url: "about:blank" });
   session = (await send("Target.attachToTarget", { targetId, flatten: true })).sessionId;
   for (const domain of ["Page", "Runtime", "Log", "Network"]) await send(`${domain}.enable`);
+  // prefers-reduced-motion: "reduce" or "no-preference". The page starts at no-preference, as
+  // this Mac's Chrome reports it: a CI runner's Chrome reports the runner's own setting.
+  const setMotion = (value) => send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value }] });
+  await setMotion("no-preference");
 
   async function evaluate(expression) {
     const { result, exceptionDetails } = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
@@ -188,7 +192,7 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
   })()`);
   const watched = () => evaluate("(() => { const seen = window.wsxFrames ?? []; window.wsxFrames = null; return seen; })()");
   return {
-    send, evaluate, until, viewport, capture, fail, problems, go, text, count, key, keyboard, watch, watched,
+    send, evaluate, until, viewport, capture, fail, problems, go, text, count, key, keyboard, watch, watched, setMotion,
     cleanup: async () => { socket.close(); await cleanup(); },
   };
 }

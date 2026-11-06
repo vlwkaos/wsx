@@ -7,6 +7,7 @@ Web Push receiver. Nothing here touches the user's daemon, Tailscale or network.
 import argparse
 import base64
 import contextlib
+import faulthandler
 import hashlib
 import http.client
 import json
@@ -890,10 +891,23 @@ def main():
     parser.add_argument('--part', choices=('all', 'chat', 'tasks'), default='all',
                         help='chat: sessions, files, terminal, push; tasks: tasks and the manager')
     args = parser.parse_args()
+    signal.signal(signal.SIGALRM, overdue)
+    signal.alarm(RUN_SECONDS)
     if args.part in ('all', 'chat'):
         web_journey(args)
     if args.part in ('all', 'tasks'):
         task_journey(args)
+
+
+# ^ A run takes about 4 min on CI. A wait that never ends stops here with every thread's stack, well
+# before CI's step limit, and the cleanup in the journey's `finally` still runs.
+RUN_SECONDS = 25 * 60
+
+
+def overdue(*_):
+    print('the web scenario ran past %d s; where each thread waited:' % RUN_SECONDS, file=sys.stderr, flush=True)
+    faulthandler.dump_traceback(all_threads=True)
+    raise TimeoutError('the web scenario ran past %d s' % RUN_SECONDS)
 
 
 def watch_wsxd(path, work):

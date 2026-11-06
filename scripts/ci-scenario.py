@@ -22,6 +22,9 @@ import time
 
 POLL_SECONDS = 30
 FIND_SECONDS = 180
+# ^ A run that has not ended by then hangs (the web scenario takes about 10 min with its build):
+# it is cancelled, well before the host's 75 min limit for a `ci:` command.
+RUN_SECONDS = 60 * 60
 LOG_LINES = 150
 # ^ Past the host's 75 min limit for a `ci:` command, no run still waits on the branch.
 STALE_SECONDS = 2 * 3600
@@ -68,6 +71,7 @@ def find_run(repo, commit):
 
 def wait_run(repo, run_id):
     said = {}
+    deadline = time.monotonic() + RUN_SECONDS
     while True:
         view = json.loads(gh('run', 'view', str(run_id), '--repo', repo,
                              '--json', 'status,conclusion,jobs').stdout)
@@ -78,6 +82,8 @@ def wait_run(repo, run_id):
                 said[job['name']] = state
         if view['status'] == 'completed':
             return view
+        if time.monotonic() > deadline:
+            raise RuntimeError('the CI run did not end in %d min; it is cancelled' % (RUN_SECONDS // 60))
         time.sleep(POLL_SECONDS)
 
 
