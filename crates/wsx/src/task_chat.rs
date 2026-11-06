@@ -17,20 +17,15 @@ use std::{
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::{
     call_socket,
-    chat::{chat_rows, ChatRow, Names, RowKind},
+    chat::{self, chat_rows, ChatRow, Names, RowKind, Window},
     checks::{self, CheckItem, CheckState},
-    manager::{
-        activity, chat_window, pending_approvals, ManagerRequest, ManagerResponse, CHAT_ENTRIES,
-    },
+    manager::{activity, pending_approvals, ManagerRequest, ManagerResponse},
     owner,
     store::{self, ManagerDir, Stamp},
     view,
 };
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(1);
-/// The end of the manager log a chat reads first; it reads more only when that holds fewer
-/// than `CHAT_ENTRIES` entries of the chat.
-const CHAT_TAIL_BYTES: u64 = 256 * 1024;
 /// The host answers its status at once; a slow answer counts as not running.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -178,11 +173,20 @@ fn read_file(main: &Path, relative: &str) -> Result<Vec<String>, String> {
     Ok(lines)
 }
 
-/// What the owner decides: an open To check item or a waiting approval.
+/// What the owner decides: an open To check item, a waiting approval or an open question.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Check(CheckItem),
-    Approval { id: String, label: String },
+    Approval {
+        id: String,
+        label: String,
+    },
+    /// A reply that asks the owner (`chat::open_asks`); `key` is `ask-<id>`.
+    Ask {
+        id: u64,
+        key: String,
+        quote: String,
+    },
 }
 
 impl Item {
@@ -190,6 +194,7 @@ impl Item {
         match self {
             Self::Check(item) => &item.id,
             Self::Approval { id, .. } => id,
+            Self::Ask { key, .. } => key,
         }
     }
 }
@@ -222,8 +227,8 @@ struct View {
 
 /// A check's answer: the host's status, and the store read again when a stamp changed.
 struct Read {
-    /// Whether the view holds the whole log (`ManagerChat::whole`) or its newest part.
-    whole: bool,
+    /// The find the view was read for (`ManagerChat::searched`).
+    searched: String,
     status: Option<ManagerResponse>,
     view: Option<(Stamp, Result<View, String>)>,
 }
@@ -265,14 +270,16 @@ pub struct ManagerChat {
     pub found: usize,
     /// The chat's width and height in the last frame: a key finds matches as they are drawn.
     pub area: Cell<(usize, u16)>,
-    /// ^ The whole log, not its newest `CHAT_ENTRIES`, once a find opened: a find reaches
-    /// every message (docs/tasks.md "TUI").
-    whole: bool,
-    /// The current match is still to be scrolled to: the whole log was not read yet.
+    /// ^ The find the chat reads for: from the oldest message that shows it, so a find reaches
+    /// every match (`Window::Find`, docs/tasks.md "TUI"); empty is the newest part.
+    searched: String,
+    /// The current match is still to be scrolled to: the log was not read for it yet.
     reveal_due: bool,
     /// ^ The rows wrapped for the last width and link, until the rows change; the draw, a key
     /// and the find's count all read it, so a frame wraps nothing new.
     wrapped: RefCell<Option<Wrapped>>,
+    /// The question a message answers (`r` on an open question): it goes as its quote.
+    reply: Option<String>,
     /// What runs now ("Sending", "Failing c3"), until its answer comes.
     pub acting: Option<String>,
     stamp: Option<Stamp>,
@@ -333,7 +340,8 @@ impl ManagerChat {
             find: InputState::new("/"),
             found: 0,
             area: Cell::new((0, 0)),
-            whole: false,
+            searched: String::new(),
+            reply: None,
             reveal_due: false,
             wrapped: RefCell::new(None),
             acting: None,
@@ -349,7 +357,7 @@ impl ManagerChat {
     fn check(&mut self) {
         let (tx, rx) = mpsc::sync_channel(1);
         let (store, last, role) = (self.store.clone(), self.stamp.clone(), self.role.clone());
-        let whole = self.whole;
+        let searched = self.searched.clone();
         let (main, project) = (self.main.clone(), self.project.clone());
         self.pending = Some(rx);
         self.last_check = Instant::now();
@@ -367,12 +375,12 @@ impl ManagerChat {
             });
             let now = store::stamp(&store);
             let view = (last.as_ref() != Some(&now)).then(|| {
-                let view = read(&project, &store, &main, dir.as_ref(), whole)
+                let view = read(&project, &store, &main, dir.as_ref(), &searched)
                     .map_err(|error| format!("{error:#}"));
                 (now, view)
             });
             let _ = tx.send(Read {
-                whole,
+                searched,
                 status,
                 view,
             });
@@ -445,8 +453,8 @@ impl ManagerChat {
                 }
                 self.activity = view.activity;
                 self.agent = view.agent;
-                // ^ A read started before the find opened has the newest part only: read again.
-                self.stamp = (read.whole == self.whole).then_some(stamp);
+                // ^ A read for another find: read again.
+                self.stamp = (read.searched == self.searched).then_some(stamp);
                 self.loaded = true;
                 self.error = None;
                 changed = true;
@@ -503,9 +511,13 @@ impl ManagerChat {
 
     /// Send the composer's text as `wsx task say` does, starting the manager when needed.
     pub fn send(&mut self) {
-        let text = self.composer.value().trim().to_string();
+        let mut text = self.composer.value().trim().to_string();
         if text.is_empty() || self.acting.is_some() {
             return;
+        }
+        // ^ The owner's quote format (`split_quote`): the web's reply writes the same.
+        if let Some(quote) = self.reply.take() {
+            text = format!("> {quote}\n\n{text}");
         }
         self.composer = InputState::new("> ");
         self.scroll = 0;
@@ -551,6 +563,20 @@ impl ManagerChat {
                 Err(error) => (format!("{id} not {verb}: {error:#}"), true, None),
             },
         );
+    }
+
+    /// Dismiss the open question of reply `id`, as `wsx task dismiss` does.
+    fn dismiss(&mut self, id: u64) {
+        self.run(format!("Dismissing {id}"), move |_, _, store| {
+            let done = ManagerDir::existing(&store).and_then(|dir| {
+                let dir = dir.ok_or_else(|| anyhow::anyhow!("no manager"))?;
+                chat::dismiss(&dir, id, wsx_core::task::now_unix_ms())
+            });
+            match done {
+                Ok(()) => ("Dismissed".into(), false, None),
+                Err(error) => (format!("Not dismissed: {error:#}"), true, None),
+            }
+        });
     }
 
     /// Fail item `id` with the note: it starts the task that fixes it, as `check fail` does.
@@ -605,19 +631,17 @@ fn read(
     store: &str,
     main: &Path,
     dir: Option<&ManagerDir>,
-    whole: bool,
+    searched: &str,
 ) -> anyhow::Result<View> {
-    // ^ The newest part reads the end of the log until it holds `CHAT_ENTRIES` entries of the
-    // chat; a find reads all of it (docs/tasks.md "TUI").
-    let log = match dir {
-        Some(dir) if whole => dir.read_log()?,
-        Some(dir) => dir.read_log_tail(CHAT_TAIL_BYTES, |log| {
-            chat_window(log, None, CHAT_ENTRIES).0.len() >= CHAT_ENTRIES
-        })?,
-        None => Vec::new(),
+    let window = match searched.is_empty() {
+        true => Window::Tail,
+        false => Window::Find(searched),
     };
-    let limit = if whole { usize::MAX } else { CHAT_ENTRIES };
-    let (entries, _) = chat_window(&log, None, limit);
+    let now = wsx_core::task::now_unix_ms();
+    let (log, asks) = match dir {
+        Some(dir) => (chat::read_chat(dir, &window)?, chat::asking(dir, now)?),
+        None => (Vec::new(), Vec::new()),
+    };
     let settings = load_task_config(main).unwrap_or_default();
     let manager = settings.manager_shown_name(project).to_string();
     let role = dir.and_then(|dir| dir.role.clone());
@@ -645,15 +669,13 @@ fn read(
         Some(_) => Vec::new(),
         None => store::read_approvals(store)?,
     };
-    let rows = chat_rows(
-        &entries,
-        &pending_approvals(&approvals),
-        &Names {
-            own: &name,
-            manager: &manager,
-            peer: &peer,
-        },
-    );
+    let names = Names {
+        own: &name,
+        manager: &manager,
+        peer: &peer,
+    };
+    let (entries, _) = chat::chat_window(&log, &window, &names);
+    let rows = chat_rows(&entries, &pending_approvals(&approvals), &asks, &names);
     if role.is_some() {
         return Ok(View {
             rows,
@@ -675,6 +697,11 @@ fn read(
                 label: owner::approval_label(line),
             }),
     );
+    items.extend(asks.into_iter().map(|ask| Item::Ask {
+        id: ask.id,
+        key: format!("ask-{}", ask.id),
+        quote: ask.quote,
+    }));
     Ok(View {
         rows,
         name,
@@ -695,7 +722,14 @@ impl ManagerChat {
             Focus::Chat => return self.chat_key(action),
             Focus::Compose => match action {
                 Action::Select => self.send(),
-                Action::InputEscape => self.focus = Focus::Chat,
+                Action::InputEscape => {
+                    // ^ Esc drops what the message would answer, not its words.
+                    if self.reply.take().is_some() {
+                        self.composer =
+                            InputState::with_value("> ", self.composer.value().to_string());
+                    }
+                    self.focus = Focus::Chat
+                }
                 _ => {
                     dispatch_text_edit(&mut self.composer, action);
                 }
@@ -707,6 +741,7 @@ impl ManagerChat {
                     if dispatch_text_edit(&mut self.find, action) {
                         // ^ Each edit starts again at the newest match.
                         self.found = usize::MAX;
+                        self.search();
                         self.reveal();
                     }
                 }
@@ -762,6 +797,15 @@ impl ManagerChat {
                 self.note = InputState::new(format!("Fail {}, what is wrong: ", item.id));
                 self.focus = Focus::Fail(item.id);
             }
+            (Action::InputChar('r'), Some(Item::Ask { quote, .. })) => {
+                self.composer = InputState::with_value(
+                    format!("Reply to “{}”: ", view::clip(&quote, 40)),
+                    self.composer.value().to_string(),
+                );
+                self.reply = Some(quote);
+                self.focus = Focus::Compose;
+            }
+            (Action::InputChar('d'), Some(Item::Ask { id, .. })) => self.dismiss(id),
             (Action::InputChar(key @ ('y' | 'n')), Some(Item::Approval { id, label })) => {
                 self.focus = Focus::Confirm {
                     id,
@@ -866,8 +910,13 @@ impl ManagerChat {
 
     fn open_find(&mut self) {
         self.focus = Focus::Find;
-        if !self.whole {
-            self.whole = true;
+    }
+
+    /// Read again at once for the find's words (`Window::Find`) when they changed.
+    fn search(&mut self) {
+        let words = self.find.value().trim().to_string();
+        if words != self.searched {
+            self.searched = words;
             self.read_again();
         }
     }
@@ -876,13 +925,12 @@ impl ManagerChat {
         self.find = InputState::new("/");
         self.reveal_due = false;
         self.focus = Focus::Chat;
-        if self.whole {
-            // ^ Back to the newest part: its read drops the old rows, and the scroll
-            // counted lines of the whole log.
-            self.whole = false;
+        // ^ Back to the newest part: its read drops the old rows, and the scroll counted
+        // lines of the find's read.
+        if !self.searched.is_empty() {
             self.scroll = 0;
-            self.read_again();
         }
+        self.search();
     }
 
     /// Read the store at the next poll, whatever the stamp says.

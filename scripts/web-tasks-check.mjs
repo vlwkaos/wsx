@@ -2755,6 +2755,30 @@ costs.push(await renderCost("at the end after a find"));
 console.log(`long chat render at 390 px, CPU 4x: ${costs.map((cost) => `${cost.label} ${cost.ms} ms, ${cost.named} rows, ${cost.nodes} elements, ${cost.renders} bubbles rendered`).join("; ")}`);
 const costly = costs.filter((cost) => cost.renders > 0 || (cost.label === "at the end after a find" && cost.named > 60));
 if (costly.length) await fail(`a read with no new message rendered bubbles again, or the log kept more than its newest 60 rows: ${JSON.stringify(costs)}`);
+// --- Questions (docs/tasks.md "Questions" under "Manager"): plans' log asked four times and the
+// owner answered the newer two (test-web-client.py). Each open question waits in the reservoir
+// with Reply and Dismiss; a dismiss clears only that one: its row, its bubble's border and the
+// overview's `asks`, which Home's accent reads.
+const plansAsks = () => evaluate(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((data) => data.asks)`);
+const openAsks = await plansAsks();
+if (!openAsks.length || openAsks.some((ask) => !["Should the fold keep five rows?", "Can #92 wait for Monday?"].includes(ask.quote))) await fail(`plans' open questions read ${JSON.stringify(openAsks)}`);
+await openReservoir();
+const question = openAsks[0].quote;
+await until(`!!${rowOf(question)}`, "an open question has no reservoir row");
+const questionRow = (await rows()).find((row) => row[1] === question);
+if (questionRow[2] !== "Asks you" || questionRow[3] !== "Reply+Dismiss") await fail(`the question's row reads ${JSON.stringify(questionRow)}`);
+await shot("question-row");
+await evaluate(`${rowOf(question)}.querySelector('.need-action[title="Reply"]').click()`);
+await until(`document.querySelector('.reply-quote-text')?.textContent === ${JSON.stringify(`Replying to: ${question}`)}`, "Reply did not quote the question in the composer");
+await click('.reply-quote button[aria-label="Remove the quote"]');
+await openReservoir();
+await evaluate(`${rowOf(question)}.querySelector('.need-action[title="Dismiss"]').click()`);
+await until(`!${rowOf(question)}`, "Dismiss did not clear the question's row", 100);
+const left = await plansAsks();
+if (left.some((ask) => ask.id === openAsks[0].id) || left.length !== openAsks.length - 1) await fail(`after a dismiss plans asks ${JSON.stringify(left)}`);
+const chatAsks = await evaluate(`fetch('api/tasks/${plansArg}/chat').then((r) => r.json()).then((data) => data.asks)`);
+if (JSON.stringify(chatAsks) !== JSON.stringify(left.map((ask) => ask.id))) await fail(`the chat's asks ${JSON.stringify(chatAsks)} differ from the overview's ${JSON.stringify(left)}`);
+await until(`!document.querySelector('.log [data-key="reply-${openAsks[0].id}"][data-asks], .log [data-key="reply-${openAsks[0].id}"] [data-asks]')`, "the dismissed question's bubble keeps its border");
 await openReservoir();
 await until(`!!${rowOf("#1")}`, "the waiting task has no reservoir row");
 const waitRow = (await rows()).find((row) => row[0] === "#1");

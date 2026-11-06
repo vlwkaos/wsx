@@ -310,8 +310,6 @@ const FAST_INTERVAL_MS: u64 = 500;
 const GIT_SWEEP_INTERVAL_MS: u64 = 15_000;
 const SLOW_INTERVAL_MS: u64 = 30_000;
 const MANAGER_ASKS_INTERVAL_MS: u64 = 2_000;
-/// How much of a manager log's end tells whether its last reply asks (as the web's overview).
-const MANAGER_TAIL_BYTES: u64 = 64 * 1024;
 const WORKSPACE_SCROLL_LINES: isize = 3;
 const NOTICE_MIN_DWELL: Duration = Duration::from_secs(2);
 const STREAM_REATTACH_WINDOW: Duration = Duration::from_secs(5);

@@ -1,7 +1,7 @@
 // Find in a chat: a bar under the top row that marks each match of the typed text in the
 // conversation, case-insensitive, and scrolls to the current one. It starts at the newest
 // match; Enter and ↑ go to the older one, Shift+Enter and ↓ to the newer one, Esc closes.
-// The page loads the whole history while the bar is open (docs/web-client-chat.md "Find").
+// A page may read more history for the typed words (`onQuery`, docs/web-client-chat.md "Find").
 import { html, Icon, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
 
 // ^ CSS Custom Highlight API: the marks paint over the rendered text, so the conversation's
@@ -31,9 +31,13 @@ function find(log, query) {
   return ranges;
 }
 
+// The typed words reach `onQuery` once typing pauses this long.
+const QUERY_MS = 250;
+
 // `log`: the conversation's node. `reveal`: scrolls a node of it into view (lib.js
-// `useFollowEnd`). `loading`: the whole history is not in yet.
-export function FindBar({ log, reveal, loading, onClose }) {
+// `useFollowEnd`). `loading`: the history for the query is not in yet. `onQuery`: the typed
+// words, after a pause.
+export function FindBar({ log, reveal, loading, onQuery, onClose }) {
   const [query, setQuery] = useState("");
   // ^ The current match from the oldest; null starts at the newest.
   const [at, setAt] = useState(null);
@@ -53,6 +57,12 @@ export function FindBar({ log, reveal, loading, onClose }) {
       if (document.activeElement === document.body || !document.activeElement?.isConnected) before.current?.focus?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (!onQuery) return undefined;
+    const timer = setTimeout(() => onQuery(query), QUERY_MS);
+    return () => clearTimeout(timer);
+  }, [query]);
 
   // Marks again when the query changes and when rows arrive or open (a fold, Show earlier).
   useEffect(() => {

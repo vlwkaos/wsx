@@ -30,11 +30,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::git::output_with_timeout_tail;
+use wsx_core::task::chat::{self, Names, Window};
 use wsx_core::task::checks::{self, CheckItem, CheckState};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
 use wsx_core::task::manager::{
-    chat_window, ApprovalAction, ApprovalLine, Author, Level, ManagerEntry, ManagerEvent,
-    ManagerRequest, ManagerResponse, CHAT_ENTRIES,
+    ApprovalAction, ApprovalLine, Author, Level, ManagerEntry, ManagerEvent, ManagerRequest,
+    ManagerResponse,
 };
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::roles;
@@ -243,6 +244,14 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// The owner dismisses an open question of the manager by its reply id: it asks no more (owner)
+    Dismiss {
+        id: u64,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// List what the owner has to check of the landed tasks, or pass, skip or fail items (owner; the manager passes with --owner-said)
     Check {
         #[command(subcommand)]
@@ -387,10 +396,13 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Read the manager conversation, or a role's, after a message id
+    /// Read the manager conversation, or a role's, after a message id or from the oldest message with some words
     Chat {
         #[arg(long, value_name = "ID")]
         after: Option<u64>,
+        /// From the oldest message that shows these words, case-insensitive
+        #[arg(long, value_name = "WORDS", conflicts_with = "after")]
+        find: Option<String>,
         #[arg(long, value_name = "NAME")]
         role: Option<String>,
         #[arg(short, long)]
@@ -515,6 +527,7 @@ impl TaskCmd {
             Self::Manager { json, .. }
             | Self::Say { json, .. }
             | Self::Chat { json, .. }
+            | Self::Dismiss { json, .. }
             | Self::Approve { json, .. }
             | Self::Deny { json, .. } => *json,
             Self::Ledger { .. } => true,
@@ -893,10 +906,18 @@ pub fn run(command: TaskCmd) -> Result<()> {
         }
         TaskCmd::Chat {
             after,
+            find,
             role,
             project,
             json,
-        } => chat(project.as_deref(), role.as_deref(), after, json),
+        } => chat(
+            project.as_deref(),
+            role.as_deref(),
+            after,
+            find.as_deref(),
+            json,
+        ),
+        TaskCmd::Dismiss { id, project, json } => dismiss(project.as_deref(), id, json),
         // ^ Under a task host's broker the CLI forwards it before parsing (broker.rs).
         TaskCmd::CheckRun { .. } => {
             bail!("`wsx task check-run` runs only inside a task's worker, through its host")
@@ -2639,8 +2660,15 @@ fn say(
     Ok(())
 }
 
-/// The conversation after message `after`: messages, replies, rotations and stops.
-fn chat(project: Option<&str>, role: Option<&str>, after: Option<u64>, json: bool) -> Result<()> {
+/// The conversation after message `after`, or from the oldest entry that shows `find`:
+/// messages, replies, rotations and stops; `asks`, the open questions (docs/tasks.md "Log window").
+fn chat(
+    project: Option<&str>,
+    role: Option<&str>,
+    after: Option<u64>,
+    find: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let (name, main) = project_entry(project)?;
     let project_id = store::project_id(&name, &main);
     let dir = match role {
@@ -2648,14 +2676,34 @@ fn chat(project: Option<&str>, role: Option<&str>, after: Option<u64>, json: boo
         Some(role) => ManagerDir::existing_as(&project_id, Some(role))?
             .with_context(|| format!("the project has no role {role}"))?,
     };
-    let log = dir.read_log()?;
-    let (entries, skipped) = chat_window(&log, after, CHAT_ENTRIES);
+    let window = match (find, after) {
+        (Some(words), _) => Window::Find(words),
+        (None, Some(after)) => Window::After(after),
+        (None, None) => Window::Tail,
+    };
+    let now = wsx_core::task::now_unix_ms();
+    let log = chat::read_chat(&dir, &window)?;
+    let shown = load_task_config(&main)
+        .unwrap_or_default()
+        .manager_shown_name(&name)
+        .to_string();
+    let own = role.unwrap_or(&shown);
+    let names = Names {
+        own,
+        manager: &shown,
+        peer: &|other: &str| other.to_string(),
+    };
+    let (entries, skipped) = chat::chat_window(&log, &window, &names);
+    let asks: Vec<u64> = chat::asking(&dir, now)?.iter().map(|ask| ask.id).collect();
     if json {
-        return print_json(&json!({ "entries": entries, "skipped": skipped }));
+        return print_json(&json!({ "entries": entries, "skipped": skipped, "asks": asks }));
     }
     for entry in entries {
         match &entry.event {
             ManagerEvent::Message { id, from, text, .. } => println!("[{id}] {from:?}: {text}"),
+            ManagerEvent::Reply { id, text, .. } if asks.contains(id) => {
+                println!("[{id}] manager (asks): {text}")
+            }
             ManagerEvent::Reply { id, text, .. } => println!("[{id}] manager: {text}"),
             ManagerEvent::Rotated {
                 reason: Some(reason),
@@ -2672,6 +2720,21 @@ fn chat(project: Option<&str>, role: Option<&str>, after: Option<u64>, json: boo
             _ => {}
         }
     }
+    Ok(())
+}
+
+/// `wsx task dismiss <id>`: the owner's; the manager answers a question, it does not close it.
+/// ref: docs/tasks.md "Manager"
+fn dismiss(project: Option<&str>, id: u64, json: bool) -> Result<()> {
+    owner_only("dismiss")?;
+    let (name, main) = project_entry(project)?;
+    let dir = ManagerDir::open(&store::project_id(&name, &main))?;
+    chat::dismiss(&dir, id, wsx_core::task::now_unix_ms())?;
+    let message = format!("reply {id} asks no more");
+    if json {
+        return print_json(&json!({ "ok": true, "message": message }));
+    }
+    println!("{message}");
     Ok(())
 }
 

@@ -20,8 +20,8 @@ use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
     self, call_host_waiting, call_socket, checks, copy, ledger,
     manager::{
-        activity, chat_window, decided_request, pending_approvals, ApprovalLine, Author,
-        ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse, CHAT_ENTRIES,
+        activity, decided_request, pending_approvals, ApprovalLine, Author, ManagerEntry,
+        ManagerEvent, ManagerRequest, ManagerResponse,
     },
     owner, stall, status,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
@@ -38,9 +38,6 @@ const RESOLUTION_WITHIN_MS: u64 = 7 * 24 * 3600 * 1000;
 const LAST_REPLY_CHARS: usize = 120;
 /// The home row's last reply and activity come from this much of the manager log's end.
 const MANAGER_TAIL_BYTES: u64 = 64 * 1024;
-/// A chat call with `after` reads this much of the log's end first (finding 5 of
-/// docs/design/web-server-health-audit.md).
-const CHAT_TAIL_BYTES: u64 = 256 * 1024;
 /// `resolutions` reads this much of each recent task's log end; a log within it is read whole.
 const RESOLUTION_LOG_BYTES: u64 = 256 * 1024;
 /// A cached overview is rebuilt after this long even when no file changed, for the words that
@@ -260,15 +257,18 @@ fn build_overview(
     listed.sort_by_key(|(order, recent, _)| (*order, *recent));
     listed.truncate(TASKS_LISTED);
     // ^ The latest manager entry and reply, for the home row (docs/web-client-tasks.md "Home").
-    let tail = ManagerDir::existing(&scope.store)
-        .ok()
-        .flatten()
+    let manager_dir = ManagerDir::existing(&scope.store).ok().flatten();
+    let tail = manager_dir
+        .as_ref()
         .and_then(|dir| dir.read_tail(MANAGER_TAIL_BYTES).ok())
         .unwrap_or_default();
     let last_reply = newest_news(&tail);
-    // ^ A reply asks the owner and no owner message came after it, a later report or not: the home
-    // row shows the chat's "Asks you" tag (docs/web-client-tasks.md "Home").
-    let asks = task::manager::tail_asks(&tail);
+    // ^ The open questions: the home row shows the chat's "Asks you" while one is open, the
+    // reservoir lists them (docs/web-client-tasks.md "Home").
+    let asks = manager_dir
+        .as_ref()
+        .and_then(|dir| task::chat::asking(dir, now).ok())
+        .unwrap_or_default();
     let check_items = checks::read(&scope.store).unwrap_or_default();
     // ^ The newest message the chat counts as new: a reply that is not quiet or a To check
     // item. The home row marks it until this device read the chat that far
@@ -659,14 +659,14 @@ fn timeline(log: &[task::LogEntry]) -> Value {
 /// The manager conversation, or the role `role`'s, after message `after`, and whether it
 /// runs or thinks; the manager's also lists the project's roles as contacts.
 /// `scopes`: the granted projects, whose managers' names a peer bubble may show.
-/// `all`: every entry, not the newest `CHAT_ENTRIES`, for a find over the whole history
-/// (docs/web-client-chat.md "Find").
+/// `find`: from the oldest entry that shows these words, for a find over the whole history
+/// (docs/web-client-chat.md "Find"). `asks` lists the open questions' ids.
 pub fn chat(
     scope: &Scope,
     scopes: &[Scope],
     role: Option<&str>,
     after: Option<u64>,
-    all: bool,
+    find: Option<&str>,
     media: &crate::media::Media,
 ) -> Outcome<Value> {
     // ^ The name the owner reads (docs/tasks.md "Config"); the role stays `manager` inside.
@@ -686,7 +686,7 @@ pub fn chat(
     };
     let Some(dir) = dir else {
         return Ok(
-            json!({ "rows": [], "skipped": 0, "running": false, "busy": false, "manager": manager, "roles": roles }),
+            json!({ "rows": [], "skipped": 0, "asks": [], "running": false, "busy": false, "manager": manager, "roles": roles }),
         );
     };
     // ^ The agent in use now, a fallback's while one runs; a role's has none shown.
@@ -694,9 +694,28 @@ pub fn chat(
         manager["agent"] =
             view::manager_agent(&dir, &load_task_config(&scope.path).unwrap_or_default());
     }
-    let log = chat_log(&dir, after).map_err(internal)?;
+    // ^ Another project's manager by its set name, read only from granted projects.
+    let peer = |project: &str| {
+        scopes
+            .iter()
+            .find(|other| other.name == project)
+            .map_or_else(|| project.to_string(), manager_name)
+    };
+    let names = task::chat::Names {
+        own: &own,
+        manager: &project_manager,
+        peer: &peer,
+    };
+    let window = match (find.filter(|words| !words.trim().is_empty()), after) {
+        (Some(words), _) => task::chat::Window::Find(words),
+        (None, Some(after)) => task::chat::Window::After(after),
+        (None, None) => task::chat::Window::Tail,
+    };
+    let now = task::now_unix_ms();
+    let log = task::chat::read_chat(&dir, &window).map_err(internal)?;
     let activity = activity(&log).map(str::to_string);
-    let (window, skipped) = chat_window(&log, after, if all { usize::MAX } else { CHAT_ENTRIES });
+    let asks = task::chat::asking(&dir, now).map_err(internal)?;
+    let (window, skipped) = task::chat::chat_window(&log, &window, &names);
     // ^ An owner message's files show as attachments, not as their paths.
     let mut attachments: std::collections::HashMap<u64, Value> = std::collections::HashMap::new();
     let window: Vec<task::manager::ManagerEntry> = window
@@ -724,21 +743,11 @@ pub fn chat(
         Some(_) => Vec::new(),
         None => store::read_approvals(&scope.store).unwrap_or_default(),
     };
-    // ^ Another project's manager by its set name, read only from granted projects.
-    let peer = |project: &str| {
-        scopes
-            .iter()
-            .find(|other| other.name == project)
-            .map_or_else(|| project.to_string(), manager_name)
-    };
     let rows: Vec<Value> = task::chat::chat_rows(
         &window.iter().collect::<Vec<_>>(),
         &pending_approvals(&approvals),
-        &task::chat::Names {
-            own: &own,
-            manager: &project_manager,
-            peer: &peer,
-        },
+        &asks,
+        &names,
     )
     .into_iter()
     .map(|row| {
@@ -762,28 +771,11 @@ pub fn chat(
         "roles": roles,
         "rows": rows,
         "skipped": skipped,
+        "asks": asks.iter().map(|ask| ask.id).collect::<Vec<_>>(),
         "running": status.is_some(),
         "busy": busy,
         "activity": if busy { activity } else { None },
     }))
-}
-
-/// The log entries a chat call needs. With `after`, the end of the log when it holds that
-/// entry and what `activity` needs (a reply or an `agent` line): the same window as the
-/// whole log gives. Else the whole log.
-fn chat_log(dir: &ManagerDir, after: Option<u64>) -> anyhow::Result<Vec<ManagerEntry>> {
-    if let Some(after) = after {
-        let tail = dir.read_tail(CHAT_TAIL_BYTES)?;
-        if tail.iter().any(|entry| entry.id() == Some(after))
-            && (activity(&tail).is_some()
-                || tail
-                    .iter()
-                    .any(|entry| matches!(entry.event, ManagerEvent::Reply { .. })))
-        {
-            return Ok(tail);
-        }
-    }
-    dir.read_log()
 }
 
 /// The newest reply of a chat that counts as news (when, text): one that is not quiet. A ping and
@@ -1076,6 +1068,12 @@ pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> O
         _ => return Err(Fault::not_found()),
     }
     run_wsx(scope, argv)
+}
+
+/// The owner dismisses an open question: `wsx task dismiss <id>` without `WSX_TASK_ACTOR`
+/// (docs/tasks.md "Manager"); a reply that is not an open question is a 409.
+pub fn dismiss(scope: &Scope, id: u64) -> Outcome<Value> {
+    run_wsx(scope, vec!["task".into(), "dismiss".into(), id.to_string()])
 }
 
 /// `wsx task <command> <task>`: `preview` starts a preview or answers the running one
