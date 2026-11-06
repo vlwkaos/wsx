@@ -342,7 +342,7 @@ fn instructions(
          tell the owner why in one line. A land needs no approval, and the project deploys \
          by itself when the ledger's `deploys` say so; call a change live only when \
          `deploys` shows its commit. \
-         A task `waiting` on `owner` asked or stopped: answer with `wsx task add` when you \
+         A task `waiting` on `owner` asked: answer with `wsx task add` when you \
          can, else ask the owner in plain words; on `disk` or `limit` it resumes by \
          itself. An event '#<n> stalled' is wsx's \
          finding, with the evidence, that the task is stuck: act with `wsx task` (a silent \
