@@ -137,6 +137,11 @@ struct CheckRun {
     label: String,
     /// It runs a `ci:` scenario, so it answered `queued` at once: CI takes 20 min or more.
     ci: bool,
+    /// The longest it may run: each local check's timeout, and `CI_TIMEOUT` beside them.
+    limit: Duration,
+    /// When the run must have ended (unix ms): its start, or its slot's, plus `limit`. `None`
+    /// while it waits for the check slot.
+    deadline_ms: Option<u64>,
 }
 
 /// A check-run's answer to the worker, and the proof the host keeps when the run passed on
@@ -466,6 +471,10 @@ impl Host {
                         response.stdout = format!("{}\n{shared}", response.stdout.trim_end());
                     }
                     let run = self.check_run.take();
+                    if self.record.waits_on(WaitOn::CheckRun) {
+                        self.record.waiting = None;
+                        self.save();
+                    }
                     let label = run
                         .as_ref()
                         .map_or_else(String::new, |run| run.label.clone());
@@ -1426,6 +1435,7 @@ impl Host {
             }
             run.result_waits = true;
             self.say("the result waits for its check-run");
+            self.show_held_result();
             return;
         }
         self.settle_result();
@@ -2101,6 +2111,12 @@ impl Host {
         let ci = to_run
             .iter()
             .any(|(_, command)| ci_command(command).is_some());
+        let local: Vec<&(usize, String)> = to_run
+            .iter()
+            .filter(|(_, command)| ci_command(command).is_none())
+            .collect();
+        let limit = (Duration::from_secs(self.record.check_timeout_secs) * local.len() as u32)
+            .max(if ci { CI_TIMEOUT } else { Duration::ZERO });
         self.check_run = Some(CheckRun {
             indexes,
             replies: vec![reply],
@@ -2116,19 +2132,21 @@ impl Host {
                 .collect::<Vec<_>>()
                 .join(" "),
             ci,
+            limit,
+            deadline_ms: None,
         });
         // ^ A run of checks that only format or compile, or only runs on CI, is light: it takes
         // no slot. One that names a local scenario takes the scenarios lane, else the checks lane.
-        let local: Vec<&(usize, String)> = to_run
-            .iter()
-            .filter(|(_, command)| ci_command(command).is_none())
-            .collect();
         let lane = match local.iter().any(|(index, _)| *index >= checks) {
             true => Lane::Scenarios,
             false => Lane::Checks,
         };
         let priority =
             (!local.iter().all(|(_, command)| light(command))).then_some((lane, Priority::Normal));
+        // ^ A run without a slot starts now; one with a slot when it takes it (`check_slot`).
+        if priority.is_none() {
+            self.start_check_run_clock();
+        }
         let events = self.events.clone();
         self.spawn_checks(priority, "check-run", to_run.clone(), move |results| {
             let ran: BTreeMap<usize, CheckResult> = to_run
@@ -2392,6 +2410,47 @@ impl Host {
             self.record.waiting = None;
             self.save();
         }
+        // ^ The checks after a result never run beside a check-run: this slot is the run's.
+        if self.record.state != TaskState::Checking {
+            self.start_check_run_clock();
+            self.show_held_result();
+        }
+    }
+
+    /// The worker's check-run starts now: its time limit counts from here, as its checks'.
+    fn start_check_run_clock(&mut self) {
+        if let Some(run) = self
+            .check_run
+            .as_mut()
+            .filter(|run| run.deadline_ms.is_none())
+        {
+            run.deadline_ms = Some(now_unix_ms() + run.limit.as_millis() as u64);
+        }
+    }
+
+    /// A result held for its own running check-run shows as a wait on `check_run` until the
+    /// run's time limit, so `show`, the ledger and the stall check see what it waits for.
+    /// ref: docs/tasks.md "Check-run"
+    fn show_held_result(&mut self) {
+        let Some(run) = self.check_run.as_ref().filter(|run| run.result_waits) else {
+            return;
+        };
+        if run.deadline_ms.is_none()
+            || self.record.waiting.is_some()
+            || self.record.state != TaskState::Working
+        {
+            return;
+        }
+        self.record.waiting = Some(Waiting {
+            on: WaitOn::CheckRun,
+            reason: format!(
+                "the result waits for check-run {}{}",
+                run.label,
+                if run.ci { " on CI" } else { "" }
+            ),
+            until_ms: run.deadline_ms,
+        });
+        self.save();
     }
 
     fn on_checks(&mut self, epoch: u64, results: Vec<CheckResult>) {
