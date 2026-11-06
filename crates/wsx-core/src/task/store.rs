@@ -948,6 +948,42 @@ impl ManagerDir {
         Ok(entries)
     }
 
+    /// The newest entries of the old log and the current one, in reading order: the last
+    /// `bytes` of both, then four times as many until `enough` holds for them or the files
+    /// are read whole. A chat needs the end of a log of up to 8 MiB, not all of it.
+    pub fn read_log_tail(
+        &self,
+        mut bytes: u64,
+        enough: impl Fn(&[super::manager::ManagerEntry]) -> bool,
+    ) -> Result<Vec<super::manager::ManagerEntry>> {
+        loop {
+            let (mut entries, mut room, mut whole) = (Vec::new(), bytes, true);
+            for name in [MANAGER_LOG, MANAGER_OLD_LOG] {
+                let path = self.path.join(name);
+                let Some(mut file) = open_if_exists(&path)? else {
+                    continue;
+                };
+                let (tail, skipped) = read_tail_bytes(&mut file, room)
+                    .with_context(|| format!("cannot read {}", path.display()))?;
+                let mut older: Vec<_> = after_cut_line(&tail, skipped)
+                    .split(|byte| *byte == b'\n')
+                    .filter_map(super::manager::ManagerEntry::read)
+                    .collect();
+                older.append(&mut entries);
+                entries = older;
+                if skipped > 0 {
+                    whole = false;
+                    break;
+                }
+                room -= tail.len() as u64;
+            }
+            if whole || enough(&entries) {
+                return Ok(entries);
+            }
+            bytes = bytes.saturating_mul(4);
+        }
+    }
+
     /// The entries in the last `bytes` of the current log, for a quick look at the latest
     /// ones; a line cut at the start is skipped.
     pub fn read_tail(&self, bytes: u64) -> Result<Vec<super::manager::ManagerEntry>> {

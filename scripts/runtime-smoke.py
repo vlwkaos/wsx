@@ -2183,6 +2183,71 @@ try:
     wait_for(lambda: "press i to write a message" not in remove_view.text(), "Esc did not close the manager chat", seconds=60)
     os.write(remove_master, b"q")
     wait_for(lambda: "All projects" not in remove_view.text(), "q did not close keep-me's Tasks view", seconds=60)
+    # docs/design/tui-health-audit.md #1, #2, #10, #11, #14: the chat of a manager log of about 7.5
+    # MiB (the log rolls over at 8 MiB) reads only the end of it, the whole log only while a
+    # find is open, and a 20 KB line in the composer costs the same as a short one.
+    MiB = 1024 * 1024
+    halt_log = STATE / "wsx" / "tasks" / f"halt-me-{hashlib.sha256(str(removal['halt-me']).encode()).hexdigest()[:8]}" / "manager" / "log.jsonl"
+    filler = "lorem ipsum dolor sit amet " * 11
+    filler_count = 0
+    base = int(time.time() * 1000) - 7_200_000
+    with halt_log.open("a") as log_file:
+        while log_file.tell() < 7.5 * MiB:
+            text = f"old-{filler_count:05d} " + ("NEEDLE-oldest " if filler_count == 0 else "") + filler
+            log_file.write(json.dumps({"unix_ms": base + filler_count, "kind": "message", "id": 100 + filler_count,
+                                       "from": "owner", "text": text}) + "\n")
+            filler_count += 1
+        log_file.write(json.dumps({"unix_ms": base + filler_count, "kind": "message", "id": 100 + filler_count,
+                                   "from": "owner", "text": "LAST-ENTRY-0"}) + "\n")
+    assert 7 * MiB < halt_log.stat().st_size < 8 * MiB - 64 * 1024, halt_log.stat().st_size
+    select_in_tui("halt-me")
+    os.write(remove_master, b"t")
+    wait_for(lambda: "All projects" in remove_view.text(), "t opened no Tasks view for halt-me", seconds=120)
+    os.write(remove_master, b"m")
+    wait_for(lambda: "LAST-ENTRY-0" in remove_view.text(), "the TUI chat did not show the end of the 7.5 MiB log", seconds=120)
+    # ^ A new entry shows within the poll interval (1 s) and one read of the end: a read of the
+    # whole log, about 20,000 entries here, takes far longer in this build.
+    REFRESH_SECONDS = 4
+    started = time.monotonic()
+    with halt_log.open("a") as log_file:
+        log_file.write(json.dumps({"unix_ms": base + filler_count + 1, "kind": "message", "id": 100 + filler_count + 1,
+                                   "from": "owner", "text": "LAST-ENTRY-1"}) + "\n")
+    wait_for(lambda: "LAST-ENTRY-1" in remove_view.text(), "the chat did not show the new entry", seconds=60)
+    refresh = time.monotonic() - started
+    print(f"smoke: the chat of a {halt_log.stat().st_size / MiB:.1f} MiB log refreshed in {refresh:.2f} s")
+    assert refresh < REFRESH_SECONDS, f"the chat refresh took {refresh:.2f} s"
+    # ^ `/` reads the whole log: the oldest entry is found. Esc clears the find and returns to
+    # the newest 200 entries (LAST-ENTRY-1 and -0 and 198 filler entries): scrolled to the top,
+    # the chat starts at old-(count - 198), not at the oldest.
+    os.write(remove_master, b"/NEEDLE-oldest")
+    wait_for(lambda: re.search(r"/NEEDLE-oldest\s+1/1", remove_view.text()), "the find did not reach the oldest entry", seconds=120)
+    os.write(remove_master, b"\x1b")
+    wait_for(lambda: "NEEDLE-oldest" not in remove_view.text() and "LAST-ENTRY-1" in remove_view.text(),
+             "Esc did not return the chat to the end", seconds=60)
+    top = filler_count - 198
+    os.write(remove_master, b"k" * 2000)
+    wait_for(lambda: f"old-{top:05d}" in remove_view.text(), "the chat after a find did not return to its newest 200 entries", seconds=120)
+    assert f"old-{top - 1:05d}" not in remove_view.text() and "NEEDLE-oldest" not in remove_view.text(), remove_view.text()
+    # ^ A 20 KB line typed (a terminal without bracketed paste sends a paste as keys): the
+    # end of the line shows within a fixed time.
+    PASTE_SECONDS = 20
+    os.write(remove_master, b"i")
+    wait_for(lambda: "Enter: send" in remove_view.text(), "i did not open the composer", seconds=60)
+    paste = ("paste0123 " * 2000).encode()
+    started = time.monotonic()
+    for at_byte in range(0, len(paste), 1024):
+        os.write(remove_master, paste[at_byte:at_byte + 1024])
+    os.write(remove_master, b"ENDMARK")
+    wait_for(lambda: "ENDMARK" in remove_view.text(), "the composer did not show the end of a 20 KB paste", seconds=60)
+    pasted = time.monotonic() - started
+    print(f"smoke: a 20 KB paste in the composer showed its end in {pasted:.2f} s")
+    assert pasted < PASTE_SECONDS, f"the 20 KB paste took {pasted:.2f} s"
+    os.write(remove_master, b"\x1b")
+    os.write(remove_master, b"\x1b")
+    wait_for(lambda: "press i to write a message" not in remove_view.text() and "Enter: send" not in remove_view.text(),
+             "Esc did not close the manager chat", seconds=60)
+    os.write(remove_master, b"q")
+    wait_for(lambda: "All projects" not in remove_view.text(), "q did not close halt-me's Tasks view", seconds=60)
     remove_from_tui("halt-me", b"H")
     wait_for(lambda: "halt-me" not in config_names(), "H did not unregister halt-me")
     wait_for(lambda: project_sessions("halt-me") == [], "H did not halt the sessions of halt-me")
