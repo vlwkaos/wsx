@@ -1,4 +1,4 @@
-/target/
+target/
 .work/
 # ^ Session files (Task Context settlements, memos) carry machine paths and stay out of main.
 /knowledge/sessions/
