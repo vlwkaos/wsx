@@ -3712,13 +3712,17 @@ def run(wsx, wsxd, work, owned):
     # its result waits for it, and the record shows the wait on `check_run` with the run's time
     # limit, so the stall check does not call it silent; the pass then goes on to the checks.
     mark('32t3')
-    ci_mark, ci_pass = base / 'ci-again-mark', base / 'ci-again-gate'
-    configure(LAND_CONFIG + '  scenarios:\n    cifail: "ci: exit 1"\n'
+    ci_mark, ci_pass, ci_go = base / 'ci-again-mark', base / 'ci-again-gate', base / 'ci-fail-gate'
+    # ^ The first runs fail only after both results: a run that ends first takes another path.
+    hold = 'while [ ! -e %s ]; do sleep 0.2; done' % ci_go
+    configure(LAND_CONFIG + '  scenarios:\n    cifail: "ci: %s; exit 1"\n'
               '    ciagain: "ci: if [ -e %s ]; then while [ ! -e %s ]; do sleep 0.2; done; echo ci-passed; '
-              'else touch %s; echo WORK ciagain2.txt CHECKRUN_LATER ciagain ; exit 1; fi"\n'
-              % (ci_mark, ci_pass, ci_mark), 'ci scenarios that fail')
+              'else %s; touch %s; echo WORK ciagain2.txt CHECKRUN_LATER ciagain ; exit 1; fi"\n'
+              % (hold, ci_mark, ci_pass, hold, ci_mark), 'ci scenarios that fail')
     plain = js('task', 'new', 'CHECKRUN_LATER cifail WORK cifail.txt')['id']
     again = js('task', 'new', 'CHECKRUN_LATER ciagain WORK ciagain.txt')['id']
+    wait(lambda: kinds(plain, 'result') and kinds(again, 'result'), 'both first results', 30)
+    ci_go.touch()
     assert wait_state(plain, 'ready', 'failed')['state'] == 'ready', log(plain)
     assert kinds(plain, 'result', 'check_run', 'checks') == ['result', 'check_run', 'result', 'checks'], log(plain)
     assert [e['trigger'] for e in log(plain) if e['kind'] == 'result'] == ['step', 'check_run'], log(plain)
