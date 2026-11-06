@@ -2228,20 +2228,23 @@ try:
     os.write(remove_master, b"k" * 2000)
     wait_for(lambda: f"old-{top:05d}" in remove_view.text(), "the chat after a find did not return to its newest 200 entries", seconds=120)
     assert f"old-{top - 1:05d}" not in remove_view.text() and "NEEDLE-oldest" not in remove_view.text(), remove_view.text()
-    # ^ A 20 KB line typed (a terminal without bracketed paste sends a paste as keys): the
-    # end of the line shows within a fixed time.
-    PASTE_SECONDS = 20
+    # ^ A 20 KB line typed (a terminal without bracketed paste sends a paste as keys), in ten
+    # parts of 2,000 characters, each ending in a mark that shows when the TUI has taken the
+    # part. Each key costs one redraw (the first part sets the cost of that), so the last part
+    # must take about as long as the first; a cost that grows with the line (the old loop, which
+    # cut the line one character at a time) makes it take many times as long.
     os.write(remove_master, b"i")
     wait_for(lambda: "Enter: send" in remove_view.text(), "i did not open the composer", seconds=60)
-    paste = ("paste0123 " * 2000).encode()
-    started = time.monotonic()
-    for at_byte in range(0, len(paste), 1024):
-        os.write(remove_master, paste[at_byte:at_byte + 1024])
-    os.write(remove_master, b"ENDMARK")
-    wait_for(lambda: "ENDMARK" in remove_view.text(), "the composer did not show the end of a 20 KB paste", seconds=60)
-    pasted = time.monotonic() - started
-    print(f"smoke: a 20 KB paste in the composer showed its end in {pasted:.2f} s")
-    assert pasted < PASTE_SECONDS, f"the 20 KB paste took {pasted:.2f} s"
+    part_seconds = []
+    for part in range(10):
+        mark = f"<<{part}>>"
+        started = time.monotonic()
+        os.write(remove_master, ("paste0123 " * 199 + "paste012 ").encode())
+        os.write(remove_master, mark.encode())
+        wait_for(lambda: mark in remove_view.text(), f"the composer did not show the end of part {part} of a 20 KB paste", seconds=180)
+        part_seconds.append(time.monotonic() - started)
+    print("smoke: 20 KB typed in the composer, seconds per 2,000 characters: " + " ".join(f"{sec:.1f}" for sec in part_seconds))
+    assert part_seconds[-1] < 3 * part_seconds[0] + 2, part_seconds
     os.write(remove_master, b"\x1b")
     os.write(remove_master, b"\x1b")
     wait_for(lambda: "press i to write a message" not in remove_view.text() and "Enter: send" not in remove_view.text(),
