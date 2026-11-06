@@ -2610,12 +2610,14 @@ capabilities = ["terminal_view"]
             method = 'GET' if target.endswith('timeline') else 'POST'
             assert family.request(method, target % sessions['owner'], {'text': 'x'} if method == 'POST' else None)[0] == 404
         before = len(traces('owner'))
+        # ^ The profile journey above already ran a turn in this session.
+        family_before = (len(traces('family')), len(messages(family, sessions['family'])['messages']))
         status, sent = family.request('POST', '/api/chat/%d/send' % sessions['family'], {'text': 'build me a page'})
         sent = sent['exchange']
         assert status == 200 and sent['access'] == 'read_only', sent
-        assert wait(lambda: traces('family'), 'family delivery')[0].startswith('[wsx exchange %d, round 1, read-only]\n' % sent['id'])
+        assert wait(lambda: traces('family')[family_before[0]:], 'family delivery')[0].startswith('[wsx exchange %d, round 1, read-only]\n' % sent['id'])
         assert len(traces('owner')) == before
-        wait(lambda: len(messages(family, sessions['family'])['messages']) == 2, 'family history')
+        wait(lambda: len(messages(family, sessions['family'])['messages']) == family_before[1] + 2, 'family history')
         assert family.request('GET', '/' + uploaded['url'])[0] == 404  # media stores are per site
         ok('site B: capability denial for files, terminal, push, session start; other project invisible')
 
