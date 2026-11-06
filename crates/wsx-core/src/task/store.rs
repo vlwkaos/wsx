@@ -226,6 +226,14 @@ fn read_open_bounded(file: File, path: &Path, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// With `WSX_TRACE_READ_LOG` set, one stderr line per whole-log read: a scenario counts them
+/// to prove a reader does not parse a whole log it does not need.
+fn trace_read_log(path: &Path) {
+    if std::env::var_os("WSX_TRACE_READ_LOG").is_some() {
+        eprintln!("wsx-trace read_log {}", path.display());
+    }
+}
+
 /// The last `limit` bytes of `file`, and how many bytes came before them. When that count
 /// is not 0 the first line of the bytes may be cut (see `after_cut_line`).
 pub fn read_tail_bytes(file: &mut File, limit: u64) -> std::io::Result<(Vec<u8>, u64)> {
@@ -531,6 +539,7 @@ impl TaskDir {
 
     pub fn read_log(&self) -> Result<Vec<LogEntry>> {
         let path = self.file(LOG_FILE);
+        trace_read_log(&path);
         let Some(file) = open_if_exists(&path)? else {
             return Ok(Vec::new());
         };
@@ -553,6 +562,20 @@ impl TaskDir {
             }
         }
         Ok(entries)
+    }
+
+    /// The entries in the last `bytes` of the log; a line cut at the start is skipped.
+    pub fn read_log_tail(&self, bytes: u64) -> Result<Vec<LogEntry>> {
+        let path = self.file(LOG_FILE);
+        let Some(mut file) = open_if_exists(&path)? else {
+            return Ok(Vec::new());
+        };
+        let (tail, skipped) = read_tail_bytes(&mut file, bytes)
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        Ok(after_cut_line(&tail, skipped)
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| serde_json::from_slice(line).ok())
+            .collect())
     }
 
     /// What `pick` makes of the newest event it accepts, scanning the log from its end: the
@@ -906,6 +929,7 @@ impl ManagerDir {
 
     /// The old log, then the current one; unreadable lines are skipped.
     pub fn read_log(&self) -> Result<Vec<super::manager::ManagerEntry>> {
+        trace_read_log(&self.path);
         let mut entries = Vec::new();
         for name in [MANAGER_OLD_LOG, MANAGER_LOG] {
             let Some(bytes) = read_bounded_if_exists(

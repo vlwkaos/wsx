@@ -2,6 +2,7 @@
 //! ^ Reads go through `wsx_core::task`; actions go to the task host's or the manager's
 //! socket. `scope` is the only code that maps a page's project id to a task store, so a
 //! project outside the grant answers 404 like every other route.
+use crate::locked;
 use crate::{
     chat::{self, Fault, Outcome},
     site::Access,
@@ -12,7 +13,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use wsx_core::config::project::load_task_config;
 use wsx_core::runtime::Snapshot;
@@ -37,6 +38,14 @@ const RESOLUTION_WITHIN_MS: u64 = 7 * 24 * 3600 * 1000;
 const LAST_REPLY_CHARS: usize = 120;
 /// The home row's last reply and activity come from this much of the manager log's end.
 const MANAGER_TAIL_BYTES: u64 = 64 * 1024;
+/// A chat call with `after` reads this much of the log's end first (finding 5 of
+/// docs/design/web-server-health-audit.md).
+const CHAT_TAIL_BYTES: u64 = 256 * 1024;
+/// `resolutions` reads this much of each recent task's log end; a log within it is read whole.
+const RESOLUTION_LOG_BYTES: u64 = 256 * 1024;
+/// A cached overview is rebuilt after this long even when no file changed, for the words that
+/// count minutes (a slot wait).
+const OVERVIEW_TTL: Duration = Duration::from_secs(60);
 const TIMELINE_ENTRIES: usize = 300;
 const MAX_REPORT_BYTES: u64 = 1024 * 1024;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
@@ -97,15 +106,75 @@ fn open_task(scope: &Scope, task: u32) -> Outcome<TaskDir> {
     TaskDir::open(&scope.store, task).map_err(|_| Fault::not_found())
 }
 
-/// What the strip, the inbox, the chips and the `#` picker need, in one answer.
-pub fn overview(scope: &Scope) -> Value {
+/// What an overview was built from: the project's files and the settings it reads. The
+/// manager's `busy` is not in it: it is read on every call.
+#[derive(PartialEq)]
+pub struct OverviewKey {
+    stamp: store::Stamp,
+    /// `land.auto`, the manager's shown name, `preview` set, `try_live`.
+    settings: Option<(bool, String, bool, bool)>,
+}
+
+/// A built overview and when, by project.
+pub type Overviews = HashMap<u64, (OverviewKey, Instant, Value)>;
+
+fn manager_busy(scope: &Scope) -> bool {
+    ManagerDir::existing(&scope.store)
+        .ok()
+        .flatten()
+        .and_then(|dir| {
+            call_socket::<_, ManagerResponse>(
+                &dir.socket_path(),
+                &ManagerRequest::Status,
+                STATUS_TIMEOUT,
+            )
+            .ok()
+        })
+        .is_some_and(|status| status.busy)
+}
+
+/// What the strip, the inbox, the chips and the `#` picker need, in one answer. The body is
+/// kept while the project's stamp and settings are the same (and for `OVERVIEW_TTL`): the
+/// files it reads change only with the stamp (finding 4 of
+/// docs/design/web-server-health-audit.md).
+pub fn overview(app: &App, scope: &Scope) -> Value {
+    let settings = load_task_config(&scope.path).ok();
+    // ^ The stamp comes before the build: a file that changes during it makes the next call build again.
+    let key = OverviewKey {
+        stamp: store::stamp(&scope.store),
+        settings: settings.as_ref().map(|settings| {
+            (
+                settings.land_auto,
+                settings.manager_shown_name(&scope.name).to_string(),
+                settings.preview.is_some(),
+                settings.deploy_command.is_some() && !settings.deploy_public,
+            )
+        }),
+    };
+    let cached = locked(&app.overviews)
+        .get(&scope.project)
+        .filter(|(kept, at, _)| *kept == key && at.elapsed() < OVERVIEW_TTL)
+        .map(|(_, _, body)| body.clone());
+    let mut body = cached.unwrap_or_else(|| {
+        let body = build_overview(scope, settings.as_ref());
+        locked(&app.overviews).insert(scope.project, (key, Instant::now(), body.clone()));
+        body
+    });
+    body["busy"] = json!(manager_busy(scope));
+    body
+}
+
+fn build_overview(
+    scope: &Scope,
+    settings: Option<&wsx_core::model::workspace::TaskConfig>,
+) -> Value {
     let tasks = view::project_tasks(&scope.store).unwrap_or_default();
     let now = task::now_unix_ms();
     let mut needs: Vec<(u8, u64, Value)> = Vec::new();
     let mut listed: Vec<(u8, u64, Value)> = Vec::new();
     let mut working = 0;
     let mut titles: HashMap<u32, String> = HashMap::new();
-    let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
+    let land_auto = settings.is_some_and(|settings| settings.land_auto);
     let approvals = store::read_approvals(&scope.store).unwrap_or_default();
     let pending = pending_approvals(&approvals);
     for (dir, record) in &tasks {
@@ -227,24 +296,9 @@ pub fn overview(scope: &Scope) -> Value {
         }))
         .chain(news.as_ref().and_then(|news| news["unix_ms"].as_u64()))
         .max();
-    // ^ The manager's turn runs now: the home row shows typing dots (docs/web-client-tasks.md "Home").
-    let busy = ManagerDir::existing(&scope.store)
-        .ok()
-        .flatten()
-        .and_then(|dir| {
-            call_socket::<_, ManagerResponse>(
-                &dir.socket_path(),
-                &ManagerRequest::Status,
-                STATUS_TIMEOUT,
-            )
-            .ok()
-        })
-        .is_some_and(|status| status.busy);
-    let settings = load_task_config(&scope.path).ok();
     json!({
         "project": scope.project,
-        "manager": settings.as_ref().map_or(scope.name.as_str(), |settings| settings.manager_shown_name(&scope.name)),
-        "busy": busy,
+        "manager": settings.map_or(scope.name.as_str(), |settings| settings.manager_shown_name(&scope.name)),
         "needs": needs.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
         "working": working,
         // ^ What the owner checks of landed tasks (docs/tasks.md "To check").
@@ -257,9 +311,9 @@ pub fn overview(scope: &Scope) -> Value {
         "asks": asks,
         "last_unix_ms": last_unix_ms,
         // ^ Tasks can be tried on a preview link (docs/tasks.md "Preview").
-        "preview": settings.as_ref().is_some_and(|settings| settings.preview.is_some()),
+        "preview": settings.is_some_and(|settings| settings.preview.is_some()),
         // ^ A ready task can be tried on the live site, and which one is (docs/tasks.md "Hold and trial").
-        "try_live": settings.as_ref().is_some_and(|settings| {
+        "try_live": settings.is_some_and(|settings| {
             settings.deploy_command.is_some() && !settings.deploy_public
         }),
         "trial": ledger::trial_status(&scope.store, &store::read_deploys(&scope.store).unwrap_or_default()),
@@ -285,7 +339,8 @@ fn resolutions(
     for (dir, record) in recent {
         let id = record.id;
         let mut blocked = false;
-        for entry in dir.read_log().unwrap_or_default() {
+        // ^ A log past the tail is cut at its start: an answer whose block is older is not listed.
+        for entry in dir.read_log_tail(RESOLUTION_LOG_BYTES).unwrap_or_default() {
             let text = match &entry.event {
                 LogEvent::Blocked { .. } => {
                     blocked = true;
@@ -639,7 +694,7 @@ pub fn chat(
         manager["agent"] =
             view::manager_agent(&dir, &load_task_config(&scope.path).unwrap_or_default());
     }
-    let log = dir.read_log().map_err(internal)?;
+    let log = chat_log(&dir, after).map_err(internal)?;
     let activity = activity(&log).map(str::to_string);
     let (window, skipped) = chat_window(&log, after, if all { usize::MAX } else { CHAT_ENTRIES });
     // ^ An owner message's files show as attachments, not as their paths.
@@ -711,6 +766,24 @@ pub fn chat(
         "busy": busy,
         "activity": if busy { activity } else { None },
     }))
+}
+
+/// The log entries a chat call needs. With `after`, the end of the log when it holds that
+/// entry and what `activity` needs (a reply or an `agent` line): the same window as the
+/// whole log gives. Else the whole log.
+fn chat_log(dir: &ManagerDir, after: Option<u64>) -> anyhow::Result<Vec<ManagerEntry>> {
+    if let Some(after) = after {
+        let tail = dir.read_tail(CHAT_TAIL_BYTES)?;
+        if tail.iter().any(|entry| entry.id() == Some(after))
+            && (activity(&tail).is_some()
+                || tail
+                    .iter()
+                    .any(|entry| matches!(entry.event, ManagerEvent::Reply { .. })))
+        {
+            return Ok(tail);
+        }
+    }
+    dir.read_log()
 }
 
 /// The newest reply of a chat that counts as news (when, text): one that is not quiet. A ping and
@@ -1517,7 +1590,7 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
                         .is_some_and(|id| !ready(id))
             });
         if !progress_only {
-            let overview = overview(scope);
+            let overview = overview(app, scope);
             let text = overview.to_string();
             let needs = overview["needs"].as_array().map_or(0, Vec::len);
             watch.needs.insert(scope.project, needs);
@@ -1584,6 +1657,7 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
     }
     let alive: HashSet<u64> = scopes.iter().map(|scope| scope.project).collect();
     watch.overviews.retain(|project, _| alive.contains(project));
+    locked(&app.overviews).retain(|project, _| alive.contains(project));
     watch.seen.retain(|project, _| alive.contains(project));
     watch.needs.retain(|project, _| alive.contains(project));
     watch.open.retain(|project, _| alive.contains(project));
@@ -1613,6 +1687,6 @@ pub fn overviews(app: &App) -> Outcome<Value> {
     let snapshot = chat::snapshot(&app.client)?;
     Ok(json!(scopes(&snapshot, &app.site.access)
         .iter()
-        .map(overview)
+        .map(|scope| overview(app, scope))
         .collect::<Vec<_>>()))
 }
