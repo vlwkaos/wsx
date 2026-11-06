@@ -317,7 +317,8 @@ async function inbox() {
   await pause(1200);
   if ((await text("section[aria-label=Running] .time")).join() === before.join()) await fail("the elapsed time does not count");
   if (phone()) {
-    if ((await text(".tabbar a")).join() !== "Inbox,Projects,Settings" || (await text(".tabbar a[aria-current=page]")).join() !== "Inbox") await fail("the tab bar is wrong");
+    // ^ m2 may run commands: the Machine tab is there (docs/panels.md "Machine panels").
+    if ((await text(".tabbar a")).join() !== "Inbox,Projects,Machine,Settings" || (await text(".tabbar a[aria-current=page]")).join() !== "Inbox") await fail("the tab bar is wrong");
     const bar = await evaluate("(() => { const r = document.querySelector('.tabbar').getBoundingClientRect(); return [r.bottom, innerHeight, r.height]; })()");
     if (Math.abs(bar[0] - bar[1]) > 1 || bar[2] < 44) await fail(`the tab bar is not at the bottom edge: ${bar}`);
   } else if ((await count(".tabbar")) || !(await count(".rail")) || (await text(".placeholder")).join() !== "Choose a session.") {
@@ -933,34 +934,34 @@ await shot("settings-light");
   const equal = (shape) => shape.widths.length > 0 && shape.widths.every((width) => Math.abs(width - shape.widths[0]) <= 0.5);
   const scheme = (name) => evaluate(`document.documentElement.dataset.scheme = ${JSON.stringify(name)}`);
   await go("#/");
-  await until("document.querySelectorAll('.tabbar a').length === 3", "the bottom bar lacks its three tabs");
+  await until("document.querySelectorAll('.tabbar a').length === 4", "the bottom bar lacks its four tabs");
   let shape = await barShape();
   if (!equal(shape) || !shape.stacked || shape.highlight.join() !== "Inbox" || !shape.floats || !shape.frame) await fail(`the bottom bar is ${JSON.stringify(shape)}`);
   for (const name of ["light", "dark"]) { await scheme(name); await shot(`tabbar-${name}`); }
   await go("#/settings/ui");
-  await until("document.querySelectorAll('.options input[name^=tab-]').length === 3", "Settings > UI does not list the three tabs");
+  await until("document.querySelectorAll('.options input[name^=tab-]').length === 4", "Settings > UI does not list the four tabs");
   const switches = () => evaluate("Object.fromEntries([...document.querySelectorAll('.options input[name^=tab-]')].map((node) => [node.name, [node.checked, node.disabled]]))");
-  if (JSON.stringify(await switches()) !== JSON.stringify({ "tab-home": [true, false], "tab-projects": [true, false], "tab-settings": [true, true] })
+  if (JSON.stringify(await switches()) !== JSON.stringify({ "tab-home": [true, false], "tab-projects": [true, false], "tab-machine": [true, false], "tab-settings": [true, true] })
     || (await text(".subtabs a")).join() !== "General,UI" || (await text(".subtabs a[aria-current=page]")).join() !== "UI") await fail(`Settings > UI is ${JSON.stringify(await switches())}`);
   for (const name of ["light", "dark"]) { await scheme(name); await shot(`settings-ui-${name}`); }
   await clickIt("input[name=tab-projects]");
-  await until("document.querySelectorAll('.tabbar a').length === 2", "hiding Projects left it in the bar");
+  await until("document.querySelectorAll('.tabbar a').length === 3", "hiding Projects left it in the bar");
   shape = await barShape();
-  if (shape.names.join() !== "Inbox,Settings" || !equal(shape)) await fail(`the bar with Projects hidden is ${JSON.stringify(shape)}`);
+  if (shape.names.join() !== "Inbox,Machine,Settings" || !equal(shape)) await fail(`the bar with Projects hidden is ${JSON.stringify(shape)}`);
   await shot("tabbar-two");
   // ^ A stored list that names Settings is not obeyed.
-  await evaluate("localStorage.setItem('wsx-tabs-hidden', JSON.stringify(['home', 'projects', 'settings']))");
+  await evaluate("localStorage.setItem('wsx-tabs-hidden', JSON.stringify(['home', 'projects', 'machine', 'settings']))");
   await send("Page.reload");
   await until("!!document.querySelector('.tabbar a')", "the page did not come back after a reload");
   if ((await text(".tabbar a")).join() !== "Settings") await fail(`the bar with a stored list naming Settings is ${await text(".tabbar a")}`);
   await evaluate("localStorage.removeItem('wsx-tabs-hidden')");
   await send("Page.reload");
-  await until("document.querySelectorAll('.tabbar a').length === 3", "the bar did not return with every tab shown");
+  await until("document.querySelectorAll('.tabbar a').length === 4", "the bar did not return with every tab shown");
   // The header at the bottom leaves the pill where it was.
   await go("#/settings/ui");
   await clickIt("input[name=bar][value=bottom]");
   await go("#/");
-  await until("document.querySelectorAll('.tabbar a').length === 3", "the bar is gone with the header at the bottom");
+  await until("document.querySelectorAll('.tabbar a').length === 4", "the bar is gone with the header at the bottom");
   shape = await barShape();
   if (!equal(shape) || !shape.frame) await fail(`the bar with the header at the bottom is ${JSON.stringify(shape)}`);
   await shot("tabbar-header-bottom");

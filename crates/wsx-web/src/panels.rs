@@ -29,7 +29,7 @@ fn ask(app: &App, project: u64, action: Action) -> Outcome<Response> {
     allowed(app)?;
     blocking(|| {
         let path = project_path(app, project)?;
-        panel::request(&app.client, &path, action)
+        panel::request(&app.client, Some(&path), action)
             .map_err(|message| Fault::new(409, "panel_unavailable", message))
     })
 }
@@ -53,24 +53,42 @@ pub struct GetQuery {
 /// run is in flight.
 pub fn get(app: &App, project: u64, name: String, query: GetQuery) -> Outcome<Value> {
     let run = query.run == Some(1);
-    match ask(app, project, Action::Get { name, run })? {
+    view(ask(app, project, Action::Get { name, run })?)
+}
+
+fn view(response: Response) -> Outcome<Value> {
+    match response {
         Response::Panel(view) => Ok(serde_json::to_value(view).unwrap_or(Value::Null)),
         _ => Err(Fault::new(502, "panel_unavailable", "unexpected answer")),
     }
 }
 
-/// `GET api/machine/panels`: the machine panels (`scope: machine`) of the granted projects,
-/// for the Machine tab. A project whose list fails shows none; a project outside the grant
-/// is never asked.
+/// `GET api/machine/panels/<name>[?run=1]`: one of wsxd's built-in machine panels, as `get`.
+pub fn machine_get(app: &App, name: String, query: GetQuery) -> Outcome<Value> {
+    allowed(app)?;
+    let run = query.run == Some(1);
+    view(blocking(|| {
+        panel::request(&app.client, None, Action::Get { name, run })
+            .map_err(|message| Fault::new(409, "panel_unavailable", message))
+    })?)
+}
+
+/// `GET api/machine/panels`: wsxd's built-in machine panels (`panels`, read by `machine_get`),
+/// then the machine panels (`scope: machine`) of the granted projects, for the Machine tab. A
+/// list that fails shows none; a project outside the grant is never asked.
 pub fn machine(app: &App) -> Outcome<Value> {
     allowed(app)?;
     blocking(|| {
+        let builtin = match panel::request(&app.client, None, Action::List) {
+            Ok(Response::Panels { panels, .. }) => panels,
+            _ => Vec::new(),
+        };
         let snapshot = chat::snapshot(&app.client)?;
         let projects: Vec<Value> = chat::projects(&snapshot, &app.site.access)
             .into_iter()
             .filter_map(|project| {
                 let Ok(Response::Panels { panels, .. }) =
-                    panel::request(&app.client, &project.path, Action::List)
+                    panel::request(&app.client, Some(&project.path), Action::List)
                 else {
                     return None;
                 };
@@ -82,6 +100,6 @@ pub fn machine(app: &App) -> Outcome<Value> {
                     .then(|| json!({ "id": project.id.0, "name": project.name, "panels": panels }))
             })
             .collect();
-        Ok(json!({ "projects": projects }))
+        Ok(json!({ "panels": builtin, "projects": projects }))
     })
 }

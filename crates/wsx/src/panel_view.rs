@@ -1,5 +1,5 @@
-//! The TUI's panel view: a project's panels, or every project's machine panels, one at a time,
-//! read from wsxd off the UI thread.
+//! The TUI's panel view: a project's panels, or wsxd's built-in machine panel and every project's
+//! machine panels, one at a time, read from wsxd off the UI thread.
 //! It asks for a run on open, on `R`, and when the result is older than the panel's `refresh`.
 //! ref: docs/panels.md
 use std::{
@@ -17,10 +17,10 @@ const RETRY: Duration = Duration::from_secs(10);
 /// The age on screen is drawn again this often.
 const REDRAW: Duration = Duration::from_secs(1);
 
-/// One panel and the project that declares it.
+/// One panel and the project that declares it; none for a panel built into wsxd.
 pub struct Entry {
-    pub project: String,
-    path: PathBuf,
+    pub project: Option<String>,
+    path: Option<PathBuf>,
     pub info: PanelInfo,
 }
 
@@ -32,8 +32,9 @@ enum Answer {
 
 pub struct PanelsView {
     pub title: String,
-    /// The projects to list, and whether only their machine panels count (`M`).
-    sources: Vec<(String, PathBuf)>,
+    /// The projects to list (none: wsxd's built-in panels), and whether only their machine
+    /// panels count (`M`).
+    sources: Vec<Option<(String, PathBuf)>>,
     pub machine: bool,
     /// None until wsxd answered the list.
     pub panels: Option<Vec<Entry>>,
@@ -55,15 +56,20 @@ pub struct PanelsView {
 impl PanelsView {
     /// One project's panels.
     pub fn new(project: String, path: PathBuf) -> Self {
-        Self::open(format!("{project} panels"), vec![(project, path)], false)
+        Self::open(
+            format!("{project} panels"),
+            vec![Some((project, path))],
+            false,
+        )
     }
 
-    /// The machine panels of these projects.
-    pub fn machine(sources: Vec<(String, PathBuf)>) -> Self {
-        Self::open("Machine panels".into(), sources, true)
+    /// wsxd's built-in machine panels, then the machine panels of these projects.
+    pub fn machine(projects: Vec<(String, PathBuf)>) -> Self {
+        let sources = std::iter::once(None).chain(projects.into_iter().map(Some));
+        Self::open("Machine panels".into(), sources.collect(), true)
     }
 
-    fn open(title: String, sources: Vec<(String, PathBuf)>, machine: bool) -> Self {
+    fn open(title: String, sources: Vec<Option<(String, PathBuf)>>, machine: bool) -> Self {
         let mut view = Self {
             title,
             sources,
@@ -102,8 +108,9 @@ impl PanelsView {
         self.fetch(move || {
             let client = wsx_core::runtime::Client::local();
             let (mut entries, mut notice, mut failure) = (Vec::new(), None, None);
-            for (project, path) in sources {
-                match panel::request(&client, &path, Action::List) {
+            for source in sources {
+                let (project, path) = source.unzip();
+                match panel::request(&client, path.as_deref(), Action::List) {
                     Ok(panel::Response::Panels {
                         panels,
                         notice: found,
@@ -192,7 +199,7 @@ impl PanelsView {
                         let client = wsx_core::runtime::Client::local();
                         match panel::request(
                             &client,
-                            &path,
+                            path.as_deref(),
                             Action::Get {
                                 name: info.name,
                                 run,

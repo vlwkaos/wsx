@@ -1,6 +1,6 @@
 # Panels
 
-A project shows the output of a command, with no model involved: this Mac's memory and disk, a deploy's state, a queue length.
+A project shows the output of a command, with no model involved: a deploy's state, a queue length, this Mac's own readings. wsxd also has one built-in panel for this machine ("Machine panels").
 
 ```yaml
 # wsx.config.yml in the main checkout
@@ -59,11 +59,32 @@ With `format: json` the command prints one object, and the clients draw it as a 
 
 ## Machine panels
 
-A panel about this Mac, not one project (memory, disk), has `scope: machine`. It is still a project's command: wsxd runs it in that project's main checkout with the same refresh, cache, formats and limits, and the project screen and `v` still list it. `scope` also puts it in one place that needs no project: the web's Machine tab and the TUI's `M`. A scope other than `project` or `machine` fails the config like any bad field (`panels[<n>].scope must be project or machine`). The list answer (`PanelInfo::scope`) carries the scope; daemon revision 45.
+The web's *Machine* tab and the TUI's `M` show the machine, with no project: first wsxd's built-in panel `this-mac`, then every `scope: machine` panel of the projects.
 
-- Web: `GET api/machine/panels` lists `{projects: [{id, name, panels: [{name, refresh, scope}]}]}` for the granted projects that declare a machine panel; a panel is read as `GET api/projects/<id>/panels/<name>[?run=1]`. The right is the same as for any panel (`terminal_input`, terminal panel; else 403); a project outside the grant is never asked. A project whose list fails shows none.
-- The *Machine* tab (`#/machine`) is in the bottom bar and the rail, and has a switch in Settings > UI, only for a device that may read panels when at least one granted project declares a machine panel. It lists each machine panel, its name with the project's name small, drawn by the same panel view: it runs on open, has *Refresh*, and asks again after `refresh`. The list is read at the start, after a missed event and when the project list changes.
-- TUI: `M` in the workspace opens the machine panels of all projects (the footer's last hint, the help line); `Tab`/`h`/`l` switch (`project: name`), `R` runs it now, `Esc` closes.
+### The built-in panel
+
+wsxd reads it itself (`crates/wsx-daemon/src/machine.rs`): system calls, no script, no disk scan, no project. A `panel` request with no project lists it (`{name: "this-mac", refresh: 60, scope: machine}`) and reads it; a project panel's rules hold: it reads on open, on a manual refresh and after 60 s, one read at a time, the last result in wsxd's memory. The result is a document (`PanelRun::doc`, title "This Mac", "This machine" off macOS) and `output` is that document as JSON. A reading the system does not give is left out, never an error. Daemon revision 46.
+
+| Section | Item | Read with | `warn` / `bad` |
+|---|---|---|---|
+| Memory (macOS) | *Memory* gauge: app, wired and compressed (as Activity Monitor) of the RAM, GB of 1024³ | `host_statistics64`, `hw.memsize` | 85 % / 95 % |
+| | *Pressure* stat: normal, warning, critical | `kern.memorystatus_vm_pressure_level` | warning / critical |
+| | *Compressed* stat: its size, and what it holds as the note | `host_statistics64` | none |
+| | *Swap* gauge of the swap total, or *none* | `vm.swapusage` | used is 25 % / 50 % of the RAM |
+| Load | *Load average* stat: 1, 5 and 15 min, the cores as the note | `getloadavg` | 1-min load per core 1.0 / 2.0 |
+| Disks | a gauge per volume, its name, GB of 10⁹ (as Finder) | `getfsstat`, `getattrlist`; elsewhere `statvfs("/")` | 90 % / 95 % used |
+
+The thresholds are the constants at the top of `machine.rs`. The disks are `/` (the boot volume: its numbers are the APFS container's, the Data volume included) and every other local volume that is writable, browsable (`MNT_DONTBROWSE` off), not a snapshot, not under `/System/Volumes/` and at least 1 GB: an external disk shows; a disk image, a simulator runtime or a Time Machine snapshot does not. At most 50.
+
+### Project machine panels
+
+A project's panel about the machine has `scope: machine`. It is still a project's command: wsxd runs it in that project's main checkout with the same refresh, cache, formats and limits, and the project screen and `v` still list it. A scope other than `project` or `machine` fails the config like any bad field (`panels[<n>].scope must be project or machine`). The list answer (`PanelInfo::scope`) carries the scope; daemon revision 45.
+
+### Clients
+
+- Web: `GET api/machine/panels` gives `{panels: [{name, refresh, scope}], projects: [{id, name, panels: [...]}]}`: wsxd's built-in panels, then the granted projects that declare a machine panel. A built-in panel is read as `GET api/machine/panels/<name>[?run=1]`, a project's as `GET api/projects/<id>/panels/<name>[?run=1]`. The right is the same as for any panel (`terminal_input`, terminal panel; else 403); a project outside the grant is never asked. A list that fails shows none; an unknown built-in name is 409.
+- The *Machine* tab (`#/machine`) is in the bottom bar and the rail, and has a switch in Settings > UI, for every device that may read panels. It lists the built-in panel, its name alone, then each project's machine panel, its name with the project's name small, drawn by the same panel view: it runs on open, has *Refresh*, and asks again after `refresh`. The list is read at the start, after a missed event and when the project list changes.
+- TUI: `M` in the workspace opens the built-in panel, then the machine panels of all projects (the footer's last hint, the help line); `Tab`/`h`/`l` switch (`this-mac`, `project: name`), `R` runs it now, `Esc` closes.
 
 ## Clients
 
@@ -71,4 +92,4 @@ A panel about this Mac, not one project (memory, disk), has `scope: machine`. It
 - TUI (`panel_view.rs`, `ui/panels.rs`): `v` on a project opens its panels. `Tab`/`l` and `h` switch, `j`/`k` scroll, `R` runs it now, `Esc` closes.
 - A `doc` is drawn in both: web cards per section (`role="meter"` bars, a table that scrolls sideways) and TUI boxed sections with `█░` bars; the notice shows above it.
 
-Daemon revision 44 adds `format`, revision 45 `scope`. Proof: `scripts/runtime-smoke.py` ("panels in wsxd", "panels in the TUI", also `scope` and `M`), `scripts/test-web-client.py --part tasks` and `scripts/web-panels-check.mjs`.
+Daemon revision 44 adds `format`, revision 45 `scope`, revision 46 the built-in panel. Proof: `scripts/runtime-smoke.py` ("panels in wsxd", "panels in the TUI", also `scope`, the built-in panel against `sysctl` and `statvfs`, and `M` with and without a project's machine panel), `scripts/test-web-client.py --part tasks` and `scripts/web-panels-check.mjs` (the Machine tab on a site whose project declares no panel).

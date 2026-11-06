@@ -20,8 +20,9 @@ export const state = {
   tasks: {},
   // This device's notification switches and muted sessions (api/push), once read.
   push: null,
-  // The granted projects that declare a machine panel, with those panels (panels.js loadMachine).
-  machine: [],
+  // wsxd's built-in machine panels, then the granted projects that declare one, with those panels
+  // (panels.js loadMachine).
+  machine: { panels: [], projects: [] },
   // Where the header bar sits on this device: "top" or "bottom" (ui.js, settings.js).
   bar: "top",
   // The bottom-bar tabs this device hides, by name (ui.js; Settings is never in it).
@@ -151,13 +152,13 @@ export function markSeen(session) {
 // ^ The one list of the bottom bar's screens: name, link, label, icon and the count on its
 // icon, the two counts the app badge sums. The bar, its hidden tabs and Settings > UI read it,
 // so a tab added here shows in all three (docs/web-client.md "Screens").
-// ^ Machine (docs/panels.md "Machine panels") is there only for a device that may read panels
-// and a grant with a machine panel in it.
+// ^ Machine (docs/panels.md "Machine panels") is there for a device that may read panels: wsxd's
+// built-in panel is in it with no project.
 export const tabs = () => {
   const list = can("task_view")
     ? [["home", "#/", "Home", "home", needsCount()], ["inbox", "#/sessions", "Sessions", "terminal", blockedCount()]]
     : [["home", "#/", "Inbox", "inbox", blockedCount()], ["projects", "#/projects", "Projects", "projects", 0]];
-  if (can("terminal_input") && shows("terminal") && state.machine.length) list.push(["machine", "#/machine", "Machine", "panel", 0]);
+  if (can("terminal_input") && shows("terminal")) list.push(["machine", "#/machine", "Machine", "panel", 0]);
   return [...list, ["settings", "#/settings", "Settings", "settings", 0]];
 };
 // ^ The bottom bar holds at most this many tabs (docs/web-client.md "Screens"); Settings > UI

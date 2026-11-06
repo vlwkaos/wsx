@@ -3775,15 +3775,27 @@ merge_seconds = 3
             listed_panels = steady(admin, 'GET', panel_url)[1]
             assert [p['name'] for p in listed_panels['panels']] == ['device', 'broken', 'gauges', 'badjson'] and listed_panels['notice'] is None, listed_panels
 
-            # ^ docs/panels.md "Machine panels": the `scope: machine` panels of the granted projects,
-            # for the right to run commands only.
+            # ^ docs/panels.md "Machine panels": wsxd's built-in panel, then the `scope: machine` panels
+            # of the granted projects, for the right to run commands only.
             machine_url = '/api/machine/panels'
+            builtin = [{'name': 'this-mac', 'refresh': 60, 'scope': 'machine'}]
             status, machine = steady(admin, 'GET', machine_url)
-            assert status == 200 and machine == {'projects': [{'id': calm_id, 'name': 'calm', 'panels': [
+            assert status == 200 and machine == {'panels': builtin, 'projects': [{'id': calm_id, 'name': 'calm', 'panels': [
                 {'name': 'device', 'refresh': 10, 'scope': 'machine'}, {'name': 'gauges', 'refresh': 0, 'scope': 'machine'}]}]}, machine
             assert steady(owner, 'GET', machine_url)[0] == 403 and steady(viewer, 'GET', machine_url)[0] == 403
-            assert steady(sites['scoped'], 'GET', machine_url) == (200, {'projects': []}), steady(sites['scoped'], 'GET', machine_url)
+            assert steady(sites['scoped'], 'GET', machine_url) == (200, {'panels': builtin, 'projects': []}), steady(sites['scoped'], 'GET', machine_url)
             assert steady(sites['scoped'], 'GET', panel_url)[0] == 404, 'a project outside the grant answered'
+            # The built-in panel reads with no project declaring one: a document of this machine.
+            assert steady(sites['scoped'], 'GET', machine_url + '/this-mac?run=1')[0] == 200
+            deadline = time.monotonic() + 20
+            while (mac := steady(sites['scoped'], 'GET', machine_url + '/this-mac'))[1]['run']['status'] != 'ok':
+                assert time.monotonic() < deadline, mac
+                time.sleep(0.2)
+            mac = mac[1]
+            assert mac['refresh'] == 60 and [section['title'] for section in mac['run']['doc']['sections']][-2:] == ['Load', 'Disks'], mac
+            assert steady(owner, 'GET', machine_url + '/this-mac')[0] == 403
+            status, body = steady(admin, 'GET', machine_url + '/missing')
+            assert status == 409 and 'no panel' in body['error']['message'], (status, body)
 
             def panel_shown(name, run=False, done=True):
                 asked = [run]
@@ -3818,11 +3830,12 @@ merge_seconds = 3
             assert badjson['doc'] is None and badjson['output'] == '{oops\n' and badjson['notice'].startswith('not a panel document'), badjson
             status, body = steady(admin, 'GET', panel_url + '/missing')
             assert status == 409 and 'no panel' in body['error']['message'], (status, body)
-            ok('panels: run in wsxd on open and when stale, cached with its age, a failing command with its exit code, a json panel as a typed document with a notice for what it skipped, 403 without terminal_input, 404 for an unknown project')
+            ok('panels: run in wsxd on open and when stale, the built-in machine panel with no project declaring one, cached with its age, a failing command with its exit code, a json panel as a typed document with a notice for what it skipped, 403 without terminal_input, 404 for an unknown project')
             if args.browser:
                 checked = check(work, [node, str(ROOT / 'scripts/web-panels-check.mjs'), admin.origin + '/', cli('web', 'pair', '--site', files['admin']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                        owner.origin + '/', cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1],
-                                       str(args.captures), str(calm_id)], timeout=240)
+                                       str(args.captures), str(calm_id),
+                                       sites['scoped'].origin + '/', cli('web', 'pair', '--site', files['scoped']).stdout.splitlines()[0].rsplit(' ', 1)[1]], timeout=240)
                 assert checked.returncode == 0, checked.stdout + checked.stderr
                 ok('real browser, ' + checked.stdout.strip().splitlines()[-1])
         panels_journey(sites['admin'])

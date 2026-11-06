@@ -442,14 +442,15 @@ pub enum Response {
     Error(String),
 }
 
-/// Send `action` for `project` to `client`'s wsxd, which runs the panel.
+/// Send `action` for `project` to `client`'s wsxd, which runs the panel. No project: wsxd's
+/// built-in machine panels.
 pub fn request(
     client: &crate::runtime::Client,
-    project: &Path,
+    project: Option<&Path>,
     action: Action,
 ) -> Result<Response, String> {
     let request = crate::runtime::Request::Panel {
-        project: project.to_path_buf(),
+        project: project.map(Path::to_path_buf),
         action,
     };
     match client.call(&request) {

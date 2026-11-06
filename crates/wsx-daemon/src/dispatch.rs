@@ -66,9 +66,11 @@ pub(crate) fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Res
         Request::Routine { project, action } => {
             Ok(Response::Routine(routine::handle(&project, action)))
         }
-        Request::Panel { project, action } => {
-            Ok(Response::Panel(panel::handle(daemon, &project, action)))
-        }
+        Request::Panel { project, action } => Ok(Response::Panel(panel::handle(
+            daemon,
+            project.as_deref(),
+            action,
+        ))),
         Request::Snapshot => Ok(Response::Snapshot(snapshot(daemon, &lock(&daemon.state)))),
         Request::Poll {
             after_revision,
