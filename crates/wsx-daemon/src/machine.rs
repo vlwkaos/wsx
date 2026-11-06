@@ -4,7 +4,7 @@
 //! not give is left out, never an error.
 //! ref: docs/panels.md "Machine panels"
 
-use std::ffi::{c_int, CStr};
+use std::ffi::c_int;
 use wsx_core::panel::{
     Item, Level, Num, PanelDoc, PanelInfo, PanelRun, PanelScope, PanelStatus, Section,
 };
@@ -160,7 +160,7 @@ fn volumes() -> Vec<(String, f64, f64)> {
 #[cfg(target_os = "macos")]
 mod mac {
     use super::*;
-    use std::ffi::c_void;
+    use std::ffi::{c_void, CStr};
     use std::sync::OnceLock;
 
     /// A sysctl value of a fixed size.
