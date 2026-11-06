@@ -28,8 +28,8 @@ Window A: 48 h before 2026-11-06 18:43 KST, when `web` and `task` became `ci:`. 
 Q1-Q10 come from one query over `~/.local/state/wsx/tasks/wsx-8cbe3f08/*/log.jsonl` (`checks` and `check_run` events, results with `queued_ms`, `stored` excluded). Save it as `q.py`, run `python3 -I q.py`:
 
 ```python
-import glob,json,re,collections as C
-S='/Users/vlwkaos/.local/state/wsx/tasks/wsx-8cbe3f08'; CUT=1793958227000; LO=CUT-48*3600000  # 11-06 18:43 KST
+import glob,json,os,re,collections as C
+S=os.path.expanduser('~/.local/state/wsx/tasks/wsx-8cbe3f08'); CUT=1793958227000; LO=CUT-48*3600000  # 11-06 18:43 KST
 kind=lambda c:next((n for k,n in (('ci:','ci'),('web-client','web'),('test-task','task'),('smoke','smoke'),('boundary','boundary')) if k in c),'plain')
 R,E,T=[],[],C.defaultdict(lambda:[0,0,0,0])  # R: one row per command, E: per run, T: task -> queue, run, web runs, web fails
 for f in glob.glob(S+'/[0-9]*/log.jsonl'):
@@ -45,8 +45,8 @@ for f in glob.glob(S+'/[0-9]*/log.jsonl'):
       E.append((sc,q,run,all(r['exit']==0 for r in rs))); T[t][0]+=q; T[t][1]+=run
       w=[r for r in rs if kind(r['command'])=='web']; T[t][2]+=len(w); T[t][3]+=sum(r['exit']!=0 for r in w)
 p=lambda v,x:sorted(v)[min(len(v)-1,int(x*len(v)))] if v else 0; m=lambda ms:round(ms/60000,1)
-for sc in (False,True):  # Q2, Q3
-  e=[x for x in E if x[0]==sc]; print('scenario' if sc else 'plain','runs',len(e),'failed',sum(not x[3] for x in e),'queue p50/p90/sum',m(p([x[1] for x in e],.5)),m(p([x[1] for x in e],.9)),m(sum(x[1] for x in e)),'run p50/p90/sum',m(p([x[2] for x in e],.5)),m(p([x[2] for x in e],.9)),m(sum(x[2] for x in e)))
+for sc in (False,True):
+  e=[x for x in E if x[0]==sc]; print('Q3 scenario' if sc else 'Q2 plain','runs',len(e),'failed',sum(not x[3] for x in e),'queue p50/p90/sum',m(p([x[1] for x in e],.5)),m(p([x[1] for x in e],.9)),m(sum(x[1] for x in e)),'run p50/p90/sum',m(p([x[2] for x in e],.5)),m(p([x[2] for x in e],.9)),m(sum(x[2] for x in e)))
 print('Q1 tasks',len(T),'queue p50/p90',m(p([v[0] for v in T.values()],.5)),m(p([v[0] for v in T.values()],.9)),'run p50/p90',m(p([v[1] for v in T.values()],.5)),m(p([v[1] for v in T.values()],.9)))
 W=[v for v in T.values() if v[2]]; print('Q7',len(W),'runs/task p50/max',p([v[2] for v in W],.5),max(v[2] for v in W),'with a failure',sum(v[3]>0 for v in W))
 w=[r for r in R if r['k']=='web' and LO<=r['at']<CUT]; bad=[r for r in w if r['exit']]
@@ -74,7 +74,7 @@ Gain is per 48 h of window A load, unless named. "Every project" means the chang
 | Option | Gain | Cost | Risk | Every project |
 |---|---|---|---|---|
 | A. Scenario parts: run a scenario's parts as parallel CI jobs and let a worker rerun one part | wall per `web` run about 35% shorter (1069 s to about 695 s plus setup, Q6); a worker fixing a tasks failure (73 of 94, Q5) skips the 374 s chat half | ci.yml matrix on `part`, `ci-scenario.py` waits for all jobs, `--part` exists | 2 of the account's 5 macOS jobs a run; the full run still gates the result | yes, a scenario names its parts |
-| B. Main baseline: run each scenario on main after a land; a task failure that main also has is answered "fails on main too" and starts no fix turn | up to 49 runs, 547 run-min (Q8); stops the 7-run regression of #269's report | a CI run per land; host keeps the last main result for each scenario | a new failure with the same assert text is hidden; match by part and assert, show the main run | yes |
+| B. Main baseline: run each scenario on main after a land; a task failure that main also has is answered "fails on main too" and starts no fix turn | up to 49 runs, 547 run-min (Q8); covers the main regression that failed 7 runs in 5 tasks (Q8) | a CI run per land; host keeps the last main result for each scenario | a new failure with the same assert text is hidden; match by part and assert, show the main run | yes |
 | C. One retry on the same tree for a failed `ci:` scenario, the answer says "passed on retry" | the timing asserts (18 runs in 10 tasks, Q8) stop starting worker turns | host retries once, no slot for `ci:` | hides a real flake if the answer does not show it | yes |
 | D. Test impact: pick parts from the changed paths | skips the chat half for a tasks-only change | a path map per project, kept by hand | a missed mapping lands a break; the full run after a land must stay | partly |
 | E. Two runs in the plain lane when load allows | at most 449 waiter-min (Q2); plain p90 queue 8.3 min | `slot.rs` second lock and a load check | 11-04 doc: a second run overloaded the machine | yes |
@@ -88,7 +88,7 @@ Sources: [Rust project goal "Rework Cargo Build Dir Layout"](https://rust-lang.g
 Rank: A, B, C, then D, E, F, G. A and B attack the 1525 `web` run-minutes and their reruns (Q4, Q7). F and G save under 100 min.
 
 1. **Scenario parts (A).** Files: `wsx.config.yml` (`web` with parts `chat`, `tasks`), `scripts/ci-scenario.py` (dispatch one job for each part and join their answers), `.github/workflows/ci.yml` (`web-scenario` matrix on `part`), `docs/tasks.md` "Scenarios". Proof: one `wsx task check-run web` run shows two CI jobs. Its `ms` is below the single-job run of the same commit. A failure names the part that failed.
-2. **Main baseline (B), after #269.** Files: `crates/wsx/src/task/host.rs` (after a land, run each `ci:` scenario on the landed commit and keep its result; compare a failed task run by part and assert), `docs/tasks.md`. Proof: `scripts/test-task.py` stages a scenario that fails on main and in a task. The answer names the main run and starts no `check_run` fix turn. A different failure still starts one.
+2. **Main baseline (B), after #269.** Files: `crates/wsx/src/task/host.rs` (after a land, run each `ci:` scenario on the landed commit and keep its result; compare a failed task run by part and assert), `docs/tasks.md` (today a scenario never runs in a land; ci.yml runs `task-scenario` on a main push only when task code changed). Proof: `scripts/test-task.py` stages a scenario that fails on main and in a task. The answer names the main run and starts no `check_run` fix turn. A different failure still starts one.
 3. **Same-tree retry (C).** Files: `crates/wsx/src/task/host.rs` (one retry of a failed `ci:` command on an unchanged tree), `docs/tasks.md`. Proof: `scripts/test-task.py` with a scenario that fails once and then passes. The answer says "passed on retry", and the log has both results.
 
 Measure again after a week of window B: run Q3, Q4 and Q9 with `CUT` as the start, and compare CI `ms` against Q6 times 1.55 (Q11).
