@@ -293,10 +293,18 @@ impl App {
         self.pending_terminal_entry = None;
         self.pending_terminal_resume = None;
         self.terminal_escape_chord.reset();
-        self.mode = match self.terminal_return.take() {
-            Some((pane, list)) if pane == pane_id => Mode::Tasks { list },
+        self.mode = self.mode_after_terminal(Some(pane_id));
+    }
+
+    /// The view a terminal that ended or was left goes back to: the Tasks view its shell was
+    /// opened from (`terminal_return`, docs/tasks.md "TUI"), else the workspace. Every path
+    /// out of Terminal mode asks it, so a stream that closes before its `Exited` message
+    /// (the reattach finds the pane exited) still goes back to the chat.
+    pub(super) fn mode_after_terminal(&mut self, pane_id: Option<runtime::PaneId>) -> Mode {
+        match self.terminal_return.take() {
+            Some((pane, list)) if Some(pane) == pane_id => Mode::Tasks { list },
             _ => Mode::Workspace,
-        };
+        }
     }
 
     pub(super) fn clear_active_terminal_selection(&mut self) {

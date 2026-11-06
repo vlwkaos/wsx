@@ -224,11 +224,8 @@ impl App {
                         }
                     }
                     self.pending_terminal_entry = None;
-                    self.mode = match self.terminal_return.take() {
-                        // ^ Back to the chat, whose `S` makes a new shell.
-                        Some((pane, list)) if Some(pane) == exited => Mode::Tasks { list },
-                        _ => Mode::Workspace,
-                    };
+                    // ^ Back to the chat, whose `S` makes a new shell.
+                    self.mode = self.mode_after_terminal(exited);
                     self.set_warning(
                         "Terminal process exited\nEnter starts it again; d closes the session",
                     );
@@ -510,7 +507,7 @@ impl App {
             }
         } else {
             self.pending_terminal_resume = None;
-            self.mode = Mode::Workspace;
+            self.mode = self.mode_after_terminal(Some(pane_id));
             self.set_warning("Terminal closed while wsx was reconnecting");
         }
     }
