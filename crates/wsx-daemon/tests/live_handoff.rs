@@ -150,8 +150,9 @@ fn wait_for_socket(path: &Path, daemon: &mut Child) {
         thread::sleep(Duration::from_millis(20));
     }
     panic!(
-        "wsxd socket did not appear: {}: {}",
+        "wsxd socket did not appear: {} (wsxd {:?}): {}",
         path.display(),
+        daemon.try_wait(),
         fs::read_to_string(path.with_file_name("daemon.log")).unwrap_or_default()
     );
 }
