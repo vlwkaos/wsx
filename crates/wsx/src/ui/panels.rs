@@ -267,11 +267,11 @@ pub fn render(frame: &mut Frame, area: Rect, view: &PanelsView) {
             Style::default()
         };
         head.push(Span::raw("  "));
-        // ^ The machine view lists several projects: each name carries its project.
-        let label = if view.machine {
-            format!("{}: {}", entry.project, entry.info.name)
-        } else {
-            entry.info.name.clone()
+        // ^ The machine view lists several projects: each name carries its project; a panel
+        // built into wsxd has none.
+        let label = match (&entry.project, view.machine) {
+            (Some(project), true) => format!("{project}: {}", entry.info.name),
+            _ => entry.info.name.clone(),
         };
         head.push(Span::styled(label, style));
     }

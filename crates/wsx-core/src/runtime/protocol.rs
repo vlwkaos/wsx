@@ -80,7 +80,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // (docs/panels.md).
 // Revision 44 reads a `format: json` panel's output into a typed document (`PanelRun::doc`).
 // Revision 45 adds a panel's `scope` (project or machine) to the panel list.
-pub const DAEMON_REVISION: u32 = 45;
+// Revision 46 answers a `panel` request with no project: wsxd's built-in machine panel
+// (docs/panels.md "Machine panels").
+pub const DAEMON_REVISION: u32 = 46;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -260,7 +262,9 @@ pub enum Request {
         action: crate::routine::Action,
     },
     Panel {
-        project: PathBuf,
+        /// None: wsxd's own machine panels (docs/panels.md "Machine panels").
+        #[serde(default)]
+        project: Option<PathBuf>,
         action: crate::panel::Action,
     },
     Snapshot,

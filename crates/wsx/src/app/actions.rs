@@ -541,7 +541,8 @@ impl App {
         };
     }
 
-    /// `M`: the machine panels of every project (docs/panels.md "Machine panels").
+    /// `M`: wsxd's built-in machine panel, then the machine panels of every project
+    /// (docs/panels.md "Machine panels").
     pub(super) fn action_machine_panels(&mut self) {
         let sources = (self.workspace.projects.iter())
             .map(|project| (project.name.clone(), project.path.clone()))

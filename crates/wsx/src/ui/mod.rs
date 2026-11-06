@@ -987,7 +987,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  d             Unregister project (H: also halt its sessions)",
         "  e             View/edit wsx.config.yml",
         "  t             Tasks (Enter: detail, m: chat, S: shell)",
-        "  v / M         Panels (M: machine panels of all projects)",
+        "  v / M         Panels (M: this Mac, every machine panel)",
         "",
         " Worktree",
         "  w             Add worktree (branch: prompt)",

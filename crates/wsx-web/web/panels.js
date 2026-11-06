@@ -8,7 +8,9 @@ import { html, Icon, Loading, useEffect, useNow, useState } from "./lib.js";
 import { can, goBack, shows, state, update, useStore } from "./store.js";
 import { SheetBar } from "./ui.js";
 
-const url = (project, name = "", run = false) => `api/projects/${project}/panels${name ? `/${encodeURIComponent(name)}` : ""}${run ? "?run=1" : ""}`;
+// `base`: a project's panels, or wsxd's built-in machine panels (api/machine/panels).
+const projectPanels = (project) => `api/projects/${project}/panels`;
+const url = (base, name = "", run = false) => `${base}${name ? `/${encodeURIComponent(name)}` : ""}${run ? "?run=1" : ""}`;
 
 // "12 s ago", "3 min ago": the age of a result.
 const age = (ms) => (ms < 60000 ? `${Math.floor(ms / 1000)} s ago` : `${Math.floor(ms / 60000)} min ago`);
@@ -17,7 +19,7 @@ export function PanelsButton({ project }) {
   const [names, setNames] = useState([]);
   useEffect(() => {
     if (!can("terminal_input")) return;
-    api(url(project)).then((value) => setNames(value.panels ?? []), () => {});
+    api(url(projectPanels(project))).then((value) => setNames(value.panels ?? []), () => {});
   }, [project]);
   if (!names.length) return null;
   return html`<a class="icon-button" href=${`#/p/${project}/panels`} aria-label="Panels" title="Panels"><${Icon} name="panel" /></a>`;
@@ -73,7 +75,7 @@ const Doc = ({ doc }) => html`
   </div>`;
 
 // One panel: its last result, kept fresh while it is shown.
-function Panel({ project, name }) {
+function Panel({ base, name }) {
   const [view, setView] = useState(null);
   const [failure, setFailure] = useState("");
   const [again, setAgain] = useState(0);
@@ -86,7 +88,7 @@ function Panel({ project, name }) {
       // ^ A hidden page shows nothing: no read, so no run.
       if (document.hidden) { timer = setTimeout(() => read(false), 5000); return; }
       try {
-        const value = await api(url(project, name, run));
+        const value = await api(url(base, name, run));
         if (!live) return;
         setView(value);
         setReadAt(Date.now());
@@ -102,7 +104,7 @@ function Panel({ project, name }) {
     };
     read(true);
     return () => { live = false; clearTimeout(timer); };
-  }, [project, name, again]);
+  }, [base, name, again]);
   if (failure && !view) return html`<p class="error empty" role="alert">${failure}</p>`;
   if (!view) return html`<${Loading} />`;
   const { run } = view;
@@ -129,7 +131,7 @@ export function PanelsPage({ project, onClose, grip }) {
   const [failure, setFailure] = useState("");
   const [open, setOpen] = useState(null);
   useEffect(() => {
-    api(url(project)).then((value) => { setList(value); setOpen((was) => was ?? value.panels?.[0]?.name ?? null); }, (error) => setFailure(error.message));
+    api(url(projectPanels(project))).then((value) => { setList(value); setOpen((was) => was ?? value.panels?.[0]?.name ?? null); }, (error) => setFailure(error.message));
   }, [project]);
   useEffect(() => { if (list || failure) grip?.ready?.(); }, [Boolean(list), failure]);
   const panels = list?.panels ?? [];
@@ -146,35 +148,40 @@ export function PanelsPage({ project, onClose, grip }) {
                 ${panels.length > 1 && html`<div class="panel-tabs" role="tablist" aria-label="Panels">
                   ${panels.map((panel) => html`<button type="button" role="tab" key=${panel.name} aria-selected=${open === panel.name} onClick=${() => setOpen(panel.name)}>${panel.name}</button>`)}
                 </div>`}
-                ${open && html`<${Panel} key=${open} project=${project} name=${open} />`}`}`}
+                ${open && html`<${Panel} key=${open} base=${projectPanels(project)} name=${open} />`}`}`}
       </div>
     </div>`;
 }
 
-// The machine panels of the granted projects (docs/panels.md "Machine panels"): read at the start,
-// after a missed event and when the project list changes. A failed read keeps the last list.
+// wsxd's built-in machine panels and those of the granted projects (docs/panels.md "Machine panels"):
+// read at the start, after a missed event and when the project list changes. A failed read keeps the last list.
 export async function loadMachine() {
   if (!can("terminal_input") || !shows("terminal")) return;
   try {
-    const { projects } = await api("api/machine/panels");
-    if (JSON.stringify(projects) !== JSON.stringify(state.machine)) update({ machine: projects });
+    const { panels, projects } = await api("api/machine/panels");
+    const machine = { panels, projects };
+    if (JSON.stringify(machine) !== JSON.stringify(state.machine)) update({ machine });
   } catch { /* the tab keeps what it had */ }
 }
 
-// The Machine tab: every machine panel, its name over the project's, each with its own run and refresh.
+// The Machine tab: the built-in panels, then every project's machine panel, its name over the
+// project's, each with its own run and refresh.
 export function MachineScreen() {
   const { machine, loaded } = useStore();
   useEffect(() => { loadMachine(); }, []);
-  const panels = machine.flatMap((project) => project.panels.map((panel) => ({ project, panel })));
+  const panels = [
+    ...machine.panels.map((panel) => ({ key: `wsxd/${panel.name}`, base: "api/machine/panels", panel })),
+    ...machine.projects.flatMap((project) => project.panels.map((panel) => ({ key: `${project.id}/${panel.name}`, base: projectPanels(project.id), panel, project }))),
+  ];
   return html`
     <div class="page">
       <h1 class="title">Machine</h1>
       <div class="scroll panels">
         ${!panels.length ? html`<p class="empty">${loaded ? "No machine panels" : ""}</p>`
-          : panels.map(({ project, panel }) => html`
-            <section class="machine-panel" key=${`${project.id}/${panel.name}`} aria-label=${panel.name}>
-              <h2 class="machine-name">${panel.name}<small>${project.name}</small></h2>
-              <${Panel} project=${project.id} name=${panel.name} />
+          : panels.map(({ key, base, panel, project }) => html`
+            <section class="machine-panel" key=${key} aria-label=${panel.name}>
+              <h2 class="machine-name">${panel.name}${project && html`<small>${project.name}</small>`}</h2>
+              <${Panel} base=${base} name=${panel.name} />
             </section>`)}
       </div>
     </div>`;

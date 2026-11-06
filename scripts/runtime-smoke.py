@@ -2339,7 +2339,7 @@ for script, body in {
 }.items():
     (PANEL_SCRIPTS / script).write_text("#!/bin/sh\n" + body)
     (PANEL_SCRIPTS / script).chmod(0o755)
-(PROJECT / "wsx.config.yml").write_text(
+PANEL_CONFIG = (
     "panels:\n"
     "  - name: ok\n    command: [scripts/device-status.sh]\n"
     "  - name: fail\n    command: [scripts/fail.sh]\n"
@@ -2351,6 +2351,7 @@ for script, body in {
     "  - name: limits\n    command: [scripts/limits.sh]\n    format: json\n"
     "  - name: machine\n    command: [scripts/machine.sh]\n    scope: machine\n"
 )
+(PROJECT / "wsx.config.yml").write_text(PANEL_CONFIG)
 assert call("synchronize_projects", {"projects": [
     {"path": str(PROJECT), "name": "smoke", "worktrees": [{"path": str(PROJECT), "branch": "main"}]},
     {"path": str(BAD), "name": "bad", "worktrees": [{"path": str(BAD), "branch": "main"}]},
@@ -2387,6 +2388,43 @@ assert [item["name"] for item in listed["data"]["panels"]] == ["ok", "fail", "js
 # ^ The scope is in the list: only `machine` is machine-scoped (docs/panels.md "Machine panels").
 assert {item["name"]: item["scope"] for item in listed["data"]["panels"]}["machine"] == "machine", listed
 assert [item["name"] for item in listed["data"]["panels"] if item["scope"] == "machine"] == ["machine"], listed
+# wsxd's built-in machine panel: no project and no command, this machine's own numbers, with the
+# same cache rules as a project's panel (docs/panels.md "Machine panels").
+def builtin_get(name, run=False):
+    answer = call("panel", {"project": None, "action": {"action": "get", "name": name, "run": run}})
+    assert answer["type"] == "panel", answer
+    return answer["data"]
+
+
+assert call("panel", {"project": None, "action": {"action": "list"}})["data"] == {"kind": "panels", "data": {
+    "panels": [{"name": "this-mac", "refresh": 60, "scope": "machine"}], "notice": None}}
+assert builtin_get("nope") == {"kind": "error", "data": 'wsxd has no panel "nope"'}
+builtin_get("this-mac", run=True)
+wait_for(lambda: builtin_get("this-mac")["data"]["run"]["status"] == "ok", "the built-in panel did not finish", 15)
+mac = builtin_get("this-mac")["data"]
+mac_doc = mac["run"]["doc"]
+mac_items = {section["title"]: {item["label"]: item for item in section["items"]} for section in mac_doc["sections"]}
+assert mac["refresh"] == 60 and json.loads(mac["run"]["output"]) == mac_doc, mac
+load = mac_items["Load"]["Load average"]
+assert len(load["value"].split(", ")) == 3 and load["note"] == f"1, 5, 15 min, {os.cpu_count()} cores", load
+# ^ The boot volume, against the file system's own numbers.
+root = os.statvfs("/")
+boot = mac_doc["sections"][-1]["items"][0]
+assert mac_doc["sections"][-1]["title"] == "Disks" and abs(boot["total"] - root.f_blocks * root.f_frsize / 1e9) < 0.2, (boot, root)
+assert 0 < boot["used"] <= boot["total"] and boot["unit"] == "GB" and boot["level"] in ("ok", "warn", "bad"), boot
+if sys.platform == "darwin":
+    assert mac_doc["title"] == "This Mac" and list(mac_items) == ["Memory", "Load", "Disks"], mac_doc
+    memsize = int(subprocess.run(["sysctl", "-n", "hw.memsize"], check=True, capture_output=True, text=True).stdout)
+    memory = mac_items["Memory"]["Memory"]
+    assert memory["total"] == round(memsize / 2**30, 1) and 0 < memory["used"] <= memory["total"], (memory, memsize)
+    pressure = mac_items["Memory"]["Pressure"]
+    assert {"normal": "ok", "warning": "warn", "critical": "bad"}[pressure["value"]] == pressure["level"], pressure
+    assert mac_items["Memory"]["Compressed"]["value"].endswith(" GB") and "Swap" in mac_items["Memory"], mac_items
+else:
+    assert mac_doc["title"] == "This machine" and list(mac_items) == ["Load", "Disks"], mac_doc
+# ^ A read within `refresh` is the cached result, not a new run.
+again = builtin_get("this-mac")["data"]
+assert again["run"]["finished_unix_ms"] == mac["run"]["finished_unix_ms"] and not again["running"], again
 # Exit 0: the output as written, ANSI and CR stripped, in the main checkout, found by its relative path.
 shown = panel_finished("ok")
 assert shown["run"]["status"] == "ok" and shown["run"]["exit"] == 0, shown
@@ -2539,11 +2577,23 @@ try:
              "the TUI did not show the broken json panel's text and notice", 20)
     os.write(panel_master, b"\x1b")
     wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the panels")
-    # `M` opens the machine panels of every project: only the one declared `scope: machine`.
+    # `M` with no project declaring a machine panel: wsxd's built-in panel alone, drawn as a document.
+    (PROJECT / "wsx.config.yml").write_text(PANEL_CONFIG.replace("  - name: machine\n    command: [scripts/machine.sh]\n    scope: machine\n", ""))
     mark = len(panel_screen)
     os.write(panel_master, b"M")
-    wait_for(lambda: b"Machine panels" in panel_screen[mark:] and b"machine-ok" in panel_screen[mark:],
-             "M did not open the machine panel with its output", 20)
+    wait_for(lambda: all(word in panel_screen[mark:] for word in (b"Machine panels", b"this-mac", b"Load", b"Disks", "█".encode())),
+             "M did not draw the built-in machine panel", 20)
+    assert b"smoke:" not in panel_screen[mark:], "M listed a project with no machine panel"
+    os.write(panel_master, b"\x1b")
+    wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the machine panels")
+    # With one: the built-in panel first, then the project's, `project: name`; only that one of the project's.
+    (PROJECT / "wsx.config.yml").write_text(PANEL_CONFIG)
+    mark = len(panel_screen)
+    os.write(panel_master, b"M")
+    wait_for(lambda: b"this-mac" in panel_screen[mark:] and b"Load" in panel_screen[mark:] and b"smoke:" in panel_screen[mark:],
+             "M did not list the built-in panel with the project's", 20)
+    os.write(panel_master, b"\t")
+    wait_for(lambda: b"machine-ok" in panel_screen[mark:], "Tab did not show the project's machine panel", 20)
     assert b"device-ok" not in panel_screen[mark:], "a project panel showed in the machine view"
     os.write(panel_master, b"\x1b")
     wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the machine panels")

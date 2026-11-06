@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 // Real-browser check of a project's panels (docs/panels.md), over the Chrome DevTools Protocol.
 // Called by `test-web-client.py --browser`.
-//   web-panels-check.mjs <admin-url> <admin-code> <owner-url> <owner-code> <capture-dir> <project id>
-// The admin site types into a terminal (so runs commands); the owner site has no terminal_input.
+//   web-panels-check.mjs <admin-url> <admin-code> <owner-url> <owner-code> <capture-dir> <project id> <scoped-url> <scoped-code>
+// The admin site types into a terminal (so runs commands); the owner site has no terminal_input; the
+// scoped site may run commands but grants only a project with no panel.
 // The project declares `device` (refresh 10, prints "device run <n>"), `broken` (exit 2), `gauges`
 // (format json: every kind, a bad level and an unknown kind) and `badjson` (not a document);
 // `device` and `gauges` are `scope: machine` (the Machine tab, docs/panels.md "Machine panels").
 import { launch } from "./web-cdp.mjs";
 
-const [adminUrl, adminCode, ownerUrl, ownerCode, captures, project] = process.argv.slice(2);
+const [adminUrl, adminCode, ownerUrl, ownerCode, captures, project, scopedUrl, scopedCode] = process.argv.slice(2);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({ captures, prefix: "panels-", timeoutSeconds: 120 });
 
 async function open(url, code) {
@@ -77,16 +78,16 @@ await until("/oops/.test(document.querySelector('.panel-output')?.textContent ??
 await capture("390x844-panel-badjson");
 await tab("gauges");
 await until("document.querySelectorAll('.panel-doc .panel-card').length === 2", "the json panel did not come back");
-// The Machine tab: the machine panels of every granted project, no project opened.
+// The Machine tab: wsxd's built-in panel, then the machine panels of every granted project, no project opened.
 await send("Page.navigate", { url: `${adminUrl}#/` });
 await until("[...document.querySelectorAll('.tabbar a')].some((tab) => tab.textContent === 'Machine')", "the bottom bar has no Machine tab");
 if ((await labels()) !== "Home,Sessions,Machine,Settings") await fail(`the bar with a machine panel is ${await labels()}`);
 await evaluate("[...document.querySelectorAll('.tabbar a')].find((tab) => tab.textContent === 'Machine').click()");
-await until("document.querySelectorAll('.machine-panel .panel').length === 2 && document.querySelectorAll('.machine-panel .panel-card').length === 2", "the Machine screen shows no panel and no cards");
-const machine = await evaluate(`({ names: [...document.querySelectorAll('.machine-name')].map((name) => name.firstChild.textContent + '/' + name.querySelector('small').textContent).join(),
+await until("document.querySelectorAll('.machine-panel .panel').length === 3 && document.querySelectorAll('.machine-panel .panel-doc').length === 2", "the Machine screen shows no panel and no cards");
+const machine = await evaluate(`({ names: [...document.querySelectorAll('.machine-name')].map((name) => name.firstChild.textContent + '/' + (name.querySelector('small')?.textContent ?? '')).join(),
   current: document.querySelector('.tabbar a[aria-current=page]')?.textContent, output: /device run \\d+/.test(document.querySelector('.panel-output')?.textContent ?? ''),
   meter: !!document.querySelector('[role=meter]'), wide: document.documentElement.scrollWidth > innerWidth, hash: location.hash })`);
-if (machine.names !== "device/calm,gauges/calm" || machine.current !== "Machine" || !machine.output || !machine.meter || machine.wide || machine.hash !== "#/machine") await fail(`the Machine screen: ${JSON.stringify(machine)}`);
+if (machine.names !== "this-mac/,device/calm,gauges/calm" || machine.current !== "Machine" || !machine.output || !machine.meter || machine.wide || machine.hash !== "#/machine") await fail(`the Machine screen: ${JSON.stringify(machine)}`);
 await capture("390x844-machine");
 // Four tabs: the pill is four tabs wide, not the screen, and centred; each tab keeps the token's width and a touch target.
 const bar = await evaluate(`(() => { const box = document.querySelector('.tabbar-pill').getBoundingClientRect(); const tabs = [...document.querySelectorAll('.tabbar a')].map((tab) => tab.getBoundingClientRect());
@@ -120,8 +121,25 @@ await capture("1280x800-panel-json");
 await tab("broken");
 await until("/failed \\(exit 2\\)/.test(document.querySelector('.panel-state[data-failed]')?.textContent ?? '')", "the failing panel did not come back");
 await capture("1280x800-panel-failed");
+// No project declares a machine panel: the Machine tab is there with wsxd's built-in panel alone.
+const builtin = async (size) => {
+  await until("document.querySelectorAll('.machine-panel').length === 1 && document.querySelectorAll('.machine-panel .panel-card').length >= 2 && !!document.querySelector('.machine-panel [role=meter]')", `the built-in panel did not draw at ${size}`);
+  const shown = await evaluate(`({ name: document.querySelector('.machine-name').textContent, project: !!document.querySelector('.machine-name small'), title: document.querySelector('.panel-title')?.textContent,
+    cards: [...document.querySelectorAll('.panel-card h3')].map((card) => card.textContent).slice(-2).join(), wide: document.documentElement.scrollWidth > innerWidth })`);
+  if (shown.name !== "this-mac" || shown.project || !/^This (Mac|machine)$/.test(shown.title ?? "") || shown.cards !== "Load,Disks" || shown.wide) await fail(`the built-in panel at ${size}: ${JSON.stringify(shown)}`);
+  await capture(`${size}-machine-builtin`);
+};
+await open(scopedUrl, scopedCode);
+await send("Page.navigate", { url: `${scopedUrl}#/machine` });
+await builtin("1280x800");
+await viewport(390, 844, 2);
+await send("Page.navigate", { url: `${scopedUrl}#/` });
+await until("[...document.querySelectorAll('.tabbar a')].some((tab) => tab.textContent === 'Machine')", "the bottom bar has no Machine tab with no machine panel declared");
+if ((await labels()) !== "Home,Sessions,Machine,Settings") await fail(`the bar with no machine panel declared is ${await labels()}`);
+await evaluate("[...document.querySelectorAll('.tabbar a')].find((tab) => tab.textContent === 'Machine').click()");
+await builtin("390x844");
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`page problems: ${defects.join("; ")}`);
-console.log(`panels page: the icon and the Machine tab only with terminal_input, the Machine screen lists both machine panels, Settings > UI hides the tab, output as written (first run ${first}), refreshes by itself, a failing command shows its exit code, a json panel draws cards, bars and level words`);
+console.log(`panels page: the icon and the Machine tab only with terminal_input, the Machine screen lists the built-in panel and both machine panels, the tab with no machine panel declared, Settings > UI hides the tab, output as written (first run ${first}), refreshes by itself, a failing command shows its exit code, a json panel draws cards, bars and level words`);
 await cleanup();
 process.exit(0);
