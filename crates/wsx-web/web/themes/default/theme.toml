@@ -84,6 +84,8 @@ space-4 = "16px"
 size-control = "44px"
 size-row = "52px"
 size-bar = "48px"
+# Width of one bottom-bar tab: the floating pill is as wide as its tabs, each this wide.
+size-tab = "72px"
 # Height of a count badge; one digit is a circle of this size.
 size-badge = "16px"
 size-key = "36px"

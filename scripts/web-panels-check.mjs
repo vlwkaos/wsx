@@ -88,6 +88,20 @@ const machine = await evaluate(`({ names: [...document.querySelectorAll('.machin
   meter: !!document.querySelector('[role=meter]'), wide: document.documentElement.scrollWidth > innerWidth, hash: location.hash })`);
 if (machine.names !== "device/calm,gauges/calm" || machine.current !== "Machine" || !machine.output || !machine.meter || machine.wide || machine.hash !== "#/machine") await fail(`the Machine screen: ${JSON.stringify(machine)}`);
 await capture("390x844-machine");
+// Four tabs: the pill is four tabs wide, not the screen, and centred; each tab keeps the token's width and a touch target.
+const bar = await evaluate(`(() => { const box = document.querySelector('.tabbar-pill').getBoundingClientRect(); const tabs = [...document.querySelectorAll('.tabbar a')].map((tab) => tab.getBoundingClientRect());
+  return { pill: box.width, screen: innerWidth, tabs: tabs.map((tab) => Math.round(tab.width * 10) / 10), height: Math.min(...tabs.map((tab) => tab.height)), left: box.left, right: innerWidth - box.right,
+    token: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--size-tab')), control: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--size-control')) }; })()`);
+if (bar.tabs.length !== 4 || bar.tabs.some((width) => Math.abs(width - bar.token) > 0.5) || bar.pill >= bar.screen - 40 || bar.pill - bar.tabs.reduce((sum, width) => sum + width, 0) > 24
+  || Math.abs(bar.left - bar.right) > 1 || bar.height < bar.control || bar.token < bar.control) await fail(`the four-tab pill is ${JSON.stringify(bar)}`);
+// At most four tabs show, Settings among them, whatever the stored list says; the real function with a fifth tab.
+const capped = await evaluate(`(async () => { const store = await import(document.querySelector('script[type=module]').src.replace(/main\\.js$/, 'store.js'));
+  const list = ['home', 'inbox', 'machine', 'extra', 'settings'].map((name) => [name, '#/' + name, name, 'home', 0]);
+  const was = store.state.hiddenTabs; store.state.hiddenTabs = [];
+  const none = store.shownTabs(list).map(([name]) => name).join(); store.state.hiddenTabs = ['inbox'];
+  const one = store.shownTabs(list).map(([name]) => name).join(); store.state.hiddenTabs = was;
+  return { none, one, max: store.MAX_TABS }; })()`);
+if (capped.max !== 4 || capped.none !== "home,inbox,machine,settings" || capped.one !== "home,machine,extra,settings") await fail(`the tab cap gives ${JSON.stringify(capped)}`);
 // Settings > UI hides the tab; the screen stays reachable by its link.
 await send("Page.navigate", { url: `${adminUrl}#/settings/ui` });
 await until("!!document.querySelector('input[name=tab-machine]')", "Settings > UI has no Machine switch");

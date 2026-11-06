@@ -59,18 +59,19 @@ p, h1, h2 { margin: 0; }
    shown; each top screen's scroll area pads its end by it, so the last row rests above the pill. */
 .tabbar {
   position: absolute; z-index: 1; left: 0; right: 0; bottom: 0; pointer-events: none;
+  display: flex; justify-content: center;
   padding: var(--space-1) calc(var(--space-3) + env(safe-area-inset-right)) calc(var(--space-2) + env(safe-area-inset-bottom)) calc(var(--space-3) + env(safe-area-inset-left));
 }
 body[data-keyboard] .tabbar { padding-bottom: var(--space-2); }
 .screen > .page > .scroll { padding-bottom: var(--tabbar-space, 0); }
 .tabbar-pill {
-  display: flex; gap: var(--space-1); padding: var(--space-1);
+  display: flex; gap: var(--space-1); padding: var(--space-1); min-width: 0; max-width: 100%;
   border: var(--border-width) solid var(--color-hairline); border-radius: calc(var(--radius-sheet) * 2);
   background: var(--color-surface); pointer-events: auto;
   box-shadow: 0 var(--space-1) var(--space-4) color-mix(in srgb, var(--color-overlay) 40%, transparent);
 }
 .tabbar a {
-  flex: 1 1 0; min-width: 0; min-height: var(--size-control); padding: var(--space-1) var(--space-2);
+  flex: 0 1 var(--size-tab); min-width: 0; min-height: var(--size-control); padding: var(--space-1) var(--space-2);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: calc(var(--space-1) / 2);
   border-radius: var(--radius-sheet); text-decoration: none; color: var(--color-muted); font-size: var(--font-size-label);
 }

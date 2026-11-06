@@ -2,7 +2,7 @@
 // Every setting here is kept per device.
 import { api } from "./api.js";
 import { html, useEffect, useNow, useState } from "./lib.js";
-import { can, loadPush, pageBuild, reloadForBuild, replaceRoute, setMuted, state, tabs, update, useStore } from "./store.js";
+import { can, loadPush, MAX_TABS, shownTabs, pageBuild, reloadForBuild, replaceRoute, setMuted, state, tabs, update, useStore } from "./store.js";
 import { confirmDialog, hasDarkScheme, scheme, setBar, setScheme, setTabHidden } from "./ui.js";
 import { AllUsage } from "./usage.js";
 
@@ -118,11 +118,12 @@ function Interface() {
       <div class="options">
         ${tabs().map(([name, , label]) => {
           const always = name === "settings";
-          const shown = always || !store.hiddenTabs.includes(name);
+          const shown = shownTabs().some(([other]) => other === name);
+          const capped = !shown && shownTabs().length >= MAX_TABS;
           return html`
             <label class="option option-row" key=${name}>
-              <span class="option-text">${label}${always && html`<span class="option-hint">Always shown</span>`}</span>
-              <input type="checkbox" role="switch" name=${`tab-${name}`} checked=${shown} disabled=${always}
+              <span class="option-text">${label}${always && html`<span class="option-hint">Always shown</span>`}${capped && html`<span class="option-hint">At most ${MAX_TABS}</span>`}</span>
+              <input type="checkbox" role="switch" name=${`tab-${name}`} checked=${shown} disabled=${always || capped}
                 onChange=${() => setTabHidden(name, shown)} />
             </label>`;
         })}
