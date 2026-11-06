@@ -173,14 +173,15 @@ pub fn open_asks(log: &[ManagerEntry], now: u64) -> Vec<OpenAsk> {
 pub fn asking(dir: &ManagerDir, now: u64) -> Result<Vec<OpenAsk>> {
     // ^ Where serde writes them: `unix_ms`, `kind` and a message's `from` first, a reply's
     // `asks` after its text, near the end (`ManagerEvent`). A quote in a text is escaped, so a
-    // text never holds these marks.
+    // text never holds these quoted words. The marks leave out the colon: a line written with
+    // a space after it (a hand-written fixture) passes too; what passes needlessly is parsed.
     let has = |part: &[u8], mark: &[u8]| part.windows(mark.len()).any(|at| at == mark);
     let keep = |line: &[u8]| {
         let head = &line[..line.len().min(128)];
-        has(head, b"\"kind\":\"answered\"")
-            || (has(head, b"\"kind\":\"message\"") && has(head, b"\"from\":\"owner\""))
-            || (has(head, b"\"kind\":\"reply\"")
-                && has(&line[line.len().saturating_sub(256)..], b"\"asks\":true"))
+        let tail = &line[line.len().saturating_sub(256)..];
+        has(head, b"\"answered\"")
+            || (has(head, b"\"message\"") && has(head, b"\"owner\""))
+            || (has(head, b"\"reply\"") && has(tail, b"\"asks\"") && has(tail, b"true"))
     };
     Ok(open_asks(
         &dir.read_back_where(FIRST_READ_BYTES, keep, |log| reaches_asks(log, now))?,

@@ -2172,9 +2172,9 @@ try:
             found.append(pattern)
             at_row += 1
         assert "RECAP REQUEST" not in chat_screen and "Manager" not in chat_screen and "r2:" not in chat_screen, chat_screen
-    rows_in_order([r"^#3 done$", r"^Atlas$", r"^#3 is on main\.$",
-                   r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.", r"^elsewhere\s+\d\d:\d\d",
-                   r"^Hello from elsewhere\.", r"^New conversation: the launch changed; the ledger carries the state\.$",
+    # ^ The open question's row under the chat leaves no room for the first rows; they are
+    # read after the scroll to the top below.
+    rows_in_order([r"^New conversation: the launch changed; the ledger carries the state\.$",
                    r"^Atlas\s+\d\d:\d\d", r"^Should I land #4\?", r"^Shall I deploy it too\?", r"^Not yet\.$",
                    r"^Atlas stopped: agent exited$"])
     # ^ Two questions, then an owner message with no quote: it answers the newer one only; the
@@ -2197,7 +2197,9 @@ try:
     # up one line at a time to the top.
     os.write(remove_master, b"k" * 40)
     wait_for(lambda: "Where is #3?" in remove_view.text(), "k did not scroll the TUI chat to its top", seconds=60)
-    rows_in_order([r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 done$", r"^Atlas$"])
+    rows_in_order([r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 done$", r"^Atlas$", r"^#3 is on main\.$",
+                   r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.", r"^elsewhere\s+\d\d:\d\d",
+                   r"^Hello from elsewhere\."])
     os.write(remove_master, b"\x1b")
     wait_for(lambda: "press i to write a message" not in remove_view.text(), "Esc did not close the manager chat", seconds=60)
     os.write(remove_master, b"q")
