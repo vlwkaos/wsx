@@ -26,7 +26,7 @@ use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::runtime;
 use wsx_core::task::manager::{
     asks_owner, decided_request, event_wakes, instructions_digest, pending_approvals, quiet_reply,
-    resolve_quote, says_nothing, ApprovalLine, QUOTE_REF,
+    quoted_id, resolve_quote, says_nothing, ApprovalLine, QUOTE_REF,
 };
 use wsx_core::task::manager::{
     Author, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
@@ -2608,11 +2608,7 @@ impl Manager {
             return text;
         }
         // ^ The log back to the quoted id, not all of it: ids grow (docs/tasks.md "Log window").
-        let quoted = text.trim_start()[QUOTE_REF.len()..]
-            .lines()
-            .next()
-            .and_then(|line| line.trim().parse::<u64>().ok());
-        let log = match quoted {
+        let log = match quoted_id(&text) {
             Some(id) => self
                 .dir
                 .read_back(QUOTE_READ_BYTES, |log| {

@@ -265,6 +265,12 @@ const QUOTE_CHARS: usize = 120;
 /// A reply that opens with this and a message id quotes that message.
 pub const QUOTE_REF: &str = "> message ";
 
+/// The id a reply quotes with `> message <id>` on its first line.
+pub fn quoted_id(text: &str) -> Option<u64> {
+    let line = text.trim_start().strip_prefix(QUOTE_REF)?;
+    line.lines().next()?.trim().parse().ok()
+}
+
 /// A message split into its leading owner-format quote (`> <line>` and an empty line) and the
 /// words after it. The web's composer writes this format (`withQuote` in web/reply.js).
 pub fn split_quote(text: &str) -> (Option<&str>, &str) {
@@ -298,7 +304,7 @@ pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<String
     };
     let (line, rest) = line.split_once('\n').unwrap_or((line, ""));
     let rest = rest.trim_start_matches('\n');
-    let said = line.trim().parse::<u64>().ok().and_then(|id| {
+    let said = quoted_id(text).and_then(|id| {
         log.iter().find_map(|entry| match &entry.event {
             ManagerEvent::Message {
                 id: found,

@@ -2676,11 +2676,7 @@ fn chat(
         Some(role) => ManagerDir::existing_as(&project_id, Some(role))?
             .with_context(|| format!("the project has no role {role}"))?,
     };
-    let window = match (find, after) {
-        (Some(words), _) => Window::Find(words),
-        (None, Some(after)) => Window::After(after),
-        (None, None) => Window::Tail,
-    };
+    let window = Window::new(find, after);
     let now = wsx_core::task::now_unix_ms();
     let log = chat::read_chat(&dir, &window)?;
     let shown = load_task_config(&main)
