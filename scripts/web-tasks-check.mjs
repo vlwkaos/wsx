@@ -576,8 +576,9 @@ async function homeUnread() {
 await go("#/");
 await until("document.querySelectorAll('.home-row').length >= 3", "home does not list the projects");
 // ^ The task summaries load after the projects; the order settles when they are in.
-await until(`[...document.querySelectorAll('.home-row .row-label')].map((node) => node.textContent).join() === ${JSON.stringify(homeOrder)}`, "home did not settle in the expected order", 30);
-const homeRows = await evaluate(`[...document.querySelectorAll('.home-row')].map((row) => ({ name: row.querySelector('.row-label').textContent,
+// ^ A row's name is its label's first text: an asking row's label adds a hidden ", Asks you".
+await until(`[...document.querySelectorAll('.home-row .row-label')].map((node) => node.firstChild.textContent).join() === ${JSON.stringify(homeOrder)}`, "home did not settle in the expected order", 30);
+const homeRows = await evaluate(`[...document.querySelectorAll('.home-row')].map((row) => ({ name: row.querySelector('.row-label').firstChild.textContent,
   count: row.querySelector('.count')?.textContent ?? '', status: row.querySelector('.row-context').textContent, state: row.querySelector('.row-state').textContent }))`);
 const uiRow = homeRows.find((row) => row.name === "ui");
 if (uiRow.count !== "6" || uiRow.status !== "#1 Waiting for your answer" || !/ago|now/.test(uiRow.state)) await fail(`the ui row reads ${JSON.stringify(uiRow)}`);
@@ -641,7 +642,7 @@ await until(`location.hash === ${JSON.stringify(chat)}`, "Back from the worktree
 // A row opens the project's chat.
 await go("#/");
 await until("!!document.querySelector('.home-row')", "home did not come back");
-await evaluate(`[...document.querySelectorAll('.home-row')].find((row) => row.querySelector('.row-label').textContent === 'ui').click()`);
+await evaluate(`[...document.querySelectorAll('.home-row')].find((row) => row.querySelector('.row-label').firstChild.textContent === 'ui').click()`);
 await until(`location.hash === ${JSON.stringify(chat)} && !!document.querySelector('.composer-field') && !!document.querySelector('.reservoir-head') && !!document.querySelector('.log .bubble')`, "a home row did not open the chat");
 if (await count(".tabbar")) await fail("the chat shows the bottom bar");
 // No Adopted list on the chat.
@@ -1144,9 +1145,13 @@ await until(`(() => { const bubbles = [...document.querySelectorAll('.log .bubbl
 if ((await evaluate(`${askTags}.length`)) !== 1) await fail("a later report dropped the chat's Asks you");
 if ((await overviewAsks())?.length !== 1) await fail("a later report dropped the overview's asks");
 const askingChat = await evaluate("location.hash");
-const homeAskRows = "[...document.querySelectorAll('.home-rows > .row')].filter((row) => row.querySelector('.row-label[data-tone=accent]') && /Asks you/.test(row.querySelector('.row-label').textContent) && !row.querySelector('.row-asks, .row-label .icon')).map((row) => row.dataset.key).join()";
+const homeAskRows = "[...document.querySelectorAll('.home-rows > .row')].filter((row) => row.querySelector('.row-label[data-tone=accent]') && /Asks you/.test(row.querySelector('.row-label').textContent) && !row.querySelector('.row-asks, .row-label .icon')).map((row) => row.dataset.key).sort().join()";
+// ^ plans may still hold an open question of its log (test-web-client.py): the rows that ask are
+// the projects whose overview lists one, ui among them.
+const askingKeys = (await evaluate(`Promise.all([${project}, ${plansArg}].map((id) => fetch('api/tasks/' + id).then((r) => r.json()).then((view) => view.asks.length ? String(id) : '')))`)).filter(Boolean).sort().join();
+if (!askingKeys.split(",").includes(String(project))) await fail(`the asking project is not in the overviews' asks: ${askingKeys}`);
 await go("#/");
-await until(`${homeAskRows} === ${JSON.stringify(String(project))}`, "Asks you is not on the row of the project whose manager asks", 100);
+await until(`${homeAskRows} === ${JSON.stringify(askingKeys)}`, "Asks you is not on the rows of the projects whose manager asks", 100);
 await entered();
 await shot("home-asks");
 await go(askingChat);
@@ -2756,14 +2761,19 @@ console.log(`long chat render at 390 px, CPU 4x: ${costs.map((cost) => `${cost.l
 const costly = costs.filter((cost) => cost.renders > 0 || (cost.label === "at the end after a find" && cost.named > 60));
 if (costly.length) await fail(`a read with no new message rendered bubbles again, or the log kept more than its newest 60 rows: ${JSON.stringify(costs)}`);
 // --- Questions (docs/tasks.md "Questions" under "Manager"): plans' log asked four times and the
-// owner answered the newer two (test-web-client.py). Each open question waits in the reservoir
-// with Reply and Dismiss; a dismiss clears only that one: its row, its bubble's border and the
-// overview's `asks`, which Home's accent reads.
+// owner answered some (test-web-client.py); the plain owner messages since answered more, so plans
+// is asked once more here. Each open question waits in the reservoir with Reply and Dismiss; a
+// dismiss clears only that one: its row, its bubble's border and the overview's `asks`, which
+// Home's accent reads.
 const plansAsks = () => evaluate(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((data) => data.asks)`);
+// ^ The fake manager answers ASK with "Should I land it now?" (scripts/fake-claude-stream.py).
+await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ text: "ASK" }))} })`);
+await until(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((data) => data.asks.some((ask) => ask.quote.includes('Should I land it now?')))`, "plans' manager did not ask", 300);
 const openAsks = await plansAsks();
-if (!openAsks.length || openAsks.some((ask) => !["Should the fold keep five rows?", "Can #92 wait for Monday?"].includes(ask.quote))) await fail(`plans' open questions read ${JSON.stringify(openAsks)}`);
+const plansQuestion = openAsks.find((ask) => ask.quote.includes("Should I land it now?"));
+if (openAsks.some((ask) => ask !== plansQuestion && !["Should the fold keep five rows?", "Can #92 wait for Monday?"].includes(ask.quote))) await fail(`plans' open questions read ${JSON.stringify(openAsks)}`);
+const question = plansQuestion.quote;
 await openReservoir();
-const question = openAsks[0].quote;
 await until(`!!${rowOf(question)}`, "an open question has no reservoir row");
 const questionRow = (await rows()).find((row) => row[1] === question);
 if (questionRow[2] !== "Asks you" || questionRow[3] !== "Reply+Dismiss") await fail(`the question's row reads ${JSON.stringify(questionRow)}`);
@@ -2775,10 +2785,10 @@ await openReservoir();
 await evaluate(`${rowOf(question)}.querySelector('.need-action[title="Dismiss"]').click()`);
 await until(`!${rowOf(question)}`, "Dismiss did not clear the question's row", 100);
 const left = await plansAsks();
-if (left.some((ask) => ask.id === openAsks[0].id) || left.length !== openAsks.length - 1) await fail(`after a dismiss plans asks ${JSON.stringify(left)}`);
+if (left.some((ask) => ask.id === plansQuestion.id) || left.length !== openAsks.length - 1) await fail(`after a dismiss plans asks ${JSON.stringify(left)}`);
 const chatAsks = await evaluate(`fetch('api/tasks/${plansArg}/chat').then((r) => r.json()).then((data) => data.asks)`);
 if (JSON.stringify(chatAsks) !== JSON.stringify(left.map((ask) => ask.id))) await fail(`the chat's asks ${JSON.stringify(chatAsks)} differ from the overview's ${JSON.stringify(left)}`);
-await until(`!document.querySelector('.log [data-key="reply-${openAsks[0].id}"][data-asks], .log [data-key="reply-${openAsks[0].id}"] [data-asks]')`, "the dismissed question's bubble keeps its border");
+await until(`!document.querySelector('.log [data-key="reply-${plansQuestion.id}"][data-asks], .log [data-key="reply-${plansQuestion.id}"] [data-asks]')`, "the dismissed question's bubble keeps its border");
 await openReservoir();
 await until(`!!${rowOf("#1")}`, "the waiting task has no reservoir row");
 const waitRow = (await rows()).find((row) => row[0] === "#1");
