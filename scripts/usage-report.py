@@ -6,7 +6,9 @@ Reads only the task state folder (docs/tasks.md "Task logs", "Manager"):
   <dir>/manager/log*.jsonl                     manager messages and replies
 Usage fields are documented in docs/tasks.md ("Usage"). Design: docs/design/usage-audit.md.
 
-  /usr/bin/python3 scripts/usage-report.py ~/.local/state/wsx/tasks/<project-id> [--since DAY | --days N] [--until DAY] [--task N]
+  /usr/bin/python3 scripts/usage-report.py ~/.local/state/wsx/tasks/<project-id>... [--since DAY | --days N] [--until DAY] [--task N]
+Several state folders (`~/.local/state/wsx/tasks/*`) add up; the manager table by trigger names
+the event kinds that woke a turn, to measure which turns only said what wsx knew.
 The last lines are a summary, so a routine run reaches the manager as an event (docs/tasks.md "Routines").
 """
 import argparse
@@ -180,30 +182,76 @@ def task_row(task, events, turns):
     }
 
 
+# ^ Event kinds that start no turn (`event_wakes`, docs/tasks.md "Manager"): a turn they join is
+# named by its other events.
+ALONG = ("landed", "closed", "stopped", "waiting:limit", "waiting:disk")
+# ^ `wsx task` verbs that only read.
+READ_VERBS = ("ledger", "show", "chat", "log", "status")
+
+
+def event_kind(line):
+    """An events line's kind: `ready`, `waiting:owner`, `stopped` (a wait on owner after a stop by
+    request), `deploy succeeded`, `routine checkin failed`, `approval push approved`."""
+    m = re.match(r"#\d+ (\w+) r\d+: ", line)
+    if m:
+        if m.group(1) != "waiting":
+            return m.group(1)
+        wait = re.search(r"; waits on (\w+): ([^;]*)", line)
+        if not wait:
+            return "waiting"
+        return "stopped" if wait.group(1) == "owner" and "stopped by request" in wait.group(2) \
+            else "waiting:" + wait.group(1)
+    m = re.match(r"(deploy|release) of \S+ (\w+)", line) or re.match(r"(routine \S+) (\w+)", line) \
+        or re.match(r"approval \S+ \((\w+)\) (\w+)", line)
+    if m and line.startswith("approval"):
+        return "approval " + " ".join(m.groups())
+    return " ".join(m.groups()) if m else line.split(" ", 1)[0]
+
+
 def manager_turns(events):
-    origin = {e["id"]: e.get("from", "?") for e in events if e.get("kind") == "message" and "id" in e}
-    out = []
+    """Each reply or ping with usage: `kind` by who wrote its messages, `trigger` the event kind
+    that woke an events turn, `acted` whether it ran a `wsx task` verb that changes something."""
+    messages = {e["id"]: e for e in events if e.get("kind") == "message" and "id" in e}
+    out, steps = [], []
     for e in events:
+        if e.get("kind") == "delivered":
+            steps = []
+        elif e.get("kind") == "agent":
+            steps.append(e.get("text", ""))
         if e.get("kind") not in ("reply", "ping") or not e.get("usage"):
             continue
-        froms = {origin.get(i, "?") for i in e.get("to") or []}
+        to = [messages[i] for i in e.get("to") or [] if i in messages]
+        froms = {m.get("from", "?") for m in to} or {"?"}
         kind = "ping" if e["kind"] == "ping" else "owner" if "owner" in froms else \
             "recap" if "recap" in froms else "events" if froms == {"events"} else "other"
-        out.append({"ms": e["unix_ms"], "kind": kind, "u": e["usage"], "quiet": e.get("quiet", False)})
+        trigger = kind
+        if kind == "events":
+            # ^ An output line of a routine or deploy is indented.
+            kinds = [event_kind(line) for m in to for line in m.get("text", "").split("\n")
+                     if line and not line.startswith(" ")]
+            trigger = next((k for k in kinds if k not in ALONG), kinds[0] if kinds else "events")
+        text = (e.get("text") or "").strip()
+        verbs = [m.group(1) for step in steps for m in re.finditer(r"\bwsx task (\w+)", step)]
+        out.append({"ms": e["unix_ms"], "kind": kind, "trigger": trigger, "u": e["usage"],
+                    "quiet": e.get("quiet", False), "acted": any(v not in READ_VERBS for v in verbs),
+                    "nothing": text in ("", "-"), "line": text not in ("", "-") and "\n" not in text})
+        if e["kind"] == "reply":
+            steps = []
     return out
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("state_dir")
+    ap.add_argument("state_dir", nargs="+", help="a project's task state folder; several add up")
     ap.add_argument("--since", help="first local day, YYYY-MM-DD")
     ap.add_argument("--days", type=int, help="the last N days; a fixed argv for a routine")
     ap.add_argument("--until", help="last local day, YYYY-MM-DD; with --since compares two windows")
     ap.add_argument("--task", type=int, help="print every turn of this task")
     ap.add_argument("--top", type=int, default=25, help="rows in the per-task and repeat tables")
     a = ap.parse_args()
-    if not os.path.isdir(a.state_dir):
-        sys.exit(f"usage-report: no such folder: {a.state_dir}")
+    for state_dir in a.state_dir:
+        if not os.path.isdir(state_dir):
+            sys.exit(f"usage-report: no such folder: {state_dir}")
     if a.days:
         a.since = (datetime.date.today() - datetime.timedelta(days=a.days - 1)).isoformat()
     try:
@@ -214,8 +262,8 @@ def main():
         sys.exit(f"usage-report: {err}")
 
     tasks, all_turns, rotations, repeats = [], [], [], collections.Counter()
-    for name in os.listdir(a.state_dir):
-        folder = os.path.join(a.state_dir, name)
+    for folder in [os.path.join(d, name) for d in a.state_dir for name in os.listdir(d)]:
+        name = os.path.basename(folder)
         if not name.isdigit() or not os.path.exists(os.path.join(folder, "task.json")):
             continue
         try:
@@ -240,10 +288,14 @@ def main():
                     f"{k(t['u'].get('cache_creation_tokens', 0))}/{k(t['u'].get('cache_read_tokens', 0))}",
                     "y" if t["after_rotation"] else "", "y" if t["after_limit"] else "", t["u"].get("model", "")]
                    for t in turns])
-    mevents = read_log(os.path.join(a.state_dir, "manager"))
-    per_turn_cost(e for e in mevents if e.get("kind") == "reply")
-    mevents = [e for e in mevents if since <= e.get("unix_ms", 0) < until]
-    mturns = manager_turns(mevents)
+    mevents, mturns = [], []
+    for state_dir in a.state_dir:
+        events = read_log(os.path.join(state_dir, "manager"))
+        per_turn_cost(e for e in events if e.get("kind") == "reply")
+        events = [e for e in events if since <= e.get("unix_ms", 0) < until]
+        mevents += events
+        # ^ Message ids are a project's own.
+        mturns += manager_turns(events)
 
     # Per day
     days, wturns = collections.defaultdict(collections.Counter), collections.defaultdict(list)
@@ -342,6 +394,14 @@ def main():
             k(statistics.median([t["u"]["context_tokens"] for t in ts if t["u"].get("context_tokens")] or [0])),
             sum(t["quiet"] for t in ts), write_share(ts)]
            for kind, ts in sorted(g.items())])
+    g = collections.defaultdict(list)
+    for t in mturns:
+        g[t["trigger"]].append(t)
+    table("Manager turns by trigger (the owner, a peer, or the event kind that woke it)",
+          ["trigger", "turns", "cost $", "no action cmd", "- or empty", "one line"],
+          [[trigger, len(ts), usd(sum(map(cost, ts))), sum(not t["acted"] for t in ts),
+            sum(t["nothing"] for t in ts), sum(t["line"] for t in ts)]
+           for trigger, ts in sorted(g.items(), key=lambda x: -sum(map(cost, x[1])))])
     print(f"\nManager rotations: {sum(1 for e in mevents if e.get('kind') == 'rotated')}")
 
     repeats.update("manager: " + mask(e.get("text", "")) for e in mevents if e.get("kind") == "agent")

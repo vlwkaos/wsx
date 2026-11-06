@@ -2393,20 +2393,31 @@ def run(wsx, wsxd, work, owned):
     context = (notes / 'context.md').read_text()
     for i, n in enumerate(memo_tasks):
         assert context.count('lesson %d kept' % i) == 1 and '- #%d: ' % n in context, context
-    # ^ One close alone, after the turns above have ended, is the case that costs no turn.
+    # ^ One close alone, after the turns above have ended, is the case that costs no turn. A stop
+    # by request costs none either: its wait on owner is a chat line that joins the next turn,
+    # while a ready event still starts one (docs/tasks.md "Manager", `event_wakes`).
     lone = js('task', 'new', 'WORK lone.txt')['id']
+    halted = js('task', 'new', 'WAIT %s NOOP' % (base / 'never'))['id']
     assert wait_state(lone, 'ready', 'failed')['state'] == 'ready'
     reply_to(wait(lambda: events_with('#%d ready r1' % lone), 'the ready event')[0]['id'])
+    wait(lambda: show(halted)['state'] == 'working', 'the halted worker')
     time.sleep(5)
+    assert js('task', 'stop', halted)['ok']
+    stop_event = wait(lambda: events_with('#%d waiting r' % halted, 'waits on owner: Stopped', 'stopped by request'),
+                      'the stop event')[0]
+    assert stop_event['short'] == [{'text': '#%d waiting' % halted, 'task': halted}], stop_event
     js('task', 'close', lone, '--discard')
     last_close = wait(lambda: events_with('#%d closed r1' % lone), 'the lone close event')[0]
     time.sleep(5)
-    assert not any(e['kind'] == 'reply' and last_close['id'] in e['to'] for e in chat()), chat()[-2:]
+    for quiet in (stop_event, last_close):
+        assert not any(e['kind'] == 'reply' and quiet['id'] in e['to'] for e in chat()), chat()[-3:]
     along = js('task', 'say', 'STATUS after the closes')
-    assert last_close['id'] in reply_to(along['id'])['to'], chat()[-2:]
+    assert {last_close['id'], stop_event['id']} <= set(reply_to(along['id'])['to']), chat()[-3:]
     along_turn = turn_with('STATUS after the closes')['message']
     # ^ The owner's message comes first and the turn says so (docs/tasks.md "Manager").
     assert 'closed r1' in along_turn and 'Answer message %d first.' % along['id'] in along_turn, along_turn
+    assert 'stopped by request' in along_turn, along_turn
+    js('task', 'close', halted, '--discard')
 
     # 22. Approvals: what the manager may not do alone becomes a request the owner decides.
     mark('22')
@@ -4254,6 +4265,9 @@ def run(wsx, wsxd, work, owned):
                              str(Path(show(held)['log']).parent.parent), '--task', str(held)],
                             capture_output=True, text=True, check=True).stdout
     assert len(re.findall(r'\| ping +\| ping ', report)) == 3, report[-600:]
+    # ^ The manager turns by trigger: a ready event woke turns, a stop by request (21b) none.
+    triggers = report.split('Manager turns by trigger', 1)[1].split('\n## ', 1)[0]
+    assert re.search(r'\| ready +\| [1-9]', triggers) and '| stopped ' not in triggers, triggers
     entries = manager_entries()
     mpings = [e for e in entries if e['kind'] == 'ping']
     assert mpings and all(e['usage']['output_tokens'] > 0 for e in mpings), entries[-12:]

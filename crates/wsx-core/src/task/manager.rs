@@ -231,9 +231,9 @@ pub fn says_nothing(text: &str) -> bool {
 }
 
 /// Whether an event line needs the manager's judgment now. The others (a landing, a close, a
-/// wait that ends by itself, an automatic deploy that worked) go along with its next turn, so
-/// they cost no turn. `deploy_auto`: `tasks.deploy.auto`; a deploy the manager started may be
-/// what it waits for. ref: docs/tasks.md "Manager"
+/// wait that ends by itself, a stop the owner or the manager asked for, an automatic deploy that
+/// worked) go along with its next turn, so they cost no turn. `deploy_auto`: `tasks.deploy.auto`;
+/// a deploy the manager started may be what it waits for. ref: docs/tasks.md "Manager"
 pub fn event_wakes(line: &str, deploy_auto: bool) -> bool {
     let task = line.strip_prefix('#').and_then(|rest| {
         let (id, rest) = rest.split_once(' ')?;
@@ -242,7 +242,12 @@ pub fn event_wakes(line: &str, deploy_auto: bool) -> bool {
     match task {
         Some(rest) if rest.starts_with("landed ") || rest.starts_with("closed ") => false,
         Some(rest) if rest.starts_with("waiting ") => {
-            !(rest.contains("; waits on limit:") || rest.contains("; waits on disk:"))
+            // ^ The wait and its sentence, up to the summary's next part.
+            let wait = rest.split_once("; waits on ").map_or("", |(_, wait)| wait);
+            let wait = wait.split("; ").next().unwrap_or_default();
+            !(wait.starts_with("limit:")
+                || wait.starts_with("disk:")
+                || (wait.starts_with("owner:") && wait.contains(super::status::STOPPED_BY_REQUEST)))
         }
         Some(_) => true,
         None => !(deploy_auto && line.starts_with("deploy of ") && line.contains(" succeeded")),
