@@ -197,7 +197,7 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
   // (docs/tasks.md "Landing"); Land stays, it refuses until they are committed or stashed.
   const blocked = acting && actions.includes("land") && detail.land_blocked_by?.length > 0 && html`
     <p class="task-approval" role="note">Land stops: ${detail.default_branch} has uncommitted changes in ${detail.land_blocked_by.join(", ")}. Commit or stash them in the main checkout first.</p>`;
-  const held = detail.hold && html`<p class="task-approval">Held for you to try: ${detail.hold}</p>`;
+  const held = detail.hold && html`<p class="task-approval">Held: ${detail.hold}</p>`;
   const handHint = acting && actions.includes("hand") && html`<p class="task-approval task-hint" id="hand-hint">Stops the worker. You continue in its session.</p>`;
   const report = sections(detail.report);
   const entries = detail.timeline.entries;

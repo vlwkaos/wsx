@@ -250,7 +250,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
     if let (Some(hold), true) = (&record.hold, record.state.is_open()) {
         if record.state != TaskState::Ready {
             status.sentence.push_str(&format!(
-                " Held for you to try once it is ready: {}.",
+                " Held: {}.",
                 clip(hold.trim_end_matches('.'), FACT_CHARS)
             ));
         }
@@ -282,10 +282,10 @@ fn ready(dir: &TaskDir, record: &TaskRecord, entered: u64, now_ms: u64) -> Statu
     if let Some(hold) = &record.hold {
         return words(
             "held",
-            "Held for you to try",
+            "Held",
             Some(entered),
             hold,
-            "Try it, then land it or tell the manager what is wrong.",
+            "It lands only when you say so, or after a trial you pass.",
             now_ms,
         );
     }
