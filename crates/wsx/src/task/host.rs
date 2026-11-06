@@ -142,6 +142,8 @@ struct CheckRun {
     /// When the run must have ended (unix ms): its start, or its slot's, plus `limit`. `None`
     /// while it waits for the check slot.
     deadline_ms: Option<u64>,
+    /// The working copy's HEAD when it started: a call on another commit never joins it.
+    commit: String,
 }
 
 /// A check-run's answer to the worker, and the proof the host keeps when the run passed on
@@ -214,6 +216,9 @@ struct Host {
     background_wait: Option<BackgroundWait>,
     /// The worker's queued or running `check-run`.
     check_run: Option<CheckRun>,
+    /// A `check-run` on a newer commit than the pending one's (its call got `queued`): it
+    /// starts when that run ends, and a held result waits for it instead.
+    check_run_next: Option<Vec<String>>,
     /// The result the worker reported with `wsx task result -` in the running turn.
     reported: Option<serde_json::Value>,
     /// The text of the running turn: a switch to another agent sends it again.
@@ -284,6 +289,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
         limit_slot: None,
         background_wait: None,
         check_run: None,
+        check_run_next: None,
         reported: None,
         turn_text: String::new(),
         gate: None,
@@ -465,70 +471,102 @@ impl Host {
                 Event::Reported(text, reply) => {
                     let _ = reply.send(self.reported(text));
                 }
-                Event::CheckRunDone(results, mut response, stored) => {
-                    let shared = self.shared_failures(&results);
-                    if !shared.is_empty() {
-                        response.stdout = format!("{}\n{shared}", response.stdout.trim_end());
-                    }
-                    let run = self.check_run.take();
-                    if self.record.waits_on(WaitOn::CheckRun) {
-                        self.record.waiting = None;
-                        self.save();
-                    }
-                    let label = run
-                        .as_ref()
-                        .map_or_else(String::new, |run| run.label.clone());
-                    for reply in run.iter().flat_map(|run| &run.replies) {
-                        let _ = reply.send(response.clone());
-                    }
-                    let tree_kept = stored.is_some();
-                    if let Some((tree, ran)) = stored {
-                        match &mut self.stored_checks {
-                            Some((on, results)) if *on == tree => results.extend(ran),
-                            _ => self.stored_checks = Some((tree, ran)),
-                        }
-                    }
-                    self.log(LogEvent::CheckRun { results });
-                    // ^ The worker finishes with the proof it asked for, then the checks run.
-                    let answer = CheckAnswer {
-                        text: format!(
-                            "Your check-run ended. Its answer:\n{}\nPut it in your result's \
-                             evidence (fix what fails in code you changed) and return your \
-                             result again.",
-                            response.stdout.trim_end()
-                        ),
-                        proof: (response.code == 0 && tree_kept).then(|| Evidence {
-                            check: format!("wsx task check-run {label} passed {RECORDED_BY_HOST}"),
-                            proof: response.stdout.trim_end().into(),
-                        }),
-                    };
-                    match run {
-                        // ^ A stopped task's answer joins the turn an add starts: no turn now.
-                        Some(_) if self.stopped => {
-                            self.say(
-                                "check-run ended while stopped: its answer joins the next turn",
-                            );
-                            self.notices.push(answer.text);
-                        }
-                        Some(run) if run.result_waits => self.answer_check_run(answer),
-                        Some(run) if run.queued && !self.turn_active => {
-                            self.send_check_answer(answer.text)
-                        }
-                        // ^ The worker still works after `queued`: its result gets the answer.
-                        Some(run) if run.queued => {
-                            self.check_run = Some(CheckRun {
-                                answer: Some(answer),
-                                ..run
-                            });
-                        }
-                        _ => {}
-                    }
+                Event::CheckRunDone(results, response, stored) => {
+                    self.check_run_done(results, response, stored)
                 }
                 Event::CheckQueued(reason) => self.check_queued(reason),
                 Event::CheckSlot(error) => self.check_slot(error),
             }
         }
         Ok(())
+    }
+
+    /// The worker's check-run ended: its waiting calls get the answer, and the worker gets it
+    /// as a turn or, after its result, as recorded evidence. A run on a newer commit that
+    /// waited for this one starts now. ref: docs/tasks.md "Check-run"
+    fn check_run_done(
+        &mut self,
+        results: Vec<CheckResult>,
+        mut response: broker::Response,
+        stored: Option<StoredChecks>,
+    ) {
+        let shared = self.shared_failures(&results);
+        if !shared.is_empty() {
+            response.stdout = format!("{}\n{shared}", response.stdout.trim_end());
+        }
+        let run = self.check_run.take();
+        if self.record.waits_on(WaitOn::CheckRun) {
+            self.record.waiting = None;
+            self.save();
+        }
+        let label = run
+            .as_ref()
+            .map_or_else(String::new, |run| run.label.clone());
+        for reply in run.iter().flat_map(|run| &run.replies) {
+            let _ = reply.send(response.clone());
+        }
+        let tree_kept = stored.is_some();
+        if let Some((tree, ran)) = stored {
+            match &mut self.stored_checks {
+                Some((on, results)) if *on == tree => results.extend(ran),
+                _ => self.stored_checks = Some((tree, ran)),
+            }
+        }
+        self.log(LogEvent::CheckRun { results });
+        // ^ The worker finishes with the proof it asked for, then the checks run.
+        let commit = run.as_ref().map_or("", |run| short(&run.commit));
+        let answer = CheckAnswer {
+            text: format!(
+                "Your check-run ended. Its answer, on commit {commit}:\n{}\nPut it in your \
+                 result's evidence (fix what fails in code you changed) and return your result \
+                 again.",
+                response.stdout.trim_end()
+            ),
+            proof: (response.code == 0 && tree_kept).then(|| Evidence {
+                check: format!("wsx task check-run {label} passed {RECORDED_BY_HOST}"),
+                proof: response.stdout.trim_end().into(),
+            }),
+        };
+        // ^ A run on a newer commit waited for this one: this answer joins the next turn, and a
+        // held result waits for the new run. One that does not start (refused, or every check
+        // kept) adds its words, and this answer takes its usual way.
+        if let Some(argv) = self.check_run_next.take().filter(|_| !self.stopped) {
+            let (reply, said) = std::sync::mpsc::channel();
+            self.check_run(&argv, reply);
+            let result_waits = run.as_ref().is_some_and(|run| run.result_waits);
+            if let Some(next) = &mut self.check_run {
+                next.queued = true;
+                next.result_waits = result_waits;
+                self.say("check-run: the run on the newer commit starts");
+                self.notices.push(answer.text);
+                self.show_held_result();
+                return;
+            }
+            if let Ok(said) = said.try_recv() {
+                self.notices.push(format!(
+                    "Your check-run on the newer commit did not start: {}{}",
+                    said.stdout,
+                    said.stderr.trim_end()
+                ));
+            }
+        }
+        match run {
+            // ^ A stopped task's answer joins the turn an add starts: no turn now.
+            Some(_) if self.stopped => {
+                self.say("check-run ended while stopped: its answer joins the next turn");
+                self.notices.push(answer.text);
+            }
+            Some(run) if run.result_waits => self.answer_check_run(answer),
+            Some(run) if run.queued && !self.turn_active => self.send_check_answer(answer.text),
+            // ^ The worker still works after `queued`: its result gets the answer.
+            Some(run) if run.queued => {
+                self.check_run = Some(CheckRun {
+                    answer: Some(answer),
+                    ..run
+                });
+            }
+            _ => {}
+        }
     }
 
     /// Whether this host must exec the wsx file that replaced it before it starts more work:
@@ -891,6 +929,7 @@ impl Host {
         if let Some(run) = &mut self.check_run {
             run.result_waits = false;
         }
+        self.check_run_next = None;
         let dropped = self.pending.len();
         self.pending.clear();
         self.log(LogEvent::Stopped {
@@ -2073,8 +2112,23 @@ impl Host {
             Ok(picked) => picked,
             Err(message) => return refuse(message),
         };
-        // ^ Never two runs in one working copy: the same checks join, other ones wait.
+        // ^ Never two runs in one working copy: the same checks on the same commit join, other
+        // checks wait, and a newer commit's run starts when the pending one ends.
         let indexes: Vec<usize> = picked.iter().map(|(index, _)| *index).collect();
+        let commit = head(&self.record.working_copy).unwrap_or_default();
+        if let Some(run) = self.check_run.as_ref().filter(|run| run.commit != commit) {
+            let _ = reply.send(broker::Response {
+                stdout: format!(
+                    "queued behind your check-run on commit {}: {CHECK_RUN_QUEUED}",
+                    short(&run.commit)
+                ),
+                stderr: String::new(),
+                code: 0,
+            });
+            self.say("check-run: on a newer commit, it starts when the pending run ends");
+            self.check_run_next = Some(argv.to_vec());
+            return;
+        }
         if let Some(run) = &mut self.check_run {
             // ^ A queued run answers only after the result, also when it already ended.
             if run.queued && run.indexes == indexes {
@@ -2134,6 +2188,7 @@ impl Host {
             ci,
             limit,
             deadline_ms: None,
+            commit,
         });
         // ^ A run of checks that only format or compile, or only runs on CI, is light: it takes
         // no slot. One that names a local scenario takes the scenarios lane, else the checks lane.
@@ -3286,6 +3341,11 @@ fn check_message(text: &str) -> Result<()> {
 
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
+}
+
+/// A commit's first 12 characters, as answers name it.
+fn short(commit: &str) -> &str {
+    commit.get(..12).unwrap_or(commit)
 }
 
 /// The working copy's HEAD commit.
