@@ -160,8 +160,16 @@ export const tabs = () => {
   if (can("terminal_input") && shows("terminal") && state.machine.length) list.push(["machine", "#/machine", "Machine", "panel", 0]);
   return [...list, ["settings", "#/settings", "Settings", "settings", 0]];
 };
-// The tabs this device shows: Settings always, so the way back to the switches stays.
-export const shownTabs = () => tabs().filter(([name]) => name === "settings" || !state.hiddenTabs.includes(name));
+// ^ The bottom bar holds at most this many tabs (docs/web-client.md "Screens"); Settings > UI
+// disables the switches that are off while this many are on.
+export const MAX_TABS = 4;
+// The tabs this device shows: Settings always, so the way back to the switches stays; of the
+// others the first ones in bar order, up to MAX_TABS, whatever a stored list says.
+export const shownTabs = (list = tabs()) => {
+  let room = MAX_TABS - 1;
+  const on = list.filter(([name]) => name === "settings" || !state.hiddenTabs.includes(name));
+  return on.length <= MAX_TABS ? on : on.filter(([name]) => name === "settings" || room-- > 0);
+};
 
 // Routes: #/ (home: the projects with task_view, else the inbox), #/sessions (the inbox),
 // #/projects, #/machine, #/settings[/ui|usage], #/s/<id>/chat|terminal, #/p/<id> (the manager with task_view, else the

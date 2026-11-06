@@ -3515,10 +3515,14 @@ await closeSheet("the page", `#/p/${plansArg}`);
       stacked: tabs.every((tab) => tab.querySelector('svg').getBoundingClientRect().bottom <= tab.querySelector('.tab-label').getBoundingClientRect().top + 0.5),
       highlight: tabs.map((tab) => getComputedStyle(tab).backgroundColor !== 'rgba(0, 0, 0, 0)' ? tab.querySelector('.tab-label').textContent : null).filter(Boolean),
       pill: document.querySelector('.tabbar-pill').getBoundingClientRect().width < document.querySelector('.tabbar').getBoundingClientRect().width,
+      // ^ The pill is as wide as its tabs (one --size-tab each, the gaps and its padding) and centred (docs/web-client.md "Screens").
+      snug: (() => { const box = document.querySelector('.tabbar-pill').getBoundingClientRect(); const sum = tabs.reduce((total, tab) => total + tab.getBoundingClientRect().width, 0);
+        return box.width - sum < 24 && Math.abs(tabs[0].getBoundingClientRect().width - parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--size-tab'))) < 0.5
+          && Math.abs(box.left - (innerWidth - box.right)) <= 1; })(),
       frame: Math.round(document.querySelector('.tabbar').getBoundingClientRect().bottom) === innerHeight }; })()`);
   const equal = (shape) => shape.widths.length > 0 && shape.widths.every((width) => Math.abs(width - shape.widths[0]) <= 0.5);
   let shape = await barShape();
-  if (!equal(shape) || !shape.stacked || shape.highlight.join() !== "Sessions" || !shape.pill || !shape.frame) await fail(`the bottom bar is ${JSON.stringify(shape)}`);
+  if (!equal(shape) || !shape.stacked || shape.highlight.join() !== "Sessions" || !shape.pill || !shape.snug || !shape.frame) await fail(`the bottom bar is ${JSON.stringify(shape)}`);
   await shot("tabbar");
   // ^ The bar floats (docs/web-client.md "Screens"): on a notched phone the nav is transparent and takes no
   // pointer, content scrolled under the gap beside the pill is what a point there hits, and a list scrolled to
@@ -3580,7 +3584,7 @@ await closeSheet("the page", `#/p/${plansArg}`);
   await click("input[name=tab-inbox]");
   await until("document.querySelectorAll('.tabbar a').length === 2", "hiding Sessions left it in the bar");
   shape = await barShape();
-  if (shape.names.join() !== "Home,Settings" || !equal(shape)) await fail(`the bar with Sessions hidden is ${JSON.stringify(shape)}`);
+  if (shape.names.join() !== "Home,Settings" || !equal(shape) || !shape.snug) await fail(`the bar with Sessions hidden is ${JSON.stringify(shape)}`);
   await shot("tabbar-two");
   // ^ Settings cannot be hidden: the switch is off limits, and a stored list that names it is not obeyed.
   await evaluate("localStorage.setItem('wsx-tabs-hidden', JSON.stringify(['inbox', 'settings', 'home']))");
