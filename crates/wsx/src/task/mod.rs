@@ -2084,9 +2084,6 @@ fn push(
     let default = default_ref(&main);
     let branch = default.trim_start_matches("refs/heads/").to_string();
     let refuse = |error: anyhow::Error| anyhow::anyhow!("{error:#}; nothing was pushed");
-    if lease.is_some_and(|tip| !tip.is_empty() && !tip.bytes().all(|b| b.is_ascii_hexdigit())) {
-        bail!("--lease takes a commit id; nothing was pushed");
-    }
     let local = copy::resolve_commit(&main, &default).map_err(refuse)?;
     let target = copy::resolve_commit(&main, commit.unwrap_or(&local)).map_err(refuse)?;
     let remote = copy::remote_tip(&main, PUSH_REMOTE, &branch).map_err(refuse)?;
@@ -2123,8 +2120,8 @@ fn push(
     if local_moves {
         copy::check_move(&main, &branch, &target, "push").map_err(refuse)?;
     }
-    let seen = remote.clone().unwrap_or_default();
-    let lease = force.then(|| lease.unwrap_or(&seen).to_string());
+    // ^ A lease that is not origin's tip was refused above, so the push leases what it saw now.
+    let lease = force.then(|| remote.clone().unwrap_or_default());
     if acting_as_manager()
         && ask_owner(
             &project_id,

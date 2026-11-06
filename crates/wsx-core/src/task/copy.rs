@@ -514,8 +514,8 @@ pub fn move_branch(
     }
 }
 
-/// How long a call to the remote may take: ssh can wait on a passphrase or a host key that
-/// nobody answers. ref: docs/tasks.md "Push"
+/// How long a call to the remote may take: `git_cmd`'s ssh never asks (BatchMode), but a
+/// server can stall after it connects. ref: docs/tasks.md "Push"
 const REMOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 fn remote_git(main: &Path, args: &[&str]) -> Result<String> {
