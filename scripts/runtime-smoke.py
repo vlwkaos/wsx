@@ -1357,7 +1357,8 @@ def pane_session(command):
 
 # ^ Ghostty reads max_scrollback as bytes, not lines (crates/wsx-terminal/src/lib.rs
 # MAX_SCROLLBACK_BYTES): with 10,000 passed as rows a pane kept about 1,000 of them. 20,000
-# numbered lines must leave the newest 10,000 in the raw replay's scrollback.
+# numbered lines must leave the newest 10,000 in the raw replay's scrollback. Screen rows follow
+# a cursor move (`H19979`), so a number is bounded by non-digits, not by \b.
 scrollback_session, scrollback_pane = pane_session(
     ["/bin/sh", "-lc", "seq 1 20000; echo scrollback-done; sleep 60"])
 wait_for(lambda: "scrollback-done" in pane_text(scrollback_pane), "20,000 lines were not written", 30)
@@ -1365,7 +1366,7 @@ scrollback_client, response = raw_subscribe(scrollback_pane, 70, False, 24, 80)
 assert response["type"] == "ack", response
 replay = recv_line(scrollback_client)
 assert replay["type"] == "replay" and not replay["data"]["truncated"], replay["type"]
-kept = {int(n) for n in re.findall(rb"\b\d{5}\b", bytes(replay["data"]["ansi"]))}
+kept = {int(n) for n in re.findall(rb"(?<!\d)\d{5}(?!\d)", bytes(replay["data"]["ansi"]))}
 missing = [n for n in range(10_001, 20_001) if n not in kept]
 assert not missing, f"scrollback lost {len(missing)} of the newest 10,000 lines, first {missing[:3]}"
 raw_close(scrollback_client)
