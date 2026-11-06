@@ -2245,10 +2245,11 @@ try:
         part_seconds.append(time.monotonic() - started)
     print("smoke: 20 KB typed in the composer, seconds per 2,000 characters: " + " ".join(f"{sec:.1f}" for sec in part_seconds))
     assert part_seconds[-1] < 3 * part_seconds[0] + 2, part_seconds
+    # ^ Two Escs in one write read as Alt-Esc: the first leaves the composer, the second the chat.
     os.write(remove_master, b"\x1b")
+    wait_for(lambda: "Enter: send" not in remove_view.text(), "Esc did not leave the composer", seconds=60)
     os.write(remove_master, b"\x1b")
-    wait_for(lambda: "press i to write a message" not in remove_view.text() and "Enter: send" not in remove_view.text(),
-             "Esc did not close the manager chat", seconds=60)
+    wait_for(lambda: "All projects" in remove_view.text(), "Esc did not close the manager chat", seconds=60)
     os.write(remove_master, b"q")
     wait_for(lambda: "All projects" not in remove_view.text(), "q did not close halt-me's Tasks view", seconds=60)
     remove_from_tui("halt-me", b"H")
