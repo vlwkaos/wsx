@@ -1115,7 +1115,7 @@ await click(".composer-send");
 const answeredOpen = "[...document.querySelectorAll('.log .bubble[data-side=in]')].at(-1)?.textContent.includes('open:') && !document.querySelector('.log .typing')";
 await until(answeredOpen, "no reply after the answer", 300);
 // ^ A reply that ends with a question carries "Asks you" in the accent, and the overview's
-// `asks` with it, until the owner writes after it (docs/web-client-tasks.md "Project screen").
+// `asks` lists it, until an owner message answers it (docs/web-client-tasks.md "Project screen").
 const asking = "[...document.querySelectorAll('.log .bubble[data-side=in]')].find((node) => node.textContent.includes('Should I land it now?'))";
 const askTags = "[...document.querySelectorAll('.log .bubble[data-asks]')]";
 const overviewAsks = () => evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((view) => view.asks)`);
@@ -1127,7 +1127,7 @@ const askBubble = await evaluate(`({ tags: ${askTags}.length, own: ${asking}.dat
   normal: getComputedStyle(document.querySelector('.log .bubble[data-side=in]:not([data-asks]) .bubble-box')).borderTopColor })`);
 const accentColor = await evaluate("(() => { const s = document.createElement('i'); s.style.color = 'var(--color-accent)'; document.body.append(s); const c = getComputedStyle(s).color; s.remove(); return c; })()");
 if (askBubble.tags !== 1 || askBubble.own !== "" || !/Asks you/.test(askBubble.label) || askBubble.icon || askBubble.border !== accentColor || askBubble.normal === accentColor) await fail(`a reply that asks reads ${JSON.stringify(askBubble)}`);
-if ((await overviewAsks()) !== true) await fail("the overview does not say the manager asks");
+if ((await overviewAsks())?.length !== 1) await fail("the overview does not say the manager asks");
 const askRow = async () => (await chatRows()).findLast((row) => row.text.includes("Should I land it now?"));
 {
   const row = await askRow();
@@ -1142,7 +1142,7 @@ await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 
 await until(`(() => { const bubbles = [...document.querySelectorAll('.log .bubble[data-side=in]')], heard = bubbles.findIndex((node) => node.textContent.includes('How is ui now?'));
   return heard >= 0 && heard < bubbles.length - 1 && !document.querySelector('.log .typing'); })()`, "no report after the question", 300);
 if ((await evaluate(`${askTags}.length`)) !== 1) await fail("a later report dropped the chat's Asks you");
-if ((await overviewAsks()) !== true) await fail("a later report dropped the overview's asks");
+if ((await overviewAsks())?.length !== 1) await fail("a later report dropped the overview's asks");
 const askingChat = await evaluate("location.hash");
 const homeAskRows = "[...document.querySelectorAll('.home-rows > .row')].filter((row) => row.querySelector('.row-label[data-tone=accent]') && /Asks you/.test(row.querySelector('.row-label').textContent) && !row.querySelector('.row-asks, .row-label .icon')).map((row) => row.dataset.key).join()";
 await go("#/");
@@ -1155,7 +1155,7 @@ await typeInto(".composer-field", "STATUS after the question");
 await click(".composer-send");
 await until(`${askTags}.length === 0`, "the owner's message did not clear Asks you", 30);
 await until(answeredOpen, "no reply after the question", 300);
-if ((await overviewAsks()) !== false) await fail("the overview still says the manager asks");
+if ((await overviewAsks())?.length !== 0) await fail("the overview still says the manager asks");
 if ((await askRow())?.asks) await fail("the asking reply's row still asks after the owner wrote");
 await entered();
 await shot("asks-you-answered", ".composer-send");
