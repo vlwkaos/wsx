@@ -803,8 +803,10 @@ async function others() {
   await sound("project");
   // Each + names what it starts, has a 44 px hit area, and takes no more height than a line of text.
   // ^ With terminal_input the + starts a plain shell at once: one button, no menu.
+  // ^ `right` is from the screen's edge left of a classic scrollbar (as on CI), which takes width.
   const plus = await evaluate(`[...document.querySelectorAll('.worktree .new-session')].map((button) => { const box = button.getBoundingClientRect(), head = button.parentElement.getBoundingClientRect();
-    return { title: button.title === button.getAttribute('aria-label'), size: [Math.round(box.width), Math.round(box.height)], head: Math.round(head.height), right: Math.round(innerWidth - box.right), word: button.textContent.trim() }; })`);
+    const scroll = button.closest('.scroll'), edge = scroll.getBoundingClientRect().left + scroll.clientLeft + scroll.clientWidth;
+    return { title: button.title === button.getAttribute('aria-label'), size: [Math.round(box.width), Math.round(box.height)], head: Math.round(head.height), right: Math.round(edge - box.right), word: button.textContent.trim() }; })`);
   if (!plus.length || plus.some((button) => !button.title || button.size.join() !== "44,44" || button.head > 40 || button.right !== 4 || button.word)) await fail(`a New session + is wrong: ${JSON.stringify(plus)}`);
   if (await count(".worktree .more-menu, .worktree .new-session[aria-haspopup]")) await fail("the New session + opens a menu instead of starting a shell");
   await shot("project");
