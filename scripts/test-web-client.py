@@ -1516,6 +1516,35 @@ capabilities = ["terminal_view"]
         assert [device['name'] for device in listed] == ['owner phone'] and 'secret_sha256' not in listed[0]
         ok('pairing: wrong code, one-time code, hashed store, cookie path per site, forged cookies refused')
 
+        # --- A paired device makes the next device's code (docs/web-client.md "Pairing"): terminal_input only.
+        status, made = owner.request('POST', '/api/pair/code', {})
+        assert status == 200 and re.fullmatch('[0-9A-Z]{5}-[0-9A-Z]{5}', made['code']), made
+        assert made['expires_in_seconds'] == 600 and made['url'] == 'http://127.0.0.1:%d/app/owner/' % ports['owner'], made
+        fresh = Site(ports['owner'], '/app/owner')
+        assert fresh.request('GET', '/api/session')[0] == 401
+        status, headers, body = fresh.request('POST', '/api/pair', {'code': made['code'], 'name': 'second phone'}, raw=True)
+        assert status == 200 and 'HttpOnly' in headers['set-cookie'], body
+        fresh.cookie = headers['set-cookie'].split(';')[0]
+        assert fresh.request('GET', '/api/session')[1]['device']['name'] == 'second phone'
+        assert fresh.request('POST', '/api/pair', {'code': made['code']})[1]['error']['code'] == 'wrong_code'  # once
+        assert made['code'].replace('-', '') not in (work / 'state/wsx/web/owner/devices.json').read_text()
+        # No terminal_input: 403. No cookie: 401. Five codes in the burst for a device, then 429.
+        status, refused = family.request('POST', '/api/pair/code', {})
+        assert status == 403 and refused['error']['code'] == 'capability_denied', refused
+        assert Site(ports['owner'], '/app/owner').request('POST', '/api/pair/code', {})[1]['error']['code'] == 'unpaired'
+        # The limiter answers before the store: 4 unused codes fit (MAX_PAIRINGS), the 5th is
+        # refused by the store (409) and the 6th by the limiter (429).
+        answers = [fresh.request('POST', '/api/pair/code', {}) for _ in range(6)]
+        assert [a[0] for a in answers] == [200, 200, 200, 200, 409, 429], answers
+        assert answers[4][1]['error']['code'] == 'pairing_refused' and answers[5][1]['error']['code'] == 'rate_limited'
+        # Drop the unused codes so the later `wsx web pair --site owner` calls are not refused.
+        store = work / 'state/wsx/web/owner/devices.json'
+        kept = json.loads(store.read_text())
+        kept['pairings'] = []
+        store.write_text(json.dumps(kept))
+        ok('pairing code from a paired device: a second client pairs with it once, 403 without terminal_input, 401 unpaired')
+        fresh.request('POST', '/api/logout', {})
+
         # --- One event stream per page; chat round trip through the exchange broker.
         events = Events(owner)
         streams.append(events)

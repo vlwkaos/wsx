@@ -1082,6 +1082,8 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-4); margin: 0; padding: 0 var(--space-4); font-size: var(--font-size-sm); }
 .facts dt { color: var(--color-muted); }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
+/* The code a paired device shows for the next one: large, one tap selects it all. */
+.pair-code { margin: 0; padding: var(--space-2) var(--space-4); font-family: var(--font-mono); font-size: var(--font-size-title); user-select: all; overflow-wrap: anywhere; }
 .pair { justify-content: center; padding: var(--space-4); }
 .pair-form { width: 100%; max-width: calc(var(--size-rail) * 1.2); margin: 0 auto; display: flex; flex-direction: column; gap: var(--space-4); }
 .pair-form .title { padding: 0; }

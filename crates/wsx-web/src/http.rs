@@ -61,6 +61,7 @@ pub fn router(app: Shared) -> Router {
             .route("/assets/{build}/{name}", get(built_asset))
             .route("/media/{file}", get(media_get))
             .route("/api/pair", post(pair))
+            .route("/api/pair/code", post(pair_code))
             .route("/api/session", get(session))
             .route("/api/logout", post(logout))
             .route("/api/events", get(events))
@@ -420,6 +421,27 @@ async fn pair(State(app): State<Shared>, Json(input): Json<PairInput>) -> Outcom
         Json(json!({ "paired": true })),
     )
         .into_response())
+}
+
+/// A paired device makes the code for the next one (docs/web-client.md "Pairing"). The site
+/// grants `terminal_input`, which already gives a full shell, so a new device adds no power.
+/// The page puts the code in a link's fragment, which no request carries.
+async fn pair_code(State(app): State<Shared>, Paired(device): Paired) -> Outcome<Json<Value>> {
+    allow(&app, Capability::TerminalInput, "pairing a new device")?;
+    if !app.limiter.allow(&format!("code:{}", device.id), 5.0, 0.5) {
+        return Err(Fault::new(
+            429,
+            "rate_limited",
+            "too many pairing codes from this device; wait a few minutes",
+        ));
+    }
+    let code = blocking(|| app.devices.create_pairing())
+        .map_err(|error| Fault::new(409, "pairing_refused", format!("{error:#}")))?;
+    Ok(Json(json!({
+        "code": code,
+        "expires_in_seconds": crate::devices::PAIRING_SECONDS,
+        "url": format!("{}{}", app.site.public.origin, app.site.scope()),
+    })))
 }
 
 async fn logout(State(app): State<Shared>, Paired(device): Paired) -> Outcome<Response> {
