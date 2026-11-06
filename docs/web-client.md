@@ -261,3 +261,5 @@ Each part runs against its own isolated `wsxd`, real PTYs and served sites, with
 - **`--browser`:** adds `scripts/web-terminal-check.mjs`, `scripts/web-browser-check.mjs` and `scripts/web-tasks-check.mjs` in an installed Chrome at phone and desktop sizes, with captures in `.work/web-captures/` or `--captures`.
 
 The exact steps are the scripts; each prints the scenarios it passed.
+
+A run that has not ended after 25 min (`RUN_SECONDS`, about 6 times a CI run) prints every thread's stack and fails, and its cleanup still runs. The Chrome checks start every page at `prefers-reduced-motion: no-preference` (`setMotion` in `scripts/web-cdp.mjs`), so a CI runner's own motion setting does not change what they see.

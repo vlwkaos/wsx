@@ -411,8 +411,14 @@ await sameAsDaemon("after returning to fit screen");
 await run("i=0; while [ $i -lt 120 ]; do echo scroll-line-$i; i=$((i+1)); done; echo scroll-end", "scroll-end");
 const jumpHidden = "document.querySelector('.terminal .jump').hidden";
 if (!(await evaluate(jumpHidden))) await fail("Jump to latest shows at the end of the output");
-await evaluate("document.querySelector('.terminal .xterm').dispatchEvent(new WheelEvent('wheel', { deltaY: -2000, deltaMode: 0, bubbles: true, cancelable: true }))");
-await until(`!${jumpHidden}`, "Jump to latest did not show after a scroll back");
+const viewportAt = "(() => { const viewport = document.querySelector('.xterm-viewport'); return { top: viewport.scrollTop, height: viewport.scrollHeight, client: viewport.clientHeight }; })()";
+await until(`(({ top, height, client }) => client < height && height - top - client < 2)(${viewportAt})`, "the output did not leave the view at its end");
+// A scroll back is a gesture: wheel events, one per frame. xterm.js drops the scroll event that
+// follows its own move of the view (Viewport._ignoreNextScrollEvent), so one event alone may not move it.
+await evaluate(`(async () => { for (let step = 0; step < 5; step++) {
+  document.querySelector('.terminal .xterm').dispatchEvent(new WheelEvent('wheel', { deltaY: -400, deltaMode: 0, bubbles: true, cancelable: true }));
+  await new Promise(requestAnimationFrame); } })()`);
+await until(`!${jumpHidden}`, `Jump to latest did not show after a scroll back (view ${JSON.stringify(await evaluate(viewportAt))})`);
 await capture("phone-jump");
 await evaluate("document.querySelector('.terminal .jump').click()");
 await until(`${jumpHidden} && (() => { const viewport = document.querySelector('.xterm-viewport'); return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 2; })()`,

@@ -168,6 +168,8 @@ jobs:
           key: web-scenario
 
       - name: Run the web scenario
+        # ^ The build and test-web-client.py's own 25 min deadline (RUN_SECONDS) fit in this.
+        timeout-minutes: 35
         run: cargo build --locked -p wsx -p wsx-daemon && python3 -B scripts/test-web-client.py --browser
 
       - name: Pack the captures
