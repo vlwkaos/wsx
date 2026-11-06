@@ -2470,10 +2470,6 @@ def run(wsx, wsxd, work, owned):
     # CHECKRUN trace).
     mark('22a')
 
-    def git(*args):
-        return subprocess.run(['git', '-c', 'user.name=o', '-c', 'user.email=o@example.invalid', *args],
-                              cwd=project, env=env, check=True, capture_output=True, text=True).stdout.strip()
-
     origin = work / 'origin.git'
     git('init', '-q', '--bare', '--template=', str(origin))
     git('remote', 'add', 'origin', str(origin))
