@@ -310,8 +310,9 @@ pub fn git_fetch(path: &Path) -> FetchOutcome {
         };
     };
     let _lock = FetchLockGuard(lock_path);
+    let (mut command, _) = super::remote_cmd(path);
     let result = super::output_with_timeout(
-        git_cmd(path).args(["fetch", "--no-tags", "--quiet"]),
+        command.args(["fetch", "--no-tags", "--quiet"]),
         std::time::Duration::from_secs(10),
     );
     match result {

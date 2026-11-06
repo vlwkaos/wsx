@@ -21,6 +21,73 @@ pub fn git_cmd(repo: &Path) -> Command {
     cmd
 }
 
+/// `git_cmd` for a call to a remote (fetch, ls-remote, push), and the words to add when ssh
+/// refuses the keys. wsxd, its hosts and the web server keep the environment of the shell
+/// that first started wsxd, such as an ssh login with no agent; the agent socket of the
+/// login session also moves at each login. So ssh gets `SSH_AUTH_SOCK` when it answers,
+/// else the login session's agent. ref: docs/tasks.md "Push"
+pub(crate) fn remote_cmd(repo: &Path) -> (Command, String) {
+    let mut cmd = git_cmd(repo);
+    let answers = |path: &std::ffi::OsStr| std::os::unix::net::UnixStream::connect(path).is_ok();
+    let inherited = std::env::var_os("SSH_AUTH_SOCK").filter(|path| !path.is_empty());
+    if let Some(path) = inherited.as_deref().filter(|path| answers(path)) {
+        let agent = format!("the ssh agent at {}", Path::new(path).display());
+        return (cmd, refused_by(&agent));
+    }
+    // SAFETY: getuid has no failure and touches no memory.
+    let uid = unsafe { libc::getuid() };
+    let login = login_agent(uid);
+    if let Some(path) = login.as_deref().filter(|path| answers(path.as_os_str())) {
+        cmd.env("SSH_AUTH_SOCK", path);
+        let agent = format!("the login session's ssh agent at {}", path.display());
+        return (cmd, refused_by(&agent));
+    }
+    let unset = match &inherited {
+        None => "SSH_AUTH_SOCK is not set".to_string(),
+        Some(path) => format!(
+            "SSH_AUTH_SOCK {} does not answer",
+            Path::new(path).display()
+        ),
+    };
+    let none = if cfg!(target_os = "macos") {
+        format!(
+            "{unset} and the login session has no agent (`launchctl print gui/{uid}/com.openssh.ssh-agent`)"
+        )
+    } else {
+        unset
+    };
+    (
+        cmd,
+        format!("ssh had no agent: {none}; log in to the Mac's desktop, or start wsxd from a shell whose ssh agent holds the key"),
+    )
+}
+
+fn refused_by(agent: &str) -> String {
+    format!("ssh offered the keys of {agent} and the server took none: add the key to that agent in your shell (`ssh-add`, with `--apple-use-keychain` for a key in the keychain)")
+}
+
+/// The socket of the login session's ssh agent: on macOS launchd's `com.openssh.ssh-agent`
+/// of the user's GUI domain, which a process outside that session (an ssh login) can ask.
+fn login_agent(uid: libc::uid_t) -> Option<std::path::PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let target = format!("gui/{uid}/com.openssh.ssh-agent");
+    let output = output_with_timeout(
+        Command::new("launchctl")
+            .args(["print", &target])
+            .stdin(std::process::Stdio::null()),
+        std::time::Duration::from_secs(5),
+    )
+    .ok()
+    .filter(|output| output.status.success())?;
+    // ^ `inherited environment = { SSH_AUTH_SOCK => /var/run/com.apple.launchd.<id>/Listeners }`
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("SSH_AUTH_SOCK => "))
+        .map(|path| path.trim().into())
+}
+
 /// A lock older than this, with no process holding it open, is left by a git that died.
 const STALE_LOCK_AGE: std::time::Duration = std::time::Duration::from_secs(300);
 /// How long a refused run waits for a young lock to go, and how often it looks.

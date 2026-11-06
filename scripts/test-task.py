@@ -2508,6 +2508,69 @@ def run(wsx, wsxd, work, owned):
     assert js('task', 'ledger')['approvals'] == []
     js('task', 'close', on_old, '--discard')
     git('remote', 'remove', 'origin')
+    # ^ An ssh origin. The fixture's wsxd, and so its manager host, has no SSH_AUTH_SOCK, as a
+    # wsxd first started from an ssh login has: ssh reaches the login session's agent. ssh reads
+    # the passwd home's ~/.ssh and that agent is the runner's own, so this runs only on CI.
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        assert 'SSH_AUTH_SOCK' not in env
+        keys = work / 'ssh'
+        keys.mkdir(mode=0o700)
+        for name in ('host', 'user'):
+            subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', name, '-f', str(keys / name)],
+                           check=True)
+        authorized = keys / 'authorized_keys'
+        authorized.write_text((keys / 'host.pub').read_text())
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0))
+            port = probe.getsockname()[1]
+        (keys / 'sshd_config').write_text(
+            'Port %d\nListenAddress 127.0.0.1\nHostKey %s\nAuthorizedKeysFile %s\nPidFile %s\nUsePAM no\n'
+            'StrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n'
+            % (port, keys / 'host', authorized, keys / 'sshd.pid'))
+        sshd_log = (keys / 'sshd.log').open('w')
+        sshd = subprocess.Popen(['/usr/sbin/sshd', '-D', '-e', '-f', str(keys / 'sshd_config')],
+                                stdout=sshd_log, stderr=subprocess.STDOUT)
+        atexit.register(sshd.kill)
+
+        def listening():
+            try:
+                socket.create_connection(('127.0.0.1', port), timeout=1).close()
+                return True
+            except OSError:
+                return False
+        wait(listening, 'sshd on port %d' % port)
+        known = Path(os.path.expanduser('~' + os.environ.get('USER', ''))) / '.ssh/known_hosts'
+        known.parent.mkdir(mode=0o700, exist_ok=True)
+        with known.open('a') as lines:
+            lines.write('[127.0.0.1]:%d %s' % (port, (keys / 'host.pub').read_text()))
+        printed = subprocess.run(['launchctl', 'print', 'gui/%d/com.openssh.ssh-agent' % os.getuid()],
+                                 capture_output=True, text=True).stdout
+        login = re.search(r'SSH_AUTH_SOCK => (\S+)', printed)
+        assert login, 'the runner has no login-session ssh agent: %s' % printed[-500:]
+        agent_env = dict(os.environ, SSH_AUTH_SOCK=login.group(1))
+        ssh_origin = work / 'origin-ssh.git'
+        git('init', '-q', '--bare', '--template=', str(ssh_origin))
+        git('push', '-q', str(ssh_origin), 'main~1:refs/heads/main')
+        git('remote', 'add', 'origin', 'ssh://%s@127.0.0.1:%d%s' % (os.environ['USER'], port, ssh_origin))
+        try:
+            # ^ The server takes no key of that agent: nothing is asked, the answer names the agent.
+            text = reply_to(js('task', 'say', 'RUN wsx task push -p demo --json')['id'])['text']
+            assert 'Permission denied (publickey)' in text, (text, (keys / 'sshd.log').read_text()[-2000:])
+            assert "the login session's ssh agent at %s and the server took none" % login.group(1) in text, text
+            assert 'owner was asked' not in text and js('task', 'ledger')['approvals'] == [], text
+            # ^ With the key in that agent, ls-remote gets past auth and the approved push moves origin.
+            subprocess.run(['ssh-add', '-q', '-t', '600', str(keys / 'user')], env=agent_env, check=True)
+            authorized.write_text((keys / 'user.pub').read_text())
+            approved, _ = ask_push('')
+            done = js('task', 'approve', approved)
+            assert done['ok'] and done['result']['pushed'], done
+            assert git('--git-dir', str(ssh_origin), 'rev-parse', 'main') == git('rev-parse', 'main')
+        finally:
+            subprocess.run(['ssh-add', '-d', str(keys / 'user')], env=agent_env, capture_output=True)
+            sshd.kill()
+            sshd.wait()
+            sshd_log.close()
+        git('remote', 'remove', 'origin')
 
     # 22b. The TUI's manager chat (`t`, then `m`; docs/tasks.md "TUI"): the conversation, the
     # open To check item and the waiting approval; a message goes to the manager's log, `p`
