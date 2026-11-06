@@ -2553,6 +2553,10 @@ const sheetBack = "dialog.task-sheet[open] .bar button[aria-label='Back to the c
 async function sameBack(name, open, back) {
   await pause(400);
   const before = await where();
+  // ^ The screen left stays as a forward entry, so history.length is compared between the two
+  // ways only, and the place (hash, depth, scroll) also with the start.
+  const place = (json) => JSON.stringify({ ...JSON.parse(json), length: undefined });
+  let byBack;
   for (const how of ["Back", "history.back()"]) {
     await open();
     await pause(400);
@@ -2561,7 +2565,9 @@ async function sameBack(name, open, back) {
     await until(`location.hash === ${JSON.stringify(JSON.parse(before).hash)} && !document.querySelector('dialog.task-sheet')`, `${name}: ${how} did not return`);
     await pause(400);
     const after = await where();
-    if (after !== before) await fail(`${name}: after ${how} the page is ${after}, was ${before}`);
+    if (place(after) !== place(before)) await fail(`${name}: after ${how} the page is ${after}, was ${before}`);
+    if (byBack && after !== byBack) await fail(`${name}: history.back() leads to ${after}, Back to ${byBack}`);
+    byBack ??= after;
   }
 }
 const opens = (selector, ready, what) => async () => {
