@@ -457,21 +457,33 @@ pub fn land_blockers(main: &Path, default_branch: &str, commit: &str) -> Result<
     }
 }
 
-/// The checkout's changed files that moving `branch` to `commit` would overwrite: what
-/// differs between its HEAD and `commit`. None when the branch is not checked out.
-pub fn move_blockers(main: &Path, branch: &str, commit: &str) -> Result<Vec<String>> {
-    match checkout_of(main, branch)? {
-        Some(checkout) => overlapping_changes(&checkout, &format!("HEAD..{commit}")),
-        None => Ok(Vec::new()),
+/// Refuse to move `branch` to `commit` (a `what`: land or push) when its checkout has changed
+/// files that differ between its HEAD and `commit`: the move would overwrite them. Other
+/// changes stay. Nothing to check when the branch is not checked out.
+pub fn check_move(main: &Path, branch: &str, commit: &str, what: &str) -> Result<()> {
+    let Some(checkout) = checkout_of(main, branch)? else {
+        return Ok(());
+    };
+    let blocked = overlapping_changes(&checkout, &format!("HEAD..{commit}"))?;
+    if !blocked.is_empty() {
+        // ^ Words first: a path at the start of the line lost its `/` when the owner
+        // copied the message from the page (2026-10-25).
+        bail!(
+            "{branch} has uncommitted changes in {} that this {what} changes too; commit or stash them in {}, then {what} again",
+            blocked.join(", "),
+            checkout.display(),
+        );
     }
+    Ok(())
 }
 
 /// Move `branch` from `old_tip` to `commit`: a fast-forward, or any commit with `force` (a
 /// push that rewrites the default branch). Where the branch is checked out, its changed
-/// files that the move also changes refuse it; other changes stay (`git merge --ff-only` and
-/// `git reset --keep` keep them). Elsewhere the ref moves with `old_tip` as guard, so a
-/// branch that moved meanwhile is never overwritten. Nothing stashes or commits the owner's
-/// files. Gives back the stale index lock it cleared, if any. ref: docs/tasks.md "Landing"
+/// files that the move also changes refuse it (`check_move`); other changes stay (`git merge
+/// --ff-only` and `git reset --keep` keep them). Elsewhere the ref moves with `old_tip` as
+/// guard, so a branch that moved meanwhile is never overwritten. Nothing stashes or commits
+/// the owner's files. Gives back the stale index lock it cleared, if any.
+/// ref: docs/tasks.md "Landing"
 pub fn move_branch(
     main: &Path,
     branch: &str,
@@ -479,19 +491,9 @@ pub fn move_branch(
     commit: &str,
     force: bool,
 ) -> Result<Option<LockCleared>> {
+    check_move(main, branch, commit, if force { "push" } else { "land" })?;
     match checkout_of(main, branch)? {
         Some(checkout) => {
-            let blocked = overlapping_changes(&checkout, &format!("HEAD..{commit}"))?;
-            if !blocked.is_empty() {
-                let what = if force { "push" } else { "land" };
-                // ^ Words first: a path at the start of the line lost its `/` when the owner
-                // copied the message from the page (2026-10-25).
-                bail!(
-                    "{branch} has uncommitted changes in {} that this {what} changes too; commit or stash them in {}, then {what} again",
-                    blocked.join(", "),
-                    checkout.display(),
-                );
-            }
             let step: &[&str] = if force {
                 &["reset", "--keep", "--quiet", commit]
             } else {

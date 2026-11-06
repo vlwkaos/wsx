@@ -2112,7 +2112,8 @@ fn push(
     // ^ Local main moves to the pushed commit unless it has it already (lands since the ask).
     let local_moves = !contains(&target, &local);
     let local_ff = contains(&local, &target);
-    if local_moves && !local_ff && !force {
+    let rewrite = local_moves && !local_ff;
+    if rewrite && !force {
         bail!(
             "local {branch} ({}) is not an ancestor of {}; a rewrite needs --force. Nothing was pushed",
             short(&local),
@@ -2120,14 +2121,7 @@ fn push(
         );
     }
     if local_moves {
-        let blocked = copy::move_blockers(&main, &branch, &target).map_err(refuse)?;
-        if !blocked.is_empty() {
-            bail!(
-                "{branch} has uncommitted changes in {} that this push changes too; commit or stash them in {}, then push again. Nothing was pushed",
-                blocked.join(", "),
-                main.display()
-            );
-        }
+        copy::check_move(&main, &branch, &target, "push").map_err(refuse)?;
     }
     let seen = remote.clone().unwrap_or_default();
     let lease = force.then(|| lease.unwrap_or(&seen).to_string());
@@ -2146,7 +2140,6 @@ fn push(
         return Ok(());
     }
     // ^ A rewrite leaves open tasks on commits the new branch lacks: name them.
-    let rewrite = !local_ff && local_moves;
     let mut old_base = Vec::new();
     if rewrite {
         for id in store::task_numbers(&project_id)? {
@@ -2164,7 +2157,7 @@ fn push(
     }
     copy::push(&main, PUSH_REMOTE, &branch, &target, lease.as_deref()).map_err(refuse)?;
     if local_moves {
-        copy::move_branch(&main, &branch, &local, &target, !local_ff).map_err(|error| {
+        copy::move_branch(&main, &branch, &local, &target, rewrite).map_err(|error| {
             anyhow::anyhow!(
                 "pushed {} to {PUSH_REMOTE} {branch}, but local {branch} stayed at {}: {error:#}",
                 short(&target),
