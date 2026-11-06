@@ -2218,7 +2218,8 @@ capabilities = ["terminal_view"]
         status, direct = via_root('past the stuck one')
         assert status == 200 and (direct['exchange'] or (direct['queued'] and not direct['queued']['failed'])), direct
         wait(lambda: delivered()[-1] == 'past the stuck one', 'a new message past the failed one')
-        assert [item['id'] for item in root_queue()] == [expired]
+        # ^ The queue drops the delivered message a moment after the log shows it.
+        wait(lambda: [item['id'] for item in root_queue()] == [expired], 'only the failed message left in the queue')
         assert steady(root, 'DELETE', chat + '/queue/%d' % expired)[0] == 200
         settle('owner')
         # A page asks from the start of its last turn and gets only what follows it.
