@@ -2536,7 +2536,13 @@ capabilities = ["terminal_view"]
         typing.send(b'exit\r')
         wait(lambda: next(p for p in call('snapshot')['data']['panes'] if p['session_id'] == opened['session_id'])['exited'], 'the shell exits')
         typing.drop()
+        # ^ This device's starts above spent the start limit (3 at once, then one per 10 s,
+        # http.rs `allow`); a quick run reaches this before a start is free again.
+        deadline = time.monotonic() + 15
         status, renewed = work_site.request('POST', project_shell)
+        while status == 429 and time.monotonic() < deadline:
+            time.sleep(1)
+            status, renewed = work_site.request('POST', project_shell)
         assert status == 200 and renewed['session_id'] != opened['session_id'], renewed
         assert all(s['id'] != opened['session_id'] for s in call('snapshot')['data']['sessions']), 'the exited shell stays'
         assert viewer.request('POST', project_shell)[0] == 403
