@@ -72,14 +72,14 @@ One function, `task::status::status` in `crates/wsx-core/src/task/status.rs`, pu
 | `working`, resolving a landing conflict | Resolving a conflict | the worker rebases it onto main. It lands when its checks pass. |
 | `working` | Working on build (2 of 3), or Working | the worker runs its turn. Its checks run after its result (or: it is ready after its result; its plan goes to the manager). |
 | `ready`, its landing stopped | Landing stopped | <why>. Land it again when that is fixed. |
-| `ready`, held | Held for you to try | <the hold>. Try it, then land it or tell the manager what is wrong. |
+| `ready`, held | Held | <the hold>. It lands only when you say so, or after a trial you pass. |
 | `ready`, the manager reviews it (see Landing) | Ready, waiting for the manager's review | checks 3 of 3 passed. The manager reads the diff, then lands it or asks for changes. |
 | `ready`, otherwise | Ready, waiting for you to land it | checks 3 of 3 passed (or: no checks prove it). Land it to put it on main. |
 | `failed` | Failed | 1 of 3 checks failed after the worker's retries. Tell the manager, so the worker fixes it. (Or: the worker could not finish. Tell the manager what to do next.) |
 | `landed` | Landed | on main (the web adds "; the last deploy does not have it yet"). |
 | `closed` | Closed | it ended without landing. |
 
-A slot holder of another project reads `pizzahouse #34`, and a holder that is no task (`scripts/check-slot.py`) by its own label: "<command> (pid 81) runs now". An open task with a hold that is not ready yet adds "Held for you to try once it is ready: <hold>." to its sentence.
+A slot holder of another project reads `pizzahouse #34`, and a holder that is no task (`scripts/check-slot.py`) by its own label: "<command> (pid 81) runs now". An open task with a hold that is not ready yet adds "Held: <hold>." to its sentence.
 - A task's title is `--title` (at most 60 characters, no control characters, kept in `task.json` as `title`), else the first line of its prompt, at most 120 characters. Either one is shown without a leading `Owner <words>:` (up to 80 characters before the colon; a colon inside brackets or without a space after it, as in `http://`, does not end it): `Owner report: tool permission` reads `tool permission`. A lead-in with nothing after it reads as the words in its brackets (`Owner report (UX failures):` reads `UX failures`), else as the prompt's next non-empty line. `Owner: x` has no words and stays. Only the shown title changes: `task.json` and the prompt keep what was written. Every title shown (ledger, events, the web) comes from this rule, also for tasks from before `--title`. The web shows a task without `--title` by the first sentence of its latest worker summary while it has one (`view::readable_title`).
 - Each revision records `base` (the merge base with the default branch, so it follows a rebase) and the paths changed in `base..r<k>`: at most 500 paths and 32 KiB in `paths`, the full count in `paths_total`.
 - `new --files <glob>` (repeatable; `add --files` extends) records the paths a task expects to change as `files` in `task.json`: at most 64 globs, each at most 256 bytes, relative to the checkout, without `..`, a valid glob (`*` stays in one folder, `**` crosses folders). A glob without wildcards also covers what is under it.

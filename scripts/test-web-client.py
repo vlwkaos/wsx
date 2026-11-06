@@ -3700,8 +3700,8 @@ merge_seconds = 3
         assert act(2, 'hold', {'text': 'two\nlines'}, site=trier)[0] == 400
         assert act(2, 'hold', {}, site=trier)[0] == 200
         held = steady(trier, 'GET', '/api/tasks/%d/t/2' % demo)[1]
-        assert held['hold'] == 'the owner holds it' and held['status']['label'] == 'Held for you to try', held
-        assert held['status']['sentence'].endswith(': the owner holds it. Try it, then land it or tell the manager what is wrong.'), held['status']
+        assert held['hold'] == 'the owner holds it' and held['status']['label'] == 'Held', held
+        assert held['status']['sentence'].endswith(': the owner holds it. It lands only when you say so, or after a trial you pass.'), held['status']
         assert held['actions'] == ['land', 'hand'] and held['trial'] is None, held['actions']
         overview = steady(trier, 'GET', '/api/tasks/%d' % demo)[1]
         assert overview['try_live'] is True and overview['trial'] is None, overview

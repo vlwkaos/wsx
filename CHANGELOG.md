@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Tasks: a held task says what holds it, the same on the web, the TUI and the CLI. The label is "Held" and the sentence is "<hold>. It lands only when you say so, or after a trial you pass."; a task that is not ready yet adds "Held: <hold>." Before, a held task always read as one to try, also when the hold only waited on something else ([docs/tasks.md](docs/tasks.md) "Status"). One text in wsx-core `task::status`.
 - Web: the phone's bottom tab pill really floats. The nav around it is transparent and takes no pointer, so content scrolled behind the corners and margins shows through; a scrolled list still ends above the pill, by padding each top screen's scroll area with the bar's measured height (`--tabbar-space`, safe area included). Screens without the bar are unchanged ([docs/web-client.md](docs/web-client.md) "Screens").
 - Web: the count badges are smaller and share one size. The tab bar's count and Home's row count both use the new theme tokens `size-badge` (16 px high, was 20) and `font-size-badge` (11 px): one digit is a circle, `99+` widens it ([docs/web-themes.md](docs/web-themes.md)).
 - Web: Settings > UI holds the appearance (Dark, Light), the header position (Top, Bottom) and the bottom bar; General keeps Notifications, Version and This device. Titles drop "on this device" and the hints are short ("Bottom", "Tasks, approvals, things to check", "Input needed or an error"); errors keep their full text ([docs/web-client.md](docs/web-client.md) "Settings sections").
