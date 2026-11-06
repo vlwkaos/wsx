@@ -340,11 +340,11 @@ impl App {
         }
         self.reconcile_pending_session_orders();
         self.collapse_stale_projects();
-        if matches!(self.mode, Mode::Terminal { .. })
-            && self.terminal_stream.is_none()
-            && self.pending_terminal_resume.is_none()
-        {
-            self.mode = Mode::Workspace;
+        if let (Mode::Terminal { pane_id }, true) = (
+            &self.mode,
+            self.terminal_stream.is_none() && self.pending_terminal_resume.is_none(),
+        ) {
+            self.mode = self.mode_after_terminal(Some(*pane_id));
             self.set_warning("Terminal closed");
         }
         for session in self
