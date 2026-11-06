@@ -1479,8 +1479,9 @@ def run(wsx, wsxd, work, owned):
     Path(page).write_text('# demo\n\n## Goal\n\nshort\n')
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     assert launch['git_optional_locks'] == '0', launch
-    # ^ README "Profiles": the manager and every worker so far run under demo's profile root.
-    demo_launches = [t for t in traces() if t.get('launch')]
+    # ^ README "Profiles": the manager and every Claude worker so far run under demo's profile
+    # root. Part 13t's Pi worker reads no CLAUDE_CONFIG_DIR.
+    demo_launches = [t for t in traces() if t.get('launch') and t.get('adapter') != 'pi']
     assert demo_launches and all(t['claude_config_dir'] == str(profile_root) for t in demo_launches), \
         {t['claude_config_dir'] for t in demo_launches}
     # Its rules: chat, not reports; quiet replies to events and no chores for the owner; start
