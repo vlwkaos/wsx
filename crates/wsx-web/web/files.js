@@ -34,14 +34,21 @@ function Editor({ project, path, text, onSaved }) {
 }
 
 const isMarkdown = (path) => /\.(md|markdown)$/i.test(path);
+const isPage = (path) => /\.html?$/i.test(path);
 
-// A markdown file opens rendered; Source shows the text and the editor, which stays
-// mounted so a draft survives the switch (docs/web-client.md "Files").
-function FileView({ project, path, text, source }) {
+// A markdown or HTML file opens rendered; Source shows the text and the editor, which stays
+// mounted so a draft survives the switch (docs/web-client.md "Files"). An HTML file is a page
+// in a frame with no script and an opaque origin, so it never reaches the site or its API.
+function FileView({ project, path, text, page, sourceError, source }) {
   const [saved, setSaved] = useState(text);
+  const name = path.split("/").pop();
   return html`
-    ${!source && html`<div class="file-markdown"><${Markdown} text=${saved} /></div>`}
-    <div class="file-source" hidden=${!source}><${Editor} project=${project} path=${path} text=${text} onSaved=${setSaved} /></div>`;
+    ${!source && (page
+      ? html`<iframe class="file-page" src=${`view/${page}/${encodeURIComponent(name)}`} title=${name}
+          sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>`
+      : html`<div class="file-markdown"><${Markdown} text=${saved} /></div>`)}
+    <div class="file-source" hidden=${!source}>${sourceError ? html`<p class="error" role="alert">${sourceError}</p>`
+      : html`<${Editor} project=${project} path=${path} text=${text} onSaved=${setSaved} />`}</div>`;
 }
 
 export function Files({ project, file: linked }) {
@@ -56,10 +63,15 @@ export function Files({ project, file: linked }) {
     setView(null);
     setRendered(true);
     try {
-      const data = file
-        ? await api("api/file", { query: { project, path: target } })
-        : await api("api/files", { query: { project, path: target } });
-      setView({ file, ...data });
+      const query = { project, path: target };
+      const read = api(file ? "api/file" : "api/files", { query });
+      // ^ A page over the 1 MiB text limit still shows; only its Source says why it cannot.
+      const page = file && isPage(target);
+      const [data, token] = await Promise.all([
+        page ? read.catch((failure) => ({ sourceError: failure.message })) : read,
+        page ? api("api/file/page", { query }).then((answer) => answer.token) : null,
+      ]);
+      setView({ file, page: token, ...data });
     } catch (failure) {
       setView({ error: failure.message });
     }
@@ -68,11 +80,11 @@ export function Files({ project, file: linked }) {
 
   const parts = path ? path.split("/") : [];
   let body = html`<${Loading} />`;
-  const markdown = Boolean(view?.file && !view.binary && isMarkdown(path));
+  const rendering = Boolean(view?.file && !view.binary && (isMarkdown(path) || view.page));
   if (view?.error) body = html`<p class="error" role="alert">${view.error}</p>`;
   else if (view?.file) {
     body = view.binary ? html`<p class="empty">This file is not text and cannot be shown here.</p>`
-      : html`<${FileView} key=${path} project=${project} path=${path} text=${view.text} source=${!(markdown && rendered)} />`;
+      : html`<${FileView} key=${path} project=${project} path=${path} text=${view.text} page=${view.page} sourceError=${view.sourceError} source=${!(rendering && rendered)} />`;
   } else if (view) {
     body = html`
       ${view.entries.length ? html`
@@ -102,7 +114,7 @@ export function Files({ project, file: linked }) {
                 : html`<button class="link-action path" type="button" onClick=${() => open(parts.slice(0, index + 1).join("/"), false)}>${part}</button>`}`;
           })}
         </nav>
-        ${markdown && html`<button class="link-action" type="button" onClick=${() => setRendered(!rendered)}>${rendered ? "Source" : "Rendered"}</button>`}
+        ${rendering && html`<button class="link-action" type="button" onClick=${() => setRendered(!rendered)}>${rendered ? "Source" : "Rendered"}</button>`}
       </header>
       <div class="scroll file-body">${body}</div>
     </div>`;

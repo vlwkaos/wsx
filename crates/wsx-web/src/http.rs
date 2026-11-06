@@ -11,7 +11,7 @@ use crate::{
     sandbox::{SandboxError, MAX_TEXT_BYTES},
     site::{Capability, Panel},
     tasks::Scope,
-    terminal, App,
+    terminal, views, App,
 };
 use axum::{
     body::{Body, Bytes},
@@ -42,7 +42,7 @@ use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use wsx_core::runtime::{Request as Daemon, Response as DaemonResponse};
 
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; \
-media-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'self'; \
+media-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-src 'self'; base-uri 'self'; \
 form-action 'none'; frame-ancestors 'none'";
 const MAX_STREAMS_PER_DEVICE: usize = 4;
 /// A quiet event stream sends `ping` this often; it also keeps proxies from closing it.
@@ -60,6 +60,7 @@ pub fn router(app: Shared) -> Router {
             .route("/assets/{name}", get(asset))
             .route("/assets/{build}/{name}", get(built_asset))
             .route("/media/{file}", get(media_get))
+            .route("/view/{token}/{*path}", get(view_get))
             .route("/api/pair", post(pair))
             .route("/api/pair/code", post(pair_code))
             .route("/api/session", get(session))
@@ -115,6 +116,7 @@ pub fn router(app: Shared) -> Router {
                     .put(file_write)
                     .layer(DefaultBodyLimit::max(3 * 1024 * 1024)),
             )
+            .route("/api/file/page", get(file_page))
             .route("/api/terminal/{session}/ws", get(terminal_socket))
             .route(
                 "/api/push",
@@ -188,6 +190,8 @@ async fn guard(State(app): State<Shared>, request: Request, next: Next) -> Respo
         None
     };
     let api = path.starts_with("/api/");
+    // ^ A page view sets its own policy: framed by the site, loaded by an opaque origin.
+    let view = path.starts_with("/view/");
     let mut response = match refusal {
         Some(fault) => fault.into_response(),
         None => next.run(request).await,
@@ -201,7 +205,15 @@ async fn guard(State(app): State<Shared>, request: Request, next: Next) -> Respo
         ("cross-origin-opener-policy", "same-origin"),
         ("cross-origin-resource-policy", "same-origin"),
     ] {
-        headers.insert(name, HeaderValue::from_static(value));
+        if !view || matches!(name, "x-content-type-options" | "referrer-policy") {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
+    }
+    if view && !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("sandbox; default-src 'none'; frame-ancestors 'none'"),
+        );
     }
     if api {
         headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -1712,6 +1724,122 @@ async fn file_write(
             .map_err(sandbox_fault)
     })?;
     Ok(Json(json!({ "saved": true })))
+}
+
+/// A token that shows an HTML file of the project in a sandboxed frame: `view/<token>/<name>`.
+async fn file_page(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    Query(query): Query<PathQuery>,
+) -> Outcome<Json<Value>> {
+    need(&app, Panel::Files)?;
+    allow(&app, Capability::FilesRead, "reading files")?;
+    let path = Path::new(&query.path);
+    if !views::is_page(path) {
+        return Err(Fault::new(
+            400,
+            "not_a_page",
+            "only an .html or .htm file opens as a page",
+        ));
+    }
+    blocking(|| {
+        project_root(&app, query.project)?
+            .open_file(path)
+            .map_err(sandbox_fault)
+    })?;
+    let folder = path.parent().unwrap_or(Path::new(""));
+    let token = app
+        .views
+        .mint(&device.id, query.project, folder)
+        .map_err(|error| Fault::new(500, "randomness", format!("{error:#}")))?;
+    Ok(Json(json!({ "token": token })))
+}
+
+/// One file of a page's folder. The token is the only right: the frame sends no cookie.
+async fn view_get(
+    State(app): State<Shared>,
+    UrlPath((token, path)): UrlPath<(String, String)>,
+) -> Response {
+    let refused = |status: u16, text: &'static str| {
+        let status = StatusCode::from_u16(status).unwrap_or(StatusCode::NOT_FOUND);
+        (
+            status,
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-store"),
+                (
+                    header::CONTENT_SECURITY_POLICY,
+                    "sandbox; default-src 'none'",
+                ),
+            ],
+            text,
+        )
+            .into_response()
+    };
+    let expired = "This view expired. Open the file again.";
+    let Some(view) = app.views.get(&token) else {
+        return refused(404, expired);
+    };
+    if !app
+        .limiter
+        .allow(&format!("view:{}", view.device), 300.0, 600.0)
+    {
+        return refused(429, "Too many requests. Wait a minute.");
+    }
+    let relative = view.folder.join(&path);
+    let Some(kind) = views::content_type(&relative) else {
+        return refused(404, "Not found.");
+    };
+    let read = blocking(|| {
+        // ^ The device and the grant are checked on each file: a revoked device or a project
+        // that left the grant stops its open views at once.
+        let paired = app
+            .devices
+            .list()
+            .is_ok_and(|devices| devices.iter().any(|device| device.id == view.device));
+        if !paired || !app.site.shows(Panel::Files) || !app.site.allows(Capability::FilesRead) {
+            return Err(None);
+        }
+        project_root(&app, view.project)
+            .map_err(|_| None)?
+            .read(&relative, views::MAX_BYTES)
+            .map_err(Some)
+    });
+    let bytes = match read {
+        Ok(bytes) => bytes,
+        Err(None) => return refused(404, expired),
+        Err(Some(SandboxError::InvalidPath)) => {
+            return refused(400, "Use a path inside the page's folder.")
+        }
+        Err(Some(SandboxError::TooLarge)) => {
+            return refused(413, "The file is larger than 16 MiB.")
+        }
+        Err(Some(SandboxError::NotFound)) => return refused(404, "Not found."),
+        Err(Some(_)) => return refused(403, "This path is not allowed."),
+    };
+    let prefix = format!(
+        "{}{}view/{token}/",
+        app.site.public.origin,
+        app.site.scope()
+    );
+    let policy = views::policy(&app.site.public.origin, &prefix);
+    let Ok(policy) = HeaderValue::from_str(&policy) else {
+        return refused(500, "Cannot build the page policy.");
+    };
+    (
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static(kind)),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            (header::CONTENT_SECURITY_POLICY, policy),
+            // ^ The frame's opaque origin is cross-origin to the site; the token guards the file.
+            (
+                header::HeaderName::from_static("cross-origin-resource-policy"),
+                HeaderValue::from_static("cross-origin"),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]

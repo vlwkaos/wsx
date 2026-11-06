@@ -22,6 +22,20 @@ const SIZES = [[320, 568, 2], [390, 844, 2], [1280, 800, 1]];
 let size = SIZES[0];
 const phone = () => size[0] < 600;
 
+// The colour the screen shows at one point, in CSS px, read from a one-pixel capture: a
+// sandboxed frame cannot be read from the page.
+async function pixel(x, y) {
+  const { data } = await send("Page.captureScreenshot", { format: "png", clip: { x, y, width: 1, height: 1, scale: 1 } });
+  return evaluate(`(async () => {
+    const bytes = Uint8Array.from(atob(${JSON.stringify(data)}), (char) => char.charCodeAt(0));
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+    const context = new OffscreenCanvas(1, 1).getContext("2d");
+    context.drawImage(bitmap, 0, 0);
+    return [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+  })()`);
+}
+const near = (seen, want) => seen.every((value, index) => Math.abs(value - want[index]) <= 8);
+
 // One capture with its slop audit. A screen may not scroll sideways and may show at
 // most one filled accent control.
 async function shot(name, primary) {
@@ -848,6 +862,24 @@ async function others() {
   // ^ `#/p/<project>/files/<path>`, the address of a routine post's file link, opens that file.
   await evaluate("location.hash = location.hash.replace(/\\/files.*$/, '/files/README.md')");
   await until("/\\/files\\/README\\.md$/.test(location.hash) && document.querySelector('.file-markdown h1')?.textContent === 'design'", "a file link did not open the file");
+  // An HTML file opens as a page in a sandboxed frame (docs/web-client.md "Files"): its relative
+  // image shows, and its script, which would paint the page red and call the API, never runs.
+  await evaluate("location.hash = location.hash.replace(/\\/files.*$/, '/files/report/board.html')");
+  await until("document.querySelector('iframe.file-page')?.getAttribute('sandbox') === 'allow-popups allow-popups-to-escape-sandbox' && /^view\\/[0-9a-f]{64}\\/board\\.html$/.test(document.querySelector('iframe.file-page').getAttribute('src'))", "the HTML file did not open as a sandboxed page");
+  const frame = await evaluate("(({ x, y, width, height }) => ({ x, y, width, height }))(document.querySelector('iframe.file-page').getBoundingClientRect())");
+  const body = await evaluate("document.querySelector('.file-body').clientWidth");
+  if (frame.width < body - 1 || frame.height < 200) await fail(`the page frame is ${frame.width}x${frame.height} in a ${body} px view at ${size[0]} px`);
+  let seen;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    seen = [await pixel(frame.x + 60, frame.y + 60), await pixel(frame.x + 60, frame.y + 180)];
+    if (near(seen[0], [30, 140, 200]) && near(seen[1], [255, 255, 255])) break;
+    await pause(100);
+  }
+  if (!near(seen[0], [30, 140, 200])) await fail(`the page's relative image did not show: ${seen[0]}`);
+  if (!near(seen[1], [255, 255, 255])) await fail(`the page's script ran or its canvas is not white: ${seen[1]}`);
+  await shot("files-page");
+  await evaluate("[...document.querySelectorAll('.files .bar button')].find((node) => node.textContent === 'Source').click()");
+  await until("!document.querySelector('iframe.file-page') && document.querySelector('textarea.code')?.value.startsWith('<!doctype html>')", "Source did not show the page's text");
   await go("#/settings/ui");
   await until("!!document.querySelector('input[name=scheme]')", "settings did not open");
   await sound("settings");
@@ -1353,7 +1385,9 @@ if (stray.length) await fail(`requests left the base path: ${stray.join(", ")}`)
 if (!facts.requests.includes(`${base}api/session`)) await fail("no API request under the base path");
 
 // The first, unpaired load answers 401 by design; any other console error is a defect.
-const defects = problems.filter((problem) => !/status of 401/.test(problem));
+// ^ The fixture page's script is blocked by design: the frame has no allow-scripts.
+const defects = problems.filter((problem) => !/status of 401/.test(problem)
+  && !/(Blocked script execution|Refused to execute)[^]*\/view\/[0-9a-f]{64}\//.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 
 // A site with no session: its project is still listed with the create action.

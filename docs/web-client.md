@@ -84,7 +84,7 @@ A second site is the same binary with another file, fewer panels and fewer bits.
 - Origin sharing: a service or alt-port site has its own browser origin. Under a sub-path, every app on the same hostname and port is the same browser origin. Script from a sibling app can call this API with the device's cookie; the `Origin` check and `SameSite` cannot tell them apart. Host a site on its own HTTPS port (alt-port root) when another app on that hostname is not trusted.
 - On SIGINT or SIGTERM the server stops taking connections, gives open event streams and terminals two seconds, then ends them and exits.
 - A revoke takes effect on the next request. An open event stream ends within 10 seconds and a terminal within 20, and the device's push subscription is removed.
-- CSP is `default-src 'none'` with `'self'` for scripts, styles, fonts, images, media, connections, the manifest and the worker. There is no inline script or style, and a theme cannot add an origin. The terminal WebSocket is covered by `connect-src 'self'`.
+- CSP is `default-src 'none'` with `'self'` for scripts, styles, fonts, images, media, frames, connections, the manifest and the worker. There is no inline script or style, and a theme cannot add an origin. The terminal WebSocket is covered by `connect-src 'self'`.
 - A WebSocket upgrade is not covered by CORS. The terminal endpoint requires the device cookie and an `Origin` header equal to `public_origin`; a missing `Origin` is refused.
 - State lives in `<wsx state dir>/web/<id>/` with owner-only modes: `devices.json`, `push.json`, `media/`.
 
@@ -252,6 +252,13 @@ The files panel covers each granted project's main checkout only, not its other 
 `#/p/<project>/files/<path>` opens that file; a `files/<path>` link in a manager chat reply (the session news, a manager's message about a routine, [tasks.md](tasks.md) "Routines") leads there for a site with `files_read`, and is text elsewhere. A `session/<id>` link (a session that needs the owner, [tasks.md](tasks.md) "Session news") opens that session's chat.
 
 A `.md` or `.markdown` file opens rendered, as the chat renders an answer ([web-client-chat.md](web-client-chat.md) "Markdown"), with **Source** to show the text and, with `files_write`, the editor. The editor stays loaded while the rendered view shows, so an unsaved edit is kept; the rendered view shows the text as last read or saved.
+
+An `.html` or `.htm` file opens as a page, with the same **Source** (the text and, with `files_write`, the editor; a page over the 1 MiB text limit still shows, and its Source says why it cannot). The page is an iframe with `sandbox="allow-popups allow-popups-to-escape-sandbox"`: no script runs, and its origin is opaque, so it cannot read the site's cookie, storage or API. A link with `target=_blank` opens a normal tab; other links navigate inside the frame.
+
+- `GET api/file/page?project=&path=` (`files_read`, 400 `not_a_page` for other names, 404 for a missing file) answers `{token}`. The frame loads `view/<token>/<name>`, and the page's relative files (`thumbs/x.jpg`) load under the same token.
+- A token is 32 random bytes, in the server's memory only: one device, one project and the page's folder and below, for 30 minutes. Each open makes a new one; a restart drops them all, and at 256 the one that ends soonest goes. An opaque origin's requests carry no `SameSite=Strict` cookie, so the token is the right. Each file it serves checks again that the device is paired and the site grants `files_read`, and reads through the pinned project root like `api/file`.
+- `view/` answers only a page's types (HTML, CSS, images, fonts, audio, video), at most 16 MiB each; another type, a path off the folder (`../`, a sibling folder) or an unknown or expired token is refused with a short text ("This view expired. Open the file again."). Each answer has `Content-Security-Policy: sandbox allow-popups allow-popups-to-escape-sandbox; default-src 'none'`, with images, styles (inline too), fonts, media and frames only from the token's folder URL (and `data:` images and fonts), `frame-ancestors` the site's origin, `X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy: cross-origin` (the frame's origin is not the site's) and no `X-Frame-Options`. So the URL opened alone is sandboxed too, and the page can load nothing from another origin.
+- The TUI has no page view; it shows the text.
 
 ## Dependencies
 

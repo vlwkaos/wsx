@@ -22,6 +22,7 @@ mod site;
 mod tasks;
 mod terminal;
 mod theme;
+mod views;
 
 use anyhow::{Context, Result};
 use std::future::IntoFuture;
@@ -53,6 +54,8 @@ pub(crate) struct App {
     client: wsx_core::runtime::Client,
     assets: assets::Assets,
     limiter: http::Limiter,
+    /// Tokens of the HTML pages shown in a sandboxed frame.
+    views: views::Views,
     events: tokio::sync::broadcast::Sender<events::Message>,
     /// Latest workspace event, replayed first on every new stream.
     workspace: Mutex<Option<events::Message>>,
@@ -119,6 +122,7 @@ pub fn serve(named: Option<&str>) -> Result<()> {
         client: wsx_core::runtime::Client::new(wsx_core::runtime::default_socket_path()),
         assets: assets::Assets::build(&site),
         limiter: http::Limiter::new(),
+        views: views::Views::new(),
         events: tokio::sync::broadcast::channel(256).0,
         workspace: Mutex::new(None),
         streams: Mutex::new(HashMap::new()),
