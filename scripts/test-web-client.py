@@ -2528,7 +2528,8 @@ capabilities = ["terminal_view"]
         assert status == 200 and held['queued']['text'] == 'keep this one', held
         subscription = {'endpoint': push_origin + '/push/device-work', 'keys': {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}, 'expirationTime': None}
         assert work_site.request('POST', '/api/push', {'subscription': subscription, 'choices': {'manager': False, 'agents': False}})[0] == 200
-        assert work_site.request('POST', '/api/push/mute', {'session': sessions['family'], 'muted': True})[1]['muted'] == [sessions['family']]
+        status, muted = steady(work_site, 'POST', '/api/push/mute', {'session': sessions['family'], 'muted': True})
+        assert status == 200 and muted['muted'] == [sessions['family']], (status, muted)
         work_state = work / 'state/wsx/web/work'
         good_config = registry.read_text()
         registry.write_text('[[projects\nthis is not toml\n')
