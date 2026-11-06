@@ -2627,6 +2627,24 @@ await pause(300);
 const focusZoom = await evaluate("({ scale: visualViewport.scale, font: getComputedStyle(document.querySelector('.composer-field')).fontSize })");
 if (focusZoom.scale !== 1 || parseFloat(focusZoom.font) < 16) await fail(`the focused composer reads ${JSON.stringify(focusZoom)}`);
 await evaluate("document.activeElement.blur()");
+// ^ A double tap on the title does not zoom either.
+const title = await evaluate("(() => { const box = document.querySelector('.manager > .bar .bar-label').getBoundingClientRect(); return [Math.round(box.left + box.width / 2), Math.round(box.top + box.height / 2)]; })()");
+for (let tap = 0; tap < 2; tap++) {
+  await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: title[0], y: title[1] }] });
+  await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await pause(80);
+}
+await pause(400);
+const doubleTap = await evaluate("({ scale: visualViewport.scale, hash: location.hash })");
+if (doubleTap.scale !== 1 || doubleTap.hash !== chat) await fail(`a double tap on the title zoomed or moved the page: ${JSON.stringify(doubleTap)}`);
+// ^ Safari pinches through its gesture events, which Chrome does not send: the page cancels them
+// on the document, and the viewport refuses scaling (docs/web-client.md "Zoom").
+const safari = await evaluate(`(() => { const sent = ["gesturestart", "gesturechange"].map((name) => { const event = new Event(name, { bubbles: true, cancelable: true });
+  document.querySelector('.composer-field').dispatchEvent(event); return event.defaultPrevented; });
+  return { sent, viewport: document.querySelector('meta[name=viewport]').content, page: getComputedStyle(document.documentElement).touchAction }; })()`);
+if (safari.sent.join() !== "true,true" || !safari.viewport.includes("maximum-scale=1") || !safari.viewport.includes("user-scalable=no") || safari.page !== "pan-x pan-y") {
+  await fail(`Safari's zoom is not refused: ${JSON.stringify(safari)}`);
+}
 
 // --- A task that waits for the owner's answer: in plans' chat its manager reads "plans" and
 // ui's "Atlas". #1's reservoir row with Answer, whose chip opens its sheet: the story asks for
