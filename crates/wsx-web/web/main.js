@@ -130,7 +130,8 @@ function App() {
   const route = useRoute();
   const wide = useWide();
   const lastList = useRef("home");
-  const top = tabs().some(([name]) => name === route.screen) || (route.screen === "inbox" && !can("task_view"));
+  // ^ A link to #/machine keeps the bar when the tab is not there (no machine panel), so the way out stays.
+  const top = tabs().some(([name]) => name === route.screen) || route.screen === "machine" || (route.screen === "inbox" && !can("task_view"));
   useEffect(() => {
     const titles = { home: can("task_view") ? "Home" : "Inbox", inbox: can("task_view") ? "Sessions" : "Inbox",
       projects: "Projects", machine: "Machine", settings: "Settings", files: "Files" };
