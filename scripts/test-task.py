@@ -13,6 +13,7 @@ import hashlib
 import urllib.request
 import json
 import os
+import pwd
 from pathlib import Path
 import pty
 import re
@@ -2539,7 +2540,8 @@ def run(wsx, wsxd, work, owned):
             except OSError:
                 return False
         wait(listening, 'sshd on port %d' % port)
-        known = Path(os.path.expanduser('~' + os.environ.get('USER', ''))) / '.ssh/known_hosts'
+        user = pwd.getpwuid(os.getuid())
+        known = Path(user.pw_dir) / '.ssh/known_hosts'
         known.parent.mkdir(mode=0o700, exist_ok=True)
         with known.open('a') as lines:
             lines.write('[127.0.0.1]:%d %s' % (port, (keys / 'host.pub').read_text()))
@@ -2551,7 +2553,7 @@ def run(wsx, wsxd, work, owned):
         ssh_origin = work / 'origin-ssh.git'
         git('init', '-q', '--bare', '--template=', str(ssh_origin))
         git('push', '-q', str(ssh_origin), 'main~1:refs/heads/main')
-        git('remote', 'add', 'origin', 'ssh://%s@127.0.0.1:%d%s' % (os.environ['USER'], port, ssh_origin))
+        git('remote', 'add', 'origin', 'ssh://%s@127.0.0.1:%d%s' % (user.pw_name, port, ssh_origin))
         try:
             # ^ The server takes no key of that agent: nothing is asked, the answer names the agent.
             text = reply_to(js('task', 'say', 'RUN wsx task push -p demo --json')['id'])['text']

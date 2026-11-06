@@ -74,7 +74,7 @@ fn login_agent(uid: libc::uid_t) -> Option<std::path::PathBuf> {
     }
     let target = format!("gui/{uid}/com.openssh.ssh-agent");
     let output = output_with_timeout(
-        Command::new("launchctl")
+        Command::new("/bin/launchctl")
             .args(["print", &target])
             .stdin(std::process::Stdio::null()),
         std::time::Duration::from_secs(5),
