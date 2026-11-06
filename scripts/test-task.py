@@ -3956,6 +3956,41 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', loud, '--discard')
     configure(LAND_CONFIG, 'no loud scenario')
 
+    # 32oa. The same failure in two tasks (docs/tasks.md "Checks, revisions and report", "Shared
+    mark('32oa')
+    # failure"): the second task's check-run answer says it is likely on main, the manager gets
+    # one event naming both, a third task adds none, and a different line posts nothing.
+    configure(LAND_CONFIG + '  scenarios:\n    shared: \'echo "FAIL: after Back the page is $$ items"; exit 1\'\n'
+              '    other: \'echo "FAIL: another thing broke"; exit 1\'\n', 'shared failure scenarios')
+
+    def shared_run(scenario, name):
+        n = js('task', 'new', 'CHECKRUN_WITH %s WORK %s.txt' % (scenario, name))['id']
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+        code, said = [t for t in traces() if 'check_run_with' in t][-1]['check_run_with'][0]
+        assert code == 1 and ': exit 1' in said, said
+        return n, said
+
+    def shared_events():
+        return events_with('checks fail the same way')
+
+    first, said = shared_run('shared', 'sf1')
+    assert 'likely on main' not in said and not shared_events(), (said, shared_events())
+    second, said = shared_run('shared', 'sf2')
+    assert 'the same failure is in #%d; it is likely on main, not your change.' % first in said, said
+    wait(lambda: shared_events(), 'the shared failure event', 30)
+    event = shared_events()[0]['text']
+    assert 'in #%d, #%d, likely on main' % (first, second) in event and 'after Back the page is 0 items' in event, event
+    third, said = shared_run('shared', 'sf3')
+    assert 'is in #%d, #%d;' % (first, second) in said, said
+    time.sleep(2)
+    assert len(shared_events()) == 1, shared_events()
+    differ, said = shared_run('other', 'sf4')
+    time.sleep(2)
+    assert 'likely on main' not in said and len(shared_events()) == 1, (said, shared_events())
+    for n in (first, second, third, differ):
+        js('task', 'close', n, '--discard')
+    configure(LAND_CONFIG, 'no shared failure scenarios')
+
     # 32p. A turn with no result (docs/tasks.md "Claude adapter"): Claude's own 0-token turn for
     mark('32p')
     # a background-task notification is ignored; a model turn without a result is asked once.
