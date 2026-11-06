@@ -2145,6 +2145,8 @@ try:
         {"kind": "ping", "usage": {"cost_micro_usd": 0, "turns": 1}},
         {"kind": "rotated", "tokens": 152000, "reason": "the launch changed"},
         {"kind": "reply", "id": 16, "to": [10], "text": "Should I land #4?", "asks": True},
+        {"kind": "reply", "id": 17, "to": [10], "text": "Shall I deploy it too?", "asks": True},
+        {"kind": "message", "id": 18, "from": "owner", "text": "Not yet."},
         {"kind": "stopped", "reason": "agent exited"},
     ]
     keep_log = STATE / "wsx" / "tasks" / f"keep-me-{hashlib.sha256(str(removal['keep-me']).encode()).hexdigest()[:8]}" / "manager" / "log.jsonl"
@@ -2173,7 +2175,24 @@ try:
     rows_in_order([r"^#3 done$", r"^Atlas$", r"^#3 is on main\.$",
                    r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.", r"^elsewhere\s+\d\d:\d\d",
                    r"^Hello from elsewhere\.", r"^New conversation: the launch changed; the ledger carries the state\.$",
-                   r"^Atlas\s+\d\d:\d\d", r"^Should I land #4\?", r"^Atlas stopped: agent exited$"])
+                   r"^Atlas\s+\d\d:\d\d", r"^Should I land #4\?", r"^Shall I deploy it too\?", r"^Not yet\.$",
+                   r"^Atlas stopped: agent exited$"])
+    # ^ Two questions, then an owner message with no quote: it answers the newer one only; the
+    # older one waits under the chat, counted in the heading. `r` starts a reply that quotes
+    # it, Esc drops that, and `d` dismisses it (docs/tasks.md "Questions" under "Manager").
+    chat_screen = remove_view.text()
+    assert "1 question  0 to check  0 approvals" in chat_screen, chat_screen
+    assert re.search(r"▸ asks +Should I land #4\?", chat_screen) and not re.search(r"asks +Shall I deploy", chat_screen), chat_screen
+    assert "(r)eply" in chat_screen and "(d)ismiss" in chat_screen, chat_screen
+    os.write(remove_master, b"r")
+    wait_for(lambda: "Reply to “Should I land #4?”:" in remove_view.text(), "r did not start a reply to the question", seconds=60)
+    os.write(remove_master, b"\x1b")
+    wait_for(lambda: "Reply to" not in remove_view.text(), "Esc did not drop the reply", seconds=60)
+    os.write(remove_master, b"d")
+    wait_for(lambda: "1 question" not in remove_view.text() and "▸ asks" not in remove_view.text(),
+             "d did not dismiss the open question", seconds=60)
+    assert [json.loads(line)["id"] for line in keep_log.read_text().splitlines()
+            if '"kind":"answered"' in line] == [16], keep_log.read_text()[-400:]
     # ^ The chat opens at its end; on a short screen the first rows are above it, and k scrolls
     # up one line at a time to the top.
     os.write(remove_master, b"k" * 40)

@@ -25,11 +25,11 @@ const leading = (row) => row.task != null && row.text.startsWith(`#${row.task} `
 // resolutions, the To check items at the time each was added and the pending approvals each
 // reply carries. A resolution that an event line says too ("Approved land #3", or "#3 closed"
 // and "#3 was closed") shows once, as the event line (docs/web-client-tasks.md "Project screen").
-export function conversation(entries, resolutions, approvals = [], checks = []) {
-  // ^ An owner message ends what a reply asks, also one a later read brought.
-  const answered = entries.findLastIndex((row) => row.kind === "message" && row.author === "owner");
-  const rows = entries.map((row, index) => ({
-    ...row, at: row.unix_ms, asks: row.asks && index > answered,
+// `asks`: the ids of the open questions in the newest read (wsx-core `open_asks`), also for
+// rows an earlier read brought.
+export function conversation(entries, resolutions, approvals = [], checks = [], asks = []) {
+  const rows = entries.map((row) => ({
+    ...row, at: row.unix_ms, asks: row.id != null && asks.includes(row.id),
     approvals: row.approvals && approvals.filter((item) => row.approvals.includes(item.approval)),
   }));
   const said = rows.filter((row) => row.kind === "line");

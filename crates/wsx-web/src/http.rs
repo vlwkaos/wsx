@@ -97,6 +97,7 @@ pub fn router(app: Shared) -> Router {
                 "/api/tasks/{project}/approvals/{id}/{decision}",
                 post(task_decide),
             )
+            .route("/api/tasks/{project}/asks/{id}/dismiss", post(task_dismiss))
             .route("/api/tasks/{project}/checks", get(tasks_checks))
             .route(
                 "/api/tasks/{project}/checks/{id}/{decision}",
@@ -1092,8 +1093,9 @@ struct AfterQuery {
     after: Option<u64>,
     /// A role's chat instead of the manager's (docs/tasks.md "Roles").
     role: Option<String>,
-    /// The whole chat, for a find (docs/web-client-chat.md "Find").
-    all: Option<bool>,
+    /// The chat from the oldest entry that shows these words, for a find
+    /// (docs/web-client-chat.md "Find").
+    find: Option<String>,
 }
 
 async fn tasks_chat(
@@ -1114,7 +1116,7 @@ async fn tasks_chat(
             &scopes,
             query.role.as_deref(),
             query.after,
-            query.all.unwrap_or(false),
+            query.find.as_deref(),
             &app.media,
         )
         .map(Json)
@@ -1427,6 +1429,21 @@ async fn task_check(
     // ^ A fail starts a task, which waits for its host for a few seconds.
     with_scope_long(&app, project, move |scope| {
         crate::tasks::check(&scope, &id, &decision, input.note)
+    })
+    .await
+    .map(Json)
+}
+
+/// The owner dismisses an open question (docs/tasks.md "Manager").
+async fn task_dismiss(
+    State(app): State<Shared>,
+    Paired(device): Paired,
+    UrlPath((project, id)): UrlPath<(u64, u64)>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, true)?;
+    act_budget(&app, &device)?;
+    with_scope_long(&app, project, move |scope| {
+        crate::tasks::dismiss(&scope, id)
     })
     .await
     .map(Json)

@@ -190,6 +190,7 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
                 Some(Item::Approval { .. }) => {
                     hints.extend(["(y)approve".into(), "(n)deny".into()])
                 }
+                Some(Item::Ask { .. }) => hints.extend(["(r)eply".into(), "(d)ismiss".into()]),
                 None => {}
             }
             if chat.items.len() > 1 {
@@ -215,11 +216,21 @@ fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
         .iter()
         .filter(|item| matches!(item, Item::Check(_)))
         .count();
-    let approvals = chat.items.len() - checks;
+    let asks = chat
+        .items
+        .iter()
+        .filter(|item| matches!(item, Item::Ask { .. }))
+        .count();
+    let approvals = chat.items.len() - checks - asks;
     let counts = match chat.role {
         Some(_) => String::new(),
         None => format!(
-            "{checks} to check  {approvals} approval{}",
+            "{}{checks} to check  {approvals} approval{}",
+            match asks {
+                0 => String::new(),
+                1 => "1 question  ".into(),
+                n => format!("{n} questions  "),
+            },
             if approvals == 1 { "" } else { "s" }
         ),
     };
@@ -593,6 +604,21 @@ fn item_lines(chat: &ManagerChat, width: usize) -> (Vec<Line<'static>>, Option<u
                     Span::raw(marker),
                     Span::styled(format!("{id:<10}"), Style::default().fg(theme::TEXT_MUTED)),
                     Span::styled(label.clone(), Style::default().fg(theme::BLOCKED)),
+                ])
+                .patch_style(style),
+            ),
+            // ^ An open question: the word says it, the accent repeats the chat's asking bar.
+            Item::Ask { quote, .. } => lines.push(
+                Line::from(vec![
+                    Span::raw(marker),
+                    Span::styled(
+                        format!("{:<10}", "asks"),
+                        Style::default().fg(theme::ACCENT),
+                    ),
+                    Span::styled(
+                        truncate_to_width(quote, width.saturating_sub(12)),
+                        Style::default().fg(theme::TEXT),
+                    ),
                 ])
                 .patch_style(style),
             ),

@@ -173,12 +173,12 @@ export function withChips(project, source = null) {
   return chipWords.get(key);
 }
 
-const KIND_TONE = { waiting: "attention", failed: "danger", approval: "attention", land: "accent" };
+const KIND_TONE = { waiting: "attention", failed: "danger", approval: "attention", land: "accent", ask: "accent" };
 // One open item in words, as the owner would read it: "#4 Waiting for your answer", "Approve
 // land #3". The words are the server's `status` (wsx-core task::status, docs/tasks.md "Status").
-export const needWords = (item) => item.kind === "approval" ? item.label : `#${item.task} ${item.status.label}`;
+export const needWords = (item) => item.kind === "approval" || item.kind === "ask" ? item.label : `#${item.task} ${item.status.label}`;
 export const needTone = (item) => KIND_TONE[item.kind];
-const itemKey = (item) => item.kind === "approval" ? item.approval : `${item.kind}-${item.task}`;
+const itemKey = (item) => item.kind === "approval" ? item.approval : item.kind === "ask" ? `ask-${item.id}` : `${item.kind}-${item.task}`;
 
 // Outcomes of actions, by `<project>/<item>`, kept across the cards' re-renders.
 const pending = new Map();
@@ -216,9 +216,10 @@ export function noteDecisions(overview) {
 export async function act(project, item, action) {
   const path = item.kind === "approval"
     ? `api/tasks/${project}/approvals/${item.approval}/${action}`
+    : item.kind === "ask" ? `api/tasks/${project}/asks/${item.id}/${action}`
     : `api/tasks/${project}/t/${item.task}/${action}`;
   const answer = await api(path, { method: "POST", json: {} });
-  const name = item.kind === "approval" ? item.label : `#${item.task}`;
+  const name = item.kind === "approval" || item.kind === "ask" ? item.label : `#${item.task}`;
   announce(name, action, answer);
   await loadTasks(project);
   return answer;
@@ -253,8 +254,9 @@ export function ChatApprovals({ project, items }) {
 // other actions are. `onActing` says an action started, `onFailed` that it failed: the
 // reservoir moves the focus on when the row leaves, before or after the action's answer.
 // `onMention` puts the task's number into the manager's composer: the owner talks to the
-// manager, which relays to the worker (docs/web-client-tasks.md "Project screen").
-function NeedRow({ project, item, index, onActing, onFailed, onMention, leaving }) {
+// manager, which relays to the worker (docs/web-client-tasks.md "Project screen"). An open
+// question has Reply (`onReply` quotes it in the composer) and Dismiss.
+function NeedRow({ project, item, index, onActing, onFailed, onMention, onReply, leaving }) {
   const key = `${project}/${itemKey(item)}`;
   const status = actionOf(key);
   const [, renew] = useState(0);
@@ -283,7 +285,9 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, leaving 
     <button class="button icon-button need-action" type="button" title=${label} data-tone=${tone} disabled=${status.busy}
       onClick=${onClick} ...${extra}><${Icon} name=${icon} /></button>`;
   let actions = null;
-  if (acting && ["waiting", "failed"].includes(item.kind)) {
+  if (acting && item.kind === "ask") {
+    actions = html`${button("Reply", "reply", null, () => onReply(item.label), { "aria-label": `Reply: ${item.label}` })}${button("Dismiss", "fail", null, () => run("dismiss"), { "aria-label": `Dismiss: ${item.label}` })}`;
+  } else if (acting && ["waiting", "failed"].includes(item.kind)) {
     actions = button("Answer", "reply", null, () => onMention(item.task), { "aria-label": `Answer #${item.task}: mention it to the manager` });
   } else if (acting && item.kind === "approval" && status.running) {
     // ^ The approved action runs until its decision settles the row; it may take minutes.
@@ -302,12 +306,12 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, leaving 
     actions = button("Land", "land", "accent", () => run("land"), { "aria-label": `Land #${item.task}` });
   }
   // ^ An approval reads as the action it asks for, never as its id (docs/web-client-tasks.md).
-  const context = item.kind === "approval" ? item.title ?? item.commit ?? ""
+  const context = item.kind === "ask" ? "Asks you" : item.kind === "approval" ? item.title ?? item.commit ?? ""
     : item.kind === "land" && trial?.stage === "live" ? "on the live site: try it" : item.status.label;
   // ^ An approval names its task in its label ("Approve land #3").
-  const task = item.kind === "approval" ? null : overview?.tasks.find((candidate) => candidate.id === item.task);
+  const task = item.task == null ? null : overview?.tasks.find((candidate) => candidate.id === item.task);
   const body = html`
-    ${item.kind === "approval" ? html`<span class="row-label">${item.label}</span>` : html`<${TaskTitle} title=${item.title} id=${item.task} state=${task && taskStage(task)[0]} />`}
+    ${item.kind === "approval" || item.kind === "ask" ? html`<span class="row-label">${item.label}</span>` : html`<${TaskTitle} title=${item.title} id=${item.task} state=${task && taskStage(task)[0]} />`}
     ${context && html`<span class="row-context">${context}</span>`}`;
   return html`
     <li class="need" data-key=${itemKey(item)} data-leaving=${leaving ? "" : null} inert=${Boolean(leaving)}>
@@ -359,7 +363,7 @@ const CheckingRow = ({ project, count }) => html`
 // the tasks that run and the To check row. Done tasks are not in it, and with nothing in it
 // there is no list. A cleared row leaves and the focus moves to the next row's action, or to
 // the composer after the last one. It never moves the chat.
-function Reservoir({ project, items, tasks, checking, onMention }) {
+function Reservoir({ project, items, tasks, checking, onMention, onReply }) {
   const [open, setOpen] = useState(false);
   const [closing, setClosing] = useState(false);
   const [paused, setPaused] = useState(false);
@@ -457,7 +461,7 @@ function Reservoir({ project, items, tasks, checking, onMention }) {
             <div class="reservoir-scroll">
               ${items.length || needRows.length ? html`
                 <ul class="reservoir-list" aria-label="Needs you">
-                  ${needRows.map(({ item, key, leaving }) => html`<${NeedRow} key=${key} project=${project} item=${item} index=${items.indexOf(item)} onActing=${onActing} onFailed=${onFailed} onMention=${onMention} leaving=${leaving} />`)}
+                  ${needRows.map(({ item, key, leaving }) => html`<${NeedRow} key=${key} project=${project} item=${item} index=${items.indexOf(item)} onActing=${onActing} onFailed=${onFailed} onMention=${onMention} onReply=${onReply} leaving=${leaving} />`)}
                 </ul>` : null}
               ${checking ? html`<ul class="reservoir-list" aria-label="To check"><${CheckingRow} project=${project} count=${checking} /></ul>` : null}
             </div>
@@ -839,20 +843,22 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
   };
   const shown = useRef([]);
   const cut = useRef(false);
-  // ^ A find reads the whole conversation once, not its newest 400 entries; it stays
-  // whole after the find closes (docs/web-client-chat.md "Find").
+  // ^ A find's words read the conversation from the oldest entry that shows them, not only
+  // its newest 400 entries; those rows stay after the find closes (docs/web-client-chat.md "Find").
   const [finding, setFinding] = useState(false);
-  const whole = useRef(null);
+  // ^ `words`: what the find asks; `read`: what the shown rows were read for.
+  const search = useRef({ words: "", read: "" });
 
   // Reads after the last entry it has; one read at a time, one more after a change during it.
   const load = useCoalescedLoad(async (current) => {
-    const all = whole.current === false;
-    const last = all ? null : shown.current.findLast((entry) => entry.id != null)?.id;
-    const next = await api(`api/tasks/${id}/chat`, { query: { ...(last != null && { after: last }), ...(all && { all: true }), ...(role && { role }) } });
+    const { words } = search.current;
+    const fresh = words !== search.current.read;
+    const last = fresh ? null : shown.current.findLast((entry) => entry.id != null)?.id;
+    const next = await api(`api/tasks/${id}/chat`, { query: { ...(last != null && { after: last }), ...(fresh && words && { find: words }), ...(role && { role }) } });
     if (!current()) return;
-    if (all) {
-      whole.current = true;
-      cut.current = false;
+    if (fresh) {
+      search.current.read = words;
+      cut.current = Boolean(next.skipped);
       shown.current = next.rows;
       setChat(next);
       setFailure("");
@@ -862,7 +868,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
     // again until the next message: a row joins once, by its key.
     const keys = new Set(shown.current.map((row) => row.key));
     const joined = [...shown.current, ...next.rows.filter((row) => !keys.has(row.key))];
-    if (whole.current) shown.current = joined;
+    if (search.current.read) shown.current = joined;
     else {
       if (next.skipped || joined.length > 400) cut.current = true;
       shown.current = joined.slice(-400);
@@ -892,26 +898,23 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
   const entries = chat?.rows ?? [];
   const items = role ? [] : overview?.needs ?? [];
   const words = withChips(id);
-  const rows = ready ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems) : [];
+  const rows = ready ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems, chat?.asks ?? []) : [];
+  // ^ The open questions wait in the reservoir with the needs (docs/web-client-tasks.md "Project screen").
+  const asking = role ? [] : (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
   // The sent message shows until the log has it.
   if (sent && !entries.some((row) => row.kind === "message" && row.id === sent.id)) {
     const last = rows.at(-1);
     const grouped = last?.kind === "message" && last.author === "owner";
     if (grouped) last.last = false;
-    // ^ The owner answered: no reply asks any more.
-    for (const row of rows) row.asks = false;
     rows.push({ kind: "message", key: "sending", author: "owner", name: "You", at: Date.now(), first: !grouped, last: true, pending: true, ...quoteSplit(sent.text) });
   }
   const firstNew = since == null ? null : rows.find((row) => row.kind === "message" && row.author !== "owner" && !row.pending && row.at > since);
   const [recent, earlier] = useRecent(place, rows, firstNew, { all: finding, away });
-  const find = () => {
-    if (finding) return setFinding(false);
-    setFinding(true);
-    // ^ false: asked, not read yet (`load` reads the whole chat once).
-    if (whole.current == null) {
-      whole.current = false;
-      load();
-    }
+  const find = () => setFinding(!finding);
+  // ^ The find's words, as typed: the chat reads again for them (`load`).
+  const findWords = (words) => {
+    search.current.words = words.trim();
+    if (search.current.words !== search.current.read) load();
   };
   // ^ The typing bubble leaves in the commit that brings the reply: a bubble that stayed to fade
   // out would move the reply down when it went.
@@ -983,7 +986,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
     <div class="page manager">
       ${!low && header}
       <div class="chat">
-        ${finding && html`<${FindBar} log=${logNode} reveal=${reveal} loading=${whole.current !== true} onClose=${() => setFinding(false)} />`}
+        ${finding && html`<${FindBar} log=${logNode} reveal=${reveal} loading=${search.current.words !== search.current.read} onQuery=${findWords} onClose=${() => setFinding(false)} />`}
         ${!role && html`<${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "message" && row.author !== "owner")?.at} sent=${sent} />`}
         <div class="log-wrap">
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label=${`Conversation with ${role ?? "the manager"}`} tabindex="0" ...${gestures}>
@@ -998,7 +1001,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
           ${away && html`<${JumpButton} unread=${unread} onClick=${toEnd} />`}
         </div>
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
-        ${!role && html`<${Reservoir} project=${id} items=${items} tasks=${overview?.tasks ?? []} checking=${overview?.to_check ?? 0} onMention=${mention} />`}
+        ${!role && html`<${Reservoir} project=${id} items=${[...items, ...asking]} tasks=${overview?.tasks ?? []} checking=${overview?.to_check ?? 0} onMention=${mention} onReply=${(quote) => { setReply(quote); field.current?.focus(); }} />`}
         ${low && header}
         ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
           onSent=${(message) => { toEnd(); setSent(message); load(); }} />`}

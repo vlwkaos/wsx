@@ -1343,6 +1343,10 @@ def run(wsx, wsxd, work, owned):
     refused = subprocess.run([str(wsx), 'task', 'check', 'skip', '--all'], cwd=project, env=manager_env,
                              capture_output=True, text=True)
     assert refused.returncode != 0 and 'check skip is for the owner' in refused.stderr, refused.stderr
+    # ^ A dismiss of a question is the owner's too (docs/tasks.md "Questions" under "Manager").
+    refused = subprocess.run([str(wsx), 'task', 'dismiss', '1'], cwd=project, env=manager_env,
+                             capture_output=True, text=True)
+    assert refused.returncode != 0 and 'dismiss is for the owner' in refused.stderr, refused.stderr
     skipped = js('task', 'check', 'skip', '--all')
     assert [c['state'] for c in skipped['changed']] == ['skipped'] and skipped['open'] == 0, skipped
     assert skipped['message'] == '1 skipped. 0 to check', skipped

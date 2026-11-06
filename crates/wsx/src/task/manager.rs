@@ -106,6 +106,8 @@ fn one_line(text: &str) -> String {
 
 /// The handover of a fresh conversation: this many last messages and replies, each clipped.
 const HANDOVER_ENTRIES: usize = 4;
+/// A quote by id reads this much of the log's end first, more until it reaches the id.
+const QUOTE_READ_BYTES: u64 = 256 * 1024;
 /// How much of the log's end a notes search reads for the earlier conversation's exchanges.
 const EARLIER_TAIL_BYTES: u64 = 1024 * 1024;
 const HANDOVER_CHARS: usize = 600;
@@ -2605,7 +2607,21 @@ impl Manager {
         if !text.trim_start().starts_with(QUOTE_REF) {
             return text;
         }
-        let log = self.dir.read_log().unwrap_or_default();
+        // ^ The log back to the quoted id, not all of it: ids grow (docs/tasks.md "Log window").
+        let quoted = text.trim_start()[QUOTE_REF.len()..]
+            .lines()
+            .next()
+            .and_then(|line| line.trim().parse::<u64>().ok());
+        let log = match quoted {
+            Some(id) => self
+                .dir
+                .read_back(QUOTE_READ_BYTES, |log| {
+                    log.iter()
+                        .any(|entry| entry.id().is_some_and(|at| at <= id))
+                })
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
         let (text, note) = resolve_quote(&text, &log);
         if let Some(note) = note {
             self.say(&note);

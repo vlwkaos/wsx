@@ -6,11 +6,196 @@ use super::manager::{
     quote_of, says_nothing, split_quote, ApprovalLine, Author, Level, ManagerEntry, ManagerEvent,
     Short,
 };
+use super::store::ManagerDir;
+use anyhow::{bail, Result};
 use serde::Serialize;
 use std::collections::HashSet;
 
 /// The same line again this soon shows once.
 const REPEAT_MS: u64 = 60_000;
+/// Most entries the chat shows at once.
+pub const CHAT_ENTRIES: usize = 200;
+/// A chat reads this much of the log's end first, more only when its window needs it.
+const FIRST_READ_BYTES: u64 = 256 * 1024;
+/// A question older than this asks no more (docs/tasks.md "Manager").
+pub const ASKS_WITHIN_MS: u64 = 7 * 24 * 3600 * 1000;
+
+/// Which part of the log a chat shows (docs/tasks.md "Log window").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Window<'a> {
+    /// The newest `CHAT_ENTRIES`.
+    Tail,
+    /// The newest `CHAT_ENTRIES` after message `id`; all of them when `id` is unknown.
+    After(u64),
+    /// From the oldest entry whose row shows these words (case-insensitive) to the end, so a
+    /// find in the chat reaches every match; the tail when none does.
+    Find(&'a str),
+}
+
+/// The entries a chat needs from the log's end: its window and the manager's last step
+/// (`activity`). The open questions are `asking`'s.
+pub fn read_chat(dir: &ManagerDir, window: &Window) -> Result<Vec<ManagerEntry>> {
+    dir.read_back(FIRST_READ_BYTES, |log| {
+        let shown = match window {
+            Window::Tail => log.iter().filter(|entry| in_chat(entry)).count() > CHAT_ENTRIES,
+            // ^ Ids grow: an entry at or before `id` means every entry after it is read.
+            Window::After(id) => log
+                .iter()
+                .any(|entry| entry.id().is_some_and(|at| at <= *id)),
+            Window::Find(_) => false,
+        };
+        shown
+            && log.iter().any(|entry| {
+                matches!(
+                    entry.event,
+                    ManagerEvent::Reply { .. } | ManagerEvent::Agent { .. }
+                )
+            })
+    })
+}
+
+/// Whether `log` reaches back past the questions that can still ask at `now`.
+fn reaches_asks(log: &[ManagerEntry], now: u64) -> bool {
+    log.first()
+        .is_some_and(|entry| now.saturating_sub(entry.unix_ms) >= ASKS_WITHIN_MS)
+}
+
+/// `Delivered`, `Agent`, `Ping` and `Answered` entries are not conversation: they use no room.
+fn in_chat(entry: &ManagerEntry) -> bool {
+    !matches!(
+        entry.event,
+        ManagerEvent::Delivered { .. }
+            | ManagerEvent::Agent { .. }
+            | ManagerEvent::Ping { .. }
+            | ManagerEvent::Answered { .. }
+    )
+}
+
+/// The entries of `window` in `log` (`read_chat`), and how many older ones were left out.
+/// `names`: what the rows show, which a find matches.
+pub fn chat_window<'a>(
+    log: &'a [ManagerEntry],
+    window: &Window,
+    names: &Names,
+) -> (Vec<&'a ManagerEntry>, usize) {
+    let (start, limit) = match window {
+        Window::Tail => (0, CHAT_ENTRIES),
+        Window::After(after) => (
+            log.iter()
+                .position(|entry| entry.id() == Some(*after))
+                .map_or(0, |index| index + 1),
+            CHAT_ENTRIES,
+        ),
+        Window::Find(words) => match find_from(log, words, names) {
+            Some(start) => (start, usize::MAX),
+            None => (0, CHAT_ENTRIES),
+        },
+    };
+    let mut entries: Vec<&ManagerEntry> = log[start..].iter().filter(|e| in_chat(e)).collect();
+    let skipped = entries.len().saturating_sub(limit);
+    entries.drain(..skipped);
+    (entries, skipped)
+}
+
+/// The oldest entry of `log` whose row shows `words`, case-insensitive: its author's name, its
+/// tag, its quote or its text, as `chat_rows` makes them.
+fn find_from(log: &[ManagerEntry], words: &str, names: &Names) -> Option<usize> {
+    let words = words.to_lowercase();
+    if words.is_empty() {
+        return None;
+    }
+    let shows = |text: &Option<String>| {
+        text.as_ref()
+            .is_some_and(|text| text.to_lowercase().contains(&words))
+    };
+    log.iter().position(|entry| {
+        in_chat(entry)
+            && chat_rows(&[entry], &[], &[], names).iter().any(|row| {
+                row.text.to_lowercase().contains(&words)
+                    || shows(&row.name)
+                    || shows(&row.tag)
+                    || shows(&row.quoted)
+            })
+    })
+}
+
+/// A reply that asks the owner and is not answered yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OpenAsk {
+    pub id: u64,
+    pub unix_ms: u64,
+    /// The line a quote of it carries (`quote_of`).
+    pub quote: String,
+}
+
+/// The replies that ask the owner (`asks`) and are not answered, oldest first. An owner
+/// message that quotes one answers it; one with no quote answers the newest open one before
+/// it; one that quotes anything else answers none. A dismiss (`Answered`) answers its reply.
+/// A question older than `ASKS_WITHIN_MS` before `now` asks no more (docs/tasks.md "Manager").
+pub fn open_asks(log: &[ManagerEntry], now: u64) -> Vec<OpenAsk> {
+    let mut open: Vec<OpenAsk> = Vec::new();
+    for entry in log {
+        match &entry.event {
+            ManagerEvent::Reply {
+                id,
+                text,
+                asks: true,
+                ..
+            } => open.push(OpenAsk {
+                id: *id,
+                unix_ms: entry.unix_ms,
+                quote: quote_of(text),
+            }),
+            ManagerEvent::Message {
+                from: Author::Owner,
+                text,
+                ..
+            } => {
+                let answered = match split_quote(text).0 {
+                    Some(quoted) => open.iter().rposition(|ask| ask.quote == quoted.trim()),
+                    None => open.len().checked_sub(1),
+                };
+                if let Some(at) = answered {
+                    open.remove(at);
+                }
+            }
+            ManagerEvent::Answered { id } => open.retain(|ask| ask.id != *id),
+            _ => {}
+        }
+    }
+    open.retain(|ask| now.saturating_sub(ask.unix_ms) < ASKS_WITHIN_MS);
+    open
+}
+
+/// The open questions of `dir`'s chat: the chats mark them, the Home row and the Workspace
+/// row show them in the accent, the TUI's items and the web's reservoir list them. Only the
+/// lines `open_asks` reads are parsed: on the wsx log, 7 days are 1 MB of it.
+pub fn asking(dir: &ManagerDir, now: u64) -> Result<Vec<OpenAsk>> {
+    // ^ Where serde writes them: `unix_ms`, `kind` and a message's `from` first, a reply's
+    // `asks` after its text, near the end (`ManagerEvent`). A quote in a text is escaped, so a
+    // text never holds these marks.
+    let has = |part: &[u8], mark: &[u8]| part.windows(mark.len()).any(|at| at == mark);
+    let keep = |line: &[u8]| {
+        let head = &line[..line.len().min(128)];
+        has(head, b"\"kind\":\"answered\"")
+            || (has(head, b"\"kind\":\"message\"") && has(head, b"\"from\":\"owner\""))
+            || (has(head, b"\"kind\":\"reply\"")
+                && has(&line[line.len().saturating_sub(256)..], b"\"asks\":true"))
+    };
+    Ok(open_asks(
+        &dir.read_back_where(FIRST_READ_BYTES, keep, |log| reaches_asks(log, now))?,
+        now,
+    ))
+}
+
+/// The owner dismisses the question of reply `id`: it asks no more, and no turn reads it.
+/// Refused for a reply that is not an open question.
+pub fn dismiss(dir: &ManagerDir, id: u64, now: u64) -> Result<()> {
+    if !asking(dir, now)?.iter().any(|ask| ask.id == id) {
+        bail!("reply {id} is not an open question");
+    }
+    dir.append(ManagerEvent::Answered { id })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -141,10 +326,12 @@ impl ChatRow {
 }
 
 /// The chat window's entries (`chat_window`) as rows. `approvals`: the pending approvals
-/// (`pending_approvals`); a quiet reply that carries one is a message.
+/// (`pending_approvals`); a quiet reply that carries one is a message. `asks`: the open
+/// questions (`open_asks`), whose rows ask.
 pub fn chat_rows(
     entries: &[&ManagerEntry],
     approvals: &[&ApprovalLine],
+    asks: &[OpenAsk],
     names: &Names,
 ) -> Vec<ChatRow> {
     // ^ wsx's recap request is not shown; the answer to it is tagged (docs/tasks.md "Recap").
@@ -159,16 +346,6 @@ pub fn chat_rows(
             _ => None,
         })
         .collect();
-    // ^ A reply asks until the owner writes after it (docs/tasks.md "Manager").
-    let answered = entries.iter().rposition(|entry| {
-        matches!(
-            entry.event,
-            ManagerEvent::Message {
-                from: Author::Owner,
-                ..
-            }
-        )
-    });
     let mut carried: Vec<Vec<String>> = vec![Vec::new(); entries.len()];
     for line in approvals {
         let ApprovalLine::Request {
@@ -280,7 +457,7 @@ pub fn chat_rows(
                 to,
                 text,
                 quiet,
-                asks,
+                id,
                 provisional,
                 post,
                 level,
@@ -309,7 +486,7 @@ pub fn chat_rows(
                         .iter()
                         .any(|id| recaps.contains(id))
                         .then(|| "Recap".into()),
-                    asks: *asks && answered.is_none_or(|owner| index > owner),
+                    asks: asks.iter().any(|ask| ask.id == *id),
                     post: *post,
                     level: *level,
                     approvals,
@@ -373,7 +550,8 @@ pub fn chat_rows(
             }),
             ManagerEvent::Delivered { .. }
             | ManagerEvent::Agent { .. }
-            | ManagerEvent::Ping { .. } => {}
+            | ManagerEvent::Ping { .. }
+            | ManagerEvent::Answered { .. } => {}
         }
     }
     rows

@@ -290,8 +290,10 @@ impl App {
                     ))
                     .ok()
                     .flatten()
-                    .and_then(|dir| dir.read_tail(MANAGER_TAIL_BYTES).ok())
-                    .is_some_and(|tail| wsx_core::task::manager::tail_asks(&tail))
+                    .and_then(|dir| {
+                        wsx_core::task::chat::asking(&dir, wsx_core::task::now_unix_ms()).ok()
+                    })
+                    .is_some_and(|asks| !asks.is_empty())
                 })
                 .map(|(_, path)| path)
                 .collect();

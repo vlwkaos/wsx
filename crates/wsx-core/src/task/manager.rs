@@ -127,7 +127,7 @@ pub enum ManagerEvent {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         quiet: bool,
         /// The reply asks the owner (`asks_owner`); such a reply is never quiet. The chat tags it
-        /// until the owner writes after it (docs/tasks.md "Manager").
+        /// until it is answered (`chat::open_asks`, docs/tasks.md "Manager").
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         asks: bool,
         /// A `minimal` agent wrote this while the manager's agent could not: the agent's name.
@@ -174,6 +174,9 @@ pub enum ManagerEvent {
     },
     /// The agent process ended outside a reply.
     Stopped { reason: String },
+    /// The owner dismissed the question of reply `id` (`wsx task dismiss`): it asks no more.
+    /// No turn reads it. ref: docs/tasks.md "Manager"
+    Answered { id: u64 },
 }
 
 /// One event as the chat shows it, written where the event is made: `#3 done`,
@@ -324,24 +327,6 @@ pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<String
     }
 }
 
-/// Whether the manager's last reply asks the owner and no owner message came after it, a later
-/// report or not: the web's Home row and the TUI's Workspace row show it in the accent.
-/// ref: docs/tasks.md "Manager"
-pub fn tail_asks(entries: &[ManagerEntry]) -> bool {
-    entries
-        .iter()
-        .rev()
-        .find_map(|entry| match entry.event {
-            ManagerEvent::Message {
-                from: Author::Owner,
-                ..
-            } => Some(false),
-            ManagerEvent::Reply { asks: true, .. } => Some(true),
-            _ => None,
-        })
-        .unwrap_or(false)
-}
-
 impl ManagerEntry {
     /// An entry as read from the log: a reply stored as quiet before the length rule keeps its
     /// flag only when it is short, and one that `says_nothing` is quiet.
@@ -360,37 +345,6 @@ impl ManagerEntry {
             _ => None,
         }
     }
-}
-
-/// Most entries the chat shows at once.
-pub const CHAT_ENTRIES: usize = 200;
-
-/// The chat after message `after` (all of it when `after` is none or unknown): messages,
-/// replies, rotations and stops, the newest `limit` of them (`CHAT_ENTRIES` for a view, no
-/// cap for a find over the whole history), and how many older ones were left out.
-/// `Delivered`, `Agent` and `Ping` entries are not conversation, so pings use no room.
-pub fn chat_window(
-    log: &[ManagerEntry],
-    after: Option<u64>,
-    limit: usize,
-) -> (Vec<&ManagerEntry>, usize) {
-    let start = after
-        .and_then(|after| log.iter().position(|entry| entry.id() == Some(after)))
-        .map_or(0, |index| index + 1);
-    let mut entries: Vec<&ManagerEntry> = log[start..]
-        .iter()
-        .filter(|entry| {
-            !matches!(
-                entry.event,
-                ManagerEvent::Delivered { .. }
-                    | ManagerEvent::Agent { .. }
-                    | ManagerEvent::Ping { .. }
-            )
-        })
-        .collect();
-    let skipped = entries.len().saturating_sub(limit);
-    entries.drain(..skipped);
-    (entries, skipped)
 }
 
 /// What the manager does now: its last step after its last reply. Shown while it is busy.

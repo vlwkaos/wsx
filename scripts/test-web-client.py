@@ -3332,6 +3332,16 @@ def task_journey(args):
         # --json with no text: the page shows neither (docs/web-client-tasks.md "Project screen").
         logged('owner', 'Anything new?', '-', quiet=False)
         old_log.append({'kind': 'sent', 'to': 'ui', 'text': '', 'unix_ms': old_log[-1]['unix_ms'] + 1000})
+        # ^ Four questions: an owner reply that quotes the third answers it, and a message with no
+        # quote the newest open one; the first two still ask, each until a quote, a dismiss or a
+        # later plain message answers it (docs/tasks.md "Questions" under "Manager").
+        asked_at = old_log[-1]['unix_ms'] + 1000
+        questions = ['Should the fold keep five rows?', 'Can #92 wait for Monday?', 'Shall I ship #93 today?', 'Is the since line right?']
+        for n, question in enumerate(questions):
+            old_log.append({'kind': 'reply', 'id': 9901 + n, 'to': [9001], 'text': question, 'asks': True, 'unix_ms': asked_at + n * 1000})
+        old_log.extend([{'kind': 'message', 'id': 9905, 'from': 'owner', 'text': '> Shall I ship #93 today?\n\nNot today.', 'unix_ms': asked_at + 5000},
+                        {'kind': 'message', 'id': 9906, 'from': 'owner', 'text': 'It is.', 'unix_ms': asked_at + 6000},
+                        {'kind': 'delivered', 'ids': [9905, 9906], 'unix_ms': asked_at + 6001}])
         # ^ Before them, 1,500 older turns (3,000 messages, with markdown and task chips): more than
         # the 200 entries a read sends and the 400 the page keeps, so a find must load the whole chat
         # to reach the first and the fourth (they say "quasar"; docs/web-client-chat.md "Find"), and
@@ -3783,7 +3793,8 @@ merge_seconds = 3
         chat_route = '/api/tasks/%d/chat' % demo
         manager_reads = full_reads('/manager')
         whole_chat = steady(owner, 'GET', chat_route)[1]
-        assert full_reads('/manager') == manager_reads + 1, 'a chat call without after reads the whole log'
+        # ^ Every chat reads from the log's end (`chat::read_chat`, docs/tasks.md "Log window").
+        assert full_reads('/manager') == manager_reads, 'a chat call without after reads the whole log'
         last_id = max(row['id'] for row in whole_chat['rows'] if row.get('id') is not None)
         warm = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         reads = full_reads()
@@ -3812,7 +3823,7 @@ merge_seconds = 3
             return [without_sentences(item) for item in value] if isinstance(value, list) else value
         cached, cold = (steady(site, 'GET', '/api/tasks/%d' % demo)[1] for site in (owner, viewer))
         assert without_sentences(cached) == without_sentences(cold) and cached != warm and 'cache check line' in cached['last_reply'], (cached, cold)
-        ok('overview and chat: no whole-log read for an unchanged stamp or a chat with a recent after; after a manager line both equal a cold build')
+        ok('overview and chat: no whole-log read for an unchanged stamp or a chat, with or without a recent after; after a manager line both equal a cold build')
         # ^ A quiet stream pings every 10 s, so a page can tell a silent dead stream from a quiet one.
         watcher.expect('ping', timeout=15)
         # Streams a phone left behind cannot lock the device out (docs/web-client.md "Limits"):
@@ -4017,14 +4028,43 @@ merge_seconds = 3
             # The manager's name: ui's set name, plans' default; a peer by its set name.
             ui_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]
             plans_chat = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['plans'])[1]
-            # ^ A find reads the whole chat (docs/web-client-chat.md "Find"): `all` sends every entry.
-            whole = steady(owner, 'GET', '/api/tasks/%d/chat?all=true' % ids['plans'])[1]
+            # ^ A find reads from the oldest entry that shows its words (docs/web-client-chat.md
+            # "Find"): every match the whole log has, as `all=true` sent before.
+            whole = steady(owner, 'GET', '/api/tasks/%d/chat?find=QUASAR' % ids['plans'])[1]
             peer = lambda chat, key: {r['name'] for r in chat['rows'] if r.get('author') == 'peer:' + key}
             assert ui_chat['manager'] == {'name': 'Atlas', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and peer(ui_chat, 'plans') == {'plans'}, (ui_chat['manager'], peer(ui_chat, 'plans'))
             assert plans_chat['manager']['name'] == 'plans' and peer(whole, 'ui') == {'Atlas'}, (plans_chat['manager'], peer(whole, 'ui'))
             # ^ The window is 200 log entries; a ping, a recap request or a repeat shows no row.
             assert plans_chat['skipped'] > 0 and 0 < len(plans_chat['rows']) <= 200, (plans_chat['skipped'], len(plans_chat['rows']))
             assert whole['skipped'] == 0 and whole['rows'][0]['text'] == 'Where did the Quasar notes go?', (whole['skipped'], whole['rows'][:1])
+            quasar = [r['text'] for r in whole['rows'] if 'quasar' in r['text'].lower()]
+            assert quasar == ['Where did the Quasar notes go?', 'The quasar notes are in docs.'], quasar
+            # ^ Words no row shows: the newest window, as a chat with no find.
+            assert [r['key'] for r in steady(owner, 'GET', '/api/tasks/%d/chat?find=zzqqnone' % ids['plans'])[1]['rows']] == [r['key'] for r in plans_chat['rows']]
+            assert steady(owner, 'GET', '/api/tasks/%d/chat?all=true' % ids['plans'])[0] == 400
+            # ^ The open questions by the rule, read from plans' log files by this test: the quoted
+            # third and the newest are answered; each later plain owner message answers one more.
+            def open_questions():
+                log_files = [manager_dir / 'log.1.jsonl', manager_dir / 'log.jsonl']
+                still = []
+                for line in (line for path in log_files if path.exists() for line in path.read_text().splitlines()):
+                    entry = json.loads(line)
+                    if entry['kind'] == 'reply' and entry.get('asks'):
+                        still.append((entry['id'], entry['text']))
+                    elif entry['kind'] == 'message' and entry['from'] == 'owner':
+                        quoted = entry['text'][2:].split('\n', 1)[0] if entry['text'].startswith('> ') else None
+                        hit = [n for n, (_, text) in enumerate(still) if quoted is None or text == quoted]
+                        if hit:
+                            still.pop(hit[-1])
+                    elif entry['kind'] == 'answered':
+                        still = [ask for ask in still if ask[0] != entry['id']]
+                return still
+            expected = open_questions()
+            overview_asks = steady(owner, 'GET', '/api/tasks/%d' % ids['plans'])[1]['asks']
+            assert [(ask['id'], ask['quote']) for ask in overview_asks] == expected and expected, (overview_asks, expected)
+            assert {ask[1] for ask in expected} <= set(questions[:2]), expected
+            assert plans_chat['asks'] == [ask[0] for ask in expected], plans_chat['asks']
+            assert {r['id'] for r in whole['rows'] if r.get('asks')} == {ask[0] for ask in expected}, [r for r in whole['rows'] if r.get('asks')]
             args.captures.mkdir(parents=True, exist_ok=True)
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]

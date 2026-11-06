@@ -256,6 +256,73 @@ fn after_cut_line(bytes: &[u8], skipped: u64) -> &[u8] {
     }
 }
 
+/// The lines of `paths` (oldest file first) from their end, as `parse` reads them, in reading
+/// order: the last `first` bytes, then four times as many until `enough` holds for them, the
+/// files are read whole or `limit` bytes are read. Each step reads and parses only the bytes
+/// before the last step's. Lines `parse` refuses are skipped. The one backward read of the
+/// task logs: a view needs a log's end, not all of it (docs/tasks.md "Log window").
+fn read_back<T>(
+    paths: &[PathBuf],
+    first: u64,
+    limit: u64,
+    parse: impl Fn(&[u8]) -> Option<T>,
+    enough: impl Fn(&[T]) -> bool,
+) -> Result<Vec<T>> {
+    // ^ Newest file first: its handle, where its read part starts, and the start of the line
+    // cut there, which the next step completes.
+    let mut files: Vec<(&PathBuf, File, u64, Vec<u8>)> = Vec::new();
+    for path in paths.iter().rev() {
+        if let Some(file) = open_if_exists(path)? {
+            let len = file
+                .metadata()
+                .with_context(|| format!("cannot read {}", path.display()))?
+                .len();
+            files.push((path, file, len, Vec::new()));
+        }
+    }
+    let (mut entries, mut read, mut want) = (Vec::new(), 0u64, first.min(limit));
+    for (path, file, start, cut) in &mut files {
+        while *start > 0 {
+            if read >= want {
+                if read >= limit || enough(&entries) {
+                    return Ok(entries);
+                }
+                want = want.saturating_mul(4).min(limit);
+            }
+            let from = start.saturating_sub(want - read);
+            file.seek(SeekFrom::Start(from))
+                .with_context(|| format!("cannot read {}", path.display()))?;
+            let mut bytes = Vec::new();
+            Read::take(&mut *file, *start - from)
+                .read_to_end(&mut bytes)
+                .with_context(|| format!("cannot read {}", path.display()))?;
+            read += *start - from;
+            *start = from;
+            bytes.append(cut);
+            let whole = match from {
+                0 => &bytes[..],
+                _ => match bytes.iter().position(|byte| *byte == b'\n') {
+                    Some(end) => {
+                        *cut = bytes[..end].to_vec();
+                        &bytes[end + 1..]
+                    }
+                    None => {
+                        *cut = bytes;
+                        continue;
+                    }
+                },
+            };
+            let mut older: Vec<T> = whole
+                .split(|byte| *byte == b'\n')
+                .filter_map(&parse)
+                .collect();
+            older.append(&mut entries);
+            entries = older;
+        }
+    }
+    Ok(entries)
+}
+
 pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     crate::fs_util::write_atomic(
         path,
@@ -564,22 +631,20 @@ impl TaskDir {
         Ok(entries)
     }
 
-    /// The entries in the last `bytes` of the log; a line cut at the start is skipped.
+    /// The entries in the last `bytes` of the log (`read_back`); a line cut at the start is
+    /// skipped.
     pub fn read_log_tail(&self, bytes: u64) -> Result<Vec<LogEntry>> {
-        let path = self.file(LOG_FILE);
-        let Some(mut file) = open_if_exists(&path)? else {
-            return Ok(Vec::new());
-        };
-        let (tail, skipped) = read_tail_bytes(&mut file, bytes)
-            .with_context(|| format!("cannot read {}", path.display()))?;
-        Ok(after_cut_line(&tail, skipped)
-            .split(|byte| *byte == b'\n')
-            .filter_map(|line| serde_json::from_slice(line).ok())
-            .collect())
+        read_back(
+            &[self.file(LOG_FILE)],
+            bytes,
+            bytes,
+            |line| serde_json::from_slice(line).ok(),
+            |_| true,
+        )
     }
 
     /// What `pick` makes of the newest event it accepts, scanning the log from its end: the
-    /// last `LOG_TAIL_SCAN_BYTES` first, the whole log only when they hold no hit. Gives
+    /// last `LOG_TAIL_SCAN_BYTES` first, more only when they hold no hit (`read_back`). Gives
     /// the answer of `read_log().iter().rev().find_map(..)` without a full parse per call.
     pub fn last_event<T>(&self, pick: impl Fn(&LogEvent) -> Option<T>) -> Result<Option<T>> {
         self.last_entry(|entry| pick(&entry.event))
@@ -587,22 +652,15 @@ impl TaskDir {
 
     /// `last_event` with the whole entry, for its time.
     pub fn last_entry<T>(&self, pick: impl Fn(&LogEntry) -> Option<T>) -> Result<Option<T>> {
-        let path = self.file(LOG_FILE);
-        let Some(mut file) = open_if_exists(&path)? else {
-            return Ok(None);
-        };
-        let (bytes, skipped) = read_tail_bytes(&mut file, LOG_TAIL_SCAN_BYTES)
-            .with_context(|| format!("cannot read {}", path.display()))?;
-        // ^ A line that does not parse is skipped, as `read_log` does.
-        let hit = after_cut_line(&bytes, skipped)
-            .split(|byte| *byte == b'\n')
-            .rev()
-            .filter_map(|line| serde_json::from_slice::<LogEntry>(line).ok())
-            .find_map(|entry| pick(&entry));
-        if hit.is_some() || skipped == 0 {
-            return Ok(hit);
-        }
-        Ok(self.read_log()?.iter().rev().find_map(&pick))
+        let newest = |entries: &[LogEntry]| entries.iter().rev().find_map(&pick);
+        let entries = read_back(
+            &[self.file(LOG_FILE)],
+            LOG_TAIL_SCAN_BYTES,
+            MAX_LOG_HARD_BYTES + 1,
+            |line| serde_json::from_slice(line).ok(),
+            |entries| newest(entries).is_some(),
+        )?;
+        Ok(newest(&entries))
     }
 
     /// The original prompt, read from the start of the log only.
@@ -949,54 +1007,39 @@ impl ManagerDir {
     }
 
     /// The newest entries of the old log and the current one, in reading order: the last
-    /// `bytes` of both, then four times as many until `enough` holds for them or the files
-    /// are read whole. A chat needs the end of a log of up to 8 MiB, not all of it.
-    pub fn read_log_tail(
+    /// `first` bytes, more until `enough` holds for them (`read_back`). A chat needs the end of
+    /// a log of up to 16 MiB, not all of it (docs/tasks.md "Log window").
+    pub fn read_back(
         &self,
-        mut bytes: u64,
+        first: u64,
         enough: impl Fn(&[super::manager::ManagerEntry]) -> bool,
     ) -> Result<Vec<super::manager::ManagerEntry>> {
-        loop {
-            let (mut entries, mut room, mut whole) = (Vec::new(), bytes, true);
-            for name in [MANAGER_LOG, MANAGER_OLD_LOG] {
-                let path = self.path.join(name);
-                let Some(mut file) = open_if_exists(&path)? else {
-                    continue;
-                };
-                let (tail, skipped) = read_tail_bytes(&mut file, room)
-                    .with_context(|| format!("cannot read {}", path.display()))?;
-                let mut older: Vec<_> = after_cut_line(&tail, skipped)
-                    .split(|byte| *byte == b'\n')
-                    .filter_map(super::manager::ManagerEntry::read)
-                    .collect();
-                older.append(&mut entries);
-                entries = older;
-                if skipped > 0 {
-                    whole = false;
-                    break;
-                }
-                room -= tail.len() as u64;
-            }
-            if whole || enough(&entries) {
-                return Ok(entries);
-            }
-            bytes = bytes.saturating_mul(4);
-        }
+        self.read_back_where(first, |_| true, enough)
     }
 
-    /// The entries in the last `bytes` of the current log, for a quick look at the latest
-    /// ones; a line cut at the start is skipped.
+    /// `read_back` of only the lines `keep` accepts as bytes: a reader that needs few kinds
+    /// of entries parses only those.
+    pub(super) fn read_back_where(
+        &self,
+        first: u64,
+        keep: impl Fn(&[u8]) -> bool,
+        enough: impl Fn(&[super::manager::ManagerEntry]) -> bool,
+    ) -> Result<Vec<super::manager::ManagerEntry>> {
+        read_back(
+            &self.log_files(),
+            first,
+            2 * (MAX_MANAGER_LOG_BYTES + MAX_LOG_LINE_BYTES as u64),
+            |line| match keep(line) {
+                true => super::manager::ManagerEntry::read(line),
+                false => None,
+            },
+            enough,
+        )
+    }
+
+    /// The entries in the last `bytes` of the log, for a quick look at the latest ones.
     pub fn read_tail(&self, bytes: u64) -> Result<Vec<super::manager::ManagerEntry>> {
-        let path = self.path.join(MANAGER_LOG);
-        let Some(mut file) = open_if_exists(&path)? else {
-            return Ok(Vec::new());
-        };
-        let (tail, skipped) = read_tail_bytes(&mut file, bytes)
-            .with_context(|| format!("cannot read {}", path.display()))?;
-        Ok(after_cut_line(&tail, skipped)
-            .split(|byte| *byte == b'\n')
-            .filter_map(super::manager::ManagerEntry::read)
-            .collect())
+        self.read_back(bytes, |_| true)
     }
 
     pub fn read_state(&self) -> Result<super::manager::ManagerState> {
