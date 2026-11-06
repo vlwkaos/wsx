@@ -38,21 +38,31 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
     if let Some(file) = &chat.file {
         return render_file(frame, inner, file, top);
     }
-    let mut lines = chat_lines(&chat.rows, width, chat.link).0;
-    let matches = find_in(&lines, chat.find.value());
+    let (lines, _) = chat.wrapped(width);
+    let matches = chat.matches();
+    // ^ Only the lines in view are copied and marked; the scroll is a `usize`, as a whole-log
+    // chat has more lines than a `u16` counts.
+    let height = usize::from(chat_height);
+    let max_scroll = lines.len().saturating_sub(height);
+    chat.max_scroll.set(max_scroll);
+    let scroll = chat.scroll.min(max_scroll);
+    let first = lines.len().saturating_sub(height + scroll);
+    let end = (first + height).min(lines.len());
+    let mut lines_shown = lines[first..end].to_vec();
     // ^ Every match reversed, the current one also in a color (docs/tasks.md "TUI").
     let current = chat.found.min(matches.len().saturating_sub(1));
-    for (index, (line, range)) in matches.into_iter().enumerate() {
+    let from = matches.partition_point(|(line, _)| *line < first);
+    for (index, (line, range)) in matches.iter().enumerate().skip(from) {
+        if *line >= end {
+            break;
+        }
         let mut style = Style::default().add_modifier(Modifier::REVERSED);
         if index == current {
             style = style.fg(theme::IDLE).bold();
         }
-        lines[line] = mark(std::mem::take(&mut lines[line]), range, style);
+        let line = &mut lines_shown[line - first];
+        *line = mark(std::mem::take(line), range.clone(), style);
     }
-    let max_scroll = (lines.len() as u16).saturating_sub(chat_height);
-    chat.max_scroll.set(max_scroll);
-    let scroll = chat.scroll.min(max_scroll);
-    let first = (lines.len() as u16).saturating_sub(chat_height + scroll);
     let body = if lines.is_empty() {
         vec![muted(if !chat.loaded {
             "Loading the chat"
@@ -60,7 +70,7 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
             "No messages yet. Press i to write a message"
         })]
     } else {
-        lines
+        lines_shown
     };
     let row = |y: u16, height: u16| Rect {
         y: inner.y + y,
@@ -70,10 +80,7 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
     frame.render_widget(Paragraph::new(top), row(0, 3));
     // ^ Newest at the bottom: a short chat sits on the items, not under the heading.
     let shown = (body.len() as u16).min(chat_height);
-    frame.render_widget(
-        Paragraph::new(body).scroll((first, 0)),
-        row(3 + chat_height - shown, shown),
-    );
+    frame.render_widget(Paragraph::new(body), row(3 + chat_height - shown, shown));
     let item_offset = item_selected
         .map(|line| (line + 2).saturating_sub(items_height as usize))
         .unwrap_or(0) as u16;
@@ -108,10 +115,10 @@ fn render_file(
         })
         .map(|cells| Line::raw(cells.into_iter().map(|(char, _)| char).collect::<String>()))
         .collect();
-    let max = (lines.len() as u16).saturating_sub(height);
+    let max = lines.len().saturating_sub(usize::from(height));
     file.max_scroll.set(max);
     let first = file.scroll.min(max);
-    let shown = (first as usize + height as usize).min(lines.len());
+    let shown = (first + usize::from(height)).min(lines.len());
     top[1] = Line::styled(
         truncate_to_width(
             &format!("files/{}  {shown}/{}", file.name, lines.len()),
@@ -127,7 +134,13 @@ fn render_file(
         },
     );
     frame.render_widget(
-        Paragraph::new(lines).scroll((first, 0)),
+        Paragraph::new(
+            lines
+                .into_iter()
+                .skip(first)
+                .take(usize::from(height))
+                .collect::<Vec<_>>(),
+        ),
         Rect {
             y: inner.y + top.len() as u16,
             height,
@@ -603,12 +616,23 @@ fn item_lines(chat: &ManagerChat, width: usize) -> (Vec<Line<'static>>, Option<u
 fn composer(chat: &ManagerChat, width: usize) -> (Line<'static>, Option<u16>) {
     let typed = |state: &crate::ui::input::InputState| {
         let cells = |text: &str| Line::from(text).width();
-        let mut before = format!("{}{}", state.prompt, &state.buffer[..state.cursor]);
-        // ^ A long line shows its end, where the cursor is.
-        while cells(&before) >= width && !before.is_empty() {
-            before.remove(0);
+        // ^ A long line shows its end, where the cursor is: one pass back from the cursor
+        // keeps the longest end that is narrower than the line.
+        let (mut kept, mut used) = (Vec::new(), 0);
+        for char in state.buffer[..state.cursor]
+            .chars()
+            .rev()
+            .chain(state.prompt.chars().rev())
+        {
+            let size = cells(char.encode_utf8(&mut [0; 4]));
+            if used + size >= width {
+                break;
+            }
+            used += size;
+            kept.push(char);
         }
-        let column = cells(&before) as u16;
+        let before: String = kept.into_iter().rev().collect();
+        let column = used as u16;
         let shown = before + &state.buffer[state.cursor..];
         (Line::raw(truncate_to_width(&shown, width)), Some(column))
     };

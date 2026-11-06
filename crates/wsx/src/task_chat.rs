@@ -5,11 +5,13 @@ use crate::{
     action::Action,
     ui::{input::InputState, text_form::dispatch_text_edit},
 };
+use ratatui::text::Line;
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     io::Read as _,
+    ops::Range,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{mpsc, Arc},
     time::{Duration, Instant},
 };
 use wsx_core::config::project::load_task_config;
@@ -26,6 +28,9 @@ use wsx_core::task::{
 };
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(1);
+/// The end of the manager log a chat reads first; it reads more only when that holds fewer
+/// than `CHAT_ENTRIES` entries of the chat.
+const CHAT_TAIL_BYTES: u64 = 256 * 1024;
 /// The host answers its status at once; a slow answer counts as not running.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -128,9 +133,9 @@ pub fn links(rows: &[ChatRow]) -> Vec<(u64, usize, Target)> {
 pub struct FileView {
     pub name: String,
     pub lines: Vec<String>,
-    pub scroll: u16,
+    pub scroll: usize,
     /// ^ The furthest scroll the last frame could show.
-    pub max_scroll: Cell<u16>,
+    pub max_scroll: Cell<usize>,
 }
 
 /// The most a file view reads.
@@ -243,9 +248,9 @@ pub struct ManagerChat {
     /// What the last message or decision answered; a failure stays until the next one.
     pub notice: Option<(String, bool)>,
     /// Lines up from the newest; 0 follows new lines.
-    pub scroll: u16,
+    pub scroll: usize,
     /// ^ The furthest scroll the last frame could show, so `k` stops at the oldest line.
-    pub max_scroll: Cell<u16>,
+    pub max_scroll: Cell<usize>,
     pub focus: Focus,
     /// The selected link, as `links` names it; Enter opens it.
     pub link: Option<(u64, usize)>,
@@ -265,12 +270,27 @@ pub struct ManagerChat {
     whole: bool,
     /// The current match is still to be scrolled to: the whole log was not read yet.
     reveal_due: bool,
+    /// ^ The rows wrapped for the last width and link, until the rows change; the draw, a key
+    /// and the find's count all read it, so a frame wraps nothing new.
+    wrapped: RefCell<Option<Wrapped>>,
     /// What runs now ("Sending", "Failing c3"), until its answer comes.
     pub acting: Option<String>,
     stamp: Option<Stamp>,
     pending: Option<mpsc::Receiver<Read>>,
     answer: Option<mpsc::Receiver<Answer>>,
     last_check: Instant,
+}
+
+/// The chat's lines at one width with one link selected, the line of that link, and the
+/// matches of the last query.
+type Found = Arc<Vec<(usize, Range<usize>)>>;
+
+struct Wrapped {
+    width: usize,
+    link: Option<(u64, usize)>,
+    lines: Arc<Vec<Line<'static>>>,
+    selected: Option<usize>,
+    found: Option<(String, Found)>,
 }
 
 /// An action's words, whether it failed, and a sent message to give back to the composer.
@@ -315,6 +335,7 @@ impl ManagerChat {
             area: Cell::new((0, 0)),
             whole: false,
             reveal_due: false,
+            wrapped: RefCell::new(None),
             acting: None,
             stamp: None,
             pending: None,
@@ -414,7 +435,10 @@ impl ManagerChat {
                     .and_then(|id| self.items.iter().position(|item| item.id() == id))
                     .unwrap_or(self.selected)
                     .min(self.items.len().saturating_sub(1));
-                self.rows = view.rows;
+                if view.rows != self.rows {
+                    self.rows = view.rows;
+                    self.wrapped.take();
+                }
                 self.name = view.name;
                 if self.reveal_due {
                     self.reveal();
@@ -452,8 +476,10 @@ impl ManagerChat {
     }
 
     pub fn scroll_by(&mut self, delta: i32) {
-        self.scroll =
-            (i32::from(self.scroll) + delta).clamp(0, i32::from(self.max_scroll.get())) as u16;
+        self.scroll = self
+            .scroll
+            .saturating_add_signed(delta as isize)
+            .min(self.max_scroll.get());
     }
 
     /// Run `act` off the UI thread unless an action runs; its answer comes through `poll`.
@@ -581,8 +607,13 @@ fn read(
     dir: Option<&ManagerDir>,
     whole: bool,
 ) -> anyhow::Result<View> {
+    // ^ The newest part reads the end of the log until it holds `CHAT_ENTRIES` entries of the
+    // chat; a find reads all of it (docs/tasks.md "TUI").
     let log = match dir {
-        Some(dir) => dir.read_log()?,
+        Some(dir) if whole => dir.read_log()?,
+        Some(dir) => dir.read_log_tail(CHAT_TAIL_BYTES, |log| {
+            chat_window(log, None, CHAT_ENTRIES).0.len() >= CHAT_ENTRIES
+        })?,
         None => Vec::new(),
     };
     let limit = if whole { usize::MAX } else { CHAT_ENTRIES };
@@ -760,7 +791,7 @@ impl ManagerChat {
         };
         self.link = Some((*ms, *nth));
         let (width, _) = self.area.get();
-        let (lines, line) = crate::ui::task_chat::chat_lines(&self.rows, width, self.link);
+        let (lines, line) = self.wrapped(width);
         if let Some(line) = line {
             self.center(line, lines.len());
         }
@@ -826,8 +857,10 @@ impl ManagerChat {
 
     fn scroll_file(&mut self, delta: i32) {
         if let Some(file) = &mut self.file {
-            file.scroll = (i32::from(file.scroll).saturating_add(delta))
-                .clamp(0, i32::from(file.max_scroll.get())) as u16;
+            file.scroll = file
+                .scroll
+                .saturating_add_signed(delta as isize)
+                .min(file.max_scroll.get());
         }
     }
 
@@ -835,11 +868,7 @@ impl ManagerChat {
         self.focus = Focus::Find;
         if !self.whole {
             self.whole = true;
-            // ^ Read again at once, now the whole log.
-            self.stamp = None;
-            self.last_check = Instant::now()
-                .checked_sub(CHECK_INTERVAL)
-                .unwrap_or(self.last_check);
+            self.read_again();
         }
     }
 
@@ -847,13 +876,58 @@ impl ManagerChat {
         self.find = InputState::new("/");
         self.reveal_due = false;
         self.focus = Focus::Chat;
+        if self.whole {
+            // ^ Back to the newest part: its read drops the old rows, and the scroll
+            // counted lines of the whole log.
+            self.whole = false;
+            self.scroll = 0;
+            self.read_again();
+        }
+    }
+
+    /// Read the store at the next poll, whatever the stamp says.
+    fn read_again(&mut self) {
+        self.stamp = None;
+        self.last_check = Instant::now()
+            .checked_sub(CHECK_INTERVAL)
+            .unwrap_or(self.last_check);
     }
 
     /// The matches of the find as the last frame drew the chat: (line, byte range).
-    pub fn matches(&self) -> Vec<(usize, std::ops::Range<usize>)> {
-        let (width, _) = self.area.get();
-        let lines = crate::ui::task_chat::chat_lines(&self.rows, width, self.link).0;
-        crate::ui::task_chat::find_in(&lines, self.find.value())
+    pub fn matches(&self) -> Found {
+        let (lines, _) = self.wrapped(self.area.get().0);
+        let mut cache = self.wrapped.borrow_mut();
+        let cache = cache.as_mut().expect("`wrapped` filled the cache");
+        let query = self.find.value();
+        match &cache.found {
+            Some((asked, found)) if asked == query => found.clone(),
+            _ => {
+                let found = Arc::new(crate::ui::task_chat::find_in(&lines, query));
+                cache.found = Some((query.to_string(), found.clone()));
+                found
+            }
+        }
+    }
+
+    /// The chat's lines at `width` and the line of the selected link: wrapped once per rows,
+    /// width and link.
+    pub fn wrapped(&self, width: usize) -> (Arc<Vec<Line<'static>>>, Option<usize>) {
+        let mut cache = self.wrapped.borrow_mut();
+        let fresh = cache
+            .as_ref()
+            .is_some_and(|cache| cache.width == width && cache.link == self.link);
+        if !fresh {
+            let (lines, selected) = crate::ui::task_chat::chat_lines(&self.rows, width, self.link);
+            *cache = Some(Wrapped {
+                width,
+                link: self.link,
+                lines: Arc::new(lines),
+                selected,
+                found: None,
+            });
+        }
+        let cache = cache.as_ref().expect("filled above");
+        (cache.lines.clone(), cache.selected)
     }
 
     /// Move `delta` matches, newer for +1, wrapping, and show the match.
@@ -875,9 +949,7 @@ impl ManagerChat {
         };
         self.reveal_due = false;
         self.found = self.found.min(last);
-        let total = crate::ui::task_chat::chat_lines(&self.rows, self.area.get().0, self.link)
-            .0
-            .len();
+        let total = self.wrapped(self.area.get().0).0.len();
         self.center(matches[self.found].0, total);
     }
 
@@ -887,6 +959,6 @@ impl ManagerChat {
         // ^ `scroll` counts lines up from the newest: the line's distance from the end, less half the chat.
         let below = total.saturating_sub(line + 1);
         let scroll = below.saturating_sub(height / 2);
-        self.scroll = scroll.min(total.saturating_sub(height)) as u16;
+        self.scroll = scroll.min(total.saturating_sub(height));
     }
 }
