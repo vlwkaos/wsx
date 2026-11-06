@@ -626,11 +626,13 @@ export function Chat({ session, onModel, finding = false, onFindClose }) {
   // New items keep the reader at the end only when the reader is at the end; the chat opens
   // at its first unread reply, else where the reader left it.
   const { log, node: logNode, away, unread, since, scrolled, toEnd, reveal } = useFollowEnd(`session-${id}`, Boolean(data));
-  // ^ A classic scrollbar takes its width from the log (its gutter is kept, app.css .log): wide
-  // blocks leave it out (app.css .markdown). An overlay scrollbar takes none.
+  // ^ A classic scrollbar takes its width from the log once the log scrolls: wide blocks leave it
+  // out (app.css .markdown). An overlay scrollbar takes none. Its coming and going resizes the log's content box.
   useLayoutEffect(() => {
     const node = logNode.current;
-    node.parentElement.style.setProperty("--log-scrollbar", `${node.offsetWidth - node.clientWidth}px`);
+    const sizes = new ResizeObserver(() => node.parentElement.style.setProperty("--log-scrollbar", `${node.offsetWidth - node.clientWidth}px`));
+    sizes.observe(node);
+    return () => sizes.disconnect();
   }, []);
   const [jump, leaving] = useExit(away);
   // The timeline the page shows.
