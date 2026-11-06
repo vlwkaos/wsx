@@ -2970,6 +2970,9 @@ capabilities = ["terminal_view"]
         # --- An agent that blocks while wsxd does not answer is news after the reconnect: the
         # server compares with the state it remembered. wsxd is frozen, the agent draws its
         # question, wsxd runs again.
+        # ^ The error turn above left the agent in `error`: a typed line ends that state, as after the revoke below.
+        cli('session', 'send-text', sessions['owner'], 'after the error')
+        wait(lambda: traces('owner')[-1] == 'after the error', 'turn after the error')
         settle('owner')
         assert steady(owner, 'POST', chat + '/send', {'text': 'ask me later'})[0] == 200
         wait(lambda: timeline()['working'], 'working turn before the freeze')
