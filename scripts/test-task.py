@@ -3957,9 +3957,9 @@ def run(wsx, wsxd, work, owned):
     configure(LAND_CONFIG, 'no loud scenario')
 
     # 32oa. The same failure in two tasks (docs/tasks.md "Checks, revisions and report", "Shared
-    mark('32oa')
     # failure"): the second task's check-run answer says it is likely on main, the manager gets
     # one event naming both, a third task adds none, and a different line posts nothing.
+    mark('32oa')
     configure(LAND_CONFIG + '  scenarios:\n    shared: \'echo "FAIL: after Back the page is $$ items"; exit 1\'\n'
               '    other: \'echo "FAIL: another thing broke"; exit 1\'\n', 'shared failure scenarios')
 
