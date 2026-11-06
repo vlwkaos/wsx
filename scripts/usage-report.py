@@ -201,10 +201,10 @@ def event_kind(line):
             return "waiting"
         return "stopped" if wait.group(1) == "owner" and "stopped by request" in wait.group(2) \
             else "waiting:" + wait.group(1)
-    m = re.match(r"(deploy|release) of \S+ (\w+)", line) or re.match(r"(routine \S+) (\w+)", line) \
-        or re.match(r"approval \S+ \((\w+)\) (\w+)", line)
-    if m and line.startswith("approval"):
+    m = re.match(r"approval \S+ \((\w+)\) (\w+)", line)
+    if m:
         return "approval " + " ".join(m.groups())
+    m = re.match(r"(deploy|release) of \S+ (\w+)", line) or re.match(r"(routine \S+) (\w+)", line)
     return " ".join(m.groups()) if m else line.split(" ", 1)[0]
 
 
@@ -221,7 +221,7 @@ def manager_turns(events):
         if e.get("kind") not in ("reply", "ping") or not e.get("usage"):
             continue
         to = [messages[i] for i in e.get("to") or [] if i in messages]
-        froms = {m.get("from", "?") for m in to} or {"?"}
+        froms = {messages.get(i, {}).get("from", "?") for i in e.get("to") or []}
         kind = "ping" if e["kind"] == "ping" else "owner" if "owner" in froms else \
             "recap" if "recap" in froms else "events" if froms == {"events"} else "other"
         trigger = kind
