@@ -1002,6 +1002,30 @@ await until("!document.querySelector('dialog')", "Escape did not close the dialo
 if (!(await evaluate("document.activeElement.classList.contains('button-danger')"))) await fail("focus did not return to the opener");
 if (!(await evaluate("fetch('api/session').then((r) => r.ok)"))) await fail("cancel unpaired the device");
 
+// Pair a new device (docs/web-client.md "Pairing"): this paired device shows a code and a link; a
+// browser with no cookie opens the link, the code fills the field, one tap pairs, no #pair is left.
+if (size[0] !== 390) await fail("the pairing link check runs at 390 px");
+await go("#/settings");
+const showCode = "[...document.querySelectorAll('button')].find((button) => button.textContent === 'Show a pairing code')";
+await until(`!!${showCode}`, "General has no Show a pairing code button");
+await evaluate(`${showCode}.click()`);
+await until("!!document.querySelector('.pair-code')", "the pairing code did not show");
+const linkCode = await evaluate("document.querySelector('.pair-code').textContent");
+if (!/^[0-9A-Z]{5}-[0-9A-Z]{5}$/.test(linkCode)) await fail(`the pairing code reads ${JSON.stringify(linkCode)}`);
+if (!(await evaluate("[...document.querySelectorAll('button')].some((button) => button.textContent === 'Copy link')"))) await fail("no Copy link button");
+await shot("settings-pair-code");
+await send("Network.clearBrowserCookies");
+await send("Page.navigate", { url: "about:blank" });
+await send("Page.navigate", { url: `${siteUrl}#pair=${linkCode}` });
+await until("!!document.querySelector('#pair-code')", "the pairing form did not render from the link");
+if ((await evaluate("document.querySelector('#pair-code').value")) !== linkCode) await fail("the link's code is not in the field");
+if (await evaluate("location.href.includes('pair=')")) await fail("the address still holds the pairing code");
+await shot("pair-from-link");
+await evaluate("document.querySelector('.pair-form button[type=submit]').click()");
+await until("!!document.querySelector('.app')", "the app did not open after the link's code");
+if (await evaluate("location.href.includes('pair=')")) await fail("the address holds the pairing code after pairing");
+console.log("pairing: General shows a code and a link at 390 px; a fresh browser opening the link pairs with one tap and keeps no #pair");
+
 await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
 await openSession("working");
 await until("!!document.querySelector('.pulse')", "the working row did not show");

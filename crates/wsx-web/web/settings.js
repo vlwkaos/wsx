@@ -1,7 +1,7 @@
 // Settings: General (notifications, version, pairing), UI (appearance, header, bottom bar) and Usage.
 // Every setting here is kept per device.
 import { api } from "./api.js";
-import { html, useEffect, useState } from "./lib.js";
+import { html, useEffect, useNow, useState } from "./lib.js";
 import { can, loadPush, pageBuild, reloadForBuild, replaceRoute, setMuted, state, tabs, update, useStore } from "./store.js";
 import { confirmDialog, hasDarkScheme, scheme, setBar, setScheme, setTabHidden } from "./ui.js";
 import { AllUsage } from "./usage.js";
@@ -130,6 +130,63 @@ function Interface() {
     </section>`;
 }
 
+// A code from this device for the next one (docs/web-client.md "Pairing"). It lives in memory
+// until it expires, so leaving General and coming back does not spend another of the 5 codes.
+let issued = null;
+function PairDevice() {
+  const [made, setMade] = useState(issued);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState({ text: "" });
+  const now = useNow(!!made && made.expires > Date.now());
+  const left = made ? Math.max(0, Math.ceil((made.expires - now) / 60_000)) : 0;
+  const live = made && made.expires > now;
+  const link = made && `${made.url}#pair=${made.code}`;
+  const show = async () => {
+    setBusy(true);
+    setStatus({ text: "" });
+    try {
+      const answer = await api("api/pair/code", { method: "POST", json: {} });
+      issued = { code: answer.code, url: answer.url, expires: Date.now() + answer.expires_in_seconds * 1000 };
+      setMade(issued);
+    } catch (failure) {
+      setStatus({ text: failure.message, failed: true });
+    }
+    setBusy(false);
+  };
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(link);
+      setStatus({ text: "Link copied." });
+    } catch {
+      setStatus({ text: "This browser refused the clipboard. Select the code instead.", failed: true });
+    }
+  };
+  const share = async () => {
+    try {
+      await navigator.share({ title: "Pair a device", url: link });
+    } catch (failure) {
+      if (failure.name !== "AbortError") setStatus({ text: failure.message, failed: true });
+    }
+  };
+  return html`
+    <section aria-label="Pair a new device">
+      <h2 class="label">Pair a new device</h2>
+      ${live && html`
+        <p class="pair-code" aria-label="Pairing code">${made.code}</p>
+        <p class="option-status muted">${left} ${left === 1 ? "minute" : "minutes"} left, works once</p>`}
+      ${made && !live && html`<p class="option-status muted">The code expired.</p>`}
+      <div class="actions">
+        ${live
+          ? html`
+            <button class="button" type="button" onClick=${copy}>Copy link</button>
+            ${navigator.share && html`<button class="button" type="button" onClick=${share}>Share</button>`}`
+          : html`<button class="button" type="button" disabled=${busy} onClick=${show}>Show a pairing code</button>`}
+      </div>
+      ${status.text && html`
+        <p class=${`option-status ${status.failed ? "error" : "muted"}`} role=${status.failed ? "alert" : "status"}>${status.text}</p>`}
+    </section>`;
+}
+
 function General() {
   const [error, setError] = useState("");
   const unpair = async () => {
@@ -164,6 +221,7 @@ function General() {
             <button class="button" type="button" onClick=${reloadForBuild}>Reload</button>
           </div>`}
       </section>`}
+    ${can("terminal_input") && html`<${PairDevice} />`}
     <section aria-label="This device">
       <h2 class="label">This device</h2>
       <p class="muted device">Paired as "${state.device.name}" (device ${state.device.id}).</p>

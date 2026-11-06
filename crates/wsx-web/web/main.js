@@ -7,7 +7,7 @@ import { html, Icon, render, useEffect, useLayoutEffect, useRef, useState } from
 import { can, events, noteBuild, parseRoute, replaceRoute, restorePlace, shownTabs, shows, stackUnder, state, tabs, trackHistory, update, useRoute, useStore } from "./store.js";
 import { Home } from "./home.js";
 import { applyBar, applyScheme, applyTabs, Notices, toast } from "./ui.js";
-import { Pair } from "./pair.js";
+import { Pair, takePairCode } from "./pair.js";
 import { Inbox } from "./inbox.js";
 import { Project, Projects, ProjectSessions } from "./projects.js";
 import { loadTasks, Manager, noteDecisions } from "./tasks.js";
@@ -290,7 +290,7 @@ async function boot() {
     session = await api("api/session");
   } catch (error) {
     if (error.status === 401) {
-      render(html`<${Pair} onPaired=${() => { render(null, root); boot(); }} />`, root);
+      render(html`<${Pair} linked=${linked} onPaired=${() => { render(null, root); boot(); }} />`, root);
     } else {
       render(html`
         <main class="screen pair" id="main">
@@ -310,6 +310,8 @@ followViewport();
 // ^ iOS ignores user-scalable=no and starts a pinch with WebKit's gesture events: refused here,
 // so the page never zooms. The viewer reads pointers, which these do not stop.
 for (const name of ["gesturestart", "gesturechange"]) document.addEventListener(name, (event) => event.preventDefault(), { passive: false });
+// ^ Before trackHistory and the first route: a pairing link's fragment is no route.
+const linked = takePairCode();
 trackHistory();
 viewImageLinks();
 boot();

@@ -18,7 +18,7 @@ use std::{
 
 const MAX_DEVICES: usize = 16;
 const MAX_PAIRINGS: usize = 4;
-const PAIRING_SECONDS: u64 = 600;
+pub(crate) const PAIRING_SECONDS: u64 = 600;
 // No 0/O, 1/I/L: the code is typed by hand on a phone.
 const CODE_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 const CODE_LENGTH: usize = 10;
