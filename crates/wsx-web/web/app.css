@@ -279,7 +279,7 @@ html[data-bar="bottom"] .more-menu { top: auto; bottom: 100%; }
 .log-wrap { position: relative; container-type: inline-size; }
 .log {
   /* Positioned: a row's offsetTop is in the log (useFollowEnd in lib.js). */
-  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; position: relative;
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; position: relative; scrollbar-gutter: stable;
   padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
   padding-inline: var(--column-inset);
   /* The end of the conversation stands well clear of the composer; the jump button fits in the gap. */
@@ -304,11 +304,12 @@ html[data-bar="bottom"] .more-menu { top: auto; bottom: 100%; }
 .markdown { min-width: 0; line-height: var(--line-height-prose); overflow-wrap: anywhere; display: flex; flex-direction: column; }
 /* Prose keeps its reading width. A table, a code block or a diagram may be as wide as the
    conversation minus the gutter, centered on the reading column (a centered flex item
-   overflows both sides alike); wider content scrolls inside its own block. */
+   overflows both sides alike); wider content scrolls inside its own block. The log's classic
+   scrollbar is not part of the conversation (--log-scrollbar, set by chat.js). */
 .markdown > :is(.code-block, .table-wrap, .diagram-failed) {
-  align-self: center; width: max-content; min-width: 100%; max-width: calc(100cqi - 2 * var(--space-4));
+  align-self: center; width: max-content; min-width: 100%; max-width: calc(100cqi - var(--log-scrollbar, 0%) - 2 * var(--space-4));
 }
-.markdown > .diagram { align-self: center; width: calc(100cqi - 2 * var(--space-4)); min-width: 100%; }
+.markdown > .diagram { align-self: center; width: calc(100cqi - var(--log-scrollbar, 0%) - 2 * var(--space-4)); min-width: 100%; }
 .markdown :where(p, ul, ol, blockquote, pre, h1, h2, h3, h4, h5, h6, hr, table) { margin: 0; }
 .markdown > * + * { margin-top: var(--space-3); }
 .markdown :is(li, blockquote) > * + * { margin-top: var(--space-2); }

@@ -620,12 +620,14 @@ async function markdown() {
     wrap.scrollLeft = 0; table.removeAttribute('style'); return seen; })()`);
   if (narrow.wide < 1 || narrow.left < 1 || narrow.tall > 1) await fail(`a wide table does not scroll only sideways: ${JSON.stringify(narrow)}`);
   // Prose keeps its reading width; a table or a code block may take the width of the
-  // conversation minus the gutter, centered on the reading column, and no wider.
+  // conversation minus the gutter, centered on the reading column, and no wider. The
+  // conversation is the log without its scrollbar (a classic one, as on CI, takes width).
   const blocks = await evaluate(`(() => { const box = (node) => node.getBoundingClientRect();
-    const root = document.querySelector('.message:not(.message-user) .markdown'); const log = box(document.querySelector('.log-wrap'));
+    const root = document.querySelector('.message:not(.message-user) .markdown'); const log = document.querySelector('.log');
     const column = box(root); const gutter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--space-4'));
     const of = (node) => { const b = box(node); return { left: b.left, right: b.right, width: b.width }; };
-    return { column: of(root), inner: [log.left + gutter, log.right - gutter], paragraph: of(root.querySelector('p')),
+    const left = box(log).left + log.clientLeft;
+    return { column: of(root), inner: [left + gutter, left + log.clientWidth - gutter], paragraph: of(root.querySelector('p')),
       code: [...root.querySelectorAll(':scope > .code-block')].map(of), table: of(root.querySelector(':scope > .table-wrap')) }; })()`);
   const centered = (block) => Math.abs((block.left + block.right) / 2 - (blocks.column.left + blocks.column.right) / 2) <= 1;
   const inside = (block) => block.left >= blocks.inner[0] - 1 && block.right <= blocks.inner[1] + 1;
@@ -691,7 +693,7 @@ async function diagrams(light = false) {
   if (seen.sources.join() !== "blob:,blob:" || seen.natural.some(([width, height]) => width < 200 || height < 100) || seen.inline) await fail(`a diagram is not a drawn image: ${JSON.stringify(seen)}`);
   // A diagram's box is the conversation's width minus the gutter, wider than the reading column on a wide screen.
   const box = await evaluate(`(() => { const gutter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--space-4'));
-    return { frame: document.querySelector('.diagram-scroll').getBoundingClientRect().width, inner: document.querySelector('.log-wrap').getBoundingClientRect().width - 2 * gutter,
+    return { frame: document.querySelector('.diagram-scroll').getBoundingClientRect().width, inner: document.querySelector('.log').clientWidth - 2 * gutter,
       column: document.querySelector('.message:not(.message-user) .markdown').getBoundingClientRect().width }; })()`);
   if (Math.abs(box.frame - box.inner) > 1 || (!phone() && box.frame <= box.column + 100)) await fail(`the diagram box is not the conversation's width: ${JSON.stringify(box)}`);
   // The whole diagram shows first: scaled down to the column, never up, with its shape kept.
