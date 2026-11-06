@@ -18,7 +18,7 @@ flowchart LR
 3. `dispatch::handle` waits for the request's ticket after the handler has dropped the state and mutation locks, then replies. A reply means the change is on disk. A `kill -9` after the reply keeps it.
 4. If the write fails, the request gets `durability_degraded`: the change is live in memory but not yet saved. The saver writes the newest state again every second, and at once on the next change. A failed save no longer rolls the change back, because other writers (a pane exit, presence expiry) change the state without the mutation lock.
 
-Background changes (pane exit, presence expiry, cold recovery) submit and do not wait. Cold recovery and shutdown call `Saver::flush` after they drop the lock.
+Changes outside a request (pane exit, presence expiry, cold recovery, a resize sent on a terminal stream) submit and do not wait. Cold recovery and shutdown call `Saver::flush` after they drop the lock.
 
 ## The write
 
