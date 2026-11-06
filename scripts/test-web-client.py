@@ -2527,7 +2527,7 @@ capabilities = ["terminal_view"]
         status, held = steady(work_site, 'POST', fam_chat + '/send', {'text': 'keep this one'})
         assert status == 200 and held['queued']['text'] == 'keep this one', held
         subscription = {'endpoint': push_origin + '/push/device-work', 'keys': {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}, 'expirationTime': None}
-        assert work_site.request('POST', '/api/push', {'subscription': subscription, 'choices': {'manager': False, 'agents': False}})[0] == 200
+        assert work_site.request('POST', '/api/push', {'subscription': subscription, 'choices': {'manager': False, 'agents': True}})[0] == 200
         status, muted = steady(work_site, 'POST', '/api/push/mute', {'session': sessions['family'], 'muted': True})
         assert status == 200 and muted['muted'] == [sessions['family']], (status, muted)
         work_state = work / 'state/wsx/web/work'
