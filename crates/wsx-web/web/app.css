@@ -1067,8 +1067,8 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 }
 .file-body .actions { border-top: var(--border-width) solid var(--color-hairline); }
 .file-markdown { padding: var(--space-4); container-type: inline-size; }
-/* ^ A page without a background of its own expects the browser's white canvas. */
-.file-page { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; }
+/* ^ A page without a background of its own expects the browser's light canvas, not a theme colour. */
+.file-page { flex: 1; min-height: 0; width: 100%; border: 0; color-scheme: light; background: Canvas; }
 .file-source { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 /* Hook: .options, .facts, .pair-form, .sheet, .notice — settings, pairing, dialog, notices. */
