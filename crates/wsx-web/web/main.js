@@ -79,7 +79,9 @@ function followViewport() {
 // it is removed with the bar, so a screen without the bar pads nothing (app.css ".tabbar").
 const Tabs = ({ current, rail }) => {
   const bar = useRef(null);
-  useEffect(() => {
+  // ^ A layout effect: App's restorePlace runs after it in the same commit, so a returning list is
+  // restored with its final bottom padding (an effect would set the space a frame later).
+  useLayoutEffect(() => {
     const node = bar.current;
     if (!node) return;
     const root = document.documentElement.style;
