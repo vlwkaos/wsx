@@ -84,6 +84,9 @@ pub enum WaitOn {
     /// The agent's usage limit: the host continues its session at `until_ms`, one task at a
     /// time. ref: docs/tasks.md "Claude adapter"
     Limit,
+    /// A worker's result waits for its own `check-run`'s answer, at most until `until_ms`
+    /// (the run's time limit); the task stays `working`. ref: docs/tasks.md "Check-run"
+    CheckRun,
 }
 
 impl WaitOn {
@@ -95,6 +98,7 @@ impl WaitOn {
             Self::Hand => "hand",
             Self::CheckSlot => "check_slot",
             Self::Limit => "limit",
+            Self::CheckRun => "check_run",
         }
     }
 }
@@ -104,7 +108,8 @@ pub struct Waiting {
     pub on: WaitOn,
     /// What it waits for, in plain words.
     pub reason: String,
-    /// When a wait on `limit` resumes, in unix ms.
+    /// When a wait on `limit` resumes, or a wait on `check_run` outlives its run's time limit,
+    /// in unix ms.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until_ms: Option<u64>,
 }
@@ -227,7 +232,8 @@ pub struct TaskRecord {
     /// `task new --plan`: the first result is a plan, with no checks; set until it arrives.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plan: bool,
-    /// Set while the state is `waiting`, and on `check_slot` while checks wait for the slot.
+    /// Set while the state is `waiting`, on `check_slot` while checks wait for the slot, and
+    /// on `check_run` while a result waits for its check-run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<Waiting>,
     pub created_unix_ms: u64,

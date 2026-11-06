@@ -3707,6 +3707,38 @@ def run(wsx, wsxd, work, owned):
     assert len(sent) == 1 and ': exit 1' in sent[0]['message'], sent
     for n in (passed, failed):
         js('task', 'close', n, '--discard')
+    # 32t3. A `ci:` check-run that fails after the result (docs/tasks.md "Check-run"): the
+    # `check_run` turn's result goes on to the checks. When that turn starts a new `ci:` run,
+    # its result waits for it, and the record shows the wait on `check_run` with the run's time
+    # limit, so the stall check does not call it silent; the pass then goes on to the checks.
+    mark('32t3')
+    ci_mark, ci_pass = base / 'ci-again-mark', base / 'ci-again-gate'
+    configure(LAND_CONFIG + '  scenarios:\n    cifail: "ci: exit 1"\n'
+              '    ciagain: "ci: if [ -e %s ]; then while [ ! -e %s ]; do sleep 0.2; done; echo ci-passed; '
+              'else touch %s; echo WORK ciagain2.txt CHECKRUN_LATER ciagain ; exit 1; fi"\n'
+              % (ci_mark, ci_pass, ci_mark), 'ci scenarios that fail')
+    plain = js('task', 'new', 'CHECKRUN_LATER cifail WORK cifail.txt')['id']
+    again = js('task', 'new', 'CHECKRUN_LATER ciagain WORK ciagain.txt')['id']
+    assert wait_state(plain, 'ready', 'failed')['state'] == 'ready', log(plain)
+    assert kinds(plain, 'result', 'check_run', 'checks') == ['result', 'check_run', 'result', 'checks'], log(plain)
+    assert [e['trigger'] for e in log(plain) if e['kind'] == 'result'] == ['step', 'check_run'], log(plain)
+    held = wait(lambda: len(kinds(again, 'result')) == 2 and (current := show(again))['record'].get('waiting') and current,
+                'the second result waits for its new ci check-run', 30)
+    waiting, now_ms = held['record']['waiting'], time.time() * 1000
+    assert held['state'] == 'working' and waiting['on'] == 'check_run', held['record']
+    assert 'check-run ciagain on CI' in waiting['reason'], waiting
+    assert now_ms + 70 * 60_000 < waiting['until_ms'] <= now_ms + 75 * 60_000, waiting
+    assert held['status']['kind'] == 'check_run' and held['status']['label'] == 'Waiting for its check-run', held['status']
+    assert kinds(again, 'result', 'check_run', 'checks') == ['result', 'check_run', 'result'], log(again)
+    ci_pass.touch()
+    done = wait_state(again, 'ready', 'failed')
+    assert done['state'] == 'ready' and not done['record'].get('waiting'), log(again)
+    assert kinds(again, 'result', 'check_run', 'checks') == ['result', 'check_run', 'result', 'check_run', 'checks'], log(again)
+    assert [e['trigger'] for e in log(again) if e['kind'] == 'result'] == ['step', 'check_run'], log(again)
+    proof = [e for e in done['result']['result']['evidence'] if 'check-run ciagain passed' in e['check']]
+    assert len(proof) == 1 and 'ci-passed' in proof[0]['proof'], done['result']
+    for n in (plain, again):
+        js('task', 'close', n, '--discard')
     # 32v. Two lanes (docs/tasks.md "Check slot"): a scenario check-run holds the scenarios lane, a
     # task's result checks still run at once in the checks lane, and a second scenario run waits
     # with the scenarios reason.

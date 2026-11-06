@@ -80,6 +80,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
         (_, Some(waiting)) if waiting.on == WaitOn::CheckSlot => {
             slot(dir, record, &waiting.reason, entered, now_ms)
         }
+        (_, Some(waiting)) if waiting.on == WaitOn::CheckRun => held(&waiting.reason, now_ms),
         (TaskState::Waiting, Some(waiting)) => match waiting.on {
             WaitOn::Owner => {
                 let stopped = dir
@@ -151,6 +152,7 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
                 now_ms,
             ),
             WaitOn::CheckSlot => slot(dir, record, &waiting.reason, entered, now_ms),
+            WaitOn::CheckRun => held(&waiting.reason, now_ms),
         },
         (TaskState::Checking, _) => words(
             "checking",
@@ -316,6 +318,18 @@ fn ready(dir: &TaskDir, record: &TaskRecord, entered: u64, now_ms: u64) -> Statu
             now_ms,
         ),
     }
+}
+
+/// A worker's result that waits for its own check-run's answer (a `ci:` one up to 75 min).
+fn held(reason: &str, now_ms: u64) -> Status {
+    words(
+        "check_run",
+        "Waiting for its check-run",
+        None,
+        reason,
+        "A failure goes back to the worker; a pass on its committed tree goes on by itself.",
+        now_ms,
+    )
 }
 
 /// A run that waits for the machine's check slot, in its lane, since its `check_queued`.

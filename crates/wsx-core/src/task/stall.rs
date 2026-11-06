@@ -141,6 +141,18 @@ fn running(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
             .until_ms
             .filter(|until_ms| *until_ms < now_ms)
             .map(|until_ms| format!("its usage limit reset {} ago", span(now_ms - until_ms))),
+        // ^ The host stops the run at its time limit and answers: a wait past it is lost.
+        WaitOn::CheckRun => {
+            waiting
+                .until_ms
+                .filter(|until_ms| *until_ms < now_ms)
+                .map(|until_ms| {
+                    format!(
+                        "its check-run passed its time limit {} ago",
+                        span(now_ms - until_ms)
+                    )
+                })
+        }
         _ => None,
     };
     match status::queue(&waiting.reason).and_then(|queue| status::task_label(queue.holder)) {
