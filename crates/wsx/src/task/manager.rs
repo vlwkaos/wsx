@@ -1118,6 +1118,10 @@ impl Manager {
                         clip(hold, EVENT_SUMMARY_CHARS)
                     ));
                 }
+                // ^ A ready task that waits for another is not for the manager to land yet.
+                if let Some(after) = record.after.as_ref().filter(|_| record.state.is_open()) {
+                    summary.push_str(&format!("; waits for #{} to land", after.task));
+                }
                 // ^ The worker's memo reaches the manager when its task leaves, never later:
                 // the ledger lists only the last few. ref: docs/tasks.md "Memo"
                 if !record.state.is_open() {
