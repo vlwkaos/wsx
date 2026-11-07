@@ -1941,13 +1941,19 @@ capabilities = ["terminal_view"]
         assert not list(media_dir.glob('*.pdf.md'))  # no tool on the PATH: the original only, the upload is fine
         attached(owner, sessions['owner'], plain)
         tools = {name: shutil.which(name) for name in ('pdftotext', 'ffmpeg', 'ffprobe')}
+        # ^ ffprobe waits while `gate` exists: a video's copy is made after the upload answers,
+        # and the gate holds it open long enough to send a message before it is ready.
+        gate = work / 'video.gate'
         for name, found in tools.items():
-            if found:
+            if found and name == 'ffprobe':
+                (bin_dir / name).write_text('#!/bin/sh\nwhile [ -e "%s" ]; do sleep 0.1; done\nexec "%s" "$@"\n' % (gate, Path(found).resolve()))
+                (bin_dir / name).chmod(0o755)
+            elif found:
                 (bin_dir / name).symlink_to(Path(found).resolve())
         if tools['pdftotext']:
             pdf_bytes = pdf_fixture('beta')
             report = owner.request('PUT', '/api/media?name=report.pdf', pdf_bytes)[1]
-            assert report['name'] == 'report.pdf' and report['hash'] == hashlib.sha256(pdf_bytes).hexdigest() and 'compact' not in report, report
+            assert report['name'] == 'report.pdf' and report['hash'] == hashlib.sha256(pdf_bytes).hexdigest() and 'compact' not in report and 'preparing' not in report, report
             line = prompt_after('summarize the report', [report['hash']]).splitlines()[-1]
             found = re.fullmatch(r'(.+\.pdf\.md) \(report\.pdf: text of 3 pages, no text on pages 2\) original: (.+\.pdf) '
                                  r'\(open it only for figures, tables or exact layout and the pages without text\)', line)
@@ -1976,9 +1982,19 @@ capabilities = ["terminal_view"]
                             '-f', 'lavfi', '-i', 'sine=frequency=440:duration=45', '-shortest', '-pix_fmt', 'yuv420p',
                             '-c:v', 'libx264', '-crf', '45', '-g', '120', '-c:a', 'aac', '-b:a', '6k', '-ac', '1', '-ar', '8000', str(clip)],
                            check=True, timeout=60)
+            gate.write_text('')
             movie = owner.request('PUT', '/api/media?name=clip.mp4', clip.read_bytes())
             assert movie[0] == 200, movie
             movie = movie[1]
+            state_route = '/api/media/' + movie['hash']
+            # The upload answered at once, the copy is not ready, and a send now names the original only.
+            assert movie['preparing'] is True and owner.request('GET', state_route)[1]['preparing'] is True, movie
+            early = prompt_after('what happens at first', [movie['hash']])
+            assert early.endswith('[attached files]\n%s/%s.mp4 (clip.mp4)' % (media_dir, movie['hash'])), early
+            assert not (media_dir / (movie['hash'] + '.mp4.md')).exists()
+            gate.unlink()
+            wait(lambda: not owner.request('GET', state_route)[1].get('preparing'), 'the video copy', timeout=60)
+            assert owner.request('GET', '/api/media/' + '0' * 64)[0] == 404
             line = prompt_after('what happens', [movie['hash']]).splitlines()[-1]
             found = re.fullmatch(r'(.+\.mp4\.md) \(clip\.mp4: 0:45, (\d) contact sheets?, no transcript\) original: (.+\.mp4) '
                                  r'\(open it only for motion, sound or detail the sheets lack\)', line)

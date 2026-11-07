@@ -106,6 +106,7 @@ pub fn router(app: Shared) -> Router {
                 post(task_check).get(check_capture),
             )
             .route("/api/media", put(media_put))
+            .route("/api/media/{hash}", get(media_state))
             .route("/api/files", get(files_list))
             // A text file is at most 1 MiB and a write carries the old and the new text.
             .route(
@@ -1513,6 +1514,30 @@ async fn media_put(
     }
     let name = query.get("name").map_or("file", String::as_str);
     let entry = blocking(|| app.media.finish(upload, name)).map_err(media_fault)?;
+    // ^ A PDF's copy takes under a second: the answer waits for it. A video's takes minutes:
+    // the answer says `preparing` and the page asks `media_state` until it is done.
+    let entry = match app.media.claim_prepare(&entry.hash) {
+        Some(claimed) if crate::compact::is_slow(&claimed.ext) => {
+            let (app, hash, ext) = (app.clone(), claimed.hash.clone(), claimed.ext.clone());
+            tokio::task::spawn_blocking(move || app.media.prepare(&hash, &ext));
+            claimed
+        }
+        Some(claimed) => {
+            blocking(|| app.media.prepare(&claimed.hash, &claimed.ext)).unwrap_or(claimed)
+        }
+        None => entry,
+    };
+    Ok(Json(json!(chat::Attachment::from(entry))))
+}
+
+/// One stored file as the upload answered, to see whether its copy is ready.
+async fn media_state(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(hash): UrlPath<String>,
+) -> Outcome<Json<Value>> {
+    allow(&app, Capability::MediaUpload, "uploads")?;
+    let entry = app.media.by_hash(&hash).ok_or_else(Fault::not_found)?;
     Ok(Json(json!(chat::Attachment::from(entry))))
 }
 

@@ -133,21 +133,50 @@ export const Attachments = ({ files }) => files?.length ? html`
 export async function uploadFiles(picked, files, changed, fail) {
   files.uploads.push(...picked);
   changed();
+  const settle = (original, stored) => {
+    if (stored) files.attachments.push(original.pasted ? { ...stored, pasted: original.pasted } : stored);
+    files.uploads = files.uploads.filter((other) => other !== original);
+    changed();
+  };
   for (const original of picked) {
     const item = await shrink(original);
+    let stored;
     if (item.size > state.site.max_file_bytes) {
       fail(`${item.name} is larger than ${bytes(state.site.max_file_bytes)}.`);
     } else {
       try {
-        const stored = await api("api/media", { method: "PUT", query: { name: item.name }, body: item });
-        files.attachments.push(original.pasted ? { ...stored, pasted: original.pasted } : stored);
+        stored = await api("api/media", { method: "PUT", query: { name: item.name }, body: item });
       } catch (failure) {
         fail(`${item.name}: ${failure.message}`);
       }
     }
-    files.uploads = files.uploads.filter((other) => other !== original);
-    changed();
+    if (stored?.preparing) {
+      // The next file uploads meanwhile; Send waits because this one stays in `uploads`.
+      original.preparing = true;
+      changed();
+      prepared(stored).then((ready) => settle(original, ready));
+    } else {
+      settle(original, stored);
+    }
   }
+}
+
+// A video's compact copy is made after its upload answers (docs/web-client.md "Media"). Ask
+// every 2 s until it is ready, for 5 minutes at most; a file the server dropped or a failed
+// read goes on as it is, and the server then names the original only.
+const PREPARE_POLL_MS = 2000;
+const PREPARE_GIVE_UP_MS = 5 * 60 * 1000;
+async function prepared(stored) {
+  const until = Date.now() + PREPARE_GIVE_UP_MS;
+  while (stored.preparing && Date.now() < until) {
+    await new Promise((done) => setTimeout(done, PREPARE_POLL_MS));
+    try {
+      stored = await api(`api/media/${stored.hash}`);
+    } catch {
+      break;
+    }
+  }
+  return stored;
 }
 
 // A text paste longer than this becomes a file (docs/web-client-tasks.md "Composer"). The
@@ -204,7 +233,7 @@ export const FileChips = ({ files, onRemove, onInline }) => files.attachments.le
         ${item.pasted && html`<button class="link-action" type="button" onClick=${() => onInline(item)}>Paste as text</button>`}
         <button class="icon-button" type="button" title="Remove" aria-label=${`Remove ${item.name}`} onClick=${() => onRemove(item)}><${Icon} name="fail" /></button>
       </li>`)}
-    ${files.uploads.map((item) => html`<li data-uploading><span>${item.name}</span><span class="note" role="status">Uploading…</span></li>`)}
+    ${files.uploads.map((item) => html`<li data-uploading><span>${item.name}</span><span class="note" role="status">${item.preparing ? "Preparing…" : "Uploading…"}</span></li>`)}
   </ul>` : null;
 
 // The attach button and its hidden file picker, when the site allows uploads.
