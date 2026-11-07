@@ -302,14 +302,24 @@ async function inbox() {
       return { scrolled: Math.round(row.scrollLeft), left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height), name: row.querySelector(".row-remove").getAttribute("aria-label"), filled: row.hasAttribute("data-open") }; })()`);
     const closed = await removeBox();
     if (closed.scrolled !== 0 || closed.left < size[0] || closed.filled) await fail(`Remove shows before a slide: ${JSON.stringify(closed)}`);
-    // The slide starts on the row only once the row is in view and nothing covers that point.
+    // The slide starts on the row only once the row is in view, nothing covers that point and no
+    // finite animation (the screen's fade-in) is still running.
     const aim = `(() => { const row = document.querySelector('.scroll .row-slide'); const r = row.getBoundingClientRect(); const [x, y] = [r.right - 40, r.top + r.height / 2];
-      return r.top >= 0 && r.bottom <= innerHeight && row.contains(document.elementFromPoint(x, y)) ? [x, y] : null; })()`;
+      const moving = document.getAnimations().some((animation) => animation.effect.getComputedTiming().iterations !== Infinity);
+      return r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight && !moving && row.contains(document.elementFromPoint(x, y)) ? [x, y] : null; })()`;
     await until(`!!${aim}`, "the first row is not in view to slide");
     const start = await evaluate(aim);
-    await evaluate("window.wsxSlid = document.querySelector('.scroll .row-slide')");
-    await send("Input.synthesizeScrollGesture", { x: start[0], y: start[1], xDistance: -160, yDistance: 0, gestureSourceType: "touch", speed: 800 });
-    const slide = "(() => { const row = document.querySelector('.scroll .row-slide'); return { left: row.scrollLeft, same: row === window.wsxSlid, top: Math.round(row.getBoundingClientRect().top), page: document.querySelector('.scroll').scrollTop }; })()";
+    // ^ What the row receives, for a failure that says whether the touch reached the page.
+    await evaluate(`(() => { const row = document.querySelector('.scroll .row-slide'); const seen = window.wsxSeen = {};
+      window.wsxSlid = row;
+      for (const type of ["touchstart", "touchmove", "touchend", "pointercancel", "scroll"]) row.addEventListener(type, () => { seen[type] = (seen[type] ?? 0) + 1; }, { passive: true }); })()`);
+    // Explicit touch events, not Input.synthesizeScrollGesture: that gesture is paced by real time,
+    // and on a loaded CI runner the row once stayed at scrollLeft 0 (runs 42341262262, 42348613484).
+    const touch = (type, x) => send("Input.dispatchTouchEvent", { type, touchPoints: type === "touchEnd" ? [] : [{ x, y: start[1] }] });
+    await touch("touchStart", start[0]);
+    for (let step = 1; step <= 8; step++) await touch("touchMove", start[0] - step * 20);
+    await touch("touchEnd");
+    const slide = "(() => { const row = document.querySelector('.scroll .row-slide'); return { left: row.scrollLeft, same: row === window.wsxSlid, top: Math.round(row.getBoundingClientRect().top), page: document.querySelector('.scroll').scrollTop, seen: window.wsxSeen, width: innerWidth, scale: visualViewport.scale }; })()";
     await until(`${slide}.left > 0`, async () => `a slide did not move the row (from ${JSON.stringify(start)}: ${JSON.stringify(await evaluate(slide))})`);
     await pause(400);
     const open = await removeBox();
