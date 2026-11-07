@@ -359,10 +359,12 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         title: task["title"].as_str().unwrap_or_default().to_string(),
         state: task["state"].as_str().unwrap_or_default().to_string(),
         // ^ The words of wsx-core `task::status` (docs/tasks.md "Status").
-        status: task["status"]["label"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string(),
+        // ^ With the reason of a wait for another task (`status.wait`), as the web's row.
+        status: [&task["status"]["label"], &task["status"]["wait"]]
+            .iter()
+            .filter_map(|word| word.as_str().filter(|word| !word.is_empty()))
+            .collect::<Vec<_>>()
+            .join(" · "),
         section,
     };
     let role = |role: &Value| TaskRow {
