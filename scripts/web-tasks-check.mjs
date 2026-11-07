@@ -2381,9 +2381,12 @@ await oneMotion("To check on a phone", async () => {
   await evaluate(`${rowOf("#2")}.querySelector('.row-open').click()`);
   await until(`/^#\\/p\\/${project}\\/checks\\/c\\d+$/.test(location.hash) && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open at the item");
 });
-const atItem = await evaluate(`(() => { const node = document.querySelector('dialog.task-sheet[open] .check-item[data-check=' + JSON.stringify(location.hash.split('/').at(-1)) + ']'), scroll = document.querySelector('dialog.task-sheet[open] .scroll').getBoundingClientRect(), box = node?.getBoundingClientRect();
-  return { task: node?.querySelector('.task-chip')?.textContent.trim(), seen: !!box && box.top >= scroll.top - 1 && box.bottom <= scroll.bottom + 1 }; })()`);
-if (atItem.task !== "#2" || !atItem.seen) await fail(`a tap on #2's To check row opened the sheet at ${JSON.stringify(atItem)}`);
+// ^ The scroll to the item runs a frame after the sheet shows: wait for it, then read the item.
+const seenItem = `(() => { const node = document.querySelector('dialog.task-sheet[open] .check-item[data-check=' + JSON.stringify(location.hash.split('/').at(-1)) + ']'), scroll = document.querySelector('dialog.task-sheet[open] .scroll').getBoundingClientRect(), box = node?.getBoundingClientRect();
+  return { task: node?.querySelector('.task-chip')?.textContent.trim(), seen: !!box && box.top >= scroll.top - 1 && box.bottom <= scroll.bottom + 1, found: node?.hasAttribute('data-found') }; })()`;
+await until(`${seenItem}.seen`, "the sheet did not scroll to the item a To check row opened", 10);
+const atItem = await evaluate(seenItem);
+if (!/^#2/.test(atItem.task ?? "")) await fail(`a tap on #2's To check row opened the sheet at ${JSON.stringify(atItem)}`);
 // ^ The opened To check list uses the reservoir's small size.
 const checkSize = await evaluate("getComputedStyle(document.querySelector('dialog.task-sheet[open] .check-item .check-task')).fontSize");
 if (checkSize !== closedSize) await fail(`the To check list's words are ${checkSize}, not ${closedSize}`);
