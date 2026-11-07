@@ -413,12 +413,11 @@ const jumpHidden = "document.querySelector('.terminal .jump').hidden";
 if (!(await evaluate(jumpHidden))) await fail("Jump to latest shows at the end of the output");
 const viewportAt = "(() => { const viewport = document.querySelector('.xterm-viewport'); return { top: viewport.scrollTop, height: viewport.scrollHeight, client: viewport.clientHeight }; })()";
 await until(`(({ top, height, client }) => client < height && height - top - client < 2)(${viewportAt})`, "the output did not leave the view at its end");
-// A scroll back is a gesture: wheel events, one per frame. xterm.js drops the scroll event that
-// follows its own move of the view (Viewport._ignoreNextScrollEvent), so one event alone may not move it.
-await evaluate(`(async () => { for (let step = 0; step < 5; step++) {
-  document.querySelector('.terminal .xterm').dispatchEvent(new WheelEvent('wheel', { deltaY: -400, deltaMode: 0, bubbles: true, cancelable: true }));
-  await new Promise(requestAnimationFrame); } })()`);
-await until(`!${jumpHidden}`, async () => `Jump to latest did not show after a scroll back (view ${JSON.stringify(await evaluate(viewportAt))})`);
+// A scroll back is a gesture: wheel events. xterm.js drops the scroll event that follows its own
+// move of the view (Viewport._ignoreNextScrollEvent), so one event may not move it, and a loaded
+// runner may drop more: one wheel event per poll, until the view has left the end.
+await until(`(() => { if (${jumpHidden}) document.querySelector('.terminal .xterm').dispatchEvent(new WheelEvent('wheel', { deltaY: -400, deltaMode: 0, bubbles: true, cancelable: true }));
+  return !${jumpHidden}; })()`, async () => `Jump to latest did not show after a scroll back (view ${JSON.stringify(await evaluate(viewportAt))})`);
 await capture("phone-jump");
 await evaluate("document.querySelector('.terminal .jump').click()");
 await until(`${jumpHidden} && (() => { const viewport = document.querySelector('.xterm-viewport'); return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 2; })()`,
