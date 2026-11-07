@@ -3531,7 +3531,17 @@ def task_journey(args):
         # the ones it counts from.
         manager_dir = state / 'wsx/tasks' / ('plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]) / 'manager'
         manager_dir.mkdir(mode=0o700, parents=True)
-        old_log, first_ms = [], int(time.time() * 1000) - 3_600_000
+        questions = ['Should the fold keep five rows?', 'Can #92 wait for Monday?', 'Shall I ship #93 today?', 'Is the since line right?']
+        # ^ The log opens with the two questions that stay open, three spare ones (the three plain
+        # owner messages below answer those, newest first) and 230 `sent` entries with no text:
+        # they show nothing but use the 200 entries a read sends, so the first two questions are
+        # older than the rows the page loads, and the events below them are not (a tap on their
+        # reservoir rows reads the chat around them, scripts/web-tasks-check.mjs).
+        lead = [{'kind': 'reply', 'id': 8901 + n, 'to': [9001], 'text': question, 'asks': True}
+                for n, question in enumerate(questions[:2] + ['Spare question %d' % n for n in range(3)])]
+        lead += [{'kind': 'sent', 'to': 'ui', 'text': ''} for _ in range(230)]
+        first_ms = int(time.time() * 1000) - 3_600_000 - len(lead) * 20_000
+        old_log = [{**entry, 'unix_ms': first_ms + n * 20_000} for n, entry in enumerate(lead)]
 
         def logged(author, text, reply, quiet=True, short=None):
             said, at = 9001 + len(old_log), first_ms + len(old_log) * 20_000
@@ -3570,13 +3580,8 @@ def task_journey(args):
         # quote the newest open one; the first two still ask, each until a quote, a dismiss or a
         # later plain message answers it (docs/tasks.md "Questions" under "Manager").
         asked_at = old_log[-1]['unix_ms'] + 1000
-        questions = ['Should the fold keep five rows?', 'Can #92 wait for Monday?', 'Shall I ship #93 today?', 'Is the since line right?']
-        for n, question in enumerate(questions):
-            old_log.append({'kind': 'reply', 'id': 9901 + n, 'to': [9001], 'text': question, 'asks': True, 'unix_ms': asked_at + n * 1000})
-        # ^ Then 230 `sent` entries with no text: they show nothing but use the 200 entries a read
-        # sends, so the first two questions are older than the rows the page loads (a tap on their
-        # reservoir rows reads back to them, scripts/web-tasks-check.mjs).
-        old_log.extend({'kind': 'sent', 'to': 'ui', 'text': '', 'unix_ms': asked_at + 4000} for _ in range(230))
+        for n, question in enumerate(questions[2:]):
+            old_log.append({'kind': 'reply', 'id': 9903 + n, 'to': [9001], 'text': question, 'asks': True, 'unix_ms': asked_at + n * 1000})
         old_log.extend([{'kind': 'message', 'id': 9905, 'from': 'owner', 'text': '> Shall I ship #93 today?\n\nNot today.', 'unix_ms': asked_at + 5000},
                         {'kind': 'message', 'id': 9906, 'from': 'owner', 'text': 'It is.', 'unix_ms': asked_at + 6000},
                         {'kind': 'delivered', 'ids': [9905, 9906], 'unix_ms': asked_at + 6001}])
