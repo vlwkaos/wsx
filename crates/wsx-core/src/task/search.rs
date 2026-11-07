@@ -5,7 +5,7 @@
 
 use super::manager::{says_nothing, split_quote, Author, ManagerEntry, ManagerEvent, QUOTE_REF};
 use super::store::{self, ManagerDir, TaskDir, RESULT_FILE};
-use super::{roles, view};
+use super::{history, roles, view};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -18,6 +18,8 @@ const DIGEST_FILE: &str = "search.jsonl";
 const LOCK_FILE: &str = "search.lock";
 /// A record keeps this much of a text; the log and the task keep the rest.
 const MAX_TEXT_BYTES: usize = 4096;
+/// A `History` record keeps this much of a line; the log keeps the rest.
+const MAX_HISTORY_BYTES: usize = 1024;
 /// A catch-up reads this much of a log's end first, more only when it has not reached the
 /// last record it kept (the same rule as the chat, "Log window").
 const FIRST_READ_BYTES: u64 = 256 * 1024;
@@ -41,6 +43,9 @@ pub enum Kind {
     Task,
     /// A task's latest result: summary, memo, decisions, what is left open.
     Result,
+    /// A line of a task's story: an add or a steer, a turn's result, a revision, its checks, a
+    /// stop, its landing or close (`history::line`); read from the task's log.
+    History,
     /// A line of the manager's `notes/decisions.md`; read from the file, never kept.
     Decision,
     /// A line of the manager's `notes/context.md` or its archive; read from the file.
@@ -65,6 +70,14 @@ struct Doc {
     by: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     text: String,
+    /// A `History` line: the byte offset after it in the task's log, so a catch-up reads the log
+    /// from the newest one it has.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    end: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// A project to search: its registered name and its store id.
@@ -98,6 +111,10 @@ pub struct Hit {
     /// manager chat of the project the search ran in can be quoted by id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quote: Option<String>,
+    /// Where the hit's task is now ("landed 11-07 cd67238", "closed: discarded", "ready r2"),
+    /// read when the search ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -112,13 +129,15 @@ pub struct Found {
 
 /// The hits for `words` in `targets`, best first, at most `limit`. `current`: the project the
 /// asker works in, whose manager chat a hit can quote by id. `reindex` rebuilds the digests
-/// from the logs and the task files first. ref: docs/tasks.md "Search"
+/// from the logs and the task files first. `only`: the hits of this task alone.
+/// ref: docs/tasks.md "Search"
 pub fn search(
     targets: &[Target],
     current: Option<&str>,
     words: &str,
     limit: usize,
     reindex: bool,
+    only: Option<u32>,
 ) -> Result<Found> {
     let words = words.to_lowercase();
     let mut terms: Vec<&str> = Vec::new();
@@ -136,7 +155,11 @@ pub fn search(
         match gather(target, reindex) {
             Ok(list) => {
                 found.projects += 1;
-                docs.extend(list.into_iter().map(|doc| (at, doc)));
+                docs.extend(
+                    list.into_iter()
+                        .filter(|doc| only.is_none_or(|task| doc.task == Some(task)))
+                        .map(|doc| (at, doc)),
+                );
             }
             Err(error) => found.problems.push(format!("{}: {error:#}", target.name)),
         }
@@ -199,10 +222,18 @@ pub fn search(
         .take(limit)
         .map(|(score, at)| {
             let (target, doc) = &docs[at];
-            hit(&targets[*target].name, doc, score, current)
+            let mut found = hit(&targets[*target].name, doc, score, current);
+            found.outcome = doc.task.and_then(|task| outcome(&targets[*target], task));
+            found
         })
         .collect();
     Ok(found)
+}
+
+/// Where task `task` is now, for a hit that names it; none when its files are gone.
+fn outcome(target: &Target, task: u32) -> Option<String> {
+    let dir = TaskDir::open(&target.project_id, task).ok()?;
+    Some(history::outcome(&dir, &dir.read_record().ok()?))
 }
 
 fn hit(project: &str, doc: &Doc, score: f64, current: Option<&str>) -> Hit {
@@ -235,10 +266,11 @@ fn hit(project: &str, doc: &Doc, score: f64, current: Option<&str>) -> Hit {
         score,
         reference,
         quote,
+        outcome: None,
     }
 }
 
-fn first_line(text: &str) -> String {
+pub(super) fn first_line(text: &str) -> String {
     let line = text
         .lines()
         .map(str::trim)
@@ -432,6 +464,7 @@ fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
                 at: 0,
                 by: String::new(),
                 text: String::new(),
+                end: 0,
             });
         }
     }
@@ -478,6 +511,7 @@ fn chat_doc(entry: &ManagerEntry, role: &str) -> Option<Doc> {
         at: entry.unix_ms,
         by,
         text: clip(body),
+        end: 0,
     })
 }
 
@@ -488,10 +522,19 @@ fn catch_up_tasks(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
         .iter()
         .filter_map(|doc| Some(((doc.kind, doc.task?), doc)))
         .collect();
+    // ^ Per task, how far its log is read: the end of the newest line kept.
+    let mut scanned: HashMap<u32, u64> = HashMap::new();
+    for doc in docs.iter().filter(|doc| doc.kind == Kind::History) {
+        if let Some(task) = doc.task {
+            let end = scanned.entry(task).or_default();
+            *end = (*end).max(doc.end);
+        }
+    }
     for task in store::task_numbers(project_id)? {
         let Ok(dir) = TaskDir::open(project_id, task) else {
             continue;
         };
+        catch_up_history(&dir, task, scanned.get(&task).copied().unwrap_or(0), fresh);
         if !kept.contains_key(&(Kind::Task, task)) {
             if let Ok(record) = dir.read_record() {
                 let title = view::title(&dir, &record).unwrap_or_default();
@@ -504,6 +547,7 @@ fn catch_up_tasks(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
                     at: record.created_unix_ms,
                     by: "task".into(),
                     text: clip(&format!("{title}\n{prompt}")),
+                    end: 0,
                 });
             }
         }
@@ -527,10 +571,52 @@ fn catch_up_tasks(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
                 at,
                 by: "task".into(),
                 text,
+                end: 0,
             });
         }
     }
     Ok(())
+}
+
+/// The lines of the task's story that its log holds past `from`. A log that is not longer has
+/// nothing new (one stat); progress lines are skipped by their bytes, before any parse.
+fn catch_up_history(dir: &TaskDir, task: u32, from: u64, fresh: &mut Vec<Doc>) {
+    const KINDS: [&[u8]; 9] = [
+        br#""kind":"created""#,
+        br#""kind":"message""#,
+        br#""kind":"result""#,
+        br#""kind":"revision""#,
+        br#""kind":"checks""#,
+        br#""kind":"landed""#,
+        br#""kind":"closed""#,
+        br#""kind":"stopped""#,
+        br#""kind":"land_stopped""#,
+    ];
+    let Ok(entries) = dir.read_log_since(from, |line| {
+        // ^ `unix_ms` comes first, so the kind is in the first bytes: a long progress line is not scanned.
+        let head = &line[..line.len().min(64)];
+        KINDS.iter().any(|kind| contains(head, kind))
+    }) else {
+        return;
+    };
+    for (end, entry) in entries {
+        // ^ The prompt is the task's own record, with its title.
+        let Some((label, text)) =
+            history::line(&entry.event).filter(|(label, _)| *label != "prompt")
+        else {
+            continue;
+        };
+        fresh.push(Doc {
+            kind: Kind::History,
+            role: String::new(),
+            id: None,
+            task: Some(task),
+            at: entry.unix_ms,
+            by: label.into(),
+            text: clip_to(&text, MAX_HISTORY_BYTES),
+            end,
+        });
+    }
 }
 
 /// The summary, memo, decisions and open points of a `result.json`.
@@ -601,6 +687,7 @@ fn notes(project_id: &str) -> Vec<Doc> {
                 at: text.split(' ').next().and_then(day_ms).unwrap_or(modified),
                 by: "notes".into(),
                 text: clip(text),
+                end: 0,
             });
         }
     }
@@ -645,10 +732,14 @@ pub fn day_of(unix_ms: u64) -> String {
 }
 
 fn clip(text: &str) -> String {
-    if text.len() <= MAX_TEXT_BYTES {
+    clip_to(text, MAX_TEXT_BYTES)
+}
+
+fn clip_to(text: &str, max: usize) -> String {
+    if text.len() <= max {
         return text.to_string();
     }
-    let mut end = MAX_TEXT_BYTES;
+    let mut end = max;
     while !text.is_char_boundary(end) {
         end -= 1;
     }

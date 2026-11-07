@@ -137,6 +137,8 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         "stray_worktrees_omitted": stray_omitted,
         "deploys": deploy_status(project_name, main, &settings).unwrap_or(Value::Null),
         "routines": routines(main),
+        // ^ Where the story of a closed task lives; the ledger keeps none (docs/tasks.md "Search").
+        "history": "wsx task search --task <n> | <words>",
         "recent": recent.into_iter().map(|(_, row)| row).collect::<Vec<_>>(),
         "open": open.iter().map(|(_, _, row)| row.clone()).collect::<Vec<_>>(),
         "open_omitted": 0,

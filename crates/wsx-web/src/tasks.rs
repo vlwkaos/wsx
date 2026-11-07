@@ -502,7 +502,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["checks"] = result["checks"].clone();
     summary["report"] = json!(report);
     summary["talk"] = talk(&log);
-    summary["timeline"] = timeline(&log);
+    summary["timeline"] = json!(task::history::timeline(&log, TIMELINE_ENTRIES));
     summary["usage"] = json!(task::usage::task(&dir));
     summary["overlaps"] = if record.state.is_open() {
         view::overlaps(&record, &records, true)
@@ -651,30 +651,6 @@ fn talk(log: &[task::LogEntry]) -> Value {
         })
         .collect();
     json!(rows)
-}
-
-/// The log without agent progress: each run of progress lines becomes one `steps` entry
-/// with its count and last line.
-fn timeline(log: &[task::LogEntry]) -> Value {
-    let mut rows: Vec<Value> = Vec::new();
-    for entry in log {
-        if let LogEvent::Agent { text, .. } = &entry.event {
-            match rows.last_mut() {
-                Some(last) if last["kind"] == "steps" => {
-                    last["count"] = json!(last["count"].as_u64().unwrap_or(0) + 1);
-                    last["last"] = json!(text);
-                    last["unix_ms"] = json!(entry.unix_ms);
-                }
-                _ => rows.push(
-                    json!({ "kind": "steps", "count": 1, "last": text, "unix_ms": entry.unix_ms }),
-                ),
-            }
-            continue;
-        }
-        rows.push(serde_json::to_value(entry).unwrap_or_default());
-    }
-    let skipped = rows.len().saturating_sub(TIMELINE_ENTRIES);
-    json!({ "entries": rows.split_off(skipped), "skipped": skipped })
 }
 
 /// The manager conversation, or the role `role`'s, after message `after`, and whether it
