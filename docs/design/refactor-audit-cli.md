@@ -4,7 +4,7 @@ Status: read-only audit, 2026-11-07, HEAD `ef7a3b5d`. Scope: `git diff v0.41.0..
 
 **Answer.** Nine findings, no dead code. Two bugs of the "second copy" kind come first: the manager is told a flag that four commands reject, and the limit rule exists twice. The big item (F3) is shape: `task/mod.rs`, `host.rs` and `manager.rs` hold 10,200 lines. It lands last, because it moves code the other fixes edit.
 
-Proof marks. **R** = I read the lines on HEAD. **G** = I confirmed callers or absence with `rg` or a script (see "Proof"). **†** = read by the Explore subagent, not re-read by me. Nothing was built or run: the smoke and task scenarios were not started, and the local `target/debug/wsx` is stale (`wsx task checkin --help` fails with a socket error), so the `--json` finding is from source.
+Proof marks. **R** = I read the lines on HEAD. **G** = I confirmed callers or absence with `rg` or a script (listed under "Checked, nothing found" and in the task result). **†** = read by the Explore subagent, not re-read by me. Nothing was built or run: the smoke and task scenarios were not started, and the local `target/debug/wsx` is stale (`wsx task checkin --help` fails with a socket error), so the `--json` finding is from source.
 
 ## Findings, ranked
 
