@@ -643,6 +643,41 @@ impl TaskDir {
         )
     }
 
+    /// The events of the lines `wanted` accepts from byte `from` on, each with the offset after
+    /// its line. A last line without `\n` is still being written: it is left for the next read.
+    /// ref: docs/tasks.md "Search"
+    pub fn read_log_since(
+        &self,
+        from: u64,
+        wanted: impl Fn(&[u8]) -> bool,
+    ) -> Result<Vec<(u64, LogEntry)>> {
+        let path = self.file(LOG_FILE);
+        let Some(mut file) = open_if_exists(&path)? else {
+            return Ok(Vec::new());
+        };
+        if file.metadata()?.len() <= from {
+            return Ok(Vec::new());
+        }
+        file.seek(SeekFrom::Start(from))?;
+        let mut reader = BufReader::new(file.take(MAX_LOG_HARD_BYTES));
+        let (mut at, mut line, mut found) = (from, Vec::new(), Vec::new());
+        loop {
+            line.clear();
+            let read = reader
+                .read_until(b'\n', &mut line)
+                .with_context(|| format!("cannot read {}", path.display()))?;
+            if read == 0 || line.last() != Some(&b'\n') {
+                return Ok(found);
+            }
+            at += read as u64;
+            if line.len() <= MAX_LOG_LINE_BYTES && wanted(&line) {
+                if let Ok(entry) = serde_json::from_slice(&line) {
+                    found.push((at, entry));
+                }
+            }
+        }
+    }
+
     /// What `pick` makes of the newest event it accepts, scanning the log from its end: the
     /// last `LOG_TAIL_SCAN_BYTES` first, more only when they hold no hit (`read_back`). Gives
     /// the answer of `read_log().iter().rev().find_map(..)` without a full parse per call.

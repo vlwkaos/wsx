@@ -1443,6 +1443,7 @@ def run(wsx, wsxd, work, owned):
     checked = ledger['open'][1]['checks']
     assert [{k: c[k] for k in ('command', 'outcome')} for c in checked] == [{'command': 'test ! -e broken.txt', 'outcome': 'passed'}], checked
     assert all(isinstance(c['ms'], int) and isinstance(c['queued_ms'], int) for c in checked), checked
+    assert ledger['history'] == 'wsx task search --task <n> | <words>'  # the ledger keeps no history
     assert 0 < len(ledger['recent']) <= 10 and all(row['state'] in ('landed', 'closed') for row in ledger['recent'])
     assert ledger['deploys']['deploy']['commit'] == older and ledger['main']['branch'] == 'main'
     assert ledger['main']['changed_files'] >= 1  # scratch.txt is untracked in the main checkout
@@ -4787,6 +4788,62 @@ def run(wsx, wsxd, work, owned):
     quoted = js('task', 'say', 'QUOTE %d Yes, that one.' % old['id'])
     answer = reply_to(quoted['id'])['text']
     assert answer.startswith('> ' + old['text'].splitlines()[0][:40]) and answer.endswith('Yes, that one.'), answer
+    # ^ A task's story (docs/tasks.md "Search"): the log of a landed and of a closed task, written
+    # as the host writes it. A word of a later add finds the task with its outcome, and
+    # `--task` lists its start, add, result, checks and landing in order.
+    t0 = 1_700_100_000_000
+
+    def third_task(n, task_state, revision, events):
+        folder = third_log.parent.parent / str(n)
+        folder.mkdir(mode=0o700)
+        (folder / 'task.json').write_text(json.dumps({
+            'id': n, 'project': 'third', 'project_id': third_id, 'project_path': str(third), 'default_branch': 'main',
+            'base': 'abc', 'branch': 'wsx/t%d' % n, 'working_copy': str(third), 'pane_id': None, 'adapter': 'claude',
+            'model': 'm', 'checks': [], 'agent_session': None, 'state': task_state, 'revision': revision,
+            'created_unix_ms': t0, 'updated_unix_ms': t0}))
+        (folder / 'log.jsonl').write_text(''.join(json.dumps(e, separators=(',', ':')) + '\n' for e in events))
+        return folder / 'log.jsonl'
+
+    def stamp(ms):
+        return time.strftime('%Y-%m-%d %H:%M', time.gmtime(ms // 1000))
+
+    landed_log = third_task(1, 'landed', 2, [
+        {'unix_ms': t0, 'kind': 'created', 'base': 'abc', 'branch': 'wsx/t1'},
+        {'unix_ms': t0 + 1000, 'kind': 'message', 'mode': 'prompt', 'text': 'Fix the quolloquy parser'},
+        *({'unix_ms': t0 + 2000 + i, 'kind': 'agent', 'text': 'tool step %d' % i} for i in range(3)),
+        {'unix_ms': t0 + 3000, 'kind': 'result', 'status': 'done', 'summary': 'First pass: the parser is fixed.'},
+        {'unix_ms': t0 + 4000, 'kind': 'message', 'mode': 'add', 'text': 'Also keep the zymurgy case small'},
+        {'unix_ms': t0 + 5000, 'kind': 'checks', 'results': [{'command': 'cargo test', 'exit': 1, 'timed_out': False, 'output': ''}]},
+        {'unix_ms': t0 + 6000, 'kind': 'revision', 'revision': 2, 'commit': 'cd67238aaaaaaaa'},
+        {'unix_ms': t0 + 7000, 'kind': 'landed', 'commit': 'cd67238aaaaaaaa'}])
+    third_task(2, 'closed', 1, [
+        {'unix_ms': t0, 'kind': 'created', 'base': 'abc', 'branch': 'wsx/t2'},
+        {'unix_ms': t0 + 1000, 'kind': 'message', 'mode': 'prompt', 'text': 'Try the gizmo idea'},
+        {'unix_ms': t0 + 2000, 'kind': 'message', 'mode': 'steer', 'text': 'Drop the gizmo, it is a dead end'},
+        {'unix_ms': t0 + 3000, 'kind': 'closed', 'discarded': True}])
+    day = time.strftime('%m-%d', time.gmtime((t0 + 7000) // 1000))
+    hit = next(h for h in js('task', 'search', '-p', 'demo', '--all', 'zymurgy')['hits'] if h['reference'] == 'third#1')
+    assert hit['kind'] == 'history' and hit['by'] == 'add' and hit['outcome'] == 'landed %s cd67238' % day, hit
+    hit = next(h for h in js('task', 'search', '-p', 'demo', '--all', 'dead', 'end')['hits'] if h['reference'] == 'third#2')
+    assert hit['by'] == 'steer' and hit['outcome'] == 'closed: discarded', hit
+    story = js('task', 'search', '-p', 'third', '--task', '1')
+    assert [e['label'] for e in story['entries']] == ['start', 'prompt', 'steps', 'result', 'add', 'checks', 'revision', 'landed'], story
+    assert [e['text'] for e in story['entries']][2:] == ['3 steps, last: tool step 2', 'First pass: the parser is fixed.',
+                                                         'Also keep the zymurgy case small', '1 failed: cargo test', 'r2 cd67238', 'cd67238'], story
+    assert story['outcome'] == 'landed %s cd67238' % day and story['title'] == 'Fix the quolloquy parser' and story['skipped'] == 0, story
+    assert story['entries'][4]['unix_ms'] == t0 + 4000
+    printed = cli('task', 'search', '-p', 'third', '--task', '1').stdout.splitlines()
+    assert printed[0] == 't1 [landed %s cd67238]  Fix the quolloquy parser' % day, printed
+    assert printed[5] == '%s add      Also keep the zymurgy case small' % stamp(t0 + 4000), printed
+    assert js('task', 'search', '-p', 'third', '--task', '1', '--limit', '2')['skipped'] == 6
+    # ^ Words with --task keep only that task's hits; a line the log gains later is found by the next
+    # search without a rebuild, and the lines read before are not found twice.
+    assert [h['reference'] for h in js('task', 'search', '-p', 'third', '--task', '1', 'gizmo', 'zymurgy')['hits']] == ['third#1']
+    with landed_log.open('a') as log:
+        log.write(json.dumps({'unix_ms': t0 + 9000, 'kind': 'message', 'mode': 'add', 'text': 'A tumbleweed note'}, separators=(',', ':')) + '\n')
+    assert [h['reference'] for h in js('task', 'search', '-p', 'third', '--task', '1', 'tumbleweed')['hits']] == ['third#1']
+    assert len(js('task', 'search', '-p', 'third', '--task', '1', 'zymurgy')['hits']) == 1
+    assert js('task', 'search', '-p', 'third', '--task', '1', '--reindex', 'tumbleweed')['docs'] == 8
     # ^ A search of nothing, and of a project with no history, says so.
     assert 'needs some words' in cli('task', 'search', '-p', 'demo', '!!', ok=False).stderr
     registry_path.write_text(registry_before)

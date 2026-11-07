@@ -10,6 +10,7 @@ pub mod chat;
 pub mod checks;
 pub mod copy;
 pub mod failure;
+pub mod history;
 pub mod ledger;
 pub mod manager;
 pub mod owner;

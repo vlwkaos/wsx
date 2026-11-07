@@ -458,11 +458,14 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Find earlier messages, decisions and task results, ranked: the manager and role chats, the notes and the tasks
+    /// Find earlier messages, decisions and task history, ranked: the manager and role chats, the notes and the tasks
     Search {
         /// The words to find, all of them or some; the best matches come first
-        #[arg(required = true, value_name = "WORDS")]
+        #[arg(required_unless_present = "task", value_name = "WORDS")]
         words: Vec<String>,
+        /// One task, open or closed: its dated history, or only its hits for the words
+        #[arg(long, value_name = "N")]
+        task: Option<String>,
         /// Every registered project, not only -p
         #[arg(long)]
         all: bool,
@@ -1015,6 +1018,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
         ),
         TaskCmd::Search {
             words,
+            task,
             all,
             limit,
             reindex,
@@ -1023,6 +1027,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
         } => search(
             project.as_deref(),
             &words.join(" "),
+            task.as_deref(),
             all,
             limit,
             reindex,
@@ -2999,11 +3004,20 @@ fn chat(
 fn search(
     project: Option<&str>,
     words: &str,
+    task: Option<&str>,
     all: bool,
     limit: usize,
     reindex: bool,
     json: bool,
 ) -> Result<()> {
+    let mut only = None;
+    if let Some(task) = task {
+        let dir = open(project, task)?;
+        if words.trim().is_empty() {
+            return history(&dir, limit, json);
+        }
+        only = Some(dir.id);
+    }
     let current = project_entry(project).ok().map(|(name, _)| name);
     let targets: Vec<search::Target> = match all {
         true => load_config()?
@@ -3023,7 +3037,7 @@ fn search(
         }
     };
     let started = Instant::now();
-    let found = search::search(&targets, current.as_deref(), words, limit, reindex)?;
+    let found = search::search(&targets, current.as_deref(), words, limit, reindex, only)?;
     if json {
         let mut value = serde_json::to_value(&found)?;
         value["ms"] = json!(started.elapsed().as_millis() as u64);
@@ -3033,8 +3047,12 @@ fn search(
         let reference = hit.quote.as_deref().map_or(hit.reference.clone(), |quote| {
             format!("{}  {quote}", hit.reference)
         });
+        let outcome = hit
+            .outcome
+            .as_deref()
+            .map_or(String::new(), |o| format!(" [{o}]"));
         println!(
-            "{reference}  {} {}  {}",
+            "{reference}{outcome}  {} {}  {}",
             search::day_of(hit.unix_ms),
             hit.by,
             hit.line
@@ -3045,6 +3063,31 @@ fn search(
     }
     if found.hits.is_empty() {
         println!("nothing found in {} records", found.docs);
+    }
+    Ok(())
+}
+
+/// `wsx task search --task <n>`: the task's story as dated lines, newest last.
+/// ref: docs/tasks.md "Search"
+fn history(dir: &TaskDir, limit: usize, json: bool) -> Result<()> {
+    let history = wsx_core::task::history::read(dir, limit)?;
+    if json {
+        return print_json(&serde_json::to_value(&history)?);
+    }
+    println!("t{} [{}]  {}", history.task, history.outcome, history.title);
+    if history.skipped > 0 {
+        println!(
+            "({} earlier lines left out; --limit shows more)",
+            history.skipped
+        );
+    }
+    for entry in &history.entries {
+        println!(
+            "{} {:<8} {}",
+            wsx_core::task::history::stamp(entry.unix_ms),
+            entry.label,
+            entry.text
+        );
     }
     Ok(())
 }
