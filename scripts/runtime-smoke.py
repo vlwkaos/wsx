@@ -2153,9 +2153,35 @@ try:
     with keep_log.open("a") as log_file:
         for n, entry in enumerate(chat_log):
             log_file.write(json.dumps({"unix_ms": at + n * 1000, **entry}) + "\n")
+    # A task that waits for another (`wsx task after`): the Tasks view's row adds the reason after
+    # the label, and the detail of the task waited for lists who waits (docs/tasks.md "TUI").
+    keep_store = keep_log.parent.parent
+    now_ms = int(time.time() * 1000)
+    for number, state, after in ((1, "working", None), (2, "ready", {"task": 1, "text": "WORK x.txt", "since_unix_ms": now_ms, "because": "check"})):
+        record = {"id": number, "project": "keep-me", "project_id": keep_store.name, "project_path": str(removal["keep-me"]),
+                  "default_branch": "main", "base": "0" * 40, "branch": f"wsx/t{number}", "working_copy": str(removal["keep-me"]),
+                  "pane_id": None, "adapter": "claude", "model": "m1", "checks": [], "agent_session": None, "state": state,
+                  "revision": 1, "created_unix_ms": now_ms, "updated_unix_ms": now_ms, "state_unix_ms": now_ms}
+        if after:
+            record["after"] = after
+        (keep_store / str(number)).mkdir(mode=0o700)
+        (keep_store / str(number) / "task.json").write_text(json.dumps(record))
+        (keep_store / str(number) / "log.jsonl").write_text("")
     select_in_tui("keep-me")
     os.write(remove_master, b"t")
     wait_for(lambda: "All projects" in remove_view.text(), "t opened no Tasks view for keep-me", seconds=60)
+    wait_for(lambda: re.search(r"#2\s+ready\s+Waiting for #1 to land · its checks fail", remove_view.text()),
+             "the Tasks view row did not give the reason of the wait", seconds=60)
+    os.write(remove_master, b"\r")
+    wait_for(lambda: "Its checks fail" in remove_view.text(), "the detail did not give the reason", seconds=60)
+    os.write(remove_master, b"\x1b")
+    wait_for(lambda: "Its checks fail" not in remove_view.text(), "Esc did not close the detail", seconds=60)
+    os.write(remove_master, b"j\r")
+    wait_for(lambda: re.search(r"Waited by\s+#2", remove_view.text()), "the detail of #1 did not list who waits for it", seconds=60)
+    os.write(remove_master, b"\x1b")
+    wait_for(lambda: "Waited by" not in remove_view.text(), "Esc did not close the detail of #1", seconds=60)
+    shutil.rmtree(keep_store / "1")
+    shutil.rmtree(keep_store / "2")
     os.write(remove_master, b"m")
     wait_for(lambda: "Atlas stopped: agent exited" in remove_view.text(), "the TUI chat did not show keep-me's log", seconds=60)
     # ^ Each row in order, by its kind and shown name: an owner message, a short event line, a

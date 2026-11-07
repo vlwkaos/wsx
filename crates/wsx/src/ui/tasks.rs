@@ -566,6 +566,20 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
             Span::raw(status.to_string()),
         ]));
     }
+    // ^ The open tasks that wait for this one (`wsx task after`), by number.
+    if let Some(waiters) = task["status"]["waited_by"]
+        .as_array()
+        .filter(|waiters| !waiters.is_empty())
+    {
+        let numbers: Vec<String> = waiters
+            .iter()
+            .map(|waiter| format!("#{}", waiter["task"].as_u64().unwrap_or_default()))
+            .collect();
+        lines.push(Line::from(vec![
+            label("Waited by"),
+            Span::raw(numbers.join(", ")),
+        ]));
+    }
     if let Some(checks) = task["checks"]
         .as_array()
         .filter(|checks| !checks.is_empty())
