@@ -3589,6 +3589,11 @@ def task_journey(args):
                            {'kind': 'reply', 'id': 5002 + 2 * n, 'to': [5001 + 2 * n], 'quiet': False, 'unix_ms': at + 2000,
                             'text': answer}])
         (manager_dir / 'log.1.jsonl').write_text(''.join(json.dumps(entry) + '\n' for entry in filler + old_log))
+        # ^ Ids only grow (the host counts in state.json): its new entries come after this log's 9906, so
+        # a read around an old id finds the file that holds it (docs/tasks.md "Log window").
+        state_file = manager_dir / 'state.json'
+        manager_state = json.loads(state_file.read_text()) if state_file.exists() else {}
+        state_file.write_text(json.dumps({**manager_state, 'next_id': 10000}))
         # `plans`: #1 waits for the owner (its worker was refused a tool and asks), #2 is ready.
         assert js('task', 'new', 'Let me jump between projects from the keyboard NEEDS WebSearch NOOP', '-p', 'plans')['id'] == 1
         # ^ A long file name: the sheet's "Land stops" line must wrap it on a phone.
