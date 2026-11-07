@@ -83,7 +83,15 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         "recent": recent.into_iter().map(|(_, row)| row).collect::<Vec<_>>(),
         "open": open.iter().map(|(_, _, row)| row.clone()).collect::<Vec<_>>(),
         "open_omitted": 0,
-        "approvals": pending,
+        // ^ Each request in words, as the web and the TUI show it ("Approve push #319 (2 commits)").
+        "approvals": pending
+            .iter()
+            .map(|line| {
+                let mut row = json!(line);
+                row["label"] = json!(super::owner::approval_label(line));
+                row
+            })
+            .collect::<Vec<_>>(),
         // ^ Open and asked roles; a closed one is history (docs/tasks.md "Roles").
         "roles": super::roles::rows(&project_id, &approvals)
             .into_iter()

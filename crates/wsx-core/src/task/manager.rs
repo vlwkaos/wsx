@@ -548,6 +548,12 @@ pub enum ApprovalLine {
         /// had no such branch).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lease: Option<String>,
+        /// A push: the landed tasks whose commits it brings to origin, and how many commits
+        /// it brings (docs/tasks.md "Push").
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tasks: Vec<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commits: Option<u32>,
         unix_ms: u64,
     },
     Decision {

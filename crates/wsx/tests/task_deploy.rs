@@ -44,7 +44,7 @@ impl Fixture {
         .expect("write the wsx config");
         fs::write(
             project.join("wsx.config.yml"),
-            format!("tasks:\n  deploy:\n    command: {deploy_command:?}\n"),
+            format!("tasks:\n  deploy:\n    command: {deploy_command:?}\n    approve: true\n"),
         )
         .expect("write the project config");
         let fixture = Self { root };
@@ -307,7 +307,53 @@ fn waiting_pushes_replace_one_another_and_run_one_at_a_time() {
     // ^ The newer request contains the older one: the older is dropped, and approving it
     // answers so and runs nothing.
     let first = id_of(&ask(&older, false));
+    // ^ Landed tasks: #7 and #8 landed on `older` and `newer`; #3 landed on `base`, which
+    // origin has. Commits carry no task ids: the request matches the tasks' `Landed` entries.
+    let project_dir = approvals_file(&fixture.root.join("state"))
+        .and_then(|file| file.parent().map(Path::to_path_buf))
+        .expect("the project folder");
+    for (id, commit) in [(3, &base), (7, &older), (8, &newer)] {
+        let dir = project_dir.join(id.to_string());
+        fs::create_dir_all(&dir).expect("task folder");
+        let record = serde_json::json!({
+            "id": id, "project": "demo", "project_id": project_dir.file_name().unwrap().to_str(),
+            "project_path": fixture.root.join("project"), "default_branch": "main", "base": base,
+            "branch": format!("wsx/t{id}"), "working_copy": fixture.root.join("none"),
+            "pane_id": null, "adapter": "claude", "model": "m", "checks": [],
+            "agent_session": null, "state": "landed", "revision": 1,
+            "created_unix_ms": 1, "updated_unix_ms": 1
+        });
+        fs::write(dir.join("task.json"), record.to_string()).expect("task.json");
+        let landed = serde_json::json!({ "unix_ms": 2, "kind": "landed", "commit": commit });
+        fs::write(dir.join("log.jsonl"), format!("{landed}\n")).expect("log.jsonl");
+    }
     let second = id_of(&ask(&newer, false));
+    let pending = |action: &str| -> Vec<Value> {
+        let output = fixture.wsx(&["task", "ledger", "-p", "demo", "--json"]);
+        let ledger: Value = serde_json::from_slice(&output.stdout).expect("ledger JSON");
+        ledger["approvals"]
+            .as_array()
+            .expect("approvals")
+            .iter()
+            .filter(|row| row["action"] == action)
+            .cloned()
+            .collect()
+    };
+    // ^ The owner sees the newest request only, and it says what it brings: the tasks landed
+    // since origin's tip and the commits (`older`, `newer`).
+    let waiting = pending("push");
+    assert_eq!(waiting.len(), 1, "{waiting:?}");
+    assert_eq!(waiting[0]["id"], second.as_str(), "{waiting:?}");
+    assert_eq!(
+        waiting[0]["tasks"],
+        serde_json::json!([7, 8]),
+        "{waiting:?}"
+    );
+    assert_eq!(waiting[0]["commits"], 2, "{waiting:?}");
+    assert_eq!(
+        waiting[0]["label"], "Approve push #7 #8 (2 commits)",
+        "{waiting:?}"
+    );
     let replaced = fixture.wsx(&["task", "approve", &first, "-p", "demo", "--json"]);
     assert!(!replaced.status.success(), "{}", text(&replaced));
     assert!(
@@ -317,16 +363,40 @@ fn waiting_pushes_replace_one_another_and_run_one_at_a_time() {
     );
     assert_eq!(origin_tip(), base);
 
-    // ^ Another line of history stays and the new request is refused, naming it; a rewrite may wait beside it.
-    let refused = ask(&other, false);
-    assert!(!refused.status.success(), "{}", text(&refused));
-    assert!(
-        text(&refused).contains(&format!("push {second}")),
-        "{}",
-        text(&refused)
+    // ^ A request that does not contain the waiting one stays beside it; with no landed task
+    // it names the commit.
+    let third = id_of(&ask(&other, false));
+    let waiting = pending("push");
+    assert_eq!(
+        waiting
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [second.as_str(), third.as_str()],
+        "{waiting:?}"
+    );
+    assert_eq!(
+        waiting[1]["label"],
+        format!("Approve push {} (1 commit)", &other[..12]),
+        "{waiting:?}"
     );
     assert_eq!(origin_tip(), base);
-    id_of(&ask(&other, true));
+
+    // ^ A deploy or release follows the same rule: the newer commit replaces the older, a
+    // commit on another line stays.
+    let deploy = |commit: &str| {
+        id_of(&fixture.manager(&["task", "deploy", "-p", "demo", "--commit", commit, "--json"]))
+    };
+    let (d_old, d_new, d_other) = (deploy(&older), deploy(&newer), deploy(&other));
+    let waiting = pending("deploy");
+    assert_eq!(
+        waiting
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [d_new.as_str(), d_other.as_str()],
+        "{d_old} {waiting:?}"
+    );
 
     // ^ Two requests that both wait, as an older wsx left them, run one at a time. A receive
     // hook that takes a second makes the overlap certain without the lock.

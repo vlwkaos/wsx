@@ -116,8 +116,8 @@ pub fn action_name(action: ApprovalAction) -> &'static str {
 }
 
 /// An approval request as the action it asks for, never its id: "Approve land #3",
-/// "Approve discard #4", "Approve deploy".
-/// ref: docs/web-client-tasks.md
+/// "Approve discard #4", "Approve deploy". A push names what it carries: "Approve push #319
+/// #320 (9 commits)", else the commit. ref: docs/web-client-tasks.md
 pub fn approval_label(request: &ApprovalLine) -> String {
     let ApprovalLine::Request {
         action,
@@ -125,6 +125,8 @@ pub fn approval_label(request: &ApprovalLine) -> String {
         role,
         commit,
         lease,
+        tasks,
+        commits,
         ..
     } = request
     else {
@@ -136,15 +138,65 @@ pub fn approval_label(request: &ApprovalLine) -> String {
         ApprovalAction::Push if lease.is_some() => "force push",
         other => action_name(*other),
     };
-    match (task, role, action, commit) {
+    let mut label = match (task, role, action, commit) {
         (Some(task), ..) => format!("Approve {verb} #{task}"),
         (None, Some(role), ..) => format!("Approve {verb} {role}"),
-        // ^ A push names the commit the owner approves: "Approve force push 1a2b3c4d5e6f".
-        (None, None, ApprovalAction::Push, Some(commit)) => {
+        // ^ A push with no landed task names the commit: "Approve force push 1a2b3c4d5e6f".
+        (None, None, ApprovalAction::Push, Some(commit)) if tasks.is_empty() => {
             format!("Approve {verb} {}", super::view::short_commit(commit))
         }
         _ => format!("Approve {verb}"),
+    };
+    for task in tasks.iter().take(MAX_LABEL_TASKS) {
+        label += &format!(" #{task}");
     }
+    if tasks.len() > MAX_LABEL_TASKS {
+        label += &format!(" +{} more", tasks.len() - MAX_LABEL_TASKS);
+    }
+    match commits {
+        Some(1) => label += " (1 commit)",
+        Some(count) => label += &format!(" ({count} commits)"),
+        None => {}
+    }
+    label
+}
+
+/// Most task numbers a push label lists before "+n more".
+const MAX_LABEL_TASKS: usize = 8;
+
+/// What a push of `to` brings to origin, whose tip is `from` (none: a branch origin lacks):
+/// the landed tasks (by number) whose landed commit lies in `from..to`, and the commits.
+/// Commits carry no task ids, so a task is matched by the `Landed` entry of its log.
+pub fn carried(
+    project_id: &str,
+    main: &Path,
+    from: Option<&str>,
+    to: &str,
+) -> Result<(Vec<u32>, u32)> {
+    let commits = super::copy::commits_after(main, from, to)?;
+    let on = |commit: &str, tip: &str| super::copy::is_ancestor(main, commit, tip).unwrap_or(false);
+    let mut tasks = Vec::new();
+    for id in store::task_numbers(project_id)? {
+        let Ok(dir) = TaskDir::open(project_id, id) else {
+            continue;
+        };
+        if dir
+            .read_record()
+            .map_or(true, |record| record.state != super::TaskState::Landed)
+        {
+            continue;
+        }
+        let landed = dir.last_entry(|entry| match &entry.event {
+            super::LogEvent::Landed { commit } => Some(commit.clone()),
+            _ => None,
+        });
+        if let Ok(Some(commit)) = landed {
+            if on(&commit, to) && !from.is_some_and(|from| on(&commit, from)) {
+                tasks.push(id);
+            }
+        }
+    }
+    Ok((tasks, commits))
 }
 
 /// A decided request in words, from its label: "Approved land #3", "Denied discard #4",
@@ -197,23 +249,6 @@ pub fn find_request<'a>(lines: &'a [ApprovalLine], id: &str) -> Result<&'a Appro
                 }
             }
         })
-}
-
-/// The pending push requests as `(id, commit)`, oldest first. ref: docs/tasks.md "Push"
-pub fn waiting_pushes(project_id: &str) -> Result<Vec<(String, String)>> {
-    let lines = store::read_approvals(project_id)?;
-    Ok(pending_approvals(&lines)
-        .into_iter()
-        .filter_map(|line| match line {
-            ApprovalLine::Request {
-                id,
-                action: ApprovalAction::Push,
-                commit: Some(commit),
-                ..
-            } => Some((id.clone(), commit.clone())),
-            _ => None,
-        })
-        .collect())
 }
 
 /// What an approved action did.
