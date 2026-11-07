@@ -30,7 +30,7 @@ pub struct Status {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub since_unix_ms: Option<u64>,
     /// What an open task that waits for another task (`wsx task after`) adds to its row, in few
-    /// words: "its checks fail on main until #283 lands".
+    /// words (`kind_words`): "its checks fail".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wait: Option<String>,
     /// The open tasks that wait for this one (`Facts::waiters`); the sentence names them too.
@@ -80,6 +80,15 @@ fn because_sentence(kind: AfterKind, other: u32) -> String {
     format!("{}{}.", first.unwrap_or_default(), chars.as_str())
 }
 
+/// The reason of a wait in few words, for a row and for "Waited for by #279 (same files)".
+pub fn kind_words(kind: AfterKind) -> &'static str {
+    match kind {
+        AfterKind::Needs => "builds on it",
+        AfterKind::Files => "same files",
+        AfterKind::Check => "its checks fail",
+    }
+}
+
 /// "Waited for by #279, #282."; the kinds follow each number when they differ.
 fn waited_by_sentence(waiters: &[Waiter]) -> String {
     let differ = waiters
@@ -88,15 +97,7 @@ fn waited_by_sentence(waiters: &[Waiter]) -> String {
     let list: Vec<String> = waiters
         .iter()
         .map(|waiter| match (differ, waiter.because) {
-            (true, Some(kind)) => format!(
-                "#{} ({})",
-                waiter.task,
-                match kind {
-                    AfterKind::Needs => "builds on it",
-                    AfterKind::Files => "same files",
-                    AfterKind::Check => "its checks fail",
-                }
-            ),
+            (true, Some(kind)) => format!("#{} ({})", waiter.task, kind_words(kind)),
             _ => format!("#{}", waiter.task),
         })
         .collect();
@@ -123,11 +124,11 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
     if let (Some(after), true) = (&record.after, record.state.is_open()) {
         // ^ A ready row already says "Waiting for #m to land"; the reason is what it adds.
         status.wait = match (after.because, record.state == TaskState::Ready) {
-            (Some(kind), true) => Some(because_phrase(kind, after.task)),
+            (Some(kind), true) => Some(kind_words(kind).to_string()),
             (Some(kind), false) => Some(format!(
                 "then waits for #{}: {}",
                 after.task,
-                because_phrase(kind, after.task)
+                kind_words(kind)
             )),
             (None, false) => Some(format!("then waits for #{}", after.task)),
             (None, true) => None,

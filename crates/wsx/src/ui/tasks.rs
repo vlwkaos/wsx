@@ -277,7 +277,13 @@ fn task_lines(
         0
     };
     let status_width = if width >= STATUS_MIN_WIDTH {
-        width * 2 / 5
+        // ^ 2/5 of the width, more (up to 11/20) when a status with its wait reason needs it.
+        let longest = rows
+            .iter()
+            .map(|row| row.status.chars().count() + 1)
+            .max()
+            .unwrap_or(0);
+        (width * 2 / 5).max(longest.min(width * 11 / 20))
     } else {
         0
     };

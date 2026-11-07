@@ -3981,7 +3981,7 @@ def run(wsx, wsxd, work, owned):
     # ^ The sentence gives the reason, not the manager's instruction to the worker.
     assert '#%d is ready' % b in status['sentence'] and 'WORK af-a2.txt' not in status['sentence'], status
     assert 'It changes the same files as #%d, so it lands after it.' % b in status['sentence'], status
-    assert status['wait'] == 'it changes the same files as #%d, so it lands after it' % b, status
+    assert status['wait'] == 'same files', status
     assert show(a)['record']['after']['because'] == 'files', show(a)['record']
     assert "Its checks fail on main until #%d lands." % d in show(c)['status']['sentence'], show(c)['status']
     row = next(r for r in js('task', 'ledger')['open'] if r['id'] == a)
@@ -3989,7 +3989,7 @@ def run(wsx, wsxd, work, owned):
     working = show(w)['status']
     assert working['kind'] == 'working' and working['sentence'].endswith(
         "Then it waits for #%d to land. It builds on #%d's change." % (b, b)), working
-    assert working['wait'] == "then waits for #%d: it builds on #%d's change" % (b, b), working
+    assert working['wait'] == "then waits for #%d: builds on it" % b, working
     # ^ The task waited for says who waits: the kinds follow the numbers when they differ.
     waited = show(b)['status']
     assert waited['sentence'].endswith('Waited for by #%d (same files), #%d (builds on it).' % (a, w)), waited
