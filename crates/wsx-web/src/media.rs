@@ -28,6 +28,9 @@ pub struct Entry {
     /// The compact copy an agent reads first (`compact.rs`); freed with the entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact: Option<Compact>,
+    /// The copy is being made now (in memory only: a restart loses the job and its files).
+    #[serde(skip)]
+    pub preparing: bool,
 }
 
 impl Entry {
@@ -238,12 +241,12 @@ impl Media {
             size: upload.size,
             created_unix: now_unix(),
             compact: None,
+            preparing: false,
         };
         fs::rename(&upload.path, self.path(&entry)).map_err(|_| MediaError::Io)?;
         index.push(entry.clone());
         self.save(&index);
-        drop(index);
-        Ok(self.add_compact(entry))
+        Ok(entry)
     }
 
     /// Oldest first (never `keep`) until `extra` more bytes fit. `max_file_bytes <=
@@ -260,27 +263,36 @@ impl Media {
         }
     }
 
-    /// Make the entry's compact copy outside the index lock (a tool can take seconds), then
-    /// record it. An entry removed meanwhile takes its new copy with it.
-    fn add_compact(&self, entry: Entry) -> Entry {
-        let Some(copy) = compact::make(&self.dir, &entry.hash, &entry.ext) else {
-            return entry;
-        };
+    /// Claim the making of an entry's compact copy: the entry when a handler exists, it has
+    /// no copy and no one makes one. The claimer then calls `prepare`, which ends it.
+    pub fn claim_prepare(&self, hash: &str) -> Option<Entry> {
         let mut index = crate::locked(&self.index);
-        let Some(position) = index.iter().position(|row| row.hash == entry.hash) else {
-            copy.files
-                .iter()
+        let row = index.iter_mut().find(|row| row.hash == hash)?;
+        if row.compact.is_some() || row.preparing || !compact::handles(&row.ext) {
+            return None;
+        }
+        row.preparing = true;
+        Some(row.clone())
+    }
+
+    /// Make the entry's compact copy outside the index lock (a tool can take minutes), then
+    /// record it and end the claim, with or without a copy. An entry removed meanwhile takes
+    /// its new copy with it.
+    pub fn prepare(&self, hash: &str, ext: &str) -> Option<Entry> {
+        let copy = compact::make(&self.dir, hash, ext);
+        let mut index = crate::locked(&self.index);
+        let Some(row) = index.iter_mut().find(|row| row.hash == hash) else {
+            copy.iter()
+                .flat_map(|copy| &copy.files)
                 .for_each(|name| compact::remove(&self.dir, name));
-            return entry;
+            return None;
         };
-        index[position].compact = Some(copy);
-        self.make_room(&mut index, 0, &entry.hash);
+        row.preparing = false;
+        row.compact = copy;
+        let entry = row.clone();
+        self.make_room(&mut index, 0, hash);
         self.save(&index);
-        index
-            .iter()
-            .find(|row| row.hash == entry.hash)
-            .cloned()
-            .unwrap_or(entry)
+        Some(entry)
     }
 
     /// The prompt line of an attachment: `path (name)`; with a compact copy that path

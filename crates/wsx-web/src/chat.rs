@@ -243,6 +243,9 @@ pub struct Attachment {
     /// Relative to the site base: `media/<sha256>.<ext>`.
     pub url: String,
     pub hash: String,
+    /// A video's compact copy is still being made (`Media::prepare`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub preparing: bool,
 }
 
 impl From<crate::media::Entry> for Attachment {
@@ -254,6 +257,7 @@ impl From<crate::media::Entry> for Attachment {
             mime: entry.mime,
             size: entry.size,
             hash: entry.hash,
+            preparing: entry.preparing,
         }
     }
 }

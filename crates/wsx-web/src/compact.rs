@@ -57,6 +57,16 @@ pub fn make(dir: &Path, hash: &str, ext: &str) -> Option<Compact> {
     }
 }
 
+/// Whether an upload of this type has a handler.
+pub fn handles(ext: &str) -> bool {
+    matches!(ext, "pdf" | "mp4" | "webm")
+}
+
+/// A handler that can take minutes (whisper): its copy is made after the upload answers.
+pub fn is_slow(ext: &str) -> bool {
+    matches!(ext, "mp4" | "webm")
+}
+
 /// Remove the files of a copy, also a partly made one.
 pub fn remove(dir: &Path, name: &str) {
     let path = dir.join(name);
