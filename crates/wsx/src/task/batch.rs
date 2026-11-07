@@ -10,7 +10,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::store::{self, TaskDir};
-use wsx_core::task::{call_host_waiting, copy, view, HostRequest, TaskRecord, TaskState};
+use wsx_core::task::{call_task_host, copy, view, HostRequest, TaskRecord, TaskState};
 
 /// A land rebases before it answers; one that runs its own checks answers sooner.
 const LAND_TIMEOUT: Duration = Duration::from_secs(120);
@@ -164,7 +164,7 @@ fn land(dir: &TaskDir, batch_tree: Option<String>) -> Result<()> {
         tried: false,
         batch_tree,
     };
-    let response = match call_host_waiting(&dir.socket_path(), &request, LAND_TIMEOUT) {
+    let response = match call_task_host(dir, &request, LAND_TIMEOUT) {
         Ok(response) => response,
         Err(error) => {
             println!("#{}: no host answered: {error:#}", dir.id);

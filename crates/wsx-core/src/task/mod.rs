@@ -699,28 +699,116 @@ pub fn call_host_waiting(
     request: &HostRequest,
     timeout: std::time::Duration,
 ) -> anyhow::Result<HostResponse> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    call_retrying(socket, request, timeout, std::time::Duration::from_secs(3))
+}
+
+fn call_retrying(
+    socket: &std::path::Path,
+    request: &HostRequest,
+    timeout: std::time::Duration,
+    grace: std::time::Duration,
+) -> anyhow::Result<HostResponse> {
+    let deadline = std::time::Instant::now() + grace;
     loop {
         match call_socket(socket, request, timeout) {
             Err(error)
                 if std::time::Instant::now() < deadline
-                    && error
-                        .root_cause()
-                        .downcast_ref::<std::io::Error>()
-                        .is_some_and(|io| {
-                            matches!(
-                                io.kind(),
-                                std::io::ErrorKind::NotFound
-                                    | std::io::ErrorKind::ConnectionRefused
-                                    | std::io::ErrorKind::UnexpectedEof
-                            )
-                        }) =>
+                    && io_kind(&error).is_some_and(|kind| {
+                        matches!(
+                            kind,
+                            std::io::ErrorKind::NotFound
+                                | std::io::ErrorKind::ConnectionRefused
+                                | std::io::ErrorKind::UnexpectedEof
+                        )
+                    }) =>
             {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
             answer => return answer,
         }
     }
+}
+
+fn io_kind(error: &anyhow::Error) -> Option<std::io::ErrorKind> {
+    error
+        .root_cause()
+        .downcast_ref::<std::io::Error>()
+        .map(std::io::Error::kind)
+}
+
+/// `call_host_waiting` for a task, also when its host started before this wsx and cannot read
+/// the request: a host answers every request it can read, so one that still closes without
+/// an answer after the retries is older than this wsx. When no turn, check or wait of the
+/// task would be lost, its host session restarts on this wsx binary and the request is sent
+/// again; the task stays as it was. Otherwise the error says when to repeat it.
+/// ref: docs/tasks.md "Host"
+pub fn call_task_host(
+    dir: &store::TaskDir,
+    request: &HostRequest,
+    timeout: std::time::Duration,
+) -> anyhow::Result<HostResponse> {
+    use anyhow::Context;
+    let socket = dir.socket_path();
+    let error = match call_host_waiting(&socket, request, timeout) {
+        Err(error) if io_kind(&error) == Some(std::io::ErrorKind::UnexpectedEof) => error,
+        answer => return answer,
+    };
+    let record = dir.read_record()?;
+    // ^ A restart ends a turn (it logs `stopped`) and drops a check-run, a limit or a disk
+    // wait; a task at rest resumes as it was.
+    let at_rest = matches!(record.state, TaskState::Ready | TaskState::Failed)
+        || (record.state == TaskState::Waiting
+            && (record.waits_on(WaitOn::Owner) || record.waits_on(WaitOn::Plan)));
+    if !at_rest {
+        anyhow::bail!(
+            "{error:#}: the host of task t{} started before this wsx and cannot read the request while the task is {}; repeat it when the task is ready or waits for the owner",
+            record.id,
+            record.state.as_str()
+        );
+    }
+    restart_host(dir, &record).with_context(|| format!("{error:#}"))?;
+    // ^ The new host loads the task, binds its socket and may start the agent again.
+    call_retrying(
+        &socket,
+        request,
+        timeout,
+        std::time::Duration::from_secs(20),
+    )
+    .with_context(|| format!("the host of task t{} was restarted on this wsx", record.id))
+}
+
+/// Replace the host session `task-<n>` by a new one that runs this wsx's host. A live pane
+/// cannot be restarted (wsxd restarts only an exited one), so the old session is closed
+/// first; the host keeps no state the task record lacks, and the new one sets its own pane.
+fn restart_host(dir: &store::TaskDir, record: &TaskRecord) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let label = format!("task-{}", record.id);
+    let client = crate::runtime::Client::local();
+    let snapshot = crate::ops::runtime_snapshot(&client)?;
+    let session = snapshot
+        .sessions
+        .iter()
+        .find(|session| {
+            session.label == label
+                && snapshot.worktrees.iter().any(|worktree| {
+                    worktree.id == session.worktree_id && worktree.path == record.working_copy
+                })
+        })
+        .with_context(|| format!("no session {label} runs the host of task t{}", record.id))?;
+    let exe = std::env::current_exe().context("cannot find the wsx binary")?;
+    let argv = vec![
+        exe.to_string_lossy().into_owned(),
+        "task".into(),
+        "host".into(),
+        dir.project_id.clone(),
+        record.id.to_string(),
+    ];
+    let (config, _) = crate::config::global::GlobalConfig::load()?;
+    crate::ops::kill_session(&client, session.id)
+        .with_context(|| format!("cannot close the host session {label}"))?;
+    crate::ops::create_session_launch(&client, &config, &record.working_copy, label, argv, None)
+        .context("the old host session is closed but its replacement did not start")?;
+    Ok(())
 }
 
 /// One JSON request and one JSON answer on a host's owner-only socket.

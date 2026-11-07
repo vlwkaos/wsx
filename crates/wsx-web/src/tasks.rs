@@ -18,7 +18,7 @@ use std::{
 use wsx_core::config::project::load_task_config;
 use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
-    self, call_host_waiting, call_socket, checks, copy, ledger,
+    self, call_socket, call_task_host, checks, copy, ledger,
     manager::{
         activity, decided_request, pending_approvals, ApprovalLine, Author, ManagerEntry,
         ManagerEvent, ManagerRequest, ManagerResponse,
@@ -955,14 +955,16 @@ pub fn act(scope: &Scope, task: u32, request: HostRequest) -> Outcome<Value> {
     } else {
         owner::HOST_TIMEOUT
     };
-    let response = call_host_waiting(&dir.socket_path(), &request, timeout).map_err(|_| {
+    let response = call_task_host(&dir, &request, timeout).map_err(|error| {
         let state = dir
             .read_record()
             .map_or("unknown".into(), |record| record.state.as_str().to_string());
         Fault::new(
             409,
             "host_not_running",
-            format!("#{task} is {state} and its host does not answer; nothing was changed"),
+            format!(
+                "#{task} is {state} and its host does not answer: {error:#}; nothing was changed"
+            ),
         )
     })?;
     if !response.ok {
