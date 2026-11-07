@@ -1189,7 +1189,8 @@ const askingChat = await evaluate("location.hash");
 const homeAskRows = "[...document.querySelectorAll('.home-rows > .row')].filter((row) => row.querySelector('.row-label[data-tone=accent]') && /Asks you/.test(row.querySelector('.row-label').textContent) && !row.querySelector('.row-asks, .row-label .icon')).map((row) => row.dataset.key).sort().join()";
 // ^ plans may still hold an open question of its log (test-web-client.py): the rows that ask are
 // the projects whose overview lists one, ui among them.
-const askingKeys = (await evaluate(`Promise.all([${project}, ${plansArg}].map((id) => fetch('api/tasks/' + id).then((r) => r.json()).then((view) => view.asks.length ? String(id) : '')))`)).filter(Boolean).sort().join();
+const askingNow = async () => (await evaluate(`Promise.all([${project}, ${plansArg}].map((id) => fetch('api/tasks/' + id).then((r) => r.json()).then((view) => view.asks.length ? String(id) : '')))`)).filter(Boolean).sort().join();
+const askingKeys = await askingNow();
 if (!askingKeys.split(",").includes(String(project))) await fail(`the asking project is not in the overviews' asks: ${askingKeys}`);
 await go("#/");
 await until(`${homeAskRows} === ${JSON.stringify(askingKeys)}`, "Asks you is not on the rows of the projects whose manager asks", 100);
@@ -1206,7 +1207,10 @@ if ((await askRow())?.asks) await fail("the asking reply's row still asks after 
 await entered();
 await shot("asks-you-answered", ".composer-send");
 await go("#/");
-await until(`!!document.querySelector('.home-rows > .row') && ${homeAskRows} === ""`, "Asks you stayed on the Home row after the owner wrote", 100);
+const askingLeft = await askingNow();
+// ^ ui's question is answered; plans' older questions (test-web-client.py) are not, so only plans may still ask.
+if (askingLeft.split(",").includes(String(project))) await fail(`ui still asks after the owner wrote: ${askingLeft}`);
+await until(`!!document.querySelector('.home-rows > .row') && ${homeAskRows} === ${JSON.stringify(askingLeft)}`, "Asks you stayed on the Home row after the owner wrote", 100);
 await go(askingChat);
 await until(`!!${asking}`, "the chat did not come back after Home", 100);
 await openReservoir();
