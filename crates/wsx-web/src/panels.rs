@@ -8,7 +8,7 @@ use crate::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use wsx_core::panel::{self, Action, PanelScope, Response};
+use wsx_core::panel::{self, Action, Response};
 
 fn allowed(app: &App) -> Outcome<()> {
     if !app.site.shows(Panel::Terminal) || !app.site.allows(Capability::TerminalInput) {
@@ -55,43 +55,20 @@ fn view(response: Response) -> Outcome<Value> {
     }
 }
 
-/// `GET api/machine/panels/<name>[?run=1]`: one of wsxd's built-in machine panels, as `get`.
-pub fn machine_get(app: &App, name: String, query: GetQuery) -> Outcome<Value> {
+/// `GET api/machine[?run=1]`: the Machine tab's one card, wsxd's built-in panel with the sections of
+/// the machine panels (`scope: machine`) of the granted projects (`panel::machine_view`). A project
+/// outside the grant is never asked.
+pub fn machine(app: &App, query: GetQuery) -> Outcome<Value> {
     allowed(app)?;
     let run = query.run == Some(1);
     view(blocking(|| {
-        panel::request(&app.client, None, Action::Get { name, run })
+        let snapshot = chat::snapshot(&app.client)?;
+        let projects: Vec<_> = chat::projects(&snapshot, &app.site.access)
+            .into_iter()
+            .map(|project| (project.name.clone(), project.path.clone()))
+            .collect();
+        panel::machine_view(&app.client, &projects, run)
+            .map(Response::Panel)
             .map_err(|message| Fault::new(409, "panel_unavailable", message))
     })?)
-}
-
-/// `GET api/machine/panels`: wsxd's built-in machine panels (`panels`, read by `machine_get`),
-/// then the machine panels (`scope: machine`) of the granted projects, for the Machine tab. A
-/// list that fails shows none; a project outside the grant is never asked.
-pub fn machine(app: &App) -> Outcome<Value> {
-    allowed(app)?;
-    blocking(|| {
-        let builtin = match panel::request(&app.client, None, Action::List) {
-            Ok(Response::Panels { panels, .. }) => panels,
-            _ => Vec::new(),
-        };
-        let snapshot = chat::snapshot(&app.client)?;
-        let projects: Vec<Value> = chat::projects(&snapshot, &app.site.access)
-            .into_iter()
-            .filter_map(|project| {
-                let Ok(Response::Panels { panels, .. }) =
-                    panel::request(&app.client, Some(&project.path), Action::List)
-                else {
-                    return None;
-                };
-                let panels: Vec<_> = panels
-                    .into_iter()
-                    .filter(|info| info.scope == PanelScope::Machine)
-                    .collect();
-                (!panels.is_empty())
-                    .then(|| json!({ "id": project.id.0, "name": project.name, "panels": panels }))
-            })
-            .collect();
-        Ok(json!({ "panels": builtin, "projects": projects }))
-    })
 }

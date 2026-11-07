@@ -4,7 +4,7 @@
 use crate::process::{run_bounded, Bound, Options, Stderr};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -178,6 +178,9 @@ pub struct PanelRun {
 pub struct PanelDoc {
     pub title: Option<String>,
     pub sections: Vec<Section>,
+    /// The worst `warn` or `bad` level of the items; set only by `machine_view`, for the card's title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<Level>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,7 +190,7 @@ pub struct Section {
 }
 
 /// The theme's state colours, by word.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
     Ok,
@@ -390,6 +393,7 @@ fn parse_doc(text: &str) -> (Option<PanelDoc>, Option<String>) {
     let doc = PanelDoc {
         title: raw.title,
         sections,
+        level: None,
     };
     (Some(doc), notice)
 }
@@ -460,6 +464,172 @@ pub fn request(
         Ok(other) => Err(format!("unexpected wsxd answer: {other:?}")),
         Err(error) => Err(format!("{error}")),
     }
+}
+
+/// The machine view (docs/panels.md "Machine panels"): wsxd's built-in panel with the sections of
+/// every `scope: machine` panel of `projects` after its own, each headed `project · section`. A
+/// project panel that failed, timed out or could not be read is one short line in its place.
+/// `doc.level` is the worst `warn` or `bad` of all items. Its `refresh` and `age_ms` are the
+/// panel's due soonest, so a client that reads again then keeps every section fresh.
+pub fn machine_view(
+    client: &crate::runtime::Client,
+    projects: &[(String, PathBuf)],
+    run: bool,
+) -> Result<PanelView, String> {
+    let name = match request(client, None, Action::List)? {
+        Response::Panels { panels, .. } => panels
+            .into_iter()
+            .find(|info| info.scope == PanelScope::Machine)
+            .map(|info| info.name)
+            .ok_or("wsxd has no machine panel")?,
+        _ => return Err("unexpected wsxd answer".into()),
+    };
+    let mut view = read_panel(client, None, name, run)?;
+    let mut due = (view.refresh > 0).then(|| (remaining(&view), view.refresh, view.age_ms));
+    let mut sections = Vec::new();
+    for (project, path) in projects {
+        let Ok(Response::Panels { panels, .. }) = request(client, Some(path), Action::List) else {
+            continue;
+        };
+        for info in panels
+            .into_iter()
+            .filter(|i| i.scope == PanelScope::Machine)
+        {
+            let result = read_panel(client, Some(path), info.name.clone(), run);
+            if let Ok(read) = &result {
+                if read.refresh > 0 && read.run.status != PanelStatus::Pending {
+                    due = Some(due.map_or_else(
+                        || (remaining(read), read.refresh, read.age_ms),
+                        |was| was.min((remaining(read), read.refresh, read.age_ms)),
+                    ));
+                }
+            }
+            sections.extend(project_sections(project, &info.name, result));
+        }
+    }
+    if let Some((_, refresh, age_ms)) = due {
+        view.refresh = refresh;
+        view.age_ms = age_ms;
+    }
+    if sections.is_empty() {
+        return Ok(view);
+    }
+    let mut doc = view.run.doc.take().unwrap_or(PanelDoc {
+        title: None,
+        sections: Vec::new(),
+        level: None,
+    });
+    doc.sections.extend(sections);
+    doc.level = doc
+        .sections
+        .iter()
+        .flat_map(|section| &section.items)
+        .filter_map(|item| match item {
+            Item::Gauge { level, .. } | Item::Stat { level, .. } | Item::List { level, .. } => {
+                *level
+            }
+            Item::Table { .. } => None,
+        })
+        .max()
+        .filter(|level| *level >= Level::Warn);
+    view.run.output = serde_json::to_string(&doc).unwrap_or_default();
+    view.run.doc = Some(doc);
+    Ok(view)
+}
+
+fn read_panel(
+    client: &crate::runtime::Client,
+    project: Option<&Path>,
+    name: String,
+    run: bool,
+) -> Result<PanelView, String> {
+    match request(client, project, Action::Get { name, run })? {
+        Response::Panel(view) => Ok(view),
+        _ => Err("unexpected wsxd answer".into()),
+    }
+}
+
+/// Milliseconds until a panel with a `refresh` is due.
+fn remaining(view: &PanelView) -> u64 {
+    (view.refresh * 1000).saturating_sub(view.age_ms)
+}
+
+/// One project panel's sections in the machine view.
+fn project_sections(project: &str, name: &str, result: Result<PanelView, String>) -> Vec<Section> {
+    let line = |text: String, level| {
+        vec![Section {
+            title: Some(project.to_string()),
+            items: vec![Item::List {
+                items: vec![clip(&text, MAX_STRING_CHARS)],
+                level,
+            }],
+        }]
+    };
+    let head = |title: Option<String>| match title {
+        Some(title) => format!("{project} · {title}"),
+        None => project.to_string(),
+    };
+    let run = match result {
+        Ok(view) => view.run,
+        Err(message) => {
+            let message = message.lines().next().unwrap_or_default();
+            return line(format!("{name}: {message}"), Some(Level::Bad));
+        }
+    };
+    match run.status {
+        PanelStatus::Pending => line(format!("{name}: no result yet"), None),
+        PanelStatus::Failed => line(
+            match run.exit {
+                Some(code) => format!("{name}: failed (exit {code})"),
+                None => format!("{name}: failed (signal)"),
+            },
+            Some(Level::Bad),
+        ),
+        PanelStatus::TimedOut => line(format!("{name}: timed out"), Some(Level::Bad)),
+        PanelStatus::NotStarted => line(format!("{name}: did not start"), Some(Level::Bad)),
+        PanelStatus::Ok => match run.doc {
+            Some(doc) => doc
+                .sections
+                .into_iter()
+                .map(|section| Section {
+                    title: Some(head(section.title)),
+                    items: section.items,
+                })
+                .collect(),
+            None => {
+                let mut lines: Vec<String> = run
+                    .output
+                    .lines()
+                    .map(|text| clip(text, MAX_STRING_CHARS))
+                    .collect();
+                if lines.len() > MAX_ITEMS {
+                    let more = lines.len() - MAX_ITEMS + 1;
+                    lines.truncate(MAX_ITEMS - 1);
+                    lines.push(format!("+{more} more"));
+                }
+                if lines.is_empty() {
+                    lines.push("(no output)".into());
+                }
+                vec![Section {
+                    title: Some(head(Some(name.to_string()))),
+                    items: vec![Item::List {
+                        items: lines,
+                        level: None,
+                    }],
+                }]
+            }
+        },
+    }
+}
+
+/// `text` cut to `max` characters, with `…` where it was cut.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut cut: String = text.chars().take(max - 1).collect();
+    cut.push('…');
+    cut
 }
 
 /// Run `panel` in `cwd` (argv, no shell) and wait for it, at most its timeout. The output is

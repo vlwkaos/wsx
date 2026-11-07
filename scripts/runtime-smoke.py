@@ -2590,20 +2590,34 @@ try:
     (PROJECT / "wsx.config.yml").write_text(PANEL_CONFIG.replace("  - name: machine\n    command: [scripts/machine.sh]\n    scope: machine\n", ""))
     mark = len(panel_screen)
     os.write(panel_master, b"M")
-    wait_for(lambda: all(word in panel_screen[mark:] for word in (b"Machine panels", b"this-mac", b"Load", b"Disks", "█".encode())),
+    wait_for(lambda: all(word in panel_screen[mark:] for word in (b"Machine", b"this-mac", b"Load", b"Disks", "█".encode())),
              "M did not draw the built-in machine panel", 20)
-    assert b"smoke:" not in panel_screen[mark:], "M listed a project with no machine panel"
+    assert b"smoke \xc2\xb7" not in panel_screen[mark:], "M showed a project with no machine panel"
     os.write(panel_master, b"\x1b")
     wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the machine panels")
-    # With one: the built-in panel first, then the project's, `project: name`; only that one of the project's.
-    (PROJECT / "wsx.config.yml").write_text(PANEL_CONFIG)
+    # With machine panels (docs/panels.md "Machine panels"): one card, This Mac first, then the project's
+    # sections headed `smoke · ...`: a document, a text panel and a failing one as one line; no project
+    # panel of scope `project` is in it. The card's state is the worst level of all items.
+    (PANEL_SCRIPTS / "machine.json").write_text(json.dumps({"title": "Pizza", "sections": [
+        {"title": "Swap holders", "items": [{"kind": "list", "items": ["Slack 1.2 GB"], "level": "warn"}]}]}))
+    (PANEL_SCRIPTS / "machine-doc.sh").write_text("#!/bin/sh\ncat scripts/machine.json\n")
+    (PANEL_SCRIPTS / "machine-doc.sh").chmod(0o755)
+    (PROJECT / "wsx.config.yml").write_text(PANEL_CONFIG
+        + "  - name: machine-doc\n    command: [scripts/machine-doc.sh]\n    format: json\n    scope: machine\n"
+        + "  - name: machine-down\n    command: [scripts/fail.sh]\n    scope: machine\n")
     mark = len(panel_screen)
     os.write(panel_master, b"M")
-    wait_for(lambda: b"this-mac" in panel_screen[mark:] and b"Load" in panel_screen[mark:] and b"smoke:" in panel_screen[mark:],
-             "M did not list the built-in panel with the project's", 20)
-    os.write(panel_master, b"\t")
-    wait_for(lambda: b"machine-ok" in panel_screen[mark:], "Tab did not show the project's machine panel", 20)
+    wait_for(lambda: b"this-mac" in panel_screen[mark:] and b"Load" in panel_screen[mark:], "M did not draw the card", 20)
+    # ^ The card is taller than the 40-row screen: `j` scrolls to the project's sections.
+    for _ in range(4):
+        os.write(panel_master, b"j" * 10)
+        time.sleep(0.3)
+    wait_for(lambda: all(word in panel_screen[mark:] for word in (
+        "smoke · Swap holders".encode(), b"Slack 1.2 GB", "smoke · machine".encode(), b"machine-ok", b"machine-down: failed (exit 3)")),
+        "the machine card did not show the project's sections", 20)
     assert b"device-ok" not in panel_screen[mark:], "a project panel showed in the machine view"
+    assert b"Pizza" not in panel_screen[mark:], "the project panel's own title showed in the card"
+    assert re.search(rb"This (Mac|machine)[\s\S]{0,40}?bad", panel_screen[mark:]), "the card title shows no state"
     os.write(panel_master, b"\x1b")
     wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the machine panels")
 finally:

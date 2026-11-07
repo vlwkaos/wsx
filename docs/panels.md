@@ -59,7 +59,7 @@ With `format: json` the command prints one object, and the clients draw it as a 
 
 ## Machine panels
 
-The web's *Machine* tab and the TUI's `M` show the machine, with no project: first wsxd's built-in panel `this-mac`, then every `scope: machine` panel of the projects.
+The web's *Machine* tab and the TUI's `M` show the machine, with no project, as one card, *This Mac*: wsxd's built-in panel `this-mac`, then the sections of every `scope: machine` panel of the projects, merged in ("Machine card").
 
 ### The built-in panel
 
@@ -80,11 +80,26 @@ The thresholds are the constants at the top of `machine.rs`. The disks are `/` (
 
 A project's panel about the machine has `scope: machine`. It is still a project's command: wsxd runs it in that project's main checkout with the same refresh, cache, formats and limits, and the project screen and `v` still list it. A scope other than `project` or `machine` fails the config like any bad field (`panels[<n>].scope must be project or machine`). The list answer (`PanelInfo::scope`) carries the scope; daemon revision 45.
 
+### Machine card
+
+`wsx_core::panel::machine_view` builds it for both clients: it reads `this-mac`, then every `scope: machine` panel of the projects it is given, and returns the built-in panel's view with the project sections added to its document. A project panel's own run, refresh, cache, formats and limits do not change; only how it is shown does.
+
+| Project panel | In the card |
+|---|---|
+| A document | its sections after This Mac's, each titled `project · section` (an untitled one: `project`); the document's own title is not shown |
+| Text output (no document) | one section `project · panel` with its lines as a list: 50 lines at most, the last entry `+N more` |
+| Failed, timed out, did not start, or unreadable | one section `project` with one line at level `bad`: `device: failed (exit 2)`, `device: timed out`, `device: did not start`, or the first line of the error |
+| No result yet | one section `project` with `device: no result yet` |
+
+- `doc.level` (`PanelDoc::level`, set only on the card) is the worst `warn` or `bad` of all items, This Mac's and the projects', failing lines included. Both clients show it as a word beside the title (*This Mac  warn*); none when every level is `ok` or absent.
+- `refresh` and `age_ms` of the card are those of the panel due soonest, so a client that reads again then keeps every panel fresh (a read starts a stale panel's run). A read with `run` starts every panel's run.
+- A project whose list fails is left out. `scope: project` panels never join the card.
+
 ### Clients
 
-- Web: `GET api/machine/panels` gives `{panels: [{name, refresh, scope}], projects: [{id, name, panels: [...]}]}`: wsxd's built-in panels, then the granted projects that declare a machine panel. A built-in panel is read as `GET api/machine/panels/<name>[?run=1]`, a project's as `GET api/projects/<id>/panels/<name>[?run=1]`. The right is the same as for any panel (`terminal_input`, terminal panel; else 403); a project outside the grant is never asked. A list that fails shows none; an unknown built-in name is 409.
-- The *Machine* tab (`#/machine`) is in the bottom bar and the rail, and has a switch in Settings > UI, for every device that may read panels. It lists the built-in panel, its name alone, then each project's machine panel, its name with the project's name small, drawn by the same panel view: it runs on open, has *Refresh*, and asks again after `refresh`. The list is read at the start, after a missed event and when the project list changes.
-- TUI: `M` in the workspace opens the built-in panel, then the machine panels of all projects (the footer's last hint, the help line); `Tab`/`h`/`l` switch (`this-mac`, `project: name`), `R` runs it now, `Esc`, `q`, `v` and `M` close.
+- Web: `GET api/machine[?run=1]` gives the card as a panel view (as `GET api/projects/<id>/panels/<name>`), for the granted projects only. The right is the same as for any panel (`terminal_input`, terminal panel; else 403); a project outside the grant is never asked.
+- The *Machine* tab (`#/machine`) is in the bottom bar and the rail, and has a switch in Settings > UI, for every device that may read panels. It shows the card with the same panel view: it runs on open, has *Refresh*, and asks again after `refresh`. It starts again when the project list changes.
+- TUI: `M` in the workspace opens the card (the footer's last hint, the help line); `j`/`k` scroll, `R` runs it now, `Esc`, `q`, `v` and `M` close.
 
 ## Clients
 
@@ -92,4 +107,4 @@ A project's panel about the machine has `scope: machine`. It is still a project'
 - TUI (`panel_view.rs`, `ui/panels.rs`): `v` on a project opens its panels. `Tab`/`l` and `h` switch, `j`/`k` scroll, `R` runs it now, `Esc`, `q`, `v` and `M` close.
 - A `doc` is drawn in both: web cards per section (`role="meter"` bars, a table that scrolls sideways) and TUI boxed sections with `█░` bars; the notice shows above it.
 
-Daemon revision 44 adds `format`, revision 45 `scope`, revision 46 the built-in panel. Proof: `scripts/runtime-smoke.py` ("panels in wsxd", "panels in the TUI", also `scope`, the built-in panel against `sysctl` and `statvfs`, and `M` with and without a project's machine panel), `scripts/test-web-client.py --part tasks` and `scripts/web-panels-check.mjs` (the Machine tab on a site whose project declares no panel).
+Daemon revision 44 adds `format`, revision 45 `scope`, revision 46 the built-in panel. Proof: `scripts/runtime-smoke.py` ("panels in wsxd", "panels in the TUI", also `scope`, the built-in panel against `sysctl` and `statvfs`, and `M` with and without a project's machine panels), `scripts/test-web-client.py --part tasks` (`api/machine`) and `scripts/web-panels-check.mjs` (the card with a project's text, failing and document panels, and on a site whose project declares none).

@@ -1181,9 +1181,6 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 /* A project's panel (panels.js): the command's output as written, in the monospace face, or a
    JSON panel's document as cards. A level is the theme's state colour plus its word. */
 .panels { padding: var(--space-3) var(--space-4) var(--space-4); }
-.machine-panel { margin-bottom: var(--space-4); }
-.machine-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); margin: 0 0 var(--space-2); font-size: var(--font-size-md); font-weight: var(--font-weight-medium); }
-.machine-name small { color: var(--color-muted); font-size: var(--font-size-sm); font-weight: normal; }
 .panel-tabs { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-3); }
 .panel-tabs button { min-height: var(--size-control); padding: 0 var(--space-3); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); background: none; color: var(--color-text); font: inherit; }
 .panel-tabs button[aria-selected="true"] { background: var(--color-surface); font-weight: var(--font-weight-medium); }
@@ -1194,7 +1191,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .panel-refresh { flex: 0 0 auto; white-space: nowrap; }
 .panel-notice { margin: 0 0 var(--space-2); color: var(--color-muted); white-space: pre-line; }
 .panel-doc { display: grid; gap: var(--space-3); }
-.panel-title { margin: 0; font-size: var(--font-size-md); font-weight: var(--font-weight-medium); }
+.panel-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); margin: 0; font-size: var(--font-size-md); font-weight: var(--font-weight-medium); }
 .panel-card { display: grid; gap: var(--space-2); padding: var(--space-3); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); background: var(--color-surface); min-width: 0; }
 .panel-card h3 { margin: 0; font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); color: var(--color-muted); }
 .panel-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); min-width: 0; }

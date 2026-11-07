@@ -13,7 +13,7 @@ import { Project, Projects, ProjectSessions } from "./projects.js";
 import { loadTasks, Manager, noteDecisions } from "./tasks.js";
 import { Session } from "./session.js";
 import { Files } from "./files.js";
-import { loadMachine, MachineScreen, PanelsScreen } from "./panels.js";
+import { MachineScreen, PanelsScreen } from "./panels.js";
 import { Settings } from "./settings.js";
 import { viewImageLinks } from "./viewer.js";
 
@@ -216,7 +216,6 @@ const relay = (name, detail = {}) => events.dispatchEvent(new CustomEvent(name, 
 // An event without a session or a project is for every one.
 function reread() {
   relay("history");
-  loadMachine();
   if (!can("task_view")) return;
   loadTasks();
   for (const name of ["manager", "task", "page"]) relay(name);
@@ -230,10 +229,7 @@ function start(session) {
   const resume = openEvents({
     ...Object.fromEntries(["history", "exchange", "task", "manager", "page"].map((name) => [name, (data) => relay(name, data)])),
     workspace: (data) => {
-      // ^ A project added or removed changes whose machine panels there are.
-      const changed = data.projects.map((project) => project.id).join() !== state.projects.map((project) => project.id).join();
       update({ projects: data.projects, sessions: data.sessions, loaded: true, daemon: true });
-      if (changed) loadMachine();
       noteBuild(data.build);
     },
     daemon: (data) => {

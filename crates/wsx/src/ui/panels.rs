@@ -210,10 +210,22 @@ fn doc_lines(doc: &PanelDoc, width: usize) -> Vec<Line<'static>> {
     let inner = width.saturating_sub(4).max(8);
     let mut lines = Vec::new();
     if let Some(title) = &doc.title {
-        lines.push(Line::styled(
-            truncate_to_width(title, width),
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+        let (word, color) = level_look(doc.level);
+        // ^ `doc.level` is set only on the machine card.
+        lines.push(Line::from(vec![
+            Span::styled(
+                truncate_to_width(title, width.saturating_sub(cells(word) + 2)),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if word.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {word}")
+                },
+                Style::default().fg(color),
+            ),
+        ]));
     }
     for section in &doc.sections {
         let title = section
@@ -259,13 +271,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &PanelsView) {
             Style::default()
         };
         head.push(Span::raw("  "));
-        // ^ The machine view lists several projects: each name carries its project; a panel
-        // built into wsxd has none.
-        let label = match (&entry.project, view.machine) {
-            (Some(project), true) => format!("{project}: {}", entry.info.name),
-            _ => entry.info.name.clone(),
-        };
-        head.push(Span::styled(label, style));
+        head.push(Span::styled(entry.info.name.clone(), style));
     }
     let mut lines = vec![Line::from(head)];
     let muted = |text: &str| {
@@ -285,11 +291,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &PanelsView) {
     }
     match (&view.panels, &view.shown, &view.error) {
         (None, _, None) => lines.push(muted("Loading panels")),
-        (Some(panels), _, _) if panels.is_empty() => lines.push(muted(if view.machine {
-            "No machine panels"
-        } else {
-            "No panels"
-        })),
+        (Some(panels), _, _) if panels.is_empty() => lines.push(muted("No panels")),
         _ => {}
     }
     if let Some(message) = &view.error {

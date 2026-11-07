@@ -1,5 +1,5 @@
-//! The TUI's panel view: a project's panels, or wsxd's built-in machine panel and every project's
-//! machine panels, one at a time, read from wsxd off the UI thread.
+//! The TUI's panel view: a project's panels one at a time, or the machine card (wsxd's built-in
+//! panel with every project's machine panels, `panel::machine_view`), read from wsxd off the UI thread.
 //! It asks for a run on open, on `R`, and when the result is older than the panel's `refresh`.
 //! ref: docs/panels.md
 use std::{
@@ -17,9 +17,8 @@ const RETRY: Duration = Duration::from_secs(10);
 /// The age on screen is drawn again this often.
 const REDRAW: Duration = Duration::from_secs(1);
 
-/// One panel and the project that declares it; none for a panel built into wsxd.
+/// One panel of the project; none for the machine card.
 pub struct Entry {
-    pub project: Option<String>,
     path: Option<PathBuf>,
     pub info: PanelInfo,
 }
@@ -32,10 +31,10 @@ enum Answer {
 
 pub struct PanelsView {
     pub title: String,
-    /// The projects to list (none: wsxd's built-in panels), and whether only their machine
-    /// panels count (`M`).
-    sources: Vec<Option<(String, PathBuf)>>,
-    pub machine: bool,
+    /// The project to list; none for the machine card (`M`).
+    source: Option<PathBuf>,
+    /// The projects whose machine panels join the machine card.
+    machine: Option<Vec<(String, PathBuf)>>,
     /// None until wsxd answered the list.
     pub panels: Option<Vec<Entry>>,
     pub notice: Option<String>,
@@ -56,23 +55,22 @@ pub struct PanelsView {
 impl PanelsView {
     /// One project's panels.
     pub fn new(project: String, path: PathBuf) -> Self {
-        Self::open(
-            format!("{project} panels"),
-            vec![Some((project, path))],
-            false,
-        )
+        Self::open(format!("{project} panels"), Some(path), None)
     }
 
-    /// wsxd's built-in machine panels, then the machine panels of these projects.
+    /// wsxd's built-in machine panel with the machine panels of these projects.
     pub fn machine(projects: Vec<(String, PathBuf)>) -> Self {
-        let sources = std::iter::once(None).chain(projects.into_iter().map(Some));
-        Self::open("Machine panels".into(), sources.collect(), true)
+        Self::open("Machine".into(), None, Some(projects))
     }
 
-    fn open(title: String, sources: Vec<Option<(String, PathBuf)>>, machine: bool) -> Self {
+    fn open(
+        title: String,
+        source: Option<PathBuf>,
+        machine: Option<Vec<(String, PathBuf)>>,
+    ) -> Self {
         let mut view = Self {
             title,
-            sources,
+            source,
             machine,
             panels: None,
             notice: None,
@@ -100,40 +98,25 @@ impl PanelsView {
         });
     }
 
-    /// Ask wsxd for the panels of every source; a machine view keeps the machine-scoped ones.
-    /// A source that fails is skipped, unless none answered.
+    /// Ask wsxd for the project's panels, or for the built-in machine panel.
     fn fetch_list(&mut self) {
-        let sources = self.sources.clone();
-        let machine = self.machine;
+        let path = self.source.clone();
+        let machine = self.machine.is_some();
         self.fetch(move || {
             let client = wsx_core::runtime::Client::local();
-            let (mut entries, mut notice, mut failure) = (Vec::new(), None, None);
-            for source in sources {
-                let (project, path) = source.unzip();
-                match panel::request(&client, path.as_deref(), Action::List) {
-                    Ok(panel::Response::Panels {
-                        panels,
-                        notice: found,
-                    }) => {
-                        notice = notice.or(found.filter(|_| !machine));
-                        entries.extend(
-                            panels
-                                .into_iter()
-                                .filter(|info| !machine || info.scope == PanelScope::Machine)
-                                .map(|info| Entry {
-                                    project: project.clone(),
-                                    path: path.clone(),
-                                    info,
-                                }),
-                        );
-                    }
-                    Ok(_) => failure = failure.or(Some("unexpected wsxd answer".to_string())),
-                    Err(message) => failure = failure.or(Some(message)),
+            match panel::request(&client, path.as_deref(), Action::List)? {
+                panel::Response::Panels { panels, notice } => {
+                    let entries = (panels.into_iter())
+                        .filter(|info| !machine || info.scope == PanelScope::Machine)
+                        .take(if machine { 1 } else { usize::MAX })
+                        .map(|info| Entry {
+                            path: path.clone(),
+                            info,
+                        })
+                        .collect();
+                    Ok(Answer::List(entries, notice.filter(|_| !machine)))
                 }
-            }
-            match failure {
-                Some(message) if entries.is_empty() => Err(message),
-                _ => Ok(Answer::List(entries, notice)),
+                _ => Err("unexpected wsxd answer".into()),
             }
         });
     }
@@ -195,8 +178,12 @@ impl PanelsView {
                 };
                 if due {
                     self.run_next = false;
+                    let machine = self.machine.clone();
                     self.fetch(move || {
                         let client = wsx_core::runtime::Client::local();
+                        if let Some(projects) = machine {
+                            return panel::machine_view(&client, &projects, run).map(Answer::Panel);
+                        }
                         match panel::request(
                             &client,
                             path.as_deref(),

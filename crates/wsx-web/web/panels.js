@@ -5,10 +5,10 @@
 // is done and when the panel's `refresh` is due.
 import { api } from "./api.js";
 import { html, Icon, Loading, useEffect, useNow, useState } from "./lib.js";
-import { can, goBack, shows, state, update, useStore } from "./store.js";
+import { can, goBack, useStore } from "./store.js";
 import { SheetBar } from "./ui.js";
 
-// `base`: a project's panels, or wsxd's built-in machine panels (api/machine/panels).
+// `base`: a project's panels, or the machine card (api/machine).
 const projectPanels = (project) => `api/projects/${project}/panels`;
 const url = (base, name = "", run = false) => `${base}${name ? `/${encodeURIComponent(name)}` : ""}${run ? "?run=1" : ""}`;
 
@@ -64,9 +64,10 @@ const List = ({ item }) => html`
 const ITEMS = { gauge: Gauge, stat: Stat, table: Table, list: List };
 
 // A good document: its title, then a card per section.
+// ^ `doc.level` is set only on the machine card: the worst warn or bad of its items.
 const Doc = ({ doc }) => html`
   <div class="panel-doc">
-    ${doc.title && html`<h2 class="panel-title">${doc.title}</h2>`}
+    ${doc.title && html`<h2 class="panel-title" data-level=${doc.level ?? null}>${doc.title}<${Level} level=${doc.level} /></h2>`}
     ${doc.sections.map((section, at) => html`
       <section class="panel-card" key=${at}>
         ${section.title && html`<h3>${section.title}</h3>`}
@@ -123,7 +124,7 @@ function Panel({ base, name }) {
       ${run.truncated && html`<p class="note">The start of the output is cut.</p>`}
       ${run.notice && html`<p class="note panel-notice">${run.notice}</p>`}
       ${run.doc ? html`<${Doc} doc=${run.doc} />`
-        : html`<pre class="panel-output" aria-label=${`Output of ${name}`}>${run.output || (run.status === "pending" ? "" : "(no output)")}</pre>`}
+        : html`<pre class="panel-output" aria-label=${`Output of ${name || "the machine"}`}>${run.output || (run.status === "pending" ? "" : "(no output)")}</pre>`}
     </div>`;
 }
 
@@ -155,36 +156,17 @@ export function PanelsPage({ project, onClose, grip }) {
     </div>`;
 }
 
-// wsxd's built-in machine panels and those of the granted projects (docs/panels.md "Machine panels"):
-// read at the start, after a missed event and when the project list changes. A failed read keeps the last list.
-export async function loadMachine() {
-  if (!can("terminal_input") || !shows("terminal")) return;
-  try {
-    const { panels, projects } = await api("api/machine/panels");
-    const machine = { panels, projects };
-    if (JSON.stringify(machine) !== JSON.stringify(state.machine)) update({ machine });
-  } catch { /* the tab keeps what it had */ }
-}
-
-// The Machine tab: the built-in panels, then every project's machine panel, its name over the
-// project's, each with its own run and refresh.
+// The Machine tab: one card, This Mac, with the sections of the granted projects' machine panels after
+// its own (docs/panels.md "Machine panels"). The card is read again when the project list changes.
 export function MachineScreen() {
-  const { machine, loaded } = useStore();
-  useEffect(() => { loadMachine(); }, []);
-  const panels = [
-    ...machine.panels.map((panel) => ({ key: `wsxd/${panel.name}`, base: "api/machine/panels", panel })),
-    ...machine.projects.flatMap((project) => project.panels.map((panel) => ({ key: `${project.id}/${panel.name}`, base: projectPanels(project.id), panel, project }))),
-  ];
+  const { projects } = useStore();
   return html`
     <div class="page">
       <h1 class="title">Machine</h1>
       <div class="scroll panels">
-        ${!panels.length ? html`<p class="empty">${loaded ? "No machine panels" : ""}</p>`
-          : panels.map(({ key, base, panel, project }) => html`
-            <section class="machine-panel" key=${key} aria-label=${panel.name}>
-              <h2 class="machine-name">${panel.name}${project && html`<small>${project.name}</small>`}</h2>
-              <${Panel} base=${base} name=${panel.name} />
-            </section>`)}
+        <section class="machine-panel" aria-label="Machine">
+          <${Panel} key=${projects.map((project) => project.id).join()} base="api/machine" name="" />
+        </section>
       </div>
     </div>`;
 }
