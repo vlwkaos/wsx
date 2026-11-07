@@ -469,9 +469,9 @@ pub enum TaskCmd {
         /// Every registered project, not only -p
         #[arg(long)]
         all: bool,
-        /// Most hits shown
-        #[arg(long, default_value_t = 10, value_name = "N")]
-        limit: usize,
+        /// Most hits shown (10), or lines of a task's history (40)
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
         /// Build the index of the searched projects again from their logs and tasks
         #[arg(long)]
         reindex: bool,
@@ -3006,7 +3006,7 @@ fn search(
     words: &str,
     task: Option<&str>,
     all: bool,
-    limit: usize,
+    limit: Option<usize>,
     reindex: bool,
     json: bool,
 ) -> Result<()> {
@@ -3014,7 +3014,7 @@ fn search(
     if let Some(task) = task {
         let dir = open(project, task)?;
         if words.trim().is_empty() {
-            return history(&dir, limit, json);
+            return history(&dir, limit.unwrap_or(HISTORY_LINES), json);
         }
         only = Some(dir.id);
     }
@@ -3037,7 +3037,14 @@ fn search(
         }
     };
     let started = Instant::now();
-    let found = search::search(&targets, current.as_deref(), words, limit, reindex, only)?;
+    let found = search::search(
+        &targets,
+        current.as_deref(),
+        words,
+        limit.unwrap_or(SEARCH_HITS),
+        reindex,
+        only,
+    )?;
     if json {
         let mut value = serde_json::to_value(&found)?;
         value["ms"] = json!(started.elapsed().as_millis() as u64);
@@ -3066,6 +3073,10 @@ fn search(
     }
     Ok(())
 }
+
+/// The lines of `wsx task search --task <n>` shown without `--limit`, and the hits of a search.
+const HISTORY_LINES: usize = 40;
+const SEARCH_HITS: usize = 10;
 
 /// `wsx task search --task <n>`: the task's story as dated lines, newest last.
 /// ref: docs/tasks.md "Search"
