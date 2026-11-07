@@ -3902,6 +3902,7 @@ merge_seconds = 3
             assert status == 409 and 'no panel' in body['error']['message'], (status, body)
             ok('panels: run in wsxd on open and when stale, the built-in machine panel with no project declaring one, cached with its age, a failing command with its exit code, a json panel as a typed document with a notice for what it skipped, 403 without terminal_input, 404 for an unknown project')
             if args.browser:
+                args.captures.mkdir(parents=True, exist_ok=True)  # ^ The tasks part runs without the chat part, which made it.
                 checked = check(work, [node, str(ROOT / 'scripts/web-panels-check.mjs'), admin.origin + '/', cli('web', 'pair', '--site', files['admin']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                        owner.origin + '/', cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                        str(args.captures), str(calm_id),
