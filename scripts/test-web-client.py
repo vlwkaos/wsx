@@ -3532,13 +3532,15 @@ def task_journey(args):
         manager_dir = state / 'wsx/tasks' / ('plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]) / 'manager'
         manager_dir.mkdir(mode=0o700, parents=True)
         questions = ['Should the fold keep five rows?', 'Can #92 wait for Monday?', 'Shall I ship #93 today?', 'Is the since line right?']
-        # ^ The log opens with the two questions that stay open, three spare ones (the three plain
-        # owner messages below answer those, newest first) and 230 `sent` entries with no text:
-        # they show nothing but use the 200 entries a read sends, so the first two questions are
+        # ^ The log opens with the two questions that stay open and five spare ones: the three plain
+        # owner messages below answer three, and the two the web check sends before it asks (its RUN
+        # and ASK) the last two, newest first. Then 230 `sent` entries with no
+        # text: they show nothing but use the 200 entries a read sends, so the first two questions are
         # older than the rows the page loads, and the events below them are not (a tap on their
         # reservoir rows reads the chat around them, scripts/web-tasks-check.mjs).
+        spares = ['Spare question %d' % n for n in range(5)]
         lead = [{'kind': 'reply', 'id': 8901 + n, 'to': [9001], 'text': question, 'asks': True}
-                for n, question in enumerate(questions[:2] + ['Spare question %d' % n for n in range(3)])]
+                for n, question in enumerate(questions[:2] + spares)]
         lead += [{'kind': 'sent', 'to': 'ui', 'text': ''} for _ in range(230)]
         first_ms = int(time.time() * 1000) - 3_600_000 - len(lead) * 20_000
         old_log = [{**entry, 'unix_ms': first_ms + n * 20_000} for n, entry in enumerate(lead)]
@@ -4357,7 +4359,7 @@ merge_seconds = 3
             expected = open_questions()
             overview_asks = steady(owner, 'GET', '/api/tasks/%d' % ids['plans'])[1]['asks']
             assert [(ask['id'], ask['quote']) for ask in overview_asks] == expected and expected, (overview_asks, expected)
-            assert {ask[1] for ask in expected} <= set(questions[:2]), expected
+            assert {ask[1] for ask in expected} == set(questions[:2] + spares[:2]), expected
             assert plans_chat['asks'] == [ask[0] for ask in expected], plans_chat['asks']
             assert {r['id'] for r in whole['rows'] if r.get('asks')} == {ask[0] for ask in expected}, [r for r in whole['rows'] if r.get('asks')]
             args.captures.mkdir(parents=True, exist_ok=True)
