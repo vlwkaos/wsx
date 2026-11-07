@@ -9,10 +9,10 @@ Code: `crates/wsx-core/src/runtime/protocol.rs` (`state_dir`, `default_socket_pa
 |---|---|
 | State folder | `$XDG_STATE_HOME/wsx`, else `$HOME/.local/state/wsx`, else the temp dir. An empty or relative value is ignored (XDG base directory spec), so the folder never depends on the current directory. The task store lives here. |
 | Socket | `$WSX_SOCKET` when set and not empty, else `<state folder>/wsx.sock`. |
-| Daemon state, singleton lock | `state.json`, `state.lock` beside the socket. |
+| Daemon state, singleton lock, routine store | `state.json`, `state.lock`, `routines/` beside the socket (`routine/store.rs:23`). |
 | Bootstrap lock, lifecycle marker, reporter | `<socket>.bootstrap.lock`, `<socket>.lifecycle`, `<socket>.reporter`. |
 
-One socket path is one daemon with one state. Two socket paths are two daemons that share no file, so they never fight over a lock. Before, the state followed `XDG_STATE_HOME` while the socket followed `WSX_SOCKET`: a second socket on the same state root started a wsxd that found the first one's lock and exited, and its client waited for a socket that never came.
+One socket path is one daemon with one state. Two socket paths are two daemons with their own `state.json`, `state.lock`, `routines/` and `<socket>.*` files, so they never fight over a lock. They do share the state folder: the task store and the project shell records in `shells/` (`ops.rs:701-704`) live there, not beside the socket. Before, the state followed `XDG_STATE_HOME` while the socket followed `WSX_SOCKET`: a second socket on the same state root started a wsxd that found the first one's lock and exited, and its client waited for a socket that never came.
 
 ## Panes keep their daemon
 
