@@ -332,7 +332,8 @@ async function inbox() {
 // a frame later: wait until the two agree before a wide block's width is read.
 async function scrollbarSettled() {
   await until("(() => { const log = document.querySelector('.log'); return parseFloat(getComputedStyle(log.parentElement).getPropertyValue('--log-scrollbar') || '0') === log.offsetWidth - log.clientWidth; })()",
-    "the log's scrollbar width was not taken by the wide blocks");
+    () => evaluate(`(() => { const log = document.querySelector('.log'); return "the log's scrollbar width was not taken by the wide blocks: " + JSON.stringify({
+      var: getComputedStyle(log.parentElement).getPropertyValue('--log-scrollbar'), scrollbar: log.offsetWidth - log.clientWidth }); })()`));
 }
 
 async function openSession(role, tab = "chat") {
