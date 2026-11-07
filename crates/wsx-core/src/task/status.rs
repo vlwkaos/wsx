@@ -9,6 +9,7 @@ use super::view::{check_outcomes, clip, read_result, resolving_conflict};
 use super::{AfterKind, LogEvent, TaskRecord, TaskState, WaitOn};
 use crate::config::project::load_task_config;
 use serde::Serialize;
+use serde_json::Value;
 
 const FACT_CHARS: usize = 240;
 /// The reason the host gives a stop the owner asked for. ref: crates/wsx/src/task/host.rs `stop`
@@ -120,7 +121,19 @@ pub struct Facts<'a> {
 
 /// The status of one task now.
 pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) -> Status {
-    let mut status = status_of(dir, record, facts, now_ms);
+    status_with_result(dir, record, facts, None, now_ms)
+}
+
+/// `status` for a caller that has read `result.json` already: `Some(&None)` is a task
+/// without one, `None` lets the status read it when it needs it.
+pub fn status_with_result(
+    dir: &TaskDir,
+    record: &TaskRecord,
+    facts: &Facts,
+    result: Option<&Option<Value>>,
+    now_ms: u64,
+) -> Status {
+    let mut status = status_of(dir, record, facts, result, now_ms);
     if let (Some(after), true) = (&record.after, record.state.is_open()) {
         // ^ A ready row already says "Waiting for #m to land"; the reason is what it adds.
         status.wait = match (after.because, record.state == TaskState::Ready) {
@@ -142,7 +155,22 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
     status
 }
 
-fn status_of(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) -> Status {
+/// What wsx ran on the task's latest revision: the caller's read of `result.json`, else a read.
+fn outcomes(dir: &TaskDir, result: Option<&Option<Value>>) -> Vec<(String, &'static str)> {
+    match result {
+        Some(read) => read.as_ref().map(check_outcomes),
+        None => read_result(dir).map(|read| check_outcomes(&read)),
+    }
+    .unwrap_or_default()
+}
+
+fn status_of(
+    dir: &TaskDir,
+    record: &TaskRecord,
+    facts: &Facts,
+    result: Option<&Option<Value>>,
+    now_ms: u64,
+) -> Status {
     let entered = record.state_unix_ms.max(record.created_unix_ms);
     let main = &record.default_branch;
     let approval = facts.approvals.iter().find_map(|line| match line {
@@ -298,11 +326,9 @@ fn status_of(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) -> 
                 now_ms,
             )
         }
-        (TaskState::Ready, _) => ready(dir, record, entered, now_ms),
+        (TaskState::Ready, _) => ready(dir, record, result, entered, now_ms),
         (TaskState::Failed, _) => {
-            let outcomes = read_result(dir)
-                .map(|result| check_outcomes(&result))
-                .unwrap_or_default();
+            let outcomes = outcomes(dir, result);
             let failed = outcomes.iter().filter(|(_, o)| *o != "passed").count();
             match failed {
                 0 => words(
@@ -374,7 +400,13 @@ fn status_of(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) -> 
 
 /// A ready task: its landing stopped, it is held, it waits for another task, the manager
 /// reviews it, or the owner lands it.
-fn ready(dir: &TaskDir, record: &TaskRecord, entered: u64, now_ms: u64) -> Status {
+fn ready(
+    dir: &TaskDir,
+    record: &TaskRecord,
+    result: Option<&Option<Value>>,
+    entered: u64,
+    now_ms: u64,
+) -> Status {
     let stopped = dir
         .last_event(|event| match event {
             LogEvent::LandStopped { reason } => Some(Some(reason.clone())),
@@ -423,9 +455,7 @@ fn ready(dir: &TaskDir, record: &TaskRecord, entered: u64, now_ms: u64) -> Statu
             now_ms,
         );
     }
-    let outcomes = read_result(dir)
-        .map(|result| check_outcomes(&result))
-        .unwrap_or_default();
+    let outcomes = outcomes(dir, result);
     let passed = outcomes.iter().filter(|(_, o)| *o == "passed").count();
     let checks = match outcomes.len() {
         0 => "no checks prove it".to_string(),

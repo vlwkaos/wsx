@@ -1,6 +1,8 @@
 //! The ledger: the bounded project state the manager reads before it acts, and the web
 //! client's project brief. ref: docs/tasks.md "Ledger"
 
+use super::manager::ApprovalLine;
+use super::store::TaskDir;
 use super::view::{
     attention, check_outcomes, clip, overlaps, project_tasks, read_result, task_agent, task_summary,
 };
@@ -30,84 +32,23 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         .iter()
         .filter_map(|(_, record)| record.as_ref().ok())
         .collect();
-    let mut open = Vec::new();
-    let mut recent = Vec::new();
     let approvals = super::store::read_approvals(&project_id).unwrap_or_default();
     let pending = super::manager::pending_approvals(&approvals);
     let now = super::now_unix_ms();
+    let mut open = Vec::new();
+    let mut recent = Vec::new();
     for (dir, record) in &tasks {
         let Ok(record) = record else { continue };
         let summary = task_summary(dir, record);
         let title = clip(summary["title"].as_str().unwrap_or_default(), TITLE_CHARS);
-        if !record.state.is_open() {
-            let mut row = json!({ "id": record.id, "title": title, "state": record.state, "revision": record.revision });
-            // ^ The worker's memo, also in its land or close event (docs/tasks.md "Memo").
-            if let Some(memo) = read_result(dir)
-                .as_ref()
-                .and_then(|r| {
-                    r["result"]["memo"]
-                        .as_str()
-                        .map(str::trim)
-                        .map(str::to_string)
-                })
-                .filter(|memo| !memo.is_empty())
-            {
-                row["memo"] = json!(clip_lines(&memo, MEMO_CHARS));
-            }
-            recent.push((record.updated_unix_ms, row));
-            continue;
-        }
+        // ^ Read once; the memo, the counts and the status all come from it.
         let result = read_result(dir);
-        let waiters = status::waiters(records.iter().copied(), record.id);
-        let facts = status::Facts {
-            approvals: &pending,
-            waiters: &waiters,
-            ..Default::default()
-        };
-        let status = status::status(dir, record, &facts, now);
-        let mut row = json!({
-            "id": record.id,
-            "title": title,
-            "state": record.state,
-            "revision": record.revision,
-            "agent": task_agent(dir, record),
-            "overlaps": overlaps(record, &records, false),
-            "human_verify": result.as_ref().map_or(0, |r| r["result"]["human_verify"].as_array().map_or(0, Vec::len)),
-            "summary": result.as_ref().and_then(|r| r["result"]["summary"].as_str()).map(|s| clip(s, SUMMARY_CHARS)),
-            // ^ What the host ran; it outranks the worker's summary (docs/tasks.md "Ledger").
-            // ^ With each check's run time and its run's wait for the check slot, in ms.
-            "checks": result.as_ref().map(|result| check_outcomes(result).into_iter()
-                .zip(result["checks"].as_array().into_iter().flatten())
-                .map(|((command, outcome), check)| json!({
-                    "command": command, "outcome": outcome,
-                    "ms": check["ms"].as_u64().unwrap_or(0),
-                    "queued_ms": check["queued_ms"].as_u64().unwrap_or(0),
-                }))
-                .collect::<Vec<_>>()).unwrap_or_default(),
-            // ^ What a waiting task waits for: the owner, disk, the check slot or a person's hands.
-            "waiting": record.waiting,
-            // ^ The same words as every other view (docs/tasks.md "Status").
-            "status": status,
-            // ^ Held for the owner to try before it lands (docs/tasks.md "Hold and trial").
-            "hold": record.hold,
-            "after": record.after,
-            // ^ The main checkout's changed files this land would overwrite: pressing
-            // Land refuses until they are committed or stashed (docs/tasks.md "Ledger").
-            "land_blocked_by": (record.state == TaskState::Ready).then(|| land_blockers(record)),
-            "usage": usage::task(dir),
-        });
-        // ^ A parent task and its open children (docs/tasks.md "Parent tasks").
-        if let Some(parent) = record.parent {
-            row["parent"] = json!(parent);
+        if record.state.is_open() {
+            let row = open_row(dir, record, &title, &result, &records, &pending, now);
+            open.push((attention(record.state), record.id, row));
+        } else {
+            recent.push((record.updated_unix_ms, closed_row(record, &title, &result)));
         }
-        let children = records
-            .iter()
-            .filter(|other| other.parent == Some(record.id) && other.state.is_open())
-            .count();
-        if children > 0 {
-            row["children"] = json!(children);
-        }
-        open.push((attention(record.state), record.id, row));
     }
     open.sort_by_key(|(order, id, _)| (*order, *id));
     recent.sort_by_key(|(updated, _)| std::cmp::Reverse(*updated));
@@ -131,7 +72,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         // ^ Open "To check" items: a release waits for them (docs/tasks.md "To check").
         "to_check": checks::open_items(&project_id).map_or(0, |items| items.len()),
         // ^ Spend today and in 7 days, workers and manager apart (docs/tasks.md "Usage").
-        "usage": usage::project(&project_id, super::now_unix_ms()),
+        "usage": usage::project(&project_id, now),
         "main": main_checkout(main),
         "stray_worktrees": strays,
         "stray_worktrees_omitted": stray_omitted,
@@ -149,14 +90,95 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
             .filter(|row| row["state"] != "closed")
             .collect::<Vec<_>>(),
     });
-    // ^ Memos go first, then the least urgent open tasks, when the ledger is over its size.
-    if serde_json::to_vec(&ledger)?.len() > MAX_LEDGER_BYTES {
+    fit_size(&mut ledger)?;
+    Ok(ledger)
+}
+
+/// The row of a landed or closed task; its usage is added once the row stays.
+fn closed_row(record: &TaskRecord, title: &str, result: &Option<Value>) -> Value {
+    let mut row = json!({ "id": record.id, "title": title, "state": record.state, "revision": record.revision });
+    // ^ The worker's memo, also in its land or close event (docs/tasks.md "Memo").
+    if let Some(memo) = result
+        .as_ref()
+        .and_then(|r| r["result"]["memo"].as_str().map(str::trim))
+        .filter(|memo| !memo.is_empty())
+    {
+        row["memo"] = json!(clip_lines(memo, MEMO_CHARS));
+    }
+    row
+}
+
+/// The row of an open task, with `result` as it read `result.json`.
+fn open_row(
+    dir: &TaskDir,
+    record: &TaskRecord,
+    title: &str,
+    result: &Option<Value>,
+    records: &[&TaskRecord],
+    pending: &[&ApprovalLine],
+    now: u64,
+) -> Value {
+    let waiters = status::waiters(records.iter().copied(), record.id);
+    let facts = status::Facts {
+        approvals: pending,
+        waiters: &waiters,
+        ..Default::default()
+    };
+    let status = status::status_with_result(dir, record, &facts, Some(result), now);
+    let mut row = json!({
+        "id": record.id,
+        "title": title,
+        "state": record.state,
+        "revision": record.revision,
+        "agent": task_agent(dir, record),
+        "overlaps": overlaps(record, records, false),
+        "human_verify": result.as_ref().map_or(0, |r| r["result"]["human_verify"].as_array().map_or(0, Vec::len)),
+        "summary": result.as_ref().and_then(|r| r["result"]["summary"].as_str()).map(|s| clip(s, SUMMARY_CHARS)),
+        // ^ What the host ran; it outranks the worker's summary (docs/tasks.md "Ledger").
+        // ^ With each check's run time and its run's wait for the check slot, in ms.
+        "checks": result.as_ref().map(|result| check_outcomes(result).into_iter()
+            .zip(result["checks"].as_array().into_iter().flatten())
+            .map(|((command, outcome), check)| json!({
+                "command": command, "outcome": outcome,
+                "ms": check["ms"].as_u64().unwrap_or(0),
+                "queued_ms": check["queued_ms"].as_u64().unwrap_or(0),
+            }))
+            .collect::<Vec<_>>()).unwrap_or_default(),
+        // ^ What a waiting task waits for: the owner, disk, the check slot or a person's hands.
+        "waiting": record.waiting,
+        // ^ The same words as every other view (docs/tasks.md "Status").
+        "status": status,
+        // ^ Held for the owner to try before it lands (docs/tasks.md "Hold and trial").
+        "hold": record.hold,
+        "after": record.after,
+        // ^ The main checkout's changed files this land would overwrite: pressing
+        // Land refuses until they are committed or stashed (docs/tasks.md "Ledger").
+        "land_blocked_by": (record.state == TaskState::Ready).then(|| land_blockers(record)),
+        "usage": usage::task(dir),
+    });
+    // ^ A parent task and its open children (docs/tasks.md "Parent tasks").
+    if let Some(parent) = record.parent {
+        row["parent"] = json!(parent);
+    }
+    let children = records
+        .iter()
+        .filter(|other| other.parent == Some(record.id) && other.state.is_open())
+        .count();
+    if children > 0 {
+        row["children"] = json!(children);
+    }
+    row
+}
+
+/// ^ Memos go first, then the least urgent open tasks, when the ledger is over its size.
+fn fit_size(ledger: &mut Value) -> Result<()> {
+    if serde_json::to_vec(&*ledger)?.len() > MAX_LEDGER_BYTES {
         for row in ledger["recent"].as_array_mut().into_iter().flatten() {
             row.as_object_mut().map(|fields| fields.remove("memo"));
         }
     }
     let mut omitted = 0;
-    while serde_json::to_vec(&ledger)?.len() > MAX_LEDGER_BYTES {
+    while serde_json::to_vec(&*ledger)?.len() > MAX_LEDGER_BYTES {
         if ledger["open"].as_array_mut().and_then(Vec::pop).is_none() {
             ledger["recent"] = json!([]);
             break;
@@ -164,7 +186,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         omitted += 1;
         ledger["open_omitted"] = json!(omitted);
     }
-    Ok(ledger)
+    Ok(())
 }
 
 /// The main checkout's changed files that landing `record`'s revision would overwrite;
