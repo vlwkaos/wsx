@@ -52,9 +52,10 @@ export function designLint({ evaluate, captures, file }) {
     for (let waited = 0; waited < 40 && await evaluate("document.getAnimations().some((animation) => animation.playState === 'running' && animation.effect?.getComputedTiming().iterations !== Infinity)"); waited++) await pause(100);
     await evaluate(`globalThis.DESIGN_LINT = ${JSON.stringify({ touch: width < 600, gutter: 16, keep })}`);
     // ^ A closed <details> keeps its content measurable: hide it for the lint, as it is for the reader.
-    await evaluate("document.head.insertAdjacentHTML('beforeend', '<style id=design-lint-closed>details:not([open]) > :not(summary) { display: none !important; }</style>')");
+    // ^ A constructed sheet, not a <style> element: the page's CSP blocks inline styles.
+    await evaluate("(() => { const sheet = new CSSStyleSheet(); sheet.replaceSync('details:not([open]) > :not(summary) { display: none !important; }'); window.designLintSheet = sheet; document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet]; })()");
     const result = await evaluate(source);
-    await evaluate("document.getElementById('design-lint-closed').remove()");
+    await evaluate("document.adoptedStyleSheets = document.adoptedStyleSheets.filter((sheet) => sheet !== window.designLintSheet)");
     const scheme = await evaluate("document.documentElement.dataset.scheme ?? 'dark'");
     const screen = { screen: name, size: `${width}x${height}`, scheme, counts: result.counts, findings: result.findings };
     screens.push(screen);
