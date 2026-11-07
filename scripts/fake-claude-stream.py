@@ -19,6 +19,7 @@ Each user message is a small script of words:
   WAIT <file>  keep working until <file> exists, at most 10 minutes
   CHECKRUN_AGAIN  start `wsx task check-run`, kill it after 1 s, run it again and trace that answer (`queued` while it waits)
   CHECKRUN_TWICE  run `wsx task check-run` twice on the same tree and trace both answers
+  CHECKRUN_REPEAT <a>  run `wsx task check-run a` twice on the same tree and trace both answers
   CHECKRUN_AFTER  after WORK's commit run `wsx task check-run` and trace its answer
   CHECKRUN_WITH <a,b>  run `wsx task check-run a b`, then a bare `wsx task check-run`, and trace both
   CHECKRUN_LATE <a>  start `wsx task check-run a` in the background and finish before its answer
@@ -582,6 +583,10 @@ def main():
         if 'CHECKRUN_TWICE' in words:
             answers = [subprocess.run(['wsx', 'task', 'check-run'], capture_output=True, text=True) for _ in range(2)]
             trace({'check_run_twice': [[ran.returncode, ran.stdout + ran.stderr] for ran in answers]})
+        if 'CHECKRUN_REPEAT' in words:
+            named = words[words.index('CHECKRUN_REPEAT') + 1]
+            answers = [subprocess.run(['wsx', 'task', 'check-run', named], capture_output=True, text=True) for _ in range(2)]
+            trace({'check_run_repeat_' + named: [[ran.returncode, ran.stdout + ran.stderr] for ran in answers]})
         if 'CHECKRUN_WITH' in words:
             named = words[words.index('CHECKRUN_WITH') + 1].split(',')
             answers = [subprocess.run(['wsx', 'task', 'check-run', *argv], capture_output=True, text=True)

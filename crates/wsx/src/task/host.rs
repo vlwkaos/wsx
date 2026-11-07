@@ -58,6 +58,10 @@ const MAX_HANDOFF_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_CHECK_RETRIES: u32 = 2;
 /// The end of each failed check's output that goes back to the worker.
 const CHECK_TAIL_BYTES: usize = 3 * 1024;
+/// EX_TEMPFAIL: a check that fails for a reason outside the tree (a CI runner's network) exits
+/// with it. Its result is never kept, so the next check-run runs it again.
+/// ref: docs/tasks.md "Check-run"
+const TEMPFAIL: i32 = 75;
 
 enum Event {
     Request(HostRequest, Sender<HostResponse>),
@@ -2277,7 +2281,11 @@ impl Host {
             });
             let ran = ran
                 .into_iter()
-                .filter(|(_, check)| check.exit.is_some() && !check.output.contains(NO_SPACE))
+                .filter(|(_, check)| {
+                    check.exit.is_some()
+                        && check.exit != Some(TEMPFAIL)
+                        && !check.output.contains(NO_SPACE)
+                })
                 .collect();
             let _ = events.send(Event::CheckRunDone(
                 results,
@@ -3429,6 +3437,14 @@ type KeptChecks = (
     Vec<(usize, String)>,
 );
 
+/// What a temporary failure (exit 75) tells the worker: nothing was kept for it.
+fn tempfail_note(check: &CheckResult) -> &'static str {
+    match check.exit == Some(TEMPFAIL) {
+        true => " (a temporary failure, not kept: the next check-run runs it again)",
+        false => "",
+    }
+}
+
 /// The answer to a worker's `check-run`: each picked check and how it ended (the output of a
 /// failed one), exit 0 when all passed: from `ran`, or `stored` from an earlier run.
 fn check_run_response(
@@ -3444,7 +3460,7 @@ fn check_run_response(
         };
         let ended = match (check.timed_out, check.exit) {
             (true, _) => "timed out".to_string(),
-            (false, Some(code)) => format!("exit {code}"),
+            (false, Some(code)) => format!("exit {code}{}", tempfail_note(check)),
             (false, None) => "no exit code".to_string(),
         };
         let note = if ran.contains_key(index) {
@@ -3587,7 +3603,7 @@ fn check_retry_request(failed: &[&CheckResult], attempt: u32) -> String {
             check
                 .exit
                 .map_or("ended without an exit code".into(), |code| {
-                    format!("exit {code}")
+                    format!("exit {code}{}", tempfail_note(check))
                 })
         };
         let output = check.output.trim_end();

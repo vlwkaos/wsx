@@ -6,13 +6,15 @@
 name. The script waits for the run, prints each job's end and the failed steps' log tail,
 downloads the run's `scenario-files` artifact (files.tar, paths in this checkout such as
 `.work/web-captures`) into the same paths, deletes the branch and exits 0 only when the run
-passed. A branch a killed run left behind is deleted by a later run once it is STALE_SECONDS
+passed, 75 (EX_TEMPFAIL) when the run failed for the network or the runner and no scenario step
+failed (the host then keeps no result: the next check-run runs it again). A branch a killed run left behind is deleted by a later run once it is STALE_SECONDS
 old. The task host runs it outside the slot (docs/tasks.md "Scenarios").
 """
 
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -30,6 +32,17 @@ LOG_LINES = 150
 STALE_SECONDS = 2 * 3600
 # ^ The run's files may land only here: the scenario scripts' output folder.
 FILES_UNDER = '.work/'
+# ^ Exit status of a failure outside the tree: the host never keeps a result that exits with it.
+TEMPFAIL = 75
+# ^ A scenario's own failure: a log with one is never a temporary failure.
+SCENARIO_FAILURE = re.compile(r'\bFAIL\b|AssertionError|Traceback')
+# ^ The one list of network and runner failures; add a line of a new one here (docs/tasks.md "Scenarios").
+TEMPORARY_FAILURES = re.compile('|'.join([
+    r'UnknownHostName', r'Could not resolve host', r'unable to connect to server', r'Connection reset',
+    r'Connection timed out', r'TLS handshake', r'The operation was canceled',
+    r'The runner has received a shutdown signal', r'lost communication with the server',
+    r'HTTP(/[\d.]+)? 5\d\d\b', r'\b5\d\d (Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)',
+]), re.IGNORECASE)
 
 
 def git(*args, env=None):
@@ -46,6 +59,11 @@ def gh(*args, check=True):
 
 def say(text):
     print(text, flush=True)
+
+
+def temporary_failure(log):
+    """True when the failed run's log shows a network or runner failure and no scenario failure."""
+    return bool(TEMPORARY_FAILURES.search(log)) and not SCENARIO_FAILURE.search(log)
 
 
 def tree_for_ci(main, scratch):
@@ -165,6 +183,10 @@ def main():
         if view['conclusion'] != 'success':
             failed = gh('run', 'view', str(run['databaseId']), '--repo', repo, '--log-failed', check=False).stdout
             say('\n'.join(failed.splitlines()[-LOG_LINES:]))
+            if temporary_failure(failed):
+                say('%s failed on CI for the network or the runner, not the tree (%s): %s\n'
+                    'a temporary failure: the next check-run runs it again.' % (name, view['conclusion'], run['url']))
+                return TEMPFAIL
             say('%s failed on CI (%s): %s' % (name, view['conclusion'], run['url']))
             return 1
         say('%s passed on CI: %s' % (name, run['url']))
