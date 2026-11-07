@@ -2708,13 +2708,13 @@ capabilities = ["terminal_view"]
         status, mentions = work_site.request('GET', '/api/tasks/%d/mentions' % projects['project2'])
         assert status == 200 and [s['name'] for s in mentions['skills']] == ['profile-skill'], mentions
         assert work_site.request('GET', '/api/tasks/%d/mentions' % projects['project'])[0] == 404
-        status, opened = work_site.request('POST', '/api/sessions', {'project': projects['project2']})
-        assert status == 200, opened
+        status, profile_session = work_site.request('POST', '/api/sessions', {'project': projects['project2']})
+        assert status == 200, profile_session
         seen = wait(lambda: (work / 'profile-agent.txt').exists() and (work / 'profile-agent.txt').read_text(), 'the profile agent starts')
         assert seen == str(profile_root), seen
         # ^ The agent ended at once; its login shell keeps the pane, so the chat can resume in it.
         time.sleep(1.0)
-        session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == opened['session_id'])
+        session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == profile_session['session_id'])
         pane = next(p for p in call('snapshot')['data']['panes'] if p['id'] == session['focused_pane'])
         assert not pane['exited'], pane
         assert call('session_close', {'session_id': session['id'], 'expected_revision': session['revision']})['type'] == 'ack'
