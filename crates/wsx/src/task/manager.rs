@@ -189,7 +189,7 @@ struct Manager {
     observed_routines: i64,
     /// The stall reported for each open task, by marker, including ones not yet logged.
     observed_stalls: BTreeMap<u32, String>,
-    /// The stall each task shows now, and since when: it is reported after `stall::GRACE`.
+    /// The stall each task shows now, and since when: it is reported after `stall::grace()`.
     stall_suspects: BTreeMap<u32, (String, Instant)>,
     stalls_swept: Option<Instant>,
     sessions_looked: Option<Instant>,
@@ -1284,7 +1284,7 @@ impl Manager {
                 _ => Instant::now(),
             };
             suspects.insert(record.id, (found.marker.clone(), since));
-            if since.elapsed() < stall::GRACE
+            if since.elapsed() < stall::grace()
                 || self.observed_stalls.get(&record.id) == Some(&found.marker)
             {
                 continue;

@@ -210,7 +210,7 @@ pub fn stuck(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<String> 
     let stall = running(dir, record, now_ms)?;
     let until = record.waiting.as_ref().and_then(|waiting| waiting.until_ms);
     let settled = progress_ms(dir).max(until.unwrap_or(0));
-    (now_ms.saturating_sub(settled) > GRACE.as_millis() as u64).then_some(stall.why)
+    (now_ms.saturating_sub(settled) > grace().as_millis() as u64).then_some(stall.why)
 }
 
 /// "no log or check output for 45 min; ..." when a running task is silent past its bound.
