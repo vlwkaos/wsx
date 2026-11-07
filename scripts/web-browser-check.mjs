@@ -328,6 +328,13 @@ async function inbox() {
   await shot("inbox");
 }
 
+// A classic scrollbar comes with the content, and chat.js sets --log-scrollbar from a ResizeObserver
+// a frame later: wait until the two agree before a wide block's width is read.
+async function scrollbarSettled() {
+  await until("(() => { const log = document.querySelector('.log'); return parseFloat(getComputedStyle(log.parentElement).getPropertyValue('--log-scrollbar') || '0') === log.offsetWidth - log.clientWidth; })()",
+    "the log's scrollbar width was not taken by the wide blocks");
+}
+
 async function openSession(role, tab = "chat") {
   await go(`#/s/${ids[role]}/${tab}`);
   await until("!!document.querySelector('.session .bar-label')", `the ${role} session did not open`);
@@ -645,6 +652,7 @@ async function markdown() {
   // Prose keeps its reading width; a table or a code block may take the width of the
   // conversation minus the gutter, centered on the reading column, and no wider. The
   // conversation is the log without its scrollbar (a classic one, as on CI, takes width).
+  await scrollbarSettled();
   const blocks = await evaluate(`(() => { const box = (node) => node.getBoundingClientRect();
     const root = document.querySelector('.message:not(.message-user) .markdown'); const log = document.querySelector('.log');
     const column = box(root); const gutter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--space-4'));
@@ -715,6 +723,7 @@ async function diagrams(light = false) {
       shell: (await cache.keys()).length }; })()`);
   if (seen.sources.join() !== "blob:,blob:" || seen.natural.some(([width, height]) => width < 200 || height < 100) || seen.inline) await fail(`a diagram is not a drawn image: ${JSON.stringify(seen)}`);
   // A diagram's box is the conversation's width minus the gutter, wider than the reading column on a wide screen.
+  await scrollbarSettled();
   const box = await evaluate(`(() => { const gutter = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--space-4'));
     return { frame: document.querySelector('.diagram-scroll').getBoundingClientRect().width, inner: document.querySelector('.log').clientWidth - 2 * gutter,
       column: document.querySelector('.message:not(.message-user) .markdown').getBoundingClientRect().width }; })()`);

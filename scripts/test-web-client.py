@@ -2039,7 +2039,7 @@ capabilities = ["terminal_view"]
 
         for broken in (False, True):
             settle('owner')
-            started = time.time() * 1000
+            began_ms = time.time() * 1000
             # The per-device message budget (20 a minute) may be spent by now: wait for it.
             status, sent = wait(lambda: (lambda answer: answer if answer[0] != 429 else None)(
                 owner.request('POST', chat + '/send', {'text': 'use tool' + (' broken' if broken else '')})), 'message budget', timeout=20)
@@ -2049,10 +2049,10 @@ capabilities = ["terminal_view"]
             step = running['items'][-1]
             # The title is one clean line from the input; the input and the thinking text are never sent.
             assert step['tool'] == {'name': 'Bash', 'title': 'List the files', 'status': 'running'} and step['text'] is None
-            assert started - 2000 <= step['at_unix_ms'] <= time.time() * 1000 + 2000, step
+            assert began_ms - 2000 <= step['at_unix_ms'] <= time.time() * 1000 + 2000, step
             assert 'private reasoning' not in json.dumps(running) and 'rm -rf' not in json.dumps(running)
             assert running['working']['activity'] == 'List the files'
-            assert started - 2000 <= running['working']['since_unix_ms'] <= time.time() * 1000, running['working']
+            assert began_ms - 2000 <= running['working']['since_unix_ms'] <= time.time() * 1000, running['working']
             # The change reaches the page within about a second of the write.
             del events.seen[:]
             opened = time.monotonic()
@@ -2337,7 +2337,8 @@ capabilities = ["terminal_view"]
         wait(lambda: seen.append([item.get('failed') for item in timeline()['queue']]) or delivered()[-1] == 'after the slow editor',
              'the message after a slow editor', timeout=20)
         assert not any(any(reasons) for reasons in seen), seen
-        assert all(item['id'] != slow for item in timeline()['queue'])
+        # ^ The queue follows the delivery a moment later.
+        wait(lambda: all(item['id'] != slow for item in timeline()['queue']), 'the message after a slow editor left the queue')
         settle('owner')
         # A message that fails does not hold back the next one; it stays with its reason.
         # Its attachment expires while it waits (the root site keeps media for 4 s).
@@ -2620,12 +2621,12 @@ capabilities = ["terminal_view"]
         # send, and its device slot, until TCP gave up (docs/web-client-terminal.md "Liveness").
         gone = Terminal(owner, term, client='11')
         gone.control('replay')
-        started = time.monotonic()
+        silent_since = time.monotonic()
         pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == term)
         wait(lambda: call('terminal_acquire', {'pane_id': pane, 'client_id': 6, 'takeover': False})['type'] == 'ack',
              'a page that went away keeps the lease', timeout=30)
         assert call('terminal_release', {'pane_id': pane, 'client_id': 6})['type'] == 'ack'
-        assert time.monotonic() - started > 10, 'a silent page lost the terminal before its liveness bound'
+        assert time.monotonic() - silent_since > 10, 'a silent page lost the terminal before its liveness bound'
         flooded = []
         for client in range(20, 24):
             page = Terminal(owner, term, '&takeover=true', client=str(client))
@@ -2707,13 +2708,13 @@ capabilities = ["terminal_view"]
         status, mentions = work_site.request('GET', '/api/tasks/%d/mentions' % projects['project2'])
         assert status == 200 and [s['name'] for s in mentions['skills']] == ['profile-skill'], mentions
         assert work_site.request('GET', '/api/tasks/%d/mentions' % projects['project'])[0] == 404
-        status, started = work_site.request('POST', '/api/sessions', {'project': projects['project2']})
-        assert status == 200, started
+        status, opened = work_site.request('POST', '/api/sessions', {'project': projects['project2']})
+        assert status == 200, opened
         seen = wait(lambda: (work / 'profile-agent.txt').exists() and (work / 'profile-agent.txt').read_text(), 'the profile agent starts')
         assert seen == str(profile_root), seen
         # ^ The agent ended at once; its login shell keeps the pane, so the chat can resume in it.
         time.sleep(1.0)
-        session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == started['session_id'])
+        session = next(s for s in call('snapshot')['data']['sessions'] if s['id'] == opened['session_id'])
         pane = next(p for p in call('snapshot')['data']['panes'] if p['id'] == session['focused_pane'])
         assert not pane['exited'], pane
         assert call('session_close', {'session_id': session['id'], 'expected_revision': session['revision']})['type'] == 'ack'
@@ -3070,14 +3071,14 @@ capabilities = ["terminal_view"]
                 if (signals / 'request').exists() and not (signals / 'done').exists():
                     old = servers['m2']
                     old.terminate()
-                    started = time.monotonic()
+                    stop_began = time.monotonic()
                     try:
                         old.wait(timeout=10)
                     except subprocess.TimeoutExpired:
                         old.kill()
                         old.wait(timeout=3)
                         raise AssertionError('wsx web serve did not stop within 10 s of SIGTERM while a page was open')
-                    stopped = time.monotonic() - started
+                    stopped = time.monotonic() - stop_began
                     # Open streams get a two-second grace period, then the server ends.
                     assert stopped < 4, 'wsx web serve took %.1f s to stop' % stopped
                     # A reply the open chat misses while the server is away: the page reads it again.
