@@ -139,6 +139,8 @@ struct CheckRun {
     answer: Option<CheckAnswer>,
     /// The checks it runs, for the evidence name: scenario names and check numbers.
     label: String,
+    /// `--part`: it runs one part of a scenario, which is never a full pass.
+    part: Option<String>,
     /// It runs a `ci:` scenario, so it answered `queued` at once: CI takes 20 min or more.
     ci: bool,
     /// The longest it may run: each local check's timeout, and `CI_TIMEOUT` beside them.
@@ -170,6 +172,42 @@ const CI_TIMEOUT: Duration = Duration::from_secs(75 * 60);
 /// The command of a `ci:` scenario: it runs on CI and takes no check slot.
 fn ci_command(command: &str) -> Option<&str> {
     command.strip_prefix("ci:").map(str::trim)
+}
+
+/// The scenario names and numbers of a `check-run`, and its `--part <p>` (or `--part=<p>`).
+/// ref: docs/tasks.md "Scenarios"
+fn split_part(args: &[String]) -> Result<(Vec<&String>, Option<String>), String> {
+    let (mut words, mut part) = (Vec::new(), None);
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let value = match arg.strip_prefix("--part=") {
+            Some(value) => value,
+            None if arg == "--part" => args.next().map_or("", String::as_str),
+            None => {
+                words.push(arg);
+                continue;
+            }
+        };
+        let valid = !value.is_empty()
+            && value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if !valid || part.replace(value.to_string()).is_some() {
+            return Err("--part takes one name of letters, digits, - and _".into());
+        }
+    }
+    Ok((words, part))
+}
+
+/// A scenario's command with its part: the command reads `WSX_SCENARIO_PART` (a `ci:` one
+/// after the prefix, which the host strips). The result's command shows it, so a part never
+/// answers for the full run. ref: docs/tasks.md "Scenarios"
+fn with_part(command: &str, part: &str) -> String {
+    let set = format!("export WSX_SCENARIO_PART='{part}'; ");
+    match ci_command(command) {
+        Some(rest) => format!("ci: {set}{rest}"),
+        None => format!("{set}{command}"),
+    }
 }
 
 struct Host {
@@ -2127,9 +2165,18 @@ impl Host {
         let refuse = |message: String| {
             let _ = reply.send(broker::refused(message));
         };
-        let numbers = match argv {
-            [task, sub, numbers @ ..] if task == "task" && sub == "check-run" => numbers,
-            _ => return refuse("a worker may run only `wsx task check-run [<n>...]`".into()),
+        let (numbers, part) = match argv {
+            [task, sub, args @ ..] if task == "task" && sub == "check-run" => {
+                match split_part(args) {
+                    Ok(split) => split,
+                    Err(message) => return refuse(message),
+                }
+            }
+            _ => {
+                return refuse(
+                    "a worker may run only `wsx task check-run [<n>...] [--part <p>]`".into(),
+                )
+            }
         };
         if self.record.waits_on(WaitOn::Hand) {
             return refuse(format!("{:#}", self.by_hand_refusal()));
@@ -2147,7 +2194,7 @@ impl Host {
         let mut runnable = self.record.checks.clone();
         runnable.extend(scenarios.values().cloned());
         let checks = self.record.checks.len();
-        let picked: Result<Vec<(usize, String)>, String> = match numbers {
+        let picked: Result<Vec<(usize, String)>, String> = match numbers.as_slice() {
             [] => Ok(runnable.iter().take(checks).cloned().enumerate().collect()),
             numbers => numbers
                 .iter()
@@ -2159,7 +2206,7 @@ impl Host {
                         .or_else(|| {
                             scenarios
                                 .keys()
-                                .position(|name| name == word)
+                                .position(|name| name == *word)
                                 .map(|at| checks + at)
                         })
                         .map(|index| (index, runnable[index].clone()))
@@ -2185,6 +2232,20 @@ impl Host {
             Ok(picked) => picked,
             Err(message) => return refuse(message),
         };
+        // ^ A part is one scenario's: the command runs with `WSX_SCENARIO_PART`.
+        let picked = match &part {
+            Some(_) if !matches!(picked.as_slice(), [(index, _)] if *index >= checks) => {
+                return refuse(
+                    "--part needs exactly one scenario, such as `check-run web --part tasks`"
+                        .into(),
+                )
+            }
+            Some(part) => picked
+                .into_iter()
+                .map(|(index, command)| (index, with_part(&command, part)))
+                .collect(),
+            None => picked,
+        };
         // ^ Never two runs in one working copy: the same checks on the same commit join, other
         // checks wait, and a newer commit's run starts when the pending one ends.
         let indexes: Vec<usize> = picked.iter().map(|(index, _)| *index).collect();
@@ -2204,16 +2265,20 @@ impl Host {
         }
         if let Some(run) = &mut self.check_run {
             // ^ A queued run answers only after the result, also when it already ended.
-            if run.queued && run.indexes == indexes {
+            if run.queued && run.indexes == indexes && run.part == part {
                 let _ = reply.send(queued_response(run.ci));
                 return;
             }
-            if run.indexes != indexes {
+            if run.indexes != indexes || run.part != part {
                 let numbers: Vec<String> =
                     run.indexes.iter().map(|i| (i + 1).to_string()).collect();
                 return refuse(format!(
-                    "a check-run of checks {} still runs; run it again to wait for its answer",
-                    numbers.join(" ")
+                    "a check-run of checks {}{} still runs; run it again to wait for its answer",
+                    numbers.join(" "),
+                    run.part
+                        .iter()
+                        .map(|p| format!(" --part {p}"))
+                        .collect::<String>()
                 ));
             }
             run.replies.push(reply);
@@ -2256,8 +2321,10 @@ impl Host {
                     Some(at) => scenarios.keys().nth(at).cloned().unwrap_or_default(),
                     None => (index + 1).to_string(),
                 })
+                .chain(part.iter().map(|part| format!("--part {part}")))
                 .collect::<Vec<_>>()
                 .join(" "),
+            part: part.clone(),
             ci,
             limit,
             deadline_ms: None,
@@ -2282,10 +2349,19 @@ impl Host {
                 .map(|(index, _)| *index)
                 .zip(results.iter().cloned())
                 .collect();
-            let response = check_run_response(&picked, &stored, &ran);
+            let mut response = check_run_response(&picked, &stored, &ran);
+            // ^ A part's pass is not the scenario's pass: nothing is stored, so no later run or
+            // evidence answers for the full run.
+            if part.is_some() {
+                response.stdout.push_str(
+                    "this ran one part: it is not a full pass; the full result still gates the \
+                     task (run the scenario without --part)\n",
+                );
+            }
             // ^ A tree that changed during the run, a timeout or a full disk is not stored.
             let unchanged = tree.filter(|tree| {
-                copy::clean_tree(&working_copy).ok().flatten().as_ref() == Some(tree)
+                part.is_none()
+                    && copy::clean_tree(&working_copy).ok().flatten().as_ref() == Some(tree)
             });
             let ran = ran
                 .into_iter()

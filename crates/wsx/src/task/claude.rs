@@ -326,7 +326,10 @@ fn check_run_note(record: &TaskRecord) -> String {
          same commit, with nothing uncommitted, answers from its stored result. Fix what \
          fails in code you changed. A check that fails in code you did not touch is not \
          yours: do not run it again, name it in your summary. After a rebase or a conflict \
-         fix run no check-run: the checks after your result prove the rebased tree. ",
+         fix run no check-run: the checks after your result prove the rebased tree. \
+         `wsx task check-run <scenario> --part <part>` reruns one part of a scenario that has \
+         parts (`web`: `chat`, `tasks`) after a fix: its pass is not a full pass, so run the \
+         scenario whole once more before your result. ",
         listed.join(" ")
     )
 }

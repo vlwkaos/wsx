@@ -3903,6 +3903,30 @@ def run(wsx, wsxd, work, owned):
     assert newer.startswith(second + ':') and 'ran-on-' + second in newer and first not in newer, sent[0]
     assert older.startswith(first + ':') and 'ran-on-' + first in older and second not in older, sent[0]
     js('task', 'close', two, '--discard')
+    # 32t5. A scenario's `--part` (docs/tasks.md "Scenarios"): the command gets WSX_SCENARIO_PART, a
+    # repeat of the same part joins the run, the full run and a bad part or a plain check are
+    # refused, and the part's pass is no full pass: no evidence. A full run records its own.
+    mark('32t5')
+    configure(LAND_CONFIG + '  scenarios:\n    parted: "ci: echo part=[$WSX_SCENARIO_PART]"\n', 'a scenario with parts')
+    parted = js('task', 'new', 'CHECKRUN_PART parted tasks WORK part.txt')['id']
+    done = wait_state(parted, 'ready', 'failed')
+    assert done['state'] == 'ready', log(parted)
+    first, again, full_run, bad, plain_check = next(t for t in traces() if 'check_run_part' in t)['check_run_part']
+    assert first[0] == again[0] == 0 and first[1].startswith('queued on CI') and again[1].startswith('queued on CI'), (first, again)
+    assert full_run[0] != 0 and '--part tasks still runs' in full_run[1], full_run
+    assert bad[0] != 0 and '--part takes one name' in bad[1], bad
+    assert plain_check[0] != 0 and '--part needs exactly one scenario' in plain_check[1], plain_check
+    ran = next(e for e in log(parted) if e['kind'] == 'check_run')['results']
+    assert len(ran) == 1 and ran[0]['command'].startswith("ci: export WSX_SCENARIO_PART='tasks'; ") and 'part=[tasks]' in ran[0]['output'], ran
+    turn = [t for t in traces() if 'Your check-run ended' in t.get('message', '') and 'part=[tasks]' in t['message']]
+    assert len(turn) == 1 and 'not a full pass' in turn[0]['message'], turn
+    assert not [e for e in done['result']['result']['evidence'] if 'recorded by the host' in e['check']], done['result']
+    full = js('task', 'new', 'CHECKRUN_LATER parted WORK full.txt')['id']
+    done = wait_state(full, 'ready', 'failed')
+    proof = [e for e in done['result']['result']['evidence'] if 'check-run parted passed' in e['check']]
+    assert done['state'] == 'ready' and len(proof) == 1 and 'part=[]' in proof[0]['proof'], done['result']
+    for n in (parted, full):
+        js('task', 'close', n, '--discard')
     # 32v. Two lanes (docs/tasks.md "Check slot"): a scenario check-run holds the scenarios lane, a
     # task's result checks still run at once in the checks lane, and a second scenario run waits
     # with the scenarios reason.
