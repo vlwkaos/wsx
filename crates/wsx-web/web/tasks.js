@@ -785,7 +785,6 @@ function Sheet({ label, fit = false, onClose, children }) {
     </dialog>`;
 }
 
-
 // The project screen with task_view: the manager chat as messages, what is open in the
 // reservoir, and with a task or the page in the route its sheet over the chat. With `role`, a
 // role's chat (#/p/<project>/r/<role>): the same bubbles without the manager's reservoir,
