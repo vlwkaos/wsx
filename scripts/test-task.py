@@ -2660,19 +2660,26 @@ def part_worker(created=None):
     assert wait_state(keep, 'ready', 'failed')['state'] == 'ready'
     asked = js('task', 'say', 'RUN wsx task close %d --discard -p demo --json' % keep)
     assert 'the owner was asked (a2)' in reply_to(asked['id'])['text']
-    js('task', 'deny', 'a2', '--note', 'keep it for now')
-    wait(lambda: events_with('approval a2 (discard #%d) denied; keep it for now' % keep), 'deny event')
+    # The owner sees the newest request of a task only: a second discard replaces the first, which
+    # then answers that it was replaced and runs nothing (docs/tasks.md "Approvals").
+    asked = js('task', 'say', 'RUN wsx task close %d --discard -p demo --json' % keep)
+    assert 'the owner was asked (a3)' in reply_to(asked['id'])['text']
+    assert [p['id'] for p in js('task', 'ledger')['approvals']] == ['a3']
+    assert 'approval a2 was decided: dropped; replaced by a3; nothing ran' in cli('task', 'approve', 'a2', ok=False).stderr
+    wait(lambda: events_with('approval a2 (discard #%d) dropped; replaced by a3' % keep), 'replace event')
+    js('task', 'deny', 'a3', '--note', 'keep it for now')
+    wait(lambda: events_with('approval a3 (discard #%d) denied; keep it for now' % keep), 'deny event')
     assert show(keep)['state'] == 'ready' and Path(show(keep)['record']['working_copy']).exists()
     # The manager cannot decide its own request.
-    asked = js('task', 'say', 'RUN wsx task land %d -p demo --json\nRUN wsx task approve a3 -p demo --json' % keep)
+    asked = js('task', 'say', 'RUN wsx task land %d -p demo --json\nRUN wsx task approve a4 -p demo --json' % keep)
     text = reply_to(asked['id'])['text']
-    assert 'the owner was asked (a3)' in text and 'is for the owner' in text, text
+    assert 'the owner was asked (a4)' in text and 'is for the owner' in text, text
     # An approval for a revision the task has moved past is dropped, and the manager hears why
     # in the chat (docs/tasks.md "Approvals").
     js('task', 'add', keep, 'WORK keep2.txt')
     assert wait_state(keep, 'ready', 'failed')['revision'] == 2
-    wait(lambda: events_with('approval a3 (land #%d) dropped; #%d moved from r1 to r2' % (keep, keep)), 'the drop event')
-    assert 'approval a3 was decided: dropped; #%d moved from r1 to r2' % keep in cli('task', 'approve', 'a3', ok=False).stderr and show(keep)['state'] == 'ready'
+    wait(lambda: events_with('approval a4 (land #%d) dropped; #%d moved from r1 to r2' % (keep, keep)), 'the drop event')
+    assert 'approval a4 was decided: dropped; #%d moved from r1 to r2' % keep in cli('task', 'approve', 'a4', ok=False).stderr and show(keep)['state'] == 'ready'
     assert js('task', 'ledger')['approvals'] == []
     wait_closed(ap)
     js('task', 'close', keep, '--discard')
@@ -2702,7 +2709,16 @@ def part_worker(created=None):
     js('task', 'deny', denied)
     wait(lambda: events_with('approval %s (push) denied' % denied), 'the push deny event')
     assert origin_tip() == before
+    # ^ The request says what it brings: the task landed since origin's tip (`ap`) and the one
+    # commit; a newer request for the same commit replaces it (docs/tasks.md "Push").
+    stale, _ = ask_push('')
     approved, _ = ask_push('')
+    waiting = js('task', 'ledger')['approvals']
+    assert [p['id'] for p in waiting] == [approved], waiting
+    assert (waiting[0]['tasks'], waiting[0]['commits']) == ([ap], 1), waiting
+    assert waiting[0]['label'] == 'Approve push #%d (1 commit)' % ap, waiting
+    assert 'replaced by %s; nothing ran' % approved in cli('task', 'approve', stale, ok=False).stderr
+    wait(lambda: events_with('approval %s (push) dropped; replaced by %s' % (stale, approved)), 'the push replace event')
     assert origin_tip() == before
     done = js('task', 'approve', approved)
     assert done['ok'] and done['result']['pushed'] and done['result']['forced'] is False, done
@@ -2820,7 +2836,7 @@ def part_worker(created=None):
         (r'WORKSPACE', b't'),
         (r'\(m\)anager', b'm'),
         # ^ The heading names the manager as the chat rows do: its shown name, `Atlas` here.
-        (r'(?s)%s demo · opus high +1 to check  1 approval\n.*▸ %s' % (js('task', 'manager')['name'], item['id']), b'i'),
+        (r'(?s)%s demo · (?:opus|fake-manager) high +1 to check  1 approval\n.*▸ %s' % (js('task', 'manager')['name'], item['id']), b'i'),
         (r'Enter: send', b'hello from the tui'),
         (r'> hello from the tui', b'\r'),
         # ^ "Sent" comes before the next read draws the message: wait for both.

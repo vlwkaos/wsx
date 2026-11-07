@@ -574,10 +574,13 @@ pub fn push(
 
 /// Commits on `branch` that `target` does not have.
 pub fn unlanded_commits(main: &Path, branch: &str, target: &str) -> Result<u32> {
-    let count = git(
-        main,
-        &["rev-list", "--count", &format!("{target}..{branch}")],
-    )?;
+    commits_after(main, Some(target), branch)
+}
+
+/// Commits in `from..to`, or all of `to` when `from` is none.
+pub fn commits_after(main: &Path, from: Option<&str>, to: &str) -> Result<u32> {
+    let range = from.map_or_else(|| to.to_string(), |from| format!("{from}..{to}"));
+    let count = git(main, &["rev-list", "--count", &range])?;
     count
         .parse()
         .with_context(|| format!("git rev-list returned {count:?}"))
