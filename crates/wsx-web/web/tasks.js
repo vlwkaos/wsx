@@ -9,7 +9,7 @@ import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, inlinePasted, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
 import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
 import { FindBar, FindButton } from "./find.js";
-import { mark, QuoteChip, quoteSplit, useReply, withQuote } from "./reply.js";
+import { markFound, QuoteChip, quoteSplit, useReply, withQuote } from "./reply.js";
 import { readTaskAhead, TaskPage } from "./task.js";
 import { ProjectOverview } from "./page.js";
 import { ChecksPage } from "./checks.js";
@@ -917,7 +917,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
     const node = log.current?.querySelector(`:scope > [data-id="${around}"]`);
     if (!node) return;
     reveal(node);
-    mark(node);
+    markFound(node);
   }, [around, chat]);
   // Closing the sheet gives the focus back to the composer, in the same commit: after a paint
   // it took the focus from a button tapped in the meantime (a reservoir row's Land).
