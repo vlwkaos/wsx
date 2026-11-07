@@ -1146,6 +1146,8 @@ struct AfterQuery {
     /// The chat from the oldest entry that shows these words, for a find
     /// (docs/web-client-chat.md "Find").
     find: Option<String>,
+    /// The chat around this message id, for a tap on a quote (docs/web-client-chat.md).
+    around: Option<u64>,
 }
 
 async fn tasks_chat(
@@ -1165,8 +1167,7 @@ async fn tasks_chat(
             scope,
             &scopes,
             query.role.as_deref(),
-            query.after,
-            query.find.as_deref(),
+            (query.after, query.find.as_deref(), query.around),
             &app.media,
         )
         .map(Json)

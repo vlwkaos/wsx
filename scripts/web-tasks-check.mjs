@@ -2805,6 +2805,22 @@ if (left.some((ask) => ask.id === plansQuestion.id) || left.length !== openAsks.
 const chatAsks = await evaluate(`fetch('api/tasks/${plansArg}/chat').then((r) => r.json()).then((data) => data.asks)`);
 if (JSON.stringify(chatAsks) !== JSON.stringify(left.map((ask) => ask.id))) await fail(`the chat's asks ${JSON.stringify(chatAsks)} differ from the overview's ${JSON.stringify(left)}`);
 await until(`!document.querySelector('.log [data-key="reply-${plansQuestion.id}"][data-asks], .log [data-key="reply-${plansQuestion.id}"] [data-asks]')`, "the dismissed question's bubble keeps its border");
+// --- A tap on a quote whose message is not among the rows (docs/web-client-chat.md "Replies"):
+// plans' first older turn (message 5001, test-web-client.py) is past the rows the page holds, so
+// the manager's quote of it opens the chat around that message, marked, and Back to newest returns.
+// (After the questions: this plain owner message would answer the newest open one.)
+await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ text: "QUOTE 5001 about the notes" }))} })`);
+const oldQuote = "[...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1)";
+await until(`${oldQuote}?.textContent === 'Where did the Quasar notes go?' && !document.querySelector('.log .typing')`, "the manager's quote of the oldest turn did not show", 120);
+if (await evaluate("!!document.querySelector('.log > [data-id=\"5001\"]')")) await fail("message 5001 is among the rows before the tap");
+await evaluate(`${oldQuote}.click()`);
+await until("!!document.querySelector('.log > [data-id=\"5001\"][data-found]')", "a tap on the quote of a message outside the rows did not open the chat there, marked", 60);
+const around = await evaluate(`(() => { const log = document.querySelector('.log').getBoundingClientRect(); const box = document.querySelector('.log > [data-id="5001"]').getBoundingClientRect();
+  return { shown: box.top >= log.top && box.bottom <= log.bottom, note: document.querySelector('.note.around')?.textContent ?? '', text: document.querySelector('.log > [data-id="5001"]').textContent }; })()`);
+if (!around.shown || !/earlier part/.test(around.note) || !/Where did the Quasar notes go/.test(around.text)) await fail(`the chat opened around the quoted message reads ${JSON.stringify(around)}`);
+await shot("quote-around");
+await click(".note.around button");
+await until("!document.querySelector('.note.around') && [...document.querySelectorAll('.log .bubble')].some((node) => node.textContent.includes('about the notes'))", "Back to newest did not return to the newest part", 60);
 await openReservoir();
 await until(`!!${rowOf("#1")}`, "the waiting task has no reservoir row");
 const waitRow = (await rows()).find((row) => row[0] === "#1");

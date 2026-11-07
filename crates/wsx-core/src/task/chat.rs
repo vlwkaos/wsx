@@ -17,6 +17,8 @@ const REPEAT_MS: u64 = 60_000;
 pub const CHAT_ENTRIES: usize = 200;
 /// A chat reads this much of the log's end first, more only when its window needs it.
 const FIRST_READ_BYTES: u64 = 256 * 1024;
+/// A window around a message shows this many chat entries before it.
+const AROUND_BEFORE: usize = 40;
 /// A question older than this asks no more (docs/tasks.md "Manager").
 pub const ASKS_WITHIN_MS: u64 = 7 * 24 * 3600 * 1000;
 
@@ -30,16 +32,20 @@ pub enum Window<'a> {
     /// From the oldest entry whose row shows these words (case-insensitive) to the end, so a
     /// find in the chat reaches every match; the tail when none does.
     Find(&'a str),
+    /// `CHAT_ENTRIES` from `AROUND_BEFORE` chat entries before message `id`, at any age the log
+    /// keeps (every rolled file is read); the tail when `id` is not in the log.
+    Around(u64),
 }
 
 impl<'a> Window<'a> {
-    /// The window of a chat request: a find when it has words, else after `after`, else the
-    /// tail. The web, the TUI and `wsx task chat` ask with these two.
-    pub fn new(find: Option<&'a str>, after: Option<u64>) -> Self {
-        match (find.filter(|words| !words.trim().is_empty()), after) {
-            (Some(words), _) => Self::Find(words),
-            (None, Some(after)) => Self::After(after),
-            (None, None) => Self::Tail,
+    /// The window of a chat request: a find when it has words, else around `around`, else after
+    /// `after`, else the tail. The web, the TUI and `wsx task chat` ask with these.
+    pub fn new(find: Option<&'a str>, after: Option<u64>, around: Option<u64>) -> Self {
+        match (find.filter(|words| !words.trim().is_empty()), around, after) {
+            (Some(words), ..) => Self::Find(words),
+            (None, Some(around), _) => Self::Around(around),
+            (None, None, Some(after)) => Self::After(after),
+            (None, None, None) => Self::Tail,
         }
     }
 }
@@ -47,6 +53,18 @@ impl<'a> Window<'a> {
 /// The entries a chat needs from the log's end: its window and the manager's last step
 /// (`activity`). The open questions are `asking`'s.
 pub fn read_chat(dir: &ManagerDir, window: &Window) -> Result<Vec<ManagerEntry>> {
+    if let Window::Around(id) = window {
+        // ^ Ids grow: an entry below `id` and none at it means the message is not in the log.
+        // Else enough entries before it, or the oldest file's start, end the read.
+        return dir.read_around(FIRST_READ_BYTES, |log| {
+            match log.iter().position(|entry| entry.id() == Some(*id)) {
+                Some(at) => log[..at].iter().filter(|e| in_chat(e)).count() >= AROUND_BEFORE,
+                None => log
+                    .iter()
+                    .any(|entry| entry.id().is_some_and(|at| at < *id)),
+            }
+        });
+    }
     dir.read_back(FIRST_READ_BYTES, |log| {
         let shown = match window {
             Window::Tail => log.iter().filter(|entry| in_chat(entry)).count() > CHAT_ENTRIES,
@@ -54,7 +72,7 @@ pub fn read_chat(dir: &ManagerDir, window: &Window) -> Result<Vec<ManagerEntry>>
             Window::After(id) => log
                 .iter()
                 .any(|entry| entry.id().is_some_and(|at| at <= *id)),
-            Window::Find(_) => false,
+            Window::Find(_) | Window::Around(_) => false,
         };
         shown
             && log.iter().any(|entry| {
@@ -90,6 +108,14 @@ pub fn chat_window<'a>(
     window: &Window,
     names: &Names,
 ) -> (Vec<&'a ManagerEntry>, usize) {
+    if let Window::Around(id) = window {
+        if let Some(at) = log.iter().position(|entry| entry.id() == Some(*id)) {
+            let before = log[..at].iter().filter(|e| in_chat(e)).count();
+            let skipped = before.saturating_sub(AROUND_BEFORE);
+            let entries = log.iter().filter(|e| in_chat(e));
+            return (entries.skip(skipped).take(CHAT_ENTRIES).collect(), skipped);
+        }
+    }
     let (start, limit) = match window {
         Window::Tail => (0, CHAT_ENTRIES),
         Window::After(after) => (
@@ -102,6 +128,7 @@ pub fn chat_window<'a>(
             Some(start) => (start, usize::MAX),
             None => (0, CHAT_ENTRIES),
         },
+        Window::Around(_) => (0, CHAT_ENTRIES),
     };
     let mut entries: Vec<&ManagerEntry> = log[start..].iter().filter(|e| in_chat(e)).collect();
     let skipped = entries.len().saturating_sub(limit);
@@ -161,11 +188,14 @@ pub fn open_asks(log: &[ManagerEntry], now: u64) -> Vec<OpenAsk> {
             ManagerEvent::Message {
                 from: Author::Owner,
                 text,
+                quote,
                 ..
             } => {
-                let answered = match split_quote(text).0 {
-                    Some(quoted) => open.iter().rposition(|ask| ask.quote == quoted.trim()),
-                    None => open.len().checked_sub(1),
+                // ^ A quote with its id answers that question; an old one, by its line.
+                let answered = match (quote, split_quote(text).0) {
+                    (Some(id), _) => open.iter().rposition(|ask| ask.id == *id),
+                    (None, Some(quoted)) => open.iter().rposition(|ask| ask.quote == quoted.trim()),
+                    (None, None) => open.len().checked_sub(1),
                 };
                 if let Some(at) = answered {
                     open.remove(at);
@@ -278,6 +308,9 @@ pub struct ChatRow {
     /// The line a quote of this message carries (`quote_of`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quote: Option<String>,
+    /// The id of the message the leading quote points at: a tap goes to it at any age.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quoted_id: Option<u64>,
     /// An event line's leading task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<u32>,
@@ -314,6 +347,7 @@ impl ChatRow {
             quoted: None,
             text,
             quote: None,
+            quoted_id: None,
             task: None,
             asks: false,
             post: false,
@@ -333,6 +367,7 @@ impl ChatRow {
             name: Some(name),
             quoted: quoted.map(str::to_string),
             quote,
+            quoted_id: entry.quote_id(),
             ..Self::new(RowKind::Message, key, entry, body.trim().to_string())
         }
     }

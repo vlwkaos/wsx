@@ -544,6 +544,8 @@ div.steps .steps-summary { cursor: default; }
 @media (pointer: coarse) {
   .log > [data-quote] { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 }
+/* The chat opened at a quoted message: the note over the log says so, with the way back. */
+.note.around { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2); margin: 0; padding: var(--space-1) var(--column-inset); border-bottom: var(--border-width) solid var(--color-hairline); color: var(--color-muted); }
 .log > [data-found] { outline: var(--focus-width) solid var(--color-accent); outline-offset: var(--space-1); border-radius: var(--radius-control); }
 .queue { list-style: none; margin: 0; padding: 0 var(--column-inset); border-top: var(--border-width) solid var(--color-hairline); background: var(--color-surface); }
 .queued { display: flex; align-items: center; gap: var(--space-3); min-height: var(--size-key); font-size: var(--font-size-sm); }

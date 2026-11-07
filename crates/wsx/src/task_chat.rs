@@ -35,9 +35,13 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 pub enum Target {
     Session(u64),
     File(String),
-    /// A quote at the head of a message (`split_quote`): it goes to the quoted message, the
-    /// newest one above with that first line.
-    Quote(String),
+    /// A quote at the head of a message (`split_quote`): it goes to the quoted message, by its
+    /// id when the log stored it (`ChatRow::quoted_id`), else the newest one above with that
+    /// first line.
+    Quote {
+        line: String,
+        id: Option<u64>,
+    },
 }
 
 /// A piece of a message: plain words, or a link `[label](session/<id>)` / `[label](files/<path>)`.
@@ -108,7 +112,10 @@ pub fn links(rows: &[ChatRow]) -> Vec<(u64, usize, Target)> {
     let mut found = Vec::new();
     for row in rows.iter().filter(|row| row.kind == RowKind::Message) {
         // ^ The quote is link 0 of its message; `chat_lines` counts the same way.
-        let quoted = row.quoted.clone().map(Target::Quote);
+        let quoted = row.quoted.clone().map(|line| Target::Quote {
+            line,
+            id: row.quoted_id,
+        });
         let targets = parts(&row.text).into_iter().filter_map(|part| match part {
             Part::Link { target, .. } => Some(target),
             Part::Text(_) => None,
@@ -229,6 +236,8 @@ struct View {
 struct Read {
     /// The find the view was read for (`ManagerChat::searched`).
     searched: String,
+    /// The message the view was read around (`ManagerChat::around`).
+    around: Option<u64>,
     status: Option<ManagerResponse>,
     view: Option<(Stamp, Result<View, String>)>,
 }
@@ -273,13 +282,21 @@ pub struct ManagerChat {
     /// ^ The find the chat reads for: from the oldest message that shows it, so a find reaches
     /// every match (`Window::Find`, docs/tasks.md "TUI"); empty is the newest part.
     searched: String,
+    /// The message a quote opened the chat at: the rows are the part of the log around it
+    /// (`Window::Around`) until Esc reads the newest part again.
+    pub around: Option<u64>,
+    /// The row to scroll to once the read for `around` is in.
+    jump_due: bool,
     /// The current match is still to be scrolled to: the log was not read for it yet.
     reveal_due: bool,
+    /// The quoted message the chat went to: its heading is reversed.
+    marked: Option<u64>,
     /// ^ The rows wrapped for the last width and link, until the rows change; the draw, a key
     /// and the find's count all read it, so a frame wraps nothing new.
     wrapped: RefCell<Option<Wrapped>>,
-    /// The question a message answers (`r` on an open question): it goes as its quote.
-    reply: Option<String>,
+    /// The question a message answers (`r` on an open question): its line and id, sent as the
+    /// quote (`> message <id>`).
+    reply: Option<(String, u64)>,
     /// What runs now ("Sending", "Failing c3"), until its answer comes.
     pub acting: Option<String>,
     stamp: Option<Stamp>,
@@ -295,6 +312,7 @@ type Found = Arc<Vec<(usize, Range<usize>)>>;
 struct Wrapped {
     width: usize,
     link: Option<(u64, usize)>,
+    marked: Option<u64>,
     lines: Arc<Vec<Line<'static>>>,
     selected: Option<usize>,
     found: Option<(String, Found)>,
@@ -341,8 +359,11 @@ impl ManagerChat {
             found: 0,
             area: Cell::new((0, 0)),
             searched: String::new(),
+            around: None,
+            jump_due: false,
             reply: None,
             reveal_due: false,
+            marked: None,
             wrapped: RefCell::new(None),
             acting: None,
             stamp: None,
@@ -357,7 +378,7 @@ impl ManagerChat {
     fn check(&mut self) {
         let (tx, rx) = mpsc::sync_channel(1);
         let (store, last, role) = (self.store.clone(), self.stamp.clone(), self.role.clone());
-        let searched = self.searched.clone();
+        let (searched, around) = (self.searched.clone(), self.around);
         let (main, project) = (self.main.clone(), self.project.clone());
         self.pending = Some(rx);
         self.last_check = Instant::now();
@@ -375,12 +396,13 @@ impl ManagerChat {
             });
             let now = store::stamp(&store);
             let view = (last.as_ref() != Some(&now)).then(|| {
-                let view = read(&project, &store, &main, dir.as_ref(), &searched)
+                let view = read(&project, &store, &main, dir.as_ref(), (&searched, around))
                     .map_err(|error| format!("{error:#}"));
                 (now, view)
             });
             let _ = tx.send(Read {
                 searched,
+                around,
                 status,
                 view,
             });
@@ -451,10 +473,14 @@ impl ManagerChat {
                 if self.reveal_due {
                     self.reveal();
                 }
+                if self.jump_due && read.around == self.around {
+                    self.arrive();
+                }
                 self.activity = view.activity;
                 self.agent = view.agent;
                 // ^ A read for another find: read again.
-                self.stamp = (read.searched == self.searched).then_some(stamp);
+                self.stamp =
+                    (read.searched == self.searched && read.around == self.around).then_some(stamp);
                 self.loaded = true;
                 self.error = None;
                 changed = true;
@@ -516,9 +542,10 @@ impl ManagerChat {
             return;
         }
         // ^ The owner's quote format (`split_quote`): the web's reply writes the same.
-        if let Some(quote) = self.reply.take() {
-            text = format!("> {quote}\n\n{text}");
+        if let Some((_, id)) = self.reply.take() {
+            text = format!("> message {id}\n\n{text}");
         }
+        self.newest();
         self.composer = InputState::new("> ");
         self.scroll = 0;
         let role = self.role.clone();
@@ -631,9 +658,9 @@ fn read(
     store: &str,
     main: &Path,
     dir: Option<&ManagerDir>,
-    searched: &str,
+    (searched, around): (&str, Option<u64>),
 ) -> anyhow::Result<View> {
-    let window = Window::new(Some(searched), None);
+    let window = Window::new(Some(searched), None, around);
     let now = wsx_core::task::now_unix_ms();
     let (log, asks) = match dir {
         Some(dir) => (chat::read_chat(dir, &window)?, chat::asking(dir, now)?),
@@ -774,6 +801,7 @@ impl ManagerChat {
             // ^ Esc clears a find first; the next Esc leaves the chat.
             (Action::InputEscape, _) if finding => self.close_find(),
             (Action::InputEscape, _) if self.link.is_some() => self.link = None,
+            (Action::InputEscape, _) if self.around.is_some() => self.newest(),
             (Action::InputEscape, _) => return false,
             (Action::InputChar('/'), _) => self.open_find(),
             (Action::InputChar('['), _) => self.step_link(-1),
@@ -784,6 +812,7 @@ impl ManagerChat {
             (Action::InputChar('N'), _) if finding => self.step(1),
             (Action::InputChar('k') | Action::NavigateUp, _) => self.scroll_by(1),
             (Action::InputChar('j') | Action::NavigateDown, _) => self.scroll_by(-1),
+            (Action::InputChar('G'), _) if self.around.is_some() => self.newest(),
             (Action::InputChar('G'), _) => self.scroll = 0,
             (Action::InputTab, _) => self.select(1),
             (Action::InputBackTab, _) => self.select(-1),
@@ -794,12 +823,12 @@ impl ManagerChat {
                 self.note = InputState::new(format!("Fail {}, what is wrong: ", item.id));
                 self.focus = Focus::Fail(item.id);
             }
-            (Action::InputChar('r'), Some(Item::Ask { quote, .. })) => {
+            (Action::InputChar('r'), Some(Item::Ask { id, quote, .. })) => {
                 self.composer = InputState::with_value(
                     format!("Reply to “{}”: ", view::clip(&quote, 40)),
                     self.composer.value().to_string(),
                 );
-                self.reply = Some(quote);
+                self.reply = Some((quote, id));
                 self.focus = Focus::Compose;
             }
             (Action::InputChar('d'), Some(Item::Ask { id, .. })) => self.dismiss(id),
@@ -858,13 +887,29 @@ impl ManagerChat {
                 }
                 Err(error) => self.notice = Some((format!("files/{path}: {error}"), true)),
             },
-            Some(Target::Quote(line)) => self.show_quoted(&line),
+            Some(Target::Quote { line, id }) => self.show_quoted(&line, id),
             None => self.link = None,
         }
     }
 
-    /// Scroll to the newest message above the selected one whose first line is `line`.
-    fn show_quoted(&mut self, line: &str) {
+    /// Show the quoted message: by `id` when the quote has one (centered and marked, reading the
+    /// log around it when the rows lack it), else the newest message above the selected one
+    /// whose first line is `line`.
+    fn show_quoted(&mut self, line: &str, id: Option<u64>) {
+        if let Some(id) = id {
+            self.marked = Some(id);
+            self.wrapped.take();
+            if self.rows.iter().any(|row| row.id == Some(id)) {
+                self.arrive();
+            } else {
+                // ^ The rows are a different part now: the selected link is not among them.
+                self.around = Some(id);
+                self.jump_due = true;
+                self.link = None;
+                self.read_again();
+            }
+            return;
+        }
         let Some(from) = self.link.and_then(|(ms, _)| {
             self.rows
                 .iter()
@@ -883,12 +928,50 @@ impl ManagerChat {
             return;
         };
         let (width, _) = self.area.get();
-        let lines = |rows: &[ChatRow]| crate::ui::task_chat::chat_lines(rows, width, None).0.len();
+        let lines = |rows: &[ChatRow]| {
+            crate::ui::task_chat::chat_lines(rows, width, None, None)
+                .0
+                .len()
+        };
         // ^ A message starts after the blank line that parts it from the one before.
         self.center(
             lines(&self.rows[..at]) + usize::from(at > 0),
             lines(&self.rows),
         );
+    }
+
+    /// Scroll to the marked row, which the rows now hold, or say the log lost it.
+    fn arrive(&mut self) {
+        self.jump_due = false;
+        let Some(at) = self.rows.iter().position(|row| row.id == self.marked) else {
+            self.notice = Some((
+                "That message is no longer in the conversation.".into(),
+                true,
+            ));
+            self.newest();
+            return;
+        };
+        let (width, _) = self.area.get();
+        let lines = |rows: &[ChatRow]| {
+            crate::ui::task_chat::chat_lines(rows, width, None, None)
+                .0
+                .len()
+        };
+        self.center(
+            lines(&self.rows[..at]) + usize::from(at > 0),
+            lines(&self.rows),
+        );
+    }
+
+    /// Back to the newest part of the conversation, from a read around a quoted message.
+    fn newest(&mut self) {
+        if self.around.take().is_some() {
+            self.scroll = 0;
+            self.read_again();
+        }
+        self.marked = None;
+        self.jump_due = false;
+        self.wrapped.take();
     }
 
     fn close_file(&mut self) {
@@ -958,14 +1041,16 @@ impl ManagerChat {
     /// width and link.
     pub fn wrapped(&self, width: usize) -> (Arc<Vec<Line<'static>>>, Option<usize>) {
         let mut cache = self.wrapped.borrow_mut();
-        let fresh = cache
-            .as_ref()
-            .is_some_and(|cache| cache.width == width && cache.link == self.link);
+        let fresh = cache.as_ref().is_some_and(|cache| {
+            cache.width == width && cache.link == self.link && cache.marked == self.marked
+        });
         if !fresh {
-            let (lines, selected) = crate::ui::task_chat::chat_lines(&self.rows, width, self.link);
+            let (lines, selected) =
+                crate::ui::task_chat::chat_lines(&self.rows, width, self.link, self.marked);
             *cache = Some(Wrapped {
                 width,
                 link: self.link,
+                marked: self.marked,
                 lines: Arc::new(lines),
                 selected,
                 found: None,

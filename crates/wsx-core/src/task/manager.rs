@@ -113,6 +113,10 @@ pub enum ManagerEvent {
         /// event is made; none for an owner's or a peer's message (docs/tasks.md "Manager").
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         short: Vec<Short>,
+        /// The id of the message its leading `> <line>` quotes (`resolve_quote`): a tap on the
+        /// quote opens the chat there. None for a quote written before ids, or by hand.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quote: Option<u64>,
     },
     /// These messages went to the agent in one turn.
     Delivered { ids: Vec<u64> },
@@ -143,6 +147,9 @@ pub enum ManagerEvent {
         /// the chat sets it off in the secondary color (docs/tasks.md "Routines").
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         post: bool,
+        /// The id of the message its leading quote points at, as on `Message`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quote: Option<u64>,
     },
     /// This manager's message to another project's manager (`say --from-manager`).
     Sent {
@@ -297,19 +304,21 @@ pub fn quote_of(text: &str) -> String {
     super::view::clip(line, QUOTE_CHARS)
 }
 
-/// A manager reply that opens with `> message <id>` quotes that message in the owner's format
-/// (`> <its first line>` and an empty line), so the chat needs no second format. Only a
-/// message the chat shows as a bubble can be quoted: the owner's, another manager's, a role's
-/// or a reply that says something. A bad or unknown id drops the line: the reply still
-/// stands, and the note says why.
-pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<String>) {
+/// A message that opens with `> message <id>` (a manager's reply, or the owner's Reply) quotes
+/// that message in the owner's format (`> <its first line>` and an empty line) and keeps the id,
+/// so the chat needs no second format and a tap finds the message at any age. Only a message the
+/// chat shows as a bubble can be quoted: the owner's, another manager's, a role's or a reply that
+/// says something. A bad or unknown id drops the line: the message still stands, and the note
+/// says why. Returns the text, the quoted id and the note.
+pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<u64>, Option<String>) {
     let text = text.trim_start();
     let Some(line) = text.strip_prefix(QUOTE_REF) else {
-        return (text.to_string(), None);
+        return (text.to_string(), None, None);
     };
     let (line, rest) = line.split_once('\n').unwrap_or((line, ""));
     let rest = rest.trim_start_matches('\n');
-    let said = quoted_id(text).and_then(|id| {
+    let id = quoted_id(text);
+    let said = id.and_then(|id| {
         log.iter().find_map(|entry| match &entry.event {
             ManagerEvent::Message {
                 id: found,
@@ -330,9 +339,10 @@ pub fn resolve_quote(text: &str, log: &[ManagerEntry]) -> (String, Option<String
         .map(|said| quote_of(said))
         .filter(|quote| !quote.is_empty())
     {
-        Some(quote) => (format!("> {quote}\n\n{rest}"), None),
+        Some(quote) => (format!("> {quote}\n\n{rest}"), id, None),
         None => (
             rest.to_string(),
+            None,
             Some(format!("no message {} to quote: line dropped", line.trim())),
         ),
     }
@@ -347,6 +357,14 @@ impl ManagerEntry {
             *quiet = (*quiet && quiet_reply(text)) || says_nothing(text);
         }
         Some(entry)
+    }
+
+    /// The id of the message this message or reply quotes (`ManagerEvent::Message::quote`).
+    pub fn quote_id(&self) -> Option<u64> {
+        match &self.event {
+            ManagerEvent::Message { quote, .. } | ManagerEvent::Reply { quote, .. } => *quote,
+            _ => None,
+        }
     }
 
     /// The id of a message or reply, which `chat --after` counts from.

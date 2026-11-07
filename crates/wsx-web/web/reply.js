@@ -1,7 +1,8 @@
 // Reply to one message in the session chat and the manager chat (docs/web-client-chat.md
 // "Replies"): a swipe right on a message, or a long press (a right click) and Reply, puts a
 // one-line quote above the composer; the sent text starts with `> <that line>`, and a tap on
-// the quote in the chat scrolls to the quoted message while it is still in the log.
+// the quote in the chat scrolls to the quoted message while it is still in the log; a quote with
+// the message's id (`quoted_id`, sent as `> message <id>`) opens the chat there when it is not.
 // A row that can be quoted is a child of the log with `data-quote`, its first line as the
 // server cuts it (wsx-core `quote_of`, sent as `quote`).
 import { html, Icon, motion, useEffect, useLayoutEffect, useRef, useState } from "./lib.js";
@@ -29,21 +30,33 @@ export function quoteSplit(text) {
   return { quoted, text: rest.trim() };
 }
 
-// A quote as a button that goes to the quoted message.
-export function Quote({ quote }) {
+// A message of the log marked as found for two seconds.
+export function mark(target) {
+  target.dataset.found = "";
+  setTimeout(() => delete target.dataset.found, 2000);
+}
+
+// A quote as a button that goes to the quoted message. `id`: the quoted message's id, when the
+// log stored it; the message is found by it, and when it is not among the rows the page asks
+// for the chat around it (`quote-jump`, tasks.js). Without an id the newest message above with
+// that first line.
+export function Quote({ quote, id = null }) {
   const go = (event) => {
     const row = event.currentTarget.closest("[data-quote]");
-    // ^ The newest message above this one that starts with the quoted line.
-    const target = row && [...row.parentElement.children]
-      .filter((other) => other.dataset.quote === quote && (other.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING))
-      .at(-1);
+    const rows = row && [...row.parentElement.children];
+    const target = id != null
+      ? rows?.find((other) => other.dataset.id === String(id))
+      : rows?.filter((other) => other.dataset.quote === quote && (other.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING)).at(-1);
+    if (!target && id != null) {
+      dispatchEvent(new CustomEvent("quote-jump", { detail: id }));
+      return;
+    }
     if (!target) {
       toast("That message is no longer in the conversation shown here.");
       return;
     }
     target.scrollIntoView({ block: "center", behavior: motion() ? "smooth" : "auto" });
-    target.dataset.found = "";
-    setTimeout(() => delete target.dataset.found, 2000);
+    mark(target);
   };
   return html`<button class="quote" type="button" aria-label=${`Go to the quoted message: ${quote}`} onClick=${go}>${quote}</button>`;
 }
@@ -63,7 +76,8 @@ export const QuoteChip = ({ quote, onRemove }) => quote ? html`
     <button class="icon-button" type="button" title="Remove" aria-label="Remove the quote" onClick=${onRemove}><${Icon} name="fail" /></button>
   </div>` : null;
 
-// The log's gestures and its menu. `onReply(quote)` takes a row's quote. Returns the handlers
+// The log's gestures and its menu. `onReply(quote, id)` takes a row's quote and its id (a
+// string, or undefined). Returns the handlers
 // for the log element and the menu to render beside it.
 export function useReply(onReply) {
   const gesture = useRef(null);
@@ -111,7 +125,7 @@ export function useReply(onReply) {
       if (now?.id !== event.pointerId) return;
       const replied = now.swiping && now.dx >= SWIPE_PX;
       end();
-      if (replied) onReply(now.row.dataset.quote);
+      if (replied) onReply(now.row.dataset.quote, now.row.dataset.id);
     },
     onPointerCancel: end,
     onContextMenu: (event) => {
@@ -158,7 +172,7 @@ function Menu({ menu, onReply, onClose }) {
   };
   return html`
     <div class="reply-menu" role="menu" aria-label="Message" ref=${node}>
-      <button role="menuitem" type="button" onClick=${() => { onClose(); onReply(menu.row.dataset.quote); }}><${Icon} name="reply" />Reply</button>
+      <button role="menuitem" type="button" onClick=${() => { onClose(); onReply(menu.row.dataset.quote, menu.row.dataset.id); }}><${Icon} name="reply" />Reply</button>
       <button role="menuitem" type="button" onClick=${copy}><${Icon} name="copy" />Copy</button>
     </div>`;
 }

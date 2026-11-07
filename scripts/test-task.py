@@ -1629,6 +1629,8 @@ def run(wsx, wsxd, work, owned):
     promise = reply_to(js('task', 'say', 'STATUS promise')['id'])
     own = reply_to(js('task', 'say', 'QUOTE %d still waiting on #8' % promise['id'])['id'])
     assert own['text'] == '> %s\n\nstill waiting on #8' % promise['text'].splitlines()[0], own
+    # ^ The entry keeps the quoted message's id, for a tap that opens the chat there at any age.
+    assert own['quote'] == promise['id'], own
     assert 'Your last reply: %d.' % promise['id'] in turn_with('QUOTE %d still' % promise['id'])['message']
     heard = js('task', 'say', 'QUOTE OWNER_SAID noted')
     assert reply_to(heard['id'])['text'] == '> QUOTE OWNER_SAID noted\n\nnoted'
@@ -1637,11 +1639,17 @@ def run(wsx, wsxd, work, owned):
     assert again['text'] == '> still waiting on #8\n\nand again', again
     for bad in ('abc', '0', '99999999', '99999999999999999999', '-3'):
         dropped = reply_to(js('task', 'say', 'QUOTE %s words stay' % bad)['id'])
-        assert dropped['text'] == 'words stay', (bad, dropped)
+        assert dropped['text'] == 'words stay' and 'quote' not in dropped, (bad, dropped)
     # ^ The TUI shows the quote as one line; `[` selects it and Enter goes to the quoted message,
     # the owner's first one, far above.
     first = reply_to(js('task', 'say', 'QUOTE 1 jump')['id'])
-    assert first['text'] == '> STATUS\n\njump', first
+    assert first['text'] == '> STATUS\n\njump' and first['quote'] == 1, first
+    # ^ The owner's Reply (web *Reply*, TUI `r`) sends `> message <id>` too: stored in the same
+    # format with the id, and the agent reads the line.
+    said_back = js('task', 'say', '> message 1\n\nthe owner answers')
+    stored = next(e for e in manager_entries() if e['kind'] == 'message' and e['id'] == said_back['id'])
+    assert stored['text'] == '> STATUS\n\nthe owner answers' and stored['quote'] == 1, stored
+    reply_to(said_back['id'])
     jumped = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
         (r'(?m)^   \u258e STATUS$', b'['),
@@ -2129,6 +2137,8 @@ def run(wsx, wsxd, work, owned):
     js('task', 'routine', 'run', 'retrospect', '-p', 'demo')
     report = wait(lambda: posted('retrospect'), 'the retrospect post', 60)[0]['text']
     assert report.startswith('Since ') and 'You asked 3 times: "RUN wsx task routine run nightly -p demo --json"' in report, report
+    quoting = re.search(r'\nQuotes: (\d+) of (\d+) replies', report)
+    assert quoting and 0 < int(quoting[1]) < int(quoting[2]), report
     assert 'not judged (--no-model)' in report and Path(report.split('Detail: ')[1].strip()).is_file(), report
     assert not events_with('routine retrospect'), 'the retrospect prints nothing'
     # ^ A run's end is an event for the owner by default, and the manager answers it with a
@@ -2689,6 +2699,42 @@ def run(wsx, wsxd, work, owned):
     assert 'The quasar notes are in docs.' in found[4], found[4]
     assert 'Where did the Quasar notes go?' in found[6], found[6]
     assert '/QUASAR' not in found[8] and 'press i to write' in found[8], found[8]
+    # A quote reaches a message of any age (docs/tasks.md "Log window"): the log rolls to
+    # log.1, log.2 and so on, and every file stays. `agent` lines (not in the chat) fill the
+    # current log just past the roll size; the host rolls it at its next write. A rotation entry
+    # sits in the first roll and 250 chat entries (past the 200 a chat shows) in the second.
+    now_ms = int(time.time() * 1000) - 5000
+
+    def fill(entries=()):
+        pad = json.dumps({'kind': 'agent', 'text': 'x' * 60000, 'unix_ms': now_ms}) + '\n'
+        head = ''.join(json.dumps(e) + '\n' for e in entries)
+        lines = (8 * 1024 * 1024 + 4096 - manager_log.stat().st_size - len(head)) // len(pad) + 1
+        with manager_log.open('a') as out:
+            out.write(head + pad * lines)
+    fill([{'kind': 'rotated', 'tokens': 400000, 'unix_ms': now_ms}])
+    reply_to(js('task', 'say', 'roll one')['id'])
+    assert manager_log.with_name('log.1.jsonl').stat().st_size > 8 * 1024 * 1024 and not manager_log.with_name('log.2.jsonl').exists()
+    fill([{'kind': 'limit', 'until': '07:45' if n % 2 else None, 'unix_ms': now_ms + n} for n in range(250)])
+    reply_to(js('task', 'say', 'roll two')['id'])
+    assert manager_log.with_name('log.1.jsonl').stat().st_size > 8 * 1024 * 1024 and manager_log.with_name('log.2.jsonl').exists()
+    shown = js('task', 'chat')
+    assert shown['skipped'] > 0 and all(e.get('id') != 1 for e in shown['entries']), 'message 1 is outside the chat window'
+    around = js('task', 'chat', '--around', '1')
+    assert around['skipped'] == 0 and len(around['entries']) == 200 and around['entries'][0]['id'] == 1, around['entries'][:2]
+    old = reply_to(js('task', 'say', 'QUOTE 1 across the rolls')['id'])
+    assert old['text'] == '> STATUS\n\nacross the rolls' and old['quote'] == 1, old
+    # ^ In the TUI, Enter on that quote reads the part around message 1, marks it and says how to
+    # go back; Esc reads the newest part again.
+    rolled = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
+        (r'(?m)^   \u258e STATUS$', b'['),
+        (r'(?m)^ MANAGER +Enter: open', b'\r'),
+        (r'(?m)^ MANAGER +Esc: newest', b''),
+        (r'(?m)^ You +\d\d:\d\d\n   STATUS$', b'\x1b'),
+        (r'across the rolls', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+    assert 'across the rolls' not in rolled[5], rolled[5]
+    for rolled_log in ('log.1.jsonl', 'log.2.jsonl'):
+        manager_log.with_name(rolled_log).unlink()
     # The Workspace row of a project shows its name in the accent while the manager's last reply
     # asks the owner, and stops when the owner writes after it (docs/tasks.md "TUI"). One TUI run
     # sees both changes live: "ASK" makes the fake manager reply with a question.
@@ -4465,6 +4511,8 @@ def run(wsx, wsxd, work, owned):
                              str(Path(show(idler)['log']).parent.parent), '--task', str(idler)],
                             capture_output=True, text=True, check=True).stdout
     assert re.search(r'worker rotations: \d+ by size, 1 after idle', report), report[-400:]
+    # ^ The manager's quotes are counted per manager (replies that open with a quote / replies).
+    assert re.search(r'\| manager +\| +\d+ +\| +[1-9]\d* +\| +\d+\.\d%', report), report
     assert re.search(r'\| build +\| step +\| done', report) and re.search(r'\| build +\| rotation +\| done', report), report
     # ^ Idle with a context under half of rotateTokens (400k of 2M): the same conversation resumes.
     js('task', 'add', idler, 'BIG')

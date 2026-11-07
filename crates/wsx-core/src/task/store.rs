@@ -877,10 +877,10 @@ pub fn task_numbers(project_id: &str) -> Result<Vec<u32>> {
 
 const MANAGER_DIR: &str = "manager";
 const MANAGER_LOG: &str = "log.jsonl";
-const MANAGER_OLD_LOG: &str = "log.1.jsonl";
 const MANAGER_STATE: &str = "state.json";
 const MANAGER_SOCKET: &str = "manager.sock";
-/// The manager log rolls over to `log.1.jsonl` past this size; one old file is kept.
+/// The manager log rolls over to `log.<n>.jsonl` past this size (n counts up from 1, the oldest);
+/// every old file is kept, so a quote reaches a message of any age. ref: docs/tasks.md "Log window"
 const MAX_MANAGER_LOG_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_MANAGER_STATE_BYTES: u64 = 256 * 1024;
 
@@ -964,7 +964,8 @@ impl ManagerDir {
     pub fn append(&self, event: super::manager::ManagerEvent) -> Result<()> {
         let path = self.path.join(MANAGER_LOG);
         if fs::symlink_metadata(&path).is_ok_and(|meta| meta.len() > MAX_MANAGER_LOG_BYTES) {
-            fs::rename(&path, self.path.join(MANAGER_OLD_LOG))
+            let next = self.old_logs().last().map_or(1, |(n, _)| n + 1);
+            fs::rename(&path, self.path.join(format!("log.{next}.jsonl")))
                 .with_context(|| format!("cannot roll over {}", path.display()))?;
         }
         let mut line = serde_json::to_vec(&super::manager::ManagerEntry {
@@ -980,20 +981,42 @@ impl ManagerDir {
             .with_context(|| format!("cannot append to {}", path.display()))
     }
 
-    /// The old log and the current one, in reading order.
+    /// The rolled files `log.<n>.jsonl`, oldest first.
+    fn old_logs(&self) -> Vec<(u32, PathBuf)> {
+        let mut files: Vec<(u32, PathBuf)> = fs::read_dir(&self.path)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                let n = name
+                    .to_str()?
+                    .strip_prefix("log.")?
+                    .strip_suffix(".jsonl")?;
+                Some((n.parse().ok()?, entry.path()))
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    /// The newest rolled file and the current one, in reading order: what the whole-log readers
+    /// (`read_log`, the usage totals) see. Older files are for `read_around`.
     pub fn log_files(&self) -> [PathBuf; 2] {
-        [self.path.join(MANAGER_OLD_LOG), self.path.join(MANAGER_LOG)]
+        let old = self.old_logs().pop().map(|(_, path)| path);
+        [
+            old.unwrap_or_else(|| self.path.join("log.1.jsonl")),
+            self.path.join(MANAGER_LOG),
+        ]
     }
 
     /// The old log, then the current one; unreadable lines are skipped.
     pub fn read_log(&self) -> Result<Vec<super::manager::ManagerEntry>> {
         trace_read_log(&self.path);
         let mut entries = Vec::new();
-        for name in [MANAGER_OLD_LOG, MANAGER_LOG] {
-            let Some(bytes) = read_bounded_if_exists(
-                &self.path.join(name),
-                MAX_MANAGER_LOG_BYTES + MAX_LOG_LINE_BYTES as u64,
-            )?
+        for path in self.log_files() {
+            let Some(bytes) =
+                read_bounded_if_exists(&path, MAX_MANAGER_LOG_BYTES + MAX_LOG_LINE_BYTES as u64)?
             else {
                 continue;
             };
@@ -1015,6 +1038,24 @@ impl ManagerDir {
         enough: impl Fn(&[super::manager::ManagerEntry]) -> bool,
     ) -> Result<Vec<super::manager::ManagerEntry>> {
         self.read_back_where(first, |_| true, enough)
+    }
+
+    /// `read_back` over every rolled file and the current one, not only the newest two: for a
+    /// reader that needs one message of any age and stops once `enough` holds.
+    pub fn read_around(
+        &self,
+        first: u64,
+        enough: impl Fn(&[super::manager::ManagerEntry]) -> bool,
+    ) -> Result<Vec<super::manager::ManagerEntry>> {
+        let mut files: Vec<PathBuf> = self.old_logs().into_iter().map(|(_, path)| path).collect();
+        files.push(self.path.join(MANAGER_LOG));
+        read_back(
+            &files,
+            first,
+            u64::MAX,
+            super::manager::ManagerEntry::read,
+            enough,
+        )
     }
 
     /// `read_back` of only the lines `keep` accepts as bytes: a reader that needs few kinds
