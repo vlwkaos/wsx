@@ -5231,7 +5231,7 @@ def run(wsx, wsxd, work, owned):
     # that is gone"): its socket is gone and its pane has exited or the session is lost. An add
     # or a hold restarts the host in the working copy and sends the request; the turn runs.
     mark('39')
-    lost = js('task', 'new', 'WORK g.txt')['id']
+    lost = js('task', 'new', 'WORK a.txt')['id']  # ^ the task's check wants a.txt
     assert wait_state(lost, 'ready', 'failed')['state'] == 'ready'
     lost_id = show(lost)['record']['project_id']
     lost_socket = Path(show(lost)['socket'])
