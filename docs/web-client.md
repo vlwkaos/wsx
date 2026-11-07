@@ -262,4 +262,4 @@ Each part runs against its own isolated `wsxd`, real PTYs and served sites, with
 
 The exact steps are the scripts; each prints the scenarios it passed.
 
-A run that has not ended after 25 min (`RUN_SECONDS`, about 6 times a CI run) prints every thread's stack and fails, and its cleanup still runs. The Chrome checks start every page at `prefers-reduced-motion: no-preference` (`setMotion` in `scripts/web-cdp.mjs`), so a CI runner's own motion setting does not change what they see.
+A run that has not ended after 35 min (`RUN_SECONDS`, about 1.5 times a CI run) prints every thread's stack and fails, and its cleanup still runs. The Chrome checks start every page at `prefers-reduced-motion: no-preference` (`setMotion` in `scripts/web-cdp.mjs`), so a CI runner's own motion setting does not change what they see.

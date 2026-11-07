@@ -127,13 +127,14 @@ export async function launch({ captures, prefix, timeoutSeconds }) {
     if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
     return result.value;
   }
-  // Poll the page from here; the page itself has no timers to wait on.
+  // Poll the page from here; the page itself has no timers to wait on. label: text, or an async
+  // function that reads the page when the wait fails.
   async function until(expression, label, attempts = 100) {
     for (let attempt = 0; attempt < attempts; attempt++) {
       if (await evaluate(expression).catch(() => false)) return;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    await fail(`${label}; page says: ${await evaluate("document.body.innerText.slice(0, 300)").catch(() => "?")}`);
+    await fail(`${typeof label === "function" ? await label() : label}; page says: ${await evaluate("document.body.innerText.slice(0, 300)").catch(() => "?")}`);
   }
   // scale: device pixel ratio. A phone-sized viewport is emulated as a touch device.
   async function viewport(width, height, scale = 1) {
