@@ -969,7 +969,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
 
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     let width = area.width.clamp(40, 64);
-    let height = area.height.clamp(12, 41);
+    let height = area.height.clamp(12, 42);
     let popup = popup_center(area, width, height);
 
     frame.render_widget(Clear, popup);
