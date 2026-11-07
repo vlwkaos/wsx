@@ -4124,21 +4124,18 @@ def run(wsx, wsxd, work, owned):
     # generic `##[error]Process completed` last): two different asserts share only that tail, so
     # no event; the same assert with other times is one.
     mark('32ob')
-    def ci_log(assertion, stamp):
-        head = r'web scenario\tRun the web scenario\t2026-11-0%s' % stamp
-        return ('printf "%s.1234567Z %s\\n%s.7654321Z ##[error]Process completed with exit code 1.\\n"; exit 1'
-                % (head, assertion, head))
-    configure(LAND_CONFIG + '  scenarios:\n'
-              + ''.join("    %s: '%s'\n" % (name, ci_log(assertion, stamp)) for name, assertion, stamp in (
-                  ('cia', 'NameError: name qrows is not defined at line 4011', '7T10:00:01'),
-                  ('cib', 'ValueError: diagram has no node', '7T10:05:09'),
-                  ('cic', 'NameError: name qrows is not defined at line 4011', '7T11:42:30'))),
-              'ci log scenarios')
-    cia, said = shared_run('cia', 'ci1')
-    cib, said = shared_run('cib', 'ci2')
+    # ^ One command for all three tasks (the key holds the command); the file the worker writes
+    # (qa*.txt or qb.txt) picks the assert, and the date gives each run other times.
+    stamp = r'web scenario\tRun the web scenario\t$(date -u +%Y-%m-%dT%H:%M:%S).123456Z'
+    configure(LAND_CONFIG + '  scenarios:\n    cilog: \'f=$(ls q[ab]*.txt | head -1); case $f in qa*) m="NameError: name qrows is not defined at line 4011";; '
+              '*) m="ValueError: diagram has no node";; esac; '
+              'printf "%s %%s\\n%s ##[error]Process completed with exit code 1.\\n" "$m"; exit 1\'\n' % (stamp, stamp),
+              'ci log scenario')
+    cia, said = shared_run('cilog', 'qa1')
+    cib, said = shared_run('cilog', 'qb')
     time.sleep(2)
     assert 'likely on main' not in said and not events_with('qrows'), (said, events_with('qrows'))
-    cic, said = shared_run('cic', 'ci3')
+    cic, said = shared_run('cilog', 'qa2')
     wait(lambda: events_with('qrows'), 'the shared event of one assert in two ci logs', 30)
     event = events_with('qrows')[0]['text']
     assert 'in #%d, #%d, likely on main' % (cia, cic) in event and 'ends with `NameError: name qrows is not defined at line 0`' in event, event
