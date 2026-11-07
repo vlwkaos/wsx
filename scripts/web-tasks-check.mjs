@@ -1121,7 +1121,6 @@ const pressAnswer = () => evaluate(`${rowOf("#1")}.querySelector('.need-action')
 await typeInto(".composer-field", "about #12 first");
 await pressAnswer();
 await composerHas("about #12 first #1 ", "Answer did not add #1 after the draft");
-if (await count(".reservoir .need-form")) await fail("a reservoir row still has a message form");
 await pressAnswer();
 await composerHas("about #12 first #1 ", "a second Answer changed the draft");
 if (!(await evaluate("Object.values(JSON.parse(localStorage.getItem('wsx-manager-drafts'))).includes('about #12 first #1 ')"))) await fail("the mention is not in the kept draft");

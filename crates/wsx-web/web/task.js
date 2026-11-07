@@ -2,7 +2,7 @@
 // and the one action when it needs the owner, the To check items to act on, then three folds at one
 // level: the report, the messages to the worker and the history (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
-import { clock, html, Icon, Loading, short, useCoalescedLoad, useEffect, useState } from "./lib.js";
+import { clock, html, Icon, Loading, plural, short, useCoalescedLoad, useEffect, useState } from "./lib.js";
 import { can, useEventLoad, useStore } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { act, agentWords, taskStage, TaskChip, TaskTitle, withChips } from "./tasks.js";
@@ -26,7 +26,7 @@ function described(entry) {
   switch (entry.kind) {
     case "created": return [`Created on ${entry.branch}`, `from ${short(entry.base)}`];
     case "message": return [MESSAGE_WORDS[entry.mode] ?? "Message", entry.text];
-    case "steps": return [`${entry.count} ${entry.count === 1 ? "step" : "steps"}`, entry.last];
+    case "steps": return [plural(entry.count, "step"), entry.last];
     case "blocked": return ["Blocked", entry.denials.length ? `denied: ${entry.denials.join(", ")}` : "", "attention"];
     case "result": return [`Result: ${entry.status}`, entry.summary, entry.status === "done" ? null : "danger"];
     case "checks": {
@@ -36,7 +36,7 @@ function described(entry) {
     }
     case "check_retry": return [`Checks failed on r${entry.revision}: sent back to the worker`,
       `${entry.commands.join(", ")} (automatic retry ${entry.attempt} of 2)`, "attention"];
-    case "revision": return [`Revision r${entry.revision}`, `${short(entry.commit)} · ${entry.paths_total} ${entry.paths_total === 1 ? "file" : "files"}`];
+    case "revision": return [`Revision r${entry.revision}`, `${short(entry.commit)} · ${plural(entry.paths_total, "file")}`];
     case "stopped": return ["Stopped", entry.reason];
     // ^ The host's keep-warm turn during a wait: no step, no result (docs/tasks.md "Context rotation").
     case "ping": return ["Ping", "kept the prompt cache warm during the wait"];
@@ -44,8 +44,8 @@ function described(entry) {
     case "conflict": return [`Conflict onto ${short(entry.onto)}`, entry.paths.join(", "), "danger"];
     case "land_stopped": return ["Landing stopped", entry.reason, "danger"];
     case "landed": return ["Landed", short(entry.commit), "accent"];
-    case "hand": return ["Worked by hand", entry.dropped ? `${entry.dropped} queued ${entry.dropped === 1 ? "message" : "messages"} dropped` : ""];
-    case "handback": return ["Handed back", `${entry.commits} ${entry.commits === 1 ? "commit" : "commits"}`];
+    case "hand": return ["Worked by hand", entry.dropped ? `${plural(entry.dropped, "queued message")} dropped` : ""];
+    case "handback": return ["Handed back", `${plural(entry.commits, "commit")}`];
     default: return [entry.kind, ""];
   }
 }
@@ -239,7 +239,7 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
               ${detail.overlaps.map((overlap) => html`
                 <li key=${overlap.id}>
                   <${TaskChip} project=${project} id=${overlap.id} />
-                  ${" "}${overlap.count} ${overlap.count === 1 ? "path" : "paths"}${overlap.complete ? "" : " or more"}: <span class="path">${overlap.paths.join(", ")}</span>
+                  ${" "}${plural(overlap.count, "path")}${overlap.complete ? "" : " or more"}: <span class="path">${overlap.paths.join(", ")}</span>
                 </li>`)}
             </ul>
           </section>` : null}

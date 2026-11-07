@@ -3,6 +3,7 @@
 // ^ wsxd's own emulator already answers terminal queries, so this one must stay silent.
 import { QUIET_MS, RETRY_MS } from "./api.js";
 import { add, fill, h } from "./dom.js";
+import { keep, kept } from "./lib.js";
 import { can, state as store, touch as touchDevice } from "./store.js";
 
 const KEYS = [
@@ -68,12 +69,6 @@ function loadLibrary() {
   return library;
 }
 
-function remembered() {
-  try { return localStorage.getItem(SIZE_KEY); } catch { return null; }
-}
-function remember(value) {
-  try { localStorage.setItem(SIZE_KEY, value); } catch { /* a private window keeps the default */ }
-}
 
 // Runs of these characters may be one ligature in the terminal font (=> != -> === <=).
 // xterm.js draws each run as one piece of text, and the font decides what it joins.
@@ -107,7 +102,7 @@ export function terminalView(mount, current, tools) {
   const canType = can("terminal_input");
   const touch = touchDevice();
   // A device that may not type never resizes the pane: it scales the host's size.
-  let hostSize = !canType || remembered() === "host";
+  let hostSize = !canType || kept(SIZE_KEY) === "host";
   const encoder = new TextEncoder();
 
   const disposers = [];
@@ -179,7 +174,7 @@ export function terminalView(mount, current, tools) {
   }
   function toggleSize() {
     hostSize = !hostSize;
-    remember(hostSize ? "host" : "fit");
+    keep(SIZE_KEY, hostSize ? "host" : "fit");
     updateSizeToggle();
     layout();
     connect();

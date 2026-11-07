@@ -1,7 +1,7 @@
 // Chat: the agent's own saved conversation as a typed timeline, what the agent does
 // now, the messages that wait for it, and the composer (docs/web-client-chat.md).
 import { api, resolve } from "./api.js";
-import { bytes, elapsed, html, Icon, keepIn, readMap, useCoalescedLoad, useEffect, useExit, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
+import { bytes, elapsed, html, Icon, keepIn, plural, readMap, useCoalescedLoad, useEffect, useExit, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, replaceRoute, shows, stateOf, state, touch, useEventLoad } from "./store.js";
 import { Markdown } from "./markdown.js";
 import { FindBar } from "./find.js";
@@ -228,7 +228,7 @@ export const FileChips = ({ files, onRemove, onInline }) => files.attachments.le
     ${files.attachments.map((item) => html`
       <li key=${item.hash}>
         ${item.image ? html`<img src=${resolve(item.url)} alt=${item.name} />`
-          : item.pasted ? html`<span data-pasted>Pasted text · ${item.pasted.lines} ${item.pasted.lines === 1 ? "line" : "lines"} · ${item.pasted.first}</span>`
+          : item.pasted ? html`<span data-pasted>Pasted text · ${plural(item.pasted.lines, "line")} · ${item.pasted.first}</span>`
           : html`<span>${item.name} (${bytes(item.size)})</span>`}
         ${item.pasted && html`<button class="link-action" type="button" onClick=${() => onInline(item)}>Paste as text</button>`}
         <button class="icon-button" type="button" title="Remove" aria-label=${`Remove ${item.name}`} onClick=${() => onRemove(item)}><${Icon} name="fail" /></button>
@@ -264,7 +264,7 @@ function Steps({ items, live }) {
     if (!items.length) return null;
   }
   const names = [...new Set(items.map(stepWord))];
-  const summary = `${items.length} ${items.length === 1 ? "step" : "steps"}: ${names.join(", ")}`;
+  const summary = `${plural(items.length, "step")}: ${names.join(", ")}`;
   if (live) {
     const earlier = items.length - 3;
     return html`
