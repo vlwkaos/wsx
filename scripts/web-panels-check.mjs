@@ -7,7 +7,7 @@
 // The project declares `device` (refresh 10, prints "device run <n>"), `broken` (exit 2), `gauges`
 // (format json: every kind, a bad level and an unknown kind) and `badjson` (not a document);
 // `device` and `gauges` are `scope: machine` (the Machine tab, docs/panels.md "Machine panels").
-import { launch } from "./web-cdp.mjs";
+import { designLint, launch } from "./web-cdp.mjs";
 
 const [adminUrl, adminCode, ownerUrl, ownerCode, captures, project, scopedUrl, scopedCode] = process.argv.slice(2);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({ captures, prefix: "panels-", timeoutSeconds: 120 });
@@ -18,6 +18,7 @@ async function open(url, code) {
   await evaluate(`(() => { const input = document.querySelector('#pair-code'); input.value = ${JSON.stringify(code)}; input.form.requestSubmit(); })()`);
   await until("!!document.querySelector('.home-row')", "Home did not list projects after pairing");
 }
+const linter = designLint({ evaluate, captures, file: "panels" });
 const run = () => evaluate("/device run (\\d+)/.exec(document.querySelector('.panel-output')?.textContent ?? '')?.[1] ?? null");
 
 await viewport(390, 844, 2);
@@ -98,6 +99,7 @@ const machine = await evaluate(`({ names: [...document.querySelectorAll('.machin
   current: document.querySelector('.tabbar a[aria-current=page]')?.textContent, output: /device run \\d+/.test(document.querySelector('.panel-output')?.textContent ?? ''),
   meter: !!document.querySelector('[role=meter]'), wide: document.documentElement.scrollWidth > innerWidth, hash: location.hash })`);
 if (machine.names !== "this-mac/,device/calm,gauges/calm" || machine.current !== "Machine" || !machine.output || !machine.meter || machine.wide || machine.hash !== "#/machine") await fail(`the Machine screen: ${JSON.stringify(machine)}`);
+await linter.lint("machine");
 await capture("390x844-machine");
 // Four tabs: the pill is four tabs wide, not the screen, and centred; each tab keeps the token's width and a touch target.
 const bar = await evaluate(`(() => { const box = document.querySelector('.tabbar-pill').getBoundingClientRect(); const tabs = [...document.querySelectorAll('.tabbar a')].map((tab) => tab.getBoundingClientRect());
@@ -127,6 +129,12 @@ await until("document.querySelectorAll('.panel-tabs [role=tab]').length === 4", 
 await tab("gauges");
 await until("document.querySelectorAll('.panel-doc .panel-card').length === 2", "the json panel did not come back on the project's page");
 await viewport(1280, 800, 1);
+// The Machine tab again, wide: the same screen the lint ran on at 390 px.
+await send("Page.navigate", { url: `${adminUrl}#/machine` });
+await until("document.querySelectorAll('.machine-panel .panel-card').length === 2", "the Machine screen did not draw at 1280 px");
+await linter.lint("machine");
+await send("Page.navigate", { url: `${adminUrl}#/p/${project}/panels` });
+await until("document.querySelectorAll('.panel-doc .panel-card').length === 2", "the json panel did not come back at 1280 px");
 await capture("1280x800-panel-json");
 await tab("broken");
 await until("/^Failed \\(exit 2\\), updated \\d+ (s|min) ago, on open$/.test(document.querySelector('.panel-state[data-failed] .panel-state-text')?.textContent ?? '')", "the failing panel did not come back");
@@ -151,6 +159,7 @@ await evaluate("[...document.querySelectorAll('.tabbar a')].find((tab) => tab.te
 await builtin("390x844");
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`page problems: ${defects.join("; ")}`);
+await linter.finish(fail);
 console.log(`panels page: the icon and the Machine tab only with terminal_input, the Machine screen lists the built-in panel and both machine panels, the tab with no machine panel declared, Settings > UI hides the tab, output as written (first run ${first}), refreshes by itself, a failing command shows its exit code, a json panel draws cards, bars and level words`);
 await cleanup();
 process.exit(0);

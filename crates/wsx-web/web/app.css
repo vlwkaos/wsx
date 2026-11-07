@@ -986,7 +986,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .usage-rate { text-align: right; color: var(--color-muted); font-variant-numeric: tabular-nums; }
 /* The Cost / Tokens tabs over the one chart (usage.js). */
 .usage-view { display: flex; gap: var(--space-1); margin-bottom: var(--space-2); }
-.usage-view button, .subtabs a { min-height: var(--size-control); padding: 0 var(--space-3); display: inline-flex; align-items: center; border: 0; border-radius: var(--radius-control); background: none; color: var(--color-muted); font: inherit; text-decoration: none; cursor: pointer; }
+.usage-view button, .subtabs a { min-height: var(--size-control); min-width: var(--size-control); justify-content: center; padding: 0 var(--space-3); display: inline-flex; align-items: center; border: 0; border-radius: var(--radius-control); background: none; color: var(--color-muted); font: inherit; text-decoration: none; cursor: pointer; }
 .usage-view button[aria-selected="true"], .subtabs a[aria-current="page"] { background: var(--color-raised); color: var(--color-text); font-weight: var(--font-weight-medium); }
 /* Hook: .subtabs — a screen's routed sections (Settings: General, UI, Usage), as the chart switch. */
 .subtabs { display: flex; gap: var(--space-1); padding: 0 var(--space-4) var(--space-2); }
@@ -1167,7 +1167,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 }
 /* Keys are flat raised blocks. */
 .terminal-key, .terminal-pad {
-  flex: 0 0 auto; min-width: var(--size-key); height: var(--size-key); padding: 0 var(--space-2);
+  flex: 0 0 auto; min-width: var(--size-control); height: var(--size-control); padding: 0 var(--space-2);
   border: 0; border-radius: var(--radius-key); background: var(--color-raised); color: var(--color-text);
   font-size: var(--font-size-sm); user-select: none; -webkit-user-select: none; cursor: pointer;
 }

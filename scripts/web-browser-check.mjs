@@ -6,7 +6,7 @@
 // Each capture is saved with the slop audit of /ui-view-standards beside it.
 import fs from "node:fs";
 import path from "node:path";
-import { jumps, launch, mobileAudit, pause } from "./web-cdp.mjs";
+import { designLint, jumps, launch, mobileAudit, pause } from "./web-cdp.mjs";
 
 const [mode, siteUrl, code, ...rest] = process.argv.slice(2);
 //   restart <site-url> <code> <capture-dir> <signal-dir> [slop-audit.js]   (the caller restarts the server)
@@ -18,6 +18,10 @@ const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, t
 });
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
 const mobileSource = mobileAudit().source;
+// The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
+const linter = designLint({ evaluate, captures, file: "browser" });
+const LINTED = new Set(["inbox", "inbox-light", "projects", "projects-light", "project", "project-light", "chat-end", "chat-end-light",
+  "files", "files-markdown", "settings", "settings-light", "settings-ui-light", "settings-ui-dark"]);
 const SIZES = [[320, 568, 2], [390, 844, 2], [1280, 800, 1]];
 let size = SIZES[0];
 const phone = () => size[0] < 600;
@@ -61,6 +65,7 @@ async function shot(name, primary) {
     }
     console.log(`mobile audit ${name} at ${mobile.viewport.join("x")}: contentShare ${mobile.contentShare}, smallTargets ${mobile.smallTargets.count} ${JSON.stringify(mobile.smallTargets.items.map((item) => `${item.label || item.el} ${item.size.join("x")}`))}, tinyText ${mobile.tinyText.count}, outsideGutter ${mobile.outsideGutter.count}`);
   }
+  if (LINTED.has(name)) await linter.lint(name);
   await capture(`${size[0]}-${name}`);
 }
 // The composer enlarged three times, to judge its insets and the round Send.
@@ -1428,5 +1433,6 @@ await until("/Cannot reach the server/.test(document.querySelector('#app')?.text
 await shot("offline");
 
 console.log("page at 320x568, 390x844 and 1280x800: inbox with a session in each state, working chat with a running tool and a waiting message, long chat with jump button, markdown answer with table and code, mermaid diagrams drawn as images and full screen, a 200 KB answer, question sheets for a permission dialog and a four-option question and one answer sent, empty chat and its Enter rules, projects, files, settings, light scheme, dialog, reduced motion, base-path requests only, offline shell, empty inbox; no sideways overflow, one scroll container, at most one filled accent control");
+await linter.finish(fail);
 await cleanup();
 process.exit(0);

@@ -5,12 +5,13 @@
 // Usage: node web-terminal-check.mjs <site-url> <pairing-code> <session-id> <capture-dir> <wsxd-socket> <pane-id> <keys-trace> <server-pid>
 import fs from "node:fs";
 import net from "node:net";
-import { launch, pause } from "./web-cdp.mjs";
+import { designLint, launch, pause } from "./web-cdp.mjs";
 
 const [siteUrl, code, sessionId, captures, daemonSocket, paneId, keysTrace, serverPid] = process.argv.slice(2);
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems, keyboard } = await launch({
   captures, prefix: "terminal-", timeoutSeconds: 210,
 });
+const linter = designLint({ evaluate, captures, file: "terminal" });
 // wsxd's protocol version, read from its source (crates/wsx-core/src/runtime/protocol.rs).
 const PROTOCOL = Number(/PROTOCOL_VERSION: u32 = (\d+);/.exec(fs.readFileSync(new URL("../crates/wsx-core/src/runtime/protocol.rs", import.meta.url), "utf8"))[1]);
 const HELLO = `${JSON.stringify({ method: "hello", params: { protocol: PROTOCOL } })}\n`;
@@ -242,7 +243,7 @@ const frame = await evaluate(`(() => {
 })()`);
 if (frame.bar > 48 || frame.barTop !== 0 || frame.tabbar) await fail(`the session top row is not the only frame above the terminal: ${JSON.stringify(frame)}`);
 if (frame.page !== "rgb(10, 11, 13)" || frame.surface !== "rgb(10, 11, 13)" || frame.key !== "rgb(26, 29, 34)") await fail(`the frame is not dark: ${JSON.stringify(frame)}`);
-if (frame.keyHeight !== 36 || frame.pad !== 36) await fail(`key row buttons are not 36 px: ${JSON.stringify(frame)}`);
+if (frame.keyHeight !== 44 || frame.pad !== 44) await fail(`key row buttons are not 44 px: ${JSON.stringify(frame)}`);
 if (frame.scrolled !== 0 || frame.first !== "Esc" || frame.more !== "end") await fail(`the key row does not start at Esc with a fade at its end: ${JSON.stringify(frame)}`);
 // ^ This session is a shell: it has no chat, so there is nothing to switch to.
 if (frame.switch !== "" || !/^Fit screen/.test(frame.toggle) || frame.toggleText !== "") await fail(`the top row's switch or size toggle is wrong: ${JSON.stringify(frame)}`);
@@ -261,7 +262,7 @@ const lineKeys = await evaluate(`(() => {
     top: box(enter).top, newlineTop: box(newline).top, pasteTop: paste ? box(paste).top : null, pasteLeft: paste ? box(paste).left : null,
     width: box(enter).width, height: box(enter).height, row: [...document.querySelectorAll('.terminal-keys .terminal-key')].map((key) => key.textContent).join() };
 })()`);
-if (lineKeys.labels !== "^J,Enter" || lineKeys.right > 4.5 || lineKeys.gap !== 4 || lineKeys.top !== lineKeys.newlineTop || lineKeys.height !== 36 || lineKeys.width < 36
+if (lineKeys.labels !== "^J,Enter" || lineKeys.right > 4.5 || lineKeys.gap !== 4 || lineKeys.top !== lineKeys.newlineTop || lineKeys.height !== 44 || lineKeys.width < 44
   || (lineKeys.pasteTop !== null && (lineKeys.pasteTop !== lineKeys.top || lineKeys.pasteLeft > 4.5)) || /\^J|Enter/.test(lineKeys.row)) await fail(`^J and Enter are not at the right of the second row: ${JSON.stringify(lineKeys)}`);
 const attributes = await evaluate(`(() => { const t = document.querySelector('.xterm-helper-textarea');
   return ['autocomplete', 'autocorrect', 'autocapitalize', 'spellcheck'].map((name) => t.getAttribute(name)).join(','); })()`);
@@ -297,6 +298,7 @@ const colors = await evaluate(`(() => {
 if (!colors.indexed) await fail("256-colour cells are not painted");
 if (!colors.truecolor) await fail("truecolour cells are not painted");
 if (colors.screen !== "rgb(10, 11, 13)") await fail(`terminal background is ${colors.screen}`);
+await linter.lint("session");
 await capture("phone-colors");
 
 // wsxd's emulator answers a query; xterm.js must not answer it a second time.
@@ -519,6 +521,7 @@ if ((await evaluate("getComputedStyle(document.querySelector('.xterm-rows')).fon
 if (await evaluate("!!document.querySelector('.terminal-keys')")) await fail("the key row shows on a desktop");
 await focusTerminal();
 await run("./colors", "truecolor-end");
+await linter.lint("session");
 await capture("desktop-colors");
 await glyphs("desktop");
 await run("./long", "long-end");
@@ -541,6 +544,7 @@ await capture("desktop-korean");
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 
+await linter.finish(fail);
 console.log("terminal: phone 390x844 and desktop 1280x800; edge to edge, 256 and true colour under the strict CSP, one query answer, key row bytes and repeat, drag pad, touch scroll in three modes, Korean composition, keyboard viewport, host size, reconnect with replay, control lost and taken back, opening takes it from a wsx window");
 await cleanup();
 process.exit(0);

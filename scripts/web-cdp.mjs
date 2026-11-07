@@ -29,6 +29,55 @@ export function mobileAudit() {
   return { file, source: fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null };
 }
 
+// The design lint of the ui-view-standards skill (scripts/design-lint.js, vendored; its keep list is
+// scripts/design-lint-keep.json). `lint(name)` runs it on the page as it is, at 390x844 (touch) and
+// 1280x800 only, and records the screen; `finish(fail)` writes `design-lint-<file>.json` into the
+// captures folder, prints the warns as a count and the first few, and fails once with every
+// un-kept error, so a run shows all of them. Warns never fail.
+export function designLint({ evaluate, captures, file }) {
+  const here = (name) => fileURLToPath(new URL(name, import.meta.url));
+  const source = fs.readFileSync(here("./design-lint.js"), "utf8");
+  const keep = JSON.parse(fs.readFileSync(here("./design-lint-keep.json"), "utf8"));
+  // ^ The vendored file is the installed one under two header lines; say so when they differ.
+  const installed = path.join(os.homedir(), ".agents/skills/ui-view-standards/scripts/design-lint.js");
+  if (fs.existsSync(installed)) {
+    const body = source.split("\n").filter((line) => !line.startsWith("// vendored:")).join("\n");
+    if (body !== fs.readFileSync(installed, "utf8")) console.log(`design lint: scripts/design-lint.js differs from the installed skill copy ${installed}`);
+  }
+  const screens = [];
+  async function lint(name) {
+    const [width, height] = await evaluate("[innerWidth, innerHeight]");
+    if (!((width === 390 && height === 844) || (width === 1280 && height === 800))) return;
+    // ^ A row that arrives or a tone that fades is mid-way in colour and place: lint it once the finite animations and transitions ended.
+    for (let waited = 0; waited < 40 && await evaluate("document.getAnimations().some((animation) => animation.playState === 'running' && animation.effect?.getComputedTiming().iterations !== Infinity)"); waited++) await pause(100);
+    await evaluate(`globalThis.DESIGN_LINT = ${JSON.stringify({ touch: width < 600, gutter: 16, keep })}`);
+    const result = await evaluate(source);
+    const scheme = await evaluate("document.documentElement.dataset.scheme ?? 'dark'");
+    const screen = { screen: name, size: `${width}x${height}`, scheme, counts: result.counts, findings: result.findings };
+    screens.push(screen);
+    const { error, warn, kept } = result.counts;
+    console.log(`design lint ${name} at ${screen.size} ${scheme}: ${error} errors, ${warn} warns, ${kept} kept`);
+  }
+  async function finish(fail) {
+    fs.writeFileSync(path.join(captures, `design-lint-${file}.json`), JSON.stringify(screens, null, 1));
+    const found = (level, kept = false) => screens.flatMap((screen) => screen.findings
+      .filter((finding) => finding.level === level && Boolean(finding.kept) === kept).map((finding) => ({ ...finding, where: `${screen.screen} ${screen.size} ${screen.scheme}` })));
+    const warns = found("warn");
+    console.log(`design lint ${file}: ${screens.length} screens, ${found("error").length} errors, ${warns.length} warns, ${found("error", true).length + found("warn", true).length} kept`);
+    for (const warn of warns.slice(0, 5)) console.log(`  warn ${warn.rule} ${warn.element} "${warn.text}" (${warn.where})`);
+    // ^ One line per element and rule, with every screen it shows on.
+    const errors = new Map();
+    for (const error of found("error")) {
+      const key = `${error.rule} ${error.element} ${error.text}`;
+      errors.set(key, { ...error, wheres: [...(errors.get(key)?.wheres ?? []), error.where] });
+    }
+    if (errors.size) {
+      await fail(`design lint found ${errors.size} errors:\n${[...errors.values()].map((error) => `  ${error.rule} ${error.element} "${error.text}" ${JSON.stringify(error.rect)} on ${error.wheres.join(", ")}\n    fix: ${error.fix}`).join("\n")}`);
+    }
+  }
+  return { lint, finish };
+}
+
 // captures: directory for screenshots. prefix: file name prefix. timeoutSeconds: whole-run limit.
 export async function launch({ captures, prefix, timeoutSeconds }) {
   const chrome = [
