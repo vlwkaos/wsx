@@ -2446,7 +2446,7 @@ def run(wsx, wsxd, work, owned):
     for n in (first, second, unseen):
         js('task', 'close', n, '--discard')
     # 21b. Memo (docs/tasks.md "Memo"): each task that leaves brings its worker's memo to the
-    mark('21b')
+    mark('21c')
     # manager in its event, also past the ledger's 10 recent tasks.
     memo_tasks = [js('task', 'new', 'WORK m%d.txt MEMO lesson %d kept' % (i, i))['id'] for i in range(11)]
     for n in memo_tasks:
@@ -4220,7 +4220,7 @@ def run(wsx, wsxd, work, owned):
     # 32h. A dirty main checkout (docs/tasks.md "Landing"): a changed file the land does not
     # touch stays dirty and the land goes on; one the land changes too refuses it, naming only
     # that file, and the ledger named it before the press. The message keeps the path's '/'.
-    mark('32h')
+    mark('32h2')
     (project / '.gitignore').write_text('target/\nunrelated/\n')
     free = js('task', 'new', 'WORK free.txt')['id']
     wait_state(free, 'ready', 'failed')
@@ -4532,7 +4532,7 @@ def run(wsx, wsxd, work, owned):
 
     # 32v. A turn that ends while a background job runs is no missing result (docs/tasks.md
     # "Claude adapter"): the host waits for Claude's own turn after the job's notice.
-    mark('32v')
+    mark('32v2')
     waiting = 'the turn ended while 1 background job(s) run: waiting for their notice'
     bg = js('task', 'new', 'BACKGROUND 2 WORK background.txt')['id']
     assert wait_state(bg, 'ready', 'failed')['state'] == 'ready', show(bg)['result']
@@ -4553,7 +4553,7 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', stuck, '--discard')
 
     # 32r. Usage fields and idle rotation (docs/tasks.md "Usage", "Context rotation"): each result
-    mark('32r')
+    mark('32r2')
     # names its step, what started its turn and its main-conversation calls; a turn after the agent
     # was idle past tasks.agent.rotateIdleSeconds rotates a context of at least half of rotateTokens.
     configure(LAND_CONFIG + '  agent: { rotateTokens: 600000, rotateIdleSeconds: 2 }\n'
@@ -4600,7 +4600,7 @@ def run(wsx, wsxd, work, owned):
     configure(LAND_CONFIG, 'no idle rotation')
 
     # 32s. Keep-warm pings (docs/tasks.md "Context rotation", "Manager"): a worker that waits on
-    mark('32s')
+    mark('32s2')
     # its checks gets a no-op turn tasks.agent.keepWarmSeconds after its last answer, at most 3 in
     # a row; it logs `ping`, is no result and starts no step. None while the account's usage limit
     # holds. The manager pings while a task checks, and a ping is never a reply.
