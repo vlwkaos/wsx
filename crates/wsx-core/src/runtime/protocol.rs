@@ -43,7 +43,7 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Revision 29 writes a prompt to the PTY without holding daemon state or the mutation lock,
 // within a 10-second write limit, and adds the keyed exchange requests
 // (docs/agent-orchestration.md "Idempotent delivery").
-// Revision 30 also takes a `!` shell line as a command round (capability `exchange_shell`).
+// Revision 30 also took a `!` shell line as a command round (capability `exchange_shell`, removed in 47).
 // Revision 31 takes prompt receipts: a round not taken ends `not_taken` (docs/agent-orchestration.md
 // "Taken, not typed").
 // Revision 32 hands off a pane whose program exited as its last screen, without a PTY, and
@@ -82,7 +82,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Revision 45 adds a panel's `scope` (project or machine) to the panel list.
 // Revision 46 answers a `panel` request with no project: wsxd's built-in machine panel
 // (docs/panels.md "Machine panels").
-pub const DAEMON_REVISION: u32 = 46;
+// Revision 47 no longer takes a `!` shell line as a command round and drops the capability
+// `exchange_shell`; the web server runs the line itself (docs/web-client-chat.md "Shell lines").
+pub const DAEMON_REVISION: u32 = 47;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -821,7 +823,6 @@ mod tests {
         assert!(!capabilities.raw_terminal_stream);
         assert!(!capabilities.daemon_restart);
         assert!(!capabilities.exchange_command);
-        assert!(!capabilities.exchange_shell);
         assert!(!capabilities.agent_steer);
     }
 

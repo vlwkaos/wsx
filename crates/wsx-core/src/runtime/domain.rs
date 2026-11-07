@@ -515,8 +515,6 @@ pub struct Capabilities {
     pub daemon_restart: bool,
     // ^ docs/agent-orchestration.md "Commands": types a one-line slash command as written.
     pub exchange_command: bool,
-    // ^ docs/agent-orchestration.md "Commands": a command round may also be a `!` shell line.
-    pub exchange_shell: bool,
     // ^ docs/agent-orchestration.md "Steer": types a message into a working Claude.
     pub agent_steer: bool,
 }

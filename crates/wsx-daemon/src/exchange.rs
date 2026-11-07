@@ -327,12 +327,6 @@ pub(crate) fn slash_command(line: &str) -> bool {
         .is_some_and(|rest| rest.starts_with(|character: char| character.is_ascii_alphanumeric()))
 }
 
-/// `!` and a command, such as `! git status` or `!ls`.
-pub(crate) fn shell_line(line: &str) -> bool {
-    line.strip_prefix('!')
-        .is_some_and(|rest| !rest.trim().is_empty())
-}
-
 /// What one exchange round types into the agent's terminal.
 pub(crate) struct ExchangeInput {
     pub(crate) prompt: String,
@@ -348,15 +342,15 @@ impl ExchangeInput {
         validate_exchange_prompt(&self.prompt)?;
         // ^ An agent runs a command only at the start of its input, so a command round
         // carries no exchange line. It must be one short line that names a command
-        // (`/name`) or a shell line (`!` and a command, docs/agent-orchestration.md "Commands").
+        // (`/name`, docs/agent-orchestration.md "Commands").
         if self.command
             && (self.prompt.len() > MAX_EXCHANGE_COMMAND_BYTES
                 || self.prompt.contains(['\n', '\t'])
-                || !(slash_command(&self.prompt) || shell_line(&self.prompt)))
+                || !slash_command(&self.prompt))
         {
             return Err(api(
                 "invalid_prompt",
-                "a command must be one line of at most 256 bytes that starts with /name or !",
+                "a command must be one line of at most 256 bytes that starts with /name",
             ));
         }
         Ok(())
