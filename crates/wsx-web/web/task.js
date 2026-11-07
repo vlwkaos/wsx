@@ -251,7 +251,7 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
               const live = title === "To check" && detail.to_check.length;
               return html`
                 <section class="task-part" key=${title} aria-label=${title}>
-                  <h3 class="task-subheading">${title}${title === "To check" && html`<span class="fold-note"> · ${checkNote(report[title], detail)}</span>`}</h3>
+                  <h3 class="task-heading">${title}${title === "To check" && html`<span class="fold-note"> · ${checkNote(report[title], detail)}</span>`}</h3>
                   ${live ? checkRows
                     : html`<div class="task-body"><${Markdown} text=${partBody(title, report[title])} words=${words} prose /></div>`}
                 </section>`;
