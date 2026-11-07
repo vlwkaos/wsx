@@ -756,6 +756,13 @@ pub fn lock_deploys(project_id: &str) -> Result<File> {
     open_locked(&path, OpenOptions::new().write(true).create(true))
 }
 
+/// The project's push lock, waited for: approved pushes of one project run one at a time and
+/// each reads origin's tip under it. ref: docs/tasks.md "Push"
+pub fn lock_pushes(project_id: &str) -> Result<File> {
+    let path = ensure_project_dir(project_id)?.join("push.lock");
+    open_locked(&path, OpenOptions::new().write(true).create(true))
+}
+
 /// `lock_deploys` without waiting: `None` while another deploy or release runs.
 pub fn try_lock_deploys(project_id: &str) -> Result<Option<File>> {
     let path = ensure_project_dir(project_id)?.join(DEPLOY_LOCK_FILE);

@@ -1,6 +1,7 @@
 //! A failed deploy keeps the end of its output, and `wsx task deployed` shows it once its
 //! detached run ends (docs/tasks.md "Deploy and release"); `wsx task push` moves origin's
-//! default branch only as asked (docs/tasks.md "Push"). Drives the public CLI on an isolated
+//! default branch only as asked, and the manager's waiting requests replace one another and
+//! run one at a time (docs/tasks.md "Push"). Drives the public CLI on an isolated
 //! HOME and state, with a local bare repository as origin; neither needs wsxd.
 
 use serde_json::Value;
@@ -85,6 +86,26 @@ impl Fixture {
             .expect("run git");
         assert!(output.status.success(), "git {args:?}: {output:?}");
         String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    /// `wsx` as the manager runs it: a push or a force push asks the owner.
+    fn manager(&self, args: &[&str]) -> Output {
+        self.command(Path::new(env!("CARGO_BIN_EXE_wsx")))
+            .env("WSX_TASK_ACTOR", "manager")
+            .args(args)
+            .output()
+            .unwrap_or_else(|error| panic!("run wsx {args:?}: {error}"))
+    }
+
+    /// Make a commit on top of `parent` with one file, without moving any branch.
+    fn commit_on(&self, parent: &str, file: &str) -> String {
+        self.git(&["checkout", "-q", "--detach", parent]);
+        fs::write(self.root.join("project").join(file), file).expect("write the file");
+        self.git(&["add", file]);
+        self.git(&["commit", "-q", "-m", file]);
+        let commit = self.git(&["rev-parse", "HEAD"]);
+        self.git(&["checkout", "-q", "main"]);
+        commit
     }
 
     fn wsx(&self, args: &[&str]) -> Output {
@@ -225,4 +246,125 @@ fn a_push_moves_origin_only_as_asked() {
     assert_eq!(origin_tip(), squash);
     assert_eq!(fixture.git(&["rev-parse", "main"]), squash);
     assert_eq!(fixture.git(&["status", "--porcelain"]), "");
+}
+
+fn approvals_file(dir: &Path) -> Option<PathBuf> {
+    for entry in fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path
+            .file_name()
+            .is_some_and(|name| name == "approvals.jsonl")
+        {
+            return Some(path);
+        }
+        if path.is_dir() {
+            if let Some(found) = approvals_file(&path) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn text(output: &Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+#[test]
+fn waiting_pushes_replace_one_another_and_run_one_at_a_time() {
+    let fixture = Fixture::new("true");
+    let origin = fixture.root.join("origin.git");
+    let origin = origin.to_str().expect("UTF-8 path");
+    fixture.git(&["init", "-q", "--bare", "--template=", "-b", "main", origin]);
+    fixture.git(&["remote", "add", "origin", origin]);
+    fixture.git(&["push", "-q", "origin", "main"]);
+    let base = fixture.git(&["rev-parse", "main"]);
+    let origin_tip = || fixture.git(&["--git-dir", origin, "rev-parse", "main"]);
+    // ^ Commits that exist in the repository only: main stays at `base` until a push moves it.
+    let older = fixture.commit_on(&base, "older.txt");
+    let newer = fixture.commit_on(&older, "newer.txt");
+    let other = fixture.commit_on(&base, "other.txt");
+    let ask = |commit: &str, force: bool| {
+        let mut args = vec!["task", "push", "-p", "demo", "--commit", commit, "--json"];
+        if force {
+            args.push("--force");
+        }
+        fixture.manager(&args)
+    };
+    let id_of = |output: &Output| -> String {
+        assert!(output.status.success(), "{}", text(output));
+        let answer: Value = serde_json::from_slice(&output.stdout).expect("request JSON");
+        answer["approval"]
+            .as_str()
+            .expect("approval id")
+            .to_string()
+    };
+
+    // ^ The newer request contains the older one: the older is dropped, and approving it
+    // answers so and runs nothing.
+    let first = id_of(&ask(&older, false));
+    let second = id_of(&ask(&newer, false));
+    let replaced = fixture.wsx(&["task", "approve", &first, "-p", "demo", "--json"]);
+    assert!(!replaced.status.success(), "{}", text(&replaced));
+    assert!(
+        text(&replaced).contains(&format!("replaced by {second}; nothing ran")),
+        "{}",
+        text(&replaced)
+    );
+    assert_eq!(origin_tip(), base);
+
+    // ^ Another line of history stays and the new request is refused, naming it; a rewrite may wait beside it.
+    let refused = ask(&other, false);
+    assert!(!refused.status.success(), "{}", text(&refused));
+    assert!(
+        text(&refused).contains(&format!("push {second}")),
+        "{}",
+        text(&refused)
+    );
+    assert_eq!(origin_tip(), base);
+    id_of(&ask(&other, true));
+
+    // ^ Two requests that both wait, as an older wsx left them, run one at a time. A receive
+    // hook that takes a second makes the overlap certain without the lock.
+    let hook = Path::new(origin).join("hooks/pre-receive");
+    fs::create_dir_all(hook.parent().unwrap()).expect("hooks folder");
+    fs::write(&hook, "#!/bin/sh\nsleep 1\n").expect("write the hook");
+    fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).expect("chmod");
+    let file = approvals_file(&fixture.root.join("state")).expect("approvals.jsonl");
+    let line = |id: &str, commit: &str| {
+        format!(
+            "{{\"kind\":\"request\",\"id\":\"{id}\",\"action\":\"push\",\"commit\":\"{commit}\",\"unix_ms\":1}}\n"
+        )
+    };
+    fixture.git(&["--git-dir", origin, "update-ref", "refs/heads/main", &base]);
+    let mut lines = fs::read_to_string(&file).expect("read approvals");
+    lines += &line("a90", &older);
+    lines += &line("a91", &newer);
+    fs::write(&file, lines).expect("write approvals");
+    let run = |id: &str| {
+        fixture
+            .command(Path::new(env!("CARGO_BIN_EXE_wsx")))
+            .args(["task", "approve", id, "-p", "demo", "--json"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn approve")
+    };
+    let (one, two) = (run("a90"), run("a91"));
+    let (one, two) = (
+        one.wait_with_output().unwrap(),
+        two.wait_with_output().unwrap(),
+    );
+    for output in [&one, &two] {
+        assert!(
+            !text(output).contains("cannot lock ref"),
+            "{}",
+            text(output)
+        );
+    }
+    assert_eq!(origin_tip(), newer, "{}{}", text(&one), text(&two));
 }

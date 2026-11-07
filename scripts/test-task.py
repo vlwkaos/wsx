@@ -2672,7 +2672,7 @@ def part_worker(created=None):
     js('task', 'add', keep, 'WORK keep2.txt')
     assert wait_state(keep, 'ready', 'failed')['revision'] == 2
     wait(lambda: events_with('approval a3 (land #%d) dropped; #%d moved from r1 to r2' % (keep, keep)), 'the drop event')
-    assert 'no pending approval a3' in cli('task', 'approve', 'a3', ok=False).stderr and show(keep)['state'] == 'ready'
+    assert 'approval a3 was decided: dropped; #%d moved from r1 to r2' % keep in cli('task', 'approve', 'a3', ok=False).stderr and show(keep)['state'] == 'ready'
     assert js('task', 'ledger')['approvals'] == []
     wait_closed(ap)
     js('task', 'close', keep, '--discard')
