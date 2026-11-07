@@ -2,7 +2,7 @@
 //! items under it and the message line last. ref: docs/tasks.md "TUI"
 use super::{
     tasks::muted,
-    text::{truncate_to_width, wrap_cells},
+    text::{cells, truncate_to_width, wrap_cells},
     theme,
 };
 use crate::task_chat::{links, parts, Focus, Item, ManagerChat, Part};
@@ -619,7 +619,6 @@ fn item_lines(chat: &ManagerChat, width: usize) -> (Vec<Line<'static>>, Option<u
 /// The bottom line by focus, and the cursor's column when it takes typing.
 fn composer(chat: &ManagerChat, width: usize) -> (Line<'static>, Option<u16>) {
     let typed = |state: &crate::ui::input::InputState| {
-        let cells = |text: &str| Line::from(text).width();
         // ^ A long line shows its end, where the cursor is: one pass back from the cursor
         // keeps the longest end that is narrower than the line.
         let (mut kept, mut used) = (Vec::new(), 0);
