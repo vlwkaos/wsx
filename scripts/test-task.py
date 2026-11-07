@@ -4923,6 +4923,14 @@ def run(wsx, wsxd, work, owned):
     # by one on the current wsx and the request again; a task in a turn gets a plain answer.
     mark('38')
     stale = work / 'stale'
+
+    def process_gone(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        return False
+
     stale.mkdir(mode=0o700)
     fake_host = stale / 'old-host.py'
     fake_host.write_text(OLD_HOST)
@@ -4953,7 +4961,7 @@ def run(wsx, wsxd, work, owned):
     parked = js('task', 'after', old, other, 'WORK a.txt')
     assert parked['ok'] and parked['state'] == 'ready', parked
     assert set(old_requests()) == {'after'}, old_requests()
-    wait(lambda: gone(stand_in), 'the older host ended')
+    wait(lambda: process_gone(stand_in), 'the older host ended')
     assert show(old)['host_running']
     assert show(old)['record']['after']['task'] == other and show(old)['state'] == 'ready', show(old)
     # ^ The new host is this wsx: it answers a later request at once, as before.
@@ -4964,7 +4972,7 @@ def run(wsx, wsxd, work, owned):
     stand_in = old_host()
     assert js('task', 'hold', old, 'try it first')['ok'], show(old)
     assert set(old_requests()) == {'after', 'hold'} and show(old)['record']['hold'], (old_requests(), show(old)['record'])
-    wait(lambda: gone(stand_in), 'the older host ended')
+    wait(lambda: process_gone(stand_in), 'the older host ended')
     assert show(old)['host_running']
     # In a turn the host is not replaced: that would stop the turn. The answer says when to repeat.
     stand_in = old_host()
@@ -4976,10 +4984,10 @@ def run(wsx, wsxd, work, owned):
     refused = cli('task', 'after', old, other, 'WORK a.txt', ok=False).stderr
     assert 'started before this wsx' in refused and 'repeat it when the task is ready' in refused, refused
     assert 'wsx session' not in refused, refused
-    assert set(old_requests()[seen:]) == {'after'} and not gone(stand_in) and show(old)['host_running']
+    assert set(old_requests()[seen:]) == {'after'} and not process_gone(stand_in) and show(old)['host_running']
     for n in (old, other):
         js('task', 'close', n, '--discard')
-    assert gone(stand_in) and not show(old)['host_running']
+    assert process_gone(stand_in) and not show(old)['host_running']
 
 if __name__ == '__main__':
     main()
