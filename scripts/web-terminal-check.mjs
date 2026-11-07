@@ -228,6 +228,8 @@ await until("!!document.querySelector('.app')", "the app did not open after pair
 await open(390, 844, 2);
 
 // The frame: the session's one top row, then the terminal down to the key row, all dark.
+// ^ The key row's fade is set by a ResizeObserver, after the first frame: wait for it, do not read once.
+await until("document.querySelector('.terminal-keys')?.dataset.more === 'end'", async () => `the key row has no fade at its end (more ${JSON.stringify(await evaluate("document.querySelector('.terminal-keys')?.dataset.more"))})`);
 const frame = await evaluate(`(() => {
   const color = (selector) => getComputedStyle(document.querySelector(selector)).backgroundColor;
   const keys = document.querySelector('.terminal-keys');
