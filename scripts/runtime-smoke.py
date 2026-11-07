@@ -2173,11 +2173,14 @@ try:
     wait_for(lambda: re.search(r"#2\s+ready\s+Waiting for #1 to land · its checks fail", remove_view.text()),
              lambda: f"the Tasks view row did not give the reason of the wait:\n{remove_view.text()}", seconds=60)
     os.write(remove_master, b"\r")
-    wait_for(lambda: "Its checks fail" in remove_view.text(), "the detail did not give the reason", seconds=60)
+    # ^ A narrow detail wraps the sentence: the words are read with their line breaks as one space.
+    wait_for(lambda: "Its checks fail" in " ".join(remove_view.text().split()),
+             lambda: f"the detail did not give the reason:\n{remove_view.text()}", seconds=60)
     os.write(remove_master, b"\x1b")
-    wait_for(lambda: "Its checks fail" not in remove_view.text(), "Esc did not close the detail", seconds=60)
+    wait_for(lambda: "Its checks fail" not in " ".join(remove_view.text().split()), "Esc did not close the detail", seconds=60)
     os.write(remove_master, b"j\r")
-    wait_for(lambda: re.search(r"Waited by\s+#2", remove_view.text()), "the detail of #1 did not list who waits for it", seconds=60)
+    wait_for(lambda: re.search(r"Waited by\s+#2", remove_view.text()),
+             lambda: f"the detail of #1 did not list who waits for it:\n{remove_view.text()}", seconds=60)
     os.write(remove_master, b"\x1b")
     wait_for(lambda: "Waited by" not in remove_view.text(), "Esc did not close the detail of #1", seconds=60)
     shutil.rmtree(keep_store / "1")
