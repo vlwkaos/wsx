@@ -26,7 +26,7 @@ import sys
 import tarfile
 import time
 
-POLL_SECONDS = 30
+POLL_SECONDS = 10
 FIND_SECONDS = 180
 # ^ A run that has not ended by then hangs (the web scenario's step takes about 26 min with its build):
 # it is cancelled, well before the host's 75 min limit for a `ci:` command.
@@ -207,8 +207,13 @@ def main():
         take_files(repo, run['databaseId'], root, scratch)
         if view['conclusion'] != 'success':
             failed = gh('run', 'view', str(run['databaseId']), '--repo', repo, '--log-failed', check=False).stdout
-            say('\n'.join(failed.splitlines()[-LOG_LINES:]))
-            # ^ A matrix job's name holds its part: the failure names it.
+            # ^ One tail for each failed job: a job's name holds its part, and a long log of one
+            # part never cuts another's failure. The run reports every failed part at once.
+            jobs = {}
+            for line in failed.splitlines():
+                jobs.setdefault(line.split('\t', 1)[0], []).append(line)
+            for lines in jobs.values():
+                say('\n'.join(lines[-LOG_LINES:]))
             say('failed: %s' % ', '.join(j['name'] for j in view['jobs']
                                          if j['conclusion'] in ('failure', 'timed_out', 'cancelled')))
             if temporary_failure(failed):
