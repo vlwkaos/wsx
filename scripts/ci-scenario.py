@@ -3,7 +3,7 @@
 
 `python3 -B scripts/ci-scenario.py <name>` pushes HEAD's tree, with origin/main's
 `.github/workflows`, to the branch `wsx-scenario/<name>/<commit>`. ci.yml runs the job for that
-name. The script waits for the run, prints each job's end and the failed steps' log tail,
+name (`task`, `web`, and `weblinux`, the web scenario on Ubuntu). The script waits for the run, prints each job's end and the failed steps' log tail,
 downloads the run's `scenario-files` artifact (files.tar, paths in this checkout such as
 `.work/web-captures`) into the same paths, deletes the branch and exits 0 only when the run
 passed, 75 (EX_TEMPFAIL) when the run failed for the network or the runner and no scenario step
