@@ -977,16 +977,27 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .usage-chart[data-chart="tokens"] .usage-bar i { min-width: var(--space-1); }
 .usage-chart[data-chart="tokens"] :is(.usage-total, .usage-day) { grid-template-columns: calc(var(--space-4) * 4) minmax(0, 1fr) calc(var(--space-4) * 3) calc(var(--space-4) * 2.5); }
 .usage-rate { text-align: right; color: var(--color-muted); font-variant-numeric: tabular-nums; }
-/* The Cost / Tokens tabs over the one chart (usage.js). */
+/* The Cost / Tokens / Projects tabs over one panel (usage.js). */
 .usage-view { display: flex; gap: var(--space-1); margin-bottom: var(--space-2); }
 .usage-view button, .subtabs a { min-height: var(--size-control); min-width: var(--size-control); justify-content: center; padding: 0 var(--space-3); display: inline-flex; align-items: center; border: 0; border-radius: var(--radius-control); background: none; color: var(--color-muted); font: inherit; text-decoration: none; cursor: pointer; }
 .usage-view button[aria-selected="true"], .subtabs a[aria-current="page"] { background: var(--color-raised); color: var(--color-text); font-weight: var(--font-weight-medium); }
 /* Hook: .subtabs — a screen's routed sections (Settings: General, UI, Usage), as the chart switch. */
 .subtabs { display: flex; gap: var(--space-1); padding: 0 var(--space-4) var(--space-2); }
-.usage .label { padding-inline: 0; }
 .usage-total { display: grid; grid-template-columns: calc(var(--space-4) * 4) minmax(0, 1fr) calc(var(--space-4) * 4.5); align-items: center; gap: var(--space-2); min-height: var(--size-control); font-weight: var(--font-weight-medium); }
 .usage-amount { color: var(--color-text); font-variant-numeric: tabular-nums; }
-/* The filters over the chart and the totals (usage.js): period, hands, agent. */
+/* The limit state above the filters (usage.js Limits): a meter per window, its text over a thin track. */
+.usage-limits { max-width: calc(var(--space-4) * 30); margin-bottom: var(--space-3); }
+.usage-meter { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: var(--space-1) var(--space-2); padding: var(--space-1) 0; }
+.usage-meter[data-tone] { color: inherit; }
+.usage-meter-resets { color: var(--color-muted); font-size: var(--font-size-sm); }
+.usage-meter-used { text-align: right; font-weight: var(--font-weight-medium); font-variant-numeric: tabular-nums; }
+.usage-meter[data-tone="attention"] .usage-meter-used { color: var(--color-attention); }
+.usage-meter[data-tone="danger"] .usage-meter-used { color: var(--color-danger); }
+.usage-meter-track { grid-column: 1 / -1; display: block; height: var(--space-2); border-radius: var(--space-1); background: var(--color-raised); overflow: hidden; }
+.usage-meter-track i { display: block; height: 100%; background: var(--color-accent); }
+.usage-meter[data-tone="attention"] i { background: var(--color-attention); }
+.usage-meter[data-tone="danger"] i { background: var(--color-danger); }
+/* The filters over the tabs (usage.js): period, hands, agent. */
 .usage-filters { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin-bottom: var(--space-3); }
 .usage-filter { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; flex: 1 1 calc(var(--space-4) * 8); font-size: var(--font-size-sm); color: var(--color-muted); }
 .usage-filter select { min-height: var(--size-control); padding: 0 var(--space-2); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); background: var(--color-surface); color: var(--color-text); }

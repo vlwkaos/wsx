@@ -32,6 +32,8 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
     let width = inner.width as usize;
     let mut lines = vec![heading(list, width)];
     if let Some(ledger) = &list.ledger {
+        // ^ The limit state first, as the web's Usage page: what Claude may still spend comes before what was spent.
+        lines.extend(limit_line(&ledger["usage_all"]["limits"], width));
         // ^ The agent `a` picked, named once on the first line; both lines count it.
         let agent = list
             .agent
@@ -43,7 +45,6 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
         {
             lines.push(muted(&truncate_to_width(&spent, width)));
         }
-        lines.extend(limit_line(&ledger["usage_all"]["limits"], width));
     }
     // ^ A short window keeps its height for the tasks. ref: docs/tasks.md "TUI"
     if shows_days(list, area.height) {
