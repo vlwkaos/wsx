@@ -4128,7 +4128,7 @@ def run(wsx, wsxd, work, owned):
     # (the second run differs: the worker writes its WORK file after its check-run), the date gives
     # each run other times.
     stamp = r'web scenario\tRun the web scenario\t$(date -u +%Y-%m-%dT%H:%M:%S).123456Z'
-    count = Path(work) / 'cilog.count'
+    count = work / 'cilog.count'
     configure(LAND_CONFIG + '  scenarios:\n    cilog: \'echo x >> %s; n=$(wc -l < %s); if [ $n -eq 2 ]; then m="ValueError: diagram has no node"; '
               'else m="NameError: name qrows is not defined at line 4011"; fi; '
               'printf "%s %%s\\n%s ##[error]Process completed with exit code 1.\\n" "$m"; exit 1\'\n' % (count, count, stamp, stamp),
@@ -4136,10 +4136,10 @@ def run(wsx, wsxd, work, owned):
     cia, said = shared_run('cilog', 'ci1')
     cib, said = shared_run('cilog', 'ci2')
     time.sleep(2)
-    assert 'likely on main' not in said and not events_with('qrows'), (said, events_with('qrows'))
+    assert 'likely on main' not in said and not events_with('ends with `NameError'), (said, events_with('ends with `NameError'))
     cic, said = shared_run('cilog', 'ci3')
-    wait(lambda: events_with('qrows'), 'the shared event of one assert in two ci logs', 30)
-    event = events_with('qrows')[0]['text']
+    wait(lambda: events_with('ends with `NameError'), 'the shared event of one assert in two ci logs', 30)
+    event = events_with('ends with `NameError')[0]['text']
     assert 'in #%d, #%d, likely on main' % (cia, cic) in event and 'ends with `NameError: name qrows is not defined at line 0`' in event, event
     assert 'diagram' not in event and 'Process completed' not in event, event
     assert 'is in #%d;' % cia in said, said
