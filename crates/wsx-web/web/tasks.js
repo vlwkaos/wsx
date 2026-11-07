@@ -914,7 +914,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
   // ^ The quoted message shows in the middle, marked, once its part is read.
   useLayoutEffect(() => {
     if (around == null || search.current.readAround !== around) return;
-    const node = log.current?.querySelector(`:scope > [data-id="${around}"]`);
+    const node = logNode.current?.querySelector(`:scope > [data-id="${around}"]`);
     if (!node) return;
     reveal(node);
     markFound(node);
