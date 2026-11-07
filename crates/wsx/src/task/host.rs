@@ -32,7 +32,7 @@ use wsx_core::task::{
     owner::HOST_TIMEOUT,
     report,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
-    view, Actor, CheckResult, Evidence, HostRequest, HostResponse, HumanVerify, LogEvent,
+    view, Actor, After, CheckResult, Evidence, HostRequest, HostResponse, HumanVerify, LogEvent,
     MessageKind, TaskRecord, TaskState, TurnTrigger, WaitOn, Waiting, WorkerResult,
     MAX_MESSAGE_BYTES,
 };
@@ -659,6 +659,7 @@ impl Host {
                     | HostRequest::Land { .. }
                     | HostRequest::Trial
                     | HostRequest::Notice { .. }
+                    | HostRequest::AfterEnd { .. }
                     | HostRequest::LandBatch { .. }
             );
         let message = match request {
@@ -669,6 +670,8 @@ impl Host {
             HostRequest::Stop => self.stop(),
             HostRequest::Land { tried, batch_tree } => self.land(false, tried, batch_tree),
             HostRequest::Hold { reason, by } => self.hold(reason, by),
+            HostRequest::After { task, text, by } => self.after(task, text, by),
+            HostRequest::AfterEnd { task, text } => self.after_end(task, text),
             HostRequest::Trial => self.trial(),
             HostRequest::Hand => self.hand(),
             HostRequest::Handback => self.handback(),
@@ -681,6 +684,7 @@ impl Host {
                 }
                 self.turn_active = false;
                 self.end_trial("the task closed");
+                self.record.after = None;
                 self.log(LogEvent::Closed { discarded: discard });
                 // ^ A landed task keeps `landed`: its work is on the default branch.
                 if self.record.state != TaskState::Landed || discard {
@@ -790,6 +794,63 @@ impl Host {
         self.log(LogEvent::Hold { reason, by });
         self.say(&message);
         Ok(message)
+    }
+
+    /// Wait for task `task` to land and then add `text`, or wait no more (`None`). The
+    /// manager host ends the wait. ref: docs/tasks.md "After another task"
+    fn after(&mut self, task: Option<u32>, text: String, by: Actor) -> Result<String> {
+        if !self.record.state.is_open() {
+            bail!("task t{} is {}", self.record.id, self.state_words());
+        }
+        let wait = match task {
+            Some(task) => {
+                check_message(&text)?;
+                if task == self.record.id {
+                    bail!("a task cannot wait for itself");
+                }
+                Some(After {
+                    task,
+                    text: text.clone(),
+                    since_unix_ms: now_unix_ms(),
+                })
+            }
+            None => None,
+        };
+        if self.record.after.is_none() && wait.is_none() {
+            return Ok("unchanged".into());
+        }
+        self.record.after = wait;
+        self.save();
+        let message = match task {
+            Some(task) => format!("waits for #{task} to land, then gets: {text}"),
+            None => "waits for no task".into(),
+        };
+        self.log(LogEvent::After { task, text, by });
+        self.say(&message);
+        Ok(message)
+    }
+
+    /// The task waited for `task`, which landed (`text` is the add) or was closed. A wait
+    /// that is gone, or on another task, is left as it is.
+    fn after_end(&mut self, task: u32, text: Option<String>) -> Result<String> {
+        if self
+            .record
+            .after
+            .as_ref()
+            .is_none_or(|after| after.task != task)
+        {
+            return Ok("unchanged".into());
+        }
+        self.record.after = None;
+        self.save();
+        self.log(LogEvent::AfterEnded {
+            task,
+            landed: text.is_some(),
+        });
+        match text {
+            Some(text) => self.add(text, Vec::new()),
+            None => Ok(format!("#{task} was closed: the wait is over")),
+        }
     }
 
     /// Put the ready revision on the live site: rebased onto the default branch first, so
@@ -2609,6 +2670,7 @@ impl Host {
                         && relands
                         && !results.is_empty()
                         && self.record.hold.is_none()
+                        && self.record.after.is_none()
                         && self.pending.is_empty()
                         && self.auto_land() =>
                     {
@@ -2844,7 +2906,7 @@ impl Host {
             "the rebase onto {} conflicted in {}; the worker is resolving it{}",
             self.record.default_branch,
             paths.join(", "),
-            if self.auto_land() && self.record.hold.is_none() {
+            if self.auto_land() && self.record.hold.is_none() && self.record.after.is_none() {
                 ", and the task lands when its checks pass"
             } else {
                 ". Act again when the task is ready"
@@ -3014,6 +3076,7 @@ impl Host {
             "it landed"
         });
         self.write_report(TaskState::Landed);
+        self.record.after = None;
         self.set_state(TaskState::Landed);
         if self.record.parent.is_none() {
             self.tell_overlaps(commit);

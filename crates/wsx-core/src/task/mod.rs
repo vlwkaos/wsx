@@ -103,6 +103,16 @@ impl WaitOn {
     }
 }
 
+/// The wait of `wsx task after`: not a state, so it holds for a ready task and a working one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct After {
+    /// The task whose land ends the wait.
+    pub task: u32,
+    /// What the task does then: the manager's add.
+    pub text: String,
+    pub since_unix_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Waiting {
     pub on: WaitOn,
@@ -225,6 +235,10 @@ pub struct TaskRecord {
     /// ref: docs/tasks.md "Hold and trial"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<String>,
+    /// `wsx task after`: the task waits for task `after.task` to land, then gets `after.text`.
+    /// ref: docs/tasks.md "After another task"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<After>,
     /// `task new --into`: the open task this one lands into, never the default branch.
     /// ref: docs/tasks.md "Parent tasks"
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -413,6 +427,17 @@ pub enum LogEvent {
         reason: Option<String>,
         by: Actor,
     },
+    /// The task waits for `task` to land and then gets `text`, or waits no more (`None`).
+    After {
+        task: Option<u32>,
+        text: String,
+        by: Actor,
+    },
+    /// The wait for `task` ended: it landed, or it was closed or is unknown.
+    AfterEnded {
+        task: u32,
+        landed: bool,
+    },
     /// Revision `revision` at `commit` goes to the live site for the owner to try.
     Trial {
         revision: u32,
@@ -518,11 +543,12 @@ impl TaskRecord {
     /// A ready task waits for the manager's review when the manager or a role created it (the
     /// creator reviews it), or when the
     /// project lands by itself (`tasks.land.auto`) and checks prove it: an owner task never
-    /// lands by itself. A held one waits for the owner, as does any other ready task. A plan
+    /// lands by itself. A held one waits for the owner, as does any other ready task; one that
+    /// waits for another task (`after`) waits for that task. A plan
     /// waits for the manager. ref: docs/tasks.md "Landing"
     pub fn manager_reviews(&self, land_auto: bool) -> bool {
         let reviewed = self.created_by != Actor::Owner || (land_auto && !self.checks.is_empty());
-        (self.state == TaskState::Ready && self.hold.is_none() && reviewed)
+        (self.state == TaskState::Ready && self.hold.is_none() && self.after.is_none() && reviewed)
             || self.waits_on(WaitOn::Plan)
     }
 }
@@ -603,6 +629,18 @@ pub enum HostRequest {
     Hold {
         reason: Option<String>,
         by: Actor,
+    },
+    /// Wait for task `task` to land and then add `text` (`None`: wait no more).
+    After {
+        task: Option<u32>,
+        text: String,
+        by: Actor,
+    },
+    /// The manager host saw the wait end: with `text` the task landed and the text is added;
+    /// without it the task was closed or is unknown.
+    AfterEnd {
+        task: u32,
+        text: Option<String>,
     },
     /// Put the ready revision on the live site for the owner to try; the trial slot is
     /// already claimed for this task.
