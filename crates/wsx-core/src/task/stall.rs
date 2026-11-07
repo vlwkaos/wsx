@@ -61,7 +61,8 @@ fn after_wait(record: &TaskRecord, now_ms: u64) -> Option<Stall> {
 
 /// A task the manager must act on (ready for its review, or waiting on `plan`) that has had
 /// no action of the manager for `tasks.manager.reviewMinutes` since it entered the state. An
-/// owner wait is none.
+/// owner wait is none, and neither is a task the manager parked with `wsx task after`: that
+/// is its review, and `after_wait` reports a long wait.
 /// ref: docs/tasks.md "Manager" (Stalls)
 fn manager_wait(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
     let settings = load_task_config(&record.project_path).ok();
@@ -69,7 +70,10 @@ fn manager_wait(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall
         .as_ref()
         .map_or(DEFAULT_MANAGER_REVIEW_SECS, |s| s.manager_review_secs)
         * 1000;
-    if limit_ms == 0 || !record.manager_reviews(settings.is_none_or(|s| s.land_auto)) {
+    if limit_ms == 0
+        || record.after.is_some()
+        || !record.manager_reviews(settings.is_none_or(|s| s.land_auto))
+    {
         return None;
     }
     let entered = record.state_unix_ms.max(record.created_unix_ms);
