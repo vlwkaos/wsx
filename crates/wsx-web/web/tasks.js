@@ -441,7 +441,7 @@ function Reservoir({ project, open, items, tasks, checks, onMention, onReply, on
     const target = row?.querySelector(".need-action") ?? row?.querySelector(".row-open") ?? document.querySelector(".pill[aria-pressed=true]");
     target?.focus({ preventScroll: true });
   }, [keys.join()]);
-  // ^ Escape closes the list from inside it, from the pills or from the page body (a field keeps
+  // ^ Escape closes the list from inside it, from the pills or from the page body (a text field keeps
   // its own Escape). The focus goes to the pill, never to a text field: that opens a phone's keyboard.
   useEffect(() => {
     if (!open) return;
