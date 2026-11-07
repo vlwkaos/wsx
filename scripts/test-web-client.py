@@ -406,6 +406,7 @@ def winch(*_):
  rows, cols = struct.unpack('hhhh', fcntl.ioctl(0, termios.TIOCGWINSZ, b'\0' * 8))[:2]
  os.write(1, b'\r\n[size %dx%d]\r\n' % (cols, rows))  # its own line: a replay wraps long lines
 signal.signal(signal.SIGWINCH, winch)
+winch()  # ^ a resize that came before the handler was set is still reported
 os.write(1, b'term-ready')
 while True:
  data = os.read(0, 65536)
@@ -736,9 +737,12 @@ class Terminal:
             self.write(10, payload)  # a browser answers each ping
         return opcode != 8
 
-    def until(self, test, label):
-        """Read frames until `test()` holds. The stream ending first is a failure."""
+    def until(self, test, label, seconds=60):
+        """Read frames until `test()` holds. The stream ending first, or `seconds` passing, is a failure."""
+        # ^ The server's pings keep each read short of the socket timeout, so only a deadline ends a wait.
+        deadline = time.monotonic() + seconds
         while not test():
+            assert time.monotonic() < deadline, '%s: not within %d s; controls %r, output %r' % (label, seconds, self.controls, self.output[-200:])
             assert self.frame(), '%s: stream ended; controls %r, output %r' % (label, self.controls, self.output[-200:])
 
     def control(self, kind):
