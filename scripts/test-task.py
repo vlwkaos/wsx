@@ -4839,8 +4839,8 @@ def run(wsx, wsxd, work, owned):
     # ^ Words with --task keep only that task's hits; a line the log gains later is found by the next
     # search without a rebuild, and the lines read before are not found twice.
     assert [h['reference'] for h in js('task', 'search', '-p', 'third', '--task', '1', 'gizmo', 'zymurgy')['hits']] == ['third#1']
-    with landed_log.open('a') as log:
-        log.write(json.dumps({'unix_ms': t0 + 9000, 'kind': 'message', 'mode': 'add', 'text': 'A tumbleweed note'}, separators=(',', ':')) + '\n')
+    with landed_log.open('a') as handle:
+        handle.write(json.dumps({'unix_ms': t0 + 9000, 'kind': 'message', 'mode': 'add', 'text': 'A tumbleweed note'}, separators=(',', ':')) + '\n')
     assert [h['reference'] for h in js('task', 'search', '-p', 'third', '--task', '1', 'tumbleweed')['hits']] == ['third#1']
     assert len(js('task', 'search', '-p', 'third', '--task', '1', 'zymurgy')['hits']) == 1
     assert js('task', 'search', '-p', 'third', '--task', '1', '--reindex', 'tumbleweed')['docs'] == 8
