@@ -101,16 +101,16 @@ impl Media {
             .unwrap_or_default();
         // The index is the authority; drop rows whose file is gone and files with no row.
         index.retain(|entry| dir.join(entry.file_name()).is_file());
+        // A copy with a missing file is dropped whole; the original stays.
         for entry in index.iter_mut() {
-            if entry
+            let broken = entry
                 .compact
                 .as_ref()
-                .is_some_and(|copy| copy.files.iter().any(|name| !dir.join(name).exists()))
-            {
-                let copy = entry.compact.take().expect("checked above");
-                copy.files
-                    .iter()
-                    .for_each(|name| compact::remove(&dir, name));
+                .is_some_and(|copy| copy.files.iter().any(|name| !dir.join(name).exists()));
+            if broken {
+                for name in entry.compact.take().iter().flat_map(|copy| &copy.files) {
+                    compact::remove(&dir, name);
+                }
             }
         }
         for item in fs::read_dir(&dir)?.flatten() {
