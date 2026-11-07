@@ -6,7 +6,7 @@
 use super::manager::ApprovalLine;
 use super::store::TaskDir;
 use super::view::{check_outcomes, clip, read_result, resolving_conflict};
-use super::{LogEvent, TaskRecord, TaskState, WaitOn};
+use super::{AfterKind, LogEvent, TaskRecord, TaskState, WaitOn};
 use crate::config::project::load_task_config;
 use serde::Serialize;
 
@@ -29,6 +29,78 @@ pub struct Status {
     /// as minutes pass.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub since_unix_ms: Option<u64>,
+    /// What an open task that waits for another task (`wsx task after`) adds to its row, in few
+    /// words: "its checks fail on main until #283 lands".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait: Option<String>,
+    /// The open tasks that wait for this one (`Facts::waiters`); the sentence names them too.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waited_by: Vec<Waiter>,
+}
+
+/// An open task that waits for another task to land, and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Waiter {
+    pub task: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub because: Option<AfterKind>,
+}
+
+/// The open tasks of `records` that wait for task `id`, by number.
+pub fn waiters<'a>(records: impl IntoIterator<Item = &'a TaskRecord>, id: u32) -> Vec<Waiter> {
+    let mut found: Vec<Waiter> = records
+        .into_iter()
+        .filter(|record| record.state.is_open())
+        .filter_map(|record| {
+            let after = record.after.as_ref().filter(|after| after.task == id)?;
+            Some(Waiter {
+                task: record.id,
+                because: after.because,
+            })
+        })
+        .collect();
+    found.sort_by_key(|waiter| waiter.task);
+    found
+}
+
+/// Why a task waits for `other`, as a phrase: "its checks fail on main until #283 lands".
+fn because_phrase(kind: AfterKind, other: u32) -> String {
+    match kind {
+        AfterKind::Needs => format!("it builds on #{other}'s change"),
+        AfterKind::Files => format!("it changes the same files as #{other}, so it lands after it"),
+        AfterKind::Check => format!("its checks fail on main until #{other} lands"),
+    }
+}
+
+/// `because_phrase` as a sentence: "Its checks fail on main until #283 lands."
+fn because_sentence(kind: AfterKind, other: u32) -> String {
+    let phrase = because_phrase(kind, other);
+    let mut chars = phrase.chars();
+    let first = chars.next().map(|c| c.to_uppercase().to_string());
+    format!("{}{}.", first.unwrap_or_default(), chars.as_str())
+}
+
+/// "Waited for by #279, #282."; the kinds follow each number when they differ.
+fn waited_by_sentence(waiters: &[Waiter]) -> String {
+    let differ = waiters
+        .iter()
+        .any(|waiter| waiter.because != waiters[0].because);
+    let list: Vec<String> = waiters
+        .iter()
+        .map(|waiter| match (differ, waiter.because) {
+            (true, Some(kind)) => format!(
+                "#{} ({})",
+                waiter.task,
+                match kind {
+                    AfterKind::Needs => "builds on it",
+                    AfterKind::Files => "same files",
+                    AfterKind::Check => "its checks fail",
+                }
+            ),
+            _ => format!("#{}", waiter.task),
+        })
+        .collect();
+    format!("Waited for by {}.", list.join(", "))
 }
 
 /// What a caller knows beyond the task's own files.
@@ -41,10 +113,35 @@ pub struct Facts<'a> {
     /// For a landed task: whether the project's last deploy has it. None when the project
     /// does not deploy or the caller does not know.
     pub deployed: Option<bool>,
+    /// `waiters` of the project's tasks; none when the caller has no list of them.
+    pub waiters: &'a [Waiter],
 }
 
 /// The status of one task now.
 pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) -> Status {
+    let mut status = status_of(dir, record, facts, now_ms);
+    if let (Some(after), true) = (&record.after, record.state.is_open()) {
+        // ^ A ready row already says "Waiting for #m to land"; the reason is what it adds.
+        status.wait = match (after.because, record.state == TaskState::Ready) {
+            (Some(kind), true) => Some(because_phrase(kind, after.task)),
+            (Some(kind), false) => Some(format!(
+                "then waits for #{}: {}",
+                after.task,
+                because_phrase(kind, after.task)
+            )),
+            (None, false) => Some(format!("then waits for #{}", after.task)),
+            (None, true) => None,
+        };
+    }
+    if !facts.waiters.is_empty() && record.state.is_open() {
+        status.sentence.push(' ');
+        status.sentence.push_str(&waited_by_sentence(facts.waiters));
+        status.waited_by = facts.waiters.to_vec();
+    }
+    status
+}
+
+fn status_of(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) -> Status {
     let entered = record.state_unix_ms.max(record.created_unix_ms);
     let main = &record.default_branch;
     let approval = facts.approvals.iter().find_map(|line| match line {
@@ -260,18 +357,18 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
     // ^ A wait for another task matters once it is ready; before, the sentence says it follows.
     if let (Some(after), true) = (&record.after, record.state.is_open()) {
         if record.state != TaskState::Ready {
-            status.sentence.push_str(&format!(
-                " Then it waits for #{} to land: {}.",
-                after.task,
-                clip(&one_line(&after.text), FACT_CHARS)
-            ));
+            status
+                .sentence
+                .push_str(&format!(" Then it waits for #{} to land.", after.task));
+            if let Some(kind) = after.because {
+                status.sentence.push(' ');
+                status
+                    .sentence
+                    .push_str(&because_sentence(kind, after.task));
+            }
         }
     }
     status
-}
-
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// A ready task: its landing stopped, it is held, it waits for another task, the manager
@@ -316,8 +413,11 @@ fn ready(dir: &TaskDir, record: &TaskRecord, entered: u64, now_ms: u64) -> Statu
             Some(after.since_unix_ms),
             &format!("#{} is {other}", after.task),
             &format!(
-                "When it lands, wsx tells the task: {}. If it is closed instead, the manager is told.",
-                clip(&one_line(&after.text), FACT_CHARS)
+                "{}When it lands, wsx sends the task the manager's next instruction. If it is closed instead, the manager is told.",
+                after
+                    .because
+                    .map(|kind| because_sentence(kind, after.task) + " ")
+                    .unwrap_or_default()
             ),
             now_ms,
         );
@@ -453,6 +553,8 @@ fn words(
         label: label.to_string(),
         sentence,
         since_unix_ms: since,
+        wait: None,
+        waited_by: Vec::new(),
     }
 }
 

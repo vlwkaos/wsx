@@ -3182,6 +3182,25 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   // ^ The server publishes the overview on its next watch step, up to 2 s after the wait began.
   await until(`${rowOf(`#${behind}`)}?.querySelector('.row-context').textContent.startsWith(${JSON.stringify(shownStatus.label)}) ?? false`,
     `the scenario wait's Running row does not read "${shownStatus.label}"`, 10);
+  // A wait for another task (`wsx task after`): the Running row gives the reason beside the
+  // label, the sheet's sentence gives it too, and the sheet of the task waited for lists who waits
+  // as chips (docs/tasks.md "After another task").
+  wsx("task", "after", behind, scenario, "WORK after.txt", "--because", "check");
+  const reason = `then waits for #${scenario}: its checks fail on main until #${scenario} lands`;
+  if (show(behind).status.wait !== reason || show(scenario).status.waited_by?.[0]?.task !== behind) await fail(`wsx task show says ${JSON.stringify([show(behind).status, show(scenario).status])}`);
+  await until(`(${rowOf(`#${behind}`)}?.querySelector('.row-context').textContent ?? '').includes(${JSON.stringify(reason)})`,
+    `the waiting task's Running row does not give its reason: ${reason}`, 10);
+  await shot("running-after-reason", ".composer-send");
+  await open(scenario);
+  await until(`document.querySelector('.story-next')?.textContent.endsWith('Waited for by #${behind}.')`, `#${scenario}'s sheet does not say who waits for it`, 10);
+  const chips = await evaluate("[...document.querySelectorAll('.task-sheet [aria-label=\"Waited for by\"] .task-chip')].map((chip) => chip.textContent.trim())");
+  if (chips.join() !== `#${behind}`) await fail(`the sheet of #${scenario} lists ${JSON.stringify(chips)} as waiting for it`);
+  await shot("task-waited-for-by", ".composer-send");
+  await open(behind);
+  await until(`/Then it waits for #${scenario} to land\\. Its checks fail on main until #${scenario} lands\\./.test(document.querySelector('.story-next')?.textContent ?? '')`, `#${behind}'s sheet does not say why it waits`, 10);
+  wsx("task", "after", behind, "--off");
+  await go(`#/p/${plansArg}`);
+  await until("!document.querySelector('dialog.task-sheet')", "the wait's sheet did not close");
   fs.writeFileSync(gate, "go");
   for (const task of [scenario, behind]) {
     await stateIs(task, "ready", 120);

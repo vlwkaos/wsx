@@ -58,8 +58,10 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
             continue;
         }
         let result = read_result(dir);
+        let waiters = status::waiters(records.iter().copied(), record.id);
         let facts = status::Facts {
             approvals: &pending,
+            waiters: &waiters,
             ..Default::default()
         };
         let status = status::status(dir, record, &facts, now);

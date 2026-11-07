@@ -3952,8 +3952,9 @@ def run(wsx, wsxd, work, owned):
     configure(LAND_CONFIG.replace('tasks:\n', 'tasks:\n  manager: { reviewMinutes: 0.2 }\n'), 'after wait')
     after_gate = base / 'after-gate'
 
-    def manager_after(*argv, ok=True):
-        done = subprocess.run([str(wsx), 'task', 'after', *map(str, argv), '--json'], cwd=project, env=manager_env,
+    def manager_after(*argv, because='files', ok=True):
+        kind = ['--because', because] if because else []
+        done = subprocess.run([str(wsx), 'task', 'after', *map(str, argv), *kind, '--json'], cwd=project, env=manager_env,
                               capture_output=True, text=True, timeout=60)
         assert (done.returncode == 0) == ok, done.stderr
         return done
@@ -3966,23 +3967,50 @@ def run(wsx, wsxd, work, owned):
     assert show(w)['state'] == 'working'
     # ^ A wait needs another open task, not the task itself.
     assert 'this task' in manager_after(a, a, 'WORK x.txt', ok=False).stderr
-    manager_after(a, b, 'WORK af-a2.txt')
-    manager_after(w, b, 'WORK af-w2.txt')
-    manager_after(c, d, 'WORK af-c2.txt')
-    manager_after(e, f, 'WORK af-e2.txt')
+    # ^ The reason is required and one of three; a missing or unknown one is refused with the list.
+    for bad in (None, 'because'):
+        refused = manager_after(a, b, 'WORK x.txt', because=bad, ok=False).stderr
+        assert 'needs' in refused and 'files' in refused and 'check' in refused, refused
+    assert 'after' not in show(a)['record']
+    manager_after(a, b, 'WORK af-a2.txt', because='files')
+    manager_after(w, b, 'WORK af-w2.txt', because='needs')
+    manager_after(c, d, 'WORK af-c2.txt', because='check')
+    manager_after(e, f, 'WORK af-e2.txt', because='check')
     status = show(a)['status']
     assert status['kind'] == 'after' and status['label'] == 'Waiting for #%d to land' % b, status
-    assert '#%d is ready' % b in status['sentence'] and 'tells the task: WORK af-a2.txt.' in status['sentence'], status
+    # ^ The sentence gives the reason, not the manager's instruction to the worker.
+    assert '#%d is ready' % b in status['sentence'] and 'WORK af-a2.txt' not in status['sentence'], status
+    assert 'It changes the same files as #%d, so it lands after it.' % b in status['sentence'], status
+    assert status['wait'] == 'it changes the same files as #%d, so it lands after it' % b, status
+    assert show(a)['record']['after']['because'] == 'files', show(a)['record']
+    assert "Its checks fail on main until #%d lands." % d in show(c)['status']['sentence'], show(c)['status']
     row = next(r for r in js('task', 'ledger')['open'] if r['id'] == a)
-    assert row['after']['task'] == b and row['status']['kind'] == 'after', row
+    assert row['after']['task'] == b and row['after']['because'] == 'files' and row['status']['kind'] == 'after', row
     working = show(w)['status']
-    assert working['kind'] == 'working' and working['sentence'].endswith('Then it waits for #%d to land: WORK af-w2.txt.' % b), working
+    assert working['kind'] == 'working' and working['sentence'].endswith(
+        "Then it waits for #%d to land. It builds on #%d's change." % (b, b)), working
+    assert working['wait'] == "then waits for #%d: it builds on #%d's change" % (b, b), working
+    # ^ The task waited for says who waits: the kinds follow the numbers when they differ.
+    waited = show(b)['status']
+    assert waited['sentence'].endswith('Waited for by #%d (same files), #%d (builds on it).' % (a, w)), waited
+    assert waited['waited_by'] == [{'task': a, 'because': 'files'}, {'task': w, 'because': 'needs'}], waited
+    assert next(r for r in js('task', 'ledger')['open'] if r['id'] == b)['status']['waited_by'] == waited['waited_by']
+    single = show(d)['status']
+    assert single['sentence'].endswith(' Waited for by #%d.' % c) and single['waited_by'] == [{'task': c, 'because': 'check'}], single
+    assert show(f)['status']['waited_by'] == [{'task': e, 'because': 'check'}], show(f)['status']
     assert [e['kind'] for e in log(a) if e['kind'] == 'after'] == ['after']
     # ^ Backdated: the file is read by the stall check, and the idle host saves nothing meanwhile.
     record_file = Path(show(e)['log']).parent / 'task.json'
     record = json.loads(record_file.read_text())
     record['after']['since_unix_ms'] -= 25 * 3600 * 1000
+    # ^ A wait from before the reason existed: no kind in the record, no reason in the words.
+    del record['after']['because']
     record_file.write_text(json.dumps(record))
+    old = show(e)['status']
+    assert old['kind'] == 'after' and 'wait' not in old and 'Its checks' not in old['sentence'], old
+    assert 'because' not in show(e)['record']['after'], show(e)['record']
+    assert [x['task'] for x in show(f)['status']['waited_by']] == [e], show(f)['status']
+    assert show(f)['status']['waited_by'][0].get('because') is None, show(f)['status']
     # ^ Past the review limit (0.2 min) and the grace: a task that waits for a landing is no
     # "ready, not reviewed", and one that waits past 24 h is the only stall reported.
     time.sleep(100)

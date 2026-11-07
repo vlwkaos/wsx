@@ -112,6 +112,44 @@ pub struct After {
     /// What the task does then: the manager's add.
     pub text: String,
     pub since_unix_ms: u64,
+    /// Why it waits; none for a wait set before the kind existed. ref: docs/tasks.md "After another task"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub because: Option<AfterKind>,
+}
+
+/// Why a task waits for another to land (`wsx task after --because`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfterKind {
+    /// It builds on the other task's change.
+    Needs,
+    /// It changes the same files and lands after, to avoid a conflict.
+    Files,
+    /// Its checks fail on main until the other task's fix lands.
+    Check,
+}
+
+impl AfterKind {
+    pub const ALL: [Self; 3] = [Self::Needs, Self::Files, Self::Check];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Needs => "needs",
+            Self::Files => "files",
+            Self::Check => "check",
+        }
+    }
+
+    /// The command line's parser: a bad kind is refused with the list.
+    pub fn parse(word: &str) -> Result<Self, String> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.as_str() == word)
+            .ok_or_else(|| {
+                let list: Vec<_> = Self::ALL.iter().map(|kind| kind.as_str()).collect();
+                format!("`{word}` is not a reason; use one of: {}", list.join(", "))
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -432,6 +470,8 @@ pub enum LogEvent {
     After {
         task: Option<u32>,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        because: Option<AfterKind>,
         by: Actor,
     },
     /// The wait for `task` ended: it landed, or it was closed or is unknown.
@@ -635,6 +675,8 @@ pub enum HostRequest {
     After {
         task: Option<u32>,
         text: String,
+        #[serde(default)]
+        because: Option<AfterKind>,
         by: Actor,
     },
     /// The manager host saw the wait end: with `text` the task landed and the text is added;
