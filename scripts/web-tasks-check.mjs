@@ -32,10 +32,15 @@ let size = [390, 844, 2];
 const phone = () => size[0] < 600;
 const audits = [];
 
+// ^ Across 900 px the app swaps its layout (main.js useWide) and an open task sheet mounts again
+// and slides in anew; wait for that state, not a time, so the next audit sees the settled sheet.
 async function resize(next) {
+  const sheet = await evaluate("!!document.querySelector('dialog.task-sheet[open]')").catch(() => false);
   size = next;
   await viewport(...next);
   await pause(250);
+  await until(`(!document.querySelector('.app') || !!document.querySelector('.app[data-wide]') === matchMedia('(min-width: 900px)').matches)
+    && (${!sheet} || !!document.querySelector('dialog.task-sheet[open]'))`, `the layout did not follow the resize to ${next[0]}x${next[1]}`);
 }
 const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
 // Type into the focused-to-be field as an input event does, the caret at the end.
