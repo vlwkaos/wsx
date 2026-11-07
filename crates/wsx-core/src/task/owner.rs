@@ -141,7 +141,7 @@ pub fn approval_label(request: &ApprovalLine) -> String {
         (None, Some(role), ..) => format!("Approve {verb} {role}"),
         // ^ A push names the commit the owner approves: "Approve force push 1a2b3c4d5e6f".
         (None, None, ApprovalAction::Push, Some(commit)) => {
-            format!("Approve {verb} {}", commit.get(..12).unwrap_or(commit))
+            format!("Approve {verb} {}", super::view::short_commit(commit))
         }
         _ => format!("Approve {verb}"),
     }

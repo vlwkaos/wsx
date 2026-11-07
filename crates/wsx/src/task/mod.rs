@@ -41,8 +41,8 @@ use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_
 use wsx_core::task::roles;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{
-    checked_files, digest_lines, overlaps, project_tasks, refuse_open_children, task_summary,
-    MAX_RESULT_READ_BYTES,
+    checked_files, digest_lines, overlaps, project_tasks, refuse_open_children, short_commit,
+    task_summary, MAX_RESULT_READ_BYTES,
 };
 use wsx_core::task::{
     call_host, copy, now_unix_ms,
@@ -2195,23 +2195,22 @@ fn push(
     let local = copy::resolve_commit(&main, &default).map_err(refuse)?;
     let target = copy::resolve_commit(&main, commit.unwrap_or(&local)).map_err(refuse)?;
     let remote = copy::remote_tip(&main, PUSH_REMOTE, &branch).map_err(refuse)?;
-    let short = |commit: &str| commit.get(..12).unwrap_or(commit).to_string();
     let contains =
         |ancestor: &str, commit: &str| copy::is_ancestor(&main, ancestor, commit).unwrap_or(false);
     // ^ A request leases what it saw; when origin moved since, the owner approved another state.
     if let Some(seen) = lease.filter(|seen| *seen != remote.as_deref().unwrap_or_default()) {
         bail!(
             "{PUSH_REMOTE} {branch} moved from {} to {} since the push was asked; ask again. Nothing was pushed",
-            if seen.is_empty() { "none".into() } else { short(seen) },
-            remote.as_deref().map_or("none".into(), short)
+            if seen.is_empty() { "none" } else { short_commit(seen) },
+            remote.as_deref().map_or("none", short_commit)
         );
     }
     let remote_ff = remote.as_deref().is_none_or(|tip| contains(tip, &target));
     if !force && !remote_ff {
         bail!(
             "{} is not a fast-forward of {PUSH_REMOTE} {branch} ({}); a rewrite needs --force. Nothing was pushed",
-            short(&target),
-            remote.as_deref().map_or_else(String::new, short)
+            short_commit(&target),
+            remote.as_deref().map_or("", short_commit)
         );
     }
     // ^ Local main moves to the pushed commit unless it has it already (lands since the ask).
@@ -2221,8 +2220,8 @@ fn push(
     if rewrite && !force {
         bail!(
             "local {branch} ({}) is not an ancestor of {}; a rewrite needs --force. Nothing was pushed",
-            short(&local),
-            short(&target)
+            short_commit(&local),
+            short_commit(&target)
         );
     }
     if local_moves {
@@ -2265,17 +2264,20 @@ fn push(
         copy::move_branch(&main, &branch, &local, &target, rewrite).map_err(|error| {
             anyhow::anyhow!(
                 "pushed {} to {PUSH_REMOTE} {branch}, but local {branch} stayed at {}: {error:#}",
-                short(&target),
-                short(&local)
+                short_commit(&target),
+                short_commit(&local)
             )
         })?;
     }
-    let mut message = format!("pushed {branch} to {PUSH_REMOTE}: {}", short(&target));
+    let mut message = format!(
+        "pushed {branch} to {PUSH_REMOTE}: {}",
+        short_commit(&target)
+    );
     if let Some(was) = remote.as_deref().filter(|was| !contains(was, &target)) {
-        message += &format!(" (forced over {})", short(was));
+        message += &format!(" (forced over {})", short_commit(was));
     }
     if rewrite {
-        message += &format!("; local {branch} was {}", short(&local));
+        message += &format!("; local {branch} was {}", short_commit(&local));
     }
     if !old_base.is_empty() {
         let tasks: Vec<String> = old_base.iter().map(|id| format!("#{id}")).collect();

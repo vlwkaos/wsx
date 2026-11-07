@@ -108,7 +108,7 @@ pub struct Hit {
     /// manager chat of the project the search ran in can be quoted by id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quote: Option<String>,
-    /// Where the hit's task is now ("landed 11-07 cd67238", "closed: discarded", "ready r2"),
+    /// Where the hit's task is now ("landed 11-07 cd67238e1f90", "closed: discarded", "ready r2"),
     /// read when the search ran.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,

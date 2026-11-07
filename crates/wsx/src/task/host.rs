@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::git::{git_cmd, output_with_timeout_tail};
 use wsx_core::runtime;
-use wsx_core::task::view::checked_files;
+use wsx_core::task::view::{checked_files, short_commit};
 use wsx_core::task::{
     build, call_host, checks,
     copy::{self, Rebase},
@@ -518,7 +518,7 @@ impl Host {
         }
         self.log(LogEvent::CheckRun { results });
         // ^ The worker finishes with the proof it asked for, then the checks run.
-        let commit = run.as_ref().map_or("", |run| short(&run.commit));
+        let commit = run.as_ref().map_or("", |run| short_commit(&run.commit));
         let answer = CheckAnswer {
             text: format!(
                 "Your check-run ended. Its answer, on commit {commit}:\n{}\nPut it in your \
@@ -2193,7 +2193,7 @@ impl Host {
             let _ = reply.send(broker::Response {
                 stdout: format!(
                     "queued behind your check-run on commit {}: {CHECK_RUN_QUEUED}",
-                    short(&run.commit)
+                    short_commit(&run.commit)
                 ),
                 stderr: String::new(),
                 code: 0,
@@ -3429,11 +3429,6 @@ fn check_message(text: &str) -> Result<()> {
 
 fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
-}
-
-/// A commit's first 12 characters, as answers name it.
-fn short(commit: &str) -> &str {
-    commit.get(..12).unwrap_or(commit)
 }
 
 /// The working copy's HEAD commit.
