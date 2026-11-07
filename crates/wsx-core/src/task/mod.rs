@@ -780,11 +780,18 @@ fn io_kind(error: &anyhow::Error) -> Option<std::io::ErrorKind> {
         .map(std::io::Error::kind)
 }
 
-/// `call_host_waiting` for a task, also when its host started before this wsx and cannot read
-/// the request: a host answers every request it can read, so one that still closes without
-/// an answer after the retries is older than this wsx. When no turn, check or wait of the
-/// task would be lost, its host session restarts on this wsx binary and the request is sent
-/// again; the task stays as it was. Otherwise the error says when to repeat it.
+/// How long a live pane without a socket may take to bind one (a host that execs a replaced
+/// wsx waits for the first-exec check of the new file) before its session is replaced.
+const HOST_BIND_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// `call_host_waiting` for a task, also when its host cannot answer. A host that started
+/// before this wsx cannot read the request: it answers every request it can read, so one that
+/// still closes without an answer after the retries is older than this wsx. A host that is
+/// gone (no socket, and a pane that exited or no session) never started or died. In both cases
+/// its host session restarts on this wsx binary and the request is sent again, when no turn,
+/// check or wait of the task would be lost: an older host is replaced only for a task at rest,
+/// a gone host for any open task (it holds nothing). The task stays as it was. Otherwise the
+/// error says when to repeat it.
 /// ref: docs/tasks.md "Host"
 pub fn call_task_host(
     dir: &store::TaskDir,
@@ -794,21 +801,47 @@ pub fn call_task_host(
     use anyhow::Context;
     let socket = dir.socket_path();
     let error = match call_host_waiting(&socket, request, timeout) {
-        Err(error) if io_kind(&error) == Some(std::io::ErrorKind::UnexpectedEof) => error,
+        Err(error) => error,
         answer => return answer,
     };
+    let kind = io_kind(&error);
+    let gone = matches!(
+        kind,
+        Some(std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused)
+    );
+    if !gone && kind != Some(std::io::ErrorKind::UnexpectedEof) {
+        return Err(error);
+    }
     let record = dir.read_record()?;
-    // ^ A restart ends a turn (it logs `stopped`) and drops a check-run, a limit or a disk
-    // wait; a task at rest resumes as it was.
-    let at_rest = matches!(record.state, TaskState::Ready | TaskState::Failed)
-        || (record.state == TaskState::Waiting
-            && (record.waits_on(WaitOn::Owner) || record.waits_on(WaitOn::Plan)));
-    if !at_rest {
-        anyhow::bail!(
-            "{error:#}: the host of task t{} started before this wsx and cannot read the request while the task is {}; repeat it when the task is ready or waits for the owner",
-            record.id,
-            record.state.as_str()
-        );
+    if gone {
+        if !record.state.is_open() {
+            return Err(error);
+        }
+        // ^ A live pane may still bind its socket; a missing or exited one never will.
+        let waited = std::time::Instant::now();
+        while host_pane_live(&record)? {
+            let probe = std::time::Duration::from_secs(2);
+            if call_host(&socket, &HostRequest::Status, probe).is_ok() {
+                return call_host_waiting(&socket, request, timeout);
+            }
+            if waited.elapsed() >= HOST_BIND_WAIT {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    } else {
+        // ^ A restart ends a turn (it logs `stopped`) and drops a check-run, a limit or a disk
+        // wait; a task at rest resumes as it was.
+        let at_rest = matches!(record.state, TaskState::Ready | TaskState::Failed)
+            || (record.state == TaskState::Waiting
+                && (record.waits_on(WaitOn::Owner) || record.waits_on(WaitOn::Plan)));
+        if !at_rest {
+            anyhow::bail!(
+                "{error:#}: the host of task t{} started before this wsx and cannot read the request while the task is {}; repeat it when the task is ready or waits for the owner",
+                record.id,
+                record.state.as_str()
+            );
+        }
     }
     restart_host(dir, &record).with_context(|| format!("{error:#}"))?;
     // ^ The new host loads the task, binds its socket and may start the agent again.
@@ -821,24 +854,41 @@ pub fn call_task_host(
     .with_context(|| format!("the host of task t{} was restarted on this wsx", record.id))
 }
 
+/// The session `task-<n>` of the task's working copy, if the daemon has one.
+fn host_session<'a>(
+    snapshot: &'a crate::runtime::Snapshot,
+    record: &TaskRecord,
+) -> Option<&'a crate::runtime::Session> {
+    let label = format!("task-{}", record.id);
+    snapshot.sessions.iter().find(|session| {
+        session.label == label
+            && snapshot.worktrees.iter().any(|worktree| {
+                worktree.id == session.worktree_id && worktree.path == record.working_copy
+            })
+    })
+}
+
+/// True when the host session has a pane whose program has not exited.
+fn host_pane_live(record: &TaskRecord) -> anyhow::Result<bool> {
+    let snapshot = crate::ops::runtime_snapshot(&crate::runtime::Client::local())?;
+    Ok(host_session(&snapshot, record).is_some_and(|session| {
+        snapshot
+            .panes
+            .iter()
+            .any(|pane| pane.session_id == session.id && !pane.exited)
+    }))
+}
+
 /// Replace the host session `task-<n>` by a new one that runs this wsx's host. A live pane
 /// cannot be restarted (wsxd restarts only an exited one), so the old session is closed
-/// first; the host keeps no state the task record lacks, and the new one sets its own pane.
+/// first (none is left to close when the daemon lost it); the host keeps no state the task
+/// record lacks, and the new one sets its own pane.
 fn restart_host(dir: &store::TaskDir, record: &TaskRecord) -> anyhow::Result<()> {
     use anyhow::Context;
     let label = format!("task-{}", record.id);
     let client = crate::runtime::Client::local();
     let snapshot = crate::ops::runtime_snapshot(&client)?;
-    let session = snapshot
-        .sessions
-        .iter()
-        .find(|session| {
-            session.label == label
-                && snapshot.worktrees.iter().any(|worktree| {
-                    worktree.id == session.worktree_id && worktree.path == record.working_copy
-                })
-        })
-        .with_context(|| format!("no session {label} runs the host of task t{}", record.id))?;
+    let session = host_session(&snapshot, record).map(|session| session.id);
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
     let argv = vec![
         exe.to_string_lossy().into_owned(),
@@ -848,8 +898,10 @@ fn restart_host(dir: &store::TaskDir, record: &TaskRecord) -> anyhow::Result<()>
         record.id.to_string(),
     ];
     let (config, _) = crate::config::global::GlobalConfig::load()?;
-    crate::ops::kill_session(&client, session.id)
-        .with_context(|| format!("cannot close the host session {label}"))?;
+    if let Some(session) = session {
+        crate::ops::kill_session(&client, session)
+            .with_context(|| format!("cannot close the host session {label}"))?;
+    }
     crate::ops::create_session_launch(&client, &config, &record.working_copy, label, argv, None)
         .context("the old host session is closed but its replacement did not start")?;
     Ok(())

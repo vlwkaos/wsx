@@ -1558,7 +1558,11 @@ fn create(
             "task t{id} did not start; its working copy and branch were removed"
         )));
     }
-    let state = wait_for_host(&dir).map(|response| response.state);
+    // ^ A host that never answers is replaced once by `call_task_host` (a deploy can break the
+    // start); `new` then reports the state it has, or that the host has not answered.
+    let state = wait_for_host(&dir)
+        .or_else(|| ask_host(&dir, &HostRequest::Status).ok())
+        .map(|response| response.state);
     Ok((dir, record, state))
 }
 

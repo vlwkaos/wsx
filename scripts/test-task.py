@@ -5227,5 +5227,49 @@ def run(wsx, wsxd, work, owned):
         js('task', 'close', n, '--discard')
     assert process_gone(stand_in) and not show(old)['host_running']
 
+    # 39. A host that never started or died while the task is working (docs/tasks.md "A host
+    # that is gone"): its socket is gone and its pane has exited or the session is lost. An add
+    # or a hold restarts the host in the working copy and sends the request; the turn runs.
+    mark('39')
+    lost = js('task', 'new', 'WORK g.txt')['id']
+    assert wait_state(lost, 'ready', 'failed')['state'] == 'ready'
+    lost_id = show(lost)['record']['project_id']
+    lost_socket = Path(show(lost)['socket'])
+    lost_record = Path(show(lost)['log']).parent / 'task.json'
+
+    def host_pids():
+        return [int(line.split()[0]) for line in leftovers('task host %s %d' % (lost_id, lost))
+                if line.endswith('task host %s %d' % (lost_id, lost))]
+
+    def kill_host():
+        for pid in host_pids():
+            os.kill(pid, 9)
+        wait(lambda: not host_pids(), 'the host ended')
+        assert wait(lambda: not show(lost)['host_running'], 'the host is not running')
+
+    # A killed host leaves its pane exited and a task `working` with nobody to run its turn.
+    kill_host()
+    record = json.loads(lost_record.read_text())
+    record['state'] = 'working'
+    lost_record.write_text(json.dumps(record))
+    added = js('task', 'add', lost, 'WORK h.txt')
+    assert added['ok'], added
+    assert show(lost)['host_running']
+    assert wait_state(lost, 'ready', 'failed')['state'] == 'ready', show(lost)
+    assert (Path(show(lost)['record']['working_copy']) / 'h.txt').exists()
+    # The host session is lost altogether (no session, an old socket file left behind): a hold
+    # creates the session again.
+    kill_host()
+    cli('session', 'delete', 'task-%d' % lost, '-w', show(lost)['record']['working_copy'])
+    assert js('task', 'hold', lost, 'back again')['ok'] and show(lost)['host_running']
+    assert show(lost)['record']['hold'], show(lost)
+    # A closed task is not revived: the answer is the plain error.
+    js('task', 'close', lost, '--discard')
+    assert not show(lost)['host_running']
+    refused = cli('task', 'hold', lost, 'x', ok=False).stderr
+    assert 'no task host answers' in refused or 'closed' in refused, refused
+    assert not lost_socket.exists() and not host_pids()
+
+
 if __name__ == '__main__':
     main()
