@@ -15,8 +15,8 @@ Proof marks. **R** = I read the lines on HEAD. **G** = I confirmed callers or ab
 | F3 | med | `task/mod.rs` (3,349 lines, +962), `host.rs` (3,659, +1,215), `manager.rs` (3,195, +1,763) | Grown by patches. `mod.rs` holds the clap enum (`:89-640`), a 415-line `run` match (`:668`), and ~40 command bodies: `deploy` 236 lines (`:2309`), `create` 174 (`:1380`), `push`, `search`. Four `#[allow(clippy::too_many_arguments)]` (`:1242,1379,2308,3248`) mark the patch points. `host.rs`: `check_run` 187 (`:2135`), `on_checks` 137 (`:2597`). `manager.rs`: `next_turn` 192 (`:1683`), `instructions` 154 (`:244`, one string literal). | Split `mod.rs` by command group (`task/cmd/{new,check,land,deploy,chat}.rs`); `run` arms become one call each. Fold the arguments of `create`, `deploy` and `push` into the arg structs clap already builds. Move the manager's instruction text to its own file. Behavior stays. | `task/mod.rs` and new files | large, mechanical | R, G (lengths by brace-matching script) |
 | F4 | low | `wsx-core/src/task/history.rs:65` (cdc5120a), `wsx-core/src/task/report.rs:175` (9a11d53f), `task/host.rs:3435` (a7486903), closure `task/mod.rs:2198` (dd7616bf) | Four short-commit helpers. cdc5120a is titled "one short-commit helper" but adds a third. The history one cuts at 7 chars, the others at 12, so one commit shows two ways. | One `wsx_core::git::short_commit` at 12; update `scripts/test-task.py` asserts that read the 7-char form in `task search` and history rows. | the four files, `scripts/test-task.py` | small | R, G |
 | F5 | low | `ui/panels.rs:62` `fit` (497b2896) = `ui/tasks.rs:257` `cell` (54e764b0) | Same body (`truncate_to_width`, then pad). `wrap_cells` lives in `ui/task_chat.rs:527` but `ui/tasks.rs:3` imports it; `truncate_to_width` lives in `ui/workspace_tree.rs:31`; `ui/tasks.rs:190` `hard_wrap` repeats the split loop of `wrap_cells`. | New `ui/text.rs` with `truncate_to_width`, `fit`, `wrap_cells`, `cells`; delete `cell`. | `ui/{text,panels,tasks,task_chat,workspace_tree}.rs` | small | R, G |
-| F6 | low | `task/host.rs:2071-2073` (7a1ea054); `:2066` `state_words`, `:2897-2902` | The doc comment of `check_run` ("`wsx task check-run [<n>...]` from the worker...") sits on top of `switch_agent`; `check_run` (`:2135`) has none. Two places spell a task's waiting state by hand while `wsx-core/src/task/status.rs` owns the status words. | Move the comment. Check whether `status::status` can give both strings; if so, use it. | `task/host.rs` | small | R |
-| F7 | med | Docs vs code | See the list below. | Edit the docs. | `docs/*.md`, `README.md`, `ui/mod.rs:989` | small | R for 1-3, † for 4-6 |
+| F6 | low | `task/host.rs:2071-2073` (7a1ea054); `:2066` `state_words`, `:2897-2902` | The doc comment of `check_run` ("`wsx task check-run [<n>...]` from the worker...") sits on top of `switch_agent`; `check_run` (`:2135`) has none. Two places spell a task's waiting state by hand (the second is a refusal text for a busy parent). | Move the comment. Leave the strings: `status::status` (`status.rs:122`) needs a `TaskDir` and `Facts`, so it is no drop-in. | `task/host.rs` | small | R |
+| F7 | med | Docs vs code | See the list below. | Edit the docs. | `docs/*.md`, `README.md`, `ui/mod.rs:989` | small | R for 1-3 and 4, † for 5 |
 | F8 | med | Five PTY harnesses: `scripts/runtime-smoke.py:1848` `tui`, `:1976` `remove_tui` (975a575f), `:2532` `tui_over_pty` (62915a2d), `:2869`; `scripts/test-task.py:93` `tui_run`, `:260` `tui_screens` | Each spawns a PTY TUI, reads output in a thread, and parses the screen in its own way (`bytearray` against `Screen`). Two were added since the tag. | One `scripts/tui_pty.py` class (spawn, reader, `screen`, `send`, `wait_text`, close) used by both scripts. | `scripts/{runtime-smoke,test-task}.py` | medium | R (headers), † (differences) |
 | F9 | low | `runtime-smoke.py:2272-2280` and `test-task.py:2679-2692` | The manager chat find (`/`, oldest entry past the newest 200) is driven in both. Smoke adds the 7.5 MiB log timing and the 20 KB paste, which `test-task.py` lacks. | Keep find in `test-task.py` (it has the log-roll fixture); keep only the size and timing steps in smoke. | both scripts | small | R |
 
@@ -25,9 +25,8 @@ Proof marks. **R** = I read the lines on HEAD. **G** = I confirmed callers or ab
 1. `docs/tasks.md:3` and `task/manager.rs:263`: `--json` on all commands (F1). R.
 2. `docs/design/tui-parity.md:8,10,11,12,15,19` say "missing" for the overview, routine post border, session link, `files/` link and Tokens tab. They exist (`task_list.rs:25` `Overview`, `dispatch.rs:131-166`, `ui/tasks.rs`). Rewrite the table as status, or delete the rows. R for row 8, † for the rest.
 3. `docs/panels.md:87,92`: only `Esc` closes the panels view; `app/dispatch.rs:181` closes on `Esc`, `q`, `v` and `M`. R.
-4. `docs/tasks.md:355`: "`Esc` or `t` closes the Tasks list"; `dispatch.rs:151-153` also takes `q`. †
-5. `README.md:73-79` Navigation table lacks `v`/`M` panels, `d` with `H`, and the Tasks keys `o`, `u`, `a`; `ui/mod.rs:989` help line for `t` lacks `o`, `u`, `a`. R (README, help), † (keys).
-6. No doc names `routine add|edit --revision`, `--new-name`, `--prompt` or `routine fire --kind --event-id --payload`; the `docs/tasks.md:6-24` synopsis omits `new --into --size --skip` and `deploy|release --owner-said`. †
+4. `README.md:73-79` Navigation table lacks `v`/`M` panels, `d` with `H`, and the Tasks keys `o`, `u`, `a`; `ui/mod.rs:989` help line for `t` lacks `o`, `u`, `a`. R (README, help line at `ui/mod.rs:989`).
+5. No doc names `routine add|edit --revision` (`cli/args.rs:526,550`), `--new-name` (`:533`) or `routine fire --kind --event-id --payload` (†); the `docs/tasks.md:6-24` synopsis omits `new --into --size --skip` and `deploy|release --owner-said`. †
 
 ## Smaller test notes (no finding)
 
@@ -41,7 +40,7 @@ Proof marks. **R** = I read the lines on HEAD. **G** = I confirmed callers or ab
 flowchart LR
   F1["F1 + F7.1 together"] --> F2 --> F4 --> F6 --> F3
   F5
-  F7["F7.2-6"]
+  F7["F7.2-5"]
   F8 --> F9
 ```
 
