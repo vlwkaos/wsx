@@ -3918,13 +3918,13 @@ def run(wsx, wsxd, work, owned):
     assert plain_check[0] != 0 and '--part needs exactly one scenario' in plain_check[1], plain_check
     ran = next(e for e in log(parted) if e['kind'] == 'check_run')['results']
     assert len(ran) == 1 and ran[0]['command'].startswith("ci: export WSX_SCENARIO_PART='tasks'; ") and 'part=[tasks]' in ran[0]['output'], ran
-    turn = [t for t in traces() if 'Your check-run ended' in t.get('message', '') and 'part=[tasks]' in t['message']]
+    turn = [t for t in traces() if 'Your check-run ended' in t.get('message', '') and "export WSX_SCENARIO_PART='tasks'" in t['message']]
     assert len(turn) == 1 and 'not a full pass' in turn[0]['message'], turn
     assert not [e for e in done['result']['result']['evidence'] if 'recorded by the host' in e['check']], done['result']
     full = js('task', 'new', 'CHECKRUN_LATER parted WORK full.txt')['id']
     done = wait_state(full, 'ready', 'failed')
     proof = [e for e in done['result']['result']['evidence'] if 'check-run parted passed' in e['check']]
-    assert done['state'] == 'ready' and len(proof) == 1 and 'part=[]' in proof[0]['proof'], done['result']
+    assert done['state'] == 'ready' and len(proof) == 1 and 'WSX_SCENARIO_PART]' in proof[0]['proof'] and 'export' not in proof[0]['proof'], done['result']
     for n in (parted, full):
         js('task', 'close', n, '--discard')
     # 32v. Two lanes (docs/tasks.md "Check slot"): a scenario check-run holds the scenarios lane, a
