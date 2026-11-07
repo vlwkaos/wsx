@@ -5071,7 +5071,7 @@ def run(wsx, wsxd, work, owned):
 
     stand_in = old_host()
     # ^ The request of the incident: `after` is newer than the host, and the task is ready.
-    parked = js('task', 'after', old, other, 'WORK a.txt')
+    parked = js('task', 'after', old, other, 'WORK a.txt', '--because', 'files')
     assert parked['ok'] and parked['state'] == 'ready', parked
     assert set(old_requests()) == {'after'}, old_requests()
     wait(lambda: process_gone(stand_in), 'the older host ended')
@@ -5094,7 +5094,7 @@ def run(wsx, wsxd, work, owned):
     record['state'] = 'working'
     record_path.write_text(json.dumps(record))
     seen = len(old_requests())
-    refused = cli('task', 'after', old, other, 'WORK a.txt', ok=False).stderr
+    refused = cli('task', 'after', old, other, 'WORK a.txt', '--because', 'files', ok=False).stderr
     assert 'started before this wsx' in refused and 'repeat it when the task is ready' in refused, refused
     assert 'wsx session' not in refused, refused
     assert set(old_requests()[seen:]) == {'after'} and not process_gone(stand_in) and show(old)['host_running']
