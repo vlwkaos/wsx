@@ -1,5 +1,5 @@
 // Manager mode on a project: the manager chat as messages with short task chips, what needs
-// the owner and what runs in one reservoir over the composer, the `#` task picker, and a
+// the owner and what runs in pills in the composer row that open lists over it, the `#` task picker, and a
 // task's or the project overview's sheet over the chat (docs/web-client-tasks.md). Fixed actions
 // go straight to wsx.
 import { api } from "./api.js";
@@ -20,7 +20,6 @@ import { PanelsButton, PanelsPage } from "./panels.js";
 // Motion only where the user allows it (the no-preference block of app.css); under reduce,
 // nothing moves and nothing waits for an animation to end.
 const calm = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
-const TICK_MS = 3500;
 const LEAVE_MS = 200;
 
 // A count that ticks: it is a new element when it changes, which plays its entry.
@@ -255,8 +254,9 @@ export function ChatApprovals({ project, items }) {
 // reservoir moves the focus on when the row leaves, before or after the action's answer.
 // `onMention` puts the task's number into the manager's composer: the owner talks to the
 // manager, which relays to the worker (docs/web-client-tasks.md "Project screen"). An open
-// question has Reply (`onReply` quotes it in the composer) and Dismiss.
-function NeedRow({ project, item, index, onActing, onFailed, onMention, onReply, leaving }) {
+// question has Reply (`onReply` quotes it in the composer) and Dismiss; its label and "Asks you"
+// are one button that takes the chat to the reply (`onShow` with its message id).
+function NeedRow({ project, item, index, onActing, onFailed, onMention, onReply, onShow, leaving }) {
   const key = `${project}/${itemKey(item)}`;
   const status = actionOf(key);
   const [, renew] = useState(0);
@@ -319,7 +319,9 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, onReply,
         ${task ? html`<${StateMark} task=${task} />` : html`<span class="mark" data-tone=${KIND_TONE[item.kind]} aria-hidden="true"></span>`}
         ${item.task != null
           ? html`<a class="row-main row-open" href=${taskLink(project, item.task)}>${body}</a>`
-          : html`<span class="row-main">${body}</span>`}
+          : item.kind === "ask"
+            ? html`<button class="row-main row-open" type="button" aria-label=${`Show the question: ${item.label}`} onClick=${() => onShow(item.id)}>${body}</button>`
+            : html`<span class="row-main">${body}</span>`}
         ${actions && html`<span class="row-actions">${actions}</span>`}
       </div>
       ${status.error && html`<p class="error need-error" role="alert">${status.error}</p>`}
@@ -356,18 +358,44 @@ const CheckingRow = ({ project, count }) => html`
     </div>
   </li>`;
 
-// The decision list, pinned over the composer (docs/web-client-tasks.md "Project screen"). Closed it
-// is one line: "2 need you · #6 <title> · 5 to check", the running slot turning through the
-// running tasks. Open, the line gives way to the chevron alone, at the right end of the list's
-// first row (app.css), and every item that waits for the owner shows in the server's order, each with its one action, then
-// the tasks that run and the To check row. Done tasks are not in it, and with nothing in it
-// there is no list. A cleared row leaves and the focus moves to the next row's action, or to
-// the composer after the last one. It never moves the chat.
-function Reservoir({ project, items, tasks, checking, onMention, onReply }) {
-  const [open, setOpen] = useState(false);
-  const [closing, setClosing] = useState(false);
-  const [paused, setPaused] = useState(false);
-  const [turn, setTurn] = useState(0);
+// The three lists over the composer and the pills that open them (docs/web-client-tasks.md
+// "Project screen"). Each pill is an icon and its count, in the composer row; a count of 0 has no
+// pill. One list is open at a time.
+const TRAYS = [
+  { key: "running", icon: "play", label: "Running", words: () => "running" },
+  { key: "needs", icon: "unchecked", label: "Needs you", words: (count) => count === 1 ? "needs you" : "need you" },
+  { key: "check", icon: "pass", label: "To check", words: () => "to check" },
+];
+
+// The open list's name, or null: a list whose count fell to 0 closes. A tap on the open pill
+// closes it; a tap on another pill switches to its list.
+function useTray(counts) {
+  const [tray, setTray] = useState(null);
+  const open = tray && counts[tray] ? tray : null;
+  useEffect(() => { if (tray && !open) setTray(null); }, [tray, open]);
+  return [open, (key) => setTray(open === key ? null : key)];
+}
+
+// `bar`: a device that cannot act has no composer, so the pills stand in a bar of their own.
+function Pills({ counts, open, onToggle, bar = false }) {
+  const shown = TRAYS.filter((tray) => counts[tray.key]);
+  if (!shown.length) return null;
+  return html`
+    <div class=${bar ? "pills pill-bar" : "pills"} role="group" aria-label="Running, needs you, to check">
+      ${shown.map((tray) => html`
+        <button class="pill" type="button" key=${tray.key} data-kind=${tray.key} aria-pressed=${open === tray.key}
+          aria-controls=${open === tray.key ? "reservoir-list" : null} aria-label=${`${counts[tray.key]} ${tray.words(counts[tray.key])}`}
+          onClick=${() => onToggle(tray.key)}>
+          <${Icon} name=${tray.icon} /><span class="pill-count"><${Tick} value=${counts[tray.key]} /></span><span class="pill-label" aria-hidden="true">${tray.label}</span>
+        </button>`)}
+    </div>`;
+}
+
+// The open list, pinned over the composer: Running (the tasks that work), Needs you (every item
+// that waits for the owner in the server's order, each with its one action) or To check. Done
+// tasks are in none of them. A cleared row leaves and the focus moves to the next row's action,
+// or to the composer after the last one. Only a question's label moves the chat, to its reply.
+function Reservoir({ project, open, items, tasks, checking, onMention, onReply, onShow }) {
   const node = useRef();
   // ^ The row whose action runs: a `tasks` event may remove it long before the answer comes.
   const cleared = useRef(null);
@@ -375,16 +403,6 @@ function Reservoir({ project, items, tasks, checking, onMention, onReply }) {
   const keys = items.map(itemKey);
   const needRows = useLeaving(items, itemKey);
   const runRows = useLeaving(working, (task) => `run-${task.id}`);
-  const expanded = open && !closing;
-  // ^ With more than one task running, the closed line turns through them every TICK_MS; it
-  // waits while the pointer or the focus is on it and while the page is hidden, and under
-  // reduced motion it keeps the newest and counts the rest.
-  const rotates = working.length > 1 && !expanded && !calm();
-  useEffect(() => {
-    if (!rotates || paused) return undefined;
-    const timer = setInterval(() => { if (document.visibilityState === "visible") setTurn((count) => count + 1); }, TICK_MS);
-    return () => clearInterval(timer);
-  }, [rotates, paused]);
   useLayoutEffect(() => {
     const done = cleared.current;
     if (!done || keys.includes(done.key)) return;
@@ -394,79 +412,45 @@ function Reservoir({ project, items, tasks, checking, onMention, onReply }) {
     if (focus && focus !== document.body && !node.current?.contains(focus)) return;
     const next = keys[Math.min(done.index, keys.length - 1)];
     const row = next && node.current?.querySelector(`.need[data-key="${CSS.escape(next)}"]`);
-    // ^ The row's action first; its title only when the site may not act.
-    const target = row?.querySelector(".need-action") ?? row?.querySelector(".row-open") ?? node.current?.querySelector(".reservoir-head");
+    // ^ The row's action first; its title only when the site may not act; the open pill last.
+    const target = row?.querySelector(".need-action") ?? row?.querySelector(".row-open") ?? document.querySelector(".pill[aria-pressed=true]");
     target?.focus({ preventScroll: true });
   }, [keys.join()]);
-  // ^ The reservoir goes with the focus in it (its last row, or the closed line while that
-  // task still ran): the focus moves to the composer, not to the page body.
-  const shown = Boolean(items.length || working.length || checking);
-  const wasShown = useRef(shown);
+  // ^ The list goes with the focus in it (its last row): the focus moves to the composer, not
+  // to the page body.
+  const wasOpen = useRef(open);
   useLayoutEffect(() => {
     const focus = document.activeElement;
-    if (wasShown.current && !shown && (!focus || focus === document.body)) {
+    if (wasOpen.current && !open && (!focus || focus === document.body)) {
       document.querySelector(".chat .composer-field")?.focus({ preventScroll: true });
     }
-    wasShown.current = shown;
-  }, [shown]);
-  if (!shown) return null;
-  const onActing = (key, index) => { cleared.current = { key, index }; };
-  const onFailed = (key) => { if (cleared.current?.key === key) cleared.current = null; };
-  // ^ The newest running task, the one with the highest number, comes first and stays while it works.
-  const lineup = [...working].sort((left, right) => right.id - left.id);
-  const current = lineup[rotates ? turn % lineup.length : 0];
-  const need = items.length ? html`<${Tick} value=${items.length} /> ${items.length === 1 ? "needs" : "need"} you` : "";
-  // ^ Closing plays the body's exit, then unmounts it; under reduced motion it is at once.
-  const toggle = () => {
-    if (closing) setClosing(false);
-    else if (open && !calm()) setClosing(true);
-    else setOpen(!open);
-  };
+    wasOpen.current = open;
+  }, [open]);
   // ^ Open, each item's task is read ahead, so its sheet shows at once.
   useEffect(() => {
-    if (open) for (const item of items) if (item.task != null) readTaskAhead(project, item.task);
+    if (open === "needs") for (const item of items) if (item.task != null) readTaskAhead(project, item.task);
   }, [open, keys.join()]);
-  const revealed = (event) => {
-    if (closing && event.target === event.currentTarget) { setClosing(false); setOpen(false); }
-  };
+  if (!open) return null;
+  const onActing = (key, index) => { cleared.current = { key, index }; };
+  const onFailed = (key) => { if (cleared.current?.key === key) cleared.current = null; };
+  const label = TRAYS.find((tray) => tray.key === open).label;
   return html`
-    <section class="reservoir" ref=${node} aria-label="Needs you and running" data-open=${expanded ? "" : null}>
-      <button class="reservoir-head" type="button" aria-expanded=${expanded} aria-controls="reservoir-list" aria-label=${expanded ? "Hide the list" : null} onClick=${toggle}
-        onPointerEnter=${() => setPaused(true)} onPointerLeave=${() => setPaused(false)} onFocus=${() => setPaused(true)} onBlur=${() => setPaused(false)}>
-        ${!expanded && html`
-          ${items.length || checking ? html`<span class="mark" data-tone="attention" aria-hidden="true"></span>` : null}
-          <span class="reservoir-words">
-            ${need}
-            ${current && html`
-              ${need && html`${" "}<span class="reservoir-sep" aria-hidden="true">·</span>${" "}`}
-              <span class="ticker-item" key=${current.id}>
-                <span class="task-chip"><span class="mark" data-tone="working" data-running="" aria-hidden="true"></span>#${current.id}</span>${" "}
-                <span class="reservoir-title">${current.title}</span>
-              </span>`}
-          </span>
-          ${working.length > 1 && html`${" "}<span class="reservoir-more">${rotates ? html`${turn % lineup.length + 1}/${lineup.length}` : `+${working.length - 1} more`}</span>`}
-          ${checking ? html`${need || current ? html`${" "}<span class="reservoir-sep" aria-hidden="true">·</span>${" "}` : null}<span class="reservoir-checks"><${Tick} value=${checking} /> to check</span>` : null}`}
-        <${Icon} name="chevron" />
-      </button>
-      ${open && (items.length || working.length || checking) ? html`
-        <div class="reservoir-reveal" data-closing=${closing ? "" : null} onAnimationEnd=${revealed}>
-          <div class="reservoir-body" id="reservoir-list">
-            ${working.length || runRows.length ? html`
-              <div class="reservoir-fixed">
-                <h2 class="label reservoir-label">Running</h2>
-                <ul class="reservoir-list reservoir-running" aria-label="Running">
-                  ${runRows.map(({ item, key, leaving }) => html`<${RunningRow} key=${key} project=${project} task=${item} leaving=${leaving} />`)}
-                </ul>
-              </div>` : null}
-            <div class="reservoir-scroll">
-              ${items.length || needRows.length ? html`
-                <ul class="reservoir-list" aria-label="Needs you">
-                  ${needRows.map(({ item, key, leaving }) => html`<${NeedRow} key=${key} project=${project} item=${item} index=${items.indexOf(item)} onActing=${onActing} onFailed=${onFailed} onMention=${onMention} onReply=${onReply} leaving=${leaving} />`)}
-                </ul>` : null}
-              ${checking ? html`<ul class="reservoir-list" aria-label="To check"><${CheckingRow} project=${project} count=${checking} /></ul>` : null}
-            </div>
+    <section class="reservoir" ref=${node} aria-label=${label}>
+      <div class="reservoir-reveal" key=${open}>
+        <div class="reservoir-body" id="reservoir-list">
+          <div class="reservoir-scroll">
+            ${open === "running" ? html`
+              <ul class="reservoir-list reservoir-running" aria-label="Running">
+                ${runRows.map(({ item, key, leaving }) => html`<${RunningRow} key=${key} project=${project} task=${item} leaving=${leaving} />`)}
+              </ul>` : null}
+            ${open === "needs" ? html`
+              <ul class="reservoir-list" aria-label="Needs you">
+                ${needRows.map(({ item, key, leaving }) => html`<${NeedRow} key=${key} project=${project} item=${item} index=${items.indexOf(item)} onActing=${onActing} onFailed=${onFailed} onMention=${onMention} onReply=${onReply} onShow=${onShow} leaving=${leaving} />`)}
+              </ul>` : null}
+            ${open === "check" ? html`<ul class="reservoir-list" aria-label="To check"><${CheckingRow} project=${project} count=${checking} /></ul>` : null}
           </div>
-        </div>` : null}
+        </div>
+      </div>
     </section>`;
 }
 
@@ -531,7 +515,7 @@ function withMention(text, n) {
   return [text, /\s/.test(text[end]) ? end + 1 : end];
 }
 
-function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent, field }) {
+function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent, field, pills }) {
   const store = useStore();
   // ^ A role's draft is its own.
   const draft = role ? `${project}/${role}` : project;
@@ -649,6 +633,7 @@ function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent
         notes=${[!options.length && emptyNote(mark, tasks, mentions, failed, () => setAttempt((count) => count + 1)), mark === "#" && foldedNote(tasks, typed.query)]} />`}
       <div class="composer-row" onPointerDown=${focusField}>
         <${AttachButton} onFiles=${upload} />
+        ${pills}
         <div class="composer-input">
           <textarea class="composer-field" ref=${field} rows="1" aria-label=${`Message to ${role ?? "the manager"}`}
             placeholder="Message · # task @ project / skill" role="combobox" aria-autocomplete="list" aria-expanded=${listOpen}
@@ -740,10 +725,8 @@ function More({ project, roles }) {
   const files = shows("files") && can("files_read");
   return html`
     <${MoreMenu}>
-      <a role="menuitem" href=${`#/p/${project.id}/page`}>Overview</a>
       <a role="menuitem" href=${`#/p/${project.id}/sessions`}>Sessions</a>
       <a role="menuitem" href=${`#/p/${project.id}/usage`}>Usage</a>
-      <a role="menuitem" href=${`#/p/${project.id}/routines`}>Routines</a>
       ${files && html`<a role="menuitem" href=${`#/p/${project.id}/files`}>Files</a>`}
       ${roles?.length > 0 && html`
         <p class="more-heading" aria-hidden="true">Roles</p>
@@ -801,6 +784,7 @@ function Sheet({ label, fit = false, onClose, children }) {
       ${children({ down, move, up, ready: () => setReady(true) })}
     </dialog>`;
 }
+
 
 // The project screen with task_view: the manager chat as messages, what is open in the
 // reservoir, and with a task or the page in the route its sheet over the chat. With `role`, a
@@ -928,6 +912,12 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
     sheetWas.current = sheet;
   }, [sheet]);
 
+  // ^ What waits for the owner is the needs and the open questions (docs/web-client-tasks.md "Project screen").
+  const asking = role ? [] : (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
+  const needing = role ? [] : [...(overview?.needs ?? []), ...asking];
+  const counts = { running: role ? 0 : (overview?.tasks ?? []).filter(running).length, needs: needing.length, check: role ? 0 : overview?.to_check ?? 0 };
+  const [tray, toggleTray] = useTray(counts);
+
   if (!project) {
     return html`
       <div class="page">
@@ -939,8 +929,6 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
   const items = role ? [] : overview?.needs ?? [];
   const words = withChips(id);
   const rows = ready ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems, chat?.asks ?? []) : [];
-  // ^ The open questions wait in the reservoir with the needs (docs/web-client-tasks.md "Project screen").
-  const asking = role ? [] : (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
   // The sent message shows until the log has it.
   if (sent && !entries.some((row) => row.kind === "message" && row.id === sent.id)) {
     const last = rows.at(-1);
@@ -955,6 +943,14 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
   const findWords = (words) => {
     search.current.words = words.trim();
     if (search.current.words !== search.current.read) load();
+  };
+  // ^ A question's label: its reply is among the rows and shows marked, else the chat reads
+  // around it as a quote jump does (`jump`, a log without it says so in a toast).
+  const goToReply = (replyId) => {
+    const node = logNode.current?.querySelector(`:scope > [data-id="${replyId}"]`);
+    if (!node) return jump.current(replyId);
+    reveal(node);
+    markFound(node);
   };
   // ^ The typing bubble leaves in the commit that brings the reply: a bubble that stayed to fade
   // out would move the reply down when it went.
@@ -1042,9 +1038,11 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
           ${away && html`<${JumpButton} unread=${unread} onClick=${around != null ? newest : toEnd} />`}
         </div>
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
-        ${!role && html`<${Reservoir} project=${id} items=${[...items, ...asking]} tasks=${overview?.tasks ?? []} checking=${overview?.to_check ?? 0} onMention=${mention} onReply=${(line, id) => { setReply({ line, id }); field.current?.focus(); }} />`}
+        ${!role && html`<${Reservoir} project=${id} open=${tray} items=${needing} tasks=${overview?.tasks ?? []} checking=${counts.check} onMention=${mention} onReply=${(line, id) => { setReply({ line, id }); field.current?.focus(); }} onShow=${goToReply} />`}
         ${low && header}
+        ${!role && !can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
         ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
+          pills=${!role && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} />`}
           onSent=${(message) => { search.current.around = null; setAround(null); toEnd(); setSent(message); load(); }} />`}
       </div>
       ${menu}

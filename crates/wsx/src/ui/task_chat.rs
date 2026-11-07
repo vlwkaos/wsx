@@ -198,7 +198,9 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
                 Some(Item::Approval { .. }) => {
                     hints.extend(["(y)approve".into(), "(n)deny".into()])
                 }
-                Some(Item::Ask { .. }) => hints.extend(["(r)eply".into(), "(d)ismiss".into()]),
+                Some(Item::Ask { .. }) => {
+                    hints.extend(["(r)eply".into(), "(d)ismiss".into(), "Enter: show".into()])
+                }
                 None => {}
             }
             if chat.items.len() > 1 {

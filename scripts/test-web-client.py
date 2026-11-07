@@ -873,6 +873,7 @@ class Relay(threading.Thread):
 
 # ^ The time since the previous passed check, by check: the result names the slowest ones.
 TIMES = []
+TIMES_START = time.monotonic()
 LAST = [time.monotonic()]
 
 
@@ -880,6 +881,8 @@ def timed(label):
     now = time.monotonic()
     TIMES.append((label[:70], round(now - LAST[0], 1)))
     LAST[0] = now
+    # ^ Flushed at once: a run CI cancels at its time limit still shows where it stood.
+    print('%7.1fs  %s' % (now - TIMES_START, label[:100]), flush=True)
 
 
 def slowest(count=8):
@@ -3570,6 +3573,10 @@ def task_journey(args):
         questions = ['Should the fold keep five rows?', 'Can #92 wait for Monday?', 'Shall I ship #93 today?', 'Is the since line right?']
         for n, question in enumerate(questions):
             old_log.append({'kind': 'reply', 'id': 9901 + n, 'to': [9001], 'text': question, 'asks': True, 'unix_ms': asked_at + n * 1000})
+        # ^ Then 230 `sent` entries with no text: they show nothing but use the 200 entries a read
+        # sends, so the first two questions are older than the rows the page loads (a tap on their
+        # reservoir rows reads back to them, scripts/web-tasks-check.mjs).
+        old_log.extend({'kind': 'sent', 'to': 'ui', 'text': '', 'unix_ms': asked_at + 4000} for _ in range(230))
         old_log.extend([{'kind': 'message', 'id': 9905, 'from': 'owner', 'text': '> Shall I ship #93 today?\n\nNot today.', 'unix_ms': asked_at + 5000},
                         {'kind': 'message', 'id': 9906, 'from': 'owner', 'text': 'It is.', 'unix_ms': asked_at + 6000},
                         {'kind': 'delivered', 'ids': [9905, 9906], 'unix_ms': asked_at + 6001}])

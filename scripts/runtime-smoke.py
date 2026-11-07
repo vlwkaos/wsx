@@ -2142,6 +2142,8 @@ try:
         {"kind": "message", "id": 13, "from": "recap", "text": "RECAP REQUEST"},
         {"kind": "reply", "id": 14, "to": [13], "text": "Quiet day: one landing."},
         {"kind": "message", "id": 15, "from": "manager:elsewhere", "text": "Hello from elsewhere."},
+        # ^ Thirty peer lines after Hello, so the question is more than a screen below the chat's top.
+        *[{"kind": "message", "id": 30 + n, "from": "manager:elsewhere", "text": f"Filler line {n}."} for n in range(30)],
         {"kind": "ping", "usage": {"cost_micro_usd": 0, "turns": 1}},
         {"kind": "rotated", "tokens": 152000, "reason": "the launch changed"},
         {"kind": "reply", "id": 16, "to": [10], "text": "Should I land #4?", "asks": True},
@@ -2213,6 +2215,15 @@ try:
     assert "1 question  0 to check  0 approvals" in chat_screen, chat_screen
     assert re.search(r"▸ asks +Should I land #4\?", chat_screen) and not re.search(r"asks +Shall I deploy", chat_screen), chat_screen
     assert "(r)eply" in chat_screen and "(d)ismiss" in chat_screen, chat_screen
+    # ^ Enter on the question item scrolls the chat to its reply (docs/tasks.md "TUI"): from the
+    # top of the chat, where the item's own line is the only place the question shows.
+    def question_in_chat():
+        return any(re.search(r"^Should I land #4\?", row.strip().lstrip("│ ")) for row in remove_view.text().splitlines())
+    os.write(remove_master, b"k" * 200)
+    wait_for(lambda: "Where is #3?" in remove_view.text(), "k did not scroll the TUI chat to its top", seconds=60)
+    assert not question_in_chat(), remove_view.text()
+    os.write(remove_master, b"\r")
+    wait_for(question_in_chat, "Enter on the question item did not show its reply in the chat", seconds=60)
     os.write(remove_master, b"r")
     wait_for(lambda: "Reply to “Should I land #4?”:" in remove_view.text(), "r did not start a reply to the question", seconds=60)
     os.write(remove_master, b"\x1b")
@@ -2224,7 +2235,7 @@ try:
             if '"kind":"answered"' in line] == [16], keep_log.read_text()[-400:]
     # ^ The chat opens at its end; on a short screen the first rows are above it, and k scrolls
     # up one line at a time to the top.
-    os.write(remove_master, b"k" * 40)
+    os.write(remove_master, b"k" * 200)
     wait_for(lambda: "Where is #3?" in remove_view.text(), "k did not scroll the TUI chat to its top", seconds=60)
     rows_in_order([r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 done$", r"^Atlas$", r"^#3 is on main\.$",
                    r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.", r"^elsewhere\s+\d\d:\d\d",
