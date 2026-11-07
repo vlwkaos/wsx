@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Web: Settings > Usage opens on the limit state, one meter per window (5 hours, 7 days) with its used share, a warning or rejected word and its reset time, then the filters, then the tabs Cost, Tokens and Projects, so the limit no longer sits below a long chart. Tokens holds the token and cost totals table, Projects the cost per project; a project's Usage sheet has the Cost and Tokens tabs and no strip. The TUI task list shows the limit line first, above the spend lines. No new data or route.
 - Tasks: a `ci:` scenario's 60 min run limit counts from the moment the first CI job starts, not from the push, so a run that waited in GitHub's queue is no longer cancelled for it (it was cancelled after 38 min of queue and 22 min of run). The script prints `queued <n> min before its jobs started`, a run whose jobs never start is cancelled after 60 min of queue, and the host's `ci:` limit is 125 min (60 queue + 60 run + 5), not 75.
 - Web: a blocked or failed `task-<n>-hand` session is no longer counted as an ordinary agent. The badge, the push and Home's lists left it out in wsx-core but not in the web server and `store.js`; the server now calls wsx-core's `is_task_session`.
 - Web: an attachment whose compact copy fails or panics (a video's whisper or ffmpeg step) no longer leaves its chip on "preparing" for ever; the claim is ended in a drop guard, and a copy with no files no longer panics the prompt line. `compact::video` is split into `probe_video` and `video_in`.

@@ -115,33 +115,70 @@ function AgentSelect({ agents, value, onChange }) {
     </label>`;
 }
 
-// Claude's limit state: each window's used share, status and reset (docs/web-client-tasks.md "All projects").
+// Claude's limit state, always above the filters: one meter per window, its used share, a status
+// word while it warns or refuses, and its reset (docs/web-client-tasks.md "All projects").
+const WINDOW_NAMES = { five_hour: "5 hours", seven_day: "7 days" };
+const TONES = { rejected: "danger", warning: "attention" };
+
 function Limits({ limits }) {
   const at = (ms) => new Date(ms).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
-  const names = { five_hour: "5 hours", seven_day: "7 days" };
-  const tone = (status) => status === "rejected" ? "danger" : status === "warning" ? "attention" : null;
-  return limits.map((limit) => html`
-    <h2 key=${`${limit.agent}-label`} class="label usage-projects-label">${ADAPTERS[limit.agent] ?? limit.agent} limit</h2>
-    <div key=${limit.agent} class="table-wrap"><table aria-label=${`${ADAPTERS[limit.agent] ?? limit.agent} limit`}>
-      <thead><tr><th scope="col">Window</th><th scope="col" data-align="right">Used</th><th scope="col">Status</th><th scope="col" data-align="right">Resets</th></tr></thead>
-      <tbody>${limit.windows.map((window) => html`
-        <tr key=${window.kind}><th scope="row">${names[window.kind] ?? window.kind.replaceAll("_", " ")}</th>
-          <td data-align="right">${window.utilization == null ? "-" : `${Math.round(window.utilization * 100)}%`}</td>
-          <td data-tone=${tone(window.status)}>${window.status || "-"}</td>
-          <td data-align="right">${at(window.resets_ms)}</td></tr>`)}</tbody>
-    </table></div>
-    <p key=${`${limit.agent}-at`} class="note usage-as-of">As of ${new Date(limit.as_of_ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</p>`);
+  return html`
+    <section class="usage-limits" aria-label="Usage limit">
+      ${limits.filter((limit) => limit.windows.length).map((limit) => html`
+        <div key=${limit.agent} class="usage-limit">
+          ${limit.windows.map((window) => {
+            const name = WINDOW_NAMES[window.kind] ?? window.kind.replaceAll("_", " ");
+            const used = window.utilization == null ? null : Math.round(window.utilization * 100);
+            const status = TONES[window.status] ? window.status : "";
+            return html`
+              <div key=${window.kind} class="usage-meter" role="meter" aria-label=${`${ADAPTERS[limit.agent] ?? limit.agent} ${name}`} aria-valuemin="0" aria-valuemax="100"
+                aria-valuenow=${used ?? undefined} aria-valuetext=${used == null ? "unknown" : `${used}%${status ? ` ${status}` : ""}`} data-tone=${TONES[window.status]}>
+                <span class="usage-meter-name">${name}</span>
+                <span class="usage-meter-resets">resets ${at(window.resets_ms)}</span>
+                <span class="usage-meter-used">${used == null ? "-" : `${used}%`}${status && html` <span class="usage-meter-status">${status}</span>`}</span>
+                <span class="usage-meter-track"><i style=${{ width: `${Math.min(100, Math.max(0, used ?? 0))}%` }}></i></span>
+              </div>`;
+          })}
+          <p class="note usage-as-of">As of ${new Date(limit.as_of_ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</p>
+        </div>`)}
+    </section>`;
 }
 
-// One set of filters over the chart and the totals of one spend: a project's
-// (`api/tasks/<project>/usage`) or every granted project's (`api/tasks/usage`, with `all`:
-// the limit state and the cost per project). It reads again on a filter change and after each
+// The cost per project in the period, the dearest first (`usage.projects`).
+function ProjectRows({ projects, label }) {
+  if (!projects.length) return html`<p class="empty">No spend</p>`;
+  return html`
+    <div class="table-wrap"><table aria-label="Cost per project">
+      <thead><tr><th scope="col">Project</th><th scope="col" data-align="right">${label}</th></tr></thead>
+      <tbody>${projects.map((row) => html`
+        <tr key=${row.name}><th scope="row">${row.name}</th><td data-align="right">${usd(row.cost_micro_usd)}</td></tr>`)}</tbody>
+    </table></div>`;
+}
+
+// The slice's token and cost totals: one column, the period.
+function Totals({ total, label }) {
+  return html`
+    <div class="table-wrap usage-tokens">
+      <table aria-label="Token use and cost">
+        <thead><tr><td></td><th scope="col" data-align="right">${label}</th></tr></thead>
+        <tbody>
+          ${ROWS.map(([name, value]) => html`
+            <tr key=${name}><th scope="row">${name}</th><td data-align="right">${value(total)}</td></tr>`)}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+// The limit state (with `all`), one set of filters, then the tabs of one spend: a project's
+// (`api/tasks/<project>/usage`) or every granted project's (`api/tasks/usage`, with `all`: the
+// limit state and the cost per project). Cost and Tokens are the two charts; the totals table sits
+// in Tokens, the project table in Projects. It reads again on a filter change and after each
 // `tasks` event (docs/web-client-tasks.md "Usage").
 function UsageView({ url, all = false }) {
   const { tasks } = useStore();
   const [filters, setFilters] = useState({ period: "week", who: "", agent: "" });
-  // ^ One chart at a time, Cost or Tokens, so each day shows once.
-  const [chart, setChart] = useState(COST);
+  // ^ One tab at a time, so each datum shows once.
+  const [tab, setTab] = useState("cost");
   // ^ The newest read and the query it answered: the filters are busy until it is this one's.
   const [{ usage, loaded }, setRead] = useState({ usage: null, loaded: null });
   const [error, setError] = useState("");
@@ -160,8 +197,11 @@ function UsageView({ url, all = false }) {
   const choose = (change) => setFilters({ ...filters, period, ...change });
   const label = PERIODS.find(([each]) => each === period)[1];
   const total = usage.total ?? {};
+  const tabs = [["cost", "Cost"], ["tokens", "Tokens"], ...(all ? [["projects", "Projects"]] : [])];
+  const chart = { cost: COST, tokens: TOKENS }[tab];
   return html`
     ${error && html`<p class="error" role="alert">${error}</p>`}
+    ${all && html`<${Limits} limits=${usage.limits ?? []} />`}
     <div class="usage-filters" aria-busy=${loaded !== search}>
       <label class="usage-filter"><span>Period</span>
         <select name="period" value=${period} onChange=${(event) => choose({ period: event.target.value, agent: WINDOWS.includes(event.target.value) && !filters.agent ? "claude" : filters.agent })}>
@@ -175,27 +215,13 @@ function UsageView({ url, all = false }) {
       </label>
       <${AgentSelect} agents=${usage.agents ?? []} value=${filters.agent} onChange=${(agent) => choose({ agent })} />
     </div>
-    <div class="usage-view" role="tablist" aria-label="Chart">
-      ${[COST, TOKENS].map((each) => html`<button key=${each.name} type="button" role="tab" aria-selected=${chart === each} onClick=${() => setChart(each)}>${each.title}</button>`)}
+    <div class="usage-view" role="tablist" aria-label="Usage sections">
+      ${tabs.map(([name, title]) => html`<button key=${name} type="button" role="tab" id=${`usage-tab-${name}`} aria-selected=${tab === name} aria-controls="usage-panel" onClick=${() => setTab(name)}>${title}</button>`)}
     </div>
-    <${DayRows} key=${chart.name} days=${usage.days ?? []} chart=${chart} label=${label}/>
-    <div class="table-wrap usage-tokens">
-      <table aria-label="Token use and cost">
-        <thead><tr><td></td><th scope="col" data-align="right">${label}</th></tr></thead>
-        <tbody>
-          ${ROWS.map(([name, value]) => html`
-            <tr key=${name}><th scope="row">${name}</th><td data-align="right">${value(total)}</td></tr>`)}
-        </tbody>
-      </table>
-    </div>
-    ${all && html`<${Limits} limits=${usage.limits ?? []} />`}
-    ${all && usage.projects?.length > 0 && html`
-      <h2 class="label usage-projects-label">Projects</h2>
-      <div class="table-wrap"><table aria-label="Cost per project">
-        <thead><tr><th scope="col">Project</th><th scope="col" data-align="right">${label}</th></tr></thead>
-        <tbody>${usage.projects.map((row) => html`
-          <tr key=${row.name}><th scope="row">${row.name}</th><td data-align="right">${usd(row.cost_micro_usd)}</td></tr>`)}</tbody>
-      </table></div>`}`;
+    <div id="usage-panel" role="tabpanel" aria-labelledby=${`usage-tab-${tab}`}>
+      ${chart ? html`<${DayRows} key=${chart.name} days=${usage.days ?? []} chart=${chart} label=${label}/>` : html`<${ProjectRows} projects=${usage.projects ?? []} label=${label} />`}
+      ${tab === "tokens" && html`<${Totals} total=${total} label=${label} />`}
+    </div>`;
 }
 
 export function UsagePage({ project, onClose, grip }) {

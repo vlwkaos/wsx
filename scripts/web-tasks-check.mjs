@@ -30,7 +30,7 @@ const { file: mobilePath, source: mobileSource } = mobileAudit();
 if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_AUDIT`);
 // The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
 const linter = designLint({ evaluate, captures, file: "tasks" });
-const LINTED = new Set(["home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light"]);
+const LINTED = new Set(["settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
 const audits = [];
@@ -1292,25 +1292,13 @@ await closeSheet("the page", chat);
 // `api/tasks/<project>/usage` (docs/web-client-tasks.md "Usage").
 await click(".more-button");
 await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Usage').click()");
-await until(`location.hash === '#/p/${project}/usage' && !!document.querySelector('dialog.task-sheet[open] .usage table')`, "Usage did not open the usage sheet");
-const usageRows = await text(".usage tbody th");
-if (usageRows.join() !== "Cost,Input,Cache read,Cache write,Output,Turns") await fail(`the usage rows are ${usageRows}`);
-// ^ One column, the filters' slice: 7 days of workers and manager on every agent at first.
-const USAGE_TOTALS = `({ head: document.querySelector('.usage thead th')?.textContent,
-  cost: document.querySelector('.usage tbody tr:first-child td')?.textContent, cells: document.querySelectorAll('.usage tbody tr:first-child td').length,
-  turns: Number(document.querySelector('.usage tbody tr:last-child td')?.textContent), days: document.querySelectorAll('.usage-days > li').length,
-  periods: [...document.querySelectorAll('select[name=period] option')].map((option) => option.value),
-  agent: document.querySelector('select[name=agent]')?.value })`;
-const usageTotals = () => evaluate(USAGE_TOTALS);
-const usageAll = await usageTotals();
-// ^ The fake worker's results cost nothing; each manager turn costs 0.001 USD.
-if (usageAll.head !== "7 days" || usageAll.cells !== 1 || !/^\$\d+\.\d\d$/.test(usageAll.cost) || usageAll.cost === "$0.00" || !(usageAll.turns > 1)) {
-  await fail(`the usage totals are ${JSON.stringify(usageAll)}`);
-}
+await until(`location.hash === '#/p/${project}/usage' && !!document.querySelector('dialog.task-sheet[open] .usage-chart')`, "Usage did not open the usage sheet");
 // ^ One row per day, a stacked bar on one scale, a legend, and a tap shows the exact amounts.
 // ^ One chart at a time, so each day shows once: Cost first, the Tokens tab switches it.
 const usageTabs = await evaluate(`[...document.querySelectorAll('.usage-view [role=tab]')].map((tab) => tab.textContent + ':' + tab.getAttribute('aria-selected'))`);
 if (usageTabs.join() !== "Cost:true,Tokens:false" || await evaluate(`document.querySelectorAll('.usage-chart').length`) !== 1) await fail(`the usage tabs are ${usageTabs}`);
+// ^ The Cost tab holds the chart and nothing else: no totals table, no limit strip (a project's sheet has none).
+if (await evaluate(`document.querySelectorAll('.usage table, .usage-limits, [role=tabpanel] [data-chart=tokens]').length`)) await fail("the Cost tab shows more than the cost chart");
 const usageDays = await evaluate(`[...document.querySelectorAll('.usage-chart[data-chart=cost] .usage-days > li')].map((row) => ({
   cost: row.querySelector('.usage-cost').textContent,
   parts: [...row.querySelectorAll('.usage-bar i')].map((part) => part.dataset.part),
@@ -1331,6 +1319,21 @@ await until(`document.querySelectorAll('[data-chart=cost] .usage-days > li:first
 // (the fake manager's turns have input, cache read and output), and the cache hit rate per row.
 await evaluate("[...document.querySelectorAll('.usage-view [role=tab]')].find((tab) => tab.textContent === 'Tokens').click()");
 await until(`!!document.querySelector('[data-chart=tokens]') && document.querySelectorAll('.usage-chart').length === 1`, "the Tokens tab did not switch the chart");
+// ^ The Tokens tab adds the totals table below its chart, one column, the filters' slice.
+const usageRows = await text(".usage tbody th");
+if (usageRows.join() !== "Cost,Input,Cache read,Cache write,Output,Turns") await fail(`the usage rows are ${usageRows}`);
+// ^ One column, the filters' slice: 7 days of workers and manager on every agent at first.
+const USAGE_TOTALS = `({ head: document.querySelector('.usage thead th')?.textContent,
+  cost: document.querySelector('.usage tbody tr:first-child td')?.textContent, cells: document.querySelectorAll('.usage tbody tr:first-child td').length,
+  turns: Number(document.querySelector('.usage tbody tr:last-child td')?.textContent), days: document.querySelectorAll('.usage-days > li').length,
+  periods: [...document.querySelectorAll('select[name=period] option')].map((option) => option.value),
+  agent: document.querySelector('select[name=agent]')?.value })`;
+const usageTotals = () => evaluate(USAGE_TOTALS);
+const usageAll = await usageTotals();
+// ^ The fake worker's results cost nothing; each manager turn costs 0.001 USD.
+if (usageAll.head !== "7 days" || usageAll.cells !== 1 || !/^\$\d+\.\d\d$/.test(usageAll.cost) || usageAll.cost === "$0.00" || !(usageAll.turns > 1)) {
+  await fail(`the usage totals are ${JSON.stringify(usageAll)}`);
+}
 const tokenLegend = await text("[data-chart=tokens] .usage-legend .usage-name");
 if (tokenLegend.join() !== "Input,Cache read,Cache write,Output") await fail(`the token legend is ${tokenLegend}`);
 const tokenAmounts = await text("[data-chart=tokens] .usage-legend .usage-amount");
@@ -3773,6 +3776,12 @@ await closeSheet("the page", `#/p/${plansArg}`);
   // ^ The manager may still log a turn between the fetch and the page's own read: a mismatch is read again
   // after a reload, up to five times, and fails when it stays.
   const usd = (micro) => `$${(micro / 1e6).toFixed(2)}`;
+  // ^ A tab of Settings > Usage: click it, wait for its panel's first `selector`, read that.
+  const openTab = async (name, selector) => {
+    await evaluate(`[...document.querySelectorAll('.usage-view [role=tab]')].find((tab) => tab.textContent === ${JSON.stringify(name)}).click()`);
+    await until(`!!document.querySelector(${JSON.stringify(selector)}) && document.querySelector('.usage-view [aria-selected=true]').textContent === ${JSON.stringify(name)}`, `the ${name} tab shows no ${selector}`);
+    return text(selector);
+  };
   let sums, shown;
   for (let attempt = 0; attempt < 5; attempt++) {
     sums = await evaluate(`fetch('api/tasks').then((r) => r.json())
@@ -3786,7 +3795,7 @@ await closeSheet("the page", `#/p/${plansArg}`);
     if ((await text(".subtabs a[aria-current=page]")).join() !== "Usage") await fail("Usage is not the current section");
     shown = {
       cost: await text(".usage[data-scope=all] [data-chart=cost] .usage-total .usage-cost"),
-      cells: await text("table[aria-label='Token use and cost'] tbody tr:first-child td"),
+      cells: await openTab("Tokens", "table[aria-label='Token use and cost'] tbody tr:first-child td"),
       turns: await text("table[aria-label='Token use and cost'] tbody tr:last-child td"),
     };
     if (shown.cost[0] === usd(sums.week) && shown.cells.join() === usd(sums.week) && Number(shown.turns[0]) === sums.turns) break;
@@ -3797,12 +3806,61 @@ await closeSheet("the page", `#/p/${plansArg}`);
   const rowsWeek = perProject.rows.reduce((sum, row) => sum + row.cost_micro_usd, 0);
   const sorted = perProject.rows.every((row, index) => index === 0 || perProject.rows[index - 1].cost_micro_usd >= row.cost_micro_usd);
   if (rowsWeek !== sums.week || perProject.rows.length !== sums.projects || !sorted || perProject.days !== 7) await fail(`the per-project rows are ${JSON.stringify(perProject)} for ${JSON.stringify(sums)}`);
-  const shownRows = await text("table[aria-label='Cost per project'] tbody tr");
-  if (shownRows.length !== sums.projects) await fail(`Settings > Usage lists ${shownRows.length} projects, not ${sums.projects}`);
-  // ^ Claude's limit state from fake Claude's rate_limit_event: each window's share, status, reset.
-  const limitRows = await evaluate(`[...document.querySelectorAll("table[aria-label='Claude limit'] tbody tr")].map((row) => [...row.children].slice(0, 3).map((cell) => cell.textContent).join(" "))`);
-  if (limitRows.join() !== "5 hours 25% allowed,7 days 47% allowed") await fail(`the Claude limit rows are ${limitRows}`);
+  // ^ Cost, Tokens and Projects are tabs of one panel: each shows its own content and no other's.
+  const panels = () => evaluate(`({ tabs: [...document.querySelectorAll('.usage-view [role=tab]')].map((tab) => tab.textContent + ':' + tab.getAttribute('aria-selected')).join(),
+    chart: document.querySelector('.usage-chart')?.dataset.chart ?? '', totals: !!document.querySelector('table[aria-label="Token use and cost"]'),
+    projects: !!document.querySelector('table[aria-label="Cost per project"]'), panel: document.querySelectorAll('[role=tabpanel]').length })`);
+  const same = (got, want) => JSON.stringify(got) === JSON.stringify(want);
+  await go("#/settings");
+  await go("#/settings/usage");
+  await until("!!document.querySelector('.usage[data-scope=all] [data-chart=cost]')", "Settings > Usage shows no cost chart");
+  let seen = await panels();
+  if (!same(seen, { tabs: "Cost:true,Tokens:false,Projects:false", chart: "cost", totals: false, projects: false, panel: 1 })) await fail(`the Cost tab shows ${JSON.stringify(seen)}`);
   await shot("settings-usage");
+  await openTab("Tokens", "[data-chart=tokens]");
+  seen = await panels();
+  if (!same(seen, { tabs: "Cost:false,Tokens:true,Projects:false", chart: "tokens", totals: true, projects: false, panel: 1 })) await fail(`the Tokens tab shows ${JSON.stringify(seen)}`);
+  await shot("settings-usage-tokens");
+  const shownRows = await openTab("Projects", "table[aria-label='Cost per project'] tbody tr");
+  seen = await panels();
+  if (!same(seen, { tabs: "Cost:false,Tokens:false,Projects:true", chart: "", totals: false, projects: true, panel: 1 })) await fail(`the Projects tab shows ${JSON.stringify(seen)}`);
+  if (shownRows.length !== sums.projects) await fail(`Settings > Usage lists ${shownRows.length} projects, not ${sums.projects}`);
+  await shot("settings-usage-projects");
+  // ^ Claude's limit state from fake Claude's rate_limit_event, a meter per window above the filters: its
+  // share, reset and tone. On a phone the strip ends inside the first screen with no scroll.
+  const meters = () => evaluate(`[...document.querySelectorAll('.usage-limits [role=meter]')].map((meter) => [meter.getAttribute('aria-label'), meter.getAttribute('aria-valuenow'),
+    meter.querySelector('.usage-meter-used').textContent.trim(), /^resets /.test(meter.querySelector('.usage-meter-resets').textContent), meter.dataset.tone ?? '',
+    Math.round(meter.querySelector('.usage-meter-track i').getBoundingClientRect().width / meter.querySelector('.usage-meter-track').getBoundingClientRect().width * 100)].join('|'))`);
+  const limits = await meters();
+  if (limits.join() !== "Claude 5 hours|25|25%|true||25,Claude 7 days|47|47%|true||47") await fail(`the limit meters are ${limits}`);
+  const order = await evaluate(`(() => { const top = (selector) => document.querySelector(selector).getBoundingClientRect();
+    return { strip: top('.usage-limits').bottom, filters: top('.usage-filters').top, tabs: top('.usage-view').top, asOf: !!document.querySelector('.usage-limits .usage-as-of'), table: !!document.querySelector("table[aria-label='Claude limit']"), height: innerHeight }; })()`);
+  if (!(order.strip <= order.filters && order.filters < order.tabs) || !order.asOf || order.table) await fail(`the limit strip, filters and tabs are not in order: ${JSON.stringify(order)}`);
+  if (phone() && !(order.strip < order.height)) await fail(`the limit strip ends at ${order.strip}, below the first screen of ${order.height}`);
+  // ^ A warning and a refused window: a read rewritten in the page (fake Claude only reports allowed) shows the
+  // tone and the status word, not color alone.
+  await evaluate(`(() => { const real = window.fetch; window.__realFetch = real; window.fetch = async (url, ...rest) => {
+    const response = await real(url, ...rest);
+    if (!/\/api\/tasks\/usage(\?|$)/.test(String(url))) return response;
+    const body = await response.json();
+    for (const limit of body.limits ?? []) { limit.windows[0].status = 'warning'; limit.windows[1].status = 'rejected'; }
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }); }; })()`);
+  await evaluate(`(() => { const select = document.querySelector('select[name=who]'); select.value = 'workers'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await until("document.querySelector('.usage-meter[data-tone=danger]')", "a refused window shows no danger tone");
+  const toned = await evaluate(`[...document.querySelectorAll('.usage-meter')].map((meter) => meter.dataset.tone + ':' + meter.querySelector('.usage-meter-used').textContent.trim() + ':' + meter.getAttribute('aria-valuetext')).join()`);
+  if (toned !== "attention:25% warning:25% warning,danger:47% rejected:47% rejected") await fail(`the toned meters read ${toned}`);
+  await shot("settings-usage-limit-tones");
+  await evaluate("window.fetch = window.__realFetch");
+  await evaluate(`(() => { const select = document.querySelector('select[name=who]'); select.value = ''; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  // ^ The same tabs at the wide size, each for the owner's look.
+  const usageSize = size;
+  await resize([1280, 800, 1]);
+  for (const [name, selector, capture] of [["Cost", "[data-chart=cost]", "settings-usage"], ["Tokens", "[data-chart=tokens]", "settings-usage-tokens"], ["Projects", "table[aria-label='Cost per project']", "settings-usage-projects"]]) {
+    await openTab(name, selector);
+    await shot(capture);
+  }
+  await resize(usageSize);
+  await openTab("Cost", "[data-chart=cost]");
 }
 console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass in a bubble that stays in place, Skip, the fix task's line), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Roles (the ⋯ contact with its unread dot, its chat at #/p/<project>/r/<role> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await linter.finish(fail);
