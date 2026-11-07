@@ -4725,6 +4725,11 @@ def run(wsx, wsxd, work, owned):
     mark('33s')
     # and quotes it by id; the digest keeps what was said when the log goes; a hit quotes by id
     # only in the project the search ran in.
+    # ^ The rolls were deleted above, and with them the `rotated` entry that fill() wrote (it sits
+    # in the first roll, docs/tasks.md "Manager"): a rotation ends the conversation the earlier
+    # messages belong to, so the current log gets one more, as the host writes it.
+    with manager_log.open('a') as out:
+        out.write(json.dumps({'kind': 'rotated', 'tokens': 400000, 'unix_ms': int(time.time() * 1000)}) + '\n')
     entries = manager_entries()
     last_rotation = max(i for i, e in enumerate(entries) if e['kind'] == 'rotated')
 
