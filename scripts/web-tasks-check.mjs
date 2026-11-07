@@ -345,6 +345,8 @@ async function viewImages(name, links, many = 2, saves = false) {
 // The list of one pill: "running", "needs" or "check" (the pills in the composer row).
 const LISTS = { running: "Running", needs: "Needs you", check: "To check" };
 async function openReservoir(kind = "needs") {
+  // ^ A pill shows when its list has something: the task a manager creates comes after a moment.
+  await until(`!!document.querySelector('.pill[data-kind=${kind}]')`, `there is no ${LISTS[kind]} pill`, 300);
   if (!(await evaluate(`document.querySelector('.pill[data-kind=${kind}]')?.getAttribute('aria-pressed') === 'true'`))) await click(`.pill[data-kind=${kind}]`);
   await until(`!!document.querySelector('.reservoir-list[aria-label="${LISTS[kind]}"]')`, `the ${LISTS[kind]} list did not open`);
 }
