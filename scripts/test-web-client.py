@@ -3532,13 +3532,13 @@ def task_journey(args):
         manager_dir = state / 'wsx/tasks' / ('plans-' + hashlib.sha256(str(plans).encode()).hexdigest()[:8]) / 'manager'
         manager_dir.mkdir(mode=0o700, parents=True)
         questions = ['Should the fold keep five rows?', 'Can #92 wait for Monday?', 'Shall I ship #93 today?', 'Is the since line right?']
-        # ^ The log opens with the two questions that stay open and five spare ones: the three plain
-        # owner messages below answer three, and the two the web check sends before it asks (its RUN
+        # ^ The log opens with the two questions that stay open and six spare ones: the four plain
+        # owner messages the journey sends to plans answer four (the run showed four gone), and the two the web check sends before it asks (its RUN
         # and ASK) the last two, newest first. Then 230 `sent` entries with no
         # text: they show nothing but use the 200 entries a read sends, so the first two questions are
         # older than the rows the page loads, and the events below them are not (a tap on their
         # reservoir rows reads the chat around them, scripts/web-tasks-check.mjs).
-        spares = ['Spare question %d' % n for n in range(5)]
+        spares = ['Spare question %d' % n for n in range(6)]
         lead = [{'kind': 'reply', 'id': 8901 + n, 'to': [9001], 'text': question, 'asks': True}
                 for n, question in enumerate(questions[:2] + spares)]
         lead += [{'kind': 'sent', 'to': 'ui', 'text': ''} for _ in range(230)]
