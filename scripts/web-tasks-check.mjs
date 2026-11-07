@@ -370,13 +370,51 @@ async function clearRow(label, action, attempts = 300) {
   await evaluate(`(() => { const button = [...${rowOf(label)}.querySelectorAll('.need-action')].find((node) => node.title === ${JSON.stringify(action)});
     button.focus(); button.click(); })()`);
   await until(`!document.querySelector('.reservoir .need[data-key=${JSON.stringify(key)}]')`, `${action} did not clear the row ${label} (${key})`, attempts);
-  // ^ After the last row the list closes and the composer has the focus.
-  const inList = "!!document.activeElement?.closest('.reservoir .need .need-action, .reservoir .need .row-open, .pill[aria-pressed=true]') || (!document.querySelector('.reservoir') && !!document.activeElement?.matches('.chat .composer-field'))";
+  // ^ After the last row the list closes; no text field takes the focus (a phone's keyboard would open).
+  const inList = "!!document.activeElement?.closest('.reservoir .need .need-action, .reservoir .need .row-open, .pill[aria-pressed=true]') || (!document.querySelector('.reservoir') && !document.activeElement?.matches('textarea, input'))";
   for (let attempt = 0; attempt < 100 && !(await evaluate(inList)); attempt++) await pause(100);
   if (!(await evaluate(inList))) await fail(`after ${action} on ${label} the focus is on ${JSON.stringify(await focused())}, not on the next row`);
   const now = await focused();
   if (await evaluate("document.activeElement?.closest('.need')?.dataset.key ?? ''") === key) await fail(`after ${action} the focus stayed on ${label}`);
   return now;
+}
+// Each list has a header: its name and one button that closes it (the same as the pill); the rows
+// scroll under it. A tap closes with no text field focused (`click()` focuses nothing, as a tap on
+// iOS does, so the list's close left the focus on the body), and Escape closes it too.
+const textFocus = "!!document.activeElement?.matches('textarea, input')";
+async function listHeaders() {
+  for (const kind of Object.keys(LISTS)) {
+    const label = LISTS[kind];
+    await openReservoir(kind);
+    const head = await evaluate(`(() => { const box = document.querySelector('.reservoir').getBoundingClientRect(), head = document.querySelector('.reservoir-head'), shut = head.querySelector('button'), scroll = document.querySelector('.reservoir-scroll').getBoundingClientRect();
+      const mine = head.getBoundingClientRect(), button = shut.getBoundingClientRect();
+      return { title: head.querySelector('.reservoir-title').textContent, name: shut.getAttribute('aria-label'), high: Math.round(mine.height), top: Math.round(mine.top - box.top), under: scroll.top >= mine.bottom - 0.5,
+        right: Math.abs(button.right - mine.right) < 16, buttons: head.querySelectorAll('button').length }; })()`);
+    if (head.title !== label || head.name !== `Close ${label}` || head.buttons !== 1 || head.top > 1 || !head.under || !head.right || head.high > 40) await fail(`the ${label} header is ${JSON.stringify(head)}`);
+    // ^ The header stays while the rows scroll.
+    const kept = await evaluate(`(() => { const scroll = document.querySelector('.reservoir-scroll'), head = document.querySelector('.reservoir-head'), before = head.getBoundingClientRect().top; scroll.scrollTop = 9999; return head.getBoundingClientRect().top === before; })()`);
+    if (!kept) await fail(`the ${label} header moved with the rows`);
+    await shot(`pills-${kind}-header`, ".composer-send");
+    await click(`.pill[data-kind=${kind}]`);
+    await until("!document.querySelector('.reservoir')", `a tap on the open ${label} pill did not close its list`);
+    if (await evaluate(textFocus)) await fail(`closing ${label} by its pill focused ${await evaluate("document.activeElement.className")}`);
+    await openReservoir(kind);
+    await click(`.reservoir-head button[aria-label="Close ${label}"]`);
+    await until("!document.querySelector('.reservoir')", `the close button of ${label} did not close the list`);
+    if ((await pressed()) !== "" || await evaluate(textFocus)) await fail(`closing ${label} by its button leaves ${await pressed()} pressed, a text field focused: ${await evaluate(textFocus)}`);
+    // ^ Escape from inside the list: the focus goes to the pill that opened it.
+    await openReservoir(kind);
+    await evaluate(`document.querySelector('.reservoir-head button').focus()`);
+    await key("Escape", 27);
+    await until("!document.querySelector('.reservoir')", `Escape did not close the ${label} list`);
+    if (!(await evaluate(`document.activeElement === document.querySelector('.pill[data-kind=${kind}]')`))) await fail(`after Escape the focus is on ${JSON.stringify(await focused())}, not the ${label} pill`);
+    // ^ Escape with the focus on the page (a tap on iOS leaves it there) closes it too.
+    await openReservoir(kind);
+    await evaluate("document.activeElement?.blur()");
+    await key("Escape", 27);
+    await until("!document.querySelector('.reservoir')", `Escape on the page did not close the ${label} list`);
+    if (await evaluate(textFocus)) await fail(`Escape on the page focused a text field after ${label}`);
+  }
 }
 async function closeReservoir() {
   if (await evaluate("!!document.querySelector('.pill[aria-pressed=true]')")) await click(".pill[aria-pressed=true]");
@@ -919,7 +957,7 @@ await runningIs("1 running", "the Running pill did not go back to one task");
 
 // Open, a list's first row shows whole at the reservoir's top, and the pill is pressed.
 async function firstRowInside(where) {
-  const seen = await evaluate(`(() => { const box = document.querySelector('.reservoir').getBoundingClientRect(), body = document.querySelector('.reservoir-scroll'), row = body.querySelector('.need').getBoundingClientRect();
+  const seen = await evaluate(`(() => { const body = document.querySelector('.reservoir-scroll'), box = body.getBoundingClientRect(), row = body.querySelector('.need').getBoundingClientRect();
     return { down: Math.round(row.top - box.top), inside: row.top >= box.top && row.bottom <= box.bottom && row.left >= box.left && row.right <= box.right + 0.5 && body.scrollTop === 0,
       box: [box.top, box.bottom, box.left, box.right].map(Math.round), row: [row.top, row.bottom, row.left, row.right].map(Math.round) }; })()`);
   if (!seen.inside || seen.down > 4) await fail(`${where}: the open list's first row is off: ${JSON.stringify(seen)}`);
@@ -959,6 +997,7 @@ await click(".pill[data-kind=check]");
 await until("!document.querySelector('.reservoir')", "a tap on the open pill did not close its list");
 if ((await pressed()) !== "") await fail(`a closed list leaves ${await pressed()} pressed`);
 await shot("pills", ".composer-send");
+await listHeaders();
 await openReservoir();
 // ^ Every row of the open list, its labels and its context, is the pills' small size.
 const sizes = await evaluate("[...document.querySelectorAll('.reservoir-body :is(.row-label, .row-context)')].map((node) => getComputedStyle(node).fontSize)");
@@ -3011,7 +3050,7 @@ await until(`(${rowOf("#2")}?.querySelector('.need-action')?.title ?? '') === 'L
 moved = await clearRow("#2", "Land");
 moved = await clearRow("#1", "Land");
 await until("!document.querySelector('.reservoir')", "the cleared list still shows the reservoir", 60);
-await until("document.activeElement?.matches('.chat .composer-field')", `with the list cleared the focus is on ${JSON.stringify(await focused())}`, 30);
+await until("!document.activeElement?.matches('textarea, input')", `with the list cleared the focus is on ${JSON.stringify(await focused())}`, 30);
 await shot("reservoir-cleared", ".composer-send");
 
 // --- The task sheet has no link to the worker's terminal, though #6's worker has a session;

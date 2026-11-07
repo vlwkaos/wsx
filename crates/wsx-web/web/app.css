@@ -796,6 +796,11 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 /* The list opens by its height (a grid row from 0fr to 1fr). */
 .reservoir-reveal { flex: 0 1 auto; min-height: 0; display: grid; grid-template-rows: 1fr; overflow: hidden; }
 .reservoir-body { min-height: 0; min-width: 0; display: flex; flex-direction: column; padding-bottom: var(--space-2); }
+/* The list's header stays while the rows scroll under it: its name and the button that closes it,
+   one line of the key size (the 44 px button's hit area overflows it). */
+.reservoir-head { flex: 0 0 auto; min-height: var(--size-key); padding-inline: var(--column-inset, var(--space-4)); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.reservoir-title { font-size: var(--font-size-label); letter-spacing: var(--tracking-label); text-transform: uppercase; color: var(--color-faint); }
+.reservoir-close { margin-block: calc((var(--size-key) - var(--size-control)) / 2); margin-right: calc(-1 * var(--space-3)); }
 .reservoir-scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 /* Every row of the open list is the small size. */
 .reservoir .row-link { font-size: var(--font-size-sm); padding-inline: var(--column-inset, var(--space-4)); }

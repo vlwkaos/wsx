@@ -414,8 +414,13 @@ function Pills({ counts, open, onToggle, bar = false }) {
 // that waits for the owner in the server's order, each with its one action) or To check. Done
 // tasks are in none of them. A cleared row leaves and the focus moves to the next row's action,
 // or to the composer after the last one. Only a question's label moves the chat, to its reply.
-function Reservoir({ project, open, items, tasks, checks, onMention, onReply, onShow }) {
+function Reservoir({ project, open, items, tasks, checks, onMention, onReply, onShow, onClose }) {
   const node = useRef();
+  // ^ A focus inside the list would fall to the body when the list goes: it goes to the open pill.
+  const close = () => {
+    if (node.current?.contains(document.activeElement)) document.querySelector(`.pill[data-kind=${open}]`)?.focus({ preventScroll: true });
+    onClose();
+  };
   // ^ The row whose action runs: a `tasks` event may remove it long before the answer comes.
   const cleared = useRef(null);
   const working = tasks.filter(running);
@@ -436,15 +441,18 @@ function Reservoir({ project, open, items, tasks, checks, onMention, onReply, on
     const target = row?.querySelector(".need-action") ?? row?.querySelector(".row-open") ?? document.querySelector(".pill[aria-pressed=true]");
     target?.focus({ preventScroll: true });
   }, [keys.join()]);
-  // ^ The list goes with the focus in it (its last row): the focus moves to the composer, not
-  // to the page body.
-  const wasOpen = useRef(open);
-  useLayoutEffect(() => {
-    const focus = document.activeElement;
-    if (wasOpen.current && !open && (!focus || focus === document.body)) {
-      document.querySelector(".chat .composer-field")?.focus({ preventScroll: true });
-    }
-    wasOpen.current = open;
+  // ^ Escape closes the list from inside it, from the pills or from the page body (a field keeps
+  // its own Escape). The focus goes to the pill, never to a text field: that opens a phone's keyboard.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event) => {
+      const at = event.target;
+      if (event.key !== "Escape" || event.defaultPrevented || !(at === document.body || at.closest?.(".reservoir, .pills"))) return;
+      event.preventDefault();
+      close();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, [open]);
   // ^ Open, each item's task is read ahead, so its sheet shows at once.
   useEffect(() => {
@@ -458,6 +466,10 @@ function Reservoir({ project, open, items, tasks, checks, onMention, onReply, on
     <section class="reservoir" ref=${node} aria-label=${label}>
       <div class="reservoir-reveal" key=${open}>
         <div class="reservoir-body" id="reservoir-list">
+          <div class="reservoir-head">
+            <span class="reservoir-title">${label}</span>
+            <button class="icon-button reservoir-close" type="button" aria-label=${`Close ${label}`} title=${`Close ${label}`} onClick=${close}><${Icon} name="down" /></button>
+          </div>
           <div class="reservoir-scroll">
             ${open === "running" ? html`
               <ul class="reservoir-list" aria-label="Running">
@@ -1062,7 +1074,7 @@ export function Manager({ project: id, task, page, checks, checkItem = null, usa
           ${away && html`<${JumpButton} unread=${unread} onClick=${around != null ? newest : toEnd} />`}
         </div>
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
-        ${!role && html`<${Reservoir} project=${id} open=${tray} items=${needing} tasks=${overview?.tasks ?? []} checks=${overview?.check_items ?? []} onMention=${mention} onReply=${(line, id) => { setReply({ line, id }); field.current?.focus(); }} onShow=${goToReply} />`}
+        ${!role && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} items=${needing} tasks=${overview?.tasks ?? []} checks=${overview?.check_items ?? []} onMention=${mention} onReply=${(line, id) => { setReply({ line, id }); field.current?.focus(); }} onShow=${goToReply} onClose=${() => toggleTray(tray)} />`}
         ${low && header}
         ${!role && !can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
         ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
