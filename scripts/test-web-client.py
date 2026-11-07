@@ -1980,15 +1980,20 @@ capabilities = ["terminal_view"]
             assert movie[0] == 200, movie
             movie = movie[1]
             line = prompt_after('what happens', [movie['hash']]).splitlines()[-1]
-            found = re.fullmatch(r'(.+\.mp4\.frames) \(clip\.mp4: 0:45, (\d+) frames named fNN-tM_SS\.jpg\) original: (.+\.mp4) '
-                                 r'\(open it only for motion, sound or detail the frames lack\)', line)
+            found = re.fullmatch(r'(.+\.mp4\.md) \(clip\.mp4: 0:45, (\d) contact sheets?, no transcript\) original: (.+\.mp4) '
+                                 r'\(open it only for motion, sound or detail the sheets lack\)', line)
             assert found, line
-            frames = sorted(Path(found[1]).iterdir())
-            assert Path(found[1]) == media_dir / (movie['hash'] + '.mp4.frames') and len(frames) == int(found[2]) >= 2, frames
-            assert all(re.fullmatch(r'f\d\d-t\d+_\d\d\.jpg', f.name) and f.read_bytes()[:3] == b'\xff\xd8\xff' for f in frames), frames
-            assert frames[0].name.startswith('f01-t0_00') and any('-t0_30' in f.name for f in frames), frames
-            assert Path(found[3]).read_bytes() == clip.read_bytes()
-            assert not list(media_dir.glob('*.part')) and not (media_dir / (movie['hash'] + '.mp4.md')).exists()  # no model in this run's cache: frames only
+            digest_file, sheets = Path(found[1]), int(found[2])
+            assert digest_file == media_dir / (movie['hash'] + '.mp4.md') and Path(found[3]).read_bytes() == clip.read_bytes(), line
+            digest = digest_file.read_text()
+            assert digest.startswith('<!-- wsx: video 0:45 -->\nduration: 0:45\ncontact sheet 1/%d (' % sheets), digest
+            # No whisper model in this run's cache: the copy says so, it does not leave the line out.
+            assert digest.endswith('\ntranscript: none (whisper or its base model is not installed)\n'), digest
+            for number in range(1, sheets + 1):
+                sheet = media_dir / ('%s.mp4.sheet%d.jpg' % (movie['hash'], number))
+                assert str(sheet) in digest and sheet.read_bytes()[:3] == b'\xff\xd8\xff', (sheet, digest)
+            assert 'frames at 0:00 ' in digest and re.search(r'4x3 grid left to right, top to bottom, frames at (\d+:\d\d ?)+\n', digest), digest
+            assert not list(media_dir.glob('*.part')) and not list(media_dir.glob('*.frames'))
             attached(owner, sessions['owner'], movie)
         else:
             print('SKIP compact video copy: ffmpeg is not installed')
