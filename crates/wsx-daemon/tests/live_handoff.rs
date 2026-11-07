@@ -1143,7 +1143,10 @@ fn a_rolled_back_handoff_saves_state_again() {
             true,
         ))
         .unwrap();
-    assert!(matches!(response, Response::Replacement { .. }), "{response:?}");
+    assert!(
+        matches!(response, Response::Replacement { .. }),
+        "{response:?}"
+    );
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if let Ok(Response::Lifecycle(status)) = client.call(&Request::LifecycleStatus) {
@@ -1157,7 +1160,10 @@ fn a_rolled_back_handoff_saves_state_again() {
     // The reply of a change waits for its save: it returns only if the saver runs again.
     sessions(&client, "rollback", &[("after", "exec cat")]);
     let saved = fs::read_to_string(&state_file).unwrap();
-    assert!(saved.contains("before") && saved.contains("after"), "{saved}");
+    assert!(
+        saved.contains("before") && saved.contains("after"),
+        "{saved}"
+    );
     client.shutdown().unwrap();
     wait_for_socket_removal(&fixture.socket);
 }
