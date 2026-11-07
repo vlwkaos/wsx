@@ -5,8 +5,9 @@ use ratatui::{prelude::*, widgets::Paragraph};
 use wsx_core::model::workspace::{PaneInfo, Project, SessionInfo, WorktreeInfo};
 
 use super::{
+    text::truncate_to_width,
     theme,
-    workspace_tree::{agent_state_icon, session_icon, truncate_to_width},
+    workspace_tree::{agent_state_icon, session_icon},
 };
 
 pub struct TerminalTitleView<'a> {

@@ -17,6 +17,7 @@ pub mod search_feedback;
 pub mod task_chat;
 pub mod tasks;
 pub mod terminal_title;
+pub(crate) mod text;
 pub(crate) mod text_form;
 pub mod theme;
 pub mod upgrade;

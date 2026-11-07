@@ -12,7 +12,7 @@ use wsx_core::config::global::{
     TerminalTitlePosition, ADAPTIVE_COLLAPSE_MAX_HOURS, ADAPTIVE_COLLAPSE_MIN_HOURS,
 };
 
-use super::{popup_block, popup_center, theme, workspace_tree::truncate_to_width};
+use super::{popup_block, popup_center, text::truncate_to_width, theme};
 
 #[cfg(target_os = "macos")]
 const RUNTIME_FIELDS: &[SettingField] = &[
