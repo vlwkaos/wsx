@@ -260,7 +260,7 @@ fn instructions(
          workers do that in tasks. Keep your notes in {notes}. \
          Messages headed 'Owner' come from the owner; 'Events' come from \
          wsx. Each message ends with wsx's ledger summary. The ledger is the truth, not \
-         your memory: run `wsx task ledger -p {project}` for more. Every `wsx task` command takes `-p {project} --json`, also in a pipe or \
+         your memory: run `wsx task ledger -p {project}` for more. Every `wsx task` command takes `-p {project} --json` (not `digest`, `checkin`, `post`, `check-run`), also in a pipe or \
          with a heredoc; no other `wsx` command runs. Name tasks as #<n>. \
          Talk like a person in a chat, not a report: answer each Owner message first, every \
          question in it, in a few short lines. Define each name the owner has not used; \

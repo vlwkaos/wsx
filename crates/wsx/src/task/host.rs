@@ -2061,8 +2061,6 @@ impl Host {
         }
     }
 
-    /// `wsx task check-run [<n>...]` from the worker: the declared checks (all, or by number)
-    /// run as after a result, in a thread, and answer the worker; no revision is recorded.
     /// Continue the task on `next` in a new conversation: the limited agent wrote no notes,
     /// so the turn it could not finish opens it after the usual rotation context. The task
     /// stays on `next` until it ends: a second switch would cost another cold start.
@@ -2123,6 +2121,8 @@ impl Host {
         }
     }
 
+    /// `wsx task check-run [<n>...]` from the worker: the declared checks (all, or by number)
+    /// run as after a result, in a thread, and answer the worker; no revision is recorded.
     fn check_run(&mut self, argv: &[String], reply: Sender<broker::Response>) {
         let refuse = |message: String| {
             let _ = reply.send(broker::refused(message));
