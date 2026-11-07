@@ -3865,7 +3865,7 @@ def run(wsx, wsxd, work, owned):
     waiting, now_ms = held['record']['waiting'], time.time() * 1000
     assert held['state'] == 'working' and waiting['on'] == 'check_run', held['record']
     assert 'check-run ciagain on CI' in waiting['reason'], waiting
-    assert now_ms + 70 * 60_000 < waiting['until_ms'] <= now_ms + 75 * 60_000, waiting
+    assert now_ms + 120 * 60_000 < waiting['until_ms'] <= now_ms + 125 * 60_000, waiting
     assert held['status']['kind'] == 'check_run' and held['status']['label'] == 'Waiting for its check-run', held['status']
     assert kinds(again, 'result', 'check_run', 'checks') == ['result', 'check_run', 'result'], log(again)
     ci_pass.touch()

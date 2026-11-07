@@ -482,7 +482,7 @@ fn ready(
     }
 }
 
-/// A worker's result that waits for its own check-run's answer (a `ci:` one up to 75 min).
+/// A worker's result that waits for its own check-run's answer (a `ci:` one up to 125 min).
 fn held(reason: &str, now_ms: u64) -> Status {
     words(
         "check_run",
