@@ -187,13 +187,28 @@ PARTS = []
 
 
 def mark(name):
+    assert all(name != seen for seen, _ in PARTS), 'part name %s is used twice' % name
     PARTS.append((name, time.monotonic()))
 
 
-def slowest(count=8):
+def spans():
     ends = [at for _, at in PARTS[1:]] + [time.monotonic()]
-    spans = [(name, round(end - at, 1)) for (name, at), end in zip(PARTS, ends)]
-    return sorted(spans, key=lambda span: -span[1])[:count]
+    return [(name, round(end - at, 1)) for (name, at), end in zip(PARTS, ends)]
+
+
+def slowest(count=8):
+    return sorted(spans(), key=lambda span: -span[1])[:count]
+
+
+def gate_cmd(path):
+    """A check or scenario command that runs until `path` exists."""
+    return 'while [ ! -e %s ]; do sleep 0.2; done' % path
+
+
+# ^ The manager host's stall grace (60 s) and sweep (10 s): the scenario sets the grace to
+# STALL_GRACE through wsxd's environment, so a stall is reported on the second sweep.
+STALL_GRACE = 4
+SWEEP = 10
 
 
 def screen(output, cols, rows=40, styled=False, colors=False):
@@ -299,7 +314,7 @@ def main():
     owned = {}
     try:
         run(wsx, wsxd, work, owned)
-        print(json.dumps({'ok': True, 'seconds': round(time.monotonic() - started, 1), 'slowest': slowest()}))
+        print(json.dumps({'ok': True, 'seconds': round(time.monotonic() - started, 1), 'slowest': slowest(), 'parts': dict(spans())}))
     finally:
         # ^ Stop the isolated wsxd also after a failure: its hosts and fake agents end with it.
         if 'env' in owned:
@@ -344,7 +359,7 @@ def run(wsx, wsxd, work, owned):
     (bin_dir / 'pi').chmod(0o755)
     daemon_socket = work / 'd.sock'
     env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
-           'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(daemon_socket),
+           'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_TEST_STALL_GRACE_SECS': str(STALL_GRACE), 'WSX_SOCKET': str(daemon_socket),
            'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
            'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp),
            # ^ A fixture git command must never reach the repository this script runs in.
@@ -412,6 +427,16 @@ def run(wsx, wsxd, work, owned):
                 return value
             time.sleep(0.1)
         raise RuntimeError(label + ' timeout')
+
+    def stays(positive, absent, label, seconds=60):
+        """Something did not happen: first wait for `positive`, an event that comes after the
+        moment it could have happened, so a late event is no pass; then `absent` must hold."""
+        wait(positive, label, seconds)
+        assert absent(), label
+
+    def sweeps(count):
+        """Time for `count` sweeps of the manager host's stall check after the grace."""
+        time.sleep(STALL_GRACE + count * SWEEP + 2)
 
     def show(n):
         return js('task', 'show', n)
@@ -3014,7 +3039,7 @@ def run(wsx, wsxd, work, owned):
         return [line for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
                 for line in e['text'].split('\n') if line.startswith('#%d stalled' % n)]
 
-    time.sleep(75)
+    sweeps(2)
     assert not stalls(dw), stalls(dw)
     # ^ Space is back, but a process holds the disk slot under the label of a closed task: one
     # event names the wait, its age and the evidence, and a later sweep does not repeat it.
@@ -3028,7 +3053,7 @@ def run(wsx, wsxd, work, owned):
         stalled = wait(lambda: stalls(dw), 'the stall event', 120)
         assert len(stalled) == 1 and 'waiting on disk for ' in stalled[0], stalled
         assert 'free ' in stalled[0] and 'tasks.minFreeGb is 0; queued behind demo t%d, which is closed' % cr in stalled[0], stalled
-        time.sleep(25)
+        sweeps(1)
         assert stalls(dw) == stalled, stalls(dw)
     finally:
         holder.kill()
@@ -3056,7 +3081,7 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', added, '--discard')
     waited = wait(lambda: stalls(idle), 'the manager-wait stall event', 150)
     assert len(waited) == 1 and re.search(r'^#%d stalled r1: .*; ready for .*; the manager has not reviewed it$' % idle, waited[0]), waited
-    time.sleep(25)
+    sweeps(1)
     assert stalls(idle) == waited and not stalls(landed_first) and not stalls(added), (stalls(idle), stalls(landed_first), stalls(added))
     js('task', 'close', idle, '--discard')
     configure(LAND_CONFIG, 'review wait over')
@@ -3089,7 +3114,7 @@ def run(wsx, wsxd, work, owned):
     # under both hosts. Nothing calls a host after the reset (`show` would wake it): only files
     # are read.
     limit_gate = base / 'limit-gate'
-    configure(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n' % limit_gate,
+    configure(LAND_CONFIG + '  scenarios:\n    slow: %s\n' % gate_cmd(limit_gate),
               'a slow scenario')
     swapped = work / 'swapped'
     swapped.mkdir(mode=0o700)
@@ -3143,12 +3168,18 @@ def run(wsx, wsxd, work, owned):
     wait(lambda: limited(held), 'the limit wait to stop', 30)
     assert js('task', 'stop', held)['state'] == 'waiting'
     assert js('task', 'stop', held)['message'].startswith('already stopped')
-    time.sleep(14)
+    # ^ A task that is not stopped hits the same limit after it: its resume after the reset is the
+    # event that comes after the moment the stopped task could have resumed.
+    held_session = show(held)['record']['agent_session']
+    sentinel = js('task', 'new', 'LIMIT 4 WORK lh0.txt')['id']
+    sentinel_session = wait(lambda: limited(sentinel), 'the limit wait of the task that is not stopped', 30)['record']['agent_session']
+    stays(lambda: sentinel_session in resumes(), lambda: held_session not in resumes(),
+          'the stopped task resumed after the reset', 60)
     stopped_at = show(held)['record']
     assert show(held)['state'] == 'waiting' and stopped_at['waiting'] == {'on': 'owner', 'reason': 'stopped by request'}, stopped_at
-    assert not [t for t in traces() if t.get('session') == stopped_at['agent_session']
-                and str(t.get('message', '')).startswith('The usage limit has reset')], traces()
     assert kinds(held, 'result', 'stopped') == ['stopped'], log(held)
+    assert wait_state(sentinel, 'ready', 'failed')['state'] == 'ready', log(sentinel)
+    js('task', 'close', sentinel, '--discard')
     js('task', 'add', held, 'WORK lh2.txt')
     assert wait_state(held, 'ready', 'failed')['state'] == 'ready', log(held)
     js('task', 'close', held, '--discard')
@@ -3714,9 +3745,9 @@ def run(wsx, wsxd, work, owned):
     # answers `queued` at once: two tasks run theirs at the same time while a third holds the
     # scenarios slot, and each gets its answer as a turn after its result.
     ci_lane, ci_gate, ci_started = base / 'ci-lane-gate', base / 'ci-gate', base / 'ci-started.log'
-    configure(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n'
-              '    remote: "ci: echo started >> %s; while [ ! -e %s ]; do sleep 0.2; done; echo remote-ran"\n'
-              % (ci_lane, ci_started, ci_gate), 'a ci scenario')
+    configure(LAND_CONFIG + '  scenarios:\n    slow: %s\n'
+              '    remote: "ci: echo started >> %s; %s; echo remote-ran"\n'
+              % (gate_cmd(ci_lane), ci_started, gate_cmd(ci_gate)), 'a ci scenario')
     holds = js('task', 'new', 'CHECKRUN_LATE slow WORK cilane.txt')['id']
     wait(lambda: kinds(holds, 'result'), 'the local scenario run that holds the slot', 30)
     remotes = [js('task', 'new', 'CHECKRUN_WITH remote WORK remote%d.txt' % n)['id'] for n in (1, 2)]
@@ -3743,7 +3774,7 @@ def run(wsx, wsxd, work, owned):
     # the answer in one turn, and only its next result runs the checks.
     mark('32t')
     late_gate = base / 'late-gate'
-    configure(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n' % late_gate, 'a slow scenario')
+    configure(LAND_CONFIG + '  scenarios:\n    slow: %s\n' % gate_cmd(late_gate), 'a slow scenario')
     late = js('task', 'new', 'CHECKRUN_LATE slow WORK late.txt')['id']
     wait(lambda: kinds(late, 'result'), 'the result before the answer', 30)
     time.sleep(1)
@@ -3759,7 +3790,7 @@ def run(wsx, wsxd, work, owned):
     # kept, starts no turn, and joins the turn the next add starts.
     mark('32t1')
     stop_gate = base / 'stop-gate'
-    configure(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n' % stop_gate, 'a stop scenario')
+    configure(LAND_CONFIG + '  scenarios:\n    slow: %s\n' % gate_cmd(stop_gate), 'a stop scenario')
     parked = js('task', 'new', 'CHECKRUN_LATE slow WORK parked.txt')['id']
     wait(lambda: kinds(parked, 'result'), 'the result before the answer', 30)
     assert js('task', 'stop', parked)['state'] == 'waiting'
@@ -3778,8 +3809,8 @@ def run(wsx, wsxd, work, owned):
     # starts no turn: the host records it as evidence in the result. A failure starts a turn.
     mark('32t2')
     pass_gate, fail_gate = base / 'pass-gate', base / 'fail-gate'
-    configure(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n'
-              '    slowfail: while [ ! -e %s ]; do sleep 0.2; done; exit 1\n' % (pass_gate, fail_gate), 'late scenarios')
+    configure(LAND_CONFIG + '  scenarios:\n    slow: %s\n'
+              '    slowfail: %s; exit 1\n' % (gate_cmd(pass_gate), gate_cmd(fail_gate)), 'late scenarios')
     passed = js('task', 'new', 'CHECKRUN_LATER slow WORK later.txt')['id']
     failed = js('task', 'new', 'CHECKRUN_LATER slowfail WORK laterfail.txt')['id']
     for n in (passed, failed):
@@ -3816,11 +3847,11 @@ def run(wsx, wsxd, work, owned):
     mark('32t3')
     ci_mark, ci_pass, ci_go = base / 'ci-again-mark', base / 'ci-again-gate', base / 'ci-fail-gate'
     # ^ The first runs fail only after both results: a run that ends first takes another path.
-    hold = 'while [ ! -e %s ]; do sleep 0.2; done' % ci_go
+    hold = gate_cmd(ci_go)
     configure(LAND_CONFIG + '  scenarios:\n    cifail: "ci: %s; exit 1"\n'
-              '    ciagain: "ci: if [ -e %s ]; then while [ ! -e %s ]; do sleep 0.2; done; echo ci-passed; '
+              '    ciagain: "ci: if [ -e %s ]; then %s; echo ci-passed; '
               'else %s; touch %s; echo WORK ciagain2.txt CHECKRUN_LATER ciagain ; exit 1; fi"\n'
-              % (hold, ci_mark, ci_pass, hold, ci_mark), 'ci scenarios that fail')
+              % (hold, ci_mark, gate_cmd(ci_pass), hold, ci_mark), 'ci scenarios that fail')
     plain = js('task', 'new', 'CHECKRUN_LATER cifail WORK cifail.txt')['id']
     again = js('task', 'new', 'CHECKRUN_LATER ciagain WORK ciagain.txt')['id']
     wait(lambda: kinds(plain, 'result') and kinds(again, 'result'), 'both first results', 30)
@@ -3852,7 +3883,7 @@ def run(wsx, wsxd, work, owned):
     two_gate = base / 'two-commits-gate'
     # ^ The run reads HEAD when it starts, as ci-scenario.py does: the gate opens after commit B.
     configure(LAND_CONFIG + '  scenarios:\n    oncommit: "ci: at=$(git rev-parse --short=12 HEAD); '
-              'while [ ! -e %s ]; do sleep 0.2; done; echo ran-on-$at; exit 1"\n' % two_gate, 'a ci scenario per commit')
+              '%s; echo ran-on-$at; exit 1"\n' % gate_cmd(two_gate), 'a ci scenario per commit')
     two = js('task', 'new', 'CHECKRUN_LATER oncommit WORK first.txt')['id']
     wait(lambda: kinds(two, 'result'), 'the result before the first answer', 30)
     js('task', 'add', two, 'WORK second.txt CHECKRUN_LATER oncommit')
@@ -3876,7 +3907,7 @@ def run(wsx, wsxd, work, owned):
     # with the scenarios reason.
     mark('32v')
     lane_gate = base / 'lane-gate'
-    configure(LAND_CONFIG + '  scenarios:\n    slow: while [ ! -e %s ]; do sleep 0.2; done\n' % lane_gate, 'a slow scenario')
+    configure(LAND_CONFIG + '  scenarios:\n    slow: %s\n' % gate_cmd(lane_gate), 'a slow scenario')
     holds = js('task', 'new', 'CHECKRUN_LATE slow WORK lane1.txt')['id']
     wait(lambda: kinds(holds, 'result'), 'the first scenario run', 30)
     waits = js('task', 'new', 'CHECKRUN_LATE slow WORK lane2.txt')['id']
@@ -3901,7 +3932,7 @@ def run(wsx, wsxd, work, owned):
     # background notice) is answered by those checks: one result, one run, one revision.
     mark('32u')
     gate_open = base / 'gate-open'
-    configure(LAND_CONFIG.replace('"test ! -e broken.txt"', '"while [ ! -e %s ]; do sleep 0.2; done"' % gate_open), 'a slow gate')
+    configure(LAND_CONFIG.replace('"test ! -e broken.txt"', '"%s"' % gate_cmd(gate_open)), 'a slow gate')
     twice = js('task', 'new', 'REPEAT WORK twice.txt')['id']
     wait(lambda: kinds(twice, 'result') == ['result'] * 2, 'the repeated result', 30)
     assert show(twice)['state'] == 'checking', show(twice)
@@ -4018,15 +4049,19 @@ def run(wsx, wsxd, work, owned):
     assert show(f)['status']['waited_by'][0].get('because') is None, show(f)['status']
     # ^ Past the review limit (0.2 min) and the grace: a task that waits for a landing is no
     # "ready, not reviewed", and one that waits past 24 h is the only stall reported.
-    time.sleep(100)
-    assert not stalls(a) and not stalls(c), (stalls(a), stalls(c))
+    # ^ a and c are ready past the review limit for two sweeps after the grace, and the sweep that
+    # reports the stalls of unparked and e looked at them too.
+    aged = lambda: all(time.time() * 1000 - show(n)['record']['state_unix_ms'] > (12 + STALL_GRACE + 2 * SWEEP + 2) * 1000
+                       for n in (a, c))
+    stays(lambda: aged() and stalls(unparked) and stalls(e), lambda: not stalls(a) and not stalls(c),
+          'the plan and the long wait stall, a and c do not', 150)
     # ^ The `after` is the manager's review of a plan too; a plan that is not parked still stalls.
     assert not stalls(parked), stalls(parked)
     plan_stall = stalls(unparked)
     assert len(plan_stall) == 1 and re.search(r'^#%d stalled r\d+: .*; waiting on plan for .*; the manager has not reviewed it$' % unparked, plan_stall[0]), plan_stall
     long = stalls(e)
     assert len(long) == 1 and re.search(r'^#%d stalled r1: .*; ready for 1 d [01] h; waiting for #%d to land$' % (e, f), long[0]), long
-    time.sleep(25)
+    sweeps(1)
     assert stalls(e) == long, stalls(e)
     # ^ The other task is closed, not landed: one event, no text added, the task is ready as before.
     js('task', 'close', d, '--discard')
@@ -4309,7 +4344,7 @@ def run(wsx, wsxd, work, owned):
     # checks each child's commits and lands on main once, with the children's To check items.
     gate = base / 'parent-gate'
     gate.touch()
-    configure(LAND_CONFIG.replace('"test ! -e broken.txt"', '"while [ ! -e %s ]; do sleep 0.2; done"' % gate),
+    configure(LAND_CONFIG.replace('"test ! -e broken.txt"', '"%s"' % gate_cmd(gate)),
               'a parent gate')
     parent = js('task', 'new', 'HV WORK parent.txt')['id']
     assert wait_state(parent, 'ready', 'failed')['state'] == 'ready', show(parent)
@@ -4875,11 +4910,19 @@ def run(wsx, wsxd, work, owned):
     def idle_tasks():
         return [t for t in other_tasks() if t.get('title') == 'Consolidate project knowledge']
 
+    # ^ Each quiet period's look fires project.idle: a line in `looks` is a look that happened, so
+    # the absence of a recap and of an idle task is read after the look that could have made them.
+    looks = base / 'other-looks.log'
+    js('task', 'routine', 'add', 'lookout', '-p', 'other', '--event', 'project.idle', '--no-post',
+       '--arg=sh', '--arg=-c', '--arg=echo look >> %s' % looks)
+    looks_count = lambda: len(looks.read_text().split()) if looks.exists() else 0
     nudge = js('task', 'say', '-p', 'other', 'STATUS')
     wait(lambda: next((e for e in other_entries() if e['kind'] == 'reply' and nudge['id'] in e['to']), None),
          'the other manager answers', 60)
-    time.sleep(20)
-    assert len(recaps()) == 1 and not idle_tasks(), (recaps(), other_tasks())
+    looked = looks_count()
+    stays(lambda: looks_count() > looked, lambda: len(recaps()) == 1 and not idle_tasks(),
+          'a look of the quiet period', 60)
+    js('task', 'routine', 'delete', 'lookout', '-p', 'other')
     # ^ The owner has workflow steps; the idle task still runs as one turn.
     owner_config.write_text('tasks:\n  workflow:\n    steps:\n      - name: plan\n        prompt: PLAN only\n')
     notes = other / 'knowledge/sessions/other'
