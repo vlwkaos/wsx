@@ -3531,6 +3531,30 @@ def run(wsx, wsxd, work, owned):
     assert wait_state(moved, 'landed', 'failed')['state'] == 'landed' and len(kinds(moved, 'checks')) == ran + 1, log(moved)
     assert not kinds(moved, 'land_stopped') and json.loads((Path(show(moved)['report']).parent / 'result.json').read_text())['result']['status'] == 'done', log(moved)
     wait_closed(moved)
+    # 32b1. A check that exits 75 (EX_TEMPFAIL, a failure outside the tree such as the CI runner's
+    # network) is never kept (docs/tasks.md "Check-run"): the next check-run on the same clean tree
+    # runs it again, while a check that exits 1 is answered from its kept result.
+    mark('32b1')
+    temp_runs, hard_runs = base / 'tempfail.log', base / 'hardfail.log'
+    configure(LAND_CONFIG + '  scenarios:\n    tempfail: "echo run >> %s; exit 75"\n    hardfail: "echo run >> %s; exit 1"\n'
+              % (temp_runs, hard_runs), 'tempfail scenarios')
+    flaky = js('task', 'new', 'CHECKRUN_REPEAT tempfail')['id']
+    hard = js('task', 'new', 'CHECKRUN_REPEAT hardfail')['id']
+    for n in (flaky, hard):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    first, second = wait(lambda: next((t for t in traces() if 'check_run_repeat_tempfail' in t), None),
+                         'the tempfail answers', 60)['check_run_repeat_tempfail']
+    assert first[0] == 1 and second[0] == 1 and 'stored' not in first[1] + second[1], (first, second)
+    assert 'exit 75 (a temporary failure, not kept: the next check-run runs it again)' in second[1], second
+    assert temp_runs.read_text().count('run') == 2, temp_runs.read_text()
+    first, second = wait(lambda: next((t for t in traces() if 'check_run_repeat_hardfail' in t), None),
+                         'the hardfail answers', 60)['check_run_repeat_hardfail']
+    assert first[0] == 1 and 'exit 1' in first[1] and 'stored' not in first[1], first
+    assert second[0] == 1 and '(stored: it ran on this tree before)' in second[1], second
+    assert hard_runs.read_text().count('run') == 1, hard_runs.read_text()
+    for n in (flaky, hard):
+        js('task', 'close', n, '--discard')
+    configure(LAND_CONFIG, 'no tempfail scenarios')
     # 32w. Each check's result has its run time and its run's wait for the check slot (ms), in
     # show and the ledger; the checks after a result answer from a check-run on the same clean
     # tree and do not run again (docs/tasks.md "Checks, revisions and report").
