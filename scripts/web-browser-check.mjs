@@ -1077,7 +1077,8 @@ await send("Network.clearBrowserCookies");
 await send("Page.navigate", { url: "about:blank" });
 await send("Page.navigate", { url: `${siteUrl}#pair=${linkCode}` });
 await until("!!document.querySelector('#pair-code')", "the pairing form did not render from the link");
-if ((await evaluate("document.querySelector('#pair-code').value")) !== linkCode) await fail("the link's code is not in the field");
+// ^ Pair.js fills the field in an effect, after the first frame: wait for it, then read what is there.
+await until(`document.querySelector('#pair-code').value === ${JSON.stringify(linkCode)}`, async () => `the link's code is not in the field: ${JSON.stringify(await evaluate("document.querySelector('#pair-code').value"))}`);
 if (await evaluate("location.href.includes('pair=')")) await fail("the address still holds the pairing code");
 await shot("pair-from-link");
 await evaluate("document.querySelector('.pair-form button[type=submit]').click()");
