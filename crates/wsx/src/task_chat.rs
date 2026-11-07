@@ -927,6 +927,11 @@ impl ManagerChat {
             ));
             return;
         };
+        self.center_row(at);
+    }
+
+    /// Center the message of row `at`.
+    fn center_row(&mut self, at: usize) {
         let (width, _) = self.area.get();
         let lines = |rows: &[ChatRow]| {
             crate::ui::task_chat::chat_lines(rows, width, None, None)
@@ -951,16 +956,7 @@ impl ManagerChat {
             self.newest();
             return;
         };
-        let (width, _) = self.area.get();
-        let lines = |rows: &[ChatRow]| {
-            crate::ui::task_chat::chat_lines(rows, width, None, None)
-                .0
-                .len()
-        };
-        self.center(
-            lines(&self.rows[..at]) + usize::from(at > 0),
-            lines(&self.rows),
-        );
+        self.center_row(at);
     }
 
     /// Back to the newest part of the conversation, from a read around a quoted message.

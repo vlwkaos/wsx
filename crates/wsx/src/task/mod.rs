@@ -2921,8 +2921,8 @@ fn say(
     Ok(())
 }
 
-/// The conversation after message `after`, around message `around`, or from the oldest entry that shows `find`:
-/// messages, replies, rotations and stops; `asks`, the open questions (docs/tasks.md "Log window").
+/// The conversation after message `after`, around message `around`, or from the oldest entry that
+/// shows `find`: messages, replies, rotations and stops; `asks`, the open questions (docs/tasks.md "Log window").
 fn chat(
     project: Option<&str>,
     role: Option<&str>,
