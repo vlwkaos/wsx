@@ -205,9 +205,9 @@ fn clock(seconds: f64) -> String {
     format!("{}:{:02}", total / 60, total % 60)
 }
 
-/// A Markdown file with the duration, up to two contact sheets (4x3 frames, 256 px tiles,
-/// JPEG) whose frame times are in the text, and the transcript or why there is none.
-fn video(original: &Path, dir: &Path, hash: &str, ext: &str) -> Option<Compact> {
+/// The duration, and whether the clip has sound; none when ffprobe fails or the clip is
+/// empty or over `VIDEO_MAX_SECONDS`.
+fn probe_video(original: &Path) -> Option<(f64, bool)> {
     let probe = |args: &[&OsStr]| run("ffprobe", args, 64 * 1024, Duration::from_secs(10));
     let seconds: f64 = text_of(probe(&[
         "-v".as_ref(),
@@ -236,75 +236,91 @@ fn video(original: &Path, dir: &Path, hash: &str, ext: &str) -> Option<Compact> 
         original.as_ref(),
     ])
     .is_some_and(|out| !out.is_empty());
+    Some((seconds, has_audio))
+}
 
+/// A Markdown file with the duration, up to two contact sheets (4x3 frames, 256 px tiles,
+/// JPEG) whose frame times are in the text, and the transcript or why there is none.
+fn video(original: &Path, dir: &Path, hash: &str, ext: &str) -> Option<Compact> {
+    let (seconds, has_audio) = probe_video(original)?;
     let _turn = crate::locked(&VIDEO_TURN);
     let work = dir.join(format!("{hash}.{ext}.part"));
     let _ = fs::remove_dir_all(&work);
     crate::devices::private_dir(&work).ok()?;
-    let made = (|| {
-        let times = sheets(original, &work, seconds)?;
-        let transcript = if !has_audio {
-            Err("the clip has no sound")
-        } else {
-            transcript(original, &work)
-        };
-        let mut files = Vec::new();
-        let mut text = format!(
-            "<!-- wsx: video {} -->\nduration: {}\n",
-            clock(seconds),
-            clock(seconds)
-        );
-        for (index, frames) in times.chunks(12).enumerate() {
-            let name = format!("{hash}.{ext}.sheet{}.jpg", index + 1);
-            fs::rename(
-                work.join(format!("sheet{}.jpg", index + 1)),
-                dir.join(&name),
-            )
-            .ok()?;
-            text.push_str(&format!(
-                "contact sheet {}/{} ({}), 4x3 grid left to right, top to bottom, frames at {}\n",
-                index + 1,
-                times.chunks(12).count(),
-                dir.join(&name).display(),
-                frames
-                    .iter()
-                    .map(|at| clock(*at))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ));
-            files.push(name);
-        }
-        let heard = match &transcript {
-            Ok(lines) => {
-                text.push_str(&format!(
-                    "transcript (machine, whisper base, first {} of the sound, may contain errors):\n{lines}",
-                    clock(f64::from(TRANSCRIPT_WINDOW))
-                ));
-                true
-            }
-            Err(why) => {
-                text.push_str(&format!("transcript: none ({why})\n"));
-                false
-            }
-        };
-        let md = format!("{hash}.{ext}.md");
-        crate::devices::write_private(&dir.join(&md), text.as_bytes()).ok()?;
-        files.insert(0, md);
-        let sheets = files.len() - 1;
-        Some(Compact {
-            size: size_of(dir, &files),
-            summary: format!(
-                "{}, {sheets} contact sheet{}, {}",
-                clock(seconds),
-                if sheets == 1 { "" } else { "s" },
-                if heard { "transcript" } else { "no transcript" }
-            ),
-            original_for: "motion, sound or detail the sheets lack".to_owned(),
-            files,
-        })
-    })();
+    let made = video_in(original, dir, (hash, ext), &work, (seconds, has_audio));
     let _ = fs::remove_dir_all(&work);
     made
+}
+
+/// The conversion of `video` in its work directory: sheets and transcript made there, the
+/// sheets and the Markdown file moved into `dir`.
+fn video_in(
+    original: &Path,
+    dir: &Path,
+    (hash, ext): (&str, &str),
+    work: &Path,
+    (seconds, has_audio): (f64, bool),
+) -> Option<Compact> {
+    let times = sheets(original, work, seconds)?;
+    let voice = if has_audio {
+        transcript(original, work)
+    } else {
+        Err("the clip has no sound")
+    };
+    let mut files = Vec::new();
+    let mut text = format!(
+        "<!-- wsx: video {} -->\nduration: {}\n",
+        clock(seconds),
+        clock(seconds)
+    );
+    for (index, frames) in times.chunks(12).enumerate() {
+        let name = format!("{hash}.{ext}.sheet{}.jpg", index + 1);
+        fs::rename(
+            work.join(format!("sheet{}.jpg", index + 1)),
+            dir.join(&name),
+        )
+        .ok()?;
+        text.push_str(&format!(
+            "contact sheet {}/{} ({}), 4x3 grid left to right, top to bottom, frames at {}\n",
+            index + 1,
+            times.chunks(12).count(),
+            dir.join(&name).display(),
+            frames
+                .iter()
+                .map(|at| clock(*at))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+        files.push(name);
+    }
+    let heard = match &voice {
+        Ok(lines) => {
+            text.push_str(&format!(
+                "transcript (machine, whisper base, first {} of the sound, may contain errors):\n{lines}",
+                clock(f64::from(TRANSCRIPT_WINDOW))
+            ));
+            true
+        }
+        Err(why) => {
+            text.push_str(&format!("transcript: none ({why})\n"));
+            false
+        }
+    };
+    let sheet_count = files.len();
+    let md = format!("{hash}.{ext}.md");
+    crate::devices::write_private(&dir.join(&md), text.as_bytes()).ok()?;
+    files.insert(0, md);
+    Some(Compact {
+        size: size_of(dir, &files),
+        summary: format!(
+            "{}, {sheet_count} contact sheet{}, {}",
+            clock(seconds),
+            if sheet_count == 1 { "" } else { "s" },
+            if heard { "transcript" } else { "no transcript" }
+        ),
+        original_for: "motion, sound or detail the sheets lack".to_owned(),
+        files,
+    })
 }
 
 /// `<work>/sheet1.jpg` (and `sheet2.jpg`) from the frames at scene changes (score over 0.3,
