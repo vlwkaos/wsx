@@ -2080,8 +2080,8 @@ if (!sheetTitle || sheetTitle[0] !== "row-label" || sheetTitle[1] !== "#2") awai
 // ^ One fold level: the report, then History; the report's parts are headings in it.
 const folds = await text(".task-sheet .scroll > details > .fold-head");
 if (folds.join("|") !== "Report · 1 check passed · 1 left open|History") await fail(`the folds read ${JSON.stringify(folds)}`);
-if (await count(".task-sheet details details, .task-sheet .task-details")) await fail("a fold holds a fold");
-const parts = await text(".task-sheet .task-part > .task-subheading");
+if (await count(".task-sheet details details")) await fail("a fold holds a fold");
+const parts = await text(".task-sheet .task-part > .task-heading");
 if (parts.join("|") !== "Changes|Evidence|To check · 1 after it lands|Left open") await fail(`the report's parts read ${JSON.stringify(parts)}`);
 const sheetWords = await evaluate("document.querySelector('dialog.task-sheet').innerText");
 if (/Asked|Human Verify|Decisions|Review|Pass r\d|Verified/.test(sheetWords)) await fail(`the sheet still shows the verdict or old sections: ${sheetWords}`);
@@ -2841,7 +2841,7 @@ await resize([390, 844, 2]);
 await until("!!document.querySelector('dialog.task-sheet[open] .task-next button[aria-label^=\"Answer #1\"]')", "the waiting sheet has no Answer at 390 px");
 await buttonRoom("the waiting sheet");
 // ^ The sheet's Answer closes the sheet over the chat and puts the mention into the composer. The
-// manager relays it, and the message shows read-only in the sheet's Details.
+// manager relays it, and the message shows read-only in the sheet's Messages fold.
 // ^ All of it inside the tap, read in the same task: a phone raises the keyboard only for a focus
 // made there (docs/web-client-tasks.md "Task sheet").
 const inTap = await evaluate(`(() => {
