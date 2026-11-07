@@ -427,6 +427,8 @@ struct Daemon {
     plugin_changed: Condvar,
     active_clients: Arc<AtomicUsize>,
     review_jobs: plugins::review::Registry,
+    /// Deadline of one plugin command; tests pass a longer one for a busy host.
+    plugin_timeout: Duration,
     epoch: u64,
     binary_id: String,
     started_unix_ms: u64,
@@ -451,12 +453,6 @@ fn state_path(socket: &Path) -> PathBuf {
 
 use wsx_core::runtime::{lifecycle_marker_path, write_lifecycle_marker};
 
-fn secure_parent(path: &Path) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    wsx_core::fs_util::private_dir(parent)
-}
 fn prepare_socket(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata)
@@ -494,11 +490,6 @@ fn load_state_with_status(path: &Path) -> io::Result<(Persisted, bool)> {
 #[cfg(test)]
 fn load_state(path: &Path) -> io::Result<Persisted> {
     load_state_with_status(path).map(|(state, _)| state)
-}
-
-#[cfg(test)]
-fn save_state(path: &Path, state: &Persisted) -> io::Result<()> {
-    state_store::save(path, state, validate_persisted)
 }
 
 fn write_state(path: &Path, bytes: &[u8]) -> io::Result<()> {

@@ -98,14 +98,6 @@ where
     Ok(bytes)
 }
 
-#[cfg(test)]
-pub(super) fn save<T>(path: &Path, state: &T, validate: fn(&T) -> io::Result<()>) -> io::Result<()>
-where
-    T: Serialize + DeserializeOwned,
-{
-    write(path, &encode(state, validate)?, validate)
-}
-
 /// Replaces the state file atomically and keeps the previous one as `.backup`.
 // ^ docs/daemon-state-store.md "Syncs": one full drive flush per save.
 pub(super) fn write<T>(
@@ -469,6 +461,14 @@ mod tests {
 
     fn valid(_fixture: &Fixture) -> io::Result<()> {
         Ok(())
+    }
+
+    fn save(
+        path: &Path,
+        state: &Fixture,
+        validate: fn(&Fixture) -> io::Result<()>,
+    ) -> io::Result<()> {
+        write(path, &encode(state, validate)?, validate)
     }
 
     fn path(name: &str) -> PathBuf {

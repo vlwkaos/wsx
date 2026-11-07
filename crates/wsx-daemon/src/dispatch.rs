@@ -530,7 +530,8 @@ pub(crate) fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Res
                 .review_jobs
                 .start(&request.request_id)
                 .map_err(|error| api("review_unavailable", error.to_string()))?;
-            let result = plugins::review::invoke(&plugin, &request, &cancelled);
+            let result =
+                plugins::review::invoke(&plugin, &request, &cancelled, daemon.plugin_timeout);
             daemon.review_jobs.finish(&request.request_id);
             result
                 .map(|response| Response::PluginReview {
@@ -647,6 +648,7 @@ pub(crate) fn render_plugin_view(
             rows,
             generation,
         },
+        daemon.plugin_timeout,
     )
     .map(Response::PluginView)
     .map_err(|error| api("plugin_view_failed", error.to_string()))
@@ -869,7 +871,7 @@ pub(crate) fn spawn_plugin_dispatcher(daemon: &Arc<Daemon>) -> io::Result<thread
                     .map(|(name, payload)| (state.plugins.clone(), name, payload))
             };
             if let Some((plugins, name, payload)) = next {
-                plugins::emit(&plugins, &name, &payload);
+                plugins::emit(&plugins, &name, &payload, daemon.plugin_timeout);
             }
         })
 }

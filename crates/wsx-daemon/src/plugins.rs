@@ -17,9 +17,6 @@ use wsx_core::runtime::{
 
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_PLUGINS: usize = 64;
-// ^ Unit tests run real plugin processes on a busy host, where a first exec can wait seconds;
-// they check the payload, and `review::tests` checks the deadline with its own timeout.
-const TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 30 } else { 3 });
 const MAX_VIEW_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_VIEW_ROWS: usize = 512;
 const MAX_VIEW_TEXT_BYTES: usize = 4096;
@@ -214,6 +211,7 @@ pub struct RenderContext<'a> {
 pub fn render(
     plugin: &PluginManifest,
     request: RenderContext<'_>,
+    timeout: Duration,
 ) -> io::Result<PluginSidecarView> {
     let context = serde_json::to_string(&PluginViewContext {
         api_version: 1,
@@ -231,7 +229,7 @@ pub fn render(
         .env(WSX_PLUGIN_VIEW_ENV, context)
         .stdin(Stdio::null());
     let output =
-        wsx_core::git::output_with_timeout_limit(&mut command, TIMEOUT, MAX_VIEW_OUTPUT_BYTES)?;
+        wsx_core::git::output_with_timeout_limit(&mut command, timeout, MAX_VIEW_OUTPUT_BYTES)?;
     if !output.status.success() {
         return Err(io::Error::other("plugin view command failed"));
     }
@@ -289,7 +287,7 @@ pub(crate) fn valid_token(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
-pub fn emit(plugins: &[PluginManifest], name: &str, payload: &str) {
+pub fn emit(plugins: &[PluginManifest], name: &str, payload: &str, timeout: Duration) {
     for plugin in plugins.iter().filter(|plugin| {
         plugin.enabled
             && plugin
@@ -307,7 +305,7 @@ pub fn emit(plugins: &[PluginManifest], name: &str, payload: &str) {
         else {
             continue;
         };
-        let deadline = Instant::now() + TIMEOUT;
+        let deadline = Instant::now() + timeout;
         loop {
             match child.try_wait() {
                 Ok(Some(_)) | Err(_) => break,
@@ -392,6 +390,7 @@ mod tests {
                 rows: 10,
                 generation: 3,
             },
+            Duration::from_secs(30),
         )
         .unwrap();
         assert_eq!(view.epoch, 7);

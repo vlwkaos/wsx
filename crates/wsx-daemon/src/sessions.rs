@@ -2,6 +2,35 @@
 
 use super::*;
 
+/// A worktree removed outside wsx and left out of the client's list, mapped to its project's
+/// main checkout when that one is retained.
+fn sessions_on_gone_worktrees(
+    persisted: &Persisted,
+    retained_worktrees: &[WorktreeId],
+) -> HashMap<WorktreeId, WorktreeId> {
+    persisted
+        .worktrees
+        .iter()
+        .filter(|worktree| {
+            !retained_worktrees.contains(&worktree.id)
+                && fs::symlink_metadata(&worktree.path)
+                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+        })
+        .filter_map(|worktree| {
+            let project = persisted
+                .projects
+                .iter()
+                .find(|project| project.id == worktree.project_id)?;
+            let main = persisted.worktrees.iter().find(|main| {
+                main.project_id == project.id
+                    && main.path == project.path
+                    && retained_worktrees.contains(&main.id)
+            })?;
+            Some((worktree.id, main.id))
+        })
+        .collect()
+}
+
 pub(crate) fn synchronize_projects(
     daemon: &Arc<Daemon>,
     specs: Vec<ProjectSpec>,
@@ -102,27 +131,7 @@ pub(crate) fn synchronize_projects(
     // on a folder that is gone: a chat to them fails to resolve its write claim, and a new
     // pane cannot start there. They move to their project's main checkout, the folder their
     // shells most likely stand in after the removal. Their PTYs keep running.
-    let gone = persisted
-        .worktrees
-        .iter()
-        .filter(|worktree| {
-            !retained_worktrees.contains(&worktree.id)
-                && fs::symlink_metadata(&worktree.path)
-                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
-        })
-        .filter_map(|worktree| {
-            let project = persisted
-                .projects
-                .iter()
-                .find(|project| project.id == worktree.project_id)?;
-            let main = persisted.worktrees.iter().find(|main| {
-                main.project_id == project.id
-                    && main.path == project.path
-                    && retained_worktrees.contains(&main.id)
-            })?;
-            Some((worktree.id, main.id))
-        })
-        .collect::<HashMap<_, _>>();
+    let gone = sessions_on_gone_worktrees(&persisted, &retained_worktrees);
     for session in &mut persisted.sessions {
         if let Some(main) = gone.get(&session.worktree_id) {
             session.worktree_id = *main;

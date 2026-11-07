@@ -14,7 +14,10 @@ impl Publication {
     // ^ [[Agent Reporter Lifetime]] Keep adapter recovery in sync with docs/agent-reporting.md.
     pub(crate) fn prepare(socket: &Path, executable: &Path) -> io::Result<Self> {
         let destination = socket.with_extension("reporter");
-        super::secure_parent(&destination)?;
+        let parent = destination
+            .parent()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
+        wsx_core::fs_util::private_dir(parent)?;
         validate_entry(&destination)?;
         let binary = executable
             .parent()

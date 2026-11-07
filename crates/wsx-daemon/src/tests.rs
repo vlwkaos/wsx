@@ -66,6 +66,8 @@ fn agent_test_daemon(persisted: Persisted) -> (Arc<Daemon>, PathBuf) {
         plugin_changed: Condvar::new(),
         active_clients: Arc::new(AtomicUsize::new(0)),
         review_jobs: plugins::review::Registry::default(),
+        // ^ Tests run real plugin processes on a busy host, where a first exec can wait seconds.
+        plugin_timeout: Duration::from_secs(30),
         epoch: 1,
         binary_id: "0.22.0:1:1:1:10".into(),
         started_unix_ms: 1,
@@ -4472,7 +4474,11 @@ fn state_save_does_not_follow_the_legacy_predictable_temp_symlink() {
     fs::write(&victim, b"unchanged").unwrap();
     symlink(&victim, state_path.with_extension("json.tmp")).unwrap();
 
-    save_state(&state_path, &Persisted::default()).unwrap();
+    write_state(
+        &state_path,
+        &serde_json::to_vec(&Persisted::default()).unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(fs::read(&victim).unwrap(), b"unchanged");
     assert_eq!(

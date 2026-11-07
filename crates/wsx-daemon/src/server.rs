@@ -65,8 +65,11 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     raise_descriptor_limit();
     let socket = default_socket_path();
     let state_path = state_path(&socket);
-    secure_parent(&socket)?;
-    let lifetime = socket.parent().map(Lifetime::new).transpose()?;
+    let socket_dir = socket
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?;
+    wsx_core::fs_util::private_dir(socket_dir)?;
+    let lifetime = Lifetime::new(socket_dir)?;
 
     let (singleton_lock, persisted, recovered_from_backup, import) = match import {
         Some(handoff::Received {
@@ -98,6 +101,7 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
         plugin_changed: Condvar::new(),
         active_clients: Arc::new(AtomicUsize::new(0)),
         review_jobs: plugins::review::Registry::default(),
+        plugin_timeout: Duration::from_secs(3),
         epoch: epoch(),
         binary_id: binary_identity(&std::env::current_exe()?)?,
         started_unix_ms: unix_time_millis(),
@@ -179,9 +183,7 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     let claude_reconciler = spawn_claude_reconciler(&daemon);
     let wake_controller = spawn_wake_controller(&daemon);
     // ^ Same stop as SIGTERM, when the socket's directory or the WSX_EXIT_WITH_PID process goes.
-    if let Some(lifetime) = lifetime {
-        lifetime.watch(|| STOP_REQUESTED.store(true, Ordering::Release))?;
-    }
+    lifetime.watch(|| STOP_REQUESTED.store(true, Ordering::Release))?;
     routine::start(&socket);
     let mut handed_off = false;
 
@@ -242,32 +244,57 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
                     state.stopping = true;
                     daemon.changed.notify_all();
                 }
-                if let Some(recovery) = cold_recovery.take() {
-                    let _ = recovery.join();
-                }
-                routine::stop(true);
-                cleanup(&daemon, &socket);
-                let _ = plugin_dispatcher.join();
-                let _ = port_scanner.join();
-                let _ = foreground_scanner.join();
-                let _ = claude_reconciler.join();
-                let _ = wake_controller.join();
+                shutdown(
+                    &daemon,
+                    &socket,
+                    cold_recovery.take(),
+                    true,
+                    [
+                        plugin_dispatcher,
+                        port_scanner,
+                        foreground_scanner,
+                        claude_reconciler,
+                        wake_controller,
+                    ],
+                );
                 return Err(error);
             }
         }
     }
-    if let Some(recovery) = cold_recovery.take() {
+    // ^ A live handoff's successor takes the running runs over.
+    shutdown(
+        &daemon,
+        &socket,
+        cold_recovery.take(),
+        !handed_off,
+        [
+            plugin_dispatcher,
+            port_scanner,
+            foreground_scanner,
+            claude_reconciler,
+            wake_controller,
+        ],
+    );
+    Ok(())
+}
+
+/// The teardown of `run_daemon`, on a stop and on a failed accept: wait for the cold recovery,
+/// stop the routines (`cancel_runs` ends the running ones), clean up, then join the threads.
+fn shutdown(
+    daemon: &Daemon,
+    socket: &Path,
+    cold_recovery: Option<thread::JoinHandle<()>>,
+    cancel_runs: bool,
+    threads: [thread::JoinHandle<()>; 5],
+) {
+    if let Some(recovery) = cold_recovery {
         let _ = recovery.join();
     }
-    // ^ A live handoff's successor takes the running runs over.
-    routine::stop(!handed_off);
-    cleanup(&daemon, &socket);
-    let _ = plugin_dispatcher.join();
-    let _ = port_scanner.join();
-    let _ = foreground_scanner.join();
-    let _ = claude_reconciler.join();
-    let _ = wake_controller.join();
-    Ok(())
+    routine::stop(cancel_runs);
+    cleanup(daemon, socket);
+    for thread in threads {
+        let _ = thread.join();
+    }
 }
 
 pub(crate) extern "C" fn request_signal_shutdown(_signal: libc::c_int) {
