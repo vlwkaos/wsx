@@ -2066,9 +2066,8 @@ async function readAndReply(where) {
 await readAndReply("390 px");
 
 // --- The task sheet of #2: how it does, one sentence of what changed and the one action; the
-// report (Changes, Evidence, To check, Left open), the usage and History under one folded
-// Details. No verdict, no Asked, no revision number. Land, then its item is live under To
-// check, outside Details.
+// report (Changes, Evidence, To check, Left open) in one Report fold, then History. No verdict,
+// no Asked, no revision number. Land, then its item is live under To check, outside the folds.
 await go(page(2));
 await until("document.querySelectorAll('dialog.task-sheet[open] .task-fold').length >= 1", "the task sheet did not show the folded report");
 let told = await story();
@@ -2108,7 +2107,7 @@ await until("(document.querySelector('.task-sheet .bar-state')?.textContent ?? '
 told = await story();
 // ^ The core's sentence (docs/tasks.md "Status"); only the web knows the deploy fact.
 if (told.next !== "Landed: on main; the last deploy does not have it yet.") await fail(`the top of a done task reads ${JSON.stringify(told)}`);
-await until("[...document.querySelectorAll('.task-sheet .scroll > .task-section > .task-heading')].some((node) => node.textContent === 'To check · 1 open')", "#2's item is not open under To check, outside Details", 60);
+await until("[...document.querySelectorAll('.task-sheet .scroll > .task-section > .task-heading')].some((node) => node.textContent === 'To check · 1 open')", "#2's item is not open under To check, outside the folds", 60);
 const offers = await evaluate("[...document.querySelectorAll('.task-sheet .scroll > .task-section .check-item .check-act')].map((node) => node.title).join()");
 if (await count(".task-sheet .progress, .task-sheet .progress-now, .task-sheet .progress-steps")) await fail("a finished task still shows the progress view, its steps or a now line");
 if (offers !== "Try it on a preview,Fail: tell the manager,Not checking: close it without a verdict,Works: close this check") await fail(`#2's item offers ${offers}`);
