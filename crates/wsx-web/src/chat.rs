@@ -131,6 +131,12 @@ pub fn project<'a>(snapshot: &'a Snapshot, access: &Access, id: u64) -> Outcome<
         .ok_or_else(Fault::not_found)
 }
 
+/// The path of one granted project.
+pub fn project_path(app: &App, id: u64) -> Outcome<PathBuf> {
+    let snapshot = snapshot(&app.client)?;
+    Ok(project(&snapshot, &app.site.access, id)?.path.clone())
+}
+
 /// Every session whose worktree belongs to a granted project.
 pub fn targets<'a>(snapshot: &'a Snapshot, access: &Access) -> Vec<Target<'a>> {
     let projects = projects(snapshot, access);

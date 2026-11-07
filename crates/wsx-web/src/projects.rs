@@ -4,7 +4,7 @@
 //! learns of one only from a client's `SynchronizeProjects`.
 use crate::{
     chat::{self, Fault, Outcome},
-    site::global_config,
+    site::config_or_fault,
     App,
 };
 use serde_json::{json, Value};
@@ -21,11 +21,6 @@ fn gate(app: &App) -> Outcome<()> {
         .manages_projects()
         .then_some(())
         .ok_or_else(|| Fault::forbidden("adding or removing projects"))
-}
-
-fn config() -> Outcome<GlobalConfig> {
-    global_config()
-        .ok_or_else(|| Fault::new(409, "config_invalid", "the wsx config does not parse"))
 }
 
 /// Config first, then wsxd, as every wsx client does.
@@ -51,7 +46,7 @@ pub fn add(app: &App, path: &str) -> Outcome<Value> {
         ));
     }
     let _one = crate::locked(&CONFIG);
-    let mut config = config()?;
+    let mut config = config_or_fault()?;
     let project = ops::register_project(path, &mut config)
         .map_err(|error| Fault::new(409, "project_refused", format!("{error:#}")))?;
     save_and_sync(app, &config)?;
@@ -73,7 +68,7 @@ pub fn remove(app: &App, id: u64, halt: bool) -> Outcome<Value> {
         0
     };
     let _one = crate::locked(&CONFIG);
-    let mut config = config()?;
+    let mut config = config_or_fault()?;
     ops::unregister_project(&project.path, &mut config);
     save_and_sync(app, &config)?;
     Ok(json!({ "removed": id, "halted": halted }))

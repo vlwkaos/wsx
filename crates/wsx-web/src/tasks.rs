@@ -195,24 +195,14 @@ fn build_overview(
                 "id": record.id, "title": title, "state": record.state, "stage": stage(record, land_auto),
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
                 "waiting": record.waiting,
-                "hold": record.hold,
                 "status": status,
-                "conflict": record.state == TaskState::Working && view::resolving_conflict(dir),
                 "agent": record.state.is_open().then(|| view::task_agent(dir, record)),
             }),
         ));
-        let result = matches!(
-            record.state,
-            TaskState::Waiting | TaskState::Failed | TaskState::Ready
-        )
-        .then(|| view::read_result(dir))
-        .flatten()
-        .unwrap_or(Value::Null);
         let item = |kind: &str| {
             json!({
                 "kind": kind, "task": record.id, "title": title, "state": record.state, "status": status,
                 "revision": record.revision, "unix_ms": record.updated_unix_ms,
-                "summary": result["result"]["summary"].as_str().map(|text| view::clip(text, SUMMARY_CHARS)),
             })
         };
         if stage(record, land_auto) == "working" {
@@ -227,7 +217,6 @@ fn build_overview(
         };
         if let Some(waiting) = &record.waiting {
             row["waiting"] = json!(waiting);
-            row["denials"] = result["denials"].clone();
         }
         needs.push((rank, record.updated_unix_ms, row));
     }
