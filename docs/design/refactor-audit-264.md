@@ -12,18 +12,18 @@ Proof marks. **R** = I read the lines on HEAD. **G** = I confirmed it with `rg` 
 |---|---|---|---|---|---|---|
 | F1 | low | `crates/wsx-web/web/app.css:800`; `scripts/web-tasks-check.mjs:837` | Both say the pill label shows "from 600 px". The wide layout starts at 900 px (`web/main.js:21` `min-width: 900px`; `.app[data-wide]`, `app.css:815`). `docs/web-client-tasks.md:49`, `CHANGELOG.md:21` and the check at `:968` say 900. | Write 900 in the two comments. | 2 lines | R, G (`rg '600 px'`: only these two) |
 | F2 | low | `web/tasks.js:899-904` (layout effect after a quote jump) and `:948-953` `goToReply` (0a2fbdfb) | Both do `logNode.current?.querySelector(':scope > [data-id="…"]')`, then `reveal(node); markFound(node)`. | One `showRow(id)` that returns whether the row was there; the effect calls it, `goToReply` is `showRow(id) \|\| jump.current(id)`. | -5 lines | R |
-| F3 | low | `scripts/web-tasks-check.mjs:887-892` and `:905-912` | The count test runs twice, once with motion and once reduced: add two runners, `until "3 running"`, check the tick, `restored()`, `until "1 running"`. The two `until` strings repeat 2 and 3 times. `pillWords() === "1 running \| 6 need you \| 2 to check"` is asserted at `:842` and `:865`. | `const runningIs = (label) => until(…)`; `const expectPills = (where)`. Keep the two motion halves; share the waits. | -8 lines | R, G (`rg "'1 running'"`) |
+| F3 | low | `scripts/web-tasks-check.mjs:887-892` and `:905-912` | The count test runs twice, once with motion and once reduced: add two runners, `until "3 running"`, check the tick, `restored()`, `until "1 running"`. Each `until` string repeats twice (`:889,907`, `:892,912`). `pillWords() === "1 running \| 6 need you \| 2 to check"` is asserted at `:842` and `:865`. | `const runningIs = (label) => until(…)`; `const expectPills = (where)`. Keep the two motion halves; share the waits. | -8 lines | R, G (`rg "'1 running'"`) |
 | F4 | low | `scripts/web-tasks-check.mjs:1057` (0a2fbdfb); the same in `:922`, `:960`, `:1026`, `:1053`, `:1066` | `pause(400)` after `openReservoir` waits for the list's open animation. Only `:1057` is new in #264; the other five moved with the block. The sheet check at `:79` already waits on `getAnimations().length === 0`. | `openReservoir` ends with `until(".reservoir-reveal" has no running animations)` (also true at once under reduced motion); delete the six pauses. `:960` (1500 ms) waits for `readTaskAhead`; wait for the sheet's detail instead. | -6 lines | R, G (`git blame` of each line) |
-| F5 | low | `scripts/web-tasks-check.mjs:2848-2858` (`bubbleShown`) and `:2909-2912` (`around`) | Two copies of "the node's box is inside the log's box and has `data-found`", keyed by `data-key="reply-<id>"` and `data-id`. | `const markedInLog = (selector)` used by both. | -6 lines | R |
+| F5 | low | `scripts/web-tasks-check.mjs:2847-2850` (`bubbleShown`) and `:2884-2887` (`around`) | Two copies of "the node's box is inside the log's box and has `data-found`", keyed by `data-key="reply-<id>"` and `data-id`. | `const markedInLog = (selector)` used by both. | -6 lines | R |
 
 ## Not found (checked)
 
 | Suspect | Result | Proof |
 |---|---|---|
 | `.reservoir-head`, ticker, rotation CSS | None left. The only `rotate` rules are arrow icons (`app.css:436,664,947`). | G (`rg 'reservoir-head\|ticker\|rotat' app.css`) |
-| `calm` unused | Used at `tasks.js:35,58` (`useLeaving`, `useFlag`). | G |
+| `calm` unused | Used at `tasks.js:35,58` (`useLeaving`, `useAfter`). | G |
 | `TICK_MS` | Does not exist in `crates/wsx-web/web`. | G |
-| Unused import in `tasks.js` | All 50 imported names are used at least once. | G (script) |
+| Unused import in `tasks.js` | Every imported name is used at least twice. | G (script) |
 | Unused CSS in `app.css:700-830` | Every class is in some `web/*.js`. Every `@keyframes` is referenced (`tick-in`, `row-out`, `reveal` too). | G (script) |
 | `goToReply` duplicates the quote jump | Only through F2. `Quote.go` (`reply.js:46-61`) must find a row by DOM order when it has no id; its id branch only dispatches `quote-jump`. Merging them changes scroll style (`reveal` against smooth `scrollIntoView`). | R |
 | Docs for the TUI Enter on a question | Match: `docs/tasks.md:369` names it, `hints` shows "Enter: show". | R |
