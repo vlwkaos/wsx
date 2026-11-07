@@ -117,11 +117,12 @@ const STATES = {
 };
 // A session without an agent is a shell: no inbox group, no chat.
 export const isAgent = (session) => Boolean(session.agent);
-// ^ A task worker (`task-<n>`) or the project manager (`task-manager`): its task or the
+// ^ A task worker (`task-<n>`, `task-<n>-hand`) or the project manager (`task-manager`): its task or the
 // project chat shows it, so the session lists leave it out (docs/web-client-tasks.md "Home").
 // The hosts report as providers `task` and `manager`; the name covers a host not yet reporting.
+// wsx-core `task::session_news::is_task_session` owns the rule; keep this the same.
 const isTaskSession = (session) =>
-  ["task", "manager"].includes(session.agent?.provider) || /^task-(\d+|manager)$/.test(session.label);
+  ["task", "manager"].includes(session.agent?.provider) || /^task-(\d+(-hand)?|manager)$/.test(session.label);
 // The sessions a list shows.
 export const listedSessions = (sessions) => sessions.filter((session) => !isTaskSession(session));
 export function stateOf(session) {

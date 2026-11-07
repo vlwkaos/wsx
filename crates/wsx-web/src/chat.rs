@@ -1207,20 +1207,15 @@ pub fn notice_line(target: &Target, state: AgentState) -> Option<String> {
 }
 const NOTICE_CHARS: usize = 120;
 
-/// A task worker or the manager: its task or the project chat shows it, so the lists leave
-/// it out (store.js `listedSessions`).
-pub fn is_task_session(target: &Target) -> bool {
-    matches!(
-        target
-            .pane
-            .agent
-            .as_ref()
-            .map(|agent| agent.provider.as_str()),
-        Some("task" | "manager")
-    ) || target
-        .label
-        .strip_prefix("task-")
-        .is_some_and(|rest| rest == "manager" || rest.parse::<u32>().is_ok())
+/// A task worker, its `-hand` session or the manager: its task or the project chat shows it,
+/// so the lists leave it out (store.js `listedSessions`). wsx-core owns the rule.
+fn is_task_session(target: &Target) -> bool {
+    let provider = target
+        .pane
+        .agent
+        .as_ref()
+        .map(|agent| agent.provider.as_str());
+    wsx_core::task::session_news::is_task_session(target.label, provider)
 }
 
 /// The state of a listed session's attached agent when it needs the owner: blocked or error.

@@ -3199,6 +3199,27 @@ capabilities = ["terminal_view"]
         wait(lambda: owner.request('GET', '/api/push')[1]['muted'] == [], 'mute forgotten with its session')
         ok('a muted session is forgotten with its session')
 
+        # The owner's `task-<n>-hand` session is a task's, not an ordinary agent: it blocks with no push and no badge.
+        # ^ wsx-core `session_news::is_task_session` owns the rule; chat.rs once lacked the `-hand` part.
+        pushed = len(pushes())
+        created = call('session_create', {'worktree_id': worktrees['project3'], 'label': 'task-8-hand',
+            'command': [sys.executable, str(actor), str(work / 'hand.jsonl'), str(work / 'hand.trace'),
+                        str(work / 'project3'), str(chart), str(outside)], 'rows': 12, 'cols': 100})
+        assert created['type'] == 'created', created
+        hand = created['data']['id']
+        def hand_state():
+            snapshot = call('snapshot')['data']
+            pane = next(s['focused_pane'] for s in snapshot['sessions'] if s['id'] == hand)
+            return (next(p for p in snapshot['panes'] if p['id'] == pane)['agent'] or {}).get('state')
+        wait(lambda: hand_state() in ('idle', 'done'), 'hand agent ready')
+        cli('session', 'send-text', hand, 'ask me something')
+        wait(lambda: hand_state() == 'blocked', 'hand session blocked')
+        time.sleep(4.5)
+        assert len(pushes()) == pushed, pushes()[pushed:]
+        hand_row = next(item for item in call('snapshot')['data']['sessions'] if item['id'] == hand)
+        assert call('session_close', {'session_id': hand, 'expected_revision': hand_row['revision']})['type'] == 'ack'
+        ok('a blocked task-<n>-hand session is not counted: no push')
+
         # --- An agent that blocks while wsxd does not answer is news after the reconnect: the
         # server compares with the state it remembered. wsxd is frozen, the agent draws its
         # question, wsxd runs again.
