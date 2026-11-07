@@ -11,6 +11,7 @@ wsx task add <n> "<text>" [--files <glob>]... --json   # after the turn (queued 
 wsx task stop <n> --json                         # interrupt, and nothing else wakes it (see Host, Stop); the next add resumes the conversation
 wsx task land <n> [--tried] [--owner-said <id>] --json   # rebase, check, fast-forward (see Landing)
 wsx task hold <n> "<why>" | --off --json         # the owner tries it before it lands; see Hold and trial
+wsx task after <n> <m> "<then>" | <n> --off --json   # park <n> until <m> lands, then add <then>; see After another task
 wsx task trial <n> [--end] --json                # its revision on the live site before it lands
 wsx task hand <n> --json                         # owner only: work on the task by hand; see By hand
 wsx task handback <n> --json                     # owner only: its commits are checked as the next revision
@@ -31,8 +32,8 @@ wsx task close <n> [--discard] [--owner-said <id>] --json
 
 | File | Content | Limit |
 |---|---|---|
-| `task.json` | id, project, base, branch `wsx/t<n>`, working copy, pane, adapter, model, tools, checks, agent session, state, revision, `created_by` (`owner` or `manager`), `hold` (why the owner tries it first), `files` (expected path globs), `plan` (true until a `--plan` task's first result), `waiting` (`{on, reason}` while the state is `waiting`, on `check_slot` while checks wait for the check slot, and on `check_run` while a result waits for its check-run; on `limit` and `check_run` also `until_ms`) | 64 KiB |
-| `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress; `said: true` on the worker's own words, not a tool call), `blocked{denials}`, `result`, `checks`, `check_retry`, `check_run`, `check_queued{reason}`, `disk_wait{free_mb, min_gb}`, `revision`, `preview{url, port}`, `hand{by, dropped}`, `handback{by, commits}`, `hold{reason, by}`, `limit_wait{until_ms}`, `ping{usage}`, `trial{revision, commit}`, `trial_ended{reason}`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
+| `task.json` | id, project, base, branch `wsx/t<n>`, working copy, pane, adapter, model, tools, checks, agent session, state, revision, `created_by` (`owner` or `manager`), `hold` (why the owner tries it first), `after` (`{task, text, since_unix_ms}`: it waits for that task to land), `files` (expected path globs), `plan` (true until a `--plan` task's first result), `waiting` (`{on, reason}` while the state is `waiting`, on `check_slot` while checks wait for the check slot, and on `check_run` while a result waits for its check-run; on `limit` and `check_run` also `until_ms`) | 64 KiB |
+| `log.jsonl` | append-only: `created`, `message{prompt\|steer\|add}`, `agent` (short progress; `said: true` on the worker's own words, not a tool call), `blocked{denials}`, `result`, `checks`, `check_retry`, `check_run`, `check_queued{reason}`, `disk_wait{free_mb, min_gb}`, `revision`, `preview{url, port}`, `hand{by, dropped}`, `handback{by, commits}`, `hold{reason, by}`, `after{task, text, by}` (`task` null: the wait was ended by hand), `after_ended{task, landed}`, `limit_wait{until_ms}`, `ping{usage}`, `trial{revision, commit}`, `trial_ended{reason}`, `stopped`, `closed` | 8 MiB for progress, 16 MiB hard |
 | `result.json` | latest worker result and check results and `denials` | 256 KiB |
 | `report.md` | report of the latest revision | |
 | `captures/` | the To check captures and posters kept at the land; removed 7 days after their item is passed or failed (see To check) | 2 MiB each image, 25 MiB each video |
@@ -73,6 +74,7 @@ One function, `task::status::status` in `crates/wsx-core/src/task/status.rs`, pu
 | `working`, resolving a landing conflict | Resolving a conflict | the worker rebases it onto main. It lands when its checks pass. |
 | `working` | Working on build (2 of 3), or Working | the worker runs its turn. Its checks run after its result (or: it is ready after its result; its plan goes to the manager). |
 | `ready`, its landing stopped | Landing stopped | <why>. Land it again when that is fixed. |
+| `ready`, waiting for another task (`after`) | Waiting for #12 to land | #12 is working. When it lands, wsx tells the task: <the text>. If it is closed instead, the manager is told. |
 | `ready`, held | Held | <the hold>. It lands only when you say so, or after a trial you pass. |
 | `ready`, the manager reviews it (see Landing) | Ready, waiting for the manager's review | checks 3 of 3 passed. The manager reads the diff, then lands it or asks for changes. |
 | `ready`, otherwise | Ready, waiting for you to land it | checks 3 of 3 passed (or: no checks prove it). Land it to put it on main. |
@@ -80,7 +82,7 @@ One function, `task::status::status` in `crates/wsx-core/src/task/status.rs`, pu
 | `landed` | Landed | on main (the web adds "; the last deploy does not have it yet"). |
 | `closed` | Closed | it ended without landing. |
 
-A slot holder of another project reads `pizzahouse #34`, and a holder that is no task (`scripts/check-slot.py`) by its own label: "<command> (pid 81) runs now". An open task with a hold that is not ready yet adds "Held: <hold>." to its sentence.
+A slot holder of another project reads `pizzahouse #34`, and a holder that is no task (`scripts/check-slot.py`) by its own label: "<command> (pid 81) runs now". An open task with a hold that is not ready yet adds "Held: <hold>." to its sentence, and one that waits for another task adds "Then it waits for #12 to land: <text>."
 - A task's title is `--title` (at most 60 characters, no control characters, kept in `task.json` as `title`), else the first line of its prompt, at most 120 characters. Either one is shown without a leading `Owner <words>:` (up to 80 characters before the colon; a colon inside brackets or without a space after it, as in `http://`, does not end it): `Owner report: tool permission` reads `tool permission`. A lead-in with nothing after it reads as the words in its brackets (`Owner report (UX failures):` reads `UX failures`), else as the prompt's next non-empty line. `Owner: x` has no words and stays. Only the shown title changes: `task.json` and the prompt keep what was written. Every title shown (ledger, events, the web) comes from this rule, also for tasks from before `--title`. The web shows a task without `--title` by the first sentence of its latest worker summary while it has one (`view::readable_title`).
 - Each revision records `base` (the merge base with the default branch, so it follows a rebase) and the paths changed in `base..r<k>`: at most 500 paths and 32 KiB in `paths`, the full count in `paths_total`.
 - `new --files <glob>` (repeatable; `add --files` extends) records the paths a task expects to change as `files` in `task.json`: at most 64 globs, each at most 256 bytes, relative to the checkout, without `..`, a valid glob (`*` stays in one folder, `**` crosses folders). A glob without wildcards also covers what is under it.
@@ -299,6 +301,15 @@ Some work the owner wants to try before it lands: a larger piece handed over, a 
 - `deployed` and the ledger's `deploys` carry `trial`: `null`, or the slot with `stage` `preparing` (rebase and checks), `deploying` or `live` (its deploy succeeded).
 - A live site cannot always roll back: a stored format, a migration or a newer daemon may stay. Such a change goes to a preview instead (see Preview). For wsx itself, `scripts/deploy-web-live.sh` replaces the binaries and restarts the web server only, so a trial runs its web and CLI against the running daemon. A `wsx daemon restart` during a trial would start its daemon, and the default branch's build cannot take that daemon back: wsxd refuses a handoff to an older build ("handoff target is not newer", checked from the dev build to 0.31.0). The terminals stay, and the newer daemon runs until a cold restart.
 
+## After another task
+
+The manager parks a task until another lands with `wsx task after <n> <m> "<what to do then>"` (`--off` ends it). Hold means only that the owner tries the task first; a wait for a landing is not that, and reads differently ("Waiting for #m to land", status kind `after`).
+
+- `after` is a field of `task.json`, not a state: it works on a ready task and on a working one (the turn finishes first). It is refused for a task that is not open, for `m` equal to `n`, and for an `m` that is not an open task of the project. A role acts only on the tasks it created.
+- While it is set a ready task is not "ready, not reviewed": the manager gets no review event or stall for it, and it does not land by itself. The owner's hold is separate and shows first.
+- The manager host looks every 10 s (with the stalls). When `m` has landed, the task host clears the wait, logs `after_ended{landed: true}` and adds the text as a manager add (the turn starts as for any add; a working task queues it). When `m` was closed without landing, or has no record, it logs `after_ended{landed: false}` and the manager gets one event `#<n> wait over: #<m> was closed without landing; nothing was added to #<n>`. A task that lands, closes, or gets `--off` ends its wait too. A host that does not answer keeps the wait for the next look.
+- A wait still open after 24 h is a stall, reported once (see Manager, Stalls). Two tasks that wait for each other never end by themselves, so they reach this stall.
+
 ## Parent tasks
 
 Long work in several steps lands on main once. Any open task becomes a parent when a child names it: `wsx task new --into <p>` (not with `--from`). A parent is one level: a child takes no children.
@@ -391,6 +402,7 @@ One manager per project runs as hidden `wsx task manager-host <project-id>` in a
   | its queue does not move | waits on `disk`, `limit` or `check_slot` "queued for ... behind `<project> t<n>`", and that task (of any project) is not working or checking, its host does not answer, or it is silent as below. A dead holder frees its `flock` at once, so this is what stops a queue. `scripts/check-slot.py` writes its own label, so a stale task label does not count |
   | silent | working or checking without a wait, with no write to `log.jsonl` or a `check-*.log` for `tasks.checkTimeoutSeconds` plus 10 minutes: the longest a check or a background job's wait runs, plus one Bash call (Claude's maximum). The evidence names the last log entry |
   | its host is down | working, checking, or waiting on `disk` or `limit`, and its host does not answer `status` |
+  | waits for another task | `after` still open 24 h after `wsx task after` (it ends by itself when that task lands or closes); reported once |
   | waits on the manager | ready and reviewed by the manager (`land_reason` "the manager reviews it": it created the task, or `tasks.land.auto` with checks), or waiting on `plan`, with no state change (`add`, steer, land, close), `hold` or `check-run` for `tasks.manager.reviewMinutes` (default 30, `0` is off, a fraction allowed) since it entered the state. The line reads `ready for 35 min; the manager has not reviewed it`. Its marker is the state's start, so it is reported once per entry. Owner waits (`owner`, `hand`, approvals) and a held task are none |
 
   Each stall has a marker (its kind with the wait's start, the holder, or the time of the last progress), and `state.json` `stalls` keeps the one reported per open task, so a stall is reported once, also across a restart; progress or a new wait makes a new stall that is reported again. A first start reports the stalls it finds. Nothing is reported while things are fine. The manager's instructions: act on it with `wsx task` (a silent worker: `stop`, then `add`), start a task that fixes wsx when the evidence shows its bug, else tell the owner in one line. The chats show it as other events (`#7 stalled`).

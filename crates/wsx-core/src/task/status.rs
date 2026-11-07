@@ -257,10 +257,25 @@ pub fn status(dir: &TaskDir, record: &TaskRecord, facts: &Facts, now_ms: u64) ->
             ));
         }
     }
+    // ^ A wait for another task matters once it is ready; before, the sentence says it follows.
+    if let (Some(after), true) = (&record.after, record.state.is_open()) {
+        if record.state != TaskState::Ready {
+            status.sentence.push_str(&format!(
+                " Then it waits for #{} to land: {}.",
+                after.task,
+                clip(&one_line(&after.text), FACT_CHARS)
+            ));
+        }
+    }
     status
 }
 
-/// A ready task: its landing stopped, it is held, the manager reviews it, or the owner lands it.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A ready task: its landing stopped, it is held, it waits for another task, the manager
+/// reviews it, or the owner lands it.
 fn ready(dir: &TaskDir, record: &TaskRecord, entered: u64, now_ms: u64) -> Status {
     let stopped = dir
         .last_event(|event| match event {
@@ -288,6 +303,22 @@ fn ready(dir: &TaskDir, record: &TaskRecord, entered: u64, now_ms: u64) -> Statu
             Some(entered),
             hold,
             "It lands only when you say so, or after a trial you pass.",
+            now_ms,
+        );
+    }
+    if let Some(after) = &record.after {
+        let other = TaskDir::open(&record.project_id, after.task)
+            .and_then(|dir| dir.read_record())
+            .map_or("unknown", |other| other.state.as_str());
+        return words(
+            "after",
+            &format!("Waiting for #{} to land", after.task),
+            Some(after.since_unix_ms),
+            &format!("#{} is {other}", after.task),
+            &format!(
+                "When it lands, wsx tells the task: {}. If it is closed instead, the manager is told.",
+                clip(&one_line(&after.text), FACT_CHARS)
+            ),
             now_ms,
         );
     }

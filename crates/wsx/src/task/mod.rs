@@ -191,6 +191,22 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Park a task until another lands, then add text to it; --off ends the wait
+    After {
+        task: String,
+        /// The task whose land ends the wait
+        #[arg(required_unless_present = "off", conflicts_with = "off")]
+        on: Option<String>,
+        /// What the task does then; it comes as a message
+        #[arg(required_unless_present = "off", conflicts_with = "off")]
+        then: Option<String>,
+        #[arg(long)]
+        off: bool,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Hold a task for the owner to try before it lands, or release it with --off
     Hold {
         task: String,
@@ -528,6 +544,7 @@ impl TaskCmd {
             | Self::Stop { json, .. }
             | Self::Land { json, .. }
             | Self::Hold { json, .. }
+            | Self::After { json, .. }
             | Self::Trial { json, .. }
             | Self::Hand { json, .. }
             | Self::Handback { json, .. }
@@ -760,6 +777,14 @@ pub fn run(command: TaskCmd) -> Result<()> {
             },
             json,
         ),
+        TaskCmd::After {
+            task,
+            on,
+            then,
+            off: _,
+            project,
+            json,
+        } => after_command(project.as_deref(), &task, on, then, json),
         TaskCmd::Trial {
             task,
             end,
@@ -1090,6 +1115,41 @@ fn open(project: Option<&str>, task: &str) -> Result<TaskDir> {
     )
 }
 
+/// `wsx task after <n> <m> "<then>"`, or `<n> --off`: task `n` waits for task `m` to land,
+/// then gets `then` as an add. ref: docs/tasks.md "After another task"
+fn after_command(
+    project: Option<&str>,
+    task: &str,
+    on: Option<String>,
+    then: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let dir = open_owned(project, task)?;
+    let target = on
+        .map(|on| {
+            let other = open(project, &on)?.read_record()?;
+            if other.id == dir.id || !other.state.is_open() {
+                bail!(
+                    "#{} is {}: a task waits for another open task",
+                    other.id,
+                    if other.id == dir.id {
+                        "this task"
+                    } else {
+                        other.state.as_str()
+                    }
+                );
+            }
+            Ok(other.id)
+        })
+        .transpose()?;
+    let request = HostRequest::After {
+        task: target,
+        text: then.unwrap_or_default(),
+        by: actor(),
+    };
+    send(&dir, request, json)
+}
+
 /// `open` for a command that changes the task: a role acts only on the tasks it created,
 /// whose events go to it. ref: docs/tasks.md "Roles"
 fn open_owned(project: Option<&str>, task: &str) -> Result<TaskDir> {
@@ -1383,6 +1443,7 @@ fn create(
         fixes,
         created_by: actor(),
         hold: hold.clone(),
+        after: None,
         parent: into,
         plan,
         waiting: None,

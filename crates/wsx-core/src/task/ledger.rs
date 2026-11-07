@@ -88,6 +88,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
             "status": status,
             // ^ Held for the owner to try before it lands (docs/tasks.md "Hold and trial").
             "hold": record.hold,
+            "after": record.after,
             // ^ The main checkout's changed files this land would overwrite: pressing
             // Land refuses until they are committed or stashed (docs/tasks.md "Ledger").
             "land_blocked_by": (record.state == TaskState::Ready).then(|| land_blockers(record)),

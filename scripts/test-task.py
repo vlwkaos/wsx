@@ -3843,6 +3843,77 @@ def run(wsx, wsxd, work, owned):
     for n in (older, newer):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'disk as before')
+    # 32af. A task waits for another to land (docs/tasks.md "After another task"): the status
+    # says so on a ready task and a working one, the stall check skips it, the landing ends the
+    # wait with the text as an add, a close ends it with one event, and a wait past 24 h is one
+    # stall.
+    mark('32af')
+    configure(LAND_CONFIG.replace('tasks:\n', 'tasks:\n  manager: { reviewMinutes: 0.2 }\n'), 'after wait')
+    after_gate = base / 'after-gate'
+
+    def manager_after(*argv, ok=True):
+        done = subprocess.run([str(wsx), 'task', 'after', *map(str, argv), '--json'], cwd=project, env=manager_env,
+                              capture_output=True, text=True, timeout=60)
+        assert (done.returncode == 0) == ok, done.stderr
+        return done
+
+    b, a, w, c, d, e, f = (manager_new(prompt) for prompt in (
+        'WORK af-b.txt', 'WORK af-a.txt', 'WAIT %s WORK af-w.txt' % after_gate, 'WORK af-c.txt',
+        'WORK af-d.txt', 'WORK af-e.txt', 'WORK af-f.txt'))
+    for n in (b, a, c, d, e, f):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    assert show(w)['state'] == 'working'
+    # ^ A wait needs another open task, not the task itself.
+    assert 'this task' in manager_after(a, a, 'WORK x.txt', ok=False).stderr
+    manager_after(a, b, 'WORK af-a2.txt')
+    manager_after(w, b, 'WORK af-w2.txt')
+    manager_after(c, d, 'WORK af-c2.txt')
+    manager_after(e, f, 'WORK af-e2.txt')
+    status = show(a)['status']
+    assert status['kind'] == 'after' and status['label'] == 'Waiting for #%d to land' % b, status
+    assert '#%d is ready' % b in status['sentence'] and 'tells the task: WORK af-a2.txt.' in status['sentence'], status
+    row = next(r for r in js('task', 'ledger')['open'] if r['id'] == a)
+    assert row['after']['task'] == b and row['status']['kind'] == 'after', row
+    working = show(w)['status']
+    assert working['kind'] == 'working' and working['sentence'].endswith('Then it waits for #%d to land: WORK af-w2.txt.' % b), working
+    assert [e['kind'] for e in log(a) if e['kind'] == 'after'] == ['after']
+    # ^ Backdated: the file is read by the stall check, and the idle host saves nothing meanwhile.
+    record_file = Path(show(e)['log']).parent / 'task.json'
+    record = json.loads(record_file.read_text())
+    record['after']['since_unix_ms'] -= 25 * 3600 * 1000
+    record_file.write_text(json.dumps(record))
+    # ^ Past the review limit (0.2 min) and the grace: a task that waits for a landing is no
+    # "ready, not reviewed", and one that waits past 24 h is the only stall reported.
+    time.sleep(100)
+    assert not stalls(a) and not stalls(c), (stalls(a), stalls(c))
+    long = stalls(e)
+    assert len(long) == 1 and re.search(r'^#%d stalled r1: .*; ready for 1 d [01] h; waiting for #%d to land$' % (e, f), long[0]), long
+    time.sleep(25)
+    assert stalls(e) == long, stalls(e)
+    # ^ The other task is closed, not landed: one event, no text added, the task is ready as before.
+    js('task', 'close', d, '--discard')
+    over = wait(lambda: events_with('#%d wait over: #%d was closed without landing; nothing was added to #%d' % (c, d, c)),
+                'the wait-over event', 40)
+    time.sleep(12)
+    assert len(events_with('#%d wait over' % c)) == len(over) == 1, events_with('#%d wait over' % c)
+    assert 'after' not in show(c)['record'] and show(c)['state'] == 'ready', show(c)['record']
+    assert [(x['kind'], x.get('landed')) for x in log(c) if x['kind'] in ('after_ended', 'message')] == [('message', None), ('after_ended', False)], log(c)
+    # ^ The landing ends the others: the text is a message of the ready task, which runs a turn,
+    # and of the working one, which queues it behind its turn.
+    assert land(b)['state'] == 'landed'
+    wait(lambda: kinds(a, 'after_ended') and kinds(w, 'after_ended'), 'both waits end', 40)
+    assert [(x['kind'], x.get('landed')) for x in log(a) if x['kind'] == 'after_ended'] == [('after_ended', True)]
+    assert wait_state(a, 'ready', 'failed')['state'] == 'ready' and 'after' not in show(a)['record'], log(a)
+    adds = [x['text'] for x in log(a) if x['kind'] == 'message' and x['mode'] == 'add']
+    assert adds == ['WORK af-a2.txt'] and len(kinds(a, 'result')) == 2, log(a)
+    assert [x['trigger'] for x in log(a) if x['kind'] == 'result'] == ['step', 'message'], log(a)
+    assert show(w)['state'] == 'working' and len(kinds(w, 'result')) == 0, log(w)
+    after_gate.touch()
+    wait(lambda: len(kinds(w, 'result')) == 2, 'the working task runs the add after its turn', 60)
+    assert wait_state(w, 'ready', 'failed')['state'] == 'ready' and 'after' not in show(w)['record'], log(w)
+    for n in (a, w, c, e, f):
+        js('task', 'close', n, '--discard')
+    configure(LAND_CONFIG, 'after wait over')
     # 32e. Approval from the owner's words (docs/tasks.md "Approvals"): in a turn that began with
     # an owner message, the manager names that message and the action runs without a new request;
     # approvals.jsonl records it as approved by that message, and no event repeats it. A message

@@ -37,7 +37,9 @@ use wsx_core::task::stall;
 use wsx_core::task::store;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{self, clip, project_tasks, read_result};
-use wsx_core::task::{checks, ledger, now_unix_ms, TaskRecord, TaskState, MAX_MESSAGE_BYTES};
+use wsx_core::task::{
+    call_host, checks, ledger, now_unix_ms, HostRequest, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
+};
 use wsx_core::task::{owner, roles, usage};
 
 use wsx_core::task::owner::ACTOR_ENV;
@@ -325,7 +327,8 @@ fn instructions(
          look at>\"` (or `--at HH:MM`): its why comes back as an event then, and a new \
          check-in replaces the last. When the owner wants to be sure of a change or to try it, start \
          it with `wsx task new --hold \"<why>\"` (`wsx task hold <n> \"<why>\"` holds a \
-         running one, `--off` releases it). \
+         running one, `--off` releases it). To park a task until another lands, use `wsx \
+         task after <n> <m> \"<what to do then>\"`, never hold. \
          Long multi-step work goes into one task: each step is `wsx task new --into <n>`, \
          which holds #<n>; land a step when an event names it ready, and #<n> once the owner \
          says so. Many tasks of one area (a parent with 3 or more \
@@ -1245,12 +1248,23 @@ impl Manager {
         let now = now_unix_ms();
         let mut open = Vec::new();
         let mut suspects = BTreeMap::new();
+        let states: BTreeMap<u32, TaskState> = tasks
+            .iter()
+            .filter_map(|(_, record)| record.as_ref().ok())
+            .map(|record| (record.id, record.state))
+            .collect();
         for (dir, record) in tasks {
             let Ok(record) = record else { continue };
             if !record.state.is_open() {
                 continue;
             }
             open.push(record.id);
+            if let Some(after) = &record.after {
+                let state = states.get(&after.task).copied();
+                if self.end_after(&dir, &record, state, &open_roles) {
+                    continue;
+                }
+            }
             let Some(found) = stall::find(&dir, &record, now) else {
                 continue;
             };
@@ -1283,6 +1297,50 @@ impl Manager {
         self.stall_suspects = suspects;
         // ^ Saved with the next event's `seen`.
         self.observed_stalls.retain(|id, _| open.contains(id));
+    }
+
+    /// End the wait of `wsx task after` when its task `state` is landed (the task gets the
+    /// text as an add), or closed or unknown (the manager hears of it once). A host that
+    /// does not answer keeps the wait; the next sweep asks again.
+    /// ref: docs/tasks.md "After another task"
+    fn end_after(
+        &mut self,
+        dir: &store::TaskDir,
+        record: &TaskRecord,
+        state: Option<TaskState>,
+        open_roles: &[String],
+    ) -> bool {
+        let Some(after) = &record.after else {
+            return false;
+        };
+        let text = match state {
+            Some(TaskState::Landed) => Some(after.text.clone()),
+            Some(state) if state.is_open() => return false,
+            _ => None,
+        };
+        let request = HostRequest::AfterEnd {
+            task: after.task,
+            text: text.clone(),
+        };
+        match call_host(&dir.socket_path(), &request, owner::HOST_TIMEOUT) {
+            Ok(response) if response.ok => {}
+            _ => return false,
+        }
+        if text.is_none() {
+            let line = format!(
+                "#{} wait over: #{} {}; nothing was added to #{}",
+                record.id,
+                after.task,
+                match state {
+                    Some(_) => "was closed without landing",
+                    None => "is not a task",
+                },
+                record.id
+            );
+            let short = Short::task(record.id, "wait over");
+            self.task_event(record, open_roles, line, short);
+        }
+        true
     }
 
     /// Close the roles with no turn for `tasks.roles.closeDays`, and tell the manager.

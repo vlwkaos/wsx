@@ -18,6 +18,8 @@ pub const SWEEP: Duration = Duration::from_secs(10);
 pub const GRACE: Duration = Duration::from_secs(60);
 /// The longest silence of a worker that still runs: a background job's wait or one check
 /// (`tasks.checkTimeoutSeconds`), plus one Bash call (Claude's 10 minute maximum).
+/// A wait for another task to land that lasts this long is a stall.
+const AFTER_STALL_SECS: u64 = 24 * 60 * 60;
 const BASH_MAX_SECS: u64 = 10 * 60;
 const PROBE: Duration = Duration::from_secs(2);
 const TAIL_BYTES: u64 = 4096;
@@ -34,7 +36,27 @@ pub struct Stall {
 
 /// The stall of an open task, if it has one now.
 pub fn find(dir: &TaskDir, record: &TaskRecord, now_ms: u64) -> Option<Stall> {
-    running(dir, record, now_ms).or_else(|| manager_wait(dir, record, now_ms))
+    running(dir, record, now_ms)
+        .or_else(|| manager_wait(dir, record, now_ms))
+        .or_else(|| after_wait(record, now_ms))
+}
+
+/// A wait for another task (`wsx task after`) still open after `AFTER_STALL_SECS`: reported
+/// once. The wait ends by itself when that task lands or closes.
+/// ref: docs/tasks.md "After another task"
+fn after_wait(record: &TaskRecord, now_ms: u64) -> Option<Stall> {
+    let after = record.after.as_ref()?;
+    let waited = now_ms.saturating_sub(after.since_unix_ms);
+    (waited >= AFTER_STALL_SECS * 1000).then(|| Stall {
+        marker: format!("after {}", after.since_unix_ms),
+        words: format!(
+            "{} for {}; waiting for #{} to land",
+            record.state.as_str(),
+            span(waited),
+            after.task
+        ),
+        why: format!("waiting for #{} to land", after.task),
+    })
 }
 
 /// A task the manager must act on (ready for its review, or waiting on `plan`) that has had
