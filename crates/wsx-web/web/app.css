@@ -609,7 +609,9 @@ div.steps .steps-summary { cursor: default; }
 .app:not([data-wide]) .composer:focus-within .composer-row { border-color: var(--color-accent); }
 /* A `!` line runs in Claude's shell mode: the input box takes the shell colour, as Claude's own does. */
 .app:not([data-wide]) .composer[data-shell] .composer-row { border-color: var(--color-attention); background: var(--shell-tint); }
-.app:not([data-wide]) .composer-input { order: -1; flex-basis: 100%; margin-bottom: var(--space-1); }
+.app:not([data-wide]) .composer-input { order: -1; flex-basis: 100%; }
+/* ^ Pills under the field: a gap between them (a composer without pills stays compact). */
+.app:not([data-wide]) .composer-row:has(.pills) .composer-input { margin-bottom: var(--space-1); }
 .app:not([data-wide]) .composer-field, .app:not([data-wide]) .composer-mirror { min-height: 0; padding: 0; }
 .app:not([data-wide]) .composer-row > .icon-button,
 .app:not([data-wide]) .composer .composer-send { height: var(--size-control); margin-block: calc((var(--size-key) - var(--size-control)) / 2); }
