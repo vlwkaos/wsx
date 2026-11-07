@@ -13,7 +13,7 @@ use std::{
     process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -23,15 +23,19 @@ use std::{
 const PAGE_TEXT_MIN: usize = 10;
 const PDF_TEXT_MAX: usize = 4 * 1024 * 1024;
 const PDF_TIME: Duration = Duration::from_secs(30);
-const VIDEO_FRAMES: usize = 12;
+/// A contact sheet is 4x3 frames; a video has at most two (`SHEETS`), so 24 frames.
+const SHEETS: usize = 2;
 const VIDEO_MAX_SECONDS: f64 = 30.0 * 60.0;
-/// Whisper (CPU) runs at about half the speed of the audio; longer clips get frames only.
-const TRANSCRIPT_MAX_SECONDS: f64 = 120.0;
+/// The transcript covers the first 5 minutes and at most this many characters.
+const TRANSCRIPT_WINDOW: u32 = 300;
+const TRANSCRIPT_CHARS: usize = 6000;
 const FFMPEG_TIME: Duration = Duration::from_secs(60);
-const WHISPER_TIME: Duration = Duration::from_secs(90);
+const WHISPER_TIME: Duration = Duration::from_secs(150);
+/// One video conversion at a time: whisper and ffmpeg use all cores.
+static VIDEO_TURN: Mutex<()> = Mutex::new(());
 
 /// The compact copy of one media entry. `files` are names in the media directory (a file
-/// or, for frames, a directory); the first one is what the prompt names.
+/// of the media directory); the first one is what the prompt names.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Compact {
     pub files: Vec<String>,
@@ -63,16 +67,11 @@ pub fn remove(dir: &Path, name: &str) {
     }
 }
 
-/// Bytes of a file, or of everything under a directory.
-fn bytes_of(path: &Path) -> u64 {
-    match fs::read_dir(path) {
-        Ok(items) => items.flatten().map(|item| bytes_of(&item.path())).sum(),
-        Err(_) => fs::metadata(path).map_or(0, |meta| meta.len()),
-    }
-}
-
 fn size_of(dir: &Path, files: &[String]) -> u64 {
-    files.iter().map(|name| bytes_of(&dir.join(name))).sum()
+    files
+        .iter()
+        .map(|name| fs::metadata(dir.join(name)).map_or(0, |meta| meta.len()))
+        .sum()
 }
 
 /// The first `name` file on PATH. The server's own PATH decides: a tool missing there is
@@ -196,8 +195,8 @@ fn clock(seconds: f64) -> String {
     format!("{}:{:02}", total / 60, total % 60)
 }
 
-/// A frame folder (scene changes, at least one every 30 s, `VIDEO_FRAMES` at most, named
-/// with their time) and, for a short clip with a model already on the machine, a transcript.
+/// A Markdown file with the duration, up to two contact sheets (4x3 frames, 256 px tiles,
+/// JPEG) whose frame times are in the text, and the transcript or why there is none.
 fn video(original: &Path, dir: &Path, hash: &str, ext: &str) -> Option<Compact> {
     let probe = |args: &[&OsStr]| run("ffprobe", args, 64 * 1024, Duration::from_secs(10));
     let seconds: f64 = text_of(probe(&[
@@ -228,70 +227,87 @@ fn video(original: &Path, dir: &Path, hash: &str, ext: &str) -> Option<Compact> 
     ])
     .is_some_and(|out| !out.is_empty());
 
+    let _turn = crate::locked(&VIDEO_TURN);
     let work = dir.join(format!("{hash}.{ext}.part"));
     let _ = fs::remove_dir_all(&work);
     crate::devices::private_dir(&work).ok()?;
-    let frames = frames(original, &work, seconds);
-    let transcript = (has_audio && seconds <= TRANSCRIPT_MAX_SECONDS)
-        .then(|| transcript(original, &work))
-        .flatten();
-    if frames.is_none() && transcript.is_none() {
-        let _ = fs::remove_dir_all(&work);
-        return None;
-    }
-    let mut files = Vec::new();
-    let mut parts = vec![clock(seconds)];
-    let folder = format!("{hash}.{ext}.frames");
-    let shown = frames.filter(|_| {
-        let _ = fs::remove_dir_all(dir.join(&folder));
-        fs::rename(work.join("frames"), dir.join(&folder)).is_ok()
-    });
-    if let Some(text) = transcript {
-        let name = format!("{hash}.{ext}.md");
-        let header = format!(
-            "<!-- wsx: machine transcript (whisper), may contain errors; {} long -->\n",
+    let made = (|| {
+        let times = sheets(original, &work, seconds)?;
+        let transcript = if !has_audio {
+            Err("the clip has no sound")
+        } else {
+            transcript(original, &work)
+        };
+        let mut files = Vec::new();
+        let mut text = format!(
+            "<!-- wsx: video {} -->\nduration: {}\n",
+            clock(seconds),
             clock(seconds)
         );
-        let bytes = format!("{header}{text}");
-        if crate::devices::write_private(&dir.join(&name), bytes.as_bytes()).is_ok() {
-            parts.push("transcript".to_owned());
+        for (index, frames) in times.chunks(12).enumerate() {
+            let name = format!("{hash}.{ext}.sheet{}.jpg", index + 1);
+            fs::rename(
+                work.join(format!("sheet{}.jpg", index + 1)),
+                dir.join(&name),
+            )
+            .ok()?;
+            text.push_str(&format!(
+                "contact sheet {}/{} ({}), 4x3 grid left to right, top to bottom, frames at {}\n",
+                index + 1,
+                times.chunks(12).count(),
+                dir.join(&name).display(),
+                frames
+                    .iter()
+                    .map(|at| clock(*at))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ));
             files.push(name);
         }
-    }
-    if let Some(count) = shown {
-        // ^ The prompt names the first file; frames are named when they are not it.
-        let place = if files.is_empty() {
-            String::new()
-        } else {
-            format!(" in {}/", dir.join(&folder).display())
+        let heard = match &transcript {
+            Ok(lines) => {
+                text.push_str(&format!(
+                    "transcript (machine, whisper base, first {} of the sound, may contain errors):\n{lines}",
+                    clock(f64::from(TRANSCRIPT_WINDOW))
+                ));
+                true
+            }
+            Err(why) => {
+                text.push_str(&format!("transcript: none ({why})\n"));
+                false
+            }
         };
-        let plural = if count == 1 { "" } else { "s" };
-        parts.push(format!("{count} frame{plural} named fNN-tM_SS.jpg{place}"));
-        files.push(folder);
-    }
+        let md = format!("{hash}.{ext}.md");
+        crate::devices::write_private(&dir.join(&md), text.as_bytes()).ok()?;
+        files.insert(0, md);
+        let sheets = files.len() - 1;
+        Some(Compact {
+            size: size_of(dir, &files),
+            summary: format!(
+                "{}, {sheets} contact sheet{}, {}",
+                clock(seconds),
+                if sheets == 1 { "" } else { "s" },
+                if heard { "transcript" } else { "no transcript" }
+            ),
+            original_for: "motion, sound or detail the sheets lack".to_owned(),
+            files,
+        })
+    })();
     let _ = fs::remove_dir_all(&work);
-    if files.is_empty() {
-        return None;
-    }
-    Some(Compact {
-        size: size_of(dir, &files),
-        summary: parts.join(", "),
-        original_for: "motion, sound or detail the frames lack".to_owned(),
-        files,
-    })
+    made
 }
 
-/// Frames into `<work>/frames/fNN-tM_SS.jpg`; how many.
-fn frames(original: &Path, work: &Path, seconds: f64) -> Option<usize> {
-    let out = work.join("frames");
-    crate::devices::private_dir(&out).ok()?;
+/// `<work>/sheet1.jpg` (and `sheet2.jpg`) from the frames at scene changes (score over 0.3,
+/// at least 0.5 s apart) or one per twelfth of the clip; the time of each frame, at most 24.
+fn sheets(original: &Path, work: &Path, seconds: f64) -> Option<Vec<f64>> {
     let times = work.join("times.txt");
+    let (gap, step) = (0.5, (seconds / 12.0).max(0.5));
     let filter = format!(
-        "select='gt(scene,0.3)+isnan(prev_selected_t)+gte(t-prev_selected_t,30)',\
-         metadata=print:file={},scale='min(768,iw)':-2",
+        "select='isnan(prev_selected_t)+gte(t-prev_selected_t,{step})+gt(scene,0.3)*gte(t-prev_selected_t,{gap})',\
+         metadata=print:file={},scale=256:-2,tile=4x3",
         times.display()
     );
-    let target = out.join("f%02d.jpg");
+    let target = work.join("sheet%d.jpg");
     run(
         "ffmpeg",
         &[
@@ -305,7 +321,7 @@ fn frames(original: &Path, work: &Path, seconds: f64) -> Option<usize> {
             "-fps_mode".as_ref(),
             "vfr".as_ref(),
             "-frames:v".as_ref(),
-            VIDEO_FRAMES.to_string().as_ref(),
+            SHEETS.to_string().as_ref(),
             "-q:v".as_ref(),
             "5".as_ref(),
             target.as_ref(),
@@ -313,37 +329,26 @@ fn frames(original: &Path, work: &Path, seconds: f64) -> Option<usize> {
         64 * 1024,
         FFMPEG_TIME,
     )?;
-    let stamps: Vec<f64> = fs::read_to_string(&times)
+    let mut stamps: Vec<f64> = fs::read_to_string(&times)
         .ok()?
         .split("pts_time:")
         .skip(1)
         .filter_map(|rest| rest.split_whitespace().next()?.parse().ok())
         .collect();
-    let mut count = 0;
-    for (index, stamp) in stamps.iter().enumerate() {
-        let from = out.join(format!("f{:02}.jpg", index + 1));
-        let total = stamp.min(seconds).max(0.0) as u64;
-        let to = out.join(format!(
-            "f{:02}-t{}_{:02}.jpg",
-            index + 1,
-            total / 60,
-            total % 60
-        ));
-        if fs::rename(&from, &to).is_ok() {
-            count += 1;
-        }
-    }
-    (count > 0).then_some(count)
+    stamps.truncate(SHEETS * 12);
+    (!stamps.is_empty() && work.join("sheet1.jpg").is_file()).then_some(stamps)
 }
 
-/// `[m:ss] text` lines from whisper, using a model already on the machine: it never
-/// downloads one, so a conversion makes no network call.
-fn transcript(original: &Path, work: &Path) -> Option<String> {
+/// `[m:ss] text` lines from whisper, using a model already on the machine (it never
+/// downloads one, so a conversion makes no network call); or why there are none.
+fn transcript(original: &Path, work: &Path) -> Result<String, &'static str> {
     let cache = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".cache")))?
-        .join("whisper");
-    cache.join("base.pt").is_file().then_some(())?;
+        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".cache")))
+        .map(|dir| dir.join("whisper"))
+        .filter(|dir| dir.join("base.pt").is_file())
+        .filter(|_| tool("whisper").is_some() && tool("ffmpeg").is_some())
+        .ok_or("whisper or its base model is not installed")?;
     let audio = work.join("audio.wav");
     run(
         "ffmpeg",
@@ -353,6 +358,8 @@ fn transcript(original: &Path, work: &Path) -> Option<String> {
             "-y".as_ref(),
             "-i".as_ref(),
             original.as_ref(),
+            "-t".as_ref(),
+            TRANSCRIPT_WINDOW.to_string().as_ref(),
             "-vn".as_ref(),
             "-ac".as_ref(),
             "1".as_ref(),
@@ -362,7 +369,8 @@ fn transcript(original: &Path, work: &Path) -> Option<String> {
         ],
         64 * 1024,
         FFMPEG_TIME,
-    )?;
+    )
+    .ok_or("the sound could not be read")?;
     run(
         "whisper",
         &[
@@ -380,9 +388,10 @@ fn transcript(original: &Path, work: &Path) -> Option<String> {
         ],
         1024 * 1024,
         WHISPER_TIME,
-    )?;
-    let vtt = fs::read_to_string(work.join("audio.vtt")).ok()?;
-    let mut lines = Vec::new();
+    )
+    .ok_or("whisper failed or ran out of time")?;
+    let vtt = fs::read_to_string(work.join("audio.vtt")).map_err(|_| "whisper wrote nothing")?;
+    let mut text = String::new();
     let mut at = None;
     for line in vtt.lines() {
         if let Some((start, _)) = line.split_once(" --> ") {
@@ -390,8 +399,19 @@ fn transcript(original: &Path, work: &Path) -> Option<String> {
             let parts: Vec<f64> = start.split(':').filter_map(|p| p.parse().ok()).collect();
             at = Some(parts.iter().fold(0.0, |total, part| total * 60.0 + part));
         } else if let (Some(seconds), false) = (at, line.trim().is_empty()) {
-            lines.push(format!("[{}] {}", clock(seconds), line.trim()));
+            text.push_str(&format!("[{}] {}\n", clock(seconds), line.trim()));
         }
     }
-    (!lines.is_empty()).then(|| lines.join("\n") + "\n")
+    if text.is_empty() {
+        return Err("no speech was heard");
+    }
+    if text.len() > TRANSCRIPT_CHARS {
+        let mut end = TRANSCRIPT_CHARS;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str("[cut here: the rest is in the original]\n");
+    }
+    Ok(text)
 }
