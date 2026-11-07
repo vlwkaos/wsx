@@ -6,7 +6,7 @@ use super::manager::{
     quote_of, says_nothing, split_quote, ApprovalLine, Author, Level, ManagerEntry, ManagerEvent,
     Short,
 };
-use super::store::ManagerDir;
+use super::store::{contains_bytes, ManagerDir, FIRST_READ_BYTES};
 use anyhow::{bail, Result};
 use serde::Serialize;
 use std::collections::HashSet;
@@ -15,8 +15,6 @@ use std::collections::HashSet;
 const REPEAT_MS: u64 = 60_000;
 /// Most entries the chat shows at once.
 pub const CHAT_ENTRIES: usize = 200;
-/// A chat reads this much of the log's end first, more only when its window needs it.
-const FIRST_READ_BYTES: u64 = 256 * 1024;
 /// A window around a message shows this many chat entries before it.
 const AROUND_BEFORE: usize = 40;
 /// A question older than this asks no more (docs/tasks.md "Manager").
@@ -217,13 +215,14 @@ pub fn asking(dir: &ManagerDir, now: u64) -> Result<Vec<OpenAsk>> {
     // `asks` after its text, near the end (`ManagerEvent`). A quote in a text is escaped, so a
     // text never holds these quoted words. The marks leave out the colon: a line written with
     // a space after it (a hand-written fixture) passes too; what passes needlessly is parsed.
-    let has = |part: &[u8], mark: &[u8]| part.windows(mark.len()).any(|at| at == mark);
     let keep = |line: &[u8]| {
         let head = &line[..line.len().min(128)];
         let tail = &line[line.len().saturating_sub(256)..];
-        has(head, b"\"answered\"")
-            || (has(head, b"\"message\"") && has(head, b"\"owner\""))
-            || (has(head, b"\"reply\"") && has(tail, b"\"asks\"") && has(tail, b"true"))
+        contains_bytes(head, b"\"answered\"")
+            || (contains_bytes(head, b"\"message\"") && contains_bytes(head, b"\"owner\""))
+            || (contains_bytes(head, b"\"reply\"")
+                && contains_bytes(tail, b"\"asks\"")
+                && contains_bytes(tail, b"true"))
     };
     Ok(open_asks(
         &dir.read_back_where(FIRST_READ_BYTES, keep, |log| reaches_asks(log, now))?,

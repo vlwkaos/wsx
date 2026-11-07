@@ -66,7 +66,7 @@ const MAX_ROTATE_TOKENS: u64 = 2_000_000;
 const MAX_ROTATE_IDLE_SECS: u64 = 24 * 60 * 60;
 /// A ping later than Claude's 1-hour prompt cache keeps nothing warm.
 const MAX_KEEP_WARM_SECS: u64 = 3_599;
-use super::global::TASK_ADAPTERS;
+use super::global::{is_agent_name, TASK_ADAPTERS};
 const PROJECT_CONFIG_TEMPLATE: &str = "hooks:\n  postCreate:\ncopy:\n  include: []\n  exclude: []\ngit:\n  subtrees: []\nworktree:\n  branchPrefix:\n  # defaultSession:\n  #   enabled: true\n  #   command:\n";
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -516,15 +516,7 @@ fn validate_steps(
 /// Up to 4 agent names; they are resolved against the global `[[agents]]` when used.
 fn validate_fallback(names: Option<Vec<String>>, key: &str) -> Result<Vec<String>, String> {
     let names = names.unwrap_or_default();
-    if names.len() > 4
-        || names.iter().any(|name| {
-            name.is_empty()
-                || name.len() > 64
-                || !name
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        })
-    {
+    if names.len() > 4 || !names.iter().all(|name| is_agent_name(name)) {
         return Err(format!("{key} must be at most 4 agent names"));
     }
     Ok(names)
@@ -536,55 +528,7 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         return Ok(config);
     };
     if let Some(agent) = file.agent {
-        if let Some(adapter) = agent.adapter {
-            if !TASK_ADAPTERS.contains(&adapter.as_str()) {
-                return Err(format!(
-                    "tasks.agent.adapter must be one of: {}",
-                    TASK_ADAPTERS.join(", ")
-                ));
-            }
-            config.adapter = adapter;
-        }
-        if let Some(model) = validate_word(agent.model, "tasks.agent.model")? {
-            config.model = model;
-        }
-        if let Some(model) = validate_word(agent.small_model, "tasks.agent.smallModel")? {
-            config.small_model = model;
-        }
-        if let Some(effort) = validate_effort(agent.effort, "tasks.agent.effort")? {
-            config.effort = effort;
-        }
-        config.fallback = validate_fallback(agent.fallback, "tasks.agent.fallback")?;
-        if let Some(minutes) = agent.max_wait_minutes {
-            if minutes > 8 * 24 * 60 {
-                return Err("tasks.agent.maxWaitMinutes must be 0..=11520".into());
-            }
-            config.max_wait_secs = minutes * 60;
-        }
-        if let Some(tokens) = agent.rotate_tokens {
-            if !(MIN_ROTATE_TOKENS..=MAX_ROTATE_TOKENS).contains(&tokens) {
-                return Err(format!(
-                    "tasks.agent.rotateTokens must be {MIN_ROTATE_TOKENS}..={MAX_ROTATE_TOKENS}"
-                ));
-            }
-            config.rotate_tokens = tokens;
-        }
-        if let Some(seconds) = agent.rotate_idle_seconds {
-            if seconds > MAX_ROTATE_IDLE_SECS {
-                return Err(format!(
-                    "tasks.agent.rotateIdleSeconds must be 0..={MAX_ROTATE_IDLE_SECS}"
-                ));
-            }
-            config.rotate_idle_seconds = seconds;
-        }
-        if let Some(seconds) = agent.keep_warm_seconds {
-            if seconds > MAX_KEEP_WARM_SECS {
-                return Err(format!(
-                    "tasks.agent.keepWarmSeconds must be 0..={MAX_KEEP_WARM_SECS}"
-                ));
-            }
-            config.keep_warm_seconds = seconds;
-        }
+        validate_task_agent(agent, &mut config)?;
     }
     config.owner_skills = match file.skills.as_deref() {
         None | Some("none") => false,
@@ -690,62 +634,7 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         .transpose()?
         .flatten();
     if let Some(manager) = file.manager {
-        // ^ Trimmed first: an empty name is no name, and the project's name shows.
-        config.manager_name = validate_optional_text(
-            manager.name.map(|name| name.trim().to_string()),
-            "tasks.manager.name",
-            MAX_MANAGER_NAME_BYTES,
-        )?;
-        if let Some(adapter) = manager.adapter {
-            if !TASK_ADAPTERS.contains(&adapter.as_str()) {
-                return Err(format!(
-                    "tasks.manager.adapter must be one of: {}",
-                    TASK_ADAPTERS.join(", ")
-                ));
-            }
-            config.manager_adapter = adapter;
-        }
-        config.manager_fallback = validate_fallback(manager.fallback, "tasks.manager.fallback")?;
-        if let Some(model) = validate_word(manager.model, "tasks.manager.model")? {
-            config.manager_model = model;
-        }
-        if let Some(effort) = validate_effort(manager.effort, "tasks.manager.effort")? {
-            config.manager_effort = effort;
-        }
-        if let Some(model) = validate_word(manager.event_model, "tasks.manager.eventModel")? {
-            config.manager_event_model = (model != "off").then_some(model);
-        }
-        if let Some(tokens) = manager.rotate_tokens {
-            if !(MIN_ROTATE_TOKENS..=MAX_ROTATE_TOKENS).contains(&tokens) {
-                return Err(format!(
-                    "tasks.manager.rotateTokens must be {MIN_ROTATE_TOKENS}..={MAX_ROTATE_TOKENS}"
-                ));
-            }
-            config.manager_rotate_tokens = Some(tokens);
-        }
-        if let Some(minutes) = manager.recap_minutes {
-            if !(0.0..=MAX_RECAP_MINUTES as f64).contains(&minutes) {
-                return Err(format!(
-                    "tasks.manager.recapMinutes must be 0 (off) to {MAX_RECAP_MINUTES}"
-                ));
-            }
-            // ^ A fraction of a minute is a shorter quiet period, at least one second.
-            config.manager_recap_secs = match minutes {
-                0.0 => 0,
-                minutes => ((minutes * 60.0).round() as u64).max(1),
-            };
-        }
-        if let Some(minutes) = manager.review_minutes {
-            if !(0.0..=MAX_RECAP_MINUTES as f64).contains(&minutes) {
-                return Err(format!(
-                    "tasks.manager.reviewMinutes must be 0 (off) to {MAX_RECAP_MINUTES}"
-                ));
-            }
-            config.manager_review_secs = match minutes {
-                0.0 => 0,
-                minutes => ((minutes * 60.0).round() as u64).max(1),
-            };
-        }
+        validate_task_manager(manager, &mut config)?;
     }
     if let Some(roles) = file.roles {
         if let Some(max) = roles.max {
@@ -773,6 +662,115 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
     }
     Ok(config)
+}
+
+/// `[tasks.agent]`.
+fn validate_task_agent(agent: TaskAgentFile, config: &mut TaskConfig) -> Result<(), String> {
+    if let Some(adapter) = agent.adapter {
+        config.adapter = validate_adapter(adapter, "tasks.agent.adapter")?;
+    }
+    if let Some(model) = validate_word(agent.model, "tasks.agent.model")? {
+        config.model = model;
+    }
+    if let Some(model) = validate_word(agent.small_model, "tasks.agent.smallModel")? {
+        config.small_model = model;
+    }
+    if let Some(effort) = validate_effort(agent.effort, "tasks.agent.effort")? {
+        config.effort = effort;
+    }
+    config.fallback = validate_fallback(agent.fallback, "tasks.agent.fallback")?;
+    if let Some(minutes) = agent.max_wait_minutes {
+        if minutes > 8 * 24 * 60 {
+            return Err("tasks.agent.maxWaitMinutes must be 0..=11520".into());
+        }
+        config.max_wait_secs = minutes * 60;
+    }
+    if let Some(tokens) = agent.rotate_tokens {
+        config.rotate_tokens = validate_rotate_tokens(tokens, "tasks.agent.rotateTokens")?;
+    }
+    if let Some(seconds) = agent.rotate_idle_seconds {
+        if seconds > MAX_ROTATE_IDLE_SECS {
+            return Err(format!(
+                "tasks.agent.rotateIdleSeconds must be 0..={MAX_ROTATE_IDLE_SECS}"
+            ));
+        }
+        config.rotate_idle_seconds = seconds;
+    }
+    if let Some(seconds) = agent.keep_warm_seconds {
+        if seconds > MAX_KEEP_WARM_SECS {
+            return Err(format!(
+                "tasks.agent.keepWarmSeconds must be 0..={MAX_KEEP_WARM_SECS}"
+            ));
+        }
+        config.keep_warm_seconds = seconds;
+    }
+    Ok(())
+}
+
+/// `[tasks.manager]`.
+fn validate_task_manager(manager: TaskManagerFile, config: &mut TaskConfig) -> Result<(), String> {
+    // ^ Trimmed first: an empty name is no name, and the project's name shows.
+    config.manager_name = validate_optional_text(
+        manager.name.map(|name| name.trim().to_string()),
+        "tasks.manager.name",
+        MAX_MANAGER_NAME_BYTES,
+    )?;
+    if let Some(adapter) = manager.adapter {
+        config.manager_adapter = validate_adapter(adapter, "tasks.manager.adapter")?;
+    }
+    config.manager_fallback = validate_fallback(manager.fallback, "tasks.manager.fallback")?;
+    if let Some(model) = validate_word(manager.model, "tasks.manager.model")? {
+        config.manager_model = model;
+    }
+    if let Some(effort) = validate_effort(manager.effort, "tasks.manager.effort")? {
+        config.manager_effort = effort;
+    }
+    if let Some(model) = validate_word(manager.event_model, "tasks.manager.eventModel")? {
+        config.manager_event_model = (model != "off").then_some(model);
+    }
+    if let Some(tokens) = manager.rotate_tokens {
+        config.manager_rotate_tokens = Some(validate_rotate_tokens(
+            tokens,
+            "tasks.manager.rotateTokens",
+        )?);
+    }
+    if let Some(minutes) = manager.recap_minutes {
+        config.manager_recap_secs = minutes_to_secs(minutes, "tasks.manager.recapMinutes")?;
+    }
+    if let Some(minutes) = manager.review_minutes {
+        config.manager_review_secs = minutes_to_secs(minutes, "tasks.manager.reviewMinutes")?;
+    }
+    Ok(())
+}
+
+fn validate_adapter(adapter: String, field: &str) -> Result<String, String> {
+    match TASK_ADAPTERS.contains(&adapter.as_str()) {
+        true => Ok(adapter),
+        false => Err(format!(
+            "{field} must be one of: {}",
+            TASK_ADAPTERS.join(", ")
+        )),
+    }
+}
+
+fn validate_rotate_tokens(tokens: u64, field: &str) -> Result<u64, String> {
+    match (MIN_ROTATE_TOKENS..=MAX_ROTATE_TOKENS).contains(&tokens) {
+        true => Ok(tokens),
+        false => Err(format!(
+            "{field} must be {MIN_ROTATE_TOKENS}..={MAX_ROTATE_TOKENS}"
+        )),
+    }
+}
+
+/// 0 is off. ^ A fraction of a minute is a shorter quiet period, at least one second.
+fn minutes_to_secs(minutes: f64, field: &str) -> Result<u64, String> {
+    if !(0.0..=MAX_RECAP_MINUTES as f64).contains(&minutes) {
+        return Err(format!("{field} must be 0 (off) to {MAX_RECAP_MINUTES}"));
+    }
+    Ok(match minutes {
+        0.0 => 0,
+        minutes => ((minutes * 60.0).round() as u64).max(1),
+    })
 }
 
 /// A scenario name starts with a letter, so it never reads as a check number.
@@ -906,7 +904,6 @@ fn validate_optional_text(
     Ok((!value.is_empty()).then_some(value))
 }
 
-/// `validate_optional_text` for one word, such as a model name.
 fn validate_effort(value: Option<String>, field: &str) -> Result<Option<String>, String> {
     use crate::model::workspace::EFFORTS;
     match value {
@@ -917,6 +914,7 @@ fn validate_effort(value: Option<String>, field: &str) -> Result<Option<String>,
     }
 }
 
+/// `validate_optional_text` for one word, such as a model name.
 fn validate_word(value: Option<String>, field: &str) -> Result<Option<String>, String> {
     let value = validate_optional_text(value, field, MAX_TASK_WORD_BYTES)?;
     if value

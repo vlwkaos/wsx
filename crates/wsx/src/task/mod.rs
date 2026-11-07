@@ -39,7 +39,6 @@ use wsx_core::task::manager::{
 };
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::roles;
-use wsx_core::task::search;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{
     checked_files, digest_lines, overlaps, project_tasks, refuse_open_children, task_summary,
@@ -51,6 +50,7 @@ use wsx_core::task::{
     Actor, AfterKind, DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind,
     TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
+use wsx_core::task::{search, text};
 use wsx_core::{ops, runtime};
 
 /// Ends the evidence name of a check-run pass the host recorded in a held result; the
@@ -3060,7 +3060,7 @@ fn search(
             .map_or(String::new(), |o| format!(" [{o}]"));
         println!(
             "{reference}{outcome}  {} {}  {}",
-            search::day_of(hit.unix_ms),
+            text::day_of(hit.unix_ms),
             hit.by,
             hit.line
         );

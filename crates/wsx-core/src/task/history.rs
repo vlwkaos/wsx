@@ -3,8 +3,8 @@
 //! the dated lines of one task (`read`, `wsx task search --task`) and where the task ended up
 //! (`outcome`, on every task hit of a search). ref: docs/tasks.md "Search"
 
-use super::search::{day_of, first_line};
 use super::store::TaskDir;
+use super::text::{day_of, first_line};
 use super::{view, LogEntry, LogEvent, MessageKind, TaskRecord, TaskState};
 use anyhow::Result;
 use serde::Serialize;
