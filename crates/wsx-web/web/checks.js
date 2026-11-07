@@ -1,10 +1,18 @@
 // The project's To check list: what only a person can check of the landed tasks, passed or
 // failed at the owner's own time (docs/tasks.md "To check", docs/web-client-tasks.md "To check").
 import { api } from "./api.js";
-import { html, Icon, Loading, useCoalescedLoad, useEffect, useState } from "./lib.js";
+import { html, Icon, Loading, useCoalescedLoad, useEffect, useRef, useState } from "./lib.js";
 import { can, useStore } from "./store.js";
 import { loadTasks, TaskChip } from "./tasks.js";
+import { markFound } from "./reply.js";
 import { SheetBar } from "./ui.js";
+
+// Pass or skip item `id` as the owner; the project's overview is read again.
+export async function decideCheck(project, id, decision) {
+  const answer = await api(`api/tasks/${project}/checks/${id}/${decision}`, { method: "POST", json: {} });
+  loadTasks(project);
+  return answer;
+}
 
 // Try: start the task's preview, or find the running one, then a link to open it. A link
 // the person opens keeps popup blockers out of the way. Only for projects with
@@ -58,9 +66,8 @@ export function CheckRow({ project, item: listed, revision, onChanged, onMention
     setBusy(true);
     setError("");
     try {
-      const answer = await api(`api/tasks/${project}/checks/${item.id}/${decision}`, { method: "POST", json: {} });
+      const answer = await decideCheck(project, item.id, decision);
       setDecided({ ...item, ...answer.changed?.find((changed) => changed.id === item.id), state: decision === "pass" ? "passed" : "skipped" });
-      loadTasks(project);
       onChanged?.();
     } catch (failure) {
       setError(failure.message);
@@ -80,7 +87,7 @@ export function CheckRow({ project, item: listed, revision, onChanged, onMention
   const poster = video && item.poster ? `api/tasks/${project}/checks/${item.id}/poster` : undefined;
   const did = item.did ?? item.title;
   return html`
-    <${tag} class="check-item" data-state=${item.state} data-gallery>
+    <${tag} class="check-item" data-check=${item.id} data-state=${item.state} data-gallery>
       <div class="check-line">
         <div class="check-words">
           <p class="check-task"><${TaskChip} project=${project} id=${item.task} /> ${did}</p>
@@ -116,7 +123,8 @@ export function CheckRow({ project, item: listed, revision, onChanged, onMention
 }
 
 // Every open item of the project in its sheet, oldest first, with All passed in the top bar.
-export function ChecksPage({ project, onClose, onMention, grip }) {
+// `item`: the item a reservoir row opened, scrolled to and marked once the list is in.
+export function ChecksPage({ project, item = null, onClose, onMention, grip }) {
   const store = useStore();
   const [items, setItems] = useState(null);
   const [failure, setFailure] = useState("");
@@ -134,6 +142,17 @@ export function ChecksPage({ project, onClose, onMention, grip }) {
   // size by then, so nothing that comes later moves the sheet.
   const loaded = items !== null || Boolean(failure);
   useEffect(() => { if (loaded) grip.ready(); }, [loaded]);
+  const scroll = useRef();
+  // ^ After a frame: the sheet is shown by the commit that follows `grip.ready`.
+  useEffect(() => {
+    const node = item && items && scroll.current?.querySelector(`.check-item[data-check="${item}"]`);
+    if (!node) return undefined;
+    const frame = requestAnimationFrame(() => {
+      node.scrollIntoView({ block: "center" });
+      markFound(node);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [item, items !== null]);
   const passAll = async () => {
     setBusy(true);
     setFailure("");
@@ -155,7 +174,7 @@ export function ChecksPage({ project, onClose, onMention, grip }) {
         <span class="bar-label">To check</span>
         ${items && html`<span class="bar-state">${items.length ? `${items.length} open` : "nothing open"}</span>`}
       </${SheetBar}>
-      <div class="scroll">
+      <div class="scroll" ref=${scroll}>
         ${failure && html`<p class="error" role="alert">${failure}</p>`}
         ${!items ? (!failure && html`<${Loading} />`)
           : !items.length ? html`<p class="empty">Nothing to check.</p>`

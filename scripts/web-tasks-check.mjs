@@ -199,10 +199,12 @@ async function lean(where) {
 // The sheet's open sections, by heading.
 const openSections = () => evaluate("[...document.querySelectorAll('.task-sheet .scroll .task-section:not(.task-fold):not(.timeline) > .task-heading')].map((node) => node.textContent.trim())");
 // The reservoir's rows: [number, title, context, actions], in the order shown.
+// ^ A row's number is its task chip's "#n" (the chip also has the state in hidden words).
+const NUMBER = "(row.querySelector('.task-chip')?.textContent.match(/#\\d+/)?.[0] ?? '')";
 const rows = () => evaluate(`[...document.querySelectorAll('.reservoir-list .need')].map((row) => [
-  row.querySelector('.task-number')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, row.querySelector('.row-context')?.textContent ?? '',
+  ${NUMBER}, row.querySelector('.row-label').textContent, row.querySelector('.row-context')?.textContent ?? '',
   [...row.querySelectorAll('.need-action')].map((node) => node.title).join('+')])`);
-const rowOf = (label) => `[...document.querySelectorAll('.reservoir-list .need')].find((row) => ((row.querySelector('.task-number')?.textContent.trim() ?? '') + ' ' + row.querySelector('.row-label').textContent).trim().startsWith(${JSON.stringify(label)}))`;
+const rowOf = (label) => `[...document.querySelectorAll('.reservoir-list .need')].find((row) => (${NUMBER} + ' ' + row.querySelector('.row-label').textContent).trim().startsWith(${JSON.stringify(label)}))`;
 // One motion: the sheet's top and left on each animation frame, from before `open` to 700 ms
 // after the sheet is first seen open. On each axis it moves one way only, never back, and its
 // last frame is where it rests. On a phone it rises from below; on a wide screen it comes in
@@ -352,7 +354,7 @@ async function openReservoir(kind = "needs") {
 }
 // The focus after a row cleared: [number, label] of the row whose action has it, or the open pill.
 const focused = () => evaluate(`(() => { const node = document.activeElement; const row = node?.closest('.reservoir .need');
-  if (row) return [row.querySelector('.task-number')?.textContent.trim() ?? '', row.querySelector('.row-label').textContent, node.title || node.textContent.trim()];
+  if (row) return [${NUMBER}, row.querySelector('.row-label').textContent, node.title || node.textContent.trim()];
   if (node?.classList.contains('pill')) return ['pill'];
   return node?.matches('.chat .composer-field') ? ['composer'] : [node?.tagName ?? 'none']; })()`);
 // One action in a row, then that row leaves and the focus is on the next row's action (on the
@@ -844,9 +846,9 @@ const pillLook = await evaluate(`(() => { const row = document.querySelector('.c
   const attach = document.querySelector('.composer-row > .icon-button')?.getBoundingClientRect(), mid = (box) => (box.top + box.bottom) / 2;
   return [...document.querySelectorAll('.pill')].map((node) => { const box = node.getBoundingClientRect();
     return { kind: node.dataset.kind, count: node.querySelector('.pill-count').textContent.trim(), icon: !!node.querySelector('svg.icon'), label: getComputedStyle(node.querySelector('.pill-label')).display,
-      pressed: node.getAttribute('aria-pressed'), between: box.left >= (attach?.right ?? row.left) - 1 && box.right <= send.left + 1, level: Math.abs(mid(box) - mid(send)) < 3, tall: box.height >= 30 && box.height <= 48 }; }); })()`);
-if (pillLook.map((pill) => `${pill.kind}:${pill.count}`).join() !== "running:1,needs:6,check:2" || pillLook.some((pill) => !pill.icon || pill.label !== "none" || pill.pressed !== "false" || !pill.between || !pill.level || !pill.tall)) {
-  await fail(`the pills are not an icon and a count between the attach button and Send on one row at 390 px: ${JSON.stringify(pillLook)}`);
+      pressed: node.getAttribute('aria-pressed'), between: box.left >= (attach?.right ?? row.left) - 1 && box.right <= send.left + 1, level: Math.abs(mid(box) - mid(send)) < 3, tall: box.height >= 24 && box.height <= 32, clear: box.top - document.querySelector('.composer-input').getBoundingClientRect().bottom >= 6 }; }); })()`);
+if (pillLook.map((pill) => `${pill.kind}:${pill.count}`).join() !== "running:1,needs:6,check:2" || pillLook.some((pill) => !pill.icon || pill.label !== "none" || pill.pressed !== "false" || !pill.between || !pill.level || !pill.tall || !pill.clear)) {
+  await fail(`the pills are not an icon and a count between the attach button and Send on one row, small and clear of the field, at 390 px: ${JSON.stringify(pillLook)}`);
 }
 if (await count(".reservoir-list") || await count(".reservoir")) await fail("a list is open before a tap");
 const inStore = (body) => evaluate(`(async () => { const { state, update } = await import(new URL('store.js', document.querySelector('script[type=module]').src)); ${body} })()`);
@@ -869,7 +871,7 @@ await shot("pills-view-only", ".pill-bar");
 await openReservoir("running");
 if ((await rows()).length !== 1 || (await rows())[0][0] !== "#6") await fail(`a device without task_act sees the Running rows ${JSON.stringify(await rows())}`);
 await openReservoir("check");
-if ((await rows()).length !== 1) await fail("a device without task_act has no To check row");
+if ((await rows()).length !== 2 || (await rows()).some((row) => row[3] !== "")) await fail(`a device without task_act sees the To check rows ${JSON.stringify(await rows())}`);
 await click(".pill[aria-pressed=true]");
 await until("!document.querySelector('.reservoir')", "a tap on the open pill did not close the list of a device without task_act");
 await withCapabilities(capabilities);
@@ -891,7 +893,7 @@ if ((await evaluate("getComputedStyle(document.querySelector('.pill-count .tick'
 await restored();
 await until("document.querySelector('.pill[data-kind=running]')?.getAttribute('aria-label') === '1 running'", "the Running pill did not go back to one task");
 // ^ Nothing waits and nothing is left to check: only Running stays; with nothing, no pill at all.
-await inStore(`const ov = state.tasks[${project}]; update({ tasks: { ...state.tasks, [${project}]: { ...ov, needs: [], asks: [], to_check: 0 } } })`);
+await inStore(`const ov = state.tasks[${project}]; update({ tasks: { ...state.tasks, [${project}]: { ...ov, needs: [], asks: [], to_check: 0, check_items: [] } } })`);
 await until("(document.querySelector('.pills')?.textContent ?? '').includes('1') && !document.querySelector('.pill[data-kind=needs]') && !document.querySelector('.pill[data-kind=check]')", "a pill with a count of 0 is still shown");
 if ((await pillWords()) !== "1 running") await fail(`with nothing to answer or check the pills read ${await pillWords()}`);
 await inStore(`const ov = state.tasks[${project}]; update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: ov.tasks.filter((task) => task.stage !== 'working') } } })`);
@@ -942,7 +944,13 @@ if (runningRows.length !== 1 || runningRows[0][0] !== "#6" || !/^keep a worker b
 await click(".pill[data-kind=check]");
 await until("!!document.querySelector('.reservoir-list[aria-label=\"To check\"]') && !document.querySelector('.reservoir-list[aria-label=Running]')", "a tap on To check did not switch the list");
 const checkRows = await rows();
-if ((await pressed()) !== "check" || checkRows.length !== 1 || checkRows[0][1] !== "2 to check") await fail(`the To check list is ${JSON.stringify(checkRows)} with ${await pressed()} pressed`);
+// ^ One row per open item: its task, its check, what passes it, and Fail and Pass as the sheet has them.
+const openChecks = await evaluate(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.open.map((item) => ['#' + item.task, item.check, 'Passes if ' + item.pass_if, 'Fail: tell the manager+Works: close this check']))`);
+if ((await pressed()) !== "check" || openChecks.length !== 2 || JSON.stringify(checkRows) !== JSON.stringify(openChecks)) await fail(`the To check list is ${JSON.stringify(checkRows)}, not ${JSON.stringify(openChecks)}, with ${await pressed()} pressed`);
+// ^ Fail puts the item into the manager's composer, as in the sheet; the item stays.
+const failedWords = await evaluate(`(() => { ${rowOf("#7")}.querySelector('.need-action[title="Fail: tell the manager"]').click();
+  const field = document.querySelector('.composer-field'), text = field.value; field.value = ''; field.dispatchEvent(new Event('input', { bubbles: true })); return text; })()`);
+if (!/^#7 To check c\d+ failed: $/.test(failedWords) || (await rows()).length !== 2) await fail(`Fail on a To check row put ${JSON.stringify(failedWords)} into the composer`);
 await shot("pills-check-open", ".composer-send");
 await click(".pill[data-kind=check]");
 await until("!document.querySelector('.reservoir')", "a tap on the open pill did not close its list");
@@ -952,6 +960,20 @@ await openReservoir();
 // ^ Every row of the open list, its labels and its context, is the pills' small size.
 const sizes = await evaluate("[...document.querySelectorAll('.reservoir-body :is(.row-label, .row-context)')].map((node) => getComputedStyle(node).fontSize)");
 if (!sizes.length || sizes.some((size) => size !== closedSize)) await fail(`the open list's words are not all ${closedSize}: ${JSON.stringify(sizes)}`);
+// ^ The three lists use one row type: the same sizes, label and context looks, spacing and marks,
+// and a task's chip first (docs/web-client-tasks.md "Project screen").
+const listLook = async (kind) => {
+  await openReservoir(kind);
+  return evaluate(`(() => { const row = document.querySelector('.reservoir-list .need'), part = (selector) => getComputedStyle(row.querySelector(selector)), link = getComputedStyle(row.querySelector('.row-link'));
+    return { label: [part('.row-label').fontSize, part('.row-label').fontWeight, part('.row-label').color].join(), context: [part('.row-context').fontSize, part('.row-context').color].join(),
+      chip: part('.task-chip').fontSize, row: [link.paddingTop, link.paddingBottom, link.minHeight, link.columnGap, link.fontSize].join(), first: row.querySelector('.row-link').firstElementChild.className, number: ${NUMBER} }; })()`);
+};
+const looks = { running: await listLook("running"), needs: await listLook("needs"), check: await listLook("check") };
+const same = (field) => new Set(Object.values(looks).map((look) => look[field])).size === 1;
+if (!["label", "context", "chip", "row"].every(same)) await fail(`the three lists do not share one row type: ${JSON.stringify(looks)}`);
+if (looks.running.first !== "task-chip" || looks.running.number !== "#6" || looks.check.first !== "task-chip" || looks.needs.first !== "task-chip") await fail(`a row does not start with its task chip: ${JSON.stringify(looks)}`);
+if (looks.running.chip !== closedSize) await fail(`the chip is ${looks.running.chip}, not ${closedSize}`);
+await openReservoir();
 // ^ The open list reads its tasks ahead: a row's sheet shows its content in the frame it opens,
 // with no loading step, on a phone and a wide screen.
 for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
@@ -970,8 +992,8 @@ await resize([1280, 800, 1]);
 await until("document.querySelectorAll('.pill').length === 3", "the pills are not in the wide chat");
 const wide = await evaluate(`(() => ({ labels: [...document.querySelectorAll('.pill')].map((node) => getComputedStyle(node.querySelector('.pill-label')).display === 'none' ? '' : node.querySelector('.pill-label').textContent.trim()).join('|'),
   names: [...document.querySelectorAll('.pill')].map((node) => node.getAttribute('aria-label')).join('|'),
-  field: document.querySelector('.composer-input').getBoundingClientRect().width, row: document.querySelector('.composer-row').getBoundingClientRect().width }))()`);
-if (wide.labels !== "Running|Needs you|To check" || wide.names !== "1 running|6 need you|2 to check" || wide.field < wide.row / 4) await fail(`the wide pills read ${JSON.stringify(wide)}`);
+  gap: document.querySelector('.composer-input').getBoundingClientRect().left - [...document.querySelectorAll('.pill')].at(-1).getBoundingClientRect().right, icon: parseFloat(getComputedStyle(document.querySelector('.pill .icon')).width), field: document.querySelector('.composer-input').getBoundingClientRect().width, row: document.querySelector('.composer-row').getBoundingClientRect().width }))()`);
+if (wide.labels !== "Running|Needs you|To check" || wide.names !== "1 running|6 need you|2 to check" || wide.field < wide.row / 4 || wide.gap < 8 || wide.icon > 16) await fail(`the wide pills read ${JSON.stringify(wide)}`);
 await shot("pills-wide", ".composer-send");
 await resize([390, 844, 2]);
 await openReservoir();
@@ -983,29 +1005,20 @@ await evaluate("document.querySelector('.bubble .bubble-approval').scrollIntoVie
 await shot("reply-approvals");
 await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight; })()");
 await until(atEnd, "the chat did not go back to its end", 100);
-// ^ A task row reads title first, then its number, small, muted and never cut (docs/web-client-tasks.md "Project screen").
-const titleFirstOk = async (where) => {
-  const titleFirst = await evaluate(`[...document.querySelectorAll('.reservoir-list .row-title')].map((title) => { const number = title.querySelector('.task-number');
-    return title.firstElementChild.classList.contains('row-label') && number.previousElementSibling === title.firstElementChild && /^#\\d+$/.test(number.textContent)
-      && number.scrollWidth <= number.clientWidth && parseFloat(getComputedStyle(number).fontSize) < parseFloat(getComputedStyle(title.firstElementChild).fontSize) + 0.5; })`);
-  if (!titleFirst.length || titleFirst.includes(false)) await fail(`${where}: a row does not read title, then number: ${JSON.stringify(titleFirst)}`);
+// ^ A task row starts with its chip (number and state dot), never cut (docs/web-client-tasks.md "Project screen").
+const chipFirstOk = async (where) => {
+  const chips = await evaluate(`[...document.querySelectorAll('.reservoir-list .need')].filter((row) => row.querySelector('.task-chip')).map((row) => { const chip = row.querySelector('.row-link').firstElementChild;
+    return chip.classList.contains('task-chip') && /^#\\d+/.test(chip.textContent) && chip.scrollWidth <= chip.clientWidth; })`);
+  if (!chips.length || chips.includes(false)) await fail(`${where}: a row does not start with its task chip: ${JSON.stringify(chips)}`);
 };
-await titleFirstOk("Needs you");
+await chipFirstOk("Needs you");
 // ^ The state the dot shows is in the row's words for a screen reader.
-const chipName = await evaluate(`${rowOf("#1")}.querySelector('.row-title').textContent`);
+const chipName = await evaluate(`${rowOf("#1")}.querySelector('.task-chip').textContent`);
 if (!chipName.endsWith("#1, needs you")) await fail(`a row's words are ${chipName}`);
 await openReservoir("running");
-await titleFirstOk("Running");
+await chipFirstOk("Running");
 if (!(await evaluate(`${rowOf("#6")}.querySelector('.mark[data-running]')`))) await fail("the running task's dot does not pulse");
-// ^ A running row: the small size, rows close together.
-const runningRow = await evaluate(`(() => { const row = ${rowOf("#6")}, link = row.querySelector('.row-link'), style = getComputedStyle(link);
-  return { label: getComputedStyle(row.querySelector('.row-label')).fontSize, chip: getComputedStyle(row.querySelector('.task-number')).fontSize,
-    gap: parseFloat(style.paddingTop) + parseFloat(style.paddingBottom), minHeight: style.minHeight }; })()`);
-if (runningRow.label !== closedSize || runningRow.chip !== closedSize || runningRow.gap > 8 || !["0px", "auto"].includes(runningRow.minHeight)) {
-  await fail(`the open running row does not match the pills' size (${closedSize}): ${JSON.stringify(runningRow)}`);
-}
-await chipsOnLine("a running row", ".reservoir-running .task-number", [".row-link", ".row-label"]);
-const runningName = await evaluate(`${rowOf("#6")}.querySelector('.row-title').textContent`);
+const runningName = await evaluate(`${rowOf("#6")}.querySelector('.task-chip').textContent`);
 if (!runningName.endsWith("#6, working")) await fail(`a working row's words are ${runningName}`);
 // ^ The agent in use now is on the row, from the overview's `agent` field (docs/web-client-tasks.md "Agent").
 const agentField = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((view) => view.tasks.find((task) => task.id === 6).agent)`);
@@ -1046,10 +1059,10 @@ const noEmptyBlock = async (where) => {
 // only by the list that scrolls it, which sits whole inside the reservoir, its last row whole at its end.
 const beforeRunners = await inStore(`return JSON.parse(JSON.stringify(state.tasks[${project}]))`);
 await inStore(`const ov = state.tasks[${project}], base = ov.tasks.find((task) => task.stage === 'working');
-  update({ tasks: { ...state.tasks, [${project}]: { ...ov, needs: [], to_check: 16, tasks: [base, { ...base, id: 91, title: 'a second running task' }] } } })`);
+  update({ tasks: { ...state.tasks, [${project}]: { ...ov, needs: [], to_check: 16, check_items: Array.from({ length: 16 }, (_, n) => ({ id: 'c' + (90 + n), task: 7, check: 'check ' + n + ' with words long enough to be cut at the end of its line', pass_if: 'it passes' })), tasks: [base, { ...base, id: 91, title: 'a second running task' }] } } })`);
 await resize([390, 844, 2]);
 await openReservoir("running");
-await until("document.querySelectorAll('.reservoir-running .need').length === 2", "the Running list does not show two running tasks");
+await until("document.querySelectorAll('.reservoir-list[aria-label=Running] .need').length === 2", "the Running list does not show two running tasks");
 await pause(400);
 await noEmptyBlock("two running tasks at 390x844");
 await shot("reservoir-two-running", ".composer-send");
@@ -1062,12 +1075,12 @@ await inStore(`const ov = state.tasks[${project}], base = ov.tasks.find((task) =
 for (const [width, height, scale] of [[390, 844, 2], [390, 560, 2], [900, 700, 1]]) {
   await resize([width, height, scale]);
   await openReservoir("running");
-  await until("document.querySelectorAll('.reservoir-running .need').length === 7", `the Running list does not show seven running tasks at ${width} px`);
+  await until("document.querySelectorAll('.reservoir-list[aria-label=Running] .need').length === 7", `the Running list does not show seven running tasks at ${width} px`);
   await pause(400);
   const cut = await evaluate(`(() => {
     const box = (node) => node.getBoundingClientRect(), scroller = (node) => /auto|scroll/.test(getComputedStyle(node).overflowY);
     const reservoir = document.querySelector('.reservoir'), found = [];
-    for (const word of reservoir.querySelectorAll('.row-label, .row-context, .task-number')) {
+    for (const word of reservoir.querySelectorAll('.row-label, .row-context, .task-chip')) {
       const name = word.textContent.trim().slice(0, 24);
       if (word.scrollHeight > word.clientHeight + 0.5) found.push(\`\${name}: taller than its box\`);
       let shown = box(word);
@@ -2354,18 +2367,22 @@ async function failTellsManager(back) {
 }
 
 // --- To check: the reservoir's row opens the list; Fail needs a note and starts a task that
-// fixes it; Pass in a bubble changes it in place; Skip closes the last without a verdict.
+// fixes it; Pass in a To check row changes its bubble in place; Skip closes the last without a verdict.
 // ^ The actions above spent this device's burst (10, then one per 3 s); this part sends four.
 await pause(12000);
 await go(chat);
 await until("!!document.querySelector('.pill')", "the chat did not come back for To check");
 await openReservoir("check");
-await until(`!!${rowOf("3 to check")}`, "the reservoir has no To check row", 60);
-// ^ The list and #8's capture are in the sheet before it moves, so it rises once and stays.
+await until(`document.querySelectorAll('.reservoir-list[aria-label="To check"] .need').length === 3`, "the reservoir has no row for each To check item", 60);
+// ^ A tap on a row opens the sheet at its item, scrolled to it and marked. The list and #8's
+// capture are in the sheet before it moves, so it rises once and stays.
 await oneMotion("To check on a phone", async () => {
-  await evaluate(`${rowOf("3 to check")}.querySelector('.row-open').click()`);
-  await until(`location.hash === '#/p/${project}/checks' && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open");
+  await evaluate(`${rowOf("#2")}.querySelector('.row-open').click()`);
+  await until(`/^#\\/p\\/${project}\\/checks\\/c\\d+$/.test(location.hash) && document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3`, "the To check list did not open at the item");
 });
+const atItem = await evaluate(`(() => { const node = document.querySelector('dialog.task-sheet[open] .check-item[data-check=' + JSON.stringify(location.hash.split('/').at(-1)) + ']'), scroll = document.querySelector('dialog.task-sheet[open] .scroll').getBoundingClientRect(), box = node?.getBoundingClientRect();
+  return { task: node?.querySelector('.task-chip')?.textContent.trim(), seen: !!box && box.top >= scroll.top - 1 && box.bottom <= scroll.bottom + 1 }; })()`);
+if (atItem.task !== "#2" || !atItem.seen) await fail(`a tap on #2's To check row opened the sheet at ${JSON.stringify(atItem)}`);
 // ^ The opened To check list uses the reservoir's small size.
 const checkSize = await evaluate("getComputedStyle(document.querySelector('dialog.task-sheet[open] .check-item .check-task')).fontSize");
 if (checkSize !== closedSize) await fail(`the To check list's words are ${checkSize}, not ${closedSize}`);
@@ -2501,15 +2518,18 @@ await until(`!!${bubbleOf(8)}`, "the chat has no To check bubble after the wide 
 const chatPlace = `(() => { const log = document.querySelector('.log'); return { keys: [...log.children].map((node) => node.dataset.key ?? '').join(), at: ${bubbleOf(8)}.dataset.at,
   jump: document.querySelector('.jump')?.textContent ?? '', fresh: ${bubbleOf(8)}.hasAttribute('data-fresh') }; })()`;
 const beforePass = await evaluate(chatPlace);
-await evaluate(`${bubbleOf(8)}.querySelector('.check-act[title="Works: close this check"]').click()`);
-await until(`(${bubbleOf(8)}?.querySelector('.check-state')?.textContent ?? '') === 'Passed' && !${bubbleOf(8)}.querySelector('.check-acts')`, "Pass in the bubble did not settle it", 60);
+// ^ Pass in the reservoir's To check row: the row leaves, the focus moves to the next row's action, and the bubble settles.
+await openReservoir("check");
+await clearRow("#8", "Works: close this check");
+await closeReservoir();
+await until(`(${bubbleOf(8)}?.querySelector('.check-state')?.textContent ?? '') === 'Passed' && !${bubbleOf(8)}.querySelector('.check-acts')`, "Pass in the To check row did not settle the bubble", 60);
 await pause(500);
 const afterPass = await evaluate(chatPlace);
 // ^ Rows that came meanwhile (an event line) go after it; with none, the "N new" count is unchanged.
 const samePlace = afterPass.keys.startsWith(beforePass.keys) && afterPass.at === beforePass.at && !afterPass.fresh
   && (afterPass.keys !== beforePass.keys || afterPass.jump === beforePass.jump);
 if (!samePlace) await fail(`a passed item's bubble moved or counts as new: ${JSON.stringify({ beforePass, afterPass })}`);
-await until("document.querySelector('.pill[data-kind=check]')?.getAttribute('aria-label') === '1 to check'", "Pass in the bubble did not drop the To check count", 60);
+await until("document.querySelector('.pill[data-kind=check]')?.getAttribute('aria-label') === '1 to check'", "Pass in the To check row did not drop the To check count", 60);
 await go(`#/p/${project}/checks`);
 await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 1", "the item passed in the chat stayed in the list", 60);
 // ^ Skip closes an item without a verdict and no task (docs/tasks.md "To check"). Its bubble shows
@@ -3510,6 +3530,22 @@ await shot("manager-quote", ".composer-send");
 const jumped = await evaluate(`(() => { [...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1).click();
   return document.querySelector('.log .bubble[data-found]')?.textContent.trim() ?? null; })()`);
 if (!jumped?.includes("the plan is on the overview")) await fail(`a tap on the manager's quote marks ${JSON.stringify(jumped)}`);
+// ^ The found bubble has no outline besides its own border: an accent tint over its box that
+// fades out (none under reduced motion, which holds the tint), then it is gone.
+const foundLook = (selector) => evaluate(`(() => { const row = document.querySelector('.log > [data-found]'), box = row?.querySelector('.bubble-box');
+  if (!box) return null; const tint = getComputedStyle(box, '::after'), edge = getComputedStyle(box);
+  return { outline: getComputedStyle(row).outlineStyle + '/' + edge.outlineStyle, tint: tint.content !== 'none' && tint.backgroundColor !== 'rgba(0, 0, 0, 0)' && parseFloat(tint.opacity) > 0, motion: tint.animationName }; })()`);
+const foundOnce = await foundLook();
+if (!foundOnce || foundOnce.outline !== "none/none" || !foundOnce.tint || foundOnce.motion !== "found-out") await fail(`the found bubble reads ${JSON.stringify(foundOnce)}`);
+await until("!document.querySelector('.log > [data-found]')", "the found mark did not go after 2 s", 50);
+await setMotion("reduce");
+await evaluate(`[...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1).click()`);
+await until("!!document.querySelector('.log > [data-found]')", "a tap on the quote did not mark under reduced motion");
+const foundCalm = await foundLook();
+if (!foundCalm?.tint || foundCalm.motion !== "none" || foundCalm.outline !== "none/none") await fail(`the found bubble under reduced motion reads ${JSON.stringify(foundCalm)}`);
+await shot("found-tint", ".composer-send");
+await until("!document.querySelector('.log > [data-found]')", "the found mark did not go under reduced motion", 50);
+await setMotion("no-preference");
 // ^ One cut of a quote, by characters (wsx-core `quote_of`): a line of emoji past 120 characters
 // is cut the same in the row, on the page and in the manager's quote, so a tap finds its message.
 {
@@ -3539,7 +3575,7 @@ const reviewed = await evaluate(`(() => { const row = [...document.querySelector
 if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${JSON.stringify(reviewed)}`);
 // ^ The row shows wsx-core's label and the sheet its sentence, as the task's JSON has them (docs/tasks.md "Status").
 {
-  const id = Number((await evaluate(`[...document.querySelectorAll('.reservoir-list[aria-label=Running] .need')].find((row) => /waiting for the manager's review/.test(row.textContent)).querySelector('.task-number').textContent`)).replace("#", ""));
+  const id = Number((await evaluate(`[...document.querySelectorAll('.reservoir-list[aria-label=Running] .need')].find((row) => /waiting for the manager's review/.test(row.textContent)).querySelector('.task-chip').textContent.match(/#\\d+/)[0]`)).replace("#", ""));
   const rowWords = (await rows()).find((row) => row[0] === `#${id}`)[2];
   await go(`#/p/${project}/t/${id}`);
   await until("!!document.querySelector('dialog.task-sheet[open] .story-next')", "the review-waiting sheet did not open");

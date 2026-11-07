@@ -476,6 +476,7 @@ div.steps .steps-summary { cursor: default; }
   .mark[data-settle] { animation: mark-settle calc(var(--motion-duration) * 4) var(--motion-easing); }
   .bar-state { animation: arrive var(--motion-duration) var(--motion-easing); }
   .tick { animation: tick-in var(--motion-duration) var(--motion-easing); }
+  .log > [data-found] > .bubble-box::after, .check-item[data-found]::after { animation: found-out calc(var(--motion-duration) * 12.5) ease-out forwards; }
   .reservoir-reveal { animation: reveal var(--motion-duration) var(--motion-easing); }
   .reservoir .need { animation: slide-up var(--motion-duration) var(--motion-easing); }
   .reservoir .need[data-leaving] { animation: row-out calc(var(--motion-duration) * 1.25) var(--motion-easing) forwards; }
@@ -488,6 +489,7 @@ div.steps .steps-summary { cursor: default; }
   .viewer[open], .viewer-stage img { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
   .viewer-stage img:not([data-swiping]) { transition: translate var(--motion-duration) var(--motion-easing); }
 }
+@keyframes found-out { to { opacity: 0; } }
 @keyframes tick-in { from { opacity: 0; transform: translateY(-40%); } }
 @keyframes row-out { to { opacity: 0; transform: translateY(calc(-1 * var(--space-1))); } }
 @keyframes mark-settle { from { opacity: 0.5; transform: scale(1.9); } }
@@ -543,7 +545,12 @@ div.steps .steps-summary { cursor: default; }
 }
 /* The chat opened at a quoted message: the note over the log says so, with the way back. */
 .note.around { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2); margin: 0; padding: var(--space-1) var(--column-inset); border-bottom: var(--border-width) solid var(--color-hairline); color: var(--color-muted); }
-.log > [data-found] { outline: var(--focus-width) solid var(--color-accent); outline-offset: var(--space-1); border-radius: var(--radius-control); }
+/* A message or item found (reply.js `markFound`): an accent tint over its box for 2 s, no line
+   beside the box's own border. It fades out; under reduced motion it stays, then goes. */
+.log > [data-found] > .bubble-box, .check-item[data-found] { position: relative; }
+.log > [data-found] > .bubble-box::after, .check-item[data-found]::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--color-accent); opacity: 0.2; pointer-events: none;
+}
 .queue { list-style: none; margin: 0; padding: 0 var(--column-inset); border-top: var(--border-width) solid var(--color-hairline); background: var(--color-surface); }
 .queued { display: flex; align-items: center; gap: var(--space-3); min-height: var(--size-key); font-size: var(--font-size-sm); }
 .queued + .queued { border-top: var(--border-width) solid var(--color-hairline); }
@@ -602,7 +609,7 @@ div.steps .steps-summary { cursor: default; }
 .app:not([data-wide]) .composer:focus-within .composer-row { border-color: var(--color-accent); }
 /* A `!` line runs in Claude's shell mode: the input box takes the shell colour, as Claude's own does. */
 .app:not([data-wide]) .composer[data-shell] .composer-row { border-color: var(--color-attention); background: var(--shell-tint); }
-.app:not([data-wide]) .composer-input { order: -1; flex-basis: 100%; }
+.app:not([data-wide]) .composer-input { order: -1; flex-basis: 100%; margin-bottom: var(--space-1); }
 .app:not([data-wide]) .composer-field, .app:not([data-wide]) .composer-mirror { min-height: 0; padding: 0; }
 .app:not([data-wide]) .composer-row > .icon-button,
 .app:not([data-wide]) .composer .composer-send { height: var(--size-control); margin-block: calc((var(--size-key) - var(--size-control)) / 2); }
@@ -792,19 +799,20 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .reservoir .row-link { font-size: var(--font-size-sm); padding-inline: var(--column-inset, var(--space-4)); }
 .reservoir-list { list-style: none; margin: 0; padding: 0; }
 .reservoir .need + .need { border-top: var(--border-width) solid var(--color-hairline); }
-/* A running row: rows close together. */
-.reservoir-running .row-link { min-height: 0; padding-block: var(--space-1); font-size: var(--font-size-sm); align-items: baseline; }
-.reservoir-running .row-open { align-self: baseline; }
+/* The task's chip leads a row, as in the chat; the three lists share this row. */
+.reservoir .row-link > .task-chip { flex: 0 0 auto; }
 /* The pills, between the attach button and the Send button: an icon and its count, the label
    too from 600 px. A pressed pill is the open list. */
-.pills { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: var(--space-1); }
+.pills { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: var(--space-1); margin-right: var(--space-3); }
 .pill {
-  position: relative; flex: 0 0 auto; height: var(--size-key); display: inline-flex; align-items: center; gap: var(--space-1);
-  padding: 0 var(--space-3); border: var(--border-width) solid var(--color-hairline); border-radius: var(--size-key); background: var(--color-raised); color: var(--color-muted);
+  --pill-height: calc(var(--size-key) - var(--space-2));
+  position: relative; flex: 0 0 auto; height: var(--pill-height); display: inline-flex; align-items: center; gap: var(--space-1);
+  padding: 0 var(--space-2); border: var(--border-width) solid var(--color-hairline); border-radius: var(--pill-height); background: var(--color-raised); color: var(--color-muted);
   font: inherit; font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); cursor: pointer;
 }
-/* ^ The drawn pill is the row's height; its hit area is the control size. */
-.pill::after { content: ""; position: absolute; inset: calc((var(--size-key) - var(--size-control)) / 2) calc(var(--space-1) * -1); }
+.pill .icon { width: var(--space-4); height: var(--space-4); }
+/* ^ The drawn pill is smaller than the row; its hit area is the control size. */
+.pill::after { content: ""; position: absolute; inset: calc((var(--pill-height) - var(--size-control)) / 2) calc(var(--space-1) * -1); }
 .pill[aria-pressed="true"] { border-color: var(--color-accent); color: var(--color-text); font-weight: var(--font-weight-strong); }
 .pill[data-kind="running"] .icon { color: var(--color-working); }
 .pill[data-kind="needs"] .icon, .pill[data-kind="check"] .icon { color: var(--color-attention); }
