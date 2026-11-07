@@ -1,0 +1,6 @@
+[
+  { "rule": "gap.interactive", "selector": ".tabbar a", "reason": "The tab pill floats over the scrolling list by design (docs/web-client.md Screens); text that scrolls behind it can end within 4 px of a tab. At rest the list ends above the pill (--tabbar-space)." },
+  { "rule": "overlap", "selector": ".tabbar a", "reason": "The tab pill floats over the scrolling list by design (docs/web-client.md Screens); at rest the list ends above the pill (--tabbar-space)." },
+  { "rule": "overlap", "selector": ".log", "reason": "The log is the chat's own scroll region with no painted box: the lint measures the whole scrolled content, which runs under the top row, not the visible part (capture 390-chat-end.png)." },
+  { "rule": "target.size", "selector": "textarea.composer-field", "reason": "A tap anywhere on the 84 px composer card puts the caret in the field, so the card is the target (docs/web-client.md Chat)." }
+]

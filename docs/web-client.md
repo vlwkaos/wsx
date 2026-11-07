@@ -149,6 +149,22 @@ Motion shows that something arrived, changed or left; nothing moves for its own 
 
 `scripts/web-tasks-check.mjs` (`motion()`) checks the animation names on the home row, count, notice, timer and placeholder, the FLIP glide and ghost, and that none of them runs under `reduce`; it captures phone and desktop frames.
 
+## Design lint
+
+The browser checks run the design linter of the ui-view-standards skill (`scripts/design-lint.js`, a copy of the skill's `scripts/design-lint.js`, dotfiles #28; two `// vendored:` lines on top name its hash and date). Rules and levels: the skill's `reference/LINT.md`. `designLint()` in `scripts/web-cdp.mjs` runs it on the page as it is, at 390 x 844 (touch) and 1280 x 800 only, from the `shot()` of `web-browser-check.mjs` and `web-tasks-check.mjs` and at the captures of `web-panels-check.mjs` (Machine tab), `web-projects-check.mjs` (Home) and `web-terminal-check.mjs` (session):
+
+| Screen | Shots |
+|---|---|
+| Home | browser `inbox`, `projects` and their `-light`; tasks `home`, `sessions`; projects `home` |
+| Project chat | browser `project`, `chat-end` and their `-light`; tasks `project` |
+| Task sheet | tasks `task-sheet`, `task-sheet-take-over-1280`, `task-sheet-open` |
+| Settings | browser `settings`, `settings-light`, `settings-ui-light`, `settings-ui-dark` |
+| Machine tab | panels `machine` at both sizes |
+| Files | browser `files`, `files-markdown` |
+| Session | terminal `session` at both sizes |
+
+A check collects the findings and, at its end, fails once with every un-kept error (rule, element, text, rect, fix). Warns never fail: the check prints their count and the first five. Each check writes `design-lint-<check>.json` (every finding per screen, size and scheme) into the captures folder. A finding that is intended design goes in `scripts/design-lint-keep.json` as `{rule, selector, reason}`; a kept finding shows as `kept` and does not fail. When the installed skill copy exists and differs from `scripts/design-lint.js`, the check prints one line saying so. To update the copy: copy the skill's file, keep the two header lines with the new hash and date.
+
 ## Zoom
 
 The page never zooms: no pinch, no double tap, no zoom on a focused field.

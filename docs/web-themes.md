@@ -118,4 +118,4 @@ The server builds one stylesheet (font faces, tokens, dark tokens, component CSS
 
 ## Verification
 
-`scripts/test-web-client.py` covers theme selection, a custom directory with a font and icons, each refusal above, content-hash URLs, the manifest, the CSP, and that `app.css` holds no color or length literal. With `--browser` it captures every screen at 320, 390 and 1280 px and writes a slop audit beside each capture.
+`scripts/test-web-client.py` covers theme selection, a custom directory with a font and icons, each refusal above, content-hash URLs, the manifest, the CSP, and that `app.css` holds no color or length literal. With `--browser` it captures every screen at 320, 390 and 1280 px and writes a slop audit beside each capture. The design lint ([web-client.md](web-client.md) "Design lint") runs on the main screens.
