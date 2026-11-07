@@ -109,14 +109,16 @@ function Panel({ base, name }) {
   if (!view) return html`<${Loading} />`;
   const { run } = view;
   const failed = run.status !== "ok" && run.status !== "pending";
-  const how = { failed: `failed (exit ${run.exit ?? "signal"})`, timed_out: "timed out", not_started: "did not start" }[run.status];
+  const how = { failed: `Failed (exit ${run.exit ?? "signal"})`, timed_out: "Timed out", not_started: "Did not start" }[run.status];
+  const when = run.status === "pending" ? "No result yet" : `${how ? `${how}, updated` : "Updated"} ${age(view.age_ms + (now - read_at))}`;
+  const running = view.running || run.status === "pending";
+  // ^ The status words, then Refresh at the row's end: it says Running… from the tap until the run ends.
   return html`
     <div class="panel" data-status=${run.status}>
-      <p class="panel-state" data-failed=${failed ? "" : null}>
-        ${run.status === "pending" ? "Running…" : html`${how ?? "ok"}, updated ${age(view.age_ms + (now - read_at))}`}
-        ${view.refresh ? ` · every ${view.refresh} s` : " · on open"}
-        <button type="button" class="link-action" disabled=${view.running} onClick=${() => setAgain(again + 1)}>${view.running ? "Running…" : "Refresh"}</button>
-      </p>
+      <div class="panel-state" data-failed=${failed ? "" : null}>
+        <p class="panel-state-text">${when}, ${view.refresh ? `every ${view.refresh} s` : "on open"}</p>
+        <button type="button" class="button panel-refresh" disabled=${running} onClick=${() => { setView({ ...view, running: true }); setAgain(again + 1); }}>${running ? "Running…" : "Refresh"}</button>
+      </div>
       ${failure && html`<p class="error" role="alert">${failure}</p>`}
       ${run.truncated && html`<p class="note">The start of the output is cut.</p>`}
       ${run.notice && html`<p class="note panel-notice">${run.notice}</p>`}

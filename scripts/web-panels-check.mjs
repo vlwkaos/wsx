@@ -42,14 +42,24 @@ await capture("390x844-project-header");
 await evaluate("document.querySelector('a[aria-label=\"Panels\"]').click()");
 await until("!!document.querySelector('dialog[open] .panel-output') && /device run \\d+/.test(document.querySelector('.panel-output').textContent)", "the panel did not show the command's output");
 const first = Number(await run());
-const state = await evaluate("document.querySelector('.panel-state').textContent");
-if (!/ok, updated/.test(state) || !/every 10 s/.test(state)) await fail(`the state line reads ${JSON.stringify(state)}`);
+// The status row: the words as one muted line, Refresh a button at its end, apart from the words.
+const stateRow = async (where, words) => {
+  const row = await evaluate(`(() => { const text = document.querySelector('.panel-state-text'); const button = document.querySelector('.panel-state .panel-refresh');
+    const range = document.createRange(); range.selectNodeContents(text); const words = [...range.getClientRects()]; const box = button.getBoundingClientRect(); const row = document.querySelector('.panel-state').getBoundingClientRect();
+    return { text: text.textContent, button: button.textContent, gap: Math.round(box.left - Math.max(...words.map((rect) => rect.right))), height: Math.round(box.height), end: Math.round(row.right - box.right),
+      inRow: box.top >= row.top - 1 && box.bottom <= row.bottom + 1, muted: getComputedStyle(text).color !== getComputedStyle(button).color, wide: document.documentElement.scrollWidth > innerWidth }; })()`);
+  // ^ 44 px is --size-control, the touch target (docs/web-client.md "Screens").
+  if (!words.test(row.text) || /·/.test(row.text) || !/^(Refresh|Running…)$/.test(row.button) || row.gap < 8 || row.height < 44 || row.end > 1 || !row.inRow || !row.muted || row.wide) {
+    await fail(`the status row ${where}: ${JSON.stringify(row)}`);
+  }
+};
+await stateRow("of the device panel at 390 px", /^Updated \d+ s ago, every 10 s$/);
 await capture("390x844-panel");
 // The refresh: the page asks again after 10 s and the counter moves.
 await until(`Number(${JSON.stringify(await run())}) < Number(/device run (\\d+)/.exec(document.querySelector('.panel-output')?.textContent ?? '')?.[1])`, "the panel did not refresh by itself", 40);
 // A failing command: the exit code and its output.
 await evaluate("[...document.querySelectorAll('.panel-tabs [role=tab]')].find((tab) => tab.textContent === 'broken').click()");
-await until("/failed \\(exit 2\\)/.test(document.querySelector('.panel-state[data-failed]')?.textContent ?? '') && /broken/.test(document.querySelector('.panel-output')?.textContent ?? '')", "the failing panel shows no exit code and output");
+await until("/^Failed \\(exit 2\\), updated \\d+ (s|min) ago, on open$/.test(document.querySelector('.panel-state[data-failed] .panel-state-text')?.textContent ?? '') && /broken/.test(document.querySelector('.panel-output')?.textContent ?? '')", "the failing panel shows no exit code and output");
 await capture("390x844-panel-failed");
 // A json panel: a card per section, a bar per gauge, a level as colour plus its word.
 const tab = (name) => evaluate(`[...document.querySelectorAll('.panel-tabs [role=tab]')].find((tab) => tab.textContent === ${JSON.stringify(name)}).click()`);
@@ -119,7 +129,7 @@ await until("document.querySelectorAll('.panel-doc .panel-card').length === 2", 
 await viewport(1280, 800, 1);
 await capture("1280x800-panel-json");
 await tab("broken");
-await until("/failed \\(exit 2\\)/.test(document.querySelector('.panel-state[data-failed]')?.textContent ?? '')", "the failing panel did not come back");
+await until("/^Failed \\(exit 2\\), updated \\d+ (s|min) ago, on open$/.test(document.querySelector('.panel-state[data-failed] .panel-state-text')?.textContent ?? '')", "the failing panel did not come back");
 await capture("1280x800-panel-failed");
 // No project declares a machine panel: the Machine tab is there with wsxd's built-in panel alone.
 const builtin = async (size) => {
@@ -127,6 +137,7 @@ const builtin = async (size) => {
   const shown = await evaluate(`({ name: document.querySelector('.machine-name').textContent, project: !!document.querySelector('.machine-name small'), title: document.querySelector('.panel-title')?.textContent,
     cards: [...document.querySelectorAll('.panel-card h3')].map((card) => card.textContent).slice(-2).join(), wide: document.documentElement.scrollWidth > innerWidth })`);
   if (shown.name !== "this-mac" || shown.project || !/^This (Mac|machine)$/.test(shown.title ?? "") || shown.cards !== "Load,Disks" || shown.wide) await fail(`the built-in panel at ${size}: ${JSON.stringify(shown)}`);
+  await stateRow(`of the built-in panel at ${size}`, /^Updated \d+ (s|min) ago, every 60 s$/);
   await capture(`${size}-machine-builtin`);
 };
 await open(scopedUrl, scopedCode);
