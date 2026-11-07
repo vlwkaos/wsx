@@ -794,9 +794,13 @@ async function largeAnswer() {
     render(html\`<\${Markdown} text=\${text} />\`, host);
     host.getBoundingClientRect();
     const first = performance.now() - started;
-    started = performance.now();
-    render(html\`<\${Markdown} text=\${text} />\`, host);
-    const again = performance.now() - started;
+    // ^ The least of three: a collection pause on a loaded runner is not the cost of an unchanged render.
+    let again = Infinity;
+    for (let turn = 0; turn < 3; turn++) {
+      started = performance.now();
+      render(html\`<\${Markdown} text=\${text} />\`, host);
+      again = Math.min(again, performance.now() - started);
+    }
     render(null, host);
     host.remove();
     return { bytes: new TextEncoder().encode(text).length, first: Math.round(first), again: Math.round(again * 10) / 10 };
