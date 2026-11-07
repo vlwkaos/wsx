@@ -228,29 +228,13 @@ export async function act(project, item, action) {
   return answer;
 }
 
-// The approvals a manager reply asked for, with Deny and Approve in the bubble: one tap. The
-// decision settles the request, which leaves the bubble and the reservoir.
-export function ChatApprovals({ project, items }) {
-  const [busy, setBusy] = useState(null);
-  if (!can("task_act")) return null;
-  const run = async (item, action) => {
-    setBusy(item.approval);
-    try {
-      await act(project, item, action);
-    } catch (failure) {
-      toast(`${item.label}: ${failure.message}`, { failure: true });
-    }
-    setBusy(null);
-  };
-  return items.map((item) => html`
-    <div class="bubble-approval" key=${item.approval} role="group" aria-label=${item.label}>
-      <span>${item.label}</span>
-      <button class="button need-action" type="button" data-tone="danger" disabled=${busy === item.approval}
-        onClick=${() => run(item, "deny")} aria-label=${`Deny: ${item.label}`}>Deny</button>
-      <button class="button need-action" type="button" data-tone="accent" disabled=${busy === item.approval}
-        onClick=${() => run(item, "approve")} aria-label=${item.label}>${busy === item.approval ? "Running…" : "Approve"}</button>
-    </div>`);
-}
+// The approvals a manager reply asked for, as one small tag each under the bubble: it opens the
+// Needs you list at that approval's row, the one place to approve (docs/web-client-tasks.md
+// "Project screen"). A decided approval is no longer in `items`, so its tag goes.
+export const NeedTags = ({ items, onShow }) => items.map((item) => html`
+  <button class="bubble-need" type="button" key=${item.approval} onClick=${() => onShow(item.approval)} aria-label=${`Show in Needs you: ${item.label}`}>
+    <span>Needs you: ${item.label}</span>
+  </button>`);
 
 // One row of any of the three lists, the same in each: the task's chip (its number and state
 // dot) or, for a row without a task, a tone dot; the label and the context under it; the
@@ -392,7 +376,7 @@ function useTray(counts) {
   const [tray, setTray] = useState(null);
   const open = tray && counts[tray] ? tray : null;
   useEffect(() => { if (tray && !open) setTray(null); }, [tray, open]);
-  return [open, (key) => setTray(open === key ? null : key)];
+  return [open, (key) => setTray(open === key ? null : key), setTray];
 }
 
 // `bar`: a device that cannot act has no composer, so the pills stand in a bar of their own.
@@ -414,7 +398,7 @@ function Pills({ counts, open, onToggle, bar = false }) {
 // that waits for the owner in the server's order, each with its one action) or To check. Done
 // tasks are in none of them. A cleared row leaves and the focus moves to the next row's action,
 // or to the composer after the last one. Only a question's label moves the chat, to its reply.
-function Reservoir({ project, open, items, tasks, checks, onMention, onReply, onShow, onClose }) {
+function Reservoir({ project, open, items, tasks, checks, look, onLooked, onMention, onReply, onShow, onClose }) {
   const node = useRef();
   // ^ A focus inside the list would fall to the body when the list goes: it goes to the open pill.
   const close = () => {
@@ -454,6 +438,13 @@ function Reservoir({ project, open, items, tasks, checks, onMention, onReply, on
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
+  // ^ A tag under a reply asked for this row: it scrolls into view and shows marked, as a found message does.
+  useLayoutEffect(() => {
+    if (!look || open !== "needs") return;
+    const row = node.current?.querySelector(`.need[data-key="${CSS.escape(look)}"]`);
+    if (row) { row.scrollIntoView({ block: "nearest" }); markFound(row); }
+    onLooked();
+  }, [look, open]);
   // ^ Open, each item's task is read ahead, so its sheet shows at once.
   useEffect(() => {
     if (open === "needs") for (const item of items) if (item.task != null) readTaskAhead(project, item.task);
@@ -955,7 +946,9 @@ export function Manager({ project: id, task, page, checks, checkItem = null, usa
   const asking = role ? [] : (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
   const needing = role ? [] : [...(overview?.needs ?? []), ...asking];
   const counts = { running: role ? 0 : (overview?.tasks ?? []).filter(running).length, needs: needing.length, check: role ? 0 : overview?.to_check ?? 0 };
-  const [tray, toggleTray] = useTray(counts);
+  const [tray, toggleTray, setTray] = useTray(counts);
+  const [look, setLook] = useState(null);
+  const showNeed = (approval) => { setTray("needs"); setLook(approval); };
 
   if (!project) {
     return html`
@@ -1008,7 +1001,7 @@ export function Manager({ project: id, task, page, checks, checkItem = null, usa
   const stopped = chat && !chat.running && entries.at(-1)?.danger;
   // ^ The manager's state only when it matters: typing or stopped (docs/web-client-tasks.md "Project screen").
   const managerWord = typing ? "typing" : stopped ? "stopped" : "";
-  const draw = (row, isNew) => row.kind === "message" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} />`
+  const draw = (row, isNew) => row.kind === "message" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} onNeed=${role ? null : showNeed} />`
     : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} row=${row} fresh=${isNew} />`
     : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} fresh=${isNew} />`
     : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} all=${finding} />`
@@ -1074,7 +1067,7 @@ export function Manager({ project: id, task, page, checks, checkItem = null, usa
           ${away && html`<${JumpButton} unread=${unread} onClick=${around != null ? newest : toEnd} />`}
         </div>
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
-        ${!role && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} items=${needing} tasks=${overview?.tasks ?? []} checks=${overview?.check_items ?? []} onMention=${mention} onReply=${(line, id) => { setReply({ line, id }); field.current?.focus(); }} onShow=${goToReply} onClose=${() => toggleTray(tray)} />`}
+        ${!role && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} checks=${overview?.check_items ?? []} onMention=${mention} onReply=${(line, id) => { setReply({ line, id }); field.current?.focus(); }} onShow=${goToReply} onClose=${() => toggleTray(tray)} />`}
         ${low && header}
         ${!role && !can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
         ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}

@@ -1040,12 +1040,25 @@ if (wide.labels !== "Running|Needs you|To check" || wide.names !== "1 running|6 
 await shot("pills-wide", ".composer-send");
 await resize([390, 844, 2]);
 await openReservoir();
-// ^ The manager's reply that asked for both approvals holds them, each with Deny and Approve:
-// one tap in the chat, besides the reservoir rows (docs/web-client-tasks.md "Project screen").
-const inBubble = await evaluate("[...document.querySelectorAll('.bubble[data-side=in] .bubble-approval')].map((node) => `${node.getAttribute('aria-label')}: ${[...node.querySelectorAll('button')].map((button) => button.textContent).join('+')}`)");
-if (inBubble.join("|") !== "Approve land #3: Deny+Approve|Approve discard #4: Deny+Approve") await fail(`the reply bubble's approvals are ${JSON.stringify(inBubble)}`);
-await evaluate("document.querySelector('.bubble .bubble-approval').scrollIntoView({ block: 'center' })");
+// ^ The manager's reply that asked for both approvals holds one tag each, no Approve or Deny: the
+// tag opens Needs you at that approval's row, the one place to approve (docs/web-client-tasks.md "Project screen").
+const tagsOf = () => evaluate("[...document.querySelectorAll('.bubble[data-side=in] .bubble-need')].map((node) => node.textContent.trim())");
+const inBubble = await tagsOf();
+if (inBubble.join("|") !== "Needs you: Approve land #3|Needs you: Approve discard #4" || await count(".bubble .bubble-approval, .bubble .need-action")) await fail(`the reply bubble's approvals are ${JSON.stringify(inBubble)}`);
+await evaluate("document.querySelector('.bubble .bubble-need').scrollIntoView({ block: 'center' })");
 await shot("reply-approvals");
+await closeReservoir();
+// ^ The mark lasts 2 s, so an observer records it; the row's place is read once the list has settled.
+await evaluate(`window.marked = new Set(); new MutationObserver((list) => { for (const change of list) if (change.target.hasAttribute('data-found') && change.target.dataset.key) window.marked.add(change.target.dataset.key); })
+  .observe(document.body, { subtree: true, attributes: true, attributeFilter: ['data-found'] })`);
+for (const [at, label] of [[1, "Approve discard #4"], [0, "Approve land #3"]]) {
+  await evaluate(`document.querySelectorAll('.bubble .bubble-need')[${at}].click()`);
+  await until(`!!document.querySelector('.reservoir-list[aria-label="Needs you"]') && ${rowOf(label)} && window.marked.has(${rowOf(label)}.dataset.key)`, `the tag of ${label} did not open its row marked in Needs you`);
+  await until(`(() => { const box = document.querySelector('.reservoir-scroll').getBoundingClientRect(), at = ${rowOf(label)}.getBoundingClientRect(); return at.top >= box.top - 1 && at.bottom <= box.bottom + 1; })()`, `the row of ${label} is not in view in Needs you`);
+  await shot(`reply-approval-row-${at}`, ".composer-send");
+  await closeReservoir();
+}
+await openReservoir();
 await evaluate("(() => { const log = document.querySelector('.log'); log.scrollTop = log.scrollHeight; })()");
 await until(atEnd, "the chat did not go back to its end", 100);
 // ^ A task row starts with its chip (number and state dot), never cut (docs/web-client-tasks.md "Project screen").

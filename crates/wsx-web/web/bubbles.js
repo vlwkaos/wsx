@@ -5,7 +5,7 @@ import { clock, firstSentence, html, Icon, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { Quote } from "./reply.js";
-import { ChatApprovals, TaskChip, withChips } from "./tasks.js";
+import { NeedTags, TaskChip, withChips } from "./tasks.js";
 import { CheckRow } from "./checks.js";
 import { can, sessionLink, shows } from "./store.js";
 
@@ -131,7 +131,7 @@ const relativeOf = (project) => {
 
 // One message. `home` turns its text runs into task chips; a message of another project's
 // manager (not a role) reads its bare `#n` as that project's task.
-export function Bubble({ project, row, words: home, fresh }) {
+export function Bubble({ project, row, words: home, fresh, onNeed }) {
   const out = row.author === "owner";
   const peer = row.author.startsWith("peer:") ? row.author.slice(5) : null;
   const words = peer != null && !peer.startsWith("role:") ? withChips(project, peer) : home;
@@ -145,7 +145,7 @@ export function Bubble({ project, row, words: home, fresh }) {
   const body = out
     ? html`<div class="bubble-body" id=${id}>${quoted}${row.text && html`<p class="prose">${words ? words(row.text) : row.text}</p>`}</div><${Attachments} files=${row.attachments} />`
     : html`<div class="bubble-body" id=${id}>${quoted}<${Markdown} text=${row.text} words=${words} relative=${relativeOf(project)} prose /></div>
-      ${row.approvals?.length > 0 && html`<${ChatApprovals} project=${project} items=${row.approvals} />`}`;
+      ${onNeed && row.approvals?.length > 0 && html`<${NeedTags} items=${row.approvals} onShow=${onNeed} />`}`;
   return html`
     <article class="bubble" data-side=${out ? "out" : "in"} data-speaker=${peer == null ? row.author : "peer"}
       data-peer=${peer == null ? null : peerColor(peer)} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}

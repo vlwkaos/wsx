@@ -476,7 +476,7 @@ div.steps .steps-summary { cursor: default; }
   .mark[data-settle] { animation: mark-settle calc(var(--motion-duration) * 4) var(--motion-easing); }
   .bar-state { animation: arrive var(--motion-duration) var(--motion-easing); }
   .tick { animation: tick-in var(--motion-duration) var(--motion-easing); }
-  .log > [data-found] > .bubble-box::after, .check-item[data-found]::after { animation: found-out calc(var(--motion-duration) * 12.5) ease-out forwards; }
+  .log > [data-found] > .bubble-box::after, .check-item[data-found]::after, .reservoir .need[data-found]::after { animation: found-out calc(var(--motion-duration) * 12.5) ease-out forwards; }
   .reservoir-reveal { animation: reveal var(--motion-duration) var(--motion-easing); }
   .reservoir .need { animation: slide-up var(--motion-duration) var(--motion-easing); }
   .reservoir .need[data-leaving] { animation: row-out calc(var(--motion-duration) * 1.25) var(--motion-easing) forwards; }
@@ -547,8 +547,8 @@ div.steps .steps-summary { cursor: default; }
 .note.around { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2); margin: 0; padding: var(--space-1) var(--column-inset); border-bottom: var(--border-width) solid var(--color-hairline); color: var(--color-muted); }
 /* A message or item found (reply.js `markFound`): an accent tint over its box for 2 s, no line
    beside the box's own border. It fades out; under reduced motion it stays, then goes. */
-.log > [data-found] > .bubble-box, .check-item[data-found] { position: relative; }
-.log > [data-found] > .bubble-box::after, .check-item[data-found]::after {
+.log > [data-found] > .bubble-box, .check-item[data-found], .reservoir .need[data-found] { position: relative; }
+.log > [data-found] > .bubble-box::after, .check-item[data-found]::after, .reservoir .need[data-found]::after {
   content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--color-accent); opacity: 0.2; pointer-events: none;
 }
 .queue { list-style: none; margin: 0; padding: 0 var(--column-inset); border-top: var(--border-width) solid var(--color-hairline); background: var(--color-surface); }
@@ -759,9 +759,14 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .bubble[data-peer="4"] { --speaker: var(--color-peer-4); }
 [data-speaker] .bubble-author { color: var(--speaker); }
 .bubble[data-pending] .bubble-box { color: var(--color-muted); }
-/* An approval the reply asked for: its words, then Deny and Approve, wrapping on a narrow screen. */
-.bubble-approval { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-2); padding-top: var(--space-2); border-top: var(--border-width) solid var(--color-hairline); }
-.bubble-approval > span { flex: 1 1 auto; min-width: 0; font-weight: var(--font-weight-medium); }
+/* An approval the reply asked for: one small tag under the text that opens it in the Needs you list. */
+.bubble-need {
+  position: relative; display: flex; max-width: 100%; margin-top: var(--space-2); padding: 0 var(--space-2);
+  border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-key); background: none;
+  color: var(--color-attention); font: inherit; font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); text-align: left; cursor: pointer;
+}
+.bubble-need > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bubble-need::after { content: ""; position: absolute; inset: calc(var(--space-2) * -1) 0; }
 /* Wide content scrolls inside its bubble, never the page. */
 .bubble .markdown > :is(.code-block, .table-wrap, .diagram-failed) { align-self: stretch; width: auto; min-width: 0; max-width: 100%; }
 .bubble .markdown > .diagram { width: 100%; min-width: 0; }
