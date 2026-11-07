@@ -143,14 +143,21 @@ export function ChecksPage({ project, item = null, onClose, onMention, grip }) {
   const loaded = items !== null || Boolean(failure);
   useEffect(() => { if (loaded) grip.ready(); }, [loaded]);
   const scroll = useRef();
-  // ^ After a frame: the sheet is shown by the commit that follows `grip.ready`.
+  // ^ After the frame that finds the sheet shown: `grip.ready` shows it in a later commit, and a
+  // closed dialog cannot scroll.
   useEffect(() => {
     const node = item && items && scroll.current?.querySelector(`.check-item[data-check="${item}"]`);
     if (!node) return undefined;
-    const frame = requestAnimationFrame(() => {
+    let frame, frames = 0;
+    const show = () => {
+      if (!node.closest("dialog")?.open && ++frames < 60) {
+        frame = requestAnimationFrame(show);
+        return;
+      }
       node.scrollIntoView({ block: "center" });
       markFound(node);
-    });
+    };
+    frame = requestAnimationFrame(show);
     return () => cancelAnimationFrame(frame);
   }, [item, items !== null]);
   const passAll = async () => {
