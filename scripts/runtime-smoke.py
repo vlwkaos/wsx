@@ -1362,7 +1362,6 @@ def pane_session(command, rows=24, cols=80):
 scrollback_session, scrollback_pane = pane_session(
     ["/bin/sh", "-lc", "seq 1 20000; echo scrollback-done; sleep 60"], rows=40, cols=80)
 wait_for(lambda: "scrollback-done" in pane_text(scrollback_pane), "20,000 lines were not written", 30)
-rss_typical = daemon_rss_kb()
 scrollback_client, response = raw_subscribe(scrollback_pane, 70, False, 40, 80)
 assert response["type"] == "ack", response
 replay = recv_line(scrollback_client)
