@@ -816,6 +816,8 @@ impl ManagerChat {
             (Action::InputChar('G'), _) => self.scroll = 0,
             (Action::InputTab, _) => self.select(1),
             (Action::InputBackTab, _) => self.select(-1),
+            // ^ Enter on an open question shows its reply, as on a quote with an id.
+            (Action::Select, Some(Item::Ask { id, .. })) => self.show_quoted("", Some(id)),
             (Action::InputChar('i') | Action::Select, _) => self.focus = Focus::Compose,
             (Action::InputChar('p'), Some(Item::Check(_))) => self.close_check(CheckState::Passed),
             (Action::InputChar('s'), Some(Item::Check(_))) => self.close_check(CheckState::Skipped),

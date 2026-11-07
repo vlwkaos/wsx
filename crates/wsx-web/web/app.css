@@ -142,6 +142,7 @@ div.row-link { cursor: default; }
 a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row-link[aria-current="page"] { background: var(--color-raised); }
 /* A row whose text opens it while its actions stay buttons: the text is the link. */
 .row-open { align-self: stretch; justify-content: center; text-decoration: none; cursor: pointer; }
+button.row-open { padding: 0; border: 0; background: none; text-align: left; }
 /* A row with a state mark: its text, and so its hairline, starts after the mark. */
 .row:has(.mark) { --row-inset: calc(var(--space-4) + var(--space-1) * 1.5 + var(--space-3)); }
 .row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -441,15 +442,13 @@ div.steps .steps-summary { cursor: default; }
 .working { display: flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-sm); color: var(--color-muted); }
 .working-activity { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Motion only under no-preference: the pulse and the typing dots loop, and only while an agent
-   works or writes, and the closed reservoir turns through the running tasks on a timer; the
-   rest plays once on entry or exit. Under reduce none of it is there (docs/web-client-tasks.md "Motion"). */
+   works or writes; the rest plays once on entry or exit. Under reduce none of it is there (docs/web-client-tasks.md "Motion"). */
 .pulse { flex: 0 0 auto; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-working); }
 @media (prefers-reduced-motion: no-preference) {
   .pulse, .mark[data-running] { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
   .typing-dot { animation: typing calc(var(--motion-duration) * 8) ease-in-out infinite; }
   .typing-dot:nth-child(3) { animation-delay: calc(var(--motion-duration) * 2); }
   .typing-dot:nth-child(4) { animation-delay: calc(var(--motion-duration) * 4); }
-  .reservoir-head .icon { transition: transform var(--motion-duration) var(--motion-easing); }
   .steps .icon { transition: transform var(--motion-duration) var(--motion-easing); }
   /* Purposeful motion (docs/web-client.md "Motion"): something arrives, changes or leaves.
      Reduced motion keeps the static page; script-driven motion (lib.js `motion`) is off too. */
@@ -477,9 +476,7 @@ div.steps .steps-summary { cursor: default; }
   .mark[data-settle] { animation: mark-settle calc(var(--motion-duration) * 4) var(--motion-easing); }
   .bar-state { animation: arrive var(--motion-duration) var(--motion-easing); }
   .tick { animation: tick-in var(--motion-duration) var(--motion-easing); }
-  .ticker-item { animation: ticker-in calc(var(--motion-duration) * 2) var(--motion-easing); }
   .reservoir-reveal { animation: reveal var(--motion-duration) var(--motion-easing); }
-  .reservoir-reveal[data-closing] { animation-direction: reverse; animation-fill-mode: forwards; }
   .reservoir .need { animation: slide-up var(--motion-duration) var(--motion-easing); }
   .reservoir .need[data-leaving] { animation: row-out calc(var(--motion-duration) * 1.25) var(--motion-easing) forwards; }
   .bubble[data-fresh], .status-line[data-fresh], .reply-line[data-fresh] { animation: slide-up calc(var(--motion-duration) * 1.5) var(--motion-easing); }
@@ -492,7 +489,6 @@ div.steps .steps-summary { cursor: default; }
   .viewer-stage img:not([data-swiping]) { transition: translate var(--motion-duration) var(--motion-easing); }
 }
 @keyframes tick-in { from { opacity: 0; transform: translateY(-40%); } }
-@keyframes ticker-in { from { opacity: 0; transform: translateY(70%); } }
 @keyframes row-out { to { opacity: 0; transform: translateY(calc(-1 * var(--space-1))); } }
 @keyframes mark-settle { from { opacity: 0.5; transform: scale(1.9); } }
 @keyframes reveal { from { grid-template-rows: 0fr; opacity: 0; } to { grid-template-rows: 1fr; opacity: 1; } }
@@ -783,54 +779,41 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .fold-count { color: var(--color-text); font-weight: var(--font-weight-medium); }
 @media (hover: hover) { .fold-toggle:hover { background: var(--color-raised); } }
 .page-link { color: var(--color-accent); }
-/* What needs the owner and what runs, pinned over the composer: one line, a tap opens the
-   decision list. */
+/* The open list over the composer: Running, Needs you or To check, one at a time, opened by
+   the pills in the composer row. */
 .reservoir {
-  --reservoir-chevron: calc(var(--size-control) + var(--column-inset, var(--space-4)));
   flex: 0 0 auto; max-height: calc(100% * var(--strip-share)); position: relative; display: flex; flex-direction: column; border-top: var(--border-width) solid var(--color-hairline); }
-.reservoir-head {
-  flex: 0 0 auto; width: 100%; min-height: var(--size-control); display: flex; align-items: center; gap: var(--space-2);
-  padding: 0 var(--column-inset, var(--space-4)); border: 0; background: none; cursor: pointer; text-align: left; font-size: var(--font-size-sm);
-}
-.reservoir-words { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--space-2); font-weight: var(--font-weight-medium); white-space: nowrap; }
-.reservoir-sep { color: var(--color-faint); }
-.reservoir-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.reservoir-more { flex: 0 0 auto; color: var(--color-muted); font-variant-numeric: tabular-nums; }
-/* The running slot: the chip and the title of one task, the title cut with an ellipsis. */
-.ticker-item { min-width: 0; display: flex; align-items: center; gap: var(--space-2); }
 .tick { display: inline-block; font-variant-numeric: tabular-nums; }
-.reservoir-head .icon { margin-left: auto; flex: 0 0 auto; }
 .typing-dots { display: inline-flex; align-items: center; gap: var(--space-1); }
-/* The list opens and closes by its height (a grid row from 0fr to 1fr). */
+/* The list opens by its height (a grid row from 0fr to 1fr). */
 .reservoir-reveal { flex: 0 1 auto; min-height: 0; display: grid; grid-template-rows: 1fr; overflow: hidden; }
-.reservoir-checks { flex: 0 0 auto; font-weight: var(--font-weight-medium); white-space: nowrap; }
-.reservoir[data-open] .reservoir-head .icon { transform: rotate(90deg); }
-.reservoir-head:focus-visible { outline-offset: calc(-1 * var(--focus-width)); }
-/* Running stays at the top of the open list; what waits for the owner and To check scroll under it. */
 .reservoir-body { min-height: 0; min-width: 0; display: flex; flex-direction: column; padding-bottom: var(--space-2); }
-/* ^ Running takes at most half of the open list and scrolls inside itself under its label, so
-   with many running tasks the rest keeps its share and no row is cut by the reveal's clip.
-   The cap is half of the reservoir's own cap, in the chat's height (a size container): a
-   percentage of the body, whose height comes from its content, resolved after that height was
-   set and left an empty block under the last row. */
-.reservoir-fixed { flex: 0 0 auto; max-height: calc((100cqh * var(--strip-share) - var(--border-width)) / 2); display: flex; flex-direction: column; }
-.reservoir-running { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .reservoir-scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-.reservoir-fixed + .reservoir-scroll:not(:empty) { border-top: var(--border-width) solid var(--color-hairline); }
-/* Every row of the open list and its labels are the closed line's small size. */
+/* Every row of the open list is the small size. */
 .reservoir .row-link { font-size: var(--font-size-sm); padding-inline: var(--column-inset, var(--space-4)); }
 .reservoir-list { list-style: none; margin: 0; padding: 0; }
 .reservoir .need + .need { border-top: var(--border-width) solid var(--color-hairline); }
-/* Open, a running row reads like the closed line: its small size, rows close together. */
+/* A running row: rows close together. */
 .reservoir-running .row-link { min-height: 0; padding-block: var(--space-1); font-size: var(--font-size-sm); align-items: baseline; }
 .reservoir-running .row-open { align-self: baseline; }
-.reservoir-label { padding: var(--space-3) var(--column-inset, var(--space-4)) var(--space-1); font-size: var(--font-size-sm); text-transform: none; letter-spacing: normal; }
-/* Open, the chevron has no row of its own: it sits at the right end of the list's first row
-   (the first label, or the first item row), which keeps room for it. */
-.reservoir[data-open] .reservoir-head { position: absolute; top: 0; right: 0; z-index: 1; width: var(--reservoir-chevron); }
-.reservoir[data-open]:has(.reservoir-body > .reservoir-scroll:first-child > .reservoir-list:first-child) .reservoir-head { min-height: var(--size-row); }
-.reservoir[data-open] .reservoir-body > .reservoir-fixed:first-child > .reservoir-label:first-child { min-height: var(--size-control); display: flex; align-items: center; padding-block: 0; padding-right: var(--reservoir-chevron); }
-.reservoir[data-open] .reservoir-body > .reservoir-scroll:first-child > .reservoir-list:first-child > .need:first-child .row-link { padding-right: var(--reservoir-chevron); }
+/* The pills, between the attach button and the Send button: an icon and its count, the label
+   too from 600 px. A pressed pill is the open list. */
+.pills { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: var(--space-1); }
+.pill {
+  position: relative; flex: 0 0 auto; height: var(--size-key); display: inline-flex; align-items: center; gap: var(--space-1);
+  padding: 0 var(--space-3); border: var(--border-width) solid var(--color-hairline); border-radius: var(--size-key); background: var(--color-raised); color: var(--color-muted);
+  font: inherit; font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); cursor: pointer;
+}
+/* ^ The drawn pill is the row's height; its hit area is the control size. */
+.pill::after { content: ""; position: absolute; inset: calc((var(--size-key) - var(--size-control)) / 2) calc(var(--space-1) * -1); }
+.pill[aria-pressed="true"] { border-color: var(--color-accent); color: var(--color-text); font-weight: var(--font-weight-strong); }
+.pill[data-kind="running"] .icon { color: var(--color-working); }
+.pill[data-kind="needs"] .icon, .pill[data-kind="check"] .icon { color: var(--color-attention); }
+/* A device that cannot act has no composer: the pills have a bar of their own. */
+.pill-bar { flex: 0 0 auto; padding: var(--space-2) var(--column-inset); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
+.pill-label { display: none; }
+.app[data-wide] .pill-label { display: inline; }
+@media (hover: hover) { .pill:hover { border-color: var(--color-faint); } .pill[aria-pressed="true"]:hover { border-color: var(--color-accent); } }
 /* With the keyboard up the reservoir steps aside while the `#` or `/` list is open. */
 body[data-keyboard] .chat:has(.slash) .reservoir { display: none; }
 .more { position: relative; }
