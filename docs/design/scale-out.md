@@ -77,7 +77,7 @@ Failure cases:
 |---|---|---|
 | Node lost mid-task | No heartbeat. Today `stall.rs` already reports "its host is down" when the socket does not answer. | After the lease, the task becomes `waiting` on `node`. The branch holds the last pushed commit; the log holds the rest. The node pushes at the end of each agent turn, so a loss costs at most one turn. Restart on another node from the branch. |
 | Network split | The node still runs; control cannot see it. | The node stops its agent when it has had no heartbeat answer for the lease time L. Control treats the node as dead only after L plus a margin. Stop wins over a silent worker. |
-| Two writers | A node comes back after control restarted the task elsewhere. | Each start gets an attempt number, like `checks_epoch` (`host.rs:190`). Events and branch pushes carry it; control drops an older attempt. `task.json` has one writer, the host that owns the attempt; control changes it by a request, not a file write. `--force-with-lease` on the task branch only (`docs/tasks.md:601`). Only control writes the default branch. |
+| Two writers | A node comes back after control restarted the task elsewhere. | Each start gets an attempt number, like `checks_epoch` (`host.rs:190`). Events and branch pushes carry it; control drops an older attempt. `task.json` has one writer, the host that owns the attempt; control changes it by a request, not a file write. `--force-with-lease` on the task branch only (`docs/tasks.md:600-601`). Only control writes the default branch. |
 
 ## 3. Options
 
@@ -130,7 +130,7 @@ The same deny-list rule holds on Linux in effect, not in form: the sources found
 |---|---|---|
 | Agent login | Read by the CLI from `CLAUDE_CONFIG_DIR` or the keychain (`claude.rs:199-202`) | Never copy the owner's keychain. A node gets its own login or API key with its own budget, revocable alone. Whether one subscription may be used from several machines is the owner's question (*terms unverified*). |
 | Git fetch | Local repo | Read-only deploy key or token for the repo. |
-| Git push | ssh agent on the control Mac (`git/mod.rs:29`) | A token that may write `wsx/*` branches only. A ruleset on the default branch (*verify in GitHub docs*) keeps that token from it. A short-lived installation token per task is stronger and costs a GitHub App. The default branch is pushed by control after approval (`wsx task push`, `docs/tasks.md:601`). |
+| Git push | ssh agent on the control Mac (`git/mod.rs:29`) | A token that may write `wsx/*` branches only. A ruleset on the default branch (*verify in GitHub docs*) keeps that token from it. A short-lived installation token per task is stronger and costs a GitHub App. The default branch is pushed by control after approval (`wsx task push`, `docs/tasks.md:600-601`). |
 | Join | n/a | One-use token, expires in minutes, stored as a digest like pairing codes (`devices.rs:19-22`). The node gets its own key; control can revoke it. |
 | Deploy and web secrets | Control only | Never on a node. |
 
