@@ -3369,6 +3369,7 @@ PANEL_CONFIG = '''panels:
     scope: machine
   - name: broken
     command: [scripts/broken.sh]
+    scope: machine
   - name: gauges
     command: [scripts/gauges.sh]
     format: json
@@ -3829,28 +3830,22 @@ merge_seconds = 3
             listed_panels = steady(admin, 'GET', panel_url)[1]
             assert [p['name'] for p in listed_panels['panels']] == ['device', 'broken', 'gauges', 'badjson'] and listed_panels['notice'] is None, listed_panels
 
-            # ^ docs/panels.md "Machine panels": wsxd's built-in panel, then the `scope: machine` panels
-            # of the granted projects, for the right to run commands only.
-            machine_url = '/api/machine/panels'
-            builtin = [{'name': 'this-mac', 'refresh': 60, 'scope': 'machine'}]
-            status, machine = steady(admin, 'GET', machine_url)
-            assert status == 200 and machine == {'panels': builtin, 'projects': [{'id': calm_id, 'name': 'calm', 'panels': [
-                {'name': 'device', 'refresh': 10, 'scope': 'machine'}, {'name': 'gauges', 'refresh': 0, 'scope': 'machine'}]}]}, machine
+            # ^ docs/panels.md "Machine panels": one card, wsxd's built-in panel with the sections of the
+            # `scope: machine` panels of the granted projects after its own, for the right to run commands only.
+            machine_url = '/api/machine'
+            assert steady(admin, 'GET', '/api/machine/panels')[0] == 404, 'the old list route answers'
             assert steady(owner, 'GET', machine_url)[0] == 403 and steady(viewer, 'GET', machine_url)[0] == 403
-            assert steady(sites['scoped'], 'GET', machine_url) == (200, {'panels': builtin, 'projects': []}), steady(sites['scoped'], 'GET', machine_url)
             assert steady(sites['scoped'], 'GET', panel_url)[0] == 404, 'a project outside the grant answered'
-            # The built-in panel reads with no project declaring one: a document of this machine.
-            assert steady(sites['scoped'], 'GET', machine_url + '/this-mac?run=1')[0] == 200
+            # Granted a project that declares none: This Mac alone, a document of this machine.
+            steady(sites['scoped'], 'GET', machine_url + '?run=1')
             deadline = time.monotonic() + 20
-            while (mac := steady(sites['scoped'], 'GET', machine_url + '/this-mac'))[1]['run']['status'] != 'ok':
+            while (mac := steady(sites['scoped'], 'GET', machine_url))[1]['run']['status'] != 'ok':
                 assert time.monotonic() < deadline, mac
                 time.sleep(0.2)
             mac = mac[1]
-            assert mac['refresh'] == 60 and [section['title'] for section in mac['run']['doc']['sections']][-2:] == ['Load', 'Disks'], mac
-            assert steady(owner, 'GET', machine_url + '/this-mac')[0] == 403
-            status, body = steady(admin, 'GET', machine_url + '/missing')
-            assert status == 409 and 'no panel' in body['error']['message'], (status, body)
-
+            assert mac['name'] == 'this-mac' and mac['refresh'] == 60, mac
+            assert [section['title'] for section in mac['run']['doc']['sections']][-2:] == ['Load', 'Disks'], mac
+            assert mac['run']['doc']['title'] in ('This Mac', 'This machine'), mac
             def panel_shown(name, run=False, done=True):
                 asked = [run]
                 # ^ run=1 starts a run each time the last one is over: only the first read asks.
@@ -3882,6 +3877,27 @@ merge_seconds = 3
             assert gauges['notice'].count('\n') == 1 and '`red`' in gauges['notice'] and '`chart`' in gauges['notice'], gauges['notice']
             badjson = panel_shown('badjson', run=True)['run']
             assert badjson['doc'] is None and badjson['output'] == '{oops\n' and badjson['notice'].startswith('not a panel document'), badjson
+            # The admin site is granted `calm`: its device (text), broken (fails) and gauges (document) joined This Mac's.
+            steady(admin, 'GET', machine_url + '?run=1')
+            deadline = time.monotonic() + 20
+            while True:
+                status, card = steady(admin, 'GET', machine_url)
+                assert status == 200, (status, card)
+                titles = [section['title'] for section in card['run']['doc']['sections']]
+                if not card['running'] and not any('no result yet' in str(section['items']) for section in card['run']['doc']['sections']):
+                    break
+                assert time.monotonic() < deadline, card
+                time.sleep(0.2)
+            sections = card['run']['doc']['sections']
+            assert titles[-6:-4] == ['Load', 'Disks'] and titles[-4:] == ['calm · device', 'calm', 'calm · Memory', 'calm · Storage'], titles
+            assert card['run']['doc']['title'] in ('This Mac', 'This machine'), card['run']['doc']['title']
+            device_lines = sections[-4]['items'][0]['items']
+            assert device_lines[0] == 'mem 8G swap 0' and device_lines[1].startswith('device run '), device_lines
+            # ^ A failing project panel is one line, level bad, in its place; the card's state is the worst level.
+            assert sections[-3]['items'] == [{'kind': 'list', 'items': ['broken: failed (exit 2)'], 'level': 'bad'}], sections[-3]
+            assert [item['kind'] for item in sections[-2]['items']] == ['gauge', 'gauge', 'stat'] and card['run']['doc']['level'] == 'bad', card['run']['doc']
+            assert 'level' not in mac['run']['doc'] or mac['run']['doc']['level'] in ('warn', 'bad'), mac['run']['doc']
+            assert not any(str(title).startswith('calm') for title in [section['title'] for section in mac['run']['doc']['sections']]), 'a project outside the grant is in the card'
             status, body = steady(admin, 'GET', panel_url + '/missing')
             assert status == 409 and 'no panel' in body['error']['message'], (status, body)
             ok('panels: run in wsxd on open and when stale, the built-in machine panel with no project declaring one, cached with its age, a failing command with its exit code, a json panel as a typed document with a notice for what it skipped, 403 without terminal_input, 404 for an unknown project')

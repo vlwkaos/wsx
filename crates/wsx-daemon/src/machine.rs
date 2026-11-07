@@ -106,6 +106,7 @@ pub(crate) fn read() -> PanelRun {
     let doc = PanelDoc {
         title: Some(TITLE.into()),
         sections,
+        level: None,
     };
     PanelRun {
         status: PanelStatus::Ok,

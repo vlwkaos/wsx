@@ -20,9 +20,6 @@ export const state = {
   tasks: {},
   // This device's notification switches and muted sessions (api/push), once read.
   push: null,
-  // wsxd's built-in machine panels, then the granted projects that declare one, with those panels
-  // (panels.js loadMachine).
-  machine: { panels: [], projects: [] },
   // Where the header bar sits on this device: "top" or "bottom" (ui.js, settings.js).
   bar: "top",
   // The bottom-bar tabs this device hides, by name (ui.js; Settings is never in it).

@@ -989,7 +989,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         "  e             View/edit wsx.config.yml",
         "  t             Tasks (Enter detail, m chat, S shell,",
         "                o view, u usage, a agent)",
-        "  v / M         Panels (M: this Mac, every machine panel)",
+        "  v / M         Panels (M: this Mac with the machine panels)",
         "",
         " Worktree",
         "  w             Add worktree (branch: prompt)",
