@@ -4,6 +4,7 @@
 use std::{
     fs,
     io::{self, Read, Write},
+    os::fd::AsRawFd,
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -181,4 +182,46 @@ pub(crate) fn read_private_small(path: &Path, cap: u64) -> Option<String> {
     let mut text = String::new();
     file.take(cap + 1).read_to_string(&mut text).ok()?;
     Some(text)
+}
+
+/// An exclusive `flock` on the open descriptor `fd`, held until it closes. `nonblocking`:
+/// `Ok(false)` when another holds it, else the call waits.
+pub fn flock(fd: std::os::fd::RawFd, nonblocking: bool) -> io::Result<bool> {
+    let operation = libc::LOCK_EX | if nonblocking { libc::LOCK_NB } else { 0 };
+    // SAFETY: flock on a descriptor the caller keeps open.
+    if unsafe { libc::flock(fd, operation) } == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        true => Ok(false),
+        false => Err(error),
+    }
+}
+
+/// The owner-only lock file at `path`, locked by this process, or `None` while another holds
+/// it. Refused unless it is a regular file with one link, owned by the effective user, with
+/// no group or other permission bits.
+pub fn try_lock_file(path: &Path) -> io::Result<Option<fs::File>> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        // ^ O_NONBLOCK: a FIFO planted at `path` must not block the open.
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.nlink() != 1
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("unsafe lock file {}", path.display()),
+        ));
+    }
+    Ok(flock(file.as_raw_fd(), true)?.then_some(file))
 }

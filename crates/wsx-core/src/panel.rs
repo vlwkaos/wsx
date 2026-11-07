@@ -1,20 +1,18 @@
 //! Project panels: a command in `wsx.config.yml` whose output the web client and the TUI show.
 //! wsxd runs it and keeps the last result; the clients only ask (docs/panels.md).
 
+use crate::process::{run_bounded, Bound, Options, Stderr};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use std::io::Read;
-use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-pub const MAX_PANELS: usize = 16;
+const MAX_PANELS: usize = 16;
 pub const MAX_NAME_BYTES: usize = 32;
-pub const MIN_REFRESH_SECS: u64 = 10;
-pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
-pub const MAX_TIMEOUT_SECS: u64 = 300;
+const MIN_REFRESH_SECS: u64 = 10;
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
+const MAX_TIMEOUT_SECS: u64 = 300;
 /// What a result keeps of the output: its last bytes.
 pub const MAX_OUTPUT_BYTES: usize = 16 * 1024;
 /// What a `format: json` document keeps (docs/panels.md "JSON panels").
@@ -27,8 +25,6 @@ const MAX_STRING_CHARS: usize = 200;
 const MAX_NOTICES: usize = 5;
 const MAX_ARGV: usize = 64;
 const MAX_ARG_BYTES: usize = 4096;
-/// After a kill, how long the output streams get to close before the bytes read so far count.
-const STREAM_GRACE: Duration = Duration::from_millis(300);
 
 /// One `panels:` entry, checked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -466,50 +462,6 @@ pub fn request(
     }
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
-}
-
-/// The last bytes of a stream, read in its own thread.
-#[derive(Default)]
-struct Tail {
-    bytes: Vec<u8>,
-    cut: bool,
-}
-
-fn read_tail(mut reader: impl Read, tail: Arc<Mutex<Tail>>) {
-    let mut chunk = [0u8; 8192];
-    while let Ok(read) = reader.read(&mut chunk) {
-        if read == 0 {
-            break;
-        }
-        let Ok(mut tail) = tail.lock() else { break };
-        tail.bytes.extend_from_slice(&chunk[..read]);
-        if tail.bytes.len() > 2 * MAX_OUTPUT_BYTES {
-            let cut = tail.bytes.len() - MAX_OUTPUT_BYTES;
-            tail.bytes.drain(..cut);
-            tail.cut = true;
-        }
-    }
-}
-
-fn spawn_reader(stream: Option<impl Read + Send + 'static>) -> Arc<Mutex<Tail>> {
-    let tail = Arc::new(Mutex::new(Tail::default()));
-    if let Some(stream) = stream {
-        let shared = tail.clone();
-        std::thread::spawn(move || read_tail(stream, shared));
-    }
-    tail
-}
-
-fn taken(tail: &Arc<Mutex<Tail>>) -> (Vec<u8>, bool) {
-    tail.lock()
-        .map(|tail| (tail.bytes.clone(), tail.cut))
-        .unwrap_or_default()
-}
-
 /// Run `panel` in `cwd` (argv, no shell) and wait for it, at most its timeout. The output is
 /// stdout, and with a failure stderr after it; its last `MAX_OUTPUT_BYTES` stay.
 pub fn run(panel: &PanelConfig, cwd: &Path) -> PanelRun {
@@ -518,7 +470,7 @@ pub fn run(panel: &PanelConfig, cwd: &Path) -> PanelRun {
         output,
         truncated,
         exit,
-        finished_unix_ms: now_ms(),
+        finished_unix_ms: crate::task::now_unix_ms(),
         doc: None,
         notice: None,
     };
@@ -536,13 +488,19 @@ pub fn run(panel: &PanelConfig, cwd: &Path) -> PanelRun {
         .current_dir(cwd)
         .env("NO_COLOR", "1")
         .env("TERM", "dumb")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // ^ Its own group, so a timeout stops the command's children too.
-        .process_group(0);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
+        .stdin(Stdio::null());
+    // ^ Its own group, so a timeout stops the command's children too.
+    let tail = Bound::Tail(MAX_OUTPUT_BYTES);
+    let ran = match run_bounded(
+        &mut command,
+        &Options {
+            timeout: Duration::from_secs(panel.timeout),
+            stdout: tail,
+            stderr: Stderr::Own(tail),
+            reap: false,
+        },
+    ) {
+        Ok(ran) => ran,
         Err(error) => {
             return result(
                 PanelStatus::NotStarted,
@@ -552,44 +510,16 @@ pub fn run(panel: &PanelConfig, cwd: &Path) -> PanelRun {
             )
         }
     };
-    let group = child.id() as libc::pid_t;
-    let stdout = spawn_reader(child.stdout.take());
-    let stderr = spawn_reader(child.stderr.take());
-    let started = Instant::now();
-    let limit = Duration::from_secs(panel.timeout);
-    let (status, timed_out) = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break (Some(status), false),
-            Ok(None) if started.elapsed() >= limit => {
-                // SAFETY: a signal to the group the command leads.
-                unsafe { libc::killpg(group, libc::SIGKILL) };
-                let _ = child.wait();
-                break (None, true);
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(error) => {
-                return result(PanelStatus::NotStarted, format!("{error}"), false, None);
-            }
-        }
-    };
-    // ^ Let the readers take what is left in the pipes; a child that left the group may keep
-    // them open, and then what was read so far is the output.
-    std::thread::sleep(if timed_out {
-        STREAM_GRACE
-    } else {
-        Duration::from_millis(50)
-    });
-    let exit = status.and_then(|status| status.code());
-    let status = match (timed_out, exit) {
+    let exit = ran.status.code();
+    let status = match (ran.timed_out, exit) {
         (true, _) => PanelStatus::TimedOut,
         (false, Some(0)) => PanelStatus::Ok,
         _ => PanelStatus::Failed,
     };
-    let (mut bytes, mut truncated) = taken(&stdout);
+    let (mut bytes, mut truncated) = (ran.stdout, ran.stdout_cut > 0);
     if status != PanelStatus::Ok {
-        let (errors, cut) = taken(&stderr);
-        truncated |= cut;
-        bytes.extend_from_slice(&errors);
+        truncated |= ran.stderr_cut > 0;
+        bytes.extend_from_slice(&ran.stderr);
     }
     if bytes.len() > MAX_OUTPUT_BYTES {
         bytes.drain(..bytes.len() - MAX_OUTPUT_BYTES);
@@ -616,7 +546,7 @@ pub fn run(panel: &PanelConfig, cwd: &Path) -> PanelRun {
 
 /// `text` without ANSI escape sequences or control characters other than newline and tab;
 /// `\r\n` is a newline and a lone `\r` goes.
-pub fn plain_text(text: &str) -> String {
+fn plain_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {

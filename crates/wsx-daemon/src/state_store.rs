@@ -10,7 +10,7 @@ use std::{
         Arc, Condvar, Mutex,
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 const MAX_STATE_BYTES: u64 = 8 * 1024 * 1024;
@@ -435,10 +435,7 @@ fn backup_path(path: &Path) -> PathBuf {
 }
 
 fn quarantine_path(path: &Path) -> PathBuf {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+    let timestamp = wsx_core::task::now_unix_ms();
     path.with_extension(format!("json.corrupt.{timestamp}"))
 }
 

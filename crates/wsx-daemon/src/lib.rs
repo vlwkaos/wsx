@@ -438,12 +438,8 @@ struct Daemon {
     lifecycle_path: PathBuf,
 }
 
-fn unix_time_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
-}
+// ^ The name stays, so the many callers and the open tasks that edit them do not move.
+use wsx_core::task::now_unix_ms as unix_time_millis;
 
 // ^ docs/daemon-discovery.md: the state and its singleton lock live beside the socket, where
 // a client waits for the lock, so two sockets are two daemons that never share a state file.

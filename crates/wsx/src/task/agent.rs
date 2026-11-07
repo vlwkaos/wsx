@@ -531,9 +531,9 @@ impl AgentProcess {
     /// reaped yet, so its group ID is still its own.
     fn signal(&self, signal: libc::c_int) {
         let leader = self.child.id() as libc::pid_t;
-        // SAFETY: plain signals to the agent's own group and to processes that carry its mark.
-        unsafe { libc::killpg(leader, signal) };
+        wsx_core::process::signal_group(leader, signal);
         for pid in marked(&self.marker) {
+            // SAFETY: a plain signal to a process that carries the agent's mark.
             unsafe { libc::kill(pid, signal) };
         }
     }

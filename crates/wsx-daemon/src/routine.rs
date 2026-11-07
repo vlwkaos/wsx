@@ -4,13 +4,13 @@
 //! ref: docs/tasks.md "Routines"
 
 use super::*;
-use crate::server::try_lock_file;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Seek;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
-use wsx_core::fs_util::private_dir;
+use wsx_core::fs_util::{private_dir, try_lock_file};
+use wsx_core::process::terminate_group;
 use wsx_core::routine::{
     cron::{CronSchedule, LocalTime},
     store::{self, ProjectRoutines},
@@ -27,6 +27,8 @@ const MAX_RUN_LOG_BYTES: usize = 8 * 1024 * 1024;
 const RUN_LOG_TAIL_BYTES: usize = 128 * 1024;
 const FINAL_OUTPUT_BYTES: usize = 16 * 1024;
 const OWNERSHIP_WAIT: Duration = Duration::from_secs(10);
+/// A routine's group gets SIGTERM, and SIGKILL after this.
+const GROUP_GRACE: Duration = Duration::from_secs(2);
 const UPGRADE_NOTE: &str = "interrupted by the upgrade from asched to wsxd's scheduler";
 
 static SCHEDULER: OnceLock<Scheduler> = OnceLock::new();
@@ -589,7 +591,7 @@ fn cancel(data: &mut ProjectRoutines, name: &str) -> bool {
     // ^ The supervisor's group first: its command stays in that group until it has written
     // `pid`, and only then moves to its own group, which `pid` names.
     if supervisor_alive(run) {
-        terminate_group(run.pid.unwrap_or_default());
+        terminate_group(run.pid.unwrap_or_default(), GROUP_GRACE);
     }
     kill_group(&dir.join("pid"));
     run.pid = None;
@@ -643,31 +645,8 @@ fn kill_group(pid_file: &Path) -> bool {
     if pid <= 1 || process_start(pid).as_deref() != Some(start) {
         return false;
     }
-    terminate_group(pid);
+    terminate_group(pid, GROUP_GRACE);
     true
-}
-
-fn group_exists(pgid: i32) -> bool {
-    let alive = unsafe { libc::kill(-pgid, 0) } == 0;
-    alive || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-}
-
-/// TERM the group, then KILL what is left after 2 s.
-fn terminate_group(pgid: i32) {
-    if pgid <= 1 {
-        return;
-    }
-    for signal in [libc::SIGTERM, libc::SIGKILL] {
-        unsafe { libc::kill(-pgid, signal) };
-        for _ in 0..20 {
-            // ^ A supervisor is wsxd's child: reap it, else its zombie keeps the group.
-            unsafe { libc::waitpid(-pgid, std::ptr::null_mut(), libc::WNOHANG) };
-            if !group_exists(pgid) {
-                return;
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
-    }
 }
 
 /// The process's start time, which tells it from a later process with its pid.
@@ -845,7 +824,7 @@ pub fn run_routine_run(mut arguments: impl Iterator<Item = OsString>) -> io::Res
     }
     let status = child.wait()?;
     // ^ What the command left in its group would hold the output pipes open.
-    terminate_group(pid);
+    terminate_group(pid, GROUP_GRACE);
     let _ = out.join();
     let _ = err.join();
     let output = match file_tail(&stdout_path) {

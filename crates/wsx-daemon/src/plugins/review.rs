@@ -207,7 +207,7 @@ fn exchange(
         }
     })();
     // Always stop descendants, including ones holding pipes after the parent exits.
-    unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    wsx_core::process::terminate_group(pgid, Duration::ZERO);
     let reaped = child.wait();
     match result {
         Ok(output) => {
