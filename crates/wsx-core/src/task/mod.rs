@@ -819,7 +819,7 @@ pub fn call_task_host(
         }
         // ^ A live pane may still bind its socket; a missing or exited one never will.
         let waited = std::time::Instant::now();
-        while host_pane_live(&record)? {
+        while host_pane_live(&record).with_context(|| format!("{error:#}"))? {
             let probe = std::time::Duration::from_secs(2);
             if call_host(&socket, &HostRequest::Status, probe).is_ok() {
                 return call_host_waiting(&socket, request, timeout);
