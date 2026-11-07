@@ -3841,7 +3841,7 @@ await closeSheet("the page", `#/p/${plansArg}`);
   // tone and the status word, not color alone.
   await evaluate(`(() => { const real = window.fetch; window.__realFetch = real; window.fetch = async (url, ...rest) => {
     const response = await real(url, ...rest);
-    if (!/\/api\/tasks\/usage(\?|$)/.test(String(url))) return response;
+    if (!String(url).includes('/api/tasks/usage')) return response;
     const body = await response.json();
     for (const limit of body.limits ?? []) { limit.windows[0].status = 'warning'; limit.windows[1].status = 'rejected'; }
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }); }; })()`);

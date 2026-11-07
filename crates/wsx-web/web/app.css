@@ -998,9 +998,9 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .usage-meter[data-tone="attention"] i { background: var(--color-attention); }
 .usage-meter[data-tone="danger"] i { background: var(--color-danger); }
 /* The filters over the tabs (usage.js): period, hands, agent. */
-.usage-filters { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin-bottom: var(--space-3); }
-.usage-filter { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; flex: 1 1 calc(var(--space-4) * 8); font-size: var(--font-size-sm); color: var(--color-muted); }
-.usage-filter select { min-height: var(--size-control); padding: 0 var(--space-2); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); background: var(--color-surface); color: var(--color-text); }
+.usage-filters { display: flex; gap: var(--space-2); margin-bottom: var(--space-3); }
+.usage-filter { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; flex: 1 1 0; font-size: var(--font-size-sm); color: var(--color-muted); }
+.usage-filter select { min-width: 0; min-height: var(--size-control); padding: 0 var(--space-2); border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); background: var(--color-surface); color: var(--color-text); }
 .usage-tokens { margin-bottom: var(--space-4); }
 .usage-as-of { padding-inline: 0; color: var(--color-muted); }
 .usage-legend { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin: 0 0 var(--space-3); padding: 0; list-style: none; color: var(--color-muted); font-size: var(--font-size-sm); }
