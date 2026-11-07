@@ -2154,7 +2154,7 @@ try:
         for n, entry in enumerate(chat_log):
             log_file.write(json.dumps({"unix_ms": at + n * 1000, **entry}) + "\n")
     # A task that waits for another (`wsx task after`): the Tasks view's row adds the reason after
-    # the label, and the detail of the task waited for lists who waits (docs/tasks.md "TUI").
+    # the label (the status column is 2/5 of the width, so the reason is clipped), and the detail of the task waited for lists who waits (docs/tasks.md "TUI").
     keep_store = keep_log.parent.parent
     now_ms = int(time.time() * 1000)
     for number, state, after in ((1, "working", None), (2, "ready", {"task": 1, "text": "WORK x.txt", "since_unix_ms": now_ms, "because": "check"})):
@@ -2170,7 +2170,7 @@ try:
     select_in_tui("keep-me")
     os.write(remove_master, b"t")
     wait_for(lambda: "All projects" in remove_view.text(), "t opened no Tasks view for keep-me", seconds=60)
-    wait_for(lambda: re.search(r"#2\s+ready\s+Waiting for #1 to land · its checks fail", remove_view.text()),
+    wait_for(lambda: re.search(r"#2\s+ready\s+Waiting for #1 to land · its", remove_view.text()),
              lambda: f"the Tasks view row did not give the reason of the wait:\n{remove_view.text()}", seconds=60)
     os.write(remove_master, b"\r")
     wait_for(lambda: "Its checks fail" in remove_view.text(), "the detail did not give the reason", seconds=60)
