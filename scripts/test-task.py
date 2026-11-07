@@ -3976,13 +3976,13 @@ def run(wsx, wsxd, work, owned):
     assert js('task', 'ledger')['approvals'] == []
     # 32f. A pending request whose task leaves is dropped with the reason, and the manager and
     # the owner read it in the chat.
-    gone = js('task', 'new', 'WORK gone.txt')['id']
-    assert wait_state(gone, 'ready', 'failed')['state'] == 'ready'
-    asked = js('task', 'say', 'RUN wsx task close %d --discard -p demo --json' % gone)
+    dropped = js('task', 'new', 'WORK gone.txt')['id']
+    assert wait_state(dropped, 'ready', 'failed')['state'] == 'ready'
+    asked = js('task', 'say', 'RUN wsx task close %d --discard -p demo --json' % dropped)
     assert 'the owner was asked (a92)' in reply_to(asked['id'])['text']
     assert [p['id'] for p in js('task', 'ledger')['approvals']] == ['a92']
-    js('task', 'close', gone, '--discard')
-    wait(lambda: events_with('approval a92 (discard #%d) dropped; #%d is closed' % (gone, gone)), 'the dropped request event')
+    js('task', 'close', dropped, '--discard')
+    wait(lambda: events_with('approval a92 (discard #%d) dropped; #%d is closed' % (dropped, dropped)), 'the dropped request event')
     assert js('task', 'ledger')['approvals'] == [] and approval_lines()[-1]['outcome'] == 'dropped; #%d is closed' % gone
     assert not events_with('approval a91'), 'an approval by the owner message became an event'
     # ^ A release refuses while items are open (docs/tasks.md "Deploy and release"), but one the
