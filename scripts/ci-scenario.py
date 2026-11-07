@@ -94,10 +94,18 @@ def find_run(repo, commit):
     raise RuntimeError('no CI run started for %s in %d s' % (commit, FIND_SECONDS))
 
 
-def jobs_started(view):
-    """True once a job of the run left the queue: it runs or ended (a skipped job never ran)."""
-    return any(job['status'] in ('in_progress', 'completed') and job['conclusion'] != 'skipped'
-               for job in view['jobs'])
+def own_jobs(view, part):
+    """The run's jobs that matter: with a part, a job named `... (<other part>)` is left out. CI
+    starts every part's job on a `--<part>` branch (a job `if` cannot read the matrix) and the
+    others end green at once, which would start the run clock and print their ends."""
+    if not part:
+        return view['jobs']
+    return [job for job in view['jobs'] if not re.search(r'\((?!%s\)$)[\w-]+\)$' % re.escape(part), job['name'])]
+
+
+def jobs_started(jobs):
+    """True once a job left the queue: it runs or ended (a skipped job never ran)."""
+    return any(job['status'] in ('in_progress', 'completed') and job['conclusion'] != 'skipped' for job in jobs)
 
 
 def overdue(queued, running):
@@ -108,7 +116,7 @@ def overdue(queued, running):
     return 'the jobs did not end in %d min' % (RUN_SECONDS // 60) if running > RUN_SECONDS else None
 
 
-def wait_run(repo, run_id):
+def wait_run(repo, run_id, part=None):
     """The finished run's view; the queue wait is in the first line said when the jobs start."""
     said = {}
     begun = time.monotonic()
@@ -116,16 +124,17 @@ def wait_run(repo, run_id):
     while True:
         view = json.loads(gh('run', 'view', str(run_id), '--repo', repo,
                              '--json', 'status,conclusion,jobs').stdout)
-        for job in view['jobs']:
+        jobs = own_jobs(view, part)
+        for job in jobs:
             state = job['conclusion'] or job['status']
             if said.get(job['name']) != state and state != 'skipped':
                 say('%s  %s: %s' % (time.strftime('%H:%M:%S'), job['name'], state))
                 said[job['name']] = state
-        if started is None and jobs_started(view):
+        if started is None and jobs_started(jobs):
             started = time.monotonic()
             say('%s  queued %d min before its jobs started' % (time.strftime('%H:%M:%S'), (started - begun) // 60))
         if view['status'] == 'completed':
-            return view
+            return view | {'jobs': jobs}
         now = time.monotonic()
         late = overdue(now - begun, None if started is None else now - started)
         if late:
@@ -226,7 +235,7 @@ def main():
                         'push', '-q', url, '%s:refs/heads/%s' % (commit, branch)], check=True)
         run = find_run(repo, commit)
         say('%s on CI for %s: %s' % (name, head[:12], run['url']))
-        view = wait_run(repo, run['databaseId'])
+        view = wait_run(repo, run['databaseId'], part)
         ended = True
         take_files(repo, run['databaseId'], root, scratch)
         if view['conclusion'] != 'success':
