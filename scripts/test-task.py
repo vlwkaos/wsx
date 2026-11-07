@@ -3748,8 +3748,9 @@ def run(wsx, wsxd, work, owned):
     # result waits for it, and each answer names its own commit, as the run's own output does.
     mark('32t4')
     two_gate = base / 'two-commits-gate'
-    configure(LAND_CONFIG + '  scenarios:\n    oncommit: "ci: while [ ! -e %s ]; do sleep 0.2; done; '
-              'echo ran-on-$(git rev-parse --short=12 HEAD); exit 1"\n' % two_gate, 'a ci scenario per commit')
+    # ^ The run reads HEAD when it starts, as ci-scenario.py does: the gate opens after commit B.
+    configure(LAND_CONFIG + '  scenarios:\n    oncommit: "ci: at=$(git rev-parse --short=12 HEAD); '
+              'while [ ! -e %s ]; do sleep 0.2; done; echo ran-on-$at; exit 1"\n' % two_gate, 'a ci scenario per commit')
     two = js('task', 'new', 'CHECKRUN_LATER oncommit WORK first.txt')['id']
     wait(lambda: kinds(two, 'result'), 'the result before the first answer', 30)
     js('task', 'add', two, 'WORK second.txt CHECKRUN_LATER oncommit')
