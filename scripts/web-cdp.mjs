@@ -51,7 +51,10 @@ export function designLint({ evaluate, captures, file }) {
     // ^ A row that arrives or a tone that fades is mid-way in colour and place: lint it once the finite animations and transitions ended.
     for (let waited = 0; waited < 40 && await evaluate("document.getAnimations().some((animation) => animation.playState === 'running' && animation.effect?.getComputedTiming().iterations !== Infinity)"); waited++) await pause(100);
     await evaluate(`globalThis.DESIGN_LINT = ${JSON.stringify({ touch: width < 600, gutter: 16, keep })}`);
+    // ^ A closed <details> keeps its content measurable: hide it for the lint, as it is for the reader.
+    await evaluate("document.head.insertAdjacentHTML('beforeend', '<style id=design-lint-closed>details:not([open]) > :not(summary) { display: none !important; }</style>')");
     const result = await evaluate(source);
+    await evaluate("document.getElementById('design-lint-closed').remove()");
     const scheme = await evaluate("document.documentElement.dataset.scheme ?? 'dark'");
     const screen = { screen: name, size: `${width}x${height}`, scheme, counts: result.counts, findings: result.findings };
     screens.push(screen);

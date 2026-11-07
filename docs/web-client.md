@@ -151,7 +151,7 @@ Motion shows that something arrived, changed or left; nothing moves for its own 
 
 ## Design lint
 
-The browser checks run the design linter of the ui-view-standards skill (`scripts/design-lint.js`, a copy of the skill's `scripts/design-lint.js`, dotfiles #28; two `// vendored:` lines on top name its hash and date). Rules and levels: the skill's `reference/LINT.md`. `designLint()` in `scripts/web-cdp.mjs` runs it on the page as it is, at 390 x 844 (touch) and 1280 x 800 only, from the `shot()` of `web-browser-check.mjs` and `web-tasks-check.mjs` and at the captures of `web-panels-check.mjs` (Machine tab), `web-projects-check.mjs` (Home) and `web-terminal-check.mjs` (session):
+The browser checks run the design linter of the ui-view-standards skill (`scripts/design-lint.js`, a copy of the skill's `scripts/design-lint.js`, dotfiles #28; two `// vendored:` lines on top name its hash and date). Rules and levels: the skill's `reference/LINT.md`. `designLint()` in `scripts/web-cdp.mjs` runs it on the page as it is (except that the content of a closed `<details>` is hidden while it runs: the lint measures it, the reader does not see it), at 390 x 844 (touch) and 1280 x 800 only, from the `shot()` of `web-browser-check.mjs` and `web-tasks-check.mjs` and at the captures of `web-panels-check.mjs` (Machine tab), `web-projects-check.mjs` (Home) and `web-terminal-check.mjs` (session):
 
 | Screen | Shots |
 |---|---|
