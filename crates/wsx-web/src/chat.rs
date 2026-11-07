@@ -1319,11 +1319,7 @@ pub fn with_attachments(
                     "an attachment expired; upload it again",
                 )
             })?;
-            prompt.push_str(&format!(
-                "\n{} ({})",
-                media.path(&entry).display(),
-                entry.name
-            ));
+            prompt.push_str(&format!("\n{}", media.prompt_line(&entry)));
         }
     }
     if prompt.is_empty() || prompt.len() > MAX_PROMPT_BYTES {
@@ -1489,10 +1485,7 @@ pub fn sent_message(text: &str, media: &Media) -> (String, Vec<Attachment>) {
     };
     let attachments = list
         .lines()
-        .filter_map(|line| {
-            let path = line.rsplit_once(" (").map_or(line, |(path, _)| path);
-            media.by_path(Path::new(path)).map(Attachment::from)
-        })
+        .filter_map(|line| media.by_line(line).map(Attachment::from))
         .collect();
     (before.to_owned(), attachments)
 }

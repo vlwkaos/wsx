@@ -1,6 +1,7 @@
 //! Per-site, content-addressed media store. See docs/web-client.md "Media".
 //! ^ A URL names the SHA-256 of the bytes, so a browser may cache it as immutable.
 //! An entry lives from its first upload until the TTL or quota removes it.
+use crate::compact::{self, Compact};
 use crate::devices::{hex, now_unix, private_dir, random_bytes, write_private};
 use crate::site::MediaLimits;
 use anyhow::Result;
@@ -24,11 +25,18 @@ pub struct Entry {
     pub name: String,
     pub size: u64,
     pub created_unix: u64,
+    /// The compact copy an agent reads first (`compact.rs`); freed with the entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact: Option<Compact>,
 }
 
 impl Entry {
     pub fn file_name(&self) -> String {
         format!("{}.{}", self.hash, self.ext)
+    }
+    /// Bytes on disk: the original and its compact copy, as the quota counts them.
+    fn stored_bytes(&self) -> u64 {
+        self.size + self.compact.as_ref().map_or(0, |compact| compact.size)
     }
     pub fn is_image(&self) -> bool {
         self.mime.starts_with("image/")
@@ -93,10 +101,30 @@ impl Media {
             .unwrap_or_default();
         // The index is the authority; drop rows whose file is gone and files with no row.
         index.retain(|entry| dir.join(entry.file_name()).is_file());
+        for entry in index.iter_mut() {
+            if entry
+                .compact
+                .as_ref()
+                .is_some_and(|copy| copy.files.iter().any(|name| !dir.join(name).exists()))
+            {
+                let copy = entry.compact.take().expect("checked above");
+                copy.files
+                    .iter()
+                    .for_each(|name| compact::remove(&dir, name));
+            }
+        }
         for item in fs::read_dir(&dir)?.flatten() {
             let name = item.file_name().to_string_lossy().into_owned();
-            if name != "index.json" && !index.iter().any(|entry| entry.file_name() == name) {
-                let _ = fs::remove_file(item.path());
+            let known = name == "index.json"
+                || index.iter().any(|entry| {
+                    entry.file_name() == name
+                        || entry
+                            .compact
+                            .as_ref()
+                            .is_some_and(|copy| copy.files.contains(&name))
+                });
+            if !known {
+                compact::remove(&dir, &name);
             }
         }
         let media = Self {
@@ -129,6 +157,9 @@ impl Media {
     fn remove(&self, index: &mut Vec<Entry>, position: usize) {
         let entry = index.remove(position);
         let _ = fs::remove_file(self.path(&entry));
+        for name in entry.compact.iter().flat_map(|copy| &copy.files) {
+            compact::remove(&self.dir, name);
+        }
     }
 
     /// Remove expired entries. Called by the server's sweeper and before each write.
@@ -198,16 +229,7 @@ impl Media {
             self.save(&index);
             return Ok(existing);
         }
-        // Oldest first until the new file fits. `max_file_bytes <= quota_bytes` is validated.
-        while index.iter().map(|entry| entry.size).sum::<u64>() + upload.size
-            > self.limits.quota_bytes
-            && !index.is_empty()
-        {
-            let oldest = (0..index.len())
-                .min_by_key(|position| index[*position].created_unix)
-                .expect("index is not empty");
-            self.remove(&mut index, oldest);
-        }
+        self.make_room(&mut index, upload.size, "");
         let entry = Entry {
             hash,
             ext: ext.to_owned(),
@@ -215,11 +237,67 @@ impl Media {
             name,
             size: upload.size,
             created_unix: now_unix(),
+            compact: None,
         };
         fs::rename(&upload.path, self.path(&entry)).map_err(|_| MediaError::Io)?;
         index.push(entry.clone());
         self.save(&index);
-        Ok(entry)
+        drop(index);
+        Ok(self.add_compact(entry))
+    }
+
+    /// Oldest first (never `keep`) until `extra` more bytes fit. `max_file_bytes <=
+    /// quota_bytes` is validated.
+    fn make_room(&self, index: &mut Vec<Entry>, extra: u64, keep: &str) {
+        while index.iter().map(Entry::stored_bytes).sum::<u64>() + extra > self.limits.quota_bytes {
+            let oldest = (0..index.len())
+                .filter(|position| index[*position].hash != keep)
+                .min_by_key(|position| index[*position].created_unix);
+            match oldest {
+                Some(oldest) => self.remove(index, oldest),
+                None => break,
+            }
+        }
+    }
+
+    /// Make the entry's compact copy outside the index lock (a tool can take seconds), then
+    /// record it. An entry removed meanwhile takes its new copy with it.
+    fn add_compact(&self, entry: Entry) -> Entry {
+        let Some(copy) = compact::make(&self.dir, &entry.hash, &entry.ext) else {
+            return entry;
+        };
+        let mut index = crate::locked(&self.index);
+        let Some(position) = index.iter().position(|row| row.hash == entry.hash) else {
+            copy.files
+                .iter()
+                .for_each(|name| compact::remove(&self.dir, name));
+            return entry;
+        };
+        index[position].compact = Some(copy);
+        self.make_room(&mut index, 0, &entry.hash);
+        self.save(&index);
+        index
+            .iter()
+            .find(|row| row.hash == entry.hash)
+            .cloned()
+            .unwrap_or(entry)
+    }
+
+    /// The prompt line of an attachment: `path (name)`; with a compact copy that path
+    /// first and the original after it.
+    pub fn prompt_line(&self, entry: &Entry) -> String {
+        let original = self.path(entry);
+        let Some(copy) = &entry.compact else {
+            return format!("{} ({})", original.display(), entry.name);
+        };
+        format!(
+            "{} ({}: {}) original: {} (open it only for {})",
+            self.dir.join(&copy.files[0]).display(),
+            entry.name,
+            copy.summary,
+            original.display(),
+            copy.original_for
+        )
     }
 
     /// Copy an already opened file into the store (agent-produced files).
@@ -256,12 +334,14 @@ impl Media {
             .cloned()
     }
 
-    /// Map a stored file path, as written into a prompt, back to its entry.
-    pub fn by_path(&self, path: &Path) -> Option<Entry> {
-        (path.parent()? == self.dir)
-            .then(|| path.file_name()?.to_str())
-            .flatten()
-            .and_then(|name| self.get(name))
+    /// The entry a prompt line names (`prompt_line`): the stored path of the original,
+    /// after `original:` when the line also names a compact copy.
+    pub fn by_line(&self, line: &str) -> Option<Entry> {
+        let rest = line
+            .split_once(") original: ")
+            .map_or(line, |(_, rest)| rest);
+        let name = rest.strip_prefix(self.dir.to_str()?)?.strip_prefix('/')?;
+        self.get(name.split_once(" (").map_or(name, |(name, _)| name))
             .map(|(entry, _)| entry)
     }
 }
