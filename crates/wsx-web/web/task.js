@@ -242,6 +242,13 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
                 : html`<div class="task-body"><${Markdown} text=${foldBody(title, report[title])} words=${words} prose /></div>`}
             </details>`;
         })}
+        ${detail.status.waited_by?.length ? html`
+          <section class="task-section" aria-label="Waited for by">
+            <h2 class="task-heading">Waited for by</h2>
+            <ul class="task-overlaps">
+              ${detail.status.waited_by.map((waiter) => html`<li key=${waiter.task}><${TaskChip} project=${project} id=${waiter.task} /></li>`)}
+            </ul>
+          </section>` : null}
         ${detail.talk.length ? html`<${Talk} project=${project} talk=${detail.talk} words=${words} />` : null}
         ${detail.conflict && detail.overlaps.length ? html`
           <section class="task-section" aria-label="Shared files">

@@ -166,6 +166,7 @@ fn build_overview(
     settings: Option<&wsx_core::model::workspace::TaskConfig>,
 ) -> Value {
     let tasks = view::project_tasks(&scope.store).unwrap_or_default();
+    let records: Vec<&TaskRecord> = tasks.iter().filter_map(|(_, r)| r.as_ref().ok()).collect();
     let now = task::now_unix_ms();
     let mut needs: Vec<(u8, u64, Value)> = Vec::new();
     let mut listed: Vec<(u8, u64, Value)> = Vec::new();
@@ -178,8 +179,10 @@ fn build_overview(
         let Ok(record) = record else { continue };
         let title = view::readable_title(dir, record).unwrap_or_default();
         // ^ The words every view shows (docs/tasks.md "Status"); a row shows the label.
+        let waiters = status::waiters(records.iter().copied(), record.id);
         let facts = status::Facts {
             approvals: &pending,
+            waiters: &waiters,
             ..Default::default()
         };
         let status = status::status(dir, record, &facts, now);
@@ -542,10 +545,12 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     });
     summary["deploy"] = deployed(scope, landed.as_deref());
     // ^ One task, so it knows whether it is stuck and deployed (docs/tasks.md "Status").
+    let waiters = status::waiters(records.iter().copied(), task);
     let facts = status::Facts {
         approvals: &approvals,
         stuck: stuck.as_deref(),
         deployed: summary["deploy"]["deployed"].as_bool(),
+        waiters: &waiters,
     };
     summary["status"] = json!(status::status(&dir, &record, &facts, now));
     summary["hold"] = json!(record.hold);

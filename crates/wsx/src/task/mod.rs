@@ -48,8 +48,8 @@ use wsx_core::task::view::{
 use wsx_core::task::{
     call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
-    Actor, DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind, TaskRecord,
-    TaskState, MAX_MESSAGE_BYTES,
+    Actor, AfterKind, DeployKind, DeployRecord, HostRequest, HostResponse, LogEvent, MessageKind,
+    TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
 use wsx_core::{ops, runtime};
 
@@ -201,6 +201,16 @@ pub enum TaskCmd {
         /// What the task does then; it comes as a message
         #[arg(required_unless_present = "off", conflicts_with = "off")]
         then: Option<String>,
+        /// Why it waits: needs (builds on #m's change), files (changes the same files, lands
+        /// after it), check (its checks fail on main until #m lands)
+        #[arg(
+            long,
+            value_name = "needs|files|check",
+            value_parser = AfterKind::parse,
+            required_unless_present = "off",
+            conflicts_with = "off"
+        )]
+        because: Option<AfterKind>,
         #[arg(long)]
         off: bool,
         #[arg(short, long)]
@@ -805,10 +815,11 @@ pub fn run(command: TaskCmd) -> Result<()> {
             task,
             on,
             then,
+            because,
             off: _,
             project,
             json,
-        } => after_command(project.as_deref(), &task, on, then, json),
+        } => after_command(project.as_deref(), &task, on, then, because, json),
         TaskCmd::Trial {
             task,
             end,
@@ -1161,6 +1172,7 @@ fn after_command(
     task: &str,
     on: Option<String>,
     then: Option<String>,
+    because: Option<AfterKind>,
     json: bool,
 ) -> Result<()> {
     let dir = open_owned(project, task)?;
@@ -1184,6 +1196,7 @@ fn after_command(
     let request = HostRequest::After {
         task: target,
         text: then.unwrap_or_default(),
+        because,
         by: actor(),
     };
     send(&dir, request, json)
@@ -1743,10 +1756,17 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
     let approvals = store::read_approvals(&dir.project_id).unwrap_or_default();
     let now = now_unix_ms();
     let stuck = wsx_core::task::stall::stuck(dir, &record, now);
+    let tasks = project_tasks(&dir.project_id)?;
+    let records: Vec<&TaskRecord> = tasks
+        .iter()
+        .filter_map(|(_, record)| record.as_ref().ok())
+        .collect();
+    let waiters = wsx_core::task::status::waiters(records.iter().copied(), record.id);
     let facts = wsx_core::task::status::Facts {
         approvals: &wsx_core::task::manager::pending_approvals(&approvals),
         stuck: stuck.as_deref(),
         deployed: None,
+        waiters: &waiters,
     };
     let status = wsx_core::task::status::status(dir, &record, &facts, now);
     if json {
@@ -1768,11 +1788,6 @@ fn show(dir: &TaskDir, json: bool) -> Result<()> {
             .into_iter()
             .filter(|item| item.task == record.id)
             .collect::<Vec<_>>());
-        let tasks = project_tasks(&dir.project_id)?;
-        let records: Vec<&TaskRecord> = tasks
-            .iter()
-            .filter_map(|(_, record)| record.as_ref().ok())
-            .collect();
         summary["overlaps"] = if record.state.is_open() {
             overlaps(&record, &records, true)
         } else {

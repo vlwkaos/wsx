@@ -342,7 +342,7 @@ const RunningRow = ({ project, task, leaving }) => html`
     <div class="row-link">
       <${StateMark} task=${task} />
       <a class="row-main row-open" href=${taskLink(project, task.id)}><${TaskTitle} title=${task.title} id=${task.id} state=${taskStage(task)[0]} />
-        <span class="row-context">${[task.status.label, agentWords(task.agent)].filter(Boolean).join(" · ")}</span></a>
+        <span class="row-context">${[task.status.label, task.status.wait, agentWords(task.agent)].filter(Boolean).join(" · ")}</span></a>
     </div>
   </li>`;
 

@@ -329,7 +329,8 @@ fn instructions(
          check-in replaces the last. When the owner wants to be sure of a change or to try it, start \
          it with `wsx task new --hold \"<why>\"` (`wsx task hold <n> \"<why>\"` holds a \
          running one, `--off` releases it). To park a task until another lands, use `wsx \
-         task after <n> <m> \"<what to do then>\"`, never hold. \
+         task after <n> <m> \"<what to do then>\" --because needs|files|check` (builds on #m's \
+         change, same files, its checks fail on main until #m lands), never hold. \
          Long multi-step work goes into one task: each step is `wsx task new --into <n>`, \
          which holds #<n>; land a step when an event names it ready, and #<n> once the owner \
          says so. Many tasks of one area (a parent with 3 or more \
