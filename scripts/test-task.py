@@ -645,6 +645,11 @@ def store_up(created):
     globals().update(locals())
 
 
+def default_manager_model():
+    """The manager config with no model (it defaults to opus): what section 21 leaves for the parts after it."""
+    configure((project / 'wsx.config.yml').read_text().replace('model: fake-manager, ', ''), 'default manager model')
+
+
 def manager_up(created):
     """Section 20: the manager starts and answers. A part run alone starts it again."""
     # 20. The manager: started by the first say, answers from the ledger, acts through wsx task.
@@ -2005,7 +2010,7 @@ def part_core(created=None):
     cli('session', 'delete', 'task-manager', '-p', 'demo')
     wait(lambda: not Path(manager_socket).exists() or
          subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
-    configure((project / 'wsx.config.yml').read_text().replace('model: fake-manager, ', ''), 'default manager model')
+    default_manager_model()
     state_file = manager_log.parent / 'state.json'
     older = json.loads(state_file.read_text())
     assert older['agent_session'] and older.pop('instructions'), older
@@ -2631,6 +2636,8 @@ def part_worker(created=None):
         created = fresh_project()
         store_up(created)
         manager_up(created)
+        # ^ Section 22b reads the default model's heading; core's section 21 left that config.
+        default_manager_model()
 
     # 22. Approvals: what the manager may not do alone becomes a request the owner decides.
     mark('22')
