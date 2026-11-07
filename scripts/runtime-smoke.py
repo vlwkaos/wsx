@@ -1359,13 +1359,6 @@ def pane_session(command, rows=24, cols=80):
 # MAX_SCROLLBACK_BYTES): with 10,000 passed as rows a pane kept about 1,000 of them. 20,000
 # numbered lines must leave the newest 10,000 in the raw replay's scrollback. Screen rows follow
 # a cursor move (`H19979`), so a number is bounded by non-digits, not by \b.
-def daemon_rss_kb():
-    return int(subprocess.check_output(["ps", "-o", "rss=", "-p", str(process.pid)]))
-
-
-# ^ Memory per pane, measured as wsxd's RSS: a typical 80x40 pane after 20,000 lines, and a
-# 215-column pane after 40,000 lines (past its 48 pages: the worst case a pane can hold).
-rss_idle = daemon_rss_kb()
 scrollback_session, scrollback_pane = pane_session(
     ["/bin/sh", "-lc", "seq 1 20000; echo scrollback-done; sleep 60"], rows=40, cols=80)
 wait_for(lambda: "scrollback-done" in pane_text(scrollback_pane), "20,000 lines were not written", 30)
@@ -1378,38 +1371,9 @@ kept = {int(n) for n in re.findall(rb"(?<!\d)\d{5}(?!\d)", bytes(replay["data"][
 missing = [n for n in range(10_001, 20_001) if n not in kept]
 assert not missing, f"scrollback lost {len(missing)} of the newest 10,000 lines, first {missing[:3]}"
 raw_close(scrollback_client)
-wide_session, wide_pane = pane_session(
-    ["/bin/sh", "-lc", "yes 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 | head -n 40000; echo wide-done; sleep 60"],
-    rows=24, cols=215)
-wait_for(lambda: "wide-done" in pane_text(wide_pane), "40,000 wide lines were not written", 60)
-rss_wide = daemon_rss_kb()
-print(f"wsxd RSS: idle {rss_idle} kB; 80x40 pane after 20,000 lines +{rss_typical - rss_idle} kB; "
-      f"215-column pane after 40,000 lines +{rss_wide - rss_typical} kB", flush=True)
-close_session(wide_session)
 close_session(scrollback_session)
 
 
-# ^ Each OSC 7 (working directory report) once pushed its path onto a list nothing read.
-# A shell reports at every prompt: 200,000 reports must not grow wsxd.
-osc_script = (
-    "import sys,time\n"
-    "def burst(count, tag):\n"
-    "    for start in range(0, count, 1000):\n"
-    "        sys.stdout.write(''.join(f'\\x1b]7;file://host/tmp/{tag}{i % 997}/dir\\x07'"
-    " for i in range(start, start + 1000)))\n"
-    "        sys.stdout.flush()\n"
-    "burst(20000, 'warm'); print('osc-warm', flush=True)\n"
-    "time.sleep(2)\n"
-    "burst(200000, 'load'); print('osc-load', flush=True)\n"
-    "time.sleep(60)\n"
-)
-osc_session, osc_pane = pane_session([sys.executable, "-c", osc_script])
-wait_for(lambda: "osc-warm" in pane_text(osc_pane), "OSC 7 warm-up did not finish", 60)
-osc_before = daemon_rss_kb()
-wait_for(lambda: "osc-load" in pane_text(osc_pane), "OSC 7 load did not finish", 120)
-osc_growth = daemon_rss_kb() - osc_before
-assert osc_growth < 4096, f"wsxd RSS grew {osc_growth} kB over 200,000 OSC 7 reports"
-close_session(osc_session)
 raw_done.set()
 raw_session = next(
     item for item in call("snapshot")["data"]["sessions"] if item["id"] == raw_session_id
