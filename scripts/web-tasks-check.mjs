@@ -3186,7 +3186,7 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   // label, the sheet's sentence gives it too, and the sheet of the task waited for lists who waits
   // as chips (docs/tasks.md "After another task").
   wsx("task", "after", behind, scenario, "WORK after.txt", "--because", "check");
-  const reason = `then waits for #${scenario}: its checks fail on main until #${scenario} lands`;
+  const reason = `then waits for #${scenario}: its checks fail`;
   if (show(behind).status.wait !== reason || show(scenario).status.waited_by?.[0]?.task !== behind) await fail(`wsx task show says ${JSON.stringify([show(behind).status, show(scenario).status])}`);
   await until(`(${rowOf(`#${behind}`)}?.querySelector('.row-context').textContent ?? '').includes(${JSON.stringify(reason)})`,
     `the waiting task's Running row does not give its reason: ${reason}`, 10);
