@@ -2672,6 +2672,9 @@ capabilities = ["terminal_view"]
             pass
         time.sleep(0.3)
         assert len(typed()) == size_before, 'a watch-only device typed into the terminal'
+        # ^ A watching stream holds the pane's lease too, until the daemon sees it closed: the
+        # next page without a takeover is refused (busy) before that, on a loaded runner.
+        lease_free(term)
         # The program sets the clipboard of a device that may type, never a watching one's.
         page = Terminal(owner, term, client='9')
         page.control('replay')
