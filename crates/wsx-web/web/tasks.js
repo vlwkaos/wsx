@@ -917,13 +917,18 @@ export function Manager({ project: id, task, page, checks, checkItem = null, usa
     addEventListener("quote-jump", on);
     return () => removeEventListener("quote-jump", on);
   }, []);
-  // ^ The quoted message shows in the middle, marked, once its part is read.
-  useLayoutEffect(() => {
-    if (around == null || search.current.readAround !== around) return;
-    const node = logNode.current?.querySelector(`:scope > [data-id="${around}"]`);
-    if (!node) return;
+  // ^ A message of the rows shows in the middle, marked; false when the rows do not hold it.
+  const showRow = (messageId) => {
+    const node = logNode.current?.querySelector(`:scope > [data-id="${messageId}"]`);
+    if (!node) return false;
     reveal(node);
     markFound(node);
+    return true;
+  };
+  // ^ The quoted message shows once its part is read.
+  useLayoutEffect(() => {
+    if (around == null || search.current.readAround !== around) return;
+    showRow(around);
   }, [around, chat]);
   // Closing the sheet gives the focus back to the composer, in the same commit: after a paint
   // it took the focus from a button tapped in the meantime (a reservoir row's Land).
@@ -969,10 +974,7 @@ export function Manager({ project: id, task, page, checks, checkItem = null, usa
   // ^ A question's label: its reply is among the rows and shows marked, else the chat reads
   // around it as a quote jump does (`jump`, a log without it says so in a toast).
   const goToReply = (replyId) => {
-    const node = logNode.current?.querySelector(`:scope > [data-id="${replyId}"]`);
-    if (!node) return jump.current(replyId);
-    reveal(node);
-    markFound(node);
+    if (!showRow(replyId)) jump.current(replyId);
   };
   // ^ The typing bubble leaves in the commit that brings the reply: a bubble that stayed to fade
   // out would move the reply down when it went.

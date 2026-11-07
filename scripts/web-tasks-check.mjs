@@ -351,6 +351,8 @@ async function openReservoir(kind = "needs") {
   await until(`!!document.querySelector('.pill[data-kind=${kind}]')`, `there is no ${LISTS[kind]} pill`, 300);
   if (!(await evaluate(`document.querySelector('.pill[data-kind=${kind}]')?.getAttribute('aria-pressed') === 'true'`))) await click(`.pill[data-kind=${kind}]`);
   await until(`!!document.querySelector('.reservoir-list[aria-label="${LISTS[kind]}"]')`, `the ${LISTS[kind]} list did not open`);
+  // ^ The list is open when its reveal and its rows have stopped moving (a dot's pulse never does); at once under reduced motion.
+  await until("[...document.querySelector('.reservoir').getAnimations({ subtree: true })].every((animation) => animation.playState !== 'running' || animation.effect.getComputedTiming().iterations === Infinity)", `the ${LISTS[kind]} list kept moving`);
 }
 // The focus after a row cleared: [number, label] of the row whose action has it, or the open pill.
 const focused = () => evaluate(`(() => { const node = document.activeElement; const row = node?.closest('.reservoir .need');
@@ -836,12 +838,13 @@ await evaluate("[...document.querySelectorAll('.log .bubble, .log .status-line, 
 await until(atEnd, "the chat did not go back to its end");
 
 // --- The pills: the composer row holds one pill for each of Running, Needs you and To check,
-// between the attach button and Send, each an icon and its count (the label from 600 px) and
+// between the attach button and Send, each an icon and its count (the label from 900 px, the wide layout) and
 // none for a count of 0. A tap opens that pill's list over the composer; one list at a time. No
 // deploy facts here. Opening a list keeps the chat at its end.
 const pillWords = () => evaluate("[...document.querySelectorAll('.pill')].map((node) => node.getAttribute('aria-label')).join(' | ')");
 const pressed = () => evaluate("[...document.querySelectorAll('.pill[aria-pressed=true]')].map((node) => node.dataset.kind).join()");
-if ((await pillWords()) !== "1 running | 6 need you | 2 to check") await fail(`the pills read ${await pillWords()}`);
+const expectPills = async (who) => { if ((await pillWords()) !== "1 running | 6 need you | 2 to check") await fail(`${who} read ${await pillWords()}`); };
+await expectPills("the pills");
 const pillLook = await evaluate(`(() => { const row = document.querySelector('.composer-row').getBoundingClientRect(), send = document.querySelector('.composer-send').getBoundingClientRect();
   const attach = document.querySelector('.composer-row > .icon-button')?.getBoundingClientRect(), mid = (box) => (box.top + box.bottom) / 2;
   return [...document.querySelectorAll('.pill')].map((node) => { const box = node.getBoundingClientRect();
@@ -864,7 +867,7 @@ const capabilities = await inStore("return [...state.site.capabilities]");
 await withCapabilities(capabilities.filter((name) => name !== "task_act"));
 await until("!document.querySelector('.composer-field') && document.querySelectorAll('.pill').length === 3", "a device without task_act lost its pills");
 if (!(await evaluate("!!document.querySelector('.pills.pill-bar') && !document.querySelector('.composer-send') && !document.querySelector('.composer-row .pill')"))) await fail("the pills of a device without task_act are not in a bar of their own");
-if ((await pillWords()) !== "1 running | 6 need you | 2 to check") await fail(`the pills of a device without task_act read ${await pillWords()}`);
+await expectPills("the pills of a device without task_act");
 await openReservoir();
 if ((await rows()).length !== 6 || (await rows()).some((row) => row[3] !== "")) await fail(`a device without task_act has actions in the Needs you list: ${JSON.stringify(await rows())}`);
 await shot("pills-view-only", ".pill-bar");
@@ -888,10 +891,11 @@ const runners = () => inStore(`const ov = state.tasks[${project}], base = ov.tas
   update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: [...ov.tasks, { ...base, id: 91, title: 'second runner' }, { ...base, id: 92, title: 'third runner' }] } } })`);
 const restored = () => inStore(`update({ tasks: { ...state.tasks, [${project}]: ${JSON.stringify(original)} } })`);
 await runners();
-await until("document.querySelector('.pill[data-kind=running]')?.getAttribute('aria-label') === '3 running'", "the Running pill did not count three tasks");
+const runningIs = (label, where) => until(`document.querySelector('.pill[data-kind=running]')?.getAttribute('aria-label') === '${label}'`, where);
+await runningIs("3 running", "the Running pill did not count three tasks");
 if ((await evaluate("getComputedStyle(document.querySelector('.pill-count .tick')).animationName")) !== "tick-in") await fail("a changed count does not tick");
 await restored();
-await until("document.querySelector('.pill[data-kind=running]')?.getAttribute('aria-label') === '1 running'", "the Running pill did not go back to one task");
+await runningIs("1 running", "the Running pill did not go back to one task");
 // ^ Nothing waits and nothing is left to check: only Running stays; with nothing, no pill at all.
 await inStore(`const ov = state.tasks[${project}]; update({ tasks: { ...state.tasks, [${project}]: { ...ov, needs: [], asks: [], to_check: 0, check_items: [] } } })`);
 await until("(document.querySelector('.pills')?.textContent ?? '').includes('1') && !document.querySelector('.pill[data-kind=needs]') && !document.querySelector('.pill[data-kind=check]')", "a pill with a count of 0 is still shown");
@@ -906,12 +910,12 @@ await go("#/");
 await go(chat);
 await until("!!document.querySelector('.pill')", "the chat did not come back for reduced motion");
 await runners();
-await until("document.querySelector('.pill[data-kind=running]')?.getAttribute('aria-label') === '3 running'", "no count under reduced motion");
+await runningIs("3 running", "no count under reduced motion");
 const calmNow = await evaluate("({ tick: getComputedStyle(document.querySelector('.pill-count .tick')).animationName })");
 if (calmNow.tick !== "none") await fail(`reduced motion still animates the count: ${JSON.stringify(calmNow)}`);
 await setMotion("no-preference");
 await restored();
-await until("document.querySelector('.pill[data-kind=running]')?.getAttribute('aria-label') === '1 running'", "the Running pill did not go back to one task");
+await runningIs("1 running", "the Running pill did not go back to one task");
 
 // Open, a list's first row shows whole at the reservoir's top, and the pill is pressed.
 async function firstRowInside(where) {
@@ -921,7 +925,6 @@ async function firstRowInside(where) {
   if (!seen.inside || seen.down > 4) await fail(`${where}: the open list's first row is off: ${JSON.stringify(seen)}`);
 }
 await openReservoir();
-await pause(400);
 await firstRowInside("with items that need the owner");
 if ((await pressed()) !== "needs" || (await count(".reservoir-list")) !== 1) await fail(`after a tap on Needs you ${await pressed()} is pressed`);
 if (!(await evaluate("document.querySelector('.pill[data-kind=needs]').getAttribute('aria-controls') === 'reservoir-list' && !!document.getElementById('reservoir-list')"))) await fail("the open pill does not name its list");
@@ -979,6 +982,7 @@ await openReservoir();
 for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
   await resize([width, height, scale]);
   await openReservoir();
+  // ^ The read ahead of every item's task (`readTaskAhead`) leaves no mark the page shows: it has time.
   await pause(1500);
   const atOnce = await evaluate(`new Promise((done) => { ${rowOf("#2")}.querySelector('.row-open').click();
     requestAnimationFrame(() => requestAnimationFrame(() => done({ open: !!document.querySelector('dialog.task-sheet'),
@@ -1063,11 +1067,9 @@ await inStore(`const ov = state.tasks[${project}], base = ov.tasks.find((task) =
 await resize([390, 844, 2]);
 await openReservoir("running");
 await until("document.querySelectorAll('.reservoir-list[aria-label=Running] .need').length === 2", "the Running list does not show two running tasks");
-await pause(400);
 await noEmptyBlock("two running tasks at 390x844");
 await shot("reservoir-two-running", ".composer-send");
 await openReservoir("check");
-await pause(400);
 await noEmptyBlock("To check at 390x844");
 await inStore(`update({ tasks: { ...state.tasks, [${project}]: ${JSON.stringify(beforeRunners)} } })`);
 await inStore(`const ov = state.tasks[${project}], base = ov.tasks.find((task) => task.stage === 'working');
@@ -1076,7 +1078,6 @@ for (const [width, height, scale] of [[390, 844, 2], [390, 560, 2], [900, 700, 1
   await resize([width, height, scale]);
   await openReservoir("running");
   await until("document.querySelectorAll('.reservoir-list[aria-label=Running] .need').length === 7", `the Running list does not show seven running tasks at ${width} px`);
-  await pause(400);
   const cut = await evaluate(`(() => {
     const box = (node) => node.getBoundingClientRect(), scroller = (node) => /auto|scroll/.test(getComputedStyle(node).overflowY);
     const reservoir = document.querySelector('.reservoir'), found = [];
@@ -2859,13 +2860,14 @@ const questionRow = (await rows()).find((row) => row[1] === question);
 if (questionRow[2] !== "Asks you" || questionRow[3] !== "Reply+Dismiss") await fail(`the question's row reads ${JSON.stringify(questionRow)}`);
 await shot("question-row");
 // ^ A tap on a question's label takes the chat to its reply (docs/web-client-tasks.md "Project
-// screen"): the bubble sits inside the log's scroll box and shows the accent outline. plans' first
+// screen"): the bubble sits inside the log's scroll box and shows the accent tint. plans' first
 // question is older than the rows the page loads (test-web-client.py), so the tap reads the chat around it.
 const oldQuestion = openAsks.find((ask) => ask.quote === "Should the fold keep five rows?");
 if (!oldQuestion) await fail(`plans' open questions read ${JSON.stringify(openAsks)}`);
-const bubbleShown = (id) => `(() => { const log = document.querySelector('.log'), node = log.querySelector('[data-key="reply-${id}"]');
-  if (!node) return false; const box = log.getBoundingClientRect(), at = node.getBoundingClientRect();
-  return at.top >= box.top && at.bottom <= box.bottom && node.hasAttribute('data-found'); })()`;
+// ^ The node is in the log and its box inside the log's box.
+const inLog = (selector) => `(() => { const node = document.querySelector(${JSON.stringify(selector)}); if (!node) return false;
+  const log = document.querySelector('.log').getBoundingClientRect(), at = node.getBoundingClientRect(); return at.top >= log.top && at.bottom <= log.bottom; })()`;
+const bubbleShown = (id) => `${inLog(`.log [data-key="reply-${id}"]`)} && document.querySelector('.log [data-key="reply-${id}"]').hasAttribute('data-found')`;
 if (await evaluate(`!!document.querySelector('.log [data-key="reply-${oldQuestion.id}"]')`)) await fail("the old question's bubble is among the rows before its tap");
 for (const ask of [oldQuestion, plansQuestion]) {
   await evaluate("document.querySelector('.log').scrollTop = 0");
@@ -2900,8 +2902,8 @@ await until(`${oldQuote}?.textContent === 'Where did the Quasar notes go?' && !d
 if (await evaluate("!!document.querySelector('.log > [data-id=\"5001\"]')")) await fail("message 5001 is among the rows before the tap");
 await evaluate(`${oldQuote}.click()`);
 await until("!!document.querySelector('.log > [data-id=\"5001\"][data-found]')", "a tap on the quote of a message outside the rows did not open the chat there, marked", 60);
-const around = await evaluate(`(() => { const log = document.querySelector('.log').getBoundingClientRect(); const box = document.querySelector('.log > [data-id="5001"]').getBoundingClientRect();
-  return { shown: box.top >= log.top && box.bottom <= log.bottom, note: document.querySelector('.note.around')?.textContent ?? '', text: document.querySelector('.log > [data-id="5001"]').textContent }; })()`);
+const around = await evaluate(`(() => {
+  return { shown: ${inLog('.log > [data-id="5001"]')}, note: document.querySelector('.note.around')?.textContent ?? '', text: document.querySelector('.log > [data-id="5001"]').textContent }; })()`);
 if (!around.shown || !/earlier part/.test(around.note) || !/Where did the Quasar notes go/.test(around.text)) await fail(`the chat opened around the quoted message reads ${JSON.stringify(around)}`);
 await shot("quote-around");
 await click(".note.around button");
@@ -3532,7 +3534,7 @@ const jumped = await evaluate(`(() => { [...document.querySelectorAll('.log .bub
 if (!jumped?.includes("the plan is on the overview")) await fail(`a tap on the manager's quote marks ${JSON.stringify(jumped)}`);
 // ^ The found bubble has no outline besides its own border: an accent tint over its box that
 // fades out (none under reduced motion, which holds the tint), then it is gone.
-const foundLook = (selector) => evaluate(`(() => { const row = document.querySelector('.log > [data-found]'), box = row?.querySelector('.bubble-box');
+const foundLook = () => evaluate(`(() => { const row = document.querySelector('.log > [data-found]'), box = row?.querySelector('.bubble-box');
   if (!box) return null; const tint = getComputedStyle(box, '::after'), edge = getComputedStyle(box);
   return { outline: getComputedStyle(row).outlineStyle + '/' + edge.outlineStyle, tint: tint.content !== 'none' && tint.backgroundColor !== 'rgba(0, 0, 0, 0)' && parseFloat(tint.opacity) > 0, motion: tint.animationName }; })()`);
 const foundOnce = await foundLook();
