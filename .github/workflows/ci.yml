@@ -173,11 +173,17 @@ jobs:
       - name: Build wsx and wsxd
         run: cargo build --locked -p wsx -p wsx-daemon
 
-  # ^ The web scenario of a worker's `wsx task check-run web` (scripts/ci-scenario.py). Its
-  # captures go back to the worker's checkout as the `scenario-files` artifact.
+  # ^ The web scenario of a worker's `wsx task check-run web` (scripts/ci-scenario.py). Its parts
+  # (test-web-client.py --part) run as one job each, at once; the run passes when all pass. A
+  # `--<part>` suffix on the branch name (`check-run web --part tasks`) runs that part only. Each
+  # part's captures go back to the worker's checkout as a `scenario-files-<part>` artifact.
   web-scenario:
-    name: web scenario
-    if: ${{ startsWith(github.ref_name, 'wsx-scenario/web/') }}
+    name: web scenario (${{ matrix.part }})
+    if: ${{ startsWith(github.ref_name, 'wsx-scenario/web/') && (!contains(github.ref_name, '--') || endsWith(github.ref_name, format('--{0}', matrix.part))) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [chat, tasks]
     # ^ macOS, where the scenario runs today; Ubuntu is not proven (t243 probe never reached it).
     runs-on: macos-15
     timeout-minutes: 60
@@ -213,7 +219,7 @@ jobs:
         timeout-minutes: 45
         env:
           WSX_REQUIRE_COMPACT_TOOLS: '1'
-        run: cargo build --locked -p wsx -p wsx-daemon && python3 -B scripts/test-web-client.py --browser
+        run: cargo build --locked -p wsx -p wsx-daemon && python3 -B scripts/test-web-client.py --browser --part ${{ matrix.part }}
 
       - name: Pack the captures
         if: always()
@@ -223,7 +229,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: scenario-files
+          name: scenario-files-${{ matrix.part }}
           path: files.tar
           if-no-files-found: ignore
           retention-days: 1

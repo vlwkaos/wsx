@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Run one of wsx's `ci:` scenarios on GitHub Actions and wait for its answer.
 
-`python3 -B scripts/ci-scenario.py <name>` pushes HEAD's tree, with origin/main's
+`python3 -B scripts/ci-scenario.py <name> [--part <part>]` pushes HEAD's tree, with origin/main's
 `.github/workflows`, to the branch `wsx-scenario/<name>/<commit>`. ci.yml runs the job for that
-name (`task`, `web`, and `weblinux`, the web scenario on Ubuntu). The script waits for the run, prints each job's end and the failed steps' log tail,
-downloads the run's `scenario-files` artifact (files.tar, paths in this checkout such as
-`.work/web-captures`) into the same paths, deletes the branch and exits 0 only when the run
+name (`task`, `web`, and `weblinux`, the web scenario on Ubuntu); a scenario with parts (the `web` scenario: `chat`, `tasks`) runs one job for each part at
+once, and the run passes only when all pass. `--part` (or `WSX_SCENARIO_PART`, which `wsx task
+check-run web --part tasks` sets) runs one part: the branch gets the suffix `--<part>` and the other
+parts' jobs skip. The script waits for the run, prints each job's end, the failed jobs' names and the
+failed steps' log tail, downloads the run's `scenario-files*` artifacts (files.tar, paths in this
+checkout such as `.work/web-captures`) into the same paths, deletes the branch and exits 0 only when the run
 passed, 75 (EX_TEMPFAIL) when the run failed for the network or the runner and no scenario step
 failed (the host then keeps no result: the next check-run runs it again). A branch a killed run left behind is deleted by a later run once it is STALE_SECONDS
 old. The task host runs it outside the slot (docs/tasks.md "Scenarios").
 """
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -106,25 +110,26 @@ def wait_run(repo, run_id):
 
 
 def take_files(repo, run_id, root, scratch):
-    """The run's `scenario-files` artifact into this checkout, under FILES_UNDER only."""
+    """The run's `scenario-files*` artifacts (one for each part) into this checkout, under
+    FILES_UNDER only."""
     folder = scratch / 'files'
-    if gh('run', 'download', str(run_id), '--repo', repo, '-n', 'scenario-files', '-D', str(folder),
+    if gh('run', 'download', str(run_id), '--repo', repo, '-p', 'scenario-files*', '-D', str(folder),
           check=False).returncode != 0:
         return
-    archive = folder / 'files.tar'
-    if not archive.is_file():
-        return
-    with tarfile.open(archive) as tar:
-        members = [m for m in tar.getmembers() if m.isfile() or m.isdir()]
-        for member in members:
+    archives = sorted(folder.rglob('files.tar'))
+    opened = [tarfile.open(archive) for archive in archives]
+    try:
+        members = [(tar, m) for tar in opened for m in tar.getmembers() if m.isfile() or m.isdir()]
+        for _, member in members:
             parts = Path(member.name).parts
             if member.name.startswith('/') or '..' in parts or not member.name.startswith(FILES_UNDER):
                 raise RuntimeError('scenario-files holds %r, outside %s' % (member.name, FILES_UNDER))
-        # ^ A folder the run sends replaces this checkout's copy, as a local run rewrites it.
-        tops = sorted({str(Path(*Path(m.name).parts[:2])) for m in members if len(Path(m.name).parts) > 1})
+        # ^ A folder the run sends replaces this checkout's copy, as a local run rewrites it; once
+        # for all parts, since each part's archive holds the same folder.
+        tops = sorted({str(Path(*Path(m.name).parts[:2])) for _, m in members if len(Path(m.name).parts) > 1})
         for top in tops:
             shutil.rmtree(root / top, ignore_errors=True)
-        for member in members:
+        for tar, member in members:
             target = root / member.name
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
@@ -132,7 +137,11 @@ def take_files(repo, run_id, root, scratch):
             target.parent.mkdir(parents=True, exist_ok=True)
             with tar.extractfile(member) as source, open(target, 'wb') as out:
                 shutil.copyfileobj(source, out)
-        say('files: %d from the run, in %s' % (sum(m.isfile() for m in members), ', '.join(tops)))
+        if members:
+            say('files: %d from the run, in %s' % (sum(m.isfile() for _, m in members), ', '.join(tops)))
+    finally:
+        for tar in opened:
+            tar.close()
 
 
 def sweep(repo):
@@ -144,10 +153,22 @@ def sweep(repo):
             gh('api', '-X', 'DELETE', 'repos/%s/%s' % (repo, ref['ref'].replace('refs/', 'git/refs/', 1)), check=False)
 
 
+def parts_of(workflow, name):
+    """The parts the scenario's job in ci.yml runs for (`part: [a, b]` in its matrix), else none."""
+    jobs = re.split(r'(?m)^  [\w-]+:\s*$', workflow)
+    job = next((j for j in jobs if "'wsx-scenario/%s/'" % name in j and 'matrix.part' in j), '')
+    found = re.search(r'part:\s*\[([^\]]*)\]', job)
+    return [p.strip() for p in found.group(1).split(',')] if found else []
+
+
 def main():
-    if len(sys.argv) != 2 or not sys.argv[1].replace('-', '').isalnum():
-        sys.exit('usage: ci-scenario.py <name>')
-    name = sys.argv[1]
+    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    parser.add_argument('name')
+    parser.add_argument('--part', default=os.environ.get('WSX_SCENARIO_PART') or None)
+    args = parser.parse_args()
+    name, part = args.name, args.part
+    if not name.replace('-', '').isalnum() or (part and not part.replace('-', '').isalnum()):
+        sys.exit('usage: ci-scenario.py <name> [--part <part>]')
     root = Path(git('rev-parse', '--show-toplevel'))
     os.chdir(root)
     dirty = git('status', '--porcelain')
@@ -162,6 +183,10 @@ def main():
         sys.exit('origin/main\'s ci.yml has no job for wsx-scenario/%s/. The ci.yml on main reaches '
                  'origin only with a release (`wsx task release`, scripts/release.sh pushes main); '
                  'until then run the scenario by hand (docs/tasks.md "Scenarios").' % name)
+    if part and part not in parts_of(workflow, name):
+        sys.exit('origin/main\'s ci.yml runs no part %r of %s (its parts: %s). A part needs the matrix in '
+                 'ci.yml, which reaches origin only with a release.'
+                 % (part, name, ', '.join(parts_of(workflow, name)) or 'none'))
     scratch = root / '.work' / ('ci-scenario-%d' % os.getpid())
     scratch.mkdir(parents=True)
     branch, run, ended = None, None, False
@@ -172,7 +197,7 @@ def main():
         commit = git('commit-tree', tree_for_ci(main_commit, scratch), '-p', head,
                      '-m', 'wsx scenario %s for %s' % (name, head))
         sweep(repo)
-        branch = 'wsx-scenario/%s/%d-%s' % (name, time.time(), commit[:12])
+        branch = 'wsx-scenario/%s/%d-%s%s' % (name, time.time(), commit[:12], '--' + part if part else '')
         subprocess.run(['git', '-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential',
                         'push', '-q', url, '%s:refs/heads/%s' % (commit, branch)], check=True)
         run = find_run(repo, commit)
@@ -183,6 +208,9 @@ def main():
         if view['conclusion'] != 'success':
             failed = gh('run', 'view', str(run['databaseId']), '--repo', repo, '--log-failed', check=False).stdout
             say('\n'.join(failed.splitlines()[-LOG_LINES:]))
+            # ^ A matrix job's name holds its part: the failure names it.
+            say('failed: %s' % ', '.join(j['name'] for j in view['jobs']
+                                         if j['conclusion'] in ('failure', 'timed_out', 'cancelled')))
             if temporary_failure(failed):
                 say('%s failed on CI for the network or the runner, not the tree (%s): %s\n'
                     'a temporary failure: the next check-run runs it again.' % (name, view['conclusion'], run['url']))

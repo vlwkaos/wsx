@@ -499,8 +499,17 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
-    /// From a task's worker: run the project's checks as after its result (all, or by number)
-    CheckRun { numbers: Vec<u32> },
+    /// From a task's worker: run the project's checks as after its result (all, or by number
+    /// or scenario name). `--part` reruns one part of one scenario, such as
+    /// `check-run web --part tasks`: the scenario's command gets `WSX_SCENARIO_PART`, and a
+    /// part's pass is no full pass (nothing is kept, no evidence is recorded); the full run
+    /// still gates the task
+    CheckRun {
+        names: Vec<String>,
+        /// One part of one scenario (the project's scenario must know its parts)
+        #[arg(long)]
+        part: Option<String>,
+    },
     /// Serve the task for a person to try on its own tailnet or local port (tasks.preview)
     Preview {
         task: String,

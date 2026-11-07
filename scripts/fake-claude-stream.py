@@ -22,6 +22,7 @@ Each user message is a small script of words:
   CHECKRUN_REPEAT <a>  run `wsx task check-run a` twice on the same tree and trace both answers
   CHECKRUN_AFTER  after WORK's commit run `wsx task check-run` and trace its answer
   CHECKRUN_WITH <a,b>  run `wsx task check-run a b`, then a bare `wsx task check-run`, and trace both
+  CHECKRUN_PART <a> <p>  run `wsx task check-run a --part p` twice, then `wsx task check-run a`, with a bad part and with a plain check, and trace the answers
   CHECKRUN_LATE <a>  start `wsx task check-run a` in the background and finish before its answer
   CHECKRUN_LATER <a>  like CHECKRUN_LATE, but after WORK's commit: the run is on a clean tree
   BGRESULT     return the result while a background job still runs
@@ -592,6 +593,12 @@ def main():
             answers = [subprocess.run(['wsx', 'task', 'check-run', *argv], capture_output=True, text=True)
                        for argv in (named, [])]
             trace({'check_run_with': [[ran.returncode, ran.stdout + ran.stderr] for ran in answers]})
+        if 'CHECKRUN_PART' in words:
+            at = words.index('CHECKRUN_PART')
+            named, part = words[at + 1], words[at + 2]
+            answers = [subprocess.run(['wsx', 'task', 'check-run', *argv], capture_output=True, text=True)
+                       for argv in ([named, '--part', part], [named, '--part', part], [named], [named, '--part=bad part'], ['1', '--part', part])]
+            trace({'check_run_part': [[ran.returncode, ran.stdout + ran.stderr] for ran in answers]})
         if 'CHECKRUN_LATE' in words:
             # ^ A worker that does not wait for its background check-run: the host sends the answer.
             subprocess.Popen(['wsx', 'task', 'check-run', words[words.index('CHECKRUN_LATE') + 1]],
