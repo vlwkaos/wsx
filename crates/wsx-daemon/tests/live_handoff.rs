@@ -1122,6 +1122,46 @@ fn a_failed_handoff_keeps_its_reason() {
     wait_for_socket_removal(&fixture.socket);
 }
 
+// docs/daemon-state-store.md "Live handoff": the old daemon holds its saver for the handoff.
+// A rollback must release it. A saver left held never writes again, so the reply of the next
+// change would wait for ever.
+#[test]
+fn a_rolled_back_handoff_saves_state_again() {
+    let mut fixture = Fixture::new();
+    let binary = fixture.wsxd();
+    let client = start(&mut fixture, &binary);
+    sessions(&client, "rollback", &[("before", "exec cat")]);
+    let state_file = fixture.root.join("state.json");
+    assert!(fs::read_to_string(&state_file).unwrap().contains("before"));
+    let target = fixture.root.join("bin/broken-wsxd");
+    fs::write(&target, "#!/bin/sh\nexit 3\n").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+    let response = client
+        .call(&prepare_handoff(
+            binary_identity(&target).unwrap(),
+            target,
+            true,
+        ))
+        .unwrap();
+    assert!(matches!(response, Response::Replacement { .. }), "{response:?}");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Ok(Response::Lifecycle(status)) = client.call(&Request::LifecycleStatus) {
+            if status.last_handoff_error.is_some() && status.replacement_target.is_none() {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "the handoff did not roll back");
+        thread::sleep(Duration::from_millis(50));
+    }
+    // The reply of a change waits for its save: it returns only if the saver runs again.
+    sessions(&client, "rollback", &[("after", "exec cat")]);
+    let saved = fs::read_to_string(&state_file).unwrap();
+    assert!(saved.contains("before") && saved.contains("after"), "{saved}");
+    client.shutdown().unwrap();
+    wait_for_socket_removal(&fixture.socket);
+}
+
 // docs/agent-orchestration.md: when a resumed agent quits, its supervisor opens a shell in
 // the same pane. Clearing the agent's record first can fail (a stale runtime generation, a
 // full disk), and the agent can quit in its alternate screen with its keyboard modes on;
