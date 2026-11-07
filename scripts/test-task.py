@@ -2285,13 +2285,13 @@ def run(wsx, wsxd, work, owned):
         assert len(news_of(session)) == count, (label, news_of(session))
         return news_of(session)
 
-    gone, gone_pane = agent_session('gone')
+    exited, gone_pane = agent_session('gone')
     agent_reports('gone', gone_pane, 'claude', 'working')
     time.sleep(5)
-    assert not news_of(gone), 'a working agent is no news'
+    assert not news_of(exited), 'a working agent is no news'
     cli('session', 'send-text', 'gone', 'exit', '-p', 'demo')
     wait(lambda: pane_of(gone_pane)['exited'], 'the agent shell exits')
-    assert posts_of(gone, 1, 'the exit post') == ['[claude in main](session/%d) exited' % gone]
+    assert posts_of(exited, 1, 'the exit post') == ['[claude in main](session/%d) exited' % exited]
     assert [e['text'] for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
             and e['text'].startswith('session ')][-1] == 'session claude in main'
     # ^ blocked is one post, a second report of it none; leaving and entering again is a second.
@@ -3976,13 +3976,13 @@ def run(wsx, wsxd, work, owned):
     assert js('task', 'ledger')['approvals'] == []
     # 32f. A pending request whose task leaves is dropped with the reason, and the manager and
     # the owner read it in the chat.
-    dropped = js('task', 'new', 'WORK gone.txt')['id']
-    assert wait_state(dropped, 'ready', 'failed')['state'] == 'ready'
-    asked = js('task', 'say', 'RUN wsx task close %d --discard -p demo --json' % dropped)
+    gone = js('task', 'new', 'WORK gone.txt')['id']
+    assert wait_state(gone, 'ready', 'failed')['state'] == 'ready'
+    asked = js('task', 'say', 'RUN wsx task close %d --discard -p demo --json' % gone)
     assert 'the owner was asked (a92)' in reply_to(asked['id'])['text']
     assert [p['id'] for p in js('task', 'ledger')['approvals']] == ['a92']
-    js('task', 'close', dropped, '--discard')
-    wait(lambda: events_with('approval a92 (discard #%d) dropped; #%d is closed' % (dropped, dropped)), 'the dropped request event')
+    js('task', 'close', gone, '--discard')
+    wait(lambda: events_with('approval a92 (discard #%d) dropped; #%d is closed' % (gone, gone)), 'the dropped request event')
     assert js('task', 'ledger')['approvals'] == [] and approval_lines()[-1]['outcome'] == 'dropped; #%d is closed' % gone
     assert not events_with('approval a91'), 'an approval by the owner message became an event'
     # ^ A release refuses while items are open (docs/tasks.md "Deploy and release"), but one the
