@@ -2007,16 +2007,25 @@ async function readAndReply(where) {
   // the quote; a long press opens the menu too.
   const point = await pressPoint(fiveColumns);
   const quote = "(document.querySelector('.composer .reply-quote-text')?.textContent ?? '').replace('Replying to: ', '')";
-  const menuReply = "[...document.querySelectorAll('.reply-menu button')].find((node) => node.textContent.trim() === 'Reply').click()";
+  // ^ The menu closes on any scroll (reply.js), also one the page makes while a capture runs: tap
+  // Reply when it is still there, else open it again.
+  const menuReply = "(() => { const node = [...document.querySelectorAll('.reply-menu button')].find((node) => node.textContent.trim() === 'Reply'); node?.click(); return !!node; })()";
   const rightClickMenu = async (at) => {
     await evaluate(`${fiveColumns}.querySelector('.bubble-body p').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: ${at.x}, clientY: ${at.y}, button: 2 }))`);
     await until("!!document.querySelector('.reply-menu')", `${where}: a right click opened no menu`);
+  };
+  const replyFromMenu = async (at) => {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await rightClickMenu(at);
+      if (await evaluate(menuReply)) return;
+    }
+    await fail(`${where}: the reply menu closed before Reply was tapped`);
   };
   if (phone()) await touch(point, 90);
   else {
     await rightClickMenu(point);
     await shot("reply-menu");
-    await evaluate(menuReply);
+    if (!(await evaluate(menuReply))) await replyFromMenu(point);
   }
   await until(`${quote} === 'Five columns:'`, `${where}: the reply shows no quote over the composer`);
   if (await evaluate(`${fiveColumns}.style.translate`)) await fail(`${where}: the swiped bubble did not come back`);
@@ -2026,8 +2035,8 @@ async function readAndReply(where) {
   if (phone()) {
     await touch(await pressPoint(fiveColumns), 0, 700);
     await until("!!document.querySelector('.reply-menu')", `${where}: a long press opened no menu`);
-  } else await rightClickMenu(await pressPoint(fiveColumns));
-  await evaluate(menuReply);
+    if (!(await evaluate(menuReply))) await fail(`${where}: the reply menu closed before Reply was tapped`);
+  } else await replyFromMenu(await pressPoint(fiveColumns));
   await until(`${quote} === 'Five columns:'`, `${where}: Reply in the menu shows no quote`);
   if (await evaluate("document.activeElement?.matches('.composer-field')") !== true) await fail(`${where}: the reply did not focus the composer`);
   await shot("reply-quote", ".composer-send");
