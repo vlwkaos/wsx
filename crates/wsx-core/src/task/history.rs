@@ -62,10 +62,13 @@ pub fn timeline(log: &[LogEntry], cap: usize) -> Timeline<'_> {
     }
 }
 
+fn short(commit: &str) -> &str {
+    commit.get(..7).unwrap_or(commit)
+}
+
 /// An event in words, with its label; none for the events that are no step of the task's story
 /// (progress, waits, pings, previews). The one wording of the digest and of `read`.
 pub fn line(event: &LogEvent) -> Option<(&'static str, String)> {
-    let short = |commit: &str| commit.get(..7).unwrap_or(commit).to_string();
     Some(match event {
         LogEvent::Created { base, branch } => ("start", format!("branch {branch} from {base}")),
         LogEvent::Message { mode, text } => (
@@ -100,7 +103,7 @@ pub fn line(event: &LogEvent) -> Option<(&'static str, String)> {
             };
             ("checks", text)
         }
-        LogEvent::Landed { commit } => ("landed", short(commit)),
+        LogEvent::Landed { commit } => ("landed", short(commit).into()),
         LogEvent::Closed { discarded } => (
             "closed",
             match discarded {
@@ -179,10 +182,7 @@ pub fn outcome(dir: &TaskDir, record: &TaskRecord) -> String {
             .flatten()
             .map_or_else(
                 || "landed".into(),
-                |(at, commit)| {
-                    let commit = commit.get(..7).unwrap_or(&commit);
-                    format!("landed {} {commit}", &day_of(at)[5..])
-                },
+                |(at, commit)| format!("landed {} {}", &day_of(at)[5..], short(&commit)),
             ),
         TaskState::Closed => match dir
             .last_event(|event| match event {
