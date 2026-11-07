@@ -22,7 +22,7 @@ import time
 
 POLL_SECONDS = 30
 FIND_SECONDS = 180
-# ^ A run that has not ended by then hangs (the web scenario takes about 10 min with its build):
+# ^ A run that has not ended by then hangs (the web scenario's step takes about 26 min with its build):
 # it is cancelled, well before the host's 75 min limit for a `ci:` command.
 RUN_SECONDS = 60 * 60
 LOG_LINES = 150

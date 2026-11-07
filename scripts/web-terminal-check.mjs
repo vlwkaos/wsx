@@ -418,7 +418,7 @@ await until(`(({ top, height, client }) => client < height && height - top - cli
 await evaluate(`(async () => { for (let step = 0; step < 5; step++) {
   document.querySelector('.terminal .xterm').dispatchEvent(new WheelEvent('wheel', { deltaY: -400, deltaMode: 0, bubbles: true, cancelable: true }));
   await new Promise(requestAnimationFrame); } })()`);
-await until(`!${jumpHidden}`, `Jump to latest did not show after a scroll back (view ${JSON.stringify(await evaluate(viewportAt))})`);
+await until(`!${jumpHidden}`, async () => `Jump to latest did not show after a scroll back (view ${JSON.stringify(await evaluate(viewportAt))})`);
 await capture("phone-jump");
 await evaluate("document.querySelector('.terminal .jump').click()");
 await until(`${jumpHidden} && (() => { const viewport = document.querySelector('.xterm-viewport'); return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 2; })()`,

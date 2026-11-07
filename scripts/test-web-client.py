@@ -903,9 +903,9 @@ def main():
         task_journey(args)
 
 
-# ^ A run takes about 4 min on CI. A wait that never ends stops here with every thread's stack, well
+# ^ A run takes about 23 min on CI's macOS runner (run 42319479835). A wait that never ends stops here with every thread's stack, well
 # before CI's step limit, and the cleanup in the journey's `finally` still runs.
-RUN_SECONDS = 25 * 60
+RUN_SECONDS = 35 * 60
 
 
 def overdue(*_):
