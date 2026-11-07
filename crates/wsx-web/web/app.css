@@ -211,6 +211,7 @@ a.row-link:active, button.row-link:active, .row-link:has(.row-open:active), .row
 .link-action {
   flex: 0 0 auto; padding: 0; border: 0; background: none; color: var(--color-text); cursor: pointer;
   font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); text-decoration: none; white-space: nowrap;
+  min-height: calc(var(--space-3) * 2);
 }
 .icon-button {
   flex: 0 0 auto; width: var(--size-control); height: var(--size-control); padding: 0;
