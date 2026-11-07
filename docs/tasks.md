@@ -1,9 +1,9 @@
 # Tasks (manager mode)
 
-A task is one headless worker on its own branch and working copy. The caller never types into it. Every action is one CLI call; `--json` works on all of them. No wsxd protocol change.
+A task is one headless worker on its own branch and working copy. The caller never types into it. Every action is one CLI call; `--json` works on all of them except `digest`, `checkin`, `post` and `check-run`. No wsxd protocol change.
 
 ```sh
-wsx task new "<prompt>" -p <project> [--from <ref>] [--title <words>] [--model <name>] [--hold <why>] [--files <glob>]... [--plan] --json   # or `-` (stdin) or --prompt-file <path>
+wsx task new "<prompt>" -p <project> [--from <ref>] [--title <words>] [--model <name>] [--hold <why>] [--files <glob>]... [--plan] [--into <n>] [--size small|full] [--skip <step>]... --json   # or `-` (stdin) or --prompt-file <path>
 wsx task list -p <project> [--all] --json
 wsx task show <n> -p <project> --json            # record, result.json, report path, host_running, socket
 wsx task steer <n> "<text>" --json               # into the running turn
@@ -571,6 +571,8 @@ Triggers (`wsx task routine add|edit` take exactly one; the ledger's `trigger` s
 | `--event <kind>` | `event:<kind>` | when wsx fires that kind; a routine still running drops it |
 | `--at <HH:MM \| YYYY-MM-DD HH:MM>` | `at:2026-11-04 14:30` | once at that local minute, or at the first minute wsxd sees after it (asleep, stopped); then `next_run_unix_ms` is null. A time that has passed is refused |
 
+`routine edit --new-name <name>` renames the routine. `add|edit|delete|enable|disable --revision <n>` names the store revision the change expects (default: the current one); a stale one is refused (`stale routine revision: expected <n>, actual <m>`). `routine fire --kind <kind> --event-id <id> [--payload <json>]` fires an event by hand: the scheduler runs each (kind, id) once and prints `no matching routines` when none matches and `deduplicated` when it saw the id; the payload defaults to `null`.
+
 The manager host fires these kinds, each with `WSX_EVENT_PAYLOAD` (compact JSON) and an id the scheduler runs once (it keeps the newest 4,096 ids per project). A project with no enabled routine of that kind sends no request:
 
 | Kind | When | Payload |
@@ -631,7 +633,7 @@ No push is added, and the post is unread as any post is.
 ## Deploy and release
 
 ```sh
-wsx task deploy -p <project> [--commit <ref> | --if-new] --json    # tasks.deploy.command
+wsx task deploy -p <project> [--commit <ref> | --if-new] [--owner-said <id>] --json    # tasks.deploy.command
 wsx task release -p <project> [--commit <ref>] [--owner-said <id>] --json   # tasks.release.command
 wsx task deployed -p <project> --json
 ```
