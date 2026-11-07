@@ -2819,6 +2819,11 @@ if (costly.length) await fail(`a read with no new message rendered bubbles again
 // is asked once more here. Each open question waits in the reservoir with Reply and Dismiss; a
 // dismiss clears only that one: its row, its bubble's border and the overview's `asks`, which
 // Home's accent reads.
+// ^ The find above left the whole log among the rows (docs/web-client-chat.md "Find"), the old
+// questions with them; the chat read anew shows only its newest part.
+await go("#/");
+await go(`#/p/${plans}`);
+await until("!!document.querySelector('.log .bubble') && !document.querySelector('.find')", "plans' chat did not come back after the find");
 const plansAsks = () => evaluate(`fetch('api/tasks/${plansArg}').then((r) => r.json()).then((data) => data.asks)`);
 // ^ The fake manager answers ASK with "Should I land it now?" (scripts/fake-claude-stream.py).
 await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(JSON.stringify({ text: "ASK" }))} })`);
