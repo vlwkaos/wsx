@@ -961,7 +961,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .task-overlaps { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); overflow-wrap: anywhere; }
 .fold-head { display: flex; align-items: center; gap: var(--space-1); cursor: pointer; list-style: none; min-height: var(--size-control); padding-block: 0; }
 .fold-head::-webkit-details-marker { display: none; }
-:is(.task-fold, .task-details, .timeline)[open] > .fold-head .icon { transform: rotate(90deg); }
+:is(.task-fold, .timeline)[open] > .fold-head .icon { transform: rotate(90deg); }
 .timeline-list { list-style: none; margin: 0; padding: 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--font-size-sm); }
 .timeline-list li { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: var(--space-3); }
 .timeline-what { font-weight: var(--font-weight-medium); }
@@ -1045,7 +1045,7 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
    of what changed, and what the owner should know next. */
 .story { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--column-inset, var(--space-4)); border-bottom: var(--border-width) solid var(--color-hairline); overflow-wrap: anywhere; }
 .story .link-action { align-self: flex-start; }
-/* How an open task is doing: its word and age, its workflow steps, the worker's last sentence. */
+/* How an open task is doing: its word and age, what it is about, its workflow steps, what it does now. */
 .progress { display: flex; flex-direction: column; gap: var(--space-2); }
 .progress-head { display: flex; align-items: center; gap: var(--space-2); margin: 0; }
 .progress-health { font-weight: var(--font-weight-strong); }
@@ -1054,7 +1054,9 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .progress-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); }
 .progress-steps li { display: flex; align-items: center; gap: var(--space-1); }
 .progress-steps [aria-current="step"] { color: var(--color-text); font-weight: var(--font-weight-strong); text-decoration: underline; }
-.progress-said { margin: 0; color: var(--color-muted); }
+.progress-now { margin: 0; font-size: var(--font-size-sm); color: var(--color-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.story-goal { margin: 0; }
+.task-subheading { padding: var(--space-3) var(--space-4) var(--space-1); font-size: var(--font-size-sm); font-weight: var(--font-weight-strong); }
 .story-act { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
 .story-act > .story-next { flex: 1 1 calc(var(--size-rail) * 0.6); min-width: 0; }
 

@@ -1,6 +1,6 @@
-// One task, in its sheet over the project chat: how it is doing and the one action when it needs
-// the owner, the To check items to act on, then one folded Details with the report, the messages
-// to the worker, its usage and its history (docs/web-client-tasks.md "Task sheet").
+// One task, in its sheet over the project chat: what it is about, where it stands, what it does now
+// and the one action when it needs the owner, the To check items to act on, then three folds at one
+// level: the report, the messages to the worker and the history (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
 import { clock, html, Icon, Loading, short, useCoalescedLoad, useEffect, useState } from "./lib.js";
 import { can, useEventLoad, useStore } from "./store.js";
@@ -9,7 +9,7 @@ import { act, agentWords, taskStage, TaskChip, TaskTitle, withChips } from "./ta
 import { Bubble } from "./bubbles.js";
 import { quoteSplit } from "./reply.js";
 import { SheetBar } from "./ui.js";
-import { summaryIsCurrent, TaskStory } from "./story.js";
+import { TaskStory } from "./story.js";
 import { CheckRow, TryButton } from "./checks.js";
 import { usageLine } from "./usage.js";
 
@@ -59,24 +59,25 @@ function sections(report) {
   }));
 }
 
-// The report's folds, in the order of report.md after its summary; sections of older reports
-// (Asked, Decisions, Human Verify) are not shown.
-const FOLDS = ["Changes", "Evidence", "To check", "Left open"];
+// The report's parts, in the order of report.md after its summary; sections of older reports
+// (Asked, Decisions, Human Verify) are not shown. They are headings in the one Report fold.
+const PARTS = ["Changes", "Evidence", "To check", "Left open"];
 const items = (body) => body.split("\n").filter((line) => line.startsWith("- ")).length;
-// A fold's text: Evidence without its first line (the note says it); To check items before
+// A part's text: Evidence without its first line (the fold's head says it); To check items before
 // the landing as plain items, not checkboxes nobody can tick.
-const foldBody = (title, body) => title === "Evidence" ? body.split("\n").slice(1).join("\n").trim()
+const partBody = (title, body) => title === "Evidence" ? body.split("\n").slice(1).join("\n").trim()
   : title === "To check" ? body.replace(/^- \[ \] /gm, "- ") : body;
-// What a fold says while closed: "4 checks passed", "2 open", "nothing".
-function foldNote(title, body, detail) {
-  if (title === "Evidence") return body.split("\n")[0].replace(/\.$/, "").replace(/ \(`tasks.checks`\)$/, "");
-  if (title === "To check") {
-    const open = detail.to_check.filter((item) => item.state === "open").length;
-    if (detail.to_check.length) return open ? `${open} open` : "all checked";
-    return items(body) ? `${items(body)} after it lands` : "nothing";
-  }
-  if (title === "Left open") return items(body) ? String(items(body)) : "nothing";
-  return "";
+// What To check says beside its heading: "2 open", "all checked", "1 after it lands".
+function checkNote(body, detail) {
+  const open = detail.to_check.filter((item) => item.state === "open").length;
+  if (detail.to_check.length) return open ? `${open} open` : "all checked";
+  return items(body) ? `${items(body)} after it lands` : "nothing";
+}
+// The Report fold's head: the checks' line and the open items left: "4 checks passed · 2 left open".
+function reportNote(report) {
+  const checks = report.Evidence?.split("\n")[0].replace(/\.$/, "").replace(/ \(`tasks.checks`\)$/, "");
+  const left = report["Left open"] ? items(report["Left open"]) : 0;
+  return [checks, left && `${left} left open`].filter(Boolean).join(" · ");
 }
 
 // An action's error, kept while the page re-renders.
@@ -201,10 +202,10 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
   const handHint = acting && actions.includes("hand") && html`<p class="task-approval task-hint" id="hand-hint">Stops the worker. You continue in its session.</p>`;
   const report = sections(detail.report);
   const entries = detail.timeline.entries;
-  // ^ Open items are the owner's to act on, so they stay outside Details.
+  // ^ Open items are the owner's to act on, so they stay outside the folds.
   const toCheck = detail.to_check.some((item) => item.state === "open");
-  const folds = FOLDS.filter((title) => report[title] != null && !(toCheck && title === "To check"));
-  const lastResult = !summaryIsCurrent(detail) && detail.result?.summary?.trim();
+  const parts = PARTS.filter((title) => report[title] != null && !(toCheck && title === "To check"));
+  const reportNoted = reportNote(report);
   const checkRows = html`
     <ul class="check-list">${detail.to_check.map((item) => html`
       <${CheckRow} key=${item.id} project=${project} item=${item} revision=${detail.revision} onChanged=${load} onMention=${onMention} />`)}
@@ -221,27 +222,9 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
 
         ${toCheck && html`
           <section class="task-section" aria-label="To check">
-            <h2 class="task-heading">To check<span class="fold-note"> · ${foldNote("To check", "", detail)}</span></h2>
+            <h2 class="task-heading">To check<span class="fold-note"> · ${checkNote("", detail)}</span></h2>
             ${checkRows}
           </section>`}
-        <details class="task-section task-details">
-          <summary class="task-heading fold-head"><${Icon} name="chevron" />Details</summary>
-        ${lastResult && html`
-          <section class="task-section" aria-label="Last result">
-            <h2 class="task-heading">Last result</h2>
-            <div class="task-body"><${Markdown} text=${lastResult} words=${words} prose /></div>
-          </section>`}
-        ${folds.map((title) => {
-          const note = foldNote(title, report[title], detail);
-          // ^ Landed items are live: Pass and Fail act on the project's list.
-          const live = title === "To check" && detail.to_check.length;
-          return html`
-            <details class="task-section task-fold" key=${title}>
-              <summary class="task-heading fold-head"><${Icon} name="chevron" />${title}${note && html`<span class="fold-note"> · ${note}</span>`}</summary>
-              ${live ? checkRows
-                : html`<div class="task-body"><${Markdown} text=${foldBody(title, report[title])} words=${words} prose /></div>`}
-            </details>`;
-        })}
         ${detail.status.waited_by?.length ? html`
           <section class="task-section" aria-label="Waited for by">
             <h2 class="task-heading">Waited for by</h2>
@@ -249,7 +232,6 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
               ${detail.status.waited_by.map((waiter) => html`<li key=${waiter.task}><${TaskChip} project=${project} id=${waiter.task} /></li>`)}
             </ul>
           </section>` : null}
-        ${detail.talk.length ? html`<${Talk} project=${project} talk=${detail.talk} words=${words} />` : null}
         ${detail.conflict && detail.overlaps.length ? html`
           <section class="task-section" aria-label="Shared files">
             <h2 class="task-heading">Shared files</h2>
@@ -261,9 +243,28 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
                 </li>`)}
             </ul>
           </section>` : null}
-        ${detail.usage?.turns > 0 && html`<p class="note task-usage">Usage: ${usageLine(detail.usage)}</p>`}
+        ${parts.length > 0 && html`
+          <details class="task-section task-fold">
+            <summary class="task-heading fold-head"><${Icon} name="chevron" />Report${reportNoted && html`<span class="fold-note"> · ${reportNoted}</span>`}</summary>
+            ${parts.map((title) => {
+              // ^ Landed items are live: Pass and Fail act on the project's list.
+              const live = title === "To check" && detail.to_check.length;
+              return html`
+                <section class="task-part" key=${title} aria-label=${title}>
+                  <h3 class="task-subheading">${title}${title === "To check" && html`<span class="fold-note"> · ${checkNote(report[title], detail)}</span>`}</h3>
+                  ${live ? checkRows
+                    : html`<div class="task-body"><${Markdown} text=${partBody(title, report[title])} words=${words} prose /></div>`}
+                </section>`;
+            })}
+          </details>`}
+        ${detail.talk.length ? html`
+          <details class="task-section task-fold">
+            <summary class="task-heading fold-head"><${Icon} name="chevron" />Messages<span class="fold-note"> · ${detail.talk.length}</span></summary>
+            <${Talk} project=${project} talk=${detail.talk} words=${words} />
+          </details>` : null}
         <details class="task-section timeline">
           <summary class="task-heading fold-head"><${Icon} name="chevron" />History</summary>
+          ${detail.usage?.turns > 0 && html`<p class="note task-usage">Usage: ${usageLine(detail.usage)}</p>`}
           ${detail.timeline.skipped ? html`<p class="note">${detail.timeline.skipped} earlier entries are not shown.</p>` : null}
           <ol class="timeline-list">
             ${entries.map((entry, index) => {
@@ -276,7 +277,6 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
                 </li>`;
             })}
           </ol>
-        </details>
         </details>
       </div>
       ${action.error && html`<p class="error chat-error" role="alert">${action.error}</p>`}

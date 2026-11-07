@@ -82,12 +82,51 @@ export const summaryIsCurrent = (detail) => ["ready", "failed", "landed", "close
 // ^ How often the age on an open sheet is said again; only the words change, nothing is read.
 const AGE_EVERY_MS = 30_000;
 
+const cut = (text, max) => text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+const fileName = (path) => path.replace(/\/+$/, "").split("/").pop();
+const host = (url) => { try { return new URL(url).host; } catch { return cut(url, 40); } };
+// A command without its leading `cd <dir> &&`, on one line.
+const command = (text) => cut(text.replace(/^\s*cd\s+\S+\s*(?:&&|;)\s*/, "").split("\n")[0].trim(), 48);
+// The tools both adapters log (claude: Read, Edit, Bash…; pi: read, bash, edit, write, grep, find,
+// ls), by lower-case name: [words, how the argument reads], never a full path or a long command.
+const TOOLS = {
+  read: ["reading", fileName], edit: ["editing", fileName], multiedit: ["editing", fileName], notebookedit: ["editing", fileName],
+  write: ["writing", fileName], bash: ["running", command], bashoutput: ["reading command output"], killshell: ["stopping a command"],
+  grep: ["searching code"], glob: ["listing files"], find: ["listing files"], ls: ["listing files"],
+  webfetch: ["fetching", host], websearch: ["searching the web"], task: ["asking a helper agent"], agent: ["asking a helper agent"],
+  todowrite: ["updating its todo list"], skill: ["loading a skill"], toolsearch: ["looking up tools"],
+};
+
+// What a worker's newest log line says it does, in few words: a tool line ("Edit /a/b/task.js")
+// as "editing task.js"; a tool of neither adapter's list by its name ("using Foo"); any other
+// line, which wsx wrote, as it is, cut short.
+export function doing(line) {
+  const [name, ...rest] = line.trim().split(/\s+/);
+  const argument = rest.join(" ");
+  const tool = Object.hasOwn(TOOLS, name.toLowerCase()) ? TOOLS[name.toLowerCase()] : null;
+  if (tool) return [tool[0], tool[1] && argument ? tool[1](argument) : ""].filter(Boolean).join(" ");
+  // ^ A tool name is one token: capitalized or with a `_`/`:`/`.` (mcp__server__tool); wsx's own lines are sentences.
+  if (/^(?:[A-Z][\w.:-]*|[a-z][a-z0-9]*[_:.][\w.:-]*)$/.test(name)) return `using ${name.split("__").pop()}`;
+  return cut(line.trim(), 60);
+}
+
+// The progress line: the worker's newest tool, its own words, or the checks that run; none while
+// the task waits (the status sentence under it says what for) or is ready.
+function nowLine(detail, words) {
+  const { now, running: checks, stuck } = detail.progress;
+  if (detail.waiting) return null;
+  if (detail.state === "checking" && checks?.length) return html`running ${cut(checks.join(", "), 60)}`;
+  if (detail.state !== "working" && !stuck) return null;
+  if (!now) return null;
+  return now.said ? words(lastSentence(now.line)) : doing(now.line);
+}
+
 // An open task at a glance: how it is doing, how long since the worker last did something, its
-// workflow steps and the worker's last sentence (docs/web-client-tasks.md "Task sheet").
-function Progress({ detail, words }) {
+// goal, workflow steps and what it does now (docs/web-client-tasks.md "Task sheet").
+function Progress({ detail, words, goal }) {
   const [, setTick] = useState(0);
   const health = [detail.status.label, statusTone(detail)];
-  const { steps, step, stuck, last_unix_ms: last, said } = detail.progress;
+  const { steps, step, stuck, last_unix_ms: last } = detail.progress;
   const working = ["working", "checking"].includes(detail.state);
   const ended = ["ready", "failed"].includes(detail.state);
   // ^ The timer runs only while the age shows.
@@ -99,7 +138,7 @@ function Progress({ detail, words }) {
   }, [aged]);
   // ^ Checks run after the last step's result, so every step is done by then.
   const current = detail.state === "checking" || detail.state === "ready" ? steps.length : step;
-  const sentence = (working || stuck) && said ? lastSentence(said) : "";
+  const now = nowLine(detail, words);
   return html`
     <div class="progress">
       <p class="progress-head">
@@ -108,6 +147,7 @@ function Progress({ detail, words }) {
         ${agentWords(detail.agent) && html`<span class="progress-model" title="Model">${agentWords(detail.agent)}</span>`}
         ${aged && html`<span class="progress-age">${ago(Date.now() - last)}</span>`}
       </p>
+      ${goal}
       ${steps.length > 0 && html`
         <ol class="progress-steps" aria-label="Workflow steps">
           ${steps.map((name, index) => html`
@@ -115,32 +155,38 @@ function Progress({ detail, words }) {
               ${index < current && html`<${Icon} name="pass" />`}${name}
             </li>`)}
         </ol>`}
-      ${sentence && html`<p class="progress-said">${words(sentence)}</p>`}
+      ${now && html`<p class="progress-now">${now}</p>`}
     </div>`;
 }
 
-// The top of the task sheet: how an open task is doing, what changed (the whole summary and what
-// the worker decided, open from the start; Less folds it to one sentence), and what the owner
-// should know next with the task's actions beside it (docs/web-client-tasks.md "Task sheet").
+// What the task is about: the prompt's opening sentence, "Goal:" lead cut. Nothing when the title
+// (made from the prompt's first line) already says it; a `--title` is another phrase, so both show.
+function goalOf(detail) {
+  const goal = firstSentence((detail.goal ?? "").replace(/^\s*goal:\s*/i, ""), 200);
+  const plain = (text) => (text ?? "").replace(/^\s*goal:\s*/i, "").replace(/…$/, "").trim().toLowerCase();
+  const [a, b] = [plain(goal), plain(detail.title)];
+  return !a || a.startsWith(b) || b.startsWith(a) ? "" : goal;
+}
+
+// The top of the task sheet: how an open task is doing and what it does now, what it is about,
+// what changed (the whole summary and what the worker decided) and what the owner should know
+// next with the task's actions beside it (docs/web-client-tasks.md "Task sheet").
 export function TaskStory({ detail, words, children }) {
-  const [more, setMore] = useState(true);
   const summary = summaryIsCurrent(detail) ? (detail.result?.summary ?? "").trim() : "";
-  const sentence = firstSentence(summary);
   const decisions = detail.result?.decisions ?? [];
-  const longer = summary !== sentence || decisions.length > 0;
+  const goal = goalOf(detail);
+  const goalLine = goal && html`<p class="story-goal">${words(goal)}</p>`;
   // ^ What it waits for, why, how long and what comes next (docs/tasks.md "Status").
   const next = detail.status.sentence;
-  if (!detail.progress && !sentence && !next && !children) return null;
+  if (!detail.progress && !goal && !summary && !next && !children) return null;
   return html`
     <section class="story" aria-label="Where this task stands">
-      ${detail.progress && html`<${Progress} detail=${detail} words=${words} />`}
-      ${sentence && (more ? html`
-        <div class="story-summary" id="story-more">
+      ${detail.progress ? html`<${Progress} detail=${detail} words=${words} goal=${goalLine} />` : goalLine}
+      ${summary && html`
+        <div class="story-summary">
           <${Markdown} text=${summary} words=${words} />
           ${decisions.length ? html`<p>Decided: ${decisions.map((entry) => `${entry.choice} (${entry.reason})`).join("; ")}.</p>` : null}
-        </div>` : html`<p class="story-summary">${words(sentence)}</p>`)}
-      ${sentence && longer && html`<button class="link-action" type="button" aria-expanded=${more} aria-controls="story-more"
-        onClick=${() => setMore(!more)}>${more ? "Less" : "More"}</button>`}
+        </div>`}
       ${(next || children) && html`<div class="story-act">${next && html`<p class="story-next">${next}</p>`}${children}</div>`}
     </section>`;
 }

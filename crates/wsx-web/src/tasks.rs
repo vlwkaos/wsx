@@ -513,6 +513,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     let now = task::now_unix_ms();
     let stuck = stall::stuck(&dir, &record, now);
     summary["progress"] = progress(&dir, &record, &log, stuck.as_deref());
+    summary["goal"] = goal(&dir);
     let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
     summary["agent"] = view::task_agent(&dir, &record);
     summary["stage"] = json!(stage(&record, land_auto));
@@ -584,7 +585,9 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
 }
 
 /// What the top of an open task's sheet shows: its workflow steps, whether it is stuck, the
-/// last write and the worker's last words; `null` once it is finished.
+/// last write, what the worker does now and the checks that run; `null` once it is finished.
+/// `now` is the log's newest entry when it is an agent line: a tool line (`said` false) or the
+/// worker's own words. The sheet words the tool.
 /// ref: docs/web-client-tasks.md "Task sheet"
 fn progress(
     dir: &TaskDir,
@@ -595,8 +598,8 @@ fn progress(
     if !record.state.is_open() {
         return Value::Null;
     }
-    let said = log.iter().rev().find_map(|entry| match &entry.event {
-        LogEvent::Agent { text, said: true } => Some(text),
+    let now = log.last().and_then(|entry| match &entry.event {
+        LogEvent::Agent { text, said } => Some(json!({ "line": text, "said": said })),
         _ => None,
     });
     json!({
@@ -604,8 +607,21 @@ fn progress(
         "step": record.step,
         "stuck": stuck,
         "last_unix_ms": stall::progress_ms(dir),
-        "said": said,
+        "now": now,
+        "running": if record.state == TaskState::Checking { json!(record.checks) } else { Value::Null },
     })
+}
+
+/// The prompt's opening paragraph, for the sheet to cut to its goal sentence.
+fn goal(dir: &TaskDir) -> Value {
+    let prompt = dir.prompt().ok().flatten().unwrap_or_default();
+    let paragraph = prompt
+        .trim()
+        .split("\n\n")
+        .next()
+        .unwrap_or_default()
+        .replace('\n', " ");
+    json!(Some(view::clip(paragraph.trim(), 400)).filter(|text| !text.is_empty()))
 }
 
 /// The actions a task's state allows. The host still decides; this only picks buttons.
