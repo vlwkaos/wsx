@@ -1834,8 +1834,8 @@ fn report_response(dir: &TaskDir, response: HostResponse, json: bool) -> Result<
     Ok(())
 }
 
-/// One request to the task's host; a host that does not answer is an error that says how
-/// to restart it.
+/// One request to the task's host (`call_task_host`); an error says why none answered and
+/// that the task is unchanged.
 fn ask_host(dir: &TaskDir, request: &HostRequest) -> Result<HostResponse> {
     // ^ A landing or a trial rebases the branch on the host before it answers.
     let timeout = if matches!(request, HostRequest::Land { .. } | HostRequest::Trial) {
@@ -1843,25 +1843,13 @@ fn ask_host(dir: &TaskDir, request: &HostRequest) -> Result<HostResponse> {
     } else {
         HOST_TIMEOUT
     };
-    match wsx_core::task::call_host_waiting(&dir.socket_path(), request, timeout) {
-        Ok(response) => Ok(response),
-        Err(error) => {
-            let (state, working_copy) = dir.read_record().map_or_else(
-                |_| ("unknown".to_string(), String::new()),
-                |record| {
-                    (
-                        record.state.as_str().to_string(),
-                        record.working_copy.display().to_string(),
-                    )
-                },
-            );
-            bail!(
-                "{error:#}; task t{} is {state} and unchanged. Restart its host with `wsx session restart task-{} -w {working_copy}`",
-                dir.id,
-                dir.id
-            );
-        }
-    }
+    wsx_core::task::call_task_host(dir, request, timeout).map_err(|error| {
+        let state = dir.read_record().map_or_else(
+            |_| "unknown".to_string(),
+            |record| record.state.as_str().to_string(),
+        );
+        anyhow::anyhow!("{error:#}; task t{} is {state} and unchanged", dir.id)
+    })
 }
 
 /// `ask_host`, where a refusal is an error.

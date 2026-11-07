@@ -51,6 +51,37 @@ slot.write(sys.argv[2])
 slot.flush()
 time.sleep(600)
 """
+# What a host that started before the CLI's newest request does with it: it cannot read the
+# request and closes the connection without an answer. Status it answers. Each other request
+# is a line `<pid> <action>` in the log; the CLI sends it again for 3 s, so there are many.
+OLD_HOST = """import json, os, socket, sys
+path, log, pidfile = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    os.unlink(path)
+except FileNotFoundError:
+    pass
+server = socket.socket(socket.AF_UNIX)
+server.bind(path)
+os.chmod(path, 0o600)
+server.listen(8)
+with open(pidfile, 'w') as out:
+    out.write(str(os.getpid()))
+while True:
+    client, _ = server.accept()
+    data = b''
+    while True:
+        chunk = client.recv(65536)
+        if not chunk:
+            break
+        data += chunk
+    action = json.loads(data)['action']
+    if action != 'status':
+        with open(log, 'a') as out:
+            out.write('%d %s\\n' % (os.getpid(), action))
+    if action == 'status':
+        client.sendall(b'{"ok":true,"state":"ready","message":""}\\n')
+    client.close()
+"""
 LAND_CONFIG = '''tasks:
   minFreeGb: 0
   land: { auto: false }
@@ -557,6 +588,70 @@ def run(wsx, wsxd, work, owned):
     js('task', 'add', '1', 'HUGE NOOP')
     assert wait_state(1, 'ready', 'failed')['state'] == 'ready'
     assert not any(len(e.get('text', '')) > 1000 for e in log(1) if e['kind'] == 'agent')
+
+    # 3d. A host that started before this wsx cannot read a request the newer CLI added
+    # (docs/tasks.md "Host"). The stand-in is what an older host does with a request it cannot
+    # read: it closes the connection unanswered. A task at rest gets its host session replaced
+    # by one on the current wsx and the request again; a task in a turn gets a plain answer.
+    mark('3d')
+    stale = work / 'stale'
+    stale.mkdir(mode=0o700)
+    fake_host = stale / 'old-host.py'
+    fake_host.write_text(OLD_HOST)
+    old_log = stale / 'old.log'
+    old, other = (js('task', 'new', 'WORK a.txt')['id'] for _ in range(2))
+    for n in (old, other):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
+    task_folder = Path(show(old)['log']).parent
+    host_socket = Path(show(old)['socket'])
+    working_copy = show(old)['record']['working_copy']
+    old_pid = stale / 'old.pid'
+
+    def old_host():
+        # ^ The session of the task's host runs the stand-in instead, as after a deploy.
+        cli('session', 'delete', 'task-%d' % old, '-w', working_copy)
+        old_pid.unlink(missing_ok=True)
+        cli('session', 'create', '--name', 'task-%d' % old, '-w', working_copy,
+            '--command', 'exec %s %s %s %s %s' % (sys.executable, fake_host, host_socket, old_log, old_pid))
+        wait(lambda: old_pid.exists() and old_pid.read_text() and host_socket.exists(), 'the older host')
+        assert show(old)['host_running']
+        return int(old_pid.read_text())
+
+    def old_requests():
+        return [line.split()[1] for line in old_log.read_text().splitlines()] if old_log.exists() else []
+
+    stand_in = old_host()
+    # ^ The request of the incident: `after` is newer than the host, and the task is ready.
+    parked = js('task', 'after', old, other, 'WORK a.txt')
+    assert parked['ok'] and parked['state'] == 'ready', parked
+    assert set(old_requests()) == {'after'}, old_requests()
+    wait(lambda: gone(stand_in), 'the older host ended')
+    assert show(old)['host_running']
+    assert show(old)['record']['after']['task'] == other and show(old)['state'] == 'ready', show(old)
+    # ^ The new host is this wsx: it answers a later request at once, as before.
+    seen = len(old_requests())
+    assert js('task', 'after', old, '--off')['ok'] and 'after' not in show(old)['record']
+    assert len(old_requests()) == seen
+    # A second request type.
+    stand_in = old_host()
+    assert js('task', 'hold', old, 'try it first')['ok'], show(old)
+    assert set(old_requests()) == {'after', 'hold'} and show(old)['record']['hold'], (old_requests(), show(old)['record'])
+    wait(lambda: gone(stand_in), 'the older host ended')
+    assert show(old)['host_running']
+    # In a turn the host is not replaced: that would stop the turn. The answer says when to repeat.
+    stand_in = old_host()
+    record_path = task_folder / 'task.json'
+    record = json.loads(record_path.read_text())
+    record['state'] = 'working'
+    record_path.write_text(json.dumps(record))
+    seen = len(old_requests())
+    refused = cli('task', 'after', old, other, 'WORK a.txt', ok=False).stderr
+    assert 'started before this wsx' in refused and 'repeat it when the task is ready' in refused, refused
+    assert 'wsx session' not in refused, refused
+    assert set(old_requests()[seen:]) == {'after'} and not gone(stand_in) and show(old)['host_running']
+    for n in (old, other):
+        js('task', 'close', n, '--discard')
+    assert gone(stand_in) and not show(old)['host_running']
 
     # 4. A failing check makes the task failed with the evidence.
     mark('4')
