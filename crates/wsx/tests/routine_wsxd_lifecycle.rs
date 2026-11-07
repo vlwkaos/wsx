@@ -267,6 +267,9 @@ fn findings_exit_codes_make_a_finished_run_findings_not_failed() {
 #[test]
 fn a_run_outlives_a_live_handoff_and_records_its_exit() {
     let install = Install::new();
+    // ^ The run ends when the test creates `gate`, not after a fixed time: a slow runner takes
+    // longer than any sleep to restart the daemon, and the run would end by itself first.
+    let gate = install.root.join("gate");
     install.routine(&[
         "add",
         "slow",
@@ -274,18 +277,19 @@ fn a_run_outlives_a_live_handoff_and_records_its_exit() {
         NEVER_DUE,
         "--arg=sh",
         "--arg=-c",
-        "--arg=sleep 3; echo done; exit 7",
+        &format!(
+            "--arg=while [ ! -e '{}' ]; do sleep 0.05; done; echo done; exit 7",
+            gate.display()
+        ),
     ]);
     install.routine(&["run", "slow"]);
     assert_eq!(install.view("slow")["running"], true);
     let restarted = install.wsx(&["daemon", "restart", "--json"]);
     let answer: Value = serde_json::from_slice(&restarted.stdout).unwrap_or_default();
     assert_eq!(answer["state"], "restarted", "{restarted:?}");
-    assert_eq!(
-        install.view("slow")["running"],
-        true,
-        "the handoff ended the run"
-    );
+    let after = install.view("slow");
+    assert_eq!(after["running"], true, "the handoff ended the run: {after}");
+    fs::write(&gate, "").unwrap();
     let run = install.finished_run("slow");
     assert_eq!(
         (&run["status"], &run["exit_code"]),

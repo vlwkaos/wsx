@@ -1855,7 +1855,7 @@ try:
     drawn_from = len(tui_screen)
     time.sleep(5)
     draws = tui_screen[drawn_from:].count(b"\x1b[?2026h")
-    print(f"tui refresh: connect median {connect_ms:.1f} ms, {draws} draws in 5 s of output")
+    print(f"tui refresh: connect median {connect_ms:.1f} ms, {draws} draws in 5 s of output", flush=True)
     assert connect_ms < 5, f"a new connection waited {connect_ms:.1f} ms for its hello"
     assert draws <= 5, f"the TUI drew {draws} times in 5 s while only a pane printed"
     printer_session = next(item for item in call("snapshot")["data"]["sessions"]
@@ -2238,7 +2238,7 @@ try:
                                    "from": "owner", "text": "LAST-ENTRY-1"}) + "\n")
     wait_for(lambda: "LAST-ENTRY-1" in remove_view.text(), "the chat did not show the new entry", seconds=60)
     refresh = time.monotonic() - started
-    print(f"smoke: the chat of a {halt_log.stat().st_size / MiB:.1f} MiB log refreshed in {refresh:.2f} s")
+    print(f"smoke: the chat of a {halt_log.stat().st_size / MiB:.1f} MiB log refreshed in {refresh:.2f} s", flush=True)
     assert refresh < REFRESH_SECONDS, f"the chat refresh took {refresh:.2f} s"
     # ^ `/` reads the whole log: the oldest entry is found. Esc clears the find and returns to
     # the newest 200 entries (LAST-ENTRY-1 and -0 and 198 filler entries): scrolled to the top,
@@ -2265,9 +2265,15 @@ try:
         started = time.monotonic()
         os.write(remove_master, ("paste0123 " * 199 + "paste012 ").encode())
         os.write(remove_master, mark.encode())
-        wait_for(lambda: mark in remove_view.text(), f"the composer did not show the end of part {part} of a 20 KB paste", seconds=180)
+        # ^ A wait that fails says whether the TUI is alive and what it shows: the CI log of a
+        # piped run carries no timing, and a hang and a slow redraw look alike without them.
+        wait_for(lambda: mark in remove_view.text(),
+                 lambda: f"the composer did not show the end of part {part} of a 20 KB paste "
+                         f"(TUI exit status {remove_tui.poll()}, {time.monotonic() - started:.0f} s):\n{remove_view.text()}",
+                 seconds=180)
         part_seconds.append(time.monotonic() - started)
-    print("smoke: 20 KB typed in the composer, seconds per 2,000 characters: " + " ".join(f"{sec:.1f}" for sec in part_seconds))
+        print(f"smoke: part {part} of the 20 KB line shown after {part_seconds[-1]:.1f} s", flush=True)
+    print("smoke: 20 KB typed in the composer, seconds per 2,000 characters: " + " ".join(f"{sec:.1f}" for sec in part_seconds), flush=True)
     assert part_seconds[-1] < 3 * part_seconds[0] + 2, part_seconds
     # ^ Two Escs in one write read as Alt-Esc: the first leaves the composer, the second the chat.
     os.write(remove_master, b"\x1b")
