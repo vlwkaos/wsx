@@ -175,13 +175,45 @@ pub fn stale_reason(request: &ApprovalLine, record: &super::TaskRecord) -> Optio
         .map(|revision| format!("#{task} moved from r{revision} to r{}", record.revision))
 }
 
+/// The pending request `id`. A request that was decided answers with its outcome ("dropped;
+/// replaced by a170"), and nothing runs.
 pub fn find_request<'a>(lines: &'a [ApprovalLine], id: &str) -> Result<&'a ApprovalLine> {
     pending_approvals(lines)
         .into_iter()
         .find(|line| matches!(line, ApprovalLine::Request { id: pending, .. } if pending == id))
         .with_context(|| {
-            format!("no pending approval {id}; `wsx task ledger` lists the pending ones")
+            let decided = lines.iter().rev().find_map(|line| match line {
+                ApprovalLine::Decision {
+                    id: decided,
+                    outcome,
+                    ..
+                } if decided == id => Some(outcome),
+                _ => None,
+            });
+            match decided {
+                Some(outcome) => format!("approval {id} was decided: {outcome}; nothing ran"),
+                None => {
+                    format!("no pending approval {id}; `wsx task ledger` lists the pending ones")
+                }
+            }
         })
+}
+
+/// The pending push requests as `(id, commit)`, oldest first. ref: docs/tasks.md "Push"
+pub fn waiting_pushes(project_id: &str) -> Result<Vec<(String, String)>> {
+    let lines = store::read_approvals(project_id)?;
+    Ok(pending_approvals(&lines)
+        .into_iter()
+        .filter_map(|line| match line {
+            ApprovalLine::Request {
+                id,
+                action: ApprovalAction::Push,
+                commit: Some(commit),
+                ..
+            } => Some((id.clone(), commit.clone())),
+            _ => None,
+        })
+        .collect())
 }
 
 /// What an approved action did.

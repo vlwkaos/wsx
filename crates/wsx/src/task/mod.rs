@@ -2205,6 +2205,14 @@ fn push(
     let default = default_ref(&main);
     let branch = default.trim_start_matches("refs/heads/").to_string();
     let refuse = |error: anyhow::Error| anyhow::anyhow!("{error:#}; nothing was pushed");
+    // ^ One approved push of a project at a time, and origin's tip is read under the lock: two
+    // approved pushes ran together once and the older won the ref. A request waits for nothing.
+    let asks = acting_as_manager() && owner_said.is_none();
+    let _one_at_a_time = if asks {
+        None
+    } else {
+        Some(store::lock_pushes(&project_id).map_err(refuse)?)
+    };
     let local = copy::resolve_commit(&main, &default).map_err(refuse)?;
     let target = copy::resolve_commit(&main, commit.unwrap_or(&local)).map_err(refuse)?;
     let remote = copy::remote_tip(&main, PUSH_REMOTE, &branch).map_err(refuse)?;
@@ -2219,6 +2227,16 @@ fn push(
         );
     }
     let remote_ff = remote.as_deref().is_none_or(|tip| contains(tip, &target));
+    if let Some(tip) = remote
+        .as_deref()
+        .filter(|tip| !force && *tip != target && contains(&target, tip))
+    {
+        bail!(
+            "{} is already on {PUSH_REMOTE} {branch}, which is at {}. Nothing was pushed",
+            short_commit(&target),
+            short_commit(tip)
+        );
+    }
     if !force && !remote_ff {
         bail!(
             "{} is not a fast-forward of {PUSH_REMOTE} {branch} ({}); a rewrite needs --force. Nothing was pushed",
@@ -2242,8 +2260,21 @@ fn push(
     }
     // ^ A lease that is not origin's tip was refused above, so the push leases what it saw now.
     let lease = force.then(|| remote.clone().unwrap_or_default());
-    if acting_as_manager()
-        && ask_owner(
+    if acting_as_manager() {
+        // ^ The newest request replaces the waiting ones it contains. Another line of history
+        // waits for the owner: the new request is refused, unless it is a rewrite.
+        let waiting = owner::waiting_pushes(&project_id).map_err(refuse)?;
+        let (older, other): (Vec<_>, Vec<_>) = waiting
+            .into_iter()
+            .partition(|(_, commit)| contains(commit, &target));
+        if let Some((id, commit)) = other.first().filter(|_| !force && owner_said.is_none()) {
+            bail!(
+                "push {id} ({}) waits for the owner and {} does not contain it; the owner decides {id} first, or ask again with --force. Nothing was pushed",
+                short_commit(commit),
+                short_commit(&target)
+            );
+        }
+        let (id, asked) = request_owner(
             &project_id,
             ApprovalAction::Push,
             None,
@@ -2252,9 +2283,16 @@ fn push(
             lease.as_deref(),
             owner_said,
             json,
-        )?
-    {
-        return Ok(());
+        )?;
+        for (old, _) in older {
+            if let Err(error) = owner::drop_request(&project_id, &old, &format!("replaced by {id}"))
+            {
+                eprintln!("cannot drop approval {old}: {error:#}");
+            }
+        }
+        if asked {
+            return Ok(());
+        }
     }
     // ^ A rewrite leaves open tasks on commits the new branch lacks: name them.
     let mut old_base = Vec::new();
@@ -3261,7 +3299,7 @@ fn actor() -> Actor {
 /// of its running turn (recorded; false: run it), else a request (true: the owner was asked).
 /// ref: docs/tasks.md "Approvals"
 #[allow(clippy::too_many_arguments)]
-fn ask_owner(
+fn request_owner(
     project_id: &str,
     action: ApprovalAction,
     task: Option<&TaskRecord>,
@@ -3270,7 +3308,7 @@ fn ask_owner(
     lease: Option<&str>,
     owner_said: Option<u64>,
     json: bool,
-) -> Result<bool> {
+) -> Result<(String, bool)> {
     let revision = task.map(|record| record.revision);
     let request = ApprovalLine::Request {
         id: String::new(),
@@ -3288,7 +3326,7 @@ fn ask_owner(
         if !json {
             println!("{id}: approved by owner message {said}");
         }
-        return Ok(false);
+        return Ok((id, false));
     }
     let line = store::append_approval(project_id, request)?;
     let id = line.id();
@@ -3306,7 +3344,26 @@ fn ask_owner(
     } else {
         println!("{message}");
     }
-    Ok(true)
+    Ok((id.to_string(), true))
+}
+
+/// `request_owner` for a caller that needs only whether the owner was asked (`true`) or the
+/// owner's message approved it (`false`).
+#[allow(clippy::too_many_arguments)]
+fn ask_owner(
+    project_id: &str,
+    action: ApprovalAction,
+    task: Option<&TaskRecord>,
+    commit: Option<&str>,
+    role: Option<(&str, &str)>,
+    lease: Option<&str>,
+    owner_said: Option<u64>,
+    json: bool,
+) -> Result<bool> {
+    Ok(request_owner(
+        project_id, action, task, commit, role, lease, owner_said, json,
+    )?
+    .1)
 }
 
 fn owner_only(command: &str) -> Result<()> {
