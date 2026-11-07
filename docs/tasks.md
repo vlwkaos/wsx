@@ -373,7 +373,29 @@ Every reader of a manager log reads it from its end (`ManagerDir::read_back` in 
 | `After(id)` | the newest 200 after message `id` | an entry at or before `id` (ids grow) |
 | `Find(words)` | from the oldest entry whose row shows the words (name, tag, quote, text; case-insensitive) to the end; `Tail` when none does | the start |
 
-Each also reads back 7 days, for the open questions ("Questions"), and to a reply or a step, for what the manager does now. A quote by id (`resolve_quote`) reads back to its id. Each step reads only the bytes before the last one. On the wsx manager log (2.8 MB, 9,264 entries, 2026-11-06; release build, the fastest of 41 runs in process): the whole read 5.4 ms, `Tail` and `After` 0.5 ms, `Find` 5.7 to 8.8 ms, `asking` 2.1 ms (it parses only owner messages, questions and `answered`; 7 days are 1.08 MB of that log).
+Each also reads back 7 days, for the open questions ("Questions"), and to a reply or a step, for what the manager does now. A quote by id (`resolve_quote`) reads back to its id. Finding an old message across projects is `wsx task search` ("Search"), not `Find`. Each step reads only the bytes before the last one. On the wsx manager log (2.8 MB, 9,264 entries, 2026-11-06; release build, the fastest of 41 runs in process): the whole read 5.4 ms, `Tail` and `After` 0.5 ms, `Find` 5.7 to 8.8 ms, `asking` 2.1 ms (it parses only owner messages, questions and `answered`; 7 days are 1.08 MB of that log).
+
+## Search
+
+`wsx task search <words> [-p <project> | --all] [--limit n] [--reindex] [--json]` finds an earlier message, decision or task result and ranks it, so a manager after a new conversation (and the owner) finds the old decision and quotes it by id. `-p` (or the project of the current folder) searches one project, `--all` every registered one. The one owner is `wsx_core::task::search`; the web and the TUI have no search box.
+
+| Searched | Record | Where it comes from |
+|---|---|---|
+| Messages of the owner, other managers and roles | `message` | the manager log and each role's log (`ManagerDir::read_back_where`) |
+| Replies that say something | `reply` | the same logs; wsx's events, recaps, quiet replies and `-` are no conversation and are left out |
+| A task's title and prompt | `task` | `task.json`, the first prompt in the task's `log.jsonl` |
+| A task's latest result: summary, memo, decisions, left open | `result` | `result.json` |
+| Decisions and memo lines | `decision`, `memo` | `notes/decisions.md`, `notes/context.md`, `notes/context-archive.md`, read as they are now |
+
+Tool steps, agent commands and the tasks' logs are not indexed. A record keeps at most 4 KiB of text; the log keeps the rest. A quote line at the head of a message is not indexed (it is another message's text).
+
+Each hit has `project`, `kind`, `id` (the message id in that chat), `task`, `unix_ms`, `by` (owner, manager, `manager:<project>`, `role:<name>`, task, notes), `line` (the first line, at most 160 characters), `score` and `reference`: `<project>:<id>`, `<project>:<role>:<id>`, `<project>#<task>` or `<project>:notes/<file>`. A message or reply of the manager chat of the project the search ran in also has `quote`, the line `> message <id>` that a reply opens with to quote it ("A quote" under "Manager"); another project's message cannot be quoted by id (its id belongs to its own log), so quote its words or name its `reference`. Text output is one line per hit. A manager reads other projects' hits with `--all` (`-p` of another project is refused to a manager, as for the chat).
+
+Ranking is BM25 (k1 1.2, b 0.75) over lower-case words of letters and digits; the words of all searched projects count together, a hit holds at least one of the words, more of them and rarer ones score higher, equal scores go to the newer. A run of Han, Kana or Hangul has no spaces, so each pair of neighbouring characters is a word (a lone character is itself), in the records and in the query alike.
+
+Each project keeps a digest, `tasks/<project-id>/search.jsonl`: one line per record, written by the search that finds it new. Freshness is on read, under `search.lock` of the project: a search reads the manager and each role log back from its end only until the newest message id it already holds (ids grow, the `Mark` record keeps the newest id scanned, also when it was no conversation), and a task's title once and its result again when `result.json` is newer. Nothing is written on the append path of a host. The digest is append-only, grows with the words said, and survives a manager's new conversation (it never depends on the session) and, for the part it already holds, a log roll; the logs are the source, so `--reindex` deletes the digest and builds it again from the logs and tasks that exist (a log file the roll already deleted is not recovered). A digest line that does not parse is skipped, and a cut last line gets a line of its own. A project that is not registered any more is not searched by `--all`; its digest stays with its tasks folder and goes when that goes.
+
+Measured on this machine's store (2026-11-07, release build, copy of the store: 18 projects, 4,023 records, 3.5 MB of digests from 4.9 MB of manager logs and 29 MB of task logs): a search of all of it takes 29 ms in process when warm (the fastest of 15 runs 26 ms, 39 ms median with the process start), 211 ms for the first build of every digest. Of that, reading and parsing the digests takes most; the scan itself is linear in the digests, so 5 times the text is about 150 ms: past that, add an inverted index file per project (not built; no new dependency needed).
 
 ## Manager
 
@@ -381,6 +403,7 @@ Each also reads back 7 days, for the open questions ("Questions"), and to a repl
 wsx task manager -p <project> --json             # start the manager, or report the running one
 wsx task say -p <project> "<text>" --json        # or `-` or --prompt-file; returns {id} at once
 wsx task chat -p <project> [--after <id> | --find <words>] --json # messages, replies, rotations; asks
+wsx task search -p <project> [--all] <words> --json # ranked earlier messages, decisions, task results ("Search")
 wsx task dismiss -p <project> <reply id> --json  # the owner's: an open question asks no more
 ```
 
