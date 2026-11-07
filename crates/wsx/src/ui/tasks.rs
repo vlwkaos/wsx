@@ -1,6 +1,9 @@
 //! The Tasks view: the list in attention order and one task's detail, both read-only.
 //! ref: docs/tasks.md "TUI"
-use super::{task_chat::wrap_cells, theme, workspace_tree::truncate_to_width};
+use super::{
+    text::{fit, hard_wrap, truncate_to_width, wrap_cells},
+    theme,
+};
 use crate::task_list::{Overview, Section, TaskList, TaskRow};
 use ratatui::{
     layout::Rect,
@@ -179,22 +182,6 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
-/// `text` cut into pieces of at most `width` cells, spaces kept.
-fn hard_wrap(text: &str, width: usize) -> Vec<String> {
-    let (mut pieces, mut piece, mut used) = (Vec::new(), String::new(), 0);
-    for char in text.chars() {
-        let size = Line::from(char.encode_utf8(&mut [0; 4]) as &str).width();
-        if used > 0 && used + size > width {
-            pieces.push(std::mem::take(&mut piece));
-            used = 0;
-        }
-        piece.push(char);
-        used += size;
-    }
-    pieces.push(piece);
-    pieces
-}
-
 fn below(area: Rect, rows: usize) -> Rect {
     let rows = (rows as u16).min(area.height);
     Rect {
@@ -253,13 +240,6 @@ fn state_color(state: &str) -> Color {
     }
 }
 
-/// `text` cut to `width` cells with an ellipsis, then padded to it.
-fn cell(text: &str, width: usize) -> String {
-    let text = truncate_to_width(text, width);
-    let pad = width.saturating_sub(Line::from(text.as_str()).width());
-    text + &" ".repeat(pad)
-}
-
 /// The rows under `Open` and `Recent` headings, and the line of the selected row.
 /// Title first, then the number, the state word and the status label; narrow widths keep
 /// the title and the state.
@@ -301,7 +281,7 @@ fn task_lines(
             ));
         }
         let mut spans = vec![Span::styled(
-            cell(&row.title, title_width.saturating_sub(1)) + " ",
+            fit(&row.title, title_width.saturating_sub(1)) + " ",
             Style::default().fg(theme::TEXT),
         )];
         if number_width > 0 {
@@ -311,17 +291,17 @@ fn task_lines(
                 _ => format!("#{}", row.id),
             };
             spans.push(Span::styled(
-                cell(&number, number_width),
+                fit(&number, number_width),
                 Style::default().fg(theme::TEXT_MUTED),
             ));
         }
         spans.push(Span::styled(
-            cell(&row.state, STATE_WIDTH) + " ",
+            fit(&row.state, STATE_WIDTH) + " ",
             Style::default().fg(state_color(&row.state)),
         ));
         if status_width > 0 {
             spans.push(Span::styled(
-                cell(&row.status, status_width),
+                fit(&row.status, status_width),
                 Style::default().fg(theme::TEXT_MUTED),
             ));
         }

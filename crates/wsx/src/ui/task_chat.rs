@@ -1,6 +1,10 @@
 //! The manager chat: the conversation with the newest at the bottom, the owner's open
 //! items under it and the message line last. ref: docs/tasks.md "TUI"
-use super::{tasks::muted, theme, workspace_tree::truncate_to_width};
+use super::{
+    tasks::muted,
+    text::{truncate_to_width, wrap_cells},
+    theme,
+};
 use crate::task_chat::{links, parts, Focus, Item, ManagerChat, Part};
 use ratatui::{
     layout::Rect,
@@ -523,47 +527,6 @@ fn mark(line: Line<'static>, range: Range<usize>, style: Style) -> Line<'static>
         }
     }
     Line { spans, ..line }
-}
-
-/// `cells` broken at spaces into lines of at most `width` cells; a longer word is split.
-pub(super) fn wrap_cells(
-    cells: &[(char, Option<usize>)],
-    width: usize,
-) -> Vec<Vec<(char, Option<usize>)>> {
-    let size_of = |char: char| Line::from(char.encode_utf8(&mut [0; 4]).to_string()).width();
-    let (mut lines, mut line, mut used) = (Vec::new(), Vec::new(), 0);
-    for word in cells.split(|(char, _)| *char == ' ') {
-        let size: usize = word.iter().map(|(char, _)| size_of(*char)).sum();
-        if used + usize::from(used > 0) + size <= width {
-            if used > 0 {
-                // ^ The space inside a link belongs to it, so its underline runs on.
-                let inside = match (line.last(), word.first()) {
-                    (Some((_, before)), Some((_, after))) if before == after => *after,
-                    _ => None,
-                };
-                line.push((' ', inside));
-                used += 1;
-            }
-            line.extend_from_slice(word);
-            used += size;
-            continue;
-        }
-        if used > 0 {
-            lines.push(std::mem::take(&mut line));
-            used = 0;
-        }
-        for cell in word {
-            let size = size_of(cell.0);
-            if used > 0 && used + size > width {
-                lines.push(std::mem::take(&mut line));
-                used = 0;
-            }
-            line.push(*cell);
-            used += size;
-        }
-    }
-    lines.push(line);
-    lines
 }
 
 /// The owner's open items: a check as its id, task and words, then when it passes (and

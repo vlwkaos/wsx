@@ -4,7 +4,7 @@ use ratatui::{
 };
 use wsx_core::runtime::{PluginSidecarDescriptor, PluginSidecarView, PluginTone, PluginViewRow};
 
-use super::{theme, workspace_tree::truncate_to_width};
+use super::{text::truncate_to_width, theme};
 
 fn tone_color(tone: PluginTone) -> Color {
     match tone {

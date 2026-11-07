@@ -1,7 +1,7 @@
 //! ^ docs/terminal-context.md: logical search hits decorate visible ancestors without changing folds.
 use ratatui::{prelude::*, widgets::Paragraph};
 
-use super::{theme, workspace_tree::truncate_to_width};
+use super::{text::truncate_to_width, theme};
 
 pub(super) fn search_status(query: &str, total: usize, width: usize) -> String {
     let suffix = format!(" ({total})");

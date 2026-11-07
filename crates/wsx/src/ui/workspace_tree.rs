@@ -14,6 +14,7 @@ use wsx_core::{
 use super::{
     compact_port_label, git_remote_status_color,
     search_feedback::SearchFeedback,
+    text::truncate_to_width,
     theme,
     workspace_nav::{render_scrollbar, SidebarLayout},
 };
@@ -26,28 +27,6 @@ fn sched_header_label(expanded: bool, count: usize) -> String {
 
 fn routine_tree_label(name: &str, status: &str) -> String {
     format!("  ◇ {name}{status}")
-}
-
-pub(super) fn truncate_to_width(value: &str, max_width: usize) -> String {
-    if Line::from(value).width() <= max_width {
-        return value.to_string();
-    }
-    if max_width == 0 {
-        return String::new();
-    }
-    let span = Span::raw(value);
-    let mut truncated = String::new();
-    let mut used = 0;
-    for grapheme in span.styled_graphemes(Style::default()) {
-        let width = Line::from(grapheme.symbol).width();
-        if used + width > max_width - 1 {
-            break;
-        }
-        truncated.push_str(grapheme.symbol);
-        used += width;
-    }
-    truncated.push('…');
-    truncated
 }
 
 fn stale_project_label(icon: &str, name: &str, count: &str, width: usize) -> String {
@@ -682,7 +661,7 @@ pub fn compute_scroll(selected: usize, visible_height: usize, current_offset: us
 mod tests {
     use super::{
         compact_tree_cell, render_tree, routine_tree_label, sched_header_label, session_icon,
-        session_line, truncate_to_width, TreeView,
+        session_line, TreeView,
     };
     use crate::ui::{theme, workspace_nav::SidebarLayout};
     use ratatui::{
@@ -1028,18 +1007,6 @@ mod tests {
         assert!(!session_line(&sess, 40, PortVisibility::Hidden, 0, None)
             .to_string()
             .contains(":5173"));
-    }
-
-    #[test]
-    fn truncation_keeps_complete_graphemes_with_linear_prefix_selection() {
-        assert_eq!(truncate_to_width("👩‍💻abcd", 3), "👩‍💻…");
-        assert_eq!(truncate_to_width("e\u{301}abcd", 2), "e\u{301}…");
-        assert_eq!(truncate_to_width("中文abcd", 3), "中…");
-        for width in 0..32 {
-            let text = truncate_to_width(&"👩‍💻e\u{301}中文".repeat(100), width);
-            assert!(Line::from(text.as_str()).width() <= width);
-            assert!(!text.ends_with("\u{200d}…"));
-        }
     }
 
     #[test]

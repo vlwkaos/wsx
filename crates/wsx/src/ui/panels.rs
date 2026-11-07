@@ -1,6 +1,9 @@
 //! The Panels view: one panel's last output, read-only: as written, or for a `format: json`
 //! panel with a good document, as boxed sections with bars. ref: docs/panels.md
-use super::{theme, workspace_tree::truncate_to_width};
+use super::{
+    text::{fit, truncate_to_width},
+    theme,
+};
 use crate::panel_view::PanelsView;
 use ratatui::{
     layout::Rect,
@@ -56,13 +59,6 @@ fn level_look(level: Option<Level>) -> (&'static str, Color) {
 fn number(value: f64) -> String {
     let text = format!("{value:.1}");
     text.strip_suffix(".0").map_or(text.clone(), str::to_string)
-}
-
-/// `text` cut to `width` cells, then padded with spaces to it.
-fn fit(text: &str, width: usize) -> String {
-    let cut = truncate_to_width(text, width);
-    let pad = width.saturating_sub(Line::from(cut.as_str()).width());
-    format!("{cut}{}", " ".repeat(pad))
 }
 
 fn cells(text: &str) -> usize {

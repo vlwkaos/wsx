@@ -9,8 +9,8 @@ use wsx_core::model::workspace::{FetchFailReason, Project, SubmoduleCommitState,
 use wsx_core::routine::RoutineView;
 
 use super::{
-    compact_port_label, git_remote_status_color, theme,
-    workspace_tree::{session_icon, truncate_to_width},
+    compact_port_label, git_remote_status_color, text::truncate_to_width, theme,
+    workspace_tree::session_icon,
 };
 
 pub fn render_worktree_preview(
