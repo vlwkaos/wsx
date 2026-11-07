@@ -2385,7 +2385,7 @@ await oneMotion("To check on a phone", async () => {
 // capture can be taller than the sheet, so it is seen when it covers part of the view.
 const seenItem = `(() => { const node = document.querySelector('dialog.task-sheet[open] .check-item[data-check=' + JSON.stringify(location.hash.split('/').at(-1)) + ']'), scroll = document.querySelector('dialog.task-sheet[open] .scroll').getBoundingClientRect(), box = node?.getBoundingClientRect();
   return { task: node?.querySelector('.task-chip')?.textContent.trim(), seen: !!box && box.top < scroll.bottom - 20 && box.bottom > scroll.top + 20 && node.hasAttribute('data-found') }; })()`;
-await until(`${seenItem}.seen`, "the sheet did not scroll to the item a To check row opened", 10);
+await until(`${seenItem}.seen`, "the sheet did not scroll to the item a To check row opened");
 const atItem = await evaluate(seenItem);
 if (!/^#2/.test(atItem.task ?? "")) await fail(`a tap on #2's To check row opened the sheet at ${JSON.stringify(atItem)}`);
 // ^ The opened To check list uses the reservoir's small size.
