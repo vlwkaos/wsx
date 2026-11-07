@@ -342,6 +342,24 @@ pub fn note_spend(adapter: &str, model: &str, micro_usd: u64, now_ms: u64) -> Op
     }
 }
 
+/// Record a usage limit the agent reached: mark its account limited until it resets (or a
+/// backoff for this `attempt` when the reset is unknown). Returns when work may resume, and
+/// the message to say when the record failed. ref: docs/tasks.md "Claude adapter"
+pub fn record_limit(
+    adapter: &str,
+    model: &str,
+    resets_at: Option<u64>,
+    attempt: u32,
+    now_ms: u64,
+) -> (u64, Option<String>) {
+    let until_ms = super::limit::resume_at(resets_at, attempt, now_ms);
+    let backoff = super::limit::known_reset(resets_at, now_ms).is_none();
+    let message = store::mark_limited(&account(adapter, model), until_ms, now_ms, backoff)
+        .err()
+        .map(|error| format!("cannot record the usage limit: {error:#}"));
+    (until_ms, message)
+}
+
 /// Longest stdout line the host reads; a longer one (a huge tool result) is skipped.
 const MAX_LINE_BYTES: u64 = 4 * 1024 * 1024;
 

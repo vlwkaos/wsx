@@ -2097,14 +2097,12 @@ impl Manager {
         let name = stand_in.name;
         match result.filter(|result| !result.is_error && !result.text.trim().is_empty()) {
             Some(result) => {
-                if let Some(message) = agent::note_spend(
+                self.spend(
                     &stand_in.adapter,
                     &stand_in.model,
                     result.usage.cost_micro_usd,
                     now,
-                ) {
-                    self.say(&message);
-                }
+                );
                 let id = self.next_id();
                 self.say(&format!("{name} stood in: reply {id}"));
                 let answered = to.iter().copied().max().unwrap_or(0);
@@ -2376,11 +2374,7 @@ impl Manager {
             self.state.context_tokens = result.usage.context_tokens;
         }
         self.state.session_cost_micro_usd = result.usage.session_cost_micro_usd;
-        if let Some(message) =
-            agent::note_spend(&self.adapter, &self.model, result.usage.cost_micro_usd, now)
-        {
-            self.say(&message);
-        }
+        self.spend(&self.adapter, &self.model, result.usage.cost_micro_usd, now);
         self.save();
         self.log(ManagerEvent::Ping {
             usage: Some(result.usage),
@@ -2569,19 +2563,15 @@ impl Manager {
             None => (self.adapter.clone(), self.model.clone()),
         };
         let now = now_unix_ms();
-        if let Some(message) = agent::note_spend(&adapter, &model, result.usage.cost_micro_usd, now)
-        {
-            self.say(&message);
-        }
+        self.spend(&adapter, &model, result.usage.cost_micro_usd, now);
         // ^ A usage limit is no reply: its messages are answered once it resets.
         // ref: docs/tasks.md "Manager"
         if let Some(reached) = &result.limit {
             let attempt = self.state.limit.as_ref().map_or(0, |hold| hold.attempt) + 1;
-            let until_ms = limit::resume_at(reached.resets_at, attempt, now);
-            let backoff = limit::known_reset(reached.resets_at, now).is_none();
-            let account = agent::account(&adapter, &model);
-            if let Err(error) = store::mark_limited(&account, until_ms, now, backoff) {
-                self.say(&format!("cannot record the usage limit: {error:#}"));
+            let (until_ms, problem) =
+                agent::record_limit(&adapter, &model, reached.resets_at, attempt, now);
+            if let Some(message) = problem {
+                self.say(&message);
             }
             if self.switch_agent(until_ms, &to, self.turn_events) {
                 self.save();
@@ -2838,6 +2828,13 @@ impl Manager {
 
     fn say(&self, text: &str) {
         hosting::progress(self.started, text);
+    }
+
+    /// Count a turn's cost on its account and say what that did (a budget reached, a failure).
+    fn spend(&self, adapter: &str, model: &str, micro_usd: u64, now_ms: u64) {
+        if let Some(message) = agent::note_spend(adapter, model, micro_usd, now_ms) {
+            self.say(&message);
+        }
     }
 
     fn report(&self, state: runtime::AgentState) {

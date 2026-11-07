@@ -1365,14 +1365,7 @@ impl Host {
             // ^ The cache is warm again: the idle rotation counts from here.
             self.answered_ms = now;
         }
-        if let Some(message) = super::agent::note_spend(
-            &self.record.adapter,
-            &self.record.model,
-            turn.usage.cost_micro_usd,
-            now,
-        ) {
-            self.say(&message);
-        }
+        self.spend(turn.usage.cost_micro_usd, now);
         self.log(LogEvent::Ping {
             usage: Some(turn.usage),
         });
@@ -1456,10 +1449,15 @@ impl Host {
         if let Some(limit) = &turn.limit {
             self.limit_attempt += 1;
             let now = now_unix_ms();
-            let until_ms = limit::resume_at(limit.resets_at, self.limit_attempt, now);
-            let backoff = limit::known_reset(limit.resets_at, now).is_none();
-            if let Err(error) = store::mark_limited(&self.account(), until_ms, now, backoff) {
-                self.say(&format!("cannot record the usage limit: {error:#}"));
+            let (until_ms, problem) = super::agent::record_limit(
+                &self.record.adapter,
+                &self.record.model,
+                limit.resets_at,
+                self.limit_attempt,
+                now,
+            );
+            if let Some(message) = problem {
+                self.say(&message);
             }
             if self.move_after_limit(None, until_ms, now) {
                 return;
@@ -1471,14 +1469,7 @@ impl Host {
             return;
         }
         self.limit_attempt = 0;
-        if let Some(message) = super::agent::note_spend(
-            &self.record.adapter,
-            &self.record.model,
-            turn.usage.cost_micro_usd,
-            now_unix_ms(),
-        ) {
-            self.say(&message);
-        }
+        self.spend(turn.usage.cost_micro_usd, now_unix_ms());
         if let Some((waiting, idle)) = self.rotating.take() {
             self.log(LogEvent::Agent {
                 said: false,
@@ -3374,6 +3365,15 @@ impl Host {
     fn log(&self, event: LogEvent) {
         if let Err(error) = self.dir.append(event) {
             self.say(&format!("cannot append to the log: {error:#}"));
+        }
+    }
+
+    /// Count a turn's cost on this task's account and say what that did.
+    fn spend(&self, micro_usd: u64, now_ms: u64) {
+        if let Some(message) =
+            super::agent::note_spend(&self.record.adapter, &self.record.model, micro_usd, now_ms)
+        {
+            self.say(&message);
         }
     }
 
