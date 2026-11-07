@@ -31,6 +31,7 @@ tasks:
   scenarios:
     task: "ci: python3 -B scripts/ci-scenario.py task"
     web: "ci: python3 -B scripts/ci-scenario.py web"
+    weblinux: "ci: python3 -B scripts/ci-scenario.py weblinux"
     smoke: cargo build -p wsx -p wsx-daemon && python3 -B scripts/runtime-smoke.py
     boundary: cargo build -p wsx -p wsx-daemon && python3 -B scripts/test-manager-boundary.py
   # ^ Workers get the owner's skills; the project's words for each stage (docs/tasks.md "Workflow").
