@@ -262,6 +262,13 @@ fn build_overview(
         .and_then(|dir| task::chat::asking(dir, now).ok())
         .unwrap_or_default();
     let check_items = checks::read(&scope.store).unwrap_or_default();
+    // ^ The open items as the Project screen's To check list shows them: a row each, which
+    // opens the sheet at the item (docs/web-client-tasks.md "Project screen").
+    let open_checks: Vec<Value> = check_items
+        .iter()
+        .filter(|item| item.state == checks::CheckState::Open)
+        .map(|item| json!({ "id": item.id, "task": item.task, "check": item.check, "pass_if": item.pass_if }))
+        .collect();
     // ^ The newest message the chat counts as new: a reply that is not quiet or a To check
     // item. The home row marks it until this device read the chat that far
     // (docs/web-client-tasks.md "Home").
@@ -294,7 +301,8 @@ fn build_overview(
         "needs": needs.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
         "working": working,
         // ^ What the owner checks of landed tasks (docs/tasks.md "To check").
-        "to_check": check_items.iter().filter(|item| item.state == checks::CheckState::Open).count(),
+        "to_check": open_checks.len(),
+        "check_items": open_checks,
         "tasks": listed.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
         "decisions": decisions(&lines),
         "resolutions": resolutions(&check_items, &tasks, &lines, now),

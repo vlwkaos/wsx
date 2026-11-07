@@ -9,5 +9,5 @@
   {"rule": "target.size", "selector": ".task-chip", "reason": "A task chip (#4, needs you) is a reference inside a sentence of a reply or a status line; a 44 px high chip would break the line (WCAG 2.5.8 inline exception, docs/web-client-tasks.md Project screen). The task's own rows are the 44 px targets."},
   {"rule": "target.size", "selector": "button.quote", "reason": "A quote is one muted line after an accent edge, the owner's quote look (web-tasks-check.mjs asserts one line under 40 px); the tap only jumps to the quoted message, which scrolling reaches too."},
   {"rule": "target.size", "selector": "textarea.composer-field", "reason": "A tap anywhere on the 84 px composer card puts the caret in the field, so the card is the target (docs/web-client.md Chat)."},
-  {"rule": "target.size", "selector": "button.pill", "reason": "A pill is drawn at the composer row's height (36 px) and its ::after reaches 44 px high and past its sides (app.css .pill::after); the lint measures the drawn box only. Capture 390-pills-rest.png."}
+  {"rule": "target.size", "selector": "button.pill", "reason": "A pill is drawn 28 px high, smaller than the composer row (36 px), and its ::after reaches 44 px high and past its sides (app.css .pill::after); the lint measures the drawn box only. Capture 390-pills-rest.png."}
 ]
