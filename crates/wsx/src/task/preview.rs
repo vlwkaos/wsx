@@ -258,15 +258,7 @@ impl Preview {
             let _ = tailscale(&["serve", "--bg", &format!("--https={port}"), "off"]);
         }
         if let Some(mut child) = self.child.take() {
-            let group = child.id() as i32;
-            // SAFETY: signals to the process group this host started.
-            unsafe { libc::kill(-group, libc::SIGTERM) };
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < deadline && matches!(child.try_wait(), Ok(None)) {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            // SAFETY: as above.
-            unsafe { libc::kill(-group, libc::SIGKILL) };
+            wsx_core::process::terminate_group(child.id() as i32, Duration::from_secs(5));
             let _ = child.wait();
         }
         if let Some((path, main)) = self.temporary.take() {

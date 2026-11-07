@@ -106,13 +106,10 @@ fn append_mode_event_at(
         ));
     }
     // Best-effort evidence cannot block terminal restoration or contend on a live UI lock.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(io::Error::last_os_error());
+    if !wsx_core::fs_util::flock(file.as_raw_fd(), true)? {
+        return Err(io::ErrorKind::WouldBlock.into());
     }
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+    let timestamp = wsx_core::task::now_unix_ms();
     // Observe the same stdin-or-controlling-terminal selection as the mode owner.
     let flags = TerminalAttributes::capture().ok().map(|attributes| {
         let attributes = attributes.saved;

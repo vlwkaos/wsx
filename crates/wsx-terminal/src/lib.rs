@@ -712,14 +712,10 @@ fn take_process_group(group: &std::sync::atomic::AtomicI32) -> Option<libc::pid_
     (group > 1).then_some(group)
 }
 
+/// SIGKILL the group at once. The SIGTERM that went before was never waited on.
 fn terminate_group(group: Option<libc::pid_t>) {
-    if let Some(group) = group.filter(|group| *group > 1) {
-        if group != unsafe { libc::getpgrp() } {
-            unsafe {
-                libc::kill(-group, libc::SIGTERM);
-                libc::kill(-group, libc::SIGKILL);
-            }
-        }
+    if let Some(group) = group {
+        wsx_core::process::terminate_group(group, Duration::ZERO);
     }
 }
 

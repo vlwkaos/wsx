@@ -230,9 +230,7 @@ pub(super) fn runtime_lifecycle_lines(lifecycle: &runtime::DaemonLifecycle) -> V
     }
     // ^ docs/daemon-live-upgrade.md "A failed handoff": the daemon's stderr goes nowhere.
     if let Some(failure) = &lifecycle.last_handoff_error {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_millis() as u64);
+        let now = wsx_core::task::now_unix_ms();
         lines.push(format!(
             "Last handoff failed {}s ago: {} failed: {}",
             now.saturating_sub(failure.unix_ms) / 1000,

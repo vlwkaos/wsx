@@ -1958,7 +1958,12 @@ fn explain_stuck_handoff(client: &Client, error: &mut super::protocol::ApiError)
         .as_deref()
         .and_then(|reason| reason.strip_prefix(super::protocol::HANDOFF_MARKER_PREFIX))
         .and_then(|value| value.parse::<u128>().ok())
-        .map(|started| format!(" {} s ago", unix_millis().saturating_sub(started) / 1000))
+        .map(|started| {
+            format!(
+                " {} s ago",
+                u128::from(crate::task::now_unix_ms()).saturating_sub(started) / 1000
+            )
+        })
         .unwrap_or_default();
     let daemon = lifecycle_status(client).map_or_else(
         |_| "wsxd".to_string(),
@@ -2093,12 +2098,6 @@ fn socket_released(socket: &Path, limit: Duration) -> bool {
     }
 }
 
-fn unix_millis() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis())
-}
-
 fn handoff_marker_fresh(reason: &str) -> bool {
     let Some(started) = reason
         .strip_prefix(super::protocol::HANDOFF_MARKER_PREFIX)
@@ -2106,7 +2105,7 @@ fn handoff_marker_fresh(reason: &str) -> bool {
     else {
         return false;
     };
-    unix_millis().saturating_sub(started) < HANDOFF_WAIT.as_millis()
+    u128::from(crate::task::now_unix_ms()).saturating_sub(started) < HANDOFF_WAIT.as_millis()
 }
 
 /// Whether `error` shows that the daemon did not apply the request: the socket was absent. A

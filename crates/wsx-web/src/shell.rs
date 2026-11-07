@@ -2,13 +2,11 @@
 //! command and its output to the agent as the person's next message
 //! (docs/web-client-chat.md "Shell lines").
 use std::{
-    io::Read,
-    os::unix::process::CommandExt,
     path::Path,
     process::{Command, Stdio},
-    sync::mpsc,
-    time::{Duration, Instant},
+    time::Duration,
 };
+use wsx_core::process::{run_bounded, Bound, Options, Stderr};
 
 /// The longest command line the chat runs.
 const MAX_LINE_BYTES: usize = 1024;
@@ -40,82 +38,39 @@ pub struct Ran {
 
 /// Run `command` with the person's login shell in `dir`, standard output and error together.
 /// The command gets its own process group, so the timeout stops what it started too.
-pub fn run(command: &str, dir: &Path) -> std::io::Result<Ran> {
+pub fn run(line: &str, dir: &Path) -> std::io::Result<Ran> {
     let shell = std::env::var_os("SHELL")
         .filter(|shell| !shell.is_empty())
         .unwrap_or_else(|| "/bin/sh".into());
-    let (reader, writer) = std::io::pipe()?;
-    let mut child = Command::new(shell)
-        .args(["-lc", command])
+    let mut command = Command::new(shell);
+    command
+        .args(["-lc", line])
         .current_dir(dir)
-        .stdin(Stdio::null())
-        .stdout(writer.try_clone()?)
-        .stderr(writer)
-        .process_group(0)
-        .spawn()?;
-    let started = Instant::now();
-    let group = child.id() as i32;
-    let (done, output) = mpsc::channel();
-    // ^ The reader ends when every process holding the pipe exits, so it runs beside the
-    // wait: a command that prints more than the pipe holds would otherwise never exit.
-    std::thread::spawn(move || {
-        let _ = done.send(read_tail(reader));
-    });
-    let mut timed_out = false;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if started.elapsed() >= TIMEOUT {
-            timed_out = true;
-            // SAFETY: a signal to the command's own process group.
-            unsafe { libc::kill(-group, libc::SIGKILL) };
-            break child.wait()?;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    let elapsed = started.elapsed();
-    // ^ A background process the command left may still hold the pipe: stop its group and
-    // read what came.
-    let (bytes, dropped) = match output.recv_timeout(Duration::from_secs(2)) {
-        Ok(read) => read,
-        Err(_) => {
-            unsafe { libc::kill(-group, libc::SIGKILL) };
-            output
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap_or_default()
-        }
-    };
+        .stdin(Stdio::null());
+    let ran = run_bounded(
+        &mut command,
+        &Options {
+            timeout: TIMEOUT,
+            stdout: Bound::Tail(MAX_OUTPUT_BYTES),
+            stderr: Stderr::Merge,
+            // ^ A background process the command left may still hold the pipe.
+            reap: true,
+        },
+    )?;
+    let bytes = ran.stdout;
+    let dropped = ran.stdout_cut;
     // A cut can fall inside a character: start at the next whole one.
     let mut start = 0;
     while start < bytes.len() && (bytes[start] & 0xC0) == 0x80 {
         start += 1;
     }
     Ok(Ran {
-        code: status.code(),
-        elapsed,
-        timed_out,
+        code: ran.status.code(),
+        elapsed: ran.elapsed,
+        timed_out: ran.timed_out,
         output: String::from_utf8_lossy(&bytes[start..]).into_owned(),
         cut: dropped + start,
     })
-}
-
-/// Everything from `reader`, keeping only the last `MAX_OUTPUT_BYTES`, and how many bytes
-/// it dropped.
-fn read_tail(mut reader: impl Read) -> (Vec<u8>, usize) {
-    let (mut kept, mut dropped, mut chunk) = (Vec::new(), 0, [0u8; 8192]);
-    while let Ok(read) = reader.read(&mut chunk) {
-        if read == 0 {
-            break;
-        }
-        kept.extend_from_slice(&chunk[..read]);
-        if kept.len() > MAX_OUTPUT_BYTES {
-            let extra = kept.len() - MAX_OUTPUT_BYTES;
-            kept.drain(..extra);
-            dropped += extra;
-        }
-    }
-    (kept, dropped)
 }
 
 /// The message the agent gets: what ran, where, how it ended, and the output.

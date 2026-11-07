@@ -8,16 +8,12 @@ use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsStr,
     fs,
-    io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
-    thread,
-    time::{Duration, Instant},
+    sync::Mutex,
+    time::Duration,
 };
+use wsx_core::process::{run_bounded, Bound, Options, Stderr};
 
 /// A text page with fewer letters and digits than this counts as having no text.
 const PAGE_TEXT_MIN: usize = 10;
@@ -93,46 +89,23 @@ fn tool(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// Run a tool with no shell and no input. Returns its first `keep` bytes of output when it
-/// exits well inside `limit`; kills it on a timeout or on more output than `keep`.
+/// Run a tool with no shell and no input, in its own process group. Returns its first `keep`
+/// bytes of output when it exits well inside `limit`; stops the group on a timeout or on
+/// more output than `keep`, so no ffmpeg or whisper child outlives it.
 fn run(name: &str, args: &[&OsStr], keep: usize, limit: Duration) -> Option<Vec<u8>> {
-    let mut child = Command::new(tool(name)?)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let over = Arc::new(AtomicBool::new(false));
-    let reader = {
-        let over = over.clone();
-        thread::spawn(move || {
-            let mut out = Vec::new();
-            let _ = stdout.by_ref().take(keep as u64 + 1).read_to_end(&mut out);
-            if out.len() > keep {
-                over.store(true, Ordering::SeqCst);
-            }
-            out
-        })
-    };
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if start.elapsed() < limit && !over.load(Ordering::SeqCst) => {
-                thread::sleep(Duration::from_millis(20));
-            }
-            _ => break None,
-        }
-    };
-    if status.is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    let out = reader.join().ok()?;
-    status.filter(|status| status.success())?;
-    (!over.load(Ordering::SeqCst)).then_some(out)
+    let mut command = Command::new(tool(name)?);
+    command.args(args).stdin(Stdio::null());
+    let ran = run_bounded(
+        &mut command,
+        &Options {
+            timeout: limit,
+            stdout: Bound::Limit(keep),
+            stderr: Stderr::Null,
+            reap: false,
+        },
+    )
+    .ok()?;
+    (!ran.timed_out && ran.status.success()).then_some(ran.stdout)
 }
 
 fn text_of(out: Vec<u8>) -> String {
@@ -440,4 +413,51 @@ fn transcript(original: &Path, work: &Path) -> Result<String, &'static str> {
         text.push_str("[cut here: the rest is in the original]\n");
     }
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{os::unix::fs::PermissionsExt, time::Instant};
+
+    /// A tool that runs past its time leaves no process behind: the conversion's children
+    /// (ffmpeg and whisper start their own) end with the tool.
+    #[test]
+    fn a_timeout_leaves_no_child_process() {
+        let dir = std::env::temp_dir().join(format!("wsx-compact-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let pid_file = dir.join("child.pid");
+        let tool = dir.join("ffprobe");
+        fs::write(
+            &tool,
+            format!(
+                "#!/bin/sh\nsleep 300 &\necho $! > '{}'\nwait\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("PATH", format!("{}:/bin:/usr/bin", dir.display()));
+
+        let started = Instant::now();
+        assert!(run("ffprobe", &[], 1024, Duration::from_secs(1)).is_none());
+        assert!(started.elapsed() < Duration::from_secs(10));
+
+        let child: libc::pid_t = fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let running = || unsafe { libc::kill(child, 0) == 0 };
+        while running() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let left = running();
+        if left {
+            unsafe { libc::kill(child, libc::SIGKILL) };
+        }
+        let _ = fs::remove_dir_all(&dir);
+        assert!(!left, "the tool's child {child} is still running");
+    }
 }
