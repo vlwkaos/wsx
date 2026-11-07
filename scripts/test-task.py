@@ -3041,8 +3041,8 @@ def run(wsx, wsxd, work, owned):
     # wait (docs/tasks.md "Manager", Stalls). The fake manager reviews nothing by itself.
     configure(LAND_CONFIG.replace('tasks:\n', 'tasks:\n  manager: { reviewMinutes: 0.2 }\n'), 'review wait')
 
-    def manager_new(prompt):
-        made = subprocess.run([str(wsx), 'task', 'new', prompt, '--json'], cwd=project, env=manager_env,
+    def manager_new(prompt, *flags):
+        made = subprocess.run([str(wsx), 'task', 'new', *flags, prompt, '--json'], cwd=project, env=manager_env,
                               capture_output=True, text=True, timeout=60)
         assert made.returncode == 0, made.stderr
         return json.loads(made.stdout)['id']
@@ -3959,10 +3959,13 @@ def run(wsx, wsxd, work, owned):
         assert (done.returncode == 0) == ok, done.stderr
         return done
 
-    b, a, w, c, d, e, f = (manager_new(prompt) for prompt in (
+    parked, unparked = (manager_new('NOOP af-plan', '--plan') for _ in range(2))
+    for n in (parked, unparked):
+        assert wait_state(n, 'waiting', 'ready', 'failed')['record']['waiting']['on'] == 'plan', show(n)
+    b, a, w, c, d, e, f, g = (manager_new(prompt) for prompt in (
         'WORK af-b.txt', 'WORK af-a.txt', 'WAIT %s WORK af-w.txt' % after_gate, 'WORK af-c.txt',
-        'WORK af-d.txt', 'WORK af-e.txt', 'WORK af-f.txt'))
-    for n in (b, a, c, d, e, f):
+        'WORK af-d.txt', 'WORK af-e.txt', 'WORK af-f.txt', 'WORK af-g.txt'))
+    for n in (b, a, c, d, e, f, g):
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
     assert show(w)['state'] == 'working'
     # ^ A wait needs another open task, not the task itself.
@@ -3976,6 +3979,7 @@ def run(wsx, wsxd, work, owned):
     manager_after(w, b, 'WORK af-w2.txt', because='needs')
     manager_after(c, d, 'WORK af-c2.txt', because='check')
     manager_after(e, f, 'WORK af-e2.txt', because='check')
+    manager_after(parked, g, 'WORK af-plan2.txt', because='needs')
     status = show(a)['status']
     assert status['kind'] == 'after' and status['label'] == 'Waiting for #%d to land' % b, status
     # ^ The sentence gives the reason, not the manager's instruction to the worker.
@@ -4015,6 +4019,10 @@ def run(wsx, wsxd, work, owned):
     # "ready, not reviewed", and one that waits past 24 h is the only stall reported.
     time.sleep(100)
     assert not stalls(a) and not stalls(c), (stalls(a), stalls(c))
+    # ^ The `after` is the manager's review of a plan too; a plan that is not parked still stalls.
+    assert not stalls(parked), stalls(parked)
+    plan_stall = stalls(unparked)
+    assert len(plan_stall) == 1 and re.search(r'^#%d stalled r\d+: .*; waiting on plan for .*; the manager has not reviewed it$' % unparked, plan_stall[0]), plan_stall
     long = stalls(e)
     assert len(long) == 1 and re.search(r'^#%d stalled r1: .*; ready for 1 d [01] h; waiting for #%d to land$' % (e, f), long[0]), long
     time.sleep(25)
@@ -4040,7 +4048,7 @@ def run(wsx, wsxd, work, owned):
     after_gate.touch()
     wait(lambda: len(kinds(w, 'result')) == 2, 'the working task runs the add after its turn', 60)
     assert wait_state(w, 'ready', 'failed')['state'] == 'ready' and 'after' not in show(w)['record'], log(w)
-    for n in (a, w, c, e, f):
+    for n in (a, w, c, e, f, g, parked, unparked):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'after wait over')
     # 32e. Approval from the owner's words (docs/tasks.md "Approvals"): in a turn that began with
