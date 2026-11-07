@@ -14,8 +14,14 @@ const WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
 const MAX_TASKS: usize = 40;
 const LOG_TAIL_BYTES: u64 = 128 * 1024;
 const LINE_CHARS: usize = 160;
-/// The cargo summaries that follow every failure and tell nothing of its cause.
-const GENERIC: [&str; 3] = ["could not compile", "previous error", "test run failed"];
+/// The summaries that follow every failure and tell nothing of its cause: cargo's, and the line
+/// GitHub Actions prints after every failed step. Lower case.
+const GENERIC: [&str; 4] = [
+    "could not compile",
+    "previous error",
+    "test run failed",
+    "process completed with exit code",
+];
 
 /// One command that fails with one line in `tasks` (ascending, this task among them).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,18 +75,33 @@ fn clip(command: &str) -> String {
     one.chars().take(120).collect()
 }
 
+/// A line of `gh run view --log-failed` (`<job>\t<step>\t<time> <text>`, scripts/ci-scenario.py
+/// prints it as is) without the job, the step, the time and GitHub's `##[error]` mark: the same
+/// assert in two runs reads the same.
+fn log_text(line: &str) -> &str {
+    let mut text = line.splitn(3, '\t').last().unwrap_or(line);
+    if let Some((time, rest)) = text.split_once(' ') {
+        let is_time = time.len() >= 20 && time.as_bytes()[4] == b'-' && time.ends_with('Z');
+        if is_time {
+            text = rest;
+        }
+    }
+    text.trim().trim_start_matches("##[error]").trim_start()
+}
+
 /// The last line of a failed result's output that tells its cause, digits as `0`: a
 /// `FAIL`/`AssertionError` line, else an `error` line that is no generic summary.
 fn failure_line(result: &CheckResult) -> Option<String> {
     if result.exit == Some(0) || result.timed_out || result.output.contains(NO_SPACE) {
         return None;
     }
-    let lines = || result.output.lines().rev().map(str::trim);
+    let lines = || result.output.lines().rev().map(log_text);
     let line = lines()
         .find(|line| line.contains("FAIL") || line.contains("AssertionError"))
         .or_else(|| {
             lines().find(|line| {
-                line.to_lowercase().contains("error") && !GENERIC.iter().any(|g| line.contains(g))
+                let lower = line.to_lowercase();
+                lower.contains("error") && !GENERIC.iter().any(|g| lower.contains(g))
             })
         })?;
     let mut out = String::new();
