@@ -127,16 +127,51 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
+          use-cache: false
 
       - name: Cache Rust build
         if: steps.changed.outputs.run == 'true'
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          key: task-scenario
+          shared-key: scenario-build
+          save-if: false
 
       - name: Run the task scenario
         if: steps.changed.outputs.run == 'true'
         run: cargo build --locked -p wsx -p wsx-daemon && python3 -B scripts/test-task.py
+
+  # ^ The only job that saves the build cache the two scenario jobs restore (shared-key
+  # `scenario-build`): a push to main builds what they build. A branch can read the default
+  # branch's caches, so `wsx-scenario/*` runs restore it and never save (docs/tasks.md "Scenarios").
+  scenario-cache:
+    name: scenario build cache
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.96.1
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+          use-cache: false
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: scenario-build
+
+      - name: Build wsx and wsxd
+        run: cargo build --locked -p wsx -p wsx-daemon
 
   # ^ The web scenario of a worker's `wsx task check-run web` (scripts/ci-scenario.py). Its
   # captures go back to the worker's checkout as the `scenario-files` artifact.
@@ -161,11 +196,13 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
+          use-cache: false
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          key: web-scenario
+          shared-key: scenario-build
+          save-if: false
 
       # ^ The scenario checks the compact copies of a PDF and a video (docs/web-client.md "Media").
       - name: Install poppler and ffmpeg
