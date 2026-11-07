@@ -3,7 +3,7 @@
 
 `python3 -B scripts/ci-scenario.py <name> [--part <part>]` pushes HEAD's tree, with origin/main's
 `.github/workflows`, to the branch `wsx-scenario/<name>/<commit>`. ci.yml runs the job for that
-name (`task`, `web`, and `weblinux`, the web scenario on Ubuntu); a scenario with parts (the `web` scenario: `chat`, `tasks`) runs one job for each part at
+name (`task`, `web`, and `weblinux`, the web scenario on Ubuntu); a scenario with parts (`web`: `chat`, `tasks`; `task`: `core`, `worker`, `host`) runs one job for each part at
 once, and the run passes only when all pass. `--part` (or `WSX_SCENARIO_PART`, which `wsx task
 check-run web --part tasks` sets) runs one part: the branch gets the suffix `--<part>` and the other
 parts' jobs skip. The script waits for the run, prints each job's end, the failed jobs' names and the

@@ -83,13 +83,19 @@ jobs:
       - name: Run runtime smoke test
         run: python3 scripts/runtime-smoke.py
 
-  # ^ The task scenario (scripts/test-task.py, 20+ min) runs here instead of on the owner's Mac:
-  # on a push or pull request that changes the task code, and always on a tag (release.yml
-  # calls this workflow), and on a worker's `wsx task check-run task` (a `wsx-scenario/task/`
-  # branch). Seatbelt (part 23) needs macOS. ref: docs/tasks.md "Verify", "Scenarios"
+  # ^ The task scenario (scripts/test-task.py) runs here instead of on the owner's Mac: on a push
+  # or pull request that changes the task code, and always on a tag (release.yml calls this
+  # workflow), and on a worker's `wsx task check-run task` (a `wsx-scenario/task/` branch). Its
+  # parts (test-task.py --part) run as one job each, at once; the run passes when all pass. A
+  # `--<part>` suffix on the branch name (`check-run task --part host`) runs that part only. Seatbelt
+  # (section 23, part worker) needs macOS. ref: docs/tasks.md "Verify", "Scenarios"
   task-scenario:
-    name: task scenario
-    if: ${{ !startsWith(github.ref_name, 'wsx-scenario/') || startsWith(github.ref_name, 'wsx-scenario/task/') }}
+    name: task scenario (${{ matrix.part }})
+    if: ${{ !startsWith(github.ref_name, 'wsx-scenario/') || (startsWith(github.ref_name, 'wsx-scenario/task/') && (!contains(github.ref_name, '--') || endsWith(github.ref_name, format('--{0}', matrix.part)))) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [core, worker, host]
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -138,9 +144,22 @@ jobs:
 
       - name: Run the task scenario
         if: steps.changed.outputs.run == 'true'
-        run: cargo build --locked -p wsx -p wsx-daemon && python3 -B scripts/test-task.py
+        run: cargo build --locked -p wsx -p wsx-daemon && python3 -B scripts/test-task.py --part ${{ matrix.part }}
 
-  # ^ The only job that saves the build cache the two scenario jobs restore (shared-key
+      - name: Pack the captures
+        if: always() && steps.changed.outputs.run == 'true'
+        run: if [ -d .work/web-captures ]; then tar -cf files.tar .work/web-captures; fi
+
+      - name: Upload the captures
+        if: always() && steps.changed.outputs.run == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scenario-files-${{ matrix.part }}
+          path: files.tar
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # ^ The only job that saves the build cache the scenario jobs restore (shared-key
   # `scenario-build`): a push to main builds what they build. A branch can read the default
   # branch's caches, so `wsx-scenario/*` runs restore it and never save (docs/tasks.md "Scenarios").
   scenario-cache:

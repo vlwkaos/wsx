@@ -4,7 +4,8 @@
 Covers new, steer during a turn, add after it, a blocked result then allow, checks that
 pass and fail, report content, a daemon live handoff while a host runs, stop and resume,
 close with and without unlanded commits, failure cleanup, and that no process, socket,
-worktree or branch is left. Build adjacent wsx and wsxd first. ref: docs/tasks.md
+worktree or branch is left. Build adjacent wsx and wsxd first. `--part core|worker|host` (or
+WSX_SCENARIO_PART) runs one part; none runs all. ref: docs/tasks.md
 """
 import argparse
 import atexit
@@ -87,6 +88,12 @@ LAND_CONFIG = '''tasks:
   land: { auto: false }
   checks:
     - "test ! -e broken.txt"
+'''
+# ^ Section 17's config, which the sections after it start from.
+DEPLOY_CONFIG = LAND_CONFIG + '''  deploy:
+    command: 'printf "%s %s\\n" "$WSX_DEPLOY_COMMIT" "$(pwd)" >> ../deploy.log'
+  release:
+    command: 'seq 1 60; echo release broke here >&2; exit 3'
 '''
 
 
@@ -181,7 +188,13 @@ def tui_text(wsx, env, cwd, until, seconds=15):
     return text
 
 
-# ^ Each numbered part marks its start; the result names the slowest parts, so a slow run
+# ^ The scenario runs as these parts (`--part`, or WSX_SCENARIO_PART); none runs all, in order. A part
+# run alone starts from setup() and makes the project state the sections before it left (fresh_project,
+# store_up, manager_up). docs/tasks.md "Scenarios"
+PART_NAMES = ('core', 'worker', 'host')
+
+
+# ^ Each numbered section marks its start; the result names the slowest sections, so a slow run
 # says where its time went.
 PARTS = []
 
@@ -302,6 +315,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wsx', type=Path, default=ROOT / 'target/debug/wsx')
     parser.add_argument('--keep', action='store_true', help='keep the scratch folder')
+    parser.add_argument('--part', choices=PART_NAMES, default=os.environ.get('WSX_SCENARIO_PART') or None,
+                        help='run one part; no part runs all')
     args = parser.parse_args()
     wsx = args.wsx.resolve()
     wsxd = wsx.with_name('wsxd')
@@ -313,8 +328,8 @@ def main():
     PARTS.append(('setup', started))
     owned = {}
     try:
-        run(wsx, wsxd, work, owned)
-        print(json.dumps({'ok': True, 'seconds': round(time.monotonic() - started, 1), 'slowest': slowest(), 'parts': dict(spans())}))
+        run(wsx, wsxd, work, owned, args.part)
+        print(json.dumps({'ok': True, 'seconds': round(time.monotonic() - started, 1), 'slowest': slowest(), 'part': args.part, 'parts': dict(spans())}))
     finally:
         # ^ Stop the isolated wsxd also after a failure: its hosts and fake agents end with it.
         if 'env' in owned:
@@ -324,7 +339,7 @@ def main():
             shutil.rmtree(work, ignore_errors=True)
 
 
-def run(wsx, wsxd, work, owned):
+def run(wsx, wsxd, work, owned, part):
     # ^ Long state and project paths: a socket in the store would pass sun_path's 104 bytes,
     # so the hosts' sockets must live elsewhere (docs/tasks.md "Store").
     base = work / ('long-project-folder-' + 'p' * 40)
@@ -491,6 +506,73 @@ def run(wsx, wsxd, work, owned):
         ps = subprocess.run(['ps', '-axo', 'ppid=,stat='], capture_output=True, text=True).stdout
         return [line for line in ps.splitlines() if line.split()[0] == str(host) and 'Z' in line.split()[1]]
 
+    owner_config = work / 'c' / 'wsx' / 'wsx.config.yml'
+
+    owner_config.parent.mkdir(parents=True, exist_ok=True)
+
+    def sessions_at(path, key='label'):
+        data = daemon_call('snapshot')['data']
+        ids = {w['id'] for w in data['worktrees'] if os.path.realpath(w['path']) == os.path.realpath(path)}
+        return [s[key] for s in data['sessions'] if s['worktree_id'] in ids]
+
+    def land(n, *flags, ok=True):
+        return json.loads(cli('task', 'land', n, *flags, '--json', ok=ok).stdout)
+
+    def main_has(path):
+        return subprocess.run(['git', 'cat-file', '-e', 'main:' + path], cwd=project, env=env).returncode == 0
+
+    def wait_closed(n):
+        # ^ A landed task closes itself and stays `landed`: its copy, build and branch go; the
+        # task folder and the log, which ends `closed`, stay.
+        copy = Path(show(n)['record']['working_copy'])
+        wait(lambda: show(n)['state'] == 'landed' and not copy.exists() and log(n)[-1]['kind'] == 'closed'
+             and not git('branch', '--list', 'wsx/t%d' % n), 't%s closed after landing' % n, 60)
+
+    def reviewed(n):
+        """Wait for a ready task that stays ready, and land it as the manager's review would."""
+        assert wait_state(n, 'ready', 'landed', 'failed')['state'] == 'ready', show(n)
+        return land(n)
+
+    manager_env = dict(env, WSX_TASK_ACTOR='manager')
+
+    def next_task():
+        return max(row['id'] for row in js('task', 'list', '--all')['tasks']) + 1
+
+    def manager_new(prompt, *flags):
+        made = subprocess.run([str(wsx), 'task', 'new', *flags, prompt, '--json'], cwd=project, env=manager_env,
+                              capture_output=True, text=True, timeout=60)
+        assert made.returncode == 0, made.stderr
+        return json.loads(made.stdout)['id']
+
+    slot_spans, release = base / 'slot-spans.log', base / 'slot-release'
+
+    slot_check = base / 'slot-check.py'
+
+    slot_check.write_text(
+        'import os, sys, time\n'
+        'def mark(what):\n'
+        '    with open(%r, "a") as out:\n'
+        '        out.write("%%s %%s %%.3f\\n" %% (os.path.basename(os.getcwd()), what, time.time()))\n'
+        'mark("start")\n'
+        'deadline = time.time() + float(sys.argv[1])\n'
+        'while time.time() < deadline and not os.path.exists(%r):\n'
+        '    time.sleep(0.05)\n'
+        'mark("end")\n' % (str(slot_spans), str(release)))
+
+    def slot_config(seconds):
+        configure(LAND_CONFIG.replace(
+            '"test ! -e broken.txt"', '"%s %s %d"' % (sys.executable, slot_check, seconds)), 'slot checks %d' % seconds)
+
+    def slot_marks():
+        marks = {}
+        for line in slot_spans.read_text().splitlines() if slot_spans.exists() else []:
+            copy_name, what, at = line.split()
+            marks.setdefault(copy_name, {})[what] = float(at)
+        return marks
+
+    def copy_name(n):
+        return Path(show(n)['record']['working_copy']).name
+
     # Refusals leave nothing: bad config, then bad ids.
     (project / 'wsx.config.yml').write_text('tasks:\n  agent:\n    adapter: nope\n')
     refused = cli('task', 'new', 'WORK a.txt', ok=False)
@@ -525,6 +607,344 @@ def run(wsx, wsxd, work, owned):
     assert 'a prompt is required' in cli('task', 'new', ok=False).stderr
     assert 'empty' in cli('task', 'new', '-', stdin='\n', ok=False).stderr
 
+    # ^ The parts read what setup and the shared starts (store_up, manager_up, probe_up) made as module
+    # globals. A name a part assigns is its own for the whole part: it must not read it before.
+    globals().update(locals())
+    # ^ A part run after another goes on from its state; one run alone makes its own (fresh_project).
+    created = None
+    for name, body in (('core', part_core), ('worker', part_worker), ('host', part_host)):
+        if part in (None, name):
+            created = body(created)
+
+
+def store_up(created):
+    """The deploy and release records of the project store (section 17)."""
+    project_store = state / 'wsx/tasks' / Path(created['task_dir']).parent.name
+
+    def deploy_records():
+        path = project_store / 'deploys.jsonl'
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def deploy_lock_free():
+        with open(project_store / 'deploy.lock', 'a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except BlockingIOError:
+                return False
+
+    def ran(*argv, seconds=20):
+        # ^ A deploy or release by hand answers once it started; its detached run records it.
+        before = len(deploy_records())
+        started = js('task', *argv)
+        assert started['started'] and ' started; ' in started['message'], started
+        wait(lambda: len(deploy_records()) > before and deploy_lock_free(), 'the detached ' + argv[0], seconds)
+        assert started['commit'] == deploy_records()[-1]['commit'], started
+        return dict(deploy_records()[-1], message=started['message'])
+
+    globals().update(locals())
+
+
+def manager_up(created):
+    """Section 20: the manager starts and answers. A part run alone starts it again."""
+    # 20. The manager: started by the first say, answers from the ledger, acts through wsx task.
+    mark('20')
+    configure((project / 'wsx.config.yml').read_text()
+              + '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, '
+                'rotateTokens: 100000 }\n'
+              + '  skills: owner\n  workflow:\n    build: "Run the fixture rule."\n'
+                '    review: "Check the fixture rule."\n', 'manager config')
+    # ^ The owner's skills folder: the manager gets it as the `owner` plugin. It is the one of
+    # demo's profile (README "Profiles"), not ~/.claude.
+    owner_skills = profile_root / 'skills'
+    (owner_skills / 'scribe').mkdir(parents=True)
+    (owner_skills / 'scribe/SKILL.md').write_text('---\nname: scribe\ndescription: fixture\n'
+                                                  'allowed-tools: Write, Edit\n---\nWrite a file.\n')
+
+    (owner_skills / 'other').mkdir()
+    (owner_skills / 'other/SKILL.md').write_text('---\nname: other\ndescription: fixture\n---\nx\n')
+
+    def chat(after=None):
+        return js('task', 'chat', *(['--after', after] if after is not None else []))['entries']
+
+    def reply_to(message_id):
+        return wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and message_id in e['to']), None),
+                    'reply to %s' % message_id)
+
+    def turn_with(text):
+        """The first manager turn whose message holds `text`."""
+        return next((t for t in traces() if t.get('manager') and text in str(t.get('message', ''))), None)
+
+    running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
+    # ^ A project with the old `page.md` and no overview gets it moved once, when the manager starts.
+    old_page = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md'
+    old_page.write_text('# demo\n\n## Goal\n\nmigrated\n')
+    asked = js('task', 'say', 'STATUS')
+    assert asked['ok'] and asked['id'] == 1, asked
+    asked_reply = reply_to(asked['id'])
+    assert ('#%d working' % running) in asked_reply['text'] and 'quiet' not in asked_reply, asked_reply
+    launch = next(t for t in traces() if t.get('launch') and t.get('manager'))
+    # ^ The message ends with the host's ledger summary; a fresh conversation gets every open task.
+    opening = next(t['message'] for t in traces() if t.get('manager') and 'message' in t)
+    summary = opening.split('\n\nLedger summary from wsx (`wsx task ledger -p demo` has the details):\n', 1)[1]
+    assert summary.startswith('- open: ') and 'working; to check: ' in summary, summary
+    assert '#%d working r' % running in summary.split('- open tasks:\n', 1)[1], summary
+    assert '`wsx task ledger -p demo` for more' in launch['instructions'], launch['instructions']
+    page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'overview.md')
+    assert not old_page.exists() and 'migrated' in Path(page).read_text(), old_page
+    # ^ It uses the owner's skills (docs/tasks.md "Manager"); no tool list: nothing prompts.
+    assert not {'--allowedTools', '--disallowedTools'} & set(launch['argv']), launch['argv']
+    plugin = Path(launch['plugin_dir'])
+    assert plugin.parent.name == 'manager' and plugin.resolve().is_relative_to(state.resolve()), plugin
+    assert json.loads((plugin / '.claude-plugin/plugin.json').read_text())['name'] == 'owner'
+    assert os.readlink(plugin / 'skills') == str(owner_skills), os.readlink(plugin / 'skills')
+    # ^ No prompts inside wsx's boundary (docs/tasks.md "Permissions").
+    assert launch['mode'] == 'bypassPermissions' and 'permissions' not in launch['settings'], launch['settings']
+    assert launch['model'] == 'fake-manager' and Path(page).read_text().startswith('# demo\n\n## Goal')
+    # ^ A manager turn that leaves the overview over the cap (60 lines, 4,000 characters) gets one
+    # follow-up turn that names the sizes; the second over-cap result gets no third
+    # (docs/tasks.md "Project overview").
+    long_said = js('task', 'say', 'OVERLONG 70')
+    wait(lambda: turn_with('The project overview is 70 lines / ') and reply_to(long_said['id']), 'the overview follow-up')
+    time.sleep(4)
+    follow = [t for t in traces() if t.get('manager') and 'The project overview is ' in str(t.get('message', ''))]
+    assert len(follow) == 1 and 'the cap is 60 / 4,000' in follow[0]['message'], follow
+    assert len(Path(page).read_text().splitlines()) == 70
+    Path(page).write_text('# demo\n\n## Goal\n\nshort\n')
+    assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
+    assert launch['git_optional_locks'] == '0', launch
+    # ^ README "Profiles": the manager and every Claude worker so far run under demo's profile
+    # root. Part 13t's Pi worker reads no CLAUDE_CONFIG_DIR.
+    demo_launches = [t for t in traces() if t.get('launch') and t.get('adapter') != 'pi']
+    assert demo_launches and all(t['claude_config_dir'] == str(profile_root) for t in demo_launches), \
+        {t['claude_config_dir'] for t in demo_launches}
+    # Its rules: chat, not reports; quiet replies to events and no chores for the owner; start
+    # at once; an open task before a new one; a complete prompt; a lean review without rebase
+    # send-backs; one housekeeping task after a request lands; the owner's word; memory.
+    for rule in ('Talk like a person in a chat, not a report', 'The reader sees one screen',
+                 'A turn of only Events is your work', 'or with exactly `-` when nothing',
+                 'Never hand the owner chores', 'A request for work starts at once',
+                 "Judge from the owner's words whether the owner wants to talk it over", 'no task, `add` or `steer` for them until the owner agrees',
+                 'then one `wsx task new` or `add` with all', 'with a mermaid diagram',
+                 'stands alone, since a worker cannot ask', 'in every task new', 'With `--plan` the worker',
+                 'Before `wsx task new`, compare the request', 'Never ask the owner to wait',
+                 'for lean code', 'never send a task back to rebase', 'trust them over the worker',
+                 'Check the fixture rule.', 'runs with `--size small`', 'open with `> message <id>`', 'Only events that need you start a turn',
+                 'tell that worker to prove it', 'never skip or fail items', 'only when the owner\'s message of this turn says',
+                 'A release refuses while items are open, unless the owner', '`wsx task trial <n>`',
+                 '`--owner-said <id>`', 'never name a message that did not ask',
+                 'call a change live only when', 'On `hand`, the owner works in its copy',
+                 'Nothing asks you for permission', 'read-only git in Bash', '`wsx task new --into <n>`',
+                 'only after the owner says yes, commit', 'also in a pipe or with a heredoc',
+                 'the Skill tool as `owner:<name>`', 'check rather than guess',
+                 '/manager/notes/decisions.md', '/manager/notes/context.md', "wsx adds each finished task's memo",
+                 'Update a section in place', 'answer each Owner message first, every question in it',
+                 'Define each name the owner has not used', 'say how both hold', 'what you said you would report',
+                 'every project and agent adapter', "the task's prompt and each later add", 'naming each ask it missed',
+                 'or call it unchecked',
+                 '--from-manager --reply', 'use it and do not answer it', "'@<project>'"):
+        assert rule in launch['instructions'], rule
+    # ^ Only `role new` takes a brief (docs/tasks.md "Roles").
+    assert 'brief' not in launch['instructions'].lower().replace('--brief', ''), launch['instructions']
+    # ^ No skill is named: the owner's skills are whatever their folder holds.
+    assert re.findall(r'owner:[^<\s]', launch['instructions']) == [], launch['instructions']
+    assert not any(name in launch['instructions'] for name in ('seek', 'recall', '/memo', 'scribe'))
+    assert launch['cwd'] == str(project)
+    # ^ The name the owner reads, trimmed; the session keeps its label `task-manager`.
+    assert js('task', 'manager')['name'] == 'Atlas'
+    # ^ The TUI's manager row reads the name; without one the project's (docs/tasks.md "Config").
+    named = tui_text(wsx, env, project, r'task-manager\s*\n*\s*\(Atlas\)')
+    assert re.search(r'task-manager\s*\n*\s*\(Atlas\)', named) and '(manager)' not in named, named[-3000:]
+    config_text = (project / 'wsx.config.yml').read_text()
+    (project / 'wsx.config.yml').write_text(config_text.replace('name: "  Atlas ", ', ''))
+    plain = tui_text(wsx, env, project, r'task-manager\s*\n*\s*\(demo\)')
+    plain_name = js('task', 'manager')['name']
+    (project / 'wsx.config.yml').write_text(config_text)
+    assert re.search(r'task-manager\s*\n*\s*\(demo\)', plain) and '(Atlas)' not in plain, plain[-3000:]
+    assert plain_name == 'demo', plain_name
+    assert js('task', 'manager')['state'] == 'running'
+    # A new task and an add to the running one, each by a wsx task command the manager runs.
+    started = js('task', 'say', 'RUN wsx task new "WORK s1.txt" -p demo --json')
+    assert 'ran: wsx task new' in reply_to(started['id'])['text']
+    manager_task = max(row['id'] for row in js('task', 'list')['tasks'])
+    assert wait_state(manager_task, 'ready', 'failed')['state'] == 'ready'
+    # ^ tasks.skills: owner lends the worker the owner's skills; tasks.workflow.build is its rule.
+    skilled = [t for t in traces() if t.get('launch') and not t.get('manager')][-1]
+    assert skilled['plugin_dir'].endswith('/%d/skills-plugin' % manager_task), skilled
+    assert 'Run the fixture rule.' in skilled['instructions'] and 'as `owner:<name>`' in skilled['instructions']
+    # ^ No tasks.skillsOnly: the worker gets every skill. With it: only the named ones, and a
+    # name the owner lacks is skipped (docs/tasks.md "Workflow").
+    assert os.readlink(Path(skilled['plugin_dir']) / 'skills') == str(owner_skills), skilled
+    unrestricted = (project / 'wsx.config.yml').read_text()
+    configure(unrestricted + '  skillsOnly: [scribe, ghost]\n', 'skills only')
+    only_task = js('task', 'new', 'WORK only.txt')['id']
+    assert wait_state(only_task, 'ready', 'failed')['state'] == 'ready'
+    only = [t for t in traces() if t.get('launch') and not t.get('manager')][-1]
+    only_dir = Path(only['plugin_dir']) / 'skills'
+    assert only_dir.is_dir() and not only_dir.is_symlink() and sorted(os.listdir(only_dir)) == ['scribe'], os.listdir(only_dir)
+    assert os.readlink(only_dir / 'scribe') == str(owner_skills / 'scribe')
+    configure(unrestricted, 'skills all')
+    added = js('task', 'say', 'RUN wsx task add %d "WORK s2.txt" -p demo --json' % running)
+    assert '-> 0' in reply_to(added['id'])['text']
+    # Any command shape reaches the broker: `;`, a heredoc with a multi-line prompt, a pipe.
+    script = js('task', 'say', "SCRIPT\nwsx task ledger -p demo --json >/dev/null; wsx task new -p demo --json - <<'EOF'\n"
+                "WORK h1.txt\nsecond line of the prompt\nEOF\nwsx task list -p demo --json | grep -c '\"id\"' >/dev/null && echo piped")
+    answer = reply_to(script['id'])['text']
+    assert answer.startswith('script -> 0') and answer.rstrip().endswith('piped'), answer
+    heredoc_task = max(row['id'] for row in js('task', 'list')['tasks'])
+    first = next(e for e in log(heredoc_task) if e['kind'] == 'message')
+    assert first['text'] == 'WORK h1.txt\nsecond line of the prompt', first
+    assert wait_state(heredoc_task, 'ready', 'failed')['state'] == 'ready'
+    # Under the broker no other command runs, neither in the CLI nor at the host.
+    refused = js('task', 'say', 'RUN wsx --version\nRUN wsx task host %s 1' % launch['cwd'])
+    text = reply_to(refused['id'])['text']
+    assert 'ran: wsx --version -> 2 wsx: only `wsx task` commands run here' in text, text
+    assert 'ran: wsx task host' in text and "-> 2 wsx: `wsx task host` is not for the manager" in text, text
+    with socket.socket(socket.AF_UNIX) as raw:
+        raw.connect(launch['broker'])
+        raw.sendall(json.dumps({'argv': ['daemon', 'stop'], 'stdin': None, 'cwd': str(project)}).encode())
+        raw.shutdown(socket.SHUT_WR)
+        direct = json.loads(raw.makefile().read())
+    assert direct['code'] == 2 and 'only `wsx task` commands' in direct['stderr'], direct
+    assert wait_state(running, 'ready', 'failed')['state'] == 'ready'
+    assert [e['mode'] for e in log(running) if e['kind'] == 'message'] == ['prompt', 'add']
+    manager_log = Path(created['task_dir']).parent / 'manager' / 'log.jsonl'
+
+    def manager_entries():
+        return [json.loads(line) for line in manager_log.read_text().splitlines()]
+
+    # Usage (docs/tasks.md "Manager"): rotation looks at the last main model call's context, not
+    # the result's sum over the turn's calls, nor a subagent's; a reply's cost is its own, not the
+    # process's running `total_cost_usd`.
+    summed = js('task', 'say', 'SUMMED')
+    usage = reply_to(summed['id'])['usage']
+    replies = [e for e in manager_entries() if e['kind'] == 'reply']
+    assert usage['input_tokens'] + usage['cache_read_tokens'] == 200000 and usage['context_tokens'] == 50000, usage
+    assert usage['model'] == 'fake-manager' and usage['adapter'] == 'claude', usage
+    # Quotes (docs/tasks.md "Manager"): a reply that opens with `> message <id>` is stored with
+    # that message's first line in the owner's quote format; a bad or unknown id drops the line and
+    # the reply stands. The next turn names the id of the manager's last reply.
+    promise = reply_to(js('task', 'say', 'STATUS promise')['id'])
+    own = reply_to(js('task', 'say', 'QUOTE %d still waiting on #8' % promise['id'])['id'])
+    assert own['text'] == '> %s\n\nstill waiting on #8' % promise['text'].splitlines()[0], own
+    # ^ The entry keeps the quoted message's id, for a tap that opens the chat there at any age.
+    assert own['quote'] == promise['id'], own
+    assert 'Your last reply: %d.' % promise['id'] in turn_with('QUOTE %d still' % promise['id'])['message']
+    heard = js('task', 'say', 'QUOTE OWNER_SAID noted')
+    assert reply_to(heard['id'])['text'] == '> QUOTE OWNER_SAID noted\n\nnoted'
+    # ^ A quote of a quote is the words of that reply, not its quote line.
+    again = reply_to(js('task', 'say', 'QUOTE %d and again' % own['id'])['id'])
+    assert again['text'] == '> still waiting on #8\n\nand again', again
+    for bad in ('abc', '0', '99999999', '99999999999999999999', '-3'):
+        dropped = reply_to(js('task', 'say', 'QUOTE %s words stay' % bad)['id'])
+        assert dropped['text'] == 'words stay' and 'quote' not in dropped, (bad, dropped)
+    # ^ The TUI shows the quote as one line; `[` selects it and Enter goes to the quoted message,
+    # the owner's first one, far above.
+    first = reply_to(js('task', 'say', 'QUOTE 1 jump')['id'])
+    assert first['text'] == '> STATUS\n\njump' and first['quote'] == 1, first
+    # ^ The owner's Reply (web *Reply*, TUI `r`) sends `> message <id>` too: stored in the same
+    # format with the id, and the agent reads the line.
+    said_back = js('task', 'say', '> message 1\n\nthe owner answers')
+    stored = next(e for e in manager_entries() if e['kind'] == 'message' and e['id'] == said_back['id'])
+    assert stored['text'] == '> STATUS\n\nthe owner answers' and stored['quote'] == 1, stored
+    reply_to(said_back['id'])
+    jumped = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
+        (r'(?m)^   \u258e STATUS$', b'['),
+        (r'(?m)^ MANAGER +Enter: open', b'\r'),
+        (r'(?m)^ You +\d\d:\d\d\n   STATUS$', b'\x1b'),
+        (r'(?m)^ MANAGER +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+    assert 'jump' in jumped[2] and 'jump' not in jumped[4], jumped[4]
+    assert not any(e['kind'] == 'rotated' for e in manager_entries()), 'four 50k calls do not rotate'
+    assert len(replies) > 3 and {e['usage']['cost_micro_usd'] for e in replies} == {1000}, replies
+    # Event-only turns run on tasks.manager.eventModel unless a ready task the manager created
+    # waits for its review: the manager's own model reviews it.
+    review = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
+                                and '#%d ready' % manager_task in e['text']), None), 'review event')
+    review_turn = wait(lambda: turn_with('Events (message %d)' % review['id']), 'review turn')
+    assert review_turn['model'] == 'fake-manager', review_turn
+    # Rotation: past rotateTokens the next turn starts a fresh conversation.
+    # ^ Without a skills folder the next launch has no plugin, keeps the Skill tool and
+    # the generic guidance.
+    shutil.rmtree(owner_skills)
+    big = js('task', 'say', 'BIG')
+    reply_to(big['id'])
+    assert wait(lambda: any(e['kind'] == 'rotated' for e in chat()), 'rotated')
+    after_rotation = js('task', 'say', 'STATUS')
+    reply_to(after_rotation['id'])
+    manager_launches = [t for t in traces() if t.get('launch') and t.get('manager')]
+    assert not manager_launches[-1]['resume'] and manager_launches[-1]['session'] != launch['session']
+    bare = manager_launches[-1]
+    assert bare['plugin_dir'] is None, bare
+    assert 'owner:' not in bare['instructions'] and 'check rather than guess' in bare['instructions']
+    assert [e['id'] for e in chat(after=big['id']) if e['kind'] == 'message' and e['from'] == 'owner'] == [after_rotation['id']]
+    for n in (running, manager_task, heredoc_task, only_task):
+        js('task', 'close', n, '--discard')
+
+    def events_with(*needles):
+        return [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
+                and all(needle in e['text'] for needle in needles)]
+
+    def stalls(n):
+        return [line for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
+                for line in e['text'].split('\n') if line.startswith('#%d stalled' % n)]
+
+    globals().update(locals())
+
+
+def probe_up(created):
+    """The boundary probe of section 23: its files, script and the process its signal must not reach."""
+    secret = home / '.ssh/id_fixture'
+
+    secret.parent.mkdir(mode=0o700, exist_ok=True)
+
+    secret.write_text('secret\n')
+
+    store_dir, common = Path(created['task_dir']).parent, project / '.git'
+
+    probe_script = work / 'probe.py'
+
+    probe_script.write_text(PROBE_SCRIPT)
+
+    # ^ A process outside the boundary that the probe's signal must not reach.
+    signal_target = subprocess.Popen(['sleep', '600'])
+
+    atexit.register(signal_target.kill)
+
+    def probe_files(n):
+        """The probe's spec and answer for task n, which is created next."""
+        spec = {'read': {'read_ssh': str(secret)}, 'signal_outside': signal_target.pid,
+                'write': {'write_ssh': str(home / '.ssh/probe'), 'write_state': str(store_dir / 'probe.txt'),
+                          'write_existing_copy': str(base / 'project-t998/probe.txt'),
+                          'write_later_copy': str(base / 'project-t999/probe.txt'),
+                          'write_main_ref': str(common / 'refs/heads/main'),
+                          'write_main_lock': str(common / 'refs/heads/main.lock'),
+                          'write_main_reflog': str(common / 'logs/refs/heads/main'),
+                          'write_hooks': str(common / 'hooks/pre-commit'), 'write_config': str(common / 'config'),
+                          'write_routines': str(work / 'routines/projects/probe.json'),
+                          'write_own_copy': str(base / ('project-t%d' % n) / 'probe.txt'),
+                          'write_task_folder': str(store_dir / str(n) / 'probe.txt'),
+                          'write_tmpdir': str(tmp / 'probe.txt'), 'write_cargo': str(home / '.cargo/registry/probe.txt'),
+                          'write_library': str(home / 'Library/Caches/wsx-probe/probe.txt')}}
+        spec_file, answer = work / ('probe-%d.json' % n), work / ('probe-%d-answer.json' % n)
+        spec_file.write_text(json.dumps(spec))
+        return spec_file, answer
+
+    globals().update(locals())
+
+
+def fresh_project():
+    """The project as section 17 leaves it, for a part that starts after it: the deploy config and a
+    first task, whose folder names the project store."""
+    configure(DEPLOY_CONFIG, 'deploy config')
+    created = js('task', 'new', 'WORK a.txt')  # ^ the task's check wants a.txt
+    wait_state(created['id'], 'ready', 'failed')
+    js('task', 'close', created['id'], '--discard')
+    return created
+
+
+def part_core(created=None):
+    """Sections 0 to 21c: the task journey, landing, checks, and the manager from its start to its notes."""
     # 0. The TUI's Tasks view (`t`) of a project without tasks (docs/tasks.md "TUI").
     mark('0')
     empty, = tui_screens(wsx, env, project, [(r'WORKSPACE', b't'), (r'No tasks', b'')])[1:]
@@ -763,8 +1183,6 @@ def run(wsx, wsxd, work, owned):
     # 13b. Workflow steps: the owner's own steps apply to a project that names none; the host
     mark('13b')
     # sends each step as its own turn and runs the checks after the last.
-    owner_config = work / 'c' / 'wsx' / 'wsx.config.yml'
-    owner_config.parent.mkdir(parents=True, exist_ok=True)
     owner_config.write_text('tasks:\n  workflow:\n    steps:\n'
                             '      - name: plan\n        prompt: PLAN only\n'
                             '      - name: build\n        prompt: WORK s.txt\n')
@@ -1097,10 +1515,6 @@ def run(wsx, wsxd, work, owned):
     copy_name = Path(show(sh)['record']['working_copy']).name
     where = b'printf "at:%s\\n" "${PWD##*/}"\r'
 
-    def sessions_at(path, key='label'):
-        data = daemon_call('snapshot')['data']
-        ids = {w['id'] for w in data['worktrees'] if os.path.realpath(w['path']) == os.path.realpath(path)}
-        return [s[key] for s in data['sessions'] if s['worktree_id'] in ids]
     prompt = r'(?m)\$ *$'
     # ^ The raw frames of the list and the chat with the `S` hint, replayed into the Human
     # Verify captures; `.work/` is git-ignored.
@@ -1175,19 +1589,6 @@ def run(wsx, wsxd, work, owned):
     js('task', 'close', sh, '--discard')
     cli('session', 'delete', main_shells[0], '-p', 'demo')
 
-    def land(n, *flags, ok=True):
-        return json.loads(cli('task', 'land', n, *flags, '--json', ok=ok).stdout)
-
-    def main_has(path):
-        return subprocess.run(['git', 'cat-file', '-e', 'main:' + path], cwd=project, env=env).returncode == 0
-
-    def wait_closed(n):
-        # ^ A landed task closes itself and stays `landed`: its copy, build and branch go; the
-        # task folder and the log, which ends `closed`, stay.
-        copy = Path(show(n)['record']['working_copy'])
-        wait(lambda: show(n)['state'] == 'landed' and not copy.exists() and log(n)[-1]['kind'] == 'closed'
-             and not git('branch', '--list', 'wsx/t%d' % n), 't%s closed after landing' % n, 60)
-
     # 15. Landing, local-merge (a dirty default-branch checkout is part 32h).
     mark('15')
     # Uncommitted work in the task's own copy refuses too: wsx commits nothing for the worker.
@@ -1239,11 +1640,6 @@ def run(wsx, wsxd, work, owned):
     # itself after the worker's fix. With main not checked out, the ref moves with the old tip
     # as guard.
     configure(LAND_CONFIG.replace('  land: { auto: false }\n', ''), 'auto land')
-
-    def reviewed(n):
-        """Wait for a ready task that stays ready, and land it as the manager's review would."""
-        assert wait_state(n, 'ready', 'landed', 'failed')['state'] == 'ready', show(n)
-        return land(n)
 
     # ^ The task records main as its default branch at `new`; main is left during the turn.
     hv = js('task', 'new', 'SLOW WORK z.txt HV')['id']
@@ -1329,7 +1725,6 @@ def run(wsx, wsxd, work, owned):
     assert [c['state'] for c in passed['changed']] == ['passed'] and passed['open'] == 2, passed
     assert 'already passed' in cli('task', 'check', 'pass', 'c1', '--json', ok=False).stderr
     assert 'no item c9' in cli('task', 'check', 'pass', 'c9', ok=False).stderr
-    manager_env = dict(env, WSX_TASK_ACTOR='manager')
     refused = subprocess.run([str(wsx), 'task', 'check', 'pass', '--all'], cwd=project, env=manager_env,
                              capture_output=True, text=True)
     assert refused.returncode != 0 and 'for the owner' in refused.stderr, refused.stderr
@@ -1353,36 +1748,11 @@ def run(wsx, wsxd, work, owned):
 
     # 17. Deploy and release records. Each runs in a temporary copy of a default-branch commit.
     mark('17')
-    project_store = state / 'wsx/tasks' / Path(created['task_dir']).parent.name
-
-    def deploy_records():
-        path = project_store / 'deploys.jsonl'
-        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
-
-    def deploy_lock_free():
-        with open(project_store / 'deploy.lock', 'a') as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return True
-            except BlockingIOError:
-                return False
-
-    def ran(*argv, seconds=20):
-        # ^ A deploy or release by hand answers once it started; its detached run records it.
-        before = len(deploy_records())
-        started = js('task', *argv)
-        assert started['started'] and ' started; ' in started['message'], started
-        wait(lambda: len(deploy_records()) > before and deploy_lock_free(), 'the detached ' + argv[0], seconds)
-        assert started['commit'] == deploy_records()[-1]['commit'], started
-        return dict(deploy_records()[-1], message=started['message'])
+    store_up(created)
 
     unset = cli('task', 'deploy', ok=False)
     assert 'tasks.deploy.command is not set' in unset.stderr and 'nothing was run' in unset.stderr
-    configure(LAND_CONFIG + '''  deploy:
-    command: 'printf "%s %s\\n" "$WSX_DEPLOY_COMMIT" "$(pwd)" >> ../deploy.log'
-  release:
-    command: 'seq 1 60; echo release broke here >&2; exit 3'
-''', 'deploy config')
+    configure(DEPLOY_CONFIG, 'deploy config')
     assert js('task', 'deployed')['deploy']['commit'] is None
     # Open items stop only public output: a release, and a deploy marked public.
     refused = cli('task', 'release', '--json', ok=False)
@@ -1476,246 +1846,11 @@ def run(wsx, wsxd, work, owned):
     for n in (ready_task, blocked_task):
         js('task', 'close', n, '--discard')
 
-    # 20. The manager: started by the first say, answers from the ledger, acts through wsx task.
-    mark('20')
-    configure((project / 'wsx.config.yml').read_text()
-              + '  manager: { name: "  Atlas ", model: fake-manager, eventModel: fake-events, '
-                'rotateTokens: 100000 }\n'
-              + '  skills: owner\n  workflow:\n    build: "Run the fixture rule."\n'
-                '    review: "Check the fixture rule."\n', 'manager config')
-    # ^ The owner's skills folder: the manager gets it as the `owner` plugin. It is the one of
-    # demo's profile (README "Profiles"), not ~/.claude.
-    owner_skills = profile_root / 'skills'
-    (owner_skills / 'scribe').mkdir(parents=True)
-    (owner_skills / 'scribe/SKILL.md').write_text('---\nname: scribe\ndescription: fixture\n'
-                                                  'allowed-tools: Write, Edit\n---\nWrite a file.\n')
-
-    (owner_skills / 'other').mkdir()
-    (owner_skills / 'other/SKILL.md').write_text('---\nname: other\ndescription: fixture\n---\nx\n')
-
-    def chat(after=None):
-        return js('task', 'chat', *(['--after', after] if after is not None else []))['entries']
-
-    def reply_to(message_id):
-        return wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and message_id in e['to']), None),
-                    'reply to %s' % message_id)
-
-    def turn_with(text):
-        """The first manager turn whose message holds `text`."""
-        return next((t for t in traces() if t.get('manager') and text in str(t.get('message', ''))), None)
-
-    running = js('task', 'new', 'SLOW SLOW SLOW WORK r.txt')['id']
-    # ^ A project with the old `page.md` and no overview gets it moved once, when the manager starts.
-    old_page = state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'page.md'
-    old_page.write_text('# demo\n\n## Goal\n\nmigrated\n')
-    asked = js('task', 'say', 'STATUS')
-    assert asked['ok'] and asked['id'] == 1, asked
-    asked_reply = reply_to(asked['id'])
-    assert ('#%d working' % running) in asked_reply['text'] and 'quiet' not in asked_reply, asked_reply
-    launch = next(t for t in traces() if t.get('launch') and t.get('manager'))
-    # ^ The message ends with the host's ledger summary; a fresh conversation gets every open task.
-    opening = next(t['message'] for t in traces() if t.get('manager') and 'message' in t)
-    summary = opening.split('\n\nLedger summary from wsx (`wsx task ledger -p demo` has the details):\n', 1)[1]
-    assert summary.startswith('- open: ') and 'working; to check: ' in summary, summary
-    assert '#%d working r' % running in summary.split('- open tasks:\n', 1)[1], summary
-    assert '`wsx task ledger -p demo` for more' in launch['instructions'], launch['instructions']
-    page = os.path.realpath(state / 'wsx/tasks' / Path(created['task_dir']).parent.name / 'overview.md')
-    assert not old_page.exists() and 'migrated' in Path(page).read_text(), old_page
-    # ^ It uses the owner's skills (docs/tasks.md "Manager"); no tool list: nothing prompts.
-    assert not {'--allowedTools', '--disallowedTools'} & set(launch['argv']), launch['argv']
-    plugin = Path(launch['plugin_dir'])
-    assert plugin.parent.name == 'manager' and plugin.resolve().is_relative_to(state.resolve()), plugin
-    assert json.loads((plugin / '.claude-plugin/plugin.json').read_text())['name'] == 'owner'
-    assert os.readlink(plugin / 'skills') == str(owner_skills), os.readlink(plugin / 'skills')
-    # ^ No prompts inside wsx's boundary (docs/tasks.md "Permissions").
-    assert launch['mode'] == 'bypassPermissions' and 'permissions' not in launch['settings'], launch['settings']
-    assert launch['model'] == 'fake-manager' and Path(page).read_text().startswith('# demo\n\n## Goal')
-    # ^ A manager turn that leaves the overview over the cap (60 lines, 4,000 characters) gets one
-    # follow-up turn that names the sizes; the second over-cap result gets no third
-    # (docs/tasks.md "Project overview").
-    long_said = js('task', 'say', 'OVERLONG 70')
-    wait(lambda: turn_with('The project overview is 70 lines / ') and reply_to(long_said['id']), 'the overview follow-up')
-    time.sleep(4)
-    follow = [t for t in traces() if t.get('manager') and 'The project overview is ' in str(t.get('message', ''))]
-    assert len(follow) == 1 and 'the cap is 60 / 4,000' in follow[0]['message'], follow
-    assert len(Path(page).read_text().splitlines()) == 70
-    Path(page).write_text('# demo\n\n## Goal\n\nshort\n')
-    assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
-    assert launch['git_optional_locks'] == '0', launch
-    # ^ README "Profiles": the manager and every Claude worker so far run under demo's profile
-    # root. Part 13t's Pi worker reads no CLAUDE_CONFIG_DIR.
-    demo_launches = [t for t in traces() if t.get('launch') and t.get('adapter') != 'pi']
-    assert demo_launches and all(t['claude_config_dir'] == str(profile_root) for t in demo_launches), \
-        {t['claude_config_dir'] for t in demo_launches}
-    # Its rules: chat, not reports; quiet replies to events and no chores for the owner; start
-    # at once; an open task before a new one; a complete prompt; a lean review without rebase
-    # send-backs; one housekeeping task after a request lands; the owner's word; memory.
-    for rule in ('Talk like a person in a chat, not a report', 'The reader sees one screen',
-                 'A turn of only Events is your work', 'or with exactly `-` when nothing',
-                 'Never hand the owner chores', 'A request for work starts at once',
-                 "Judge from the owner's words whether the owner wants to talk it over", 'no task, `add` or `steer` for them until the owner agrees',
-                 'then one `wsx task new` or `add` with all', 'with a mermaid diagram',
-                 'stands alone, since a worker cannot ask', 'in every task new', 'With `--plan` the worker',
-                 'Before `wsx task new`, compare the request', 'Never ask the owner to wait',
-                 'for lean code', 'never send a task back to rebase', 'trust them over the worker',
-                 'Check the fixture rule.', 'runs with `--size small`', 'open with `> message <id>`', 'Only events that need you start a turn',
-                 'tell that worker to prove it', 'never skip or fail items', 'only when the owner\'s message of this turn says',
-                 'A release refuses while items are open, unless the owner', '`wsx task trial <n>`',
-                 '`--owner-said <id>`', 'never name a message that did not ask',
-                 'call a change live only when', 'On `hand`, the owner works in its copy',
-                 'Nothing asks you for permission', 'read-only git in Bash', '`wsx task new --into <n>`',
-                 'only after the owner says yes, commit', 'also in a pipe or with a heredoc',
-                 'the Skill tool as `owner:<name>`', 'check rather than guess',
-                 '/manager/notes/decisions.md', '/manager/notes/context.md', "wsx adds each finished task's memo",
-                 'Update a section in place', 'answer each Owner message first, every question in it',
-                 'Define each name the owner has not used', 'say how both hold', 'what you said you would report',
-                 'every project and agent adapter', "the task's prompt and each later add", 'naming each ask it missed',
-                 'or call it unchecked',
-                 '--from-manager --reply', 'use it and do not answer it', "'@<project>'"):
-        assert rule in launch['instructions'], rule
-    # ^ Only `role new` takes a brief (docs/tasks.md "Roles").
-    assert 'brief' not in launch['instructions'].lower().replace('--brief', ''), launch['instructions']
-    # ^ No skill is named: the owner's skills are whatever their folder holds.
-    assert re.findall(r'owner:[^<\s]', launch['instructions']) == [], launch['instructions']
-    assert not any(name in launch['instructions'] for name in ('seek', 'recall', '/memo', 'scribe'))
-    assert launch['cwd'] == str(project)
-    # ^ The name the owner reads, trimmed; the session keeps its label `task-manager`.
-    assert js('task', 'manager')['name'] == 'Atlas'
-    # ^ The TUI's manager row reads the name; without one the project's (docs/tasks.md "Config").
-    named = tui_text(wsx, env, project, r'task-manager\s*\n*\s*\(Atlas\)')
-    assert re.search(r'task-manager\s*\n*\s*\(Atlas\)', named) and '(manager)' not in named, named[-3000:]
-    config_text = (project / 'wsx.config.yml').read_text()
-    (project / 'wsx.config.yml').write_text(config_text.replace('name: "  Atlas ", ', ''))
-    plain = tui_text(wsx, env, project, r'task-manager\s*\n*\s*\(demo\)')
-    plain_name = js('task', 'manager')['name']
-    (project / 'wsx.config.yml').write_text(config_text)
-    assert re.search(r'task-manager\s*\n*\s*\(demo\)', plain) and '(Atlas)' not in plain, plain[-3000:]
-    assert plain_name == 'demo', plain_name
-    assert js('task', 'manager')['state'] == 'running'
-    # A new task and an add to the running one, each by a wsx task command the manager runs.
-    started = js('task', 'say', 'RUN wsx task new "WORK s1.txt" -p demo --json')
-    assert 'ran: wsx task new' in reply_to(started['id'])['text']
-    manager_task = max(row['id'] for row in js('task', 'list')['tasks'])
-    assert wait_state(manager_task, 'ready', 'failed')['state'] == 'ready'
-    # ^ tasks.skills: owner lends the worker the owner's skills; tasks.workflow.build is its rule.
-    skilled = [t for t in traces() if t.get('launch') and not t.get('manager')][-1]
-    assert skilled['plugin_dir'].endswith('/%d/skills-plugin' % manager_task), skilled
-    assert 'Run the fixture rule.' in skilled['instructions'] and 'as `owner:<name>`' in skilled['instructions']
-    # ^ No tasks.skillsOnly: the worker gets every skill. With it: only the named ones, and a
-    # name the owner lacks is skipped (docs/tasks.md "Workflow").
-    assert os.readlink(Path(skilled['plugin_dir']) / 'skills') == str(owner_skills), skilled
-    unrestricted = (project / 'wsx.config.yml').read_text()
-    configure(unrestricted + '  skillsOnly: [scribe, ghost]\n', 'skills only')
-    only_task = js('task', 'new', 'WORK only.txt')['id']
-    assert wait_state(only_task, 'ready', 'failed')['state'] == 'ready'
-    only = [t for t in traces() if t.get('launch') and not t.get('manager')][-1]
-    only_dir = Path(only['plugin_dir']) / 'skills'
-    assert only_dir.is_dir() and not only_dir.is_symlink() and sorted(os.listdir(only_dir)) == ['scribe'], os.listdir(only_dir)
-    assert os.readlink(only_dir / 'scribe') == str(owner_skills / 'scribe')
-    configure(unrestricted, 'skills all')
-    added = js('task', 'say', 'RUN wsx task add %d "WORK s2.txt" -p demo --json' % running)
-    assert '-> 0' in reply_to(added['id'])['text']
-    # Any command shape reaches the broker: `;`, a heredoc with a multi-line prompt, a pipe.
-    script = js('task', 'say', "SCRIPT\nwsx task ledger -p demo --json >/dev/null; wsx task new -p demo --json - <<'EOF'\n"
-                "WORK h1.txt\nsecond line of the prompt\nEOF\nwsx task list -p demo --json | grep -c '\"id\"' >/dev/null && echo piped")
-    answer = reply_to(script['id'])['text']
-    assert answer.startswith('script -> 0') and answer.rstrip().endswith('piped'), answer
-    heredoc_task = max(row['id'] for row in js('task', 'list')['tasks'])
-    first = next(e for e in log(heredoc_task) if e['kind'] == 'message')
-    assert first['text'] == 'WORK h1.txt\nsecond line of the prompt', first
-    assert wait_state(heredoc_task, 'ready', 'failed')['state'] == 'ready'
-    # Under the broker no other command runs, neither in the CLI nor at the host.
-    refused = js('task', 'say', 'RUN wsx --version\nRUN wsx task host %s 1' % launch['cwd'])
-    text = reply_to(refused['id'])['text']
-    assert 'ran: wsx --version -> 2 wsx: only `wsx task` commands run here' in text, text
-    assert 'ran: wsx task host' in text and "-> 2 wsx: `wsx task host` is not for the manager" in text, text
-    with socket.socket(socket.AF_UNIX) as raw:
-        raw.connect(launch['broker'])
-        raw.sendall(json.dumps({'argv': ['daemon', 'stop'], 'stdin': None, 'cwd': str(project)}).encode())
-        raw.shutdown(socket.SHUT_WR)
-        direct = json.loads(raw.makefile().read())
-    assert direct['code'] == 2 and 'only `wsx task` commands' in direct['stderr'], direct
-    assert wait_state(running, 'ready', 'failed')['state'] == 'ready'
-    assert [e['mode'] for e in log(running) if e['kind'] == 'message'] == ['prompt', 'add']
-    manager_log = Path(created['task_dir']).parent / 'manager' / 'log.jsonl'
-
-    def manager_entries():
-        return [json.loads(line) for line in manager_log.read_text().splitlines()]
-
-    # Usage (docs/tasks.md "Manager"): rotation looks at the last main model call's context, not
-    # the result's sum over the turn's calls, nor a subagent's; a reply's cost is its own, not the
-    # process's running `total_cost_usd`.
-    summed = js('task', 'say', 'SUMMED')
-    usage = reply_to(summed['id'])['usage']
-    replies = [e for e in manager_entries() if e['kind'] == 'reply']
-    assert usage['input_tokens'] + usage['cache_read_tokens'] == 200000 and usage['context_tokens'] == 50000, usage
-    assert usage['model'] == 'fake-manager' and usage['adapter'] == 'claude', usage
-    # Quotes (docs/tasks.md "Manager"): a reply that opens with `> message <id>` is stored with
-    # that message's first line in the owner's quote format; a bad or unknown id drops the line and
-    # the reply stands. The next turn names the id of the manager's last reply.
-    promise = reply_to(js('task', 'say', 'STATUS promise')['id'])
-    own = reply_to(js('task', 'say', 'QUOTE %d still waiting on #8' % promise['id'])['id'])
-    assert own['text'] == '> %s\n\nstill waiting on #8' % promise['text'].splitlines()[0], own
-    # ^ The entry keeps the quoted message's id, for a tap that opens the chat there at any age.
-    assert own['quote'] == promise['id'], own
-    assert 'Your last reply: %d.' % promise['id'] in turn_with('QUOTE %d still' % promise['id'])['message']
-    heard = js('task', 'say', 'QUOTE OWNER_SAID noted')
-    assert reply_to(heard['id'])['text'] == '> QUOTE OWNER_SAID noted\n\nnoted'
-    # ^ A quote of a quote is the words of that reply, not its quote line.
-    again = reply_to(js('task', 'say', 'QUOTE %d and again' % own['id'])['id'])
-    assert again['text'] == '> still waiting on #8\n\nand again', again
-    for bad in ('abc', '0', '99999999', '99999999999999999999', '-3'):
-        dropped = reply_to(js('task', 'say', 'QUOTE %s words stay' % bad)['id'])
-        assert dropped['text'] == 'words stay' and 'quote' not in dropped, (bad, dropped)
-    # ^ The TUI shows the quote as one line; `[` selects it and Enter goes to the quoted message,
-    # the owner's first one, far above.
-    first = reply_to(js('task', 'say', 'QUOTE 1 jump')['id'])
-    assert first['text'] == '> STATUS\n\njump' and first['quote'] == 1, first
-    # ^ The owner's Reply (web *Reply*, TUI `r`) sends `> message <id>` too: stored in the same
-    # format with the id, and the agent reads the line.
-    said_back = js('task', 'say', '> message 1\n\nthe owner answers')
-    stored = next(e for e in manager_entries() if e['kind'] == 'message' and e['id'] == said_back['id'])
-    assert stored['text'] == '> STATUS\n\nthe owner answers' and stored['quote'] == 1, stored
-    reply_to(said_back['id'])
-    jumped = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
-        (r'(?m)^   \u258e STATUS$', b'['),
-        (r'(?m)^ MANAGER +Enter: open', b'\r'),
-        (r'(?m)^ You +\d\d:\d\d\n   STATUS$', b'\x1b'),
-        (r'(?m)^ MANAGER +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
-    assert 'jump' in jumped[2] and 'jump' not in jumped[4], jumped[4]
-    assert not any(e['kind'] == 'rotated' for e in manager_entries()), 'four 50k calls do not rotate'
-    assert len(replies) > 3 and {e['usage']['cost_micro_usd'] for e in replies} == {1000}, replies
-    # Event-only turns run on tasks.manager.eventModel unless a ready task the manager created
-    # waits for its review: the manager's own model reviews it.
-    review = wait(lambda: next((e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
-                                and '#%d ready' % manager_task in e['text']), None), 'review event')
-    review_turn = wait(lambda: turn_with('Events (message %d)' % review['id']), 'review turn')
-    assert review_turn['model'] == 'fake-manager', review_turn
-    # Rotation: past rotateTokens the next turn starts a fresh conversation.
-    # ^ Without a skills folder the next launch has no plugin, keeps the Skill tool and
-    # the generic guidance.
-    shutil.rmtree(owner_skills)
-    big = js('task', 'say', 'BIG')
-    reply_to(big['id'])
-    assert wait(lambda: any(e['kind'] == 'rotated' for e in chat()), 'rotated')
-    after_rotation = js('task', 'say', 'STATUS')
-    reply_to(after_rotation['id'])
-    manager_launches = [t for t in traces() if t.get('launch') and t.get('manager')]
-    assert not manager_launches[-1]['resume'] and manager_launches[-1]['session'] != launch['session']
-    bare = manager_launches[-1]
-    assert bare['plugin_dir'] is None, bare
-    assert 'owner:' not in bare['instructions'] and 'check rather than guess' in bare['instructions']
-    assert [e['id'] for e in chat(after=big['id']) if e['kind'] == 'message' and e['from'] == 'owner'] == [after_rotation['id']]
-    for n in (running, manager_task, heredoc_task, only_task):
-        js('task', 'close', n, '--discard')
+    manager_up(created)
 
     # 21. Events: task state changes reach the manager, merged while it is busy; an owner
     mark('21')
     # message waiting at the same time goes first; a host restart loses no event.
-    def events_with(*needles):
-        return [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
-                and all(needle in e['text'] for needle in needles)]
 
     # ^ A failed deploy or release is an event with the end of its output.
     js('task', 'check', 'pass', '--all')
@@ -2487,6 +2622,16 @@ def run(wsx, wsxd, work, owned):
     assert 'stopped by request' in along_turn, along_turn
     js('task', 'close', halted, '--discard')
 
+    return created
+
+
+def part_worker(created=None):
+    """Sections 22 to 32u: the push, the boundary, the worker's checks and the limit waits."""
+    if created is None:
+        created = fresh_project()
+        store_up(created)
+        manager_up(created)
+
     # 22. Approvals: what the manager may not do alone becomes a request the owner decides.
     mark('22')
     # ^ By default the manager lands alone: only what goes public or is lost asks.
@@ -2822,38 +2967,7 @@ def run(wsx, wsxd, work, owned):
         copy = os.path.realpath(show(n)['record']['working_copy'])
         return [t for t in traces() if t.get('launch') and os.path.realpath(t['cwd']) == copy]
 
-    secret = home / '.ssh/id_fixture'
-    secret.parent.mkdir(mode=0o700, exist_ok=True)
-    secret.write_text('secret\n')
-    store_dir, common = Path(created['task_dir']).parent, project / '.git'
-    probe_script = work / 'probe.py'
-    probe_script.write_text(PROBE_SCRIPT)
-    # ^ A process outside the boundary that the probe's signal must not reach.
-    signal_target = subprocess.Popen(['sleep', '600'])
-    atexit.register(signal_target.kill)
-
-    def probe_files(n):
-        """The probe's spec and answer for task n, which is created next."""
-        spec = {'read': {'read_ssh': str(secret)}, 'signal_outside': signal_target.pid,
-                'write': {'write_ssh': str(home / '.ssh/probe'), 'write_state': str(store_dir / 'probe.txt'),
-                          'write_existing_copy': str(base / 'project-t998/probe.txt'),
-                          'write_later_copy': str(base / 'project-t999/probe.txt'),
-                          'write_main_ref': str(common / 'refs/heads/main'),
-                          'write_main_lock': str(common / 'refs/heads/main.lock'),
-                          'write_main_reflog': str(common / 'logs/refs/heads/main'),
-                          'write_hooks': str(common / 'hooks/pre-commit'), 'write_config': str(common / 'config'),
-                          'write_routines': str(work / 'routines/projects/probe.json'),
-                          'write_own_copy': str(base / ('project-t%d' % n) / 'probe.txt'),
-                          'write_task_folder': str(store_dir / str(n) / 'probe.txt'),
-                          'write_tmpdir': str(tmp / 'probe.txt'), 'write_cargo': str(home / '.cargo/registry/probe.txt'),
-                          'write_library': str(home / 'Library/Caches/wsx-probe/probe.txt')}}
-        spec_file, answer = work / ('probe-%d.json' % n), work / ('probe-%d-answer.json' % n)
-        spec_file.write_text(json.dumps(spec))
-        return spec_file, answer
-
-    def next_task():
-        return max(row['id'] for row in js('task', 'list', '--all')['tasks']) + 1
-
+    probe_up(created)
     # ^ A copy that exists at the launch and one made after it are both another task's.
     (base / 'project-t998').mkdir()
     main_tip, config_before = git('rev-parse', 'main'), (common / 'config').read_text()
@@ -3036,10 +3150,6 @@ def run(wsx, wsxd, work, owned):
     # Stalls (docs/tasks.md "Manager"): a wait whose cause is real is none, past the grace.
     js('task', 'manager')
 
-    def stalls(n):
-        return [line for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
-                for line in e['text'].split('\n') if line.startswith('#%d stalled' % n)]
-
     sweeps(2)
     assert not stalls(dw), stalls(dw)
     # ^ Space is back, but a process holds the disk slot under the label of a closed task: one
@@ -3067,12 +3177,6 @@ def run(wsx, wsxd, work, owned):
     # passed since it entered the state; a land, or an add and a close, before that end the
     # wait (docs/tasks.md "Manager", Stalls). The fake manager reviews nothing by itself.
     configure(LAND_CONFIG.replace('tasks:\n', 'tasks:\n  manager: { reviewMinutes: 0.2 }\n'), 'review wait')
-
-    def manager_new(prompt, *flags):
-        made = subprocess.run([str(wsx), 'task', 'new', *flags, prompt, '--json'], cwd=project, env=manager_env,
-                              capture_output=True, text=True, timeout=60)
-        assert made.returncode == 0, made.stderr
-        return json.loads(made.stdout)['id']
 
     idle, landed_first, added = (manager_new('WORK rw%d.txt' % i) for i in range(3))
     for n in (landed_first, added):
@@ -3475,32 +3579,6 @@ def run(wsx, wsxd, work, owned):
     # 32c. The check slot (docs/tasks.md "Checks, revisions and report"): one check run at a
     mark('32c')
     # time on the machine. The run that waits shows queued; a killed holder frees the slot.
-    spans, release = base / 'slot-spans.log', base / 'slot-release'
-    slot_check = base / 'slot-check.py'
-    slot_check.write_text(
-        'import os, sys, time\n'
-        'def mark(what):\n'
-        '    with open(%r, "a") as out:\n'
-        '        out.write("%%s %%s %%.3f\\n" %% (os.path.basename(os.getcwd()), what, time.time()))\n'
-        'mark("start")\n'
-        'deadline = time.time() + float(sys.argv[1])\n'
-        'while time.time() < deadline and not os.path.exists(%r):\n'
-        '    time.sleep(0.05)\n'
-        'mark("end")\n' % (str(spans), str(release)))
-
-    def slot_config(seconds):
-        configure(LAND_CONFIG.replace(
-            '"test ! -e broken.txt"', '"%s %s %d"' % (sys.executable, slot_check, seconds)), 'slot checks %d' % seconds)
-
-    def slot_marks():
-        marks = {}
-        for line in spans.read_text().splitlines() if spans.exists() else []:
-            copy_name, what, at = line.split()
-            marks.setdefault(copy_name, {})[what] = float(at)
-        return marks
-
-    def copy_name(n):
-        return Path(show(n)['record']['working_copy']).name
 
     def queued_row(pair):
         rows = [r for r in js('task', 'ledger')['open'] if r['id'] in pair]
@@ -3520,7 +3598,7 @@ def run(wsx, wsxd, work, owned):
     assert first['end'] <= second['start'], (first, second)
     for n in pair:
         js('task', 'close', n, '--discard')
-    spans.unlink()
+    slot_spans.unlink()
     slot_config(60)
     pair = [js('task', 'new', 'WORK slot%d.txt' % i)['id'] for i in (3, 4)]
     holder_copy = wait(lambda: next(iter(slot_marks()), None), 'the first check run starts', 30)
@@ -3547,7 +3625,7 @@ def run(wsx, wsxd, work, owned):
     # client that asks again, so no turn waits or polls (docs/tasks.md "Check-run"): the step
     # ends with its result, the answer comes as one `check_run` turn of that step, and the next
     # step follows. The checks run once, never beside each other.
-    spans.unlink()
+    slot_spans.unlink()
     release.unlink()
     configure(LAND_CONFIG.replace('"test ! -e broken.txt"', '"%s %s 60"' % (sys.executable, slot_check))
               + '  workflow:\n    steps:\n      - {name: build, prompt: build it}\n'
@@ -3570,8 +3648,8 @@ def run(wsx, wsxd, work, owned):
     answers = [t['message'] for t in traces() if t.get('message', '').startswith('Your check-run ended. Its answer')]
     assert len(answers) == 1 and ': exit 0' in answers[0], answers
     # ^ One start for the check-run and one for the checks after the result.
-    starts = [line for line in spans.read_text().splitlines() if line.startswith(copy_name(again) + ' start')]
-    assert len(starts) == 2, spans.read_text()
+    starts = [line for line in slot_spans.read_text().splitlines() if line.startswith(copy_name(again) + ' start')]
+    assert len(starts) == 2, slot_spans.read_text()
     for n in (holder, again):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'no slot checks')
@@ -3967,11 +4045,21 @@ def run(wsx, wsxd, work, owned):
     assert kinds(twice, 'checks', 'revision') == ['checks', 'revision'], log(twice)
     js('task', 'close', twice, '--discard')
     configure(LAND_CONFIG, 'no scenario')
+    return created
+
+
+def part_host(created=None):
+    """Sections 32d to 39: the disk queue, stalls, roles, other projects, the fallback agent and lost hosts."""
+    if created is None:
+        created = fresh_project()
+        store_up(created)
+        manager_up(created)
+
     # 32d. The disk queue (docs/tasks.md "Checks, revisions and report"): tasks that wait for
     mark('32d')
     # disk resume one at a time, oldest first, so they do not fill the freed space at once, but
     # the next one resumes about a minute later, while the first one's checks still run.
-    release.unlink()
+    release.unlink(missing_ok=True)
     slot_config(240)
     roomy = (project / 'wsx.config.yml').read_text()
     configure(roomy.replace('minFreeGb: 0', 'minFreeGb: 100000'), 'no disk for two')
@@ -4212,6 +4300,7 @@ def run(wsx, wsxd, work, owned):
     if real is None:
         print('32h skipped: no real claude on PATH', file=sys.stderr)
     else:
+        probe_up(created)
         # ^ `tasks.env` reaches the worker's launch: the wrapper runs the real claude, signed in
         # through the real home, for this task alone.
         # ^ The real claude signs in through the real home, not demo's fixture profile root.
@@ -5104,8 +5193,8 @@ def run(wsx, wsxd, work, owned):
     assert json.loads(pi_limit.read_text())['until_ms'] > (time.time() + 5 * 3600) * 1000, pi_limit.read_text()
     assert not any(e['kind'] == 'reply' and 'credit balance' in e['text'] for e in chat()), chat()[-3:]
     limit_file.unlink()
-    home = reply_to(no_credit['id'])
-    assert home['text'].startswith('open: '), home
+    back_home = reply_to(no_credit['id'])
+    assert back_home['text'].startswith('open: '), back_home
     assert 'agent' not in manager_state(), manager_state()
     assert any(e['kind'] == 'rotated' and e.get('reason') == 'back on claude' for e in chat()), chat()[-5:]
     home_turn = turn_with('PIERROR %s' % refusal)
@@ -5269,6 +5358,7 @@ def run(wsx, wsxd, work, owned):
     refused = cli('task', 'hold', lost, 'x', ok=False).stderr
     assert 'no task host answers' in refused or 'closed' in refused, refused
     assert not lost_socket.exists() and not host_pids()
+    return created
 
 
 if __name__ == '__main__':
