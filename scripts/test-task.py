@@ -4814,8 +4814,8 @@ def run(wsx, wsxd, work, owned):
         {'unix_ms': t0 + 3000, 'kind': 'result', 'status': 'done', 'summary': 'First pass: the parser is fixed.'},
         {'unix_ms': t0 + 4000, 'kind': 'message', 'mode': 'add', 'text': 'Also keep the zymurgy case small'},
         {'unix_ms': t0 + 5000, 'kind': 'checks', 'results': [{'command': 'cargo test', 'exit': 1, 'timed_out': False, 'output': ''}]},
-        {'unix_ms': t0 + 6000, 'kind': 'revision', 'revision': 2, 'commit': 'cd67238aaaaaaaa'},
-        {'unix_ms': t0 + 7000, 'kind': 'landed', 'commit': 'cd67238aaaaaaaa'}])
+        {'unix_ms': t0 + 6000, 'kind': 'revision', 'revision': 2, 'commit': 'cd67238e1f90aaaa'},
+        {'unix_ms': t0 + 7000, 'kind': 'landed', 'commit': 'cd67238e1f90aaaa'}])
     third_task(2, 'closed', 1, [
         {'unix_ms': t0, 'kind': 'created', 'base': 'abc', 'branch': 'wsx/t2'},
         {'unix_ms': t0 + 1000, 'kind': 'message', 'mode': 'prompt', 'text': 'Try the gizmo idea'},
@@ -4823,17 +4823,17 @@ def run(wsx, wsxd, work, owned):
         {'unix_ms': t0 + 3000, 'kind': 'closed', 'discarded': True}])
     day = time.strftime('%m-%d', time.gmtime((t0 + 7000) // 1000))
     hit = next(h for h in js('task', 'search', '-p', 'demo', '--all', 'zymurgy')['hits'] if h['reference'] == 'third#1')
-    assert hit['kind'] == 'history' and hit['by'] == 'add' and hit['outcome'] == 'landed %s cd67238' % day, hit
+    assert hit['kind'] == 'history' and hit['by'] == 'add' and hit['outcome'] == 'landed %s cd67238e1f90' % day, hit
     hit = next(h for h in js('task', 'search', '-p', 'demo', '--all', 'dead', 'end')['hits'] if h['reference'] == 'third#2')
     assert hit['by'] == 'steer' and hit['outcome'] == 'closed: discarded', hit
     story = js('task', 'search', '-p', 'third', '--task', '1')
     assert [e['label'] for e in story['entries']] == ['start', 'prompt', 'steps', 'result', 'add', 'checks', 'revision', 'landed'], story
     assert [e['text'] for e in story['entries']][2:] == ['3 steps, last: tool step 2', 'First pass: the parser is fixed.',
-                                                         'Also keep the zymurgy case small', '1 failed: cargo test', 'r2 cd67238', 'cd67238'], story
-    assert story['outcome'] == 'landed %s cd67238' % day and story['title'] == 'Fix the quolloquy parser' and story['skipped'] == 0, story
+                                                         'Also keep the zymurgy case small', '1 failed: cargo test', 'r2 cd67238e1f90', 'cd67238e1f90'], story
+    assert story['outcome'] == 'landed %s cd67238e1f90' % day and story['title'] == 'Fix the quolloquy parser' and story['skipped'] == 0, story
     assert story['entries'][4]['unix_ms'] == t0 + 4000
     printed = cli('task', 'search', '-p', 'third', '--task', '1').stdout.splitlines()
-    assert printed[0] == 't1 [landed %s cd67238]  Fix the quolloquy parser' % day, printed
+    assert printed[0] == 't1 [landed %s cd67238e1f90]  Fix the quolloquy parser' % day, printed
     assert printed[5] == '%s add      Also keep the zymurgy case small' % stamp(t0 + 4000), printed
     assert js('task', 'search', '-p', 'third', '--task', '1', '--limit', '2')['skipped'] == 6
     # ^ Words with --task keep only that task's hits; a line the log gains later is found by the next

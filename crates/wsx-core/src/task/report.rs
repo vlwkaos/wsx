@@ -1,6 +1,7 @@
 //! `report.md` of one revision, built only from the log, git and the result.
 //! ref: docs/tasks.md "Report"
 
+use super::view::short_commit;
 use super::{LogEvent, TaskRecord, WorkerResult};
 use crate::git::{git_cmd, output_with_timeout_limit};
 use std::fmt::Write as _;
@@ -51,8 +52,8 @@ pub fn render(
         "State `{}`, branch `{}`, base `{}`, revision `{}`\n",
         record.state.as_str(),
         record.branch,
-        short(&record.base),
-        short(commit)
+        short_commit(&record.base),
+        short_commit(commit)
     );
 
     let _ = writeln!(out, "## Summary\n\nWorker status: `{}`\n", result.status);
@@ -170,10 +171,6 @@ pub fn checks_line(passed: usize, total: usize) -> String {
     } else {
         format!("{passed} of {total} {noun} passed")
     }
-}
-
-fn short(commit: &str) -> &str {
-    commit.get(..12).unwrap_or(commit)
 }
 
 fn nonempty(text: &str) -> &str {

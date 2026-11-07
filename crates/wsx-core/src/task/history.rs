@@ -62,10 +62,6 @@ pub fn timeline(log: &[LogEntry], cap: usize) -> Timeline<'_> {
     }
 }
 
-fn short(commit: &str) -> &str {
-    commit.get(..7).unwrap_or(commit)
-}
-
 /// An event in words, with its label; none for the events that are no step of the task's story
 /// (progress, waits, pings, previews). The one wording of the digest and of `read`.
 pub fn line(event: &LogEvent) -> Option<(&'static str, String)> {
@@ -90,7 +86,10 @@ pub fn line(event: &LogEvent) -> Option<(&'static str, String)> {
         ),
         LogEvent::Revision {
             revision, commit, ..
-        } => ("revision", format!("r{revision} {}", short(commit))),
+        } => (
+            "revision",
+            format!("r{revision} {}", view::short_commit(commit)),
+        ),
         LogEvent::Checks { results } if !results.is_empty() => {
             let failed: Vec<&str> = results
                 .iter()
@@ -103,7 +102,7 @@ pub fn line(event: &LogEvent) -> Option<(&'static str, String)> {
             };
             ("checks", text)
         }
-        LogEvent::Landed { commit } => ("landed", short(commit).into()),
+        LogEvent::Landed { commit } => ("landed", view::short_commit(commit).into()),
         LogEvent::Closed { discarded } => (
             "closed",
             match discarded {
@@ -169,7 +168,7 @@ pub fn read(dir: &TaskDir, limit: usize) -> Result<History> {
     })
 }
 
-/// Where the task is in a few words: "landed 11-07 cd67238", "closed: discarded", or an open
+/// Where the task is in a few words: "landed 11-07 cd67238e1f90", "closed: discarded", or an open
 /// task's state and revision ("ready r2"). Not stored anywhere: it is read when asked.
 pub fn outcome(dir: &TaskDir, record: &TaskRecord) -> String {
     match record.state {
@@ -182,7 +181,13 @@ pub fn outcome(dir: &TaskDir, record: &TaskRecord) -> String {
             .flatten()
             .map_or_else(
                 || "landed".into(),
-                |(at, commit)| format!("landed {} {}", &day_of(at)[5..], short(&commit)),
+                |(at, commit)| {
+                    format!(
+                        "landed {} {}",
+                        &day_of(at)[5..],
+                        view::short_commit(&commit)
+                    )
+                },
             ),
         TaskState::Closed => match dir
             .last_event(|event| match event {

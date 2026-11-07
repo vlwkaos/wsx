@@ -83,13 +83,15 @@ pub fn digest_lines(project_id: &str, after_ms: u64) -> Vec<String> {
         if let Some(deploy) = deploys.iter().rev().find(|deploy| {
             deploy.kind == kind && deploy.exit == Some(0) && deploy.unix_ms > after_ms
         }) {
-            lines.push(format!(
-                "{word} {}",
-                deploy.commit.get(..7).unwrap_or(&deploy.commit)
-            ));
+            lines.push(format!("{word} {}", short_commit(&deploy.commit)));
         }
     }
     lines
+}
+
+/// A commit's first 12 characters, as every answer and row names it.
+pub fn short_commit(commit: &str) -> &str {
+    commit.get(..12).unwrap_or(commit)
 }
 
 /// The first line of `text`, at most `chars` characters in all: a longer line keeps
