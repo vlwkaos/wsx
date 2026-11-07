@@ -1896,6 +1896,103 @@ capabilities = ["terminal_view"]
         assert history['messages'][9]['attachments'] == [], history['messages'][9]
         assert hashlib.sha256(outside.read_bytes()).hexdigest() not in json.dumps(history)
 
+        # --- Compact copies (docs/web-client.md "Media"): a PDF or a video reaches the agent as text
+        # or frames first, with the original named. The server's PATH is work/bin and the system
+        # folders, so it finds a tool only when this block links it there.
+        def pdf_fixture(tag):
+            """A 3-page PDF: text, a page of one image with no text, text."""
+            text = lambda words: b'BT /F1 8 Tf 5 50 Td (%s) Tj ET' % words.encode()
+            image = b'q 90 0 0 90 5 5 cm /Im1 Do Q'
+            page = lambda contents, resources: b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents %d 0 R /Resources << %s >> >>' % (contents, resources)
+            fonts, images = b'/Font << /F1 9 0 R >>', b'/XObject << /Im1 10 0 R >>'
+            objects = {1: b'<< /Type /Catalog /Pages 2 0 R >>', 2: b'<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>',
+                       3: page(4, fonts), 5: page(6, images), 7: page(8, fonts),
+                       9: b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'}
+            for number, data in ((4, text('Quarterly report %s. Latency fell from 41 ms to 17 ms.' % tag)), (6, image),
+                                 (8, text('Appendix. Results are in the table of the second section.'))):
+                objects[number] = b'<< /Length %d >>\nstream\n%s\nendstream' % (len(data), data)
+            pixels = bytes((x * 31 + y * 17) % 256 for y in range(8) for x in range(8))
+            objects[10] = b'<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 64 >>\nstream\n' + pixels + b'\nendstream'
+            out, offsets = b'%PDF-1.4\n', {}
+            for number in sorted(objects):
+                offsets[number] = len(out)
+                out += b'%d 0 obj\n%s\nendobj\n' % (number, objects[number])
+            xref = len(out)
+            out += b'xref\n0 11\n0000000000 65535 f \n' + b''.join(b'%010d 00000 n \n' % offsets[n] for n in range(1, 11))
+            return out + b'trailer\n<< /Size 11 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n' % xref
+
+        def prompt_after(text, hashes):
+            settle('owner')
+            before = len(traces('owner'))
+            status, sent = owner.request('POST', chat + '/send', {'text': text, 'attachments': hashes})
+            assert status == 200, sent
+            return wait(lambda: len(traces('owner')) > before and traces('owner')[-1], 'prompt with ' + text)
+
+        def attached(site, session, attachment):
+            """The chat shows the file as an attachment, not as the prompt's lines."""
+            return wait(lambda: any([a['hash'] for a in m['attachments']] == [attachment['hash']] and '[attached files]' not in m['text']
+                                    for m in messages(site, session)['messages']), 'attachment shown for ' + attachment['name'])
+
+        media_dir = (work / 'state/wsx/web/owner/media').resolve()
+        held_pdf = None
+        pdf_plain = pdf_fixture('alpha')
+        plain = owner.request('PUT', '/api/media?name=plain.pdf', pdf_plain)[1]
+        assert prompt_after('read plain', [plain['hash']]).endswith('[attached files]\n%s/%s.pdf (plain.pdf)' % (media_dir, plain['hash']))
+        assert not list(media_dir.glob('*.pdf.md'))  # no tool on the PATH: the original only, the upload is fine
+        attached(owner, sessions['owner'], plain)
+        tools = {name: shutil.which(name) for name in ('pdftotext', 'ffmpeg', 'ffprobe')}
+        for name, found in tools.items():
+            if found:
+                (bin_dir / name).symlink_to(Path(found).resolve())
+        if tools['pdftotext']:
+            pdf_bytes = pdf_fixture('beta')
+            report = owner.request('PUT', '/api/media?name=report.pdf', pdf_bytes)[1]
+            assert report['name'] == 'report.pdf' and report['hash'] == hashlib.sha256(pdf_bytes).hexdigest() and 'compact' not in report, report
+            line = prompt_after('summarize the report', [report['hash']]).splitlines()[-1]
+            found = re.fullmatch(r'(.+\.pdf\.md) \(report\.pdf: text of 3 pages, no text on pages 2\) original: (.+\.pdf) '
+                                 r'\(open it only for figures, tables or exact layout and the pages without text\)', line)
+            assert found, line
+            compact, original = Path(found[1]), Path(found[2])
+            assert compact == media_dir / (report['hash'] + '.pdf.md') and original == media_dir / (report['hash'] + '.pdf'), line
+            assert original.read_bytes() == pdf_bytes
+            markdown = compact.read_text()
+            assert markdown.startswith('<!-- wsx: 3 pages; no text on pages 2: open those in the original as images -->\n<!-- page:1 -->\nQuarterly report beta.'), markdown
+            assert re.search(r'<!-- page:2 -->\s*<!-- page:3 -->\nAppendix\.', markdown), markdown
+            attached(owner, sessions['owner'], report)
+            held_pdf = report  # sent to the manager chat further down
+            # An entry that expires takes its copy with it (the root site keeps media for 4 s).
+            expiring = root.request('PUT', '/api/media?name=gone.pdf', pdf_fixture('delta'))[1]
+            root_media = work / 'state/wsx/web/root/media'
+            assert (root_media / (expiring['hash'] + '.pdf.md')).is_file()
+            time.sleep(5)
+            assert root.request('PUT', '/api/media?name=trigger.txt', b'sweep\n')[0] == 200  # a write sweeps
+            assert not list(root_media.glob(expiring['hash'] + '*')), list(root_media.iterdir())
+            assert expiring['hash'] not in (root_media / 'index.json').read_text()
+        else:
+            print('SKIP compact PDF copy: pdftotext is not installed')
+        if tools['ffmpeg'] and tools['ffprobe']:
+            clip = work / 'clip.mp4'
+            subprocess.run([tools['ffmpeg'], '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=duration=45:size=64x48:rate=1',
+                            '-f', 'lavfi', '-i', 'sine=frequency=440:duration=45', '-shortest', '-pix_fmt', 'yuv420p',
+                            '-c:v', 'libx264', '-crf', '45', '-g', '120', '-c:a', 'aac', '-b:a', '6k', '-ac', '1', '-ar', '8000', str(clip)],
+                           check=True, timeout=60)
+            movie = owner.request('PUT', '/api/media?name=clip.mp4', clip.read_bytes())
+            assert movie[0] == 200, movie
+            movie = movie[1]
+            line = prompt_after('what happens', [movie['hash']]).splitlines()[-1]
+            found = re.fullmatch(r'(.+\.mp4\.frames) \(clip\.mp4: 0:45, (\d+) frames named fNN-tM_SS\.jpg\) original: (.+\.mp4) '
+                                 r'\(open it only for motion, sound or detail the frames lack\)', line)
+            assert found, line
+            frames = sorted(Path(found[1]).iterdir())
+            assert Path(found[1]) == media_dir / (movie['hash'] + '.mp4.frames') and len(frames) == int(found[2]) >= 2, frames
+            assert all(re.fullmatch(r'f\d\d-t\d+_\d\d\.jpg', f.name) and f.read_bytes()[:3] == b'\xff\xd8\xff' for f in frames), frames
+            assert frames[0].name.startswith('f01-t0_00') and any('-t0_30' in f.name for f in frames), frames
+            assert Path(found[3]).read_bytes() == clip.read_bytes()
+            assert not list(media_dir.glob('*.part')) and not (media_dir / (movie['hash'] + '.mp4.md')).exists()  # no model in this run's cache: frames only
+            attached(owner, sessions['owner'], movie)
+        else:
+            print('SKIP compact video copy: ffmpeg is not installed')
+
         # --- Timeline: the saved conversation gains a tool call, then its result, then the answer.
         def timeline():
             # These scenarios poll often; when the device's request budget is spent, wait for it.
@@ -3841,6 +3938,15 @@ merge_seconds = 3
         assert status == 200, body
         watcher.expect('tasks', lambda data: data['project'] == demo and data['busy'], timeout=20)
         watcher.expect('tasks', lambda data: data['project'] == demo and not data['busy'], timeout=20)
+        if held_pdf:
+            # The manager chat takes the same attachment line and shows the file as an attachment.
+            status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS with the report', 'attachments': [held_pdf['hash']]})
+            assert status == 200, body
+            watcher.expect('tasks', lambda data: data['project'] == demo and data['busy'], timeout=20)
+            watcher.expect('tasks', lambda data: data['project'] == demo and not data['busy'], timeout=20)
+            rows = steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['rows']
+            sent_row = next(r for r in rows if r.get('author') == 'owner' and r.get('attachments'))
+            assert sent_row['text'] == 'STATUS with the report' and [a['hash'] for a in sent_row['attachments']] == [held_pdf['hash']], sent_row
         # --- The overview and the chat read little (docs/design/web-server-health-audit.md findings 4, 5): the
         # server traces each whole-log read on stderr (WSX_TRACE_READ_LOG).
         def full_reads(suffix=''):

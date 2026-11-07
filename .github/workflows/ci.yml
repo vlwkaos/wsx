@@ -167,6 +167,10 @@ jobs:
         with:
           key: web-scenario
 
+      # ^ The scenario checks the compact copies of a PDF and a video (docs/web-client.md "Media").
+      - name: Install poppler and ffmpeg
+        run: brew install poppler ffmpeg
+
       - name: Run the web scenario
         # ^ The build and test-web-client.py's own 35 min deadline (RUN_SECONDS) fit in this.
         timeout-minutes: 45
