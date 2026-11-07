@@ -784,6 +784,18 @@ struct StartInput {
     shell: bool,
 }
 
+/// Each session start spawns a process: three a second, a burst of six, per device.
+fn start_budget(app: &App, device: &Device) -> Outcome<()> {
+    if app.limiter.allow(&format!("start:{}", device.id), 3.0, 6.0) {
+        return Ok(());
+    }
+    Err(Fault::new(
+        429,
+        "rate_limited",
+        "too many new sessions; wait a moment",
+    ))
+}
+
 async fn session_start(
     State(app): State<Shared>,
     Paired(device): Paired,
@@ -812,16 +824,9 @@ async fn session_start(
         }
         .ok_or_else(Fault::not_found)?;
         // Each start spawns a process on the host.
-        if !app.limiter.allow(&format!("start:{}", device.id), 3.0, 6.0) {
-            return Err(Fault::new(
-                429,
-                "rate_limited",
-                "too many new sessions; wait a moment",
-            ));
-        }
+        start_budget(&app, &device)?;
         // ^ The agent runs under the account of the project's profile (README "Profiles").
-        let config = crate::site::global_config()
-            .ok_or_else(|| Fault::new(409, "config_invalid", "the wsx config does not parse"))?;
+        let config = crate::site::config_or_fault()?;
         // ^ Every session is a login shell; the agent is typed into it, so the pane outlives
         // the agent: chat can resume it, and the terminal can start another (docs/web-client.md).
         let command = wsx_core::ops::with_account(&config, &project.path, Vec::new())
@@ -898,20 +903,10 @@ async fn project_shell(
     allow(&app, Capability::SessionStart, "starting a session")?;
     allow(&app, Capability::TerminalInput, "starting a shell")?;
     blocking(|| {
-        let snapshot = chat::snapshot(&app.client)?;
-        let path = chat::project(&snapshot, &app.site.access, project)?
-            .path
-            .clone();
+        let path = chat::project_path(&app, project)?;
         // ^ Every call counts against the start limit, also one that opens a live shell.
-        if !app.limiter.allow(&format!("start:{}", device.id), 3.0, 6.0) {
-            return Err(Fault::new(
-                429,
-                "rate_limited",
-                "too many new sessions; wait a moment",
-            ));
-        }
-        let config = crate::site::global_config()
-            .ok_or_else(|| Fault::new(409, "config_invalid", "the wsx config does not parse"))?;
+        start_budget(&app, &device)?;
+        let config = crate::site::config_or_fault()?;
         let session = wsx_core::ops::project_shell(&app.client, &config, &path)
             .map_err(|error| Fault::new(409, "shell_unavailable", format!("{error:#}")))?;
         Ok(Json(json!({ "session_id": session.0 })))
@@ -1673,9 +1668,8 @@ struct PathQuery {
 
 /// The pinned root of one granted project.
 fn project_root(app: &App, project: u64) -> Outcome<Arc<crate::sandbox::Root>> {
-    let snapshot = chat::snapshot(&app.client)?;
-    let project = chat::project(&snapshot, &app.site.access, project)?;
-    app.root(&project.path).map_err(|_| Fault::not_found())
+    app.root(&chat::project_path(app, project)?)
+        .map_err(|_| Fault::not_found())
 }
 
 async fn files_list(

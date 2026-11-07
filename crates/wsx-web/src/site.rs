@@ -196,6 +196,13 @@ impl Grant<'_> {
     }
 }
 
+/// `global_config`, or the 409 a handler answers when the config does not parse.
+pub fn config_or_fault() -> crate::chat::Outcome<GlobalConfig> {
+    global_config().ok_or_else(|| {
+        crate::chat::Fault::new(409, "config_invalid", "the wsx config does not parse")
+    })
+}
+
 /// config-v2.toml as wsx reads it, or None with the reason on stderr when it does not parse.
 pub fn global_config() -> Option<GlobalConfig> {
     match GlobalConfig::load() {

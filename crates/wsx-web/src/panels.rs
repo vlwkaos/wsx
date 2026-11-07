@@ -8,7 +8,6 @@ use crate::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use wsx_core::panel::{self, Action, PanelScope, Response};
 
 fn allowed(app: &App) -> Outcome<()> {
@@ -18,17 +17,10 @@ fn allowed(app: &App) -> Outcome<()> {
     Ok(())
 }
 
-fn project_path(app: &App, project: u64) -> Outcome<PathBuf> {
-    let snapshot = chat::snapshot(&app.client)?;
-    Ok(chat::project(&snapshot, &app.site.access, project)?
-        .path
-        .clone())
-}
-
 fn ask(app: &App, project: u64, action: Action) -> Outcome<Response> {
     allowed(app)?;
     blocking(|| {
-        let path = project_path(app, project)?;
+        let path = chat::project_path(app, project)?;
         panel::request(&app.client, Some(&path), action)
             .map_err(|message| Fault::new(409, "panel_unavailable", message))
     })
