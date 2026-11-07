@@ -7,8 +7,6 @@ use super::store::{self, TaskDir, LOG_FILE};
 use super::{call_host, view, HostRequest, LogEvent, TaskRecord, TaskState, WaitOn};
 use crate::config::project::load_task_config;
 use crate::model::workspace::DEFAULT_MANAGER_REVIEW_SECS;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -16,13 +14,12 @@ pub const SWEEP: Duration = Duration::from_secs(10);
 /// A stall seen only in the present must last this long: two disk polls of the task host
 /// (30 s each), and longer than a host's exec handoff or a land's rebase holds its socket.
 pub const GRACE: Duration = Duration::from_secs(60);
-/// The longest silence of a worker that still runs: a background job's wait or one check
-/// (`tasks.checkTimeoutSeconds`), plus one Bash call (Claude's 10 minute maximum).
 /// A wait for another task to land that lasts this long is a stall.
 const AFTER_STALL_SECS: u64 = 24 * 60 * 60;
+/// The longest silence of a worker that still runs: a background job's wait or one check
+/// (`tasks.checkTimeoutSeconds`), plus one Bash call (Claude's 10 minute maximum).
 const BASH_MAX_SECS: u64 = 10 * 60;
 const PROBE: Duration = Duration::from_secs(2);
-const TAIL_BYTES: u64 = 4096;
 const LAST_ENTRY_CHARS: usize = 120;
 
 pub struct Stall {
@@ -293,8 +290,11 @@ pub fn progress_ms(dir: &TaskDir) -> u64 {
 /// "its last write 2 h ago; its log ends with agent \"cargo build\"".
 fn last_entry(dir: &TaskDir, progress: u64, now_ms: u64) -> String {
     let ago = span(now_ms.saturating_sub(progress));
-    let line = tail_line(&dir.file(LOG_FILE)).unwrap_or_default();
-    let entry: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+    let entry = dir
+        .last_entry(|entry| serde_json::to_value(entry).ok())
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     match entry["kind"].as_str() {
         Some(kind) => {
             let text = entry["text"].as_str().or(entry["reason"].as_str());
@@ -306,18 +306,4 @@ fn last_entry(dir: &TaskDir, progress: u64, now_ms: u64) -> String {
         }
         None => format!("its last write {ago} ago"),
     }
-}
-
-fn tail_line(path: &Path) -> Option<String> {
-    let mut file = File::open(path).ok()?;
-    let length = file.metadata().ok()?.len();
-    file.seek(SeekFrom::Start(length.saturating_sub(TAIL_BYTES)))
-        .ok()?;
-    let mut tail = Vec::new();
-    file.read_to_end(&mut tail).ok()?;
-    let tail = String::from_utf8_lossy(&tail);
-    tail.lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .map(str::to_string)
 }

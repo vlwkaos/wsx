@@ -4,7 +4,8 @@
 //! ref: docs/tasks.md "Search"
 
 use super::manager::{says_nothing, split_quote, Author, ManagerEntry, ManagerEvent, QUOTE_REF};
-use super::store::{self, ManagerDir, TaskDir, RESULT_FILE};
+use super::store::{self, contains_bytes, ManagerDir, TaskDir, FIRST_READ_BYTES, RESULT_FILE};
+use super::text::first_line;
 use super::{history, roles, view};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -20,15 +21,11 @@ const LOCK_FILE: &str = "search.lock";
 const MAX_TEXT_BYTES: usize = 4096;
 /// A `History` record keeps this much of a line; the log keeps the rest.
 const MAX_HISTORY_BYTES: usize = 1024;
-/// A catch-up reads this much of a log's end first, more only when it has not reached the
-/// last record it kept (the same rule as the chat, "Log window").
-const FIRST_READ_BYTES: u64 = 256 * 1024;
 /// The longest note file read.
 const MAX_NOTES_BYTES: u64 = 2 * 1024 * 1024;
 /// The longest digest read: past it the search says to reindex or to build the inverted index
 /// ("Search" in docs/tasks.md names the trigger).
 const MAX_DIGEST_BYTES: u64 = 1 << 30;
-const FIRST_LINE_CHARS: usize = 160;
 const BM25_K1: f64 = 1.2;
 const BM25_B: f64 = 0.75;
 
@@ -270,21 +267,6 @@ fn hit(project: &str, doc: &Doc, score: f64, current: Option<&str>) -> Hit {
     }
 }
 
-pub(super) fn first_line(text: &str) -> String {
-    let line = text
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_default();
-    match line.chars().count() > FIRST_LINE_CHARS {
-        true => format!(
-            "{}…",
-            line.chars().take(FIRST_LINE_CHARS - 1).collect::<String>()
-        ),
-        false => line.to_string(),
-    }
-}
-
 /// Calls `f` with each word of lowercase `text`: a run of letters and digits is one token; a
 /// run of Han, Kana or Hangul gives each pair of neighbours (a lone character gives itself),
 /// as these scripts have no spaces and a word carries particles. The query is cut the same way.
@@ -435,7 +417,10 @@ fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
             .max();
         let log = dir.read_back_where(
             FIRST_READ_BYTES,
-            |line| contains(line, br#""kind":"message""#) || contains(line, br#""kind":"reply""#),
+            |line| {
+                contains_bytes(line, br#""kind":"message""#)
+                    || contains_bytes(line, br#""kind":"reply""#)
+            },
             |log| {
                 seen.is_some_and(|seen| {
                     log.iter()
@@ -469,10 +454,6 @@ fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
         }
     }
     Ok(())
-}
-
-fn contains(line: &[u8], needle: &[u8]) -> bool {
-    line.windows(needle.len()).any(|window| window == needle)
 }
 
 /// The record of a chat entry: what the owner, a manager or a role said, and a reply that says
@@ -595,7 +576,7 @@ fn catch_up_history(dir: &TaskDir, task: u32, from: u64, fresh: &mut Vec<Doc>) {
     let Ok(entries) = dir.read_log_since(from, |line| {
         // ^ `unix_ms` comes first, so the kind is in the first bytes: a long progress line is not scanned.
         let head = &line[..line.len().min(64)];
-        KINDS.iter().any(|kind| contains(head, kind))
+        KINDS.iter().any(|kind| contains_bytes(head, kind))
     }) else {
         return;
     };
@@ -711,24 +692,6 @@ fn day_ms(date: &str) -> Option<u64> {
     let of_era = of_year * 365 + of_year / 4 - of_year / 100 + of_day;
     let days = era * 146_097 + of_era - 719_468;
     u64::try_from(days * 86_400_000).ok()
-}
-
-/// The date (UTC) of a unix time in ms, `YYYY-MM-DD`.
-pub fn day_of(unix_ms: u64) -> String {
-    let days = (unix_ms / 86_400_000) as i64 + 719_468;
-    let era = days.div_euclid(146_097);
-    let of_era = days - era * 146_097;
-    let of_year = (of_era - of_era / 1460 + of_era / 36_524 - of_era / 146_096) / 365;
-    let of_day = of_era - (365 * of_year + of_year / 4 - of_year / 100);
-    let shifted = (5 * of_day + 2) / 153;
-    let day = of_day - (153 * shifted + 2) / 5 + 1;
-    let month = if shifted < 10 {
-        shifted + 3
-    } else {
-        shifted - 9
-    };
-    let year = of_year + era * 400 + i64::from(month <= 2);
-    format!("{year:04}-{month:02}-{day:02}")
 }
 
 fn clip(text: &str) -> String {

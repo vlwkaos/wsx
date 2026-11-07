@@ -311,6 +311,15 @@ pub struct ProfileEntry {
 /// The headless adapters a task host can drive (`crates/wsx/src/task/agent.rs`).
 pub const TASK_ADAPTERS: &[&str] = &["claude", "pi"];
 
+/// An agent's name, and so its account file's: 1 to 64 of letters, digits, `-`, `_` and `.`.
+pub fn is_agent_name(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 64
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// One agent the owner uses: how a session starts it, and how a task host drives it.
 /// ref: docs/tasks.md "Agents"
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,14 +346,7 @@ pub struct AgentEntry {
 
 fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
     for (index, agent) in agents.iter().enumerate() {
-        let word = |text: &str| {
-            !text.is_empty()
-                && text.len() <= 64
-                && text
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        };
-        if !word(&agent.name) {
+        if !is_agent_name(&agent.name) {
             return Err(format!(
                 "agent name {:?} must be letters, digits, -, _ or .",
                 agent.name

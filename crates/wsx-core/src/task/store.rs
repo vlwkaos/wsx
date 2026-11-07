@@ -2,6 +2,7 @@
 //! ref: docs/tasks.md "Store"
 
 use super::{now_unix_ms, LogEntry, LogEvent, TaskRecord};
+use crate::config::global::is_agent_name;
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::fs::{self, DirBuilder, File, OpenOptions};
@@ -373,11 +374,7 @@ pub fn write_note(path: &Path, text: &str) -> Result<()> {
 /// `tasks/agents/<account><suffix>`, one account's file (`claude`, `pi-anthropic`), shared by
 /// every host on this machine. ref: docs/tasks.md "Agents"
 fn account_file(account: &str, suffix: &str) -> Result<PathBuf> {
-    if account.is_empty()
-        || !account
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    {
+    if !is_agent_name(account) {
         bail!("no account {account}");
     }
     Ok(tasks_root()
@@ -1132,6 +1129,14 @@ impl ManagerDir {
             &serde_json::to_vec_pretty(state)?,
         )
     }
+}
+
+/// A reader of the manager's log (the chat, the search catch-up) reads this much of its end
+/// first, more only when its window needs it (`read_back_where`, docs/tasks.md "Log window").
+pub(super) const FIRST_READ_BYTES: u64 = 256 * 1024;
+/// Whether `needle` is in `haystack`: the test of a `read_back_where` filter.
+pub(super) fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|at| at == needle)
 }
 
 const APPROVALS_FILE: &str = "approvals.jsonl";

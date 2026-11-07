@@ -334,7 +334,7 @@ fn bracketed(lead: &str) -> Option<&str> {
 }
 
 /// The agent a task runs on now, not the configured one: its record follows a switch to a
-/// fallback, which the log tells. No effort: wsx sets none and no stream reports one.
+/// fallback, which the log tells.
 /// ref: docs/tasks.md "Agents"
 pub fn task_agent(dir: &TaskDir, record: &TaskRecord) -> Value {
     let fallback = dir.read_log().is_ok_and(|log| {
