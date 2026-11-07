@@ -802,7 +802,7 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 /* The task's chip leads a row, as in the chat; the three lists share this row. */
 .reservoir .row-link > .task-chip { flex: 0 0 auto; }
 /* The pills, between the attach button and the Send button: an icon and its count, the label
-   too from 600 px. A pressed pill is the open list. */
+   too from 900 px (the wide layout). A pressed pill is the open list. */
 .pills { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: var(--space-1); margin-right: var(--space-3); }
 .pill {
   --pill-height: calc(var(--size-key) - var(--space-2));
