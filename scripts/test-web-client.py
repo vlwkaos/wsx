@@ -899,6 +899,8 @@ def main():
     parser.add_argument('--part', choices=('all', 'chat', 'tasks'), default='all',
                         help='chat: sessions, files, terminal, push; tasks: tasks and the manager')
     args = parser.parse_args()
+    # ^ Made once for every part: a part run alone (`--part tasks`) writes captures without the chat part's sections.
+    args.captures.mkdir(parents=True, exist_ok=True)
     signal.signal(signal.SIGALRM, overdue)
     signal.alarm(RUN_SECONDS)
     if args.part in ('all', 'chat'):
@@ -2779,7 +2781,6 @@ capabilities = ["terminal_view"]
         # once it exited.
         project_shell = '/api/projects/%d/shell' % projects['project2']
         if args.browser:
-            args.captures.mkdir(parents=True, exist_ok=True)
             result = check(work, [node, str(ROOT / 'scripts/web-browser-check.mjs'), 'shell', work_site.origin + '/',
                                   cli('web', 'pair', '--site', files['work']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                   str(args.captures), '', str(projects['project2'])], timeout=120)
@@ -2932,7 +2933,6 @@ capabilities = ["terminal_view"]
 
         # --- Optional real browser, on both sites, before any device is revoked.
         if args.browser:
-            args.captures.mkdir(parents=True, exist_ok=True)
             # The live terminal, on a shell session of its own.
             tools = work / 'tools'
             tools.mkdir()
@@ -2945,7 +2945,6 @@ capabilities = ["terminal_view"]
             shell = created['data']['id']
             shell_pane = next(s['focused_pane'] for s in call('snapshot')['data']['sessions'] if s['id'] == shell)
             code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
-            args.captures.mkdir(parents=True, exist_ok=True)
             result = check(work, [node, str(ROOT / 'scripts/web-terminal-check.mjs'), owner.origin + owner.base + '/',
                                   code, str(shell), str(args.captures), str(path), str(shell_pane), str(tools / 'keys.trace'),
                                   str(owner_server.pid)],
@@ -4400,7 +4399,6 @@ merge_seconds = 3
             assert {ask[1] for ask in expected} == set(questions[:2] + spares[:2]), expected
             assert plans_chat['asks'] == [ask[0] for ask in expected], plans_chat['asks']
             assert {r['id'] for r in whole['rows'] if r.get('asks')} == {ask[0] for ask in expected}, [r for r in whole['rows'] if r.get('asks')]
-            args.captures.mkdir(parents=True, exist_ok=True)
             audit = Path.home() / '.claude/skills/ui-view-standards/scripts/slop-audit.js'
             browser_code = cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1]
             # Home's order by its rule: needs first (most urgent kind, then the oldest need of it),
