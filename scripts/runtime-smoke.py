@@ -156,7 +156,7 @@ def wait_for(test, label, seconds=10):
         if test():
             return
         time.sleep(0.1)
-    raise AssertionError(label)
+    raise AssertionError(label() if callable(label) else label)
 
 
 def send_shell_command(pane_id, command, client_id):
@@ -2171,7 +2171,7 @@ try:
     os.write(remove_master, b"t")
     wait_for(lambda: "All projects" in remove_view.text(), "t opened no Tasks view for keep-me", seconds=60)
     wait_for(lambda: re.search(r"#2\s+ready\s+Waiting for #1 to land · its checks fail", remove_view.text()),
-             "the Tasks view row did not give the reason of the wait", seconds=60)
+             lambda: f"the Tasks view row did not give the reason of the wait:\n{remove_view.text()}", seconds=60)
     os.write(remove_master, b"\r")
     wait_for(lambda: "Its checks fail" in remove_view.text(), "the detail did not give the reason", seconds=60)
     os.write(remove_master, b"\x1b")
