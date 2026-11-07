@@ -31,7 +31,7 @@ export function quoteSplit(text) {
 }
 
 // A message of the log marked as found for two seconds.
-export function mark(target) {
+export function markFound(target) {
   target.dataset.found = "";
   setTimeout(() => delete target.dataset.found, 2000);
 }
@@ -56,7 +56,7 @@ export function Quote({ quote, id = null }) {
       return;
     }
     target.scrollIntoView({ block: "center", behavior: motion() ? "smooth" : "auto" });
-    mark(target);
+    markFound(target);
   };
   return html`<button class="quote" type="button" aria-label=${`Go to the quoted message: ${quote}`} onClick=${go}>${quote}</button>`;
 }
