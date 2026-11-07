@@ -134,6 +134,8 @@ await send("Page.navigate", { url: `${adminUrl}#/machine` });
 await until("document.querySelectorAll('.machine-panel .panel').length === 3 && document.querySelectorAll('.machine-panel .panel-doc').length === 2", "the Machine screen did not draw at 1280 px");
 await linter.lint("machine");
 await send("Page.navigate", { url: `${adminUrl}#/p/${project}/panels` });
+await until("document.querySelectorAll('.panel-tabs [role=tab]').length === 4", "the project's panels page did not draw at 1280 px");
+await tab("gauges");
 await until("document.querySelectorAll('.panel-doc .panel-card').length === 2", "the json panel did not come back at 1280 px");
 await capture("1280x800-panel-json");
 await tab("broken");
