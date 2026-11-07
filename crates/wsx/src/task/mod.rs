@@ -436,8 +436,11 @@ pub enum TaskCmd {
         #[arg(long, value_name = "ID")]
         after: Option<u64>,
         /// From the oldest message that shows these words, case-insensitive
-        #[arg(long, value_name = "WORDS", conflicts_with = "after")]
+        #[arg(long, value_name = "WORDS", conflicts_with_all = ["after", "around"])]
         find: Option<String>,
+        /// The part of the conversation around message ID, at any age the log keeps
+        #[arg(long, value_name = "ID", conflicts_with = "after")]
+        around: Option<u64>,
         #[arg(long, value_name = "NAME")]
         role: Option<String>,
         #[arg(short, long)]
@@ -989,14 +992,14 @@ pub fn run(command: TaskCmd) -> Result<()> {
         TaskCmd::Chat {
             after,
             find,
+            around,
             role,
             project,
             json,
         } => chat(
             project.as_deref(),
             role.as_deref(),
-            after,
-            find.as_deref(),
+            (after, find.as_deref(), around),
             json,
         ),
         TaskCmd::Search {
@@ -2918,13 +2921,12 @@ fn say(
     Ok(())
 }
 
-/// The conversation after message `after`, or from the oldest entry that shows `find`:
+/// The conversation after message `after`, around message `around`, or from the oldest entry that shows `find`:
 /// messages, replies, rotations and stops; `asks`, the open questions (docs/tasks.md "Log window").
 fn chat(
     project: Option<&str>,
     role: Option<&str>,
-    after: Option<u64>,
-    find: Option<&str>,
+    (after, find, around): (Option<u64>, Option<&str>, Option<u64>),
     json: bool,
 ) -> Result<()> {
     let (name, main) = project_entry(project)?;
@@ -2934,7 +2936,7 @@ fn chat(
         Some(role) => ManagerDir::existing_as(&project_id, Some(role))?
             .with_context(|| format!("the project has no role {role}"))?,
     };
-    let window = Window::new(find, after);
+    let window = Window::new(find, after, around);
     let now = wsx_core::task::now_unix_ms();
     let log = chat::read_chat(&dir, &window)?;
     let shown = load_task_config(&main)

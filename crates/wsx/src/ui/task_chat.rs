@@ -162,6 +162,14 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
         Focus::Fail(_) => vec!["Enter: fail it".into(), "Esc: cancel".into()],
         Focus::Confirm { .. } => vec!["(y)es".into(), "(n)o".into()],
         Focus::Chat => {
+            if chat.around.is_some() && chat.find.value().is_empty() {
+                return vec![
+                    "Esc: newest".into(),
+                    "(j/k)scroll".into(),
+                    "(i)message".into(),
+                    "(/)find".into(),
+                ];
+            }
             // ^ The footer drops hints from the end: scrolling goes first, then back.
             if !chat.find.value().is_empty() {
                 return vec![
@@ -295,11 +303,12 @@ fn clock(unix_ms: u64) -> String {
 /// Each message as its author, tag and time, then its words wrapped under them; each event,
 /// limit or note as one muted line, and a run of quiet replies under the manager's name once
 /// (`chat_rows`). A link shows its words underlined, the selected one reversed; the second
-/// value is the line of the selected link.
+/// value is the line of the selected link. The heading of the `marked` message is reversed.
 pub fn chat_lines(
     rows: &[ChatRow],
     width: usize,
     selected: Option<(u64, usize)>,
+    marked: Option<u64>,
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let mut lines = Vec::new();
     let mut selected_line = None;
@@ -349,7 +358,11 @@ pub fn chat_lines(
         } else {
             level_color.or_else(|| row.post.then_some(theme::SECONDARY))
         };
-        let mut heading = vec![Span::styled(name, Style::default().fg(color).bold())];
+        let mut name_style = Style::default().fg(color).bold();
+        if marked.is_some() && row.id == marked {
+            name_style = name_style.add_modifier(Modifier::REVERSED);
+        }
+        let mut heading = vec![Span::styled(name, name_style)];
         if let Some(tag) = &row.tag {
             heading.push(Span::styled(
                 format!("  {tag}"),

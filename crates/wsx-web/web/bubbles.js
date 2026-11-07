@@ -141,7 +141,7 @@ export function Bubble({ project, row, words: home, fresh }) {
   // ^ In a chat's small space the stand-in mark is an icon; an asking reply is set off by its border, and its words are in the aria-label.
   const mark = row.provisional ? ["unchecked", "Stand-in, not checked"] : null;
   // ^ A message quotes an earlier one in the owner's format (docs/tasks.md "Manager").
-  const quoted = row.quoted != null && html`<${Quote} quote=${row.quoted} />`;
+  const quoted = row.quoted != null && html`<${Quote} quote=${row.quoted} id=${row.quoted_id} />`;
   const body = out
     ? html`<div class="bubble-body" id=${id}>${quoted}${row.text && html`<p class="prose">${words ? words(row.text) : row.text}</p>`}</div><${Attachments} files=${row.attachments} />`
     : html`<div class="bubble-body" id=${id}>${quoted}<${Markdown} text=${row.text} words=${words} relative=${relativeOf(project)} prose /></div>
@@ -150,7 +150,7 @@ export function Bubble({ project, row, words: home, fresh }) {
     <article class="bubble" data-side=${out ? "out" : "in"} data-speaker=${peer == null ? row.author : "peer"}
       data-peer=${peer == null ? null : peerColor(peer)} data-first=${row.first ? "" : null} data-last=${row.last ? "" : null} data-fresh=${fresh ? "" : null}
       data-at=${row.pending ? null : row.at} data-key=${row.key} data-in=${out || row.pending ? null : ""}
-      data-quote=${row.quote ?? null}
+      data-quote=${row.quote ?? null} data-id=${row.quote != null ? row.id ?? null : null}
       data-pending=${row.pending ? "" : null} data-asks=${row.asks ? "" : null} data-routine=${row.post ? "" : null} data-level=${row.level ?? null}
       aria-label=${`${row.name}, ${clock(row.at)}${row.asks ? ", Asks you" : row.level ? `, ${tag}` : row.post ? ", Routine" : ""}`}>
       ${row.first && !out && html`<p class="bubble-author" aria-hidden="true">${row.name}</p>`}

@@ -28,9 +28,12 @@ BIG_CTX = 200_000
 
 
 def read_log(folder):
-    """Events of log.1.jsonl (older) then log.jsonl; bad lines are skipped."""
+    """Events of log.1.jsonl, log.2.jsonl ... (every roll, oldest first) then log.jsonl; bad lines
+    are skipped."""
     events = []
-    for name in ("log.1.jsonl", "log.jsonl"):
+    rolls = sorted((n for n in os.listdir(folder) if re.fullmatch(r"log\.\d+\.jsonl", n)),
+                   key=lambda n: int(n.split(".")[1])) if os.path.isdir(folder) else []
+    for name in rolls + ["log.jsonl"]:
         path = os.path.join(folder, name)
         if not os.path.exists(path):
             continue
@@ -288,14 +291,29 @@ def main():
                     f"{k(t['u'].get('cache_creation_tokens', 0))}/{k(t['u'].get('cache_read_tokens', 0))}",
                     "y" if t["after_rotation"] else "", "y" if t["after_limit"] else "", t["u"].get("model", "")]
                    for t in turns])
-    mevents, mturns = [], []
+    mevents, mturns, quotes = [], [], []
     for state_dir in a.state_dir:
+        roles = os.path.join(state_dir, "roles")
+        managers = [("manager", os.path.join(state_dir, "manager"))]
+        if os.path.isdir(roles):
+            managers += [(f"role {r}", os.path.join(roles, r)) for r in sorted(os.listdir(roles))]
+        for who, folder in managers:
+            said = [e for e in read_log(folder) if e.get("kind") == "reply" and since <= e.get("unix_ms", 0) < until
+                    and not e.get("post") and (e.get("text") or "").strip() not in ("", "-")]
+            # ^ A quote is the owner's format (`> <line>`); `quote` is the id stored since quotes keep one.
+            quoting = sum(1 for e in said if "quote" in e or (e.get("text") or "").startswith("> "))
+            if said:
+                quotes.append([os.path.basename(os.path.normpath(state_dir)), who, len(said), quoting,
+                               f"{100 * quoting / len(said):.1f}%"])
         events = read_log(os.path.join(state_dir, "manager"))
         per_turn_cost(e for e in events if e.get("kind") == "reply")
         events = [e for e in events if since <= e.get("unix_ms", 0) < until]
         mevents += events
         # ^ Message ids are a project's own.
         mturns += manager_turns(events)
+
+    table("Quotes (replies that say something, and those that open with a quote, per manager)",
+          ["project", "manager", "replies", "quoting", "share"], quotes)
 
     # Per day
     days, wturns = collections.defaultdict(collections.Counter), collections.defaultdict(list)

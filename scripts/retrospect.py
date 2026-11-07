@@ -213,13 +213,17 @@ def spend(state_dir, after):
     return sum(per_task.values()), manager, top
 
 
-def summary(state_dir, after, asked, repeated, pairs, judged):
+def summary(state_dir, after, asked, repeated, pairs, judged, replies):
     workers, manager, top = spend(state_dir, after)
     since = time.strftime("%m-%d %H:%M", time.localtime(after / 1000))
     line = f"Since {since}: spend ${usage.usd(workers + manager)} (manager ${usage.usd(manager)})"
     if top:
         line += "; costliest " + ", ".join(f"#{n} ${usage.usd(c)}" for n, c in top)
     lines = [line]
+    # ^ A reply that opens with `> ` quotes an earlier message (docs/tasks.md "Manager"): is it used?
+    recent = [e for e in replies if e["unix_ms"] > after]
+    if recent:
+        lines.append(f"Quotes: {sum(1 for e in recent if (e['text'] or '').startswith('> '))} of {len(recent)} replies")
     lines += [f"You asked {len(r['ids'])} times: \"{r['text']}\" ({ids('m', r['ids'])})" for r in asked[:SHOWN]]
     lines += [f"The manager repeated in {len(r['ids'])} replies: \"{r['text']}\" ({ids('r', r['ids'])})"
               for r in repeated[:SHOWN]]
@@ -288,7 +292,7 @@ def main():
             judged = judge(a.state_dir, pairs, asked, repeated)
         except RuntimeError as err:
             judged = str(err)
-    lines = summary(a.state_dir, after, asked, repeated, pairs, judged)
+    lines = summary(a.state_dir, after, asked, repeated, pairs, judged, replies)
     path = write_report(os.path.join(a.state_dir, "retrospect"), now, lines, asked, repeated, pairs, judged)
     lines.append(f"Detail: {path}")
     post = subprocess.run([a.wsx, "task", "post", "-p", a.project, "--title", TITLE],

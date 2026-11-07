@@ -9,7 +9,7 @@ import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, inlinePasted, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
 import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
 import { FindBar, FindButton } from "./find.js";
-import { QuoteChip, quoteSplit, useReply, withQuote } from "./reply.js";
+import { mark, QuoteChip, quoteSplit, useReply, withQuote } from "./reply.js";
 import { readTaskAhead, TaskPage } from "./task.js";
 import { ProjectOverview } from "./page.js";
 import { ChecksPage } from "./checks.js";
@@ -286,7 +286,7 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, onReply,
       onClick=${onClick} ...${extra}><${Icon} name=${icon} /></button>`;
   let actions = null;
   if (acting && item.kind === "ask") {
-    actions = html`${button("Reply", "reply", null, () => onReply(item.label), { "aria-label": `Reply: ${item.label}` })}${button("Dismiss", "fail", null, () => run("dismiss"), { "aria-label": `Dismiss: ${item.label}` })}`;
+    actions = html`${button("Reply", "reply", null, () => onReply(item.label, item.id), { "aria-label": `Reply: ${item.label}` })}${button("Dismiss", "fail", null, () => run("dismiss"), { "aria-label": `Dismiss: ${item.label}` })}`;
   } else if (acting && ["waiting", "failed"].includes(item.kind)) {
     actions = button("Answer", "reply", null, () => onMention(item.task), { "aria-label": `Answer #${item.task}: mention it to the manager` });
   } else if (acting && item.kind === "approval" && status.running) {
@@ -594,9 +594,9 @@ function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent
     setError("");
     try {
       const attachments = files.attachments.map((item) => item.hash);
-      const text = withQuote(reply, body);
+      const text = withQuote(reply?.line, body);
       // ^ A say may start the manager first: up to about 40 s (docs/tasks.md "Manager").
-      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text, attachments, ...(role && { role }) }, timeout: 60_000 });
+      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text: reply?.id != null ? `> message ${reply.id}\n\n${body}` : text, attachments, ...(role && { role }) }, timeout: 60_000 });
       field.current.value = "";
       files.attachments = [];
       changed();
@@ -643,7 +643,7 @@ function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent
     <div class="composer">
       <${FileChips} files=${files} onInline=${inline} onRemove=${(item) => { files.attachments = files.attachments.filter((other) => other !== item); filesChanged(); }} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
-      <${QuoteChip} quote=${reply} onRemove=${() => onReply(null)} />
+      <${QuoteChip} quote=${reply?.line} onRemove=${() => onReply(null)} />
       ${listOpen && html`<${Suggestions} label=${LIST_LABELS[mark]} active=${active} onHover=${setActive} onPick=${pick}
         options=${options}
         notes=${[!options.length && emptyNote(mark, tasks, mentions, failed, () => setAttempt((count) => count + 1)), mark === "#" && foldedNote(tasks, typed.query)]} />`}
@@ -828,7 +828,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
   const { log, node: logNode, away, unread, since, scrolled, toEnd, reveal } = useFollowEnd(place, ready);
   const field = useRef();
   const [reply, setReply] = useState(null);
-  const [gestures, menu] = useReply((line) => { setReply(line); field.current?.focus(); });
+  const [gestures, menu] = useReply((line, id) => { setReply({ line, id: id ? Number(id) : null }); field.current?.focus(); });
   // ^ A task's Answer: the composer takes the mention as typed text, so its own input handler
   // keeps the draft (docs/web-client-tasks.md "Project screen").
   const mention = (n, words = "") => {
@@ -847,18 +847,29 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
   // its newest 400 entries; those rows stay after the find closes (docs/web-client-chat.md "Find").
   const [finding, setFinding] = useState(false);
   // ^ `words`: what the find asks; `read`: what the shown rows were read for.
-  const search = useRef({ words: "", read: "" });
+  // ^ `around`: the message a tap on a quote opened the chat at (docs/web-client-chat.md "Replies"):
+  // the rows are a snapshot of that part, no later read adds to them, until Back to newest.
+  const [around, setAround] = useState(null);
+  const search = useRef({ words: "", read: "", around: null, readAround: null });
 
   // Reads after the last entry it has; one read at a time, one more after a change during it.
   const load = useCoalescedLoad(async (current) => {
-    const { words } = search.current;
-    const fresh = words !== search.current.read;
+    const { words, around: at } = search.current;
+    const fresh = words !== search.current.read || at !== search.current.readAround;
+    if (at != null && !fresh) return;
     const last = fresh ? null : shown.current.findLast((entry) => entry.id != null)?.id;
-    const next = await api(`api/tasks/${id}/chat`, { query: { ...(last != null && { after: last }), ...(fresh && words && { find: words }), ...(role && { role }) } });
+    const next = await api(`api/tasks/${id}/chat`, { query: { ...(last != null && { after: last }), ...(fresh && words && { find: words }), ...(fresh && !words && at != null && { around: at }), ...(role && { role }) } });
     if (!current()) return;
     if (fresh) {
       search.current.read = words;
+      search.current.readAround = at;
       cut.current = Boolean(next.skipped);
+      if (at != null && !words && !next.rows.some((row) => row.id === at)) {
+        // ^ The log no longer has it: the newest part shows.
+        search.current.around = search.current.readAround = null;
+        setAround(null);
+        toast("That message is no longer in the conversation.");
+      }
       shown.current = next.rows;
       setChat(next);
       setFailure("");
@@ -879,6 +890,35 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
   useEffect(() => { if (!overview) loadTasks(id, { missing: true }); }, [id]);
   useEventLoad("manager", load, (detail) => detail.project == null
     || (detail.project === id && (!role || detail.role === role)), [id]);
+  // ^ A tap on a quote whose message is not among the rows (`Quote`, reply.js) reads the chat
+  // around it; the way back reads the newest part.
+  const jump = useRef(null);
+  jump.current = (message) => {
+    search.current.words = "";
+    search.current.around = message;
+    setFinding(false);
+    setAround(message);
+    load();
+  };
+  const newest = () => {
+    search.current.around = null;
+    setAround(null);
+    toEnd();
+    load();
+  };
+  useEffect(() => {
+    const on = (event) => jump.current(event.detail);
+    addEventListener("quote-jump", on);
+    return () => removeEventListener("quote-jump", on);
+  }, []);
+  // ^ The quoted message shows in the middle, marked, once its part is read.
+  useLayoutEffect(() => {
+    if (around == null || search.current.readAround !== around) return;
+    const node = log.current?.querySelector(`:scope > [data-id="${around}"]`);
+    if (!node) return;
+    reveal(node);
+    mark(node);
+  }, [around, chat]);
   // Closing the sheet gives the focus back to the composer, in the same commit: after a paint
   // it took the focus from a button tapped in the meantime (a reservoir row's Land).
   const sheet = task ?? (page || checks || null);
@@ -909,7 +949,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
     rows.push({ kind: "message", key: "sending", author: "owner", name: "You", at: Date.now(), first: !grouped, last: true, pending: true, ...quoteSplit(sent.text) });
   }
   const firstNew = since == null ? null : rows.find((row) => row.kind === "message" && row.author !== "owner" && !row.pending && row.at > since);
-  const [recent, earlier] = useRecent(place, rows, firstNew, { all: finding, away });
+  const [recent, earlier] = useRecent(place, rows, firstNew, { all: finding || around != null, away });
   const find = () => setFinding(!finding);
   // ^ The find's words, as typed: the chat reads again for them (`load`).
   const findWords = (words) => {
@@ -988,6 +1028,7 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
       <div class="chat">
         ${finding && html`<${FindBar} log=${logNode} reveal=${reveal} loading=${search.current.words !== search.current.read} onQuery=${findWords} onClose=${() => setFinding(false)} />`}
         ${!role && html`<${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "message" && row.author !== "owner")?.at} sent=${sent} />`}
+        ${around != null && html`<p class="note around" role="status">Showing an earlier part of the conversation. <button class="link-action" type="button" onClick=${newest}>Back to newest</button></p>`}
         <div class="log-wrap">
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label=${`Conversation with ${role ?? "the manager"}`} tabindex="0" ...${gestures}>
             ${cut.current ? html`<p class="note">Older messages are not shown.</p>` : null}
@@ -998,13 +1039,13 @@ export function Manager({ project: id, task, page, checks, usage, routines, pane
             ${withNewLine(recent, firstNew, show)}
             ${typing && html`<${Typing} name=${names.manager} />`}
           </div>
-          ${away && html`<${JumpButton} unread=${unread} onClick=${toEnd} />`}
+          ${away && html`<${JumpButton} unread=${unread} onClick=${around != null ? newest : toEnd} />`}
         </div>
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
-        ${!role && html`<${Reservoir} project=${id} items=${[...items, ...asking]} tasks=${overview?.tasks ?? []} checking=${overview?.to_check ?? 0} onMention=${mention} onReply=${(quote) => { setReply(quote); field.current?.focus(); }} />`}
+        ${!role && html`<${Reservoir} project=${id} items=${[...items, ...asking]} tasks=${overview?.tasks ?? []} checking=${overview?.to_check ?? 0} onMention=${mention} onReply=${(line, id) => { setReply({ line, id }); field.current?.focus(); }} />`}
         ${low && header}
         ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
-          onSent=${(message) => { toEnd(); setSent(message); load(); }} />`}
+          onSent=${(message) => { search.current.around = null; setAround(null); toEnd(); setSent(message); load(); }} />`}
       </div>
       ${menu}
       ${task != null && html`

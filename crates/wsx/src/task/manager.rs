@@ -297,8 +297,8 @@ fn instructions(
          task per fix. With \
          `--plan` the worker writes a short plan and the task waits on `plan`; read it with \
          `wsx task show <n> --json` and continue with `wsx task add <n> \"go\"` or what to \
-         change. Never ask the owner to wait. Never restate a plan, promise or wait: open with \
-         `> message <id>`, then only what is new. `wsx task add` or \
+         change. Never ask the owner to wait. Never retell an earlier message or reply (a plan, a promise, a wait): open with \
+         `> message <id>` (`Your last reply`, a message heading, `wsx task chat --json`), then only what is new. `wsx task add` or \
          `wsx task steer` changes a running task. \
          A ready task waits for your review when you created it, or the owner did while the \
          ledger's `auto_land` is true and checks ran. Read its diff (`git -C <working copy> \
@@ -677,6 +677,7 @@ impl Manager {
             from: Author::Events,
             text: event,
             short: Vec::new(),
+            quote: None,
         });
         self.log(ManagerEvent::Delivered { ids: vec![id] });
         let reply = self.next_id();
@@ -690,6 +691,7 @@ impl Manager {
             provisional: None,
             level,
             post: true,
+            quote: None,
         });
     }
 
@@ -1475,6 +1477,11 @@ impl Manager {
 
     /// Log a message and queue it; owner messages go before events.
     fn accept(&mut self, from: Author, text: String, short: Vec<Short>) -> Result<u64> {
+        // ^ The owner's Reply sends `> message <id>`, as a manager's reply does.
+        let (text, quote) = match from {
+            Author::Owner => self.quoted(text),
+            _ => (text, None),
+        };
         if text.trim().is_empty() {
             anyhow::bail!("the message is empty");
         }
@@ -1487,6 +1494,7 @@ impl Manager {
             from: from.clone(),
             text: text.clone(),
             short,
+            quote,
         })?;
         self.last_activity = Instant::now();
         self.overview_asked &= from != Author::Owner;
@@ -2108,6 +2116,7 @@ impl Manager {
                     provisional: Some(name),
                     level: None,
                     post: false,
+                    quote: None,
                 });
                 self.state.provisional_to = answered;
                 self.state.provisional = true;
@@ -2633,7 +2642,7 @@ impl Manager {
             result.text.lines().next().unwrap_or_default()
         ));
         let in_thinking = result.answered_in_thinking();
-        let text = self.quoted(result.text);
+        let (text, quote) = self.quoted(result.text);
         let asks = asks_owner(&text);
         let quiet = self.turn_events && !asks && quiet_reply(&text);
         if !quiet && !says_nothing(&text) {
@@ -2650,6 +2659,7 @@ impl Manager {
             provisional: None,
             level: None,
             post: false,
+            quote,
         });
         if context > self.rotate_limit() {
             self.rotate(context, None);
@@ -2673,26 +2683,26 @@ impl Manager {
     }
 
     /// A reply that opens with `> message <id>` quotes that message. ref: `resolve_quote`
-    fn quoted(&self, text: String) -> String {
+    fn quoted(&self, text: String) -> (String, Option<u64>) {
         if !text.trim_start().starts_with(QUOTE_REF) {
-            return text;
+            return (text, None);
         }
         // ^ The log back to the quoted id, not all of it: ids grow (docs/tasks.md "Log window").
         let log = match quoted_id(&text) {
             Some(id) => self
                 .dir
-                .read_back(QUOTE_READ_BYTES, |log| {
+                .read_around(QUOTE_READ_BYTES, |log| {
                     log.iter()
                         .any(|entry| entry.id().is_some_and(|at| at <= id))
                 })
                 .unwrap_or_default(),
             None => Vec::new(),
         };
-        let (text, note) = resolve_quote(&text, &log);
+        let (text, quote, note) = resolve_quote(&text, &log);
         if let Some(note) = note {
             self.say(&note);
         }
-        text
+        (text, quote)
     }
 
     /// The manager writes the overview with its own tools: after a turn, a file over the cap

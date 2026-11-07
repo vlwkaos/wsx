@@ -660,13 +660,13 @@ fn timeline(log: &[task::LogEntry]) -> Value {
 /// runs or thinks; the manager's also lists the project's roles as contacts.
 /// `scopes`: the granted projects, whose managers' names a peer bubble may show.
 /// `find`: from the oldest entry that shows these words, for a find over the whole history
-/// (docs/web-client-chat.md "Find"). `asks` lists the open questions' ids.
+/// (docs/web-client-chat.md "Find"). `around`: the part around message `around`, at any age
+/// the log keeps (a tap on a quote). `asks` lists the open questions' ids.
 pub fn chat(
     scope: &Scope,
     scopes: &[Scope],
     role: Option<&str>,
-    after: Option<u64>,
-    find: Option<&str>,
+    (after, find, around): (Option<u64>, Option<&str>, Option<u64>),
     media: &crate::media::Media,
 ) -> Outcome<Value> {
     // ^ The name the owner reads (docs/tasks.md "Config"); the role stays `manager` inside.
@@ -706,7 +706,7 @@ pub fn chat(
         manager: &project_manager,
         peer: &peer,
     };
-    let window = task::chat::Window::new(find, after);
+    let window = task::chat::Window::new(find, after, around);
     let now = task::now_unix_ms();
     let log = task::chat::read_chat(&dir, &window).map_err(internal)?;
     let activity = activity(&log).map(str::to_string);

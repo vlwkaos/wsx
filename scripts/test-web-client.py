@@ -4312,6 +4312,14 @@ merge_seconds = 3
             # ^ Words no row shows: the newest window, as a chat with no find.
             assert [r['key'] for r in steady(owner, 'GET', '/api/tasks/%d/chat?find=zzqqnone' % ids['plans'])[1]['rows']] == [r['key'] for r in plans_chat['rows']]
             assert steady(owner, 'GET', '/api/tasks/%d/chat?all=true' % ids['plans'])[0] == 400
+            # ^ Around a message (a tap on a quote, docs/web-client-chat.md "Replies"): 200 entries from
+            # 40 before it, any age the log keeps; an id the log lacks reads the newest window.
+            first = steady(owner, 'GET', '/api/tasks/%d/chat?around=5001' % ids['plans'])[1]
+            assert first['skipped'] == 0 and first['rows'][0]['id'] == 5001 and 0 < len(first['rows']) <= 200, (first['skipped'], first['rows'][:1])
+            middle = steady(owner, 'GET', '/api/tasks/%d/chat?around=5601' % ids['plans'])[1]
+            assert middle['skipped'] > 0 and any(r.get('id') == 5601 for r in middle['rows']) and middle['rows'][0]['id'] < 5601, middle['skipped']
+            assert [r['key'] for r in steady(owner, 'GET', '/api/tasks/%d/chat?around=4' % ids['plans'])[1]['rows']] == [r['key'] for r in plans_chat['rows']]
+            assert steady(owner, 'GET', '/api/tasks/%d/chat?around=x' % ids['plans'])[0] == 400
             # ^ The open questions by the rule, read from plans' log files by this test: the quoted
             # third and the newest are answered; each later plain owner message answers one more.
             def open_questions():
