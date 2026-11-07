@@ -15,6 +15,7 @@ pub mod manager;
 pub mod owner;
 pub mod report;
 pub mod roles;
+pub mod search;
 pub mod session_news;
 pub mod stall;
 pub mod status;

@@ -372,6 +372,9 @@ fn instructions(
          60 lines and 4,000 characters: the goal, open tasks as a mermaid graph, live plans in short, \
          open questions. \
          Update a section in place; never create another overview. \
+         To find an earlier message, decision or task result, also from before your last new \
+         conversation or in another project, run `wsx task search -p {project} --all <words>`; \
+         quote a hit of this project with its `quote` line. \
          You may read another project's `wsx task ledger -p \
          <project>` and message its manager with `wsx task say -p <project> --from-manager \
          \"<text>\"`; never create or change its tasks. A message headed 'Manager <project>' \

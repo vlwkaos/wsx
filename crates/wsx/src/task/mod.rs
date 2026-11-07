@@ -39,6 +39,7 @@ use wsx_core::task::manager::{
 };
 use wsx_core::task::owner::{self, action_name, find_request, HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::roles;
+use wsx_core::task::search;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::{
     checked_files, digest_lines, overlaps, project_tasks, refuse_open_children, task_summary,
@@ -444,6 +445,25 @@ pub enum TaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Find earlier messages, decisions and task results, ranked: the manager and role chats, the notes and the tasks
+    Search {
+        /// The words to find, all of them or some; the best matches come first
+        #[arg(required = true, value_name = "WORDS")]
+        words: Vec<String>,
+        /// Every registered project, not only -p
+        #[arg(long)]
+        all: bool,
+        /// Most hits shown
+        #[arg(long, default_value_t = 10, value_name = "N")]
+        limit: usize,
+        /// Build the index of the searched projects again from their logs and tasks
+        #[arg(long)]
+        reindex: bool,
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Approve a request the manager made, and run its action (owner only)
     Approve {
         /// The request id, such as a3
@@ -563,6 +583,7 @@ impl TaskCmd {
             Self::Manager { json, .. }
             | Self::Say { json, .. }
             | Self::Chat { json, .. }
+            | Self::Search { json, .. }
             | Self::Dismiss { json, .. }
             | Self::Approve { json, .. }
             | Self::Deny { json, .. } => *json,
@@ -976,6 +997,21 @@ pub fn run(command: TaskCmd) -> Result<()> {
             role.as_deref(),
             after,
             find.as_deref(),
+            json,
+        ),
+        TaskCmd::Search {
+            words,
+            all,
+            limit,
+            reindex,
+            project,
+            json,
+        } => search(
+            project.as_deref(),
+            &words.join(" "),
+            all,
+            limit,
+            reindex,
             json,
         ),
         TaskCmd::Dismiss { id, project, json } => dismiss(project.as_deref(), id, json),
@@ -2949,6 +2985,61 @@ fn chat(
             ManagerEvent::Stopped { reason } => println!("(manager stopped: {reason})"),
             _ => {}
         }
+    }
+    Ok(())
+}
+
+/// `wsx task search <words>`: ranked hits in one project or every registered one, each with
+/// the reference to quote it by. ref: docs/tasks.md "Search"
+fn search(
+    project: Option<&str>,
+    words: &str,
+    all: bool,
+    limit: usize,
+    reindex: bool,
+    json: bool,
+) -> Result<()> {
+    let current = project_entry(project).ok().map(|(name, _)| name);
+    let targets: Vec<search::Target> = match all {
+        true => load_config()?
+            .projects
+            .iter()
+            .map(|project| search::Target {
+                name: project.name.clone(),
+                project_id: store::project_id(&project.name, &project.path),
+            })
+            .collect(),
+        false => {
+            let (name, main) = project_entry(project)?;
+            vec![search::Target {
+                project_id: store::project_id(&name, &main),
+                name,
+            }]
+        }
+    };
+    let started = Instant::now();
+    let found = search::search(&targets, current.as_deref(), words, limit, reindex)?;
+    if json {
+        let mut value = serde_json::to_value(&found)?;
+        value["ms"] = json!(started.elapsed().as_millis() as u64);
+        return print_json(&value);
+    }
+    for hit in &found.hits {
+        let reference = hit.quote.as_deref().map_or(hit.reference.clone(), |quote| {
+            format!("{}  {quote}", hit.reference)
+        });
+        println!(
+            "{reference}  {} {}  {}",
+            search::day_of(hit.unix_ms),
+            hit.by,
+            hit.line
+        );
+    }
+    for problem in &found.problems {
+        eprintln!("skipped {problem}");
+    }
+    if found.hits.is_empty() {
+        println!("nothing found in {} records", found.docs);
     }
     Ok(())
 }

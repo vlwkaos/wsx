@@ -4555,6 +4555,71 @@ def run(wsx, wsxd, work, owned):
         js('task', 'land', other_land, '-p', 'other')
     wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and '#%d landed' % other_land in e['text']
                      and 'memo: other lesson' in e['text'] for e in other_entries()), 'the other land event', 60)
+    # 33s. Search (docs/tasks.md "Search"): a manager finds an old decision across projects, ranked,
+    mark('33s')
+    # and quotes it by id; the digest keeps what was said when the log goes; a hit quotes by id
+    # only in the project the search ran in.
+    entries = manager_entries()
+    last_rotation = max(i for i, e in enumerate(entries) if e['kind'] == 'rotated')
+
+    def words_of(text):
+        return set(re.findall(r'[a-z]{6,}', text.lower()))
+
+    spoken = [e for e in entries if e['kind'] in ('message', 'reply')]
+    old, rare = next((e, sorted(words_of(e['text']) - set().union(*(words_of(o['text']) for o in spoken if o is not e)))[0])
+                     for e in entries[:last_rotation]
+                     if e['kind'] == 'message' and e['from'] == 'owner'
+                     and words_of(e['text']) - set().union(*(words_of(o['text']) for o in spoken if o is not e)))
+    found = js('task', 'search', '-p', 'demo', rare)
+    mine = next((h for h in found['hits'] if h['reference'] == 'demo:%d' % old['id']), None)
+    assert mine and mine['quote'] == '> message %d' % old['id'] and mine['kind'] == 'message', found['hits']
+    assert found['projects'] == 1 and found['problems'] == [], found
+    saved = js('task', 'say', '-p', 'other', 'We keep the marmalade quokka retries at seven.')
+    registry_path = config_dir / 'config-v2.toml'
+    registry_before = registry_path.read_text()
+    third = base / 'third'
+    third.mkdir(mode=0o700)
+    registry_path.write_text(registry_before + '[[projects]]\nname = "third"\npath = ' + json.dumps(str(third)) + '\n')
+    third_id = 'third-' + hashlib.sha256(str(third).encode()).hexdigest()[:8]
+    third_log = state / 'wsx/tasks' / third_id / 'manager' / 'log.jsonl'
+    third_log.parent.mkdir(parents=True, mode=0o700)
+
+    def third_says(*lines):
+        third_log.write_text(''.join(json.dumps(line, separators=(',', ':')) + '\n' for line in lines))
+
+    third_says({'unix_ms': 1_700_000_000_000, 'kind': 'message', 'id': 1, 'from': 'owner',
+                'text': '> an older line\n\nThe zebra ledger rule is decided: marmalade stays out of it.'},
+               {'unix_ms': 1_700_000_001_000, 'kind': 'reply', 'id': 2, 'to': [1], 'text': 'Noted: the zebra ledger rule.'},
+               {'unix_ms': 1_700_000_002_000, 'kind': 'reply', 'id': 3, 'to': [1], 'text': 'zebra quiet', 'quiet': True},
+               {'unix_ms': 1_700_000_003_000, 'kind': 'message', 'id': 4, 'from': 'events', 'text': 'zebra event'},
+               {'unix_ms': 1_700_000_004_000, 'kind': 'agent', 'text': 'zebra tool step'})
+    found = js('task', 'search', '-p', 'demo', '--all', 'zebra', 'marmalade')
+    refs = [(h['reference'], h.get('quote')) for h in found['hits']]
+    assert refs[0][0] == 'third:1' and ('third:2', None) in refs and ('other:%d' % saved['id'], None) in refs, refs
+    assert not any(h['reference'] in ('third:3', 'third:4') for h in found['hits']), refs
+    assert found['hits'][0]['line'] == 'The zebra ledger rule is decided: marmalade stays out of it.', found['hits'][0]
+    assert found['projects'] == 3 and found['docs'] > 3, found
+    assert 'an older line' not in json.dumps(js('task', 'search', '-p', 'demo', '--all', 'older'))
+    assert 'third:1' in [h['reference'] for h in js('task', 'search', '-p', 'demo', '--all', 'ZEBRA')['hits']]
+    # ^ The log was replaced (a roll that deleted the old file): the digest still holds the old
+    # words, and a rebuild from the logs that exist drops them (docs/tasks.md "Search"). Pairs of
+    # characters are the words of Korean: a particle after the word still matches.
+    third_says({'unix_ms': 1_700_000_005_000, 'kind': 'message', 'id': 5, 'from': 'owner', 'text': '배포 결정은 월요일로 합니다'})
+    assert js('task', 'search', '-p', 'demo', '--all', '결정을')['hits'][0]['reference'] == 'third:5'
+    assert 'third:1' in [h['reference'] for h in js('task', 'search', '-p', 'demo', '--all', 'zebra')['hits']]
+    assert 'third:1' not in [h['reference'] for h in js('task', 'search', '-p', 'demo', '--all', '--reindex', 'zebra')['hits']]
+    assert js('task', 'search', '-p', 'demo', '--all', '결정을')['hits'][0]['reference'] == 'third:5'
+    # ^ A manager runs it in its boundary, and quotes the old message by id from the hit.
+    asked = js('task', 'say', 'RUN wsx task search -p demo --all --limit 3 %s' % rare)
+    searched = reply_to(asked['id'])['text']
+    assert 'demo:%d  > message %d' % (old['id'], old['id']) in searched, searched
+    quoted = js('task', 'say', 'QUOTE %d Yes, that one.' % old['id'])
+    answer = reply_to(quoted['id'])['text']
+    assert answer.startswith('> ' + old['text'].splitlines()[0][:40]) and answer.endswith('Yes, that one.'), answer
+    # ^ A search of nothing, and of a project with no history, says so.
+    assert 'needs some words' in cli('task', 'search', '-p', 'demo', '!!', ok=False).stderr
+    registry_path.write_text(registry_before)
+    shutil.rmtree(third_log.parent.parent)
     # 34. Recap (docs/tasks.md "Recap"): once the other project is quiet for its 12 s after a
     mark('34')
     # land, wsx asks its manager for one recap with the token cost since the last one, and the
