@@ -38,9 +38,11 @@ step install
 cp target/release/wsxd "$live/wsxd.new"
 mv "$live/wsxd.new" "$live/wsxd"
 cp target/release/wsx "$live/wsx.new"
+# ^ Replace, never overwrite in place: hosts exec the new file. The rename over wsx is atomic, so
+# the path never goes missing (a host or `wsx task new` that starts then finds a file to run).
 rm -f "$live/wsx.previous"
-mv "$live/wsx" "$live/wsx.previous"
-mv "$live/wsx.new" "$live/wsx"   # ^ replace, never overwrite in place: hosts exec the new file
+ln "$live/wsx" "$live/wsx.previous"
+mv "$live/wsx.new" "$live/wsx"
 echo "installed ${WSX_DEPLOY_COMMIT:-this commit} at $live/wsx"
 
 # ^ The deploy may run under the web server itself (an approval tapped in the web client), and pm2
