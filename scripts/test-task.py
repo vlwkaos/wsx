@@ -4120,6 +4120,34 @@ def run(wsx, wsxd, work, owned):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'no shared failure scenarios')
 
+    # 32ob. Output shaped like a ci-scenario.py log (`<job>\t<step>\t<time> <text>`, GitHub's
+    # generic `##[error]Process completed` last): two different asserts share only that tail, so
+    # no event; the same assert with other times is one.
+    mark('32ob')
+    def ci_log(assertion, stamp):
+        head = r'web scenario\tRun the web scenario\t2026-11-0%s' % stamp
+        return ('printf "%s.1234567Z %s\\n%s.7654321Z ##[error]Process completed with exit code 1.\\n"; exit 1'
+                % (head, assertion, head))
+    configure(LAND_CONFIG + '  scenarios:\n'
+              + ''.join("    %s: '%s'\n" % (name, ci_log(assertion, stamp)) for name, assertion, stamp in (
+                  ('cia', 'NameError: name qrows is not defined at line 4011', '7T10:00:01'),
+                  ('cib', 'ValueError: diagram has no node', '7T10:05:09'),
+                  ('cic', 'NameError: name qrows is not defined at line 4011', '7T11:42:30'))),
+              'ci log scenarios')
+    cia, said = shared_run('cia', 'ci1')
+    cib, said = shared_run('cib', 'ci2')
+    time.sleep(2)
+    assert 'likely on main' not in said and not events_with('qrows'), (said, events_with('qrows'))
+    cic, said = shared_run('cic', 'ci3')
+    wait(lambda: events_with('qrows'), 'the shared event of one assert in two ci logs', 30)
+    event = events_with('qrows')[0]['text']
+    assert 'in #%d, #%d, likely on main' % (cia, cic) in event and 'ends with `NameError: name qrows is not defined at line 0`' in event, event
+    assert 'diagram' not in event and 'Process completed' not in event, event
+    assert 'is in #%d;' % cia in said, said
+    for n in (cia, cib, cic):
+        js('task', 'close', n, '--discard')
+    configure(LAND_CONFIG, 'no ci log scenarios')
+
     # 32p. A turn with no result (docs/tasks.md "Claude adapter"): Claude's own 0-token turn for
     mark('32p')
     # a background-task notification is ignored; a model turn without a result is asked once.
