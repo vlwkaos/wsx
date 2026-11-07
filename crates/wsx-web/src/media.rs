@@ -41,6 +41,15 @@ impl Entry {
     fn stored_bytes(&self) -> u64 {
         self.size + self.compact.as_ref().map_or(0, |compact| compact.size)
     }
+    /// Every file the entry keeps in the media directory: the original, then its compact
+    /// copy's.
+    fn files(&self) -> impl Iterator<Item = String> + '_ {
+        std::iter::once(self.file_name()).chain(
+            self.compact
+                .iter()
+                .flat_map(|copy| copy.files.iter().cloned()),
+        )
+    }
     pub fn is_image(&self) -> bool {
         self.mime.starts_with("image/")
     }
@@ -119,13 +128,9 @@ impl Media {
         for item in fs::read_dir(&dir)?.flatten() {
             let name = item.file_name().to_string_lossy().into_owned();
             let known = name == "index.json"
-                || index.iter().any(|entry| {
-                    entry.file_name() == name
-                        || entry
-                            .compact
-                            .as_ref()
-                            .is_some_and(|copy| copy.files.contains(&name))
-                });
+                || index
+                    .iter()
+                    .any(|entry| entry.files().any(|file| file == name));
             if !known {
                 compact::remove(&dir, &name);
             }
@@ -159,9 +164,8 @@ impl Media {
 
     fn remove(&self, index: &mut Vec<Entry>, position: usize) {
         let entry = index.remove(position);
-        let _ = fs::remove_file(self.path(&entry));
-        for name in entry.compact.iter().flat_map(|copy| &copy.files) {
-            compact::remove(&self.dir, name);
+        for name in entry.files() {
+            compact::remove(&self.dir, &name);
         }
     }
 
@@ -279,7 +283,23 @@ impl Media {
     /// record it and end the claim, with or without a copy. An entry removed meanwhile takes
     /// its new copy with it.
     pub fn prepare(&self, hash: &str, ext: &str) -> Option<Entry> {
-        let copy = compact::make(&self.dir, hash, ext);
+        self.attach_copy(hash, || compact::make(&self.dir, hash, ext))
+    }
+
+    /// `prepare` with the copy's maker given. The claim ends also when `make` panics: a
+    /// guard clears `preparing`, or the page would ask `media_state` for ever.
+    fn attach_copy(&self, hash: &str, make: impl FnOnce() -> Option<Compact>) -> Option<Entry> {
+        struct EndClaim<'a>(&'a Media, &'a str);
+        impl Drop for EndClaim<'_> {
+            fn drop(&mut self) {
+                let mut index = crate::locked(&self.0.index);
+                if let Some(row) = index.iter_mut().find(|row| row.hash == self.1) {
+                    row.preparing = false;
+                }
+            }
+        }
+        let _claim = EndClaim(self, hash);
+        let copy = make();
         let mut index = crate::locked(&self.index);
         let Some(row) = index.iter_mut().find(|row| row.hash == hash) else {
             copy.iter()
@@ -299,12 +319,14 @@ impl Media {
     /// first and the original after it.
     pub fn prompt_line(&self, entry: &Entry) -> String {
         let original = self.path(entry);
-        let Some(copy) = &entry.compact else {
+        let Some((copy, first)) =
+            (entry.compact.as_ref()).and_then(|copy| copy.files.first().map(|first| (copy, first)))
+        else {
             return format!("{} ({})", original.display(), entry.name);
         };
         format!(
             "{} ({}: {}) original: {} (open it only for {})",
-            self.dir.join(&copy.files[0]).display(),
+            self.dir.join(first).display(),
             entry.name,
             copy.summary,
             original.display(),
@@ -395,5 +417,63 @@ fn sniff(head: &[u8]) -> Option<(&'static str, &'static str)> {
         Some(("mp3", "audio/mpeg"))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    fn store() -> (Media, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "wsx-media-test-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        let media = Media::open(&root, MediaLimits::default()).unwrap();
+        (media, root)
+    }
+
+    fn pdf(media: &Media) -> Entry {
+        let mut upload = media.begin().unwrap();
+        upload.write(b"%PDF-1.4 a real enough file").unwrap();
+        media.finish(upload, "doc.pdf").unwrap()
+    }
+
+    /// A copy that fails, one that panics and one with no files all end the claim, so the
+    /// chip stops polling; the prompt line of the empty copy names the original.
+    #[test]
+    fn a_failed_or_panicking_copy_clears_preparing() {
+        let (media, root) = store();
+        let entry = pdf(&media);
+        let preparing = || media.by_hash(&entry.hash).unwrap().preparing;
+
+        assert!(media.claim_prepare(&entry.hash).is_some());
+        assert!(preparing());
+        assert!(media.attach_copy(&entry.hash, || None).is_some());
+        assert!(!preparing());
+
+        assert!(media.claim_prepare(&entry.hash).is_some());
+        let panicked = catch_unwind(AssertUnwindSafe(|| {
+            media.attach_copy(&entry.hash, || panic!("whisper died"))
+        }));
+        assert!(panicked.is_err());
+        assert!(!preparing());
+
+        assert!(media.claim_prepare(&entry.hash).is_some());
+        let empty = Compact {
+            files: Vec::new(),
+            summary: "none".to_owned(),
+            original_for: "all".to_owned(),
+            size: 0,
+        };
+        let entry = media.attach_copy(&entry.hash, || Some(empty)).unwrap();
+        assert!(!preparing());
+        assert_eq!(
+            media.prompt_line(&entry),
+            format!("{} (doc.pdf)", media.path(&entry).display())
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }
