@@ -1742,7 +1742,7 @@ capabilities = ["terminal_view"]
         before = len(traces('commands'))
         status, sent = owner.request('POST', '/api/chat/%d/send' % commands_session,
                                      {'text': "! sleep 1; printf 'SHELL-%s\\n' OUT; pwd; exit 3"})
-        assert status == 200 and sent['shell']['running'] and 'queued' not in sent, sent
+        assert status == 200 and sent == {'ok': True}, sent
         status, busy = owner.request('POST', '/api/chat/%d/send' % commands_session, {'text': '! true'})
         assert status == 409 and busy['error']['code'] == 'shell_busy', busy
         received = wait(lambda: len(traces('commands')) > before and traces('commands')[-1], 'shell output delivery')

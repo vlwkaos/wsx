@@ -675,7 +675,6 @@ pub(crate) fn capabilities() -> Capabilities {
         raw_terminal_stream: true,
         daemon_restart: true,
         exchange_command: true,
-        exchange_shell: true,
         agent_steer: true,
     }
 }

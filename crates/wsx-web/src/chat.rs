@@ -605,7 +605,7 @@ impl Chat {
         }
         app.queue.notice(session, format!("Running `{command}`"));
         crate::events::history_changed(app, session);
-        let answer = json!({ "shell": { "command": command, "running": true } });
+        let answer = json!({ "ok": true });
         let (app, dir, command) = (Arc::clone(app), dir.to_owned(), command.to_owned());
         std::thread::spawn(move || {
             let text = match crate::shell::run(&command, &dir) {
