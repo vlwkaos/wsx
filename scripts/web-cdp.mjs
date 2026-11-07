@@ -57,6 +57,8 @@ export function designLint({ evaluate, captures, file }) {
     screens.push(screen);
     const { error, warn, kept } = result.counts;
     console.log(`design lint ${name} at ${screen.size} ${scheme}: ${error} errors, ${warn} warns, ${kept} kept`);
+    // ^ At once too: a check that stops on something else before finish() still shows what the lint found.
+    for (const finding of result.findings.filter((finding) => finding.level === "error" && !finding.kept)) console.log(`  error ${finding.rule} ${finding.element} "${finding.text}" ${JSON.stringify(finding.rect)}: ${finding.fix}`);
   }
   async function finish(fail) {
     fs.writeFileSync(path.join(captures, `design-lint-${file}.json`), JSON.stringify(screens, null, 1));

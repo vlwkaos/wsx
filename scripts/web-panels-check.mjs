@@ -131,7 +131,7 @@ await until("document.querySelectorAll('.panel-doc .panel-card').length === 2", 
 await viewport(1280, 800, 1);
 // The Machine tab again, wide: the same screen the lint ran on at 390 px.
 await send("Page.navigate", { url: `${adminUrl}#/machine` });
-await until("document.querySelectorAll('.machine-panel .panel-card').length === 2", "the Machine screen did not draw at 1280 px");
+await until("document.querySelectorAll('.machine-panel .panel').length === 3 && document.querySelectorAll('.machine-panel .panel-doc').length === 2", "the Machine screen did not draw at 1280 px");
 await linter.lint("machine");
 await send("Page.navigate", { url: `${adminUrl}#/p/${project}/panels` });
 await until("document.querySelectorAll('.panel-doc .panel-card').length === 2", "the json panel did not come back at 1280 px");
