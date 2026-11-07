@@ -28,12 +28,15 @@ import time
 
 POLL_SECONDS = 10
 FIND_SECONDS = 180
-# ^ A run that has not ended by then hangs (the web scenario's step takes about 26 min with its build):
-# it is cancelled, well before the host's 75 min limit for a `ci:` command.
+# ^ A run whose jobs started and have not ended by then hangs (the web scenario's step takes about 26 min
+# with its build): it is cancelled. The time the run waited for a runner does not count (QUEUE_SECONDS).
 RUN_SECONDS = 60 * 60
+# ^ The account runs at most 5 macOS jobs at once: a run whose jobs have not started by then is cancelled.
+QUEUE_SECONDS = 60 * 60
 LOG_LINES = 150
-# ^ Past the host's 75 min limit for a `ci:` command, no run still waits on the branch.
-STALE_SECONDS = 2 * 3600
+# ^ The host's `ci:` limit is QUEUE_SECONDS + RUN_SECONDS + 5 min (CI_TIMEOUT in
+# crates/wsx/src/task/host.rs); past it, no run still waits on the branch.
+STALE_SECONDS = 3 * 3600
 # ^ The run's files may land only here: the scenario scripts' output folder.
 FILES_UNDER = '.work/'
 # ^ Exit status of a failure outside the tree: the host never keeps a result that exits with it.
@@ -91,9 +94,25 @@ def find_run(repo, commit):
     raise RuntimeError('no CI run started for %s in %d s' % (commit, FIND_SECONDS))
 
 
+def jobs_started(view):
+    """True once a job of the run left the queue: it runs or ended (a skipped job never ran)."""
+    return any(job['status'] in ('in_progress', 'completed') and job['conclusion'] != 'skipped'
+               for job in view['jobs'])
+
+
+def overdue(queued, running):
+    """Why the run is cancelled, or None: `queued` seconds with no job started, else `running`
+    seconds since the first job started (None while it waits)."""
+    if running is None:
+        return 'no job started in %d min of queue' % (QUEUE_SECONDS // 60) if queued > QUEUE_SECONDS else None
+    return 'the jobs did not end in %d min' % (RUN_SECONDS // 60) if running > RUN_SECONDS else None
+
+
 def wait_run(repo, run_id):
+    """The finished run's view; the queue wait is in the first line said when the jobs start."""
     said = {}
-    deadline = time.monotonic() + RUN_SECONDS
+    begun = time.monotonic()
+    started = None
     while True:
         view = json.loads(gh('run', 'view', str(run_id), '--repo', repo,
                              '--json', 'status,conclusion,jobs').stdout)
@@ -102,10 +121,15 @@ def wait_run(repo, run_id):
             if said.get(job['name']) != state and state != 'skipped':
                 say('%s  %s: %s' % (time.strftime('%H:%M:%S'), job['name'], state))
                 said[job['name']] = state
+        if started is None and jobs_started(view):
+            started = time.monotonic()
+            say('%s  queued %d min before its jobs started' % (time.strftime('%H:%M:%S'), (started - begun) // 60))
         if view['status'] == 'completed':
             return view
-        if time.monotonic() > deadline:
-            raise RuntimeError('the CI run did not end in %d min; it is cancelled' % (RUN_SECONDS // 60))
+        now = time.monotonic()
+        late = overdue(now - begun, None if started is None else now - started)
+        if late:
+            raise RuntimeError('the CI run is cancelled: %s' % late)
         time.sleep(POLL_SECONDS)
 
 

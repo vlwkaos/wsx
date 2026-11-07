@@ -165,9 +165,10 @@ const CHECK_RUN_QUEUED: &str = "its answer comes after your result. Do not wait 
 finish this step and return its result now. The host sends you the answer as your next turn, \
 in this step.\n";
 
-/// A `ci:` scenario's command runs on CI and waits there: its own time limit, beyond the job's
-/// 60 min and the runner's queue. ref: docs/tasks.md "Scenarios"
-const CI_TIMEOUT: Duration = Duration::from_secs(75 * 60);
+/// A `ci:` scenario's command runs on CI and waits there: its own time limit, the runner queue
+/// limit (60 min) plus the run limit (60 min) of scripts/ci-scenario.py and 5 min to start and
+/// fetch the files. ref: docs/tasks.md "Scenarios"
+const CI_TIMEOUT: Duration = Duration::from_secs(125 * 60);
 
 /// The command of a `ci:` scenario: it runs on CI and takes no check slot.
 fn ci_command(command: &str) -> Option<&str> {
