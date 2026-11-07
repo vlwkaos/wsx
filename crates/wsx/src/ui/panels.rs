@@ -1,7 +1,7 @@
 //! The Panels view: one panel's last output, read-only: as written, or for a `format: json`
 //! panel with a good document, as boxed sections with bars. ref: docs/panels.md
 use super::{
-    text::{fit, truncate_to_width},
+    text::{cells, fit, truncate_to_width},
     theme,
 };
 use crate::panel_view::PanelsView;
@@ -59,10 +59,6 @@ fn level_look(level: Option<Level>) -> (&'static str, Color) {
 fn number(value: f64) -> String {
     let text = format!("{value:.1}");
     text.strip_suffix(".0").map_or(text.clone(), str::to_string)
-}
-
-fn cells(text: &str) -> usize {
-    Line::from(text).width()
 }
 
 /// One section's rows (without the box), `width` cells wide at most.

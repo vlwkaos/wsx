@@ -6,12 +6,13 @@ use ratatui::{
 
 type Cell = (char, Option<usize>);
 
-fn cells_of(text: &str) -> usize {
+/// Display cells `text` takes.
+pub(super) fn cells(text: &str) -> usize {
     Line::from(text).width()
 }
 
 pub(super) fn truncate_to_width(value: &str, max_width: usize) -> String {
-    if cells_of(value) <= max_width {
+    if cells(value) <= max_width {
         return value.to_string();
     }
     if max_width == 0 {
@@ -21,7 +22,7 @@ pub(super) fn truncate_to_width(value: &str, max_width: usize) -> String {
     let mut truncated = String::new();
     let mut used = 0;
     for grapheme in span.styled_graphemes(Style::default()) {
-        let width = Line::from(grapheme.symbol).width();
+        let width = cells(grapheme.symbol);
         if used + width > max_width - 1 {
             break;
         }
@@ -35,12 +36,12 @@ pub(super) fn truncate_to_width(value: &str, max_width: usize) -> String {
 /// `text` cut to `width` cells with an ellipsis, then padded with spaces to it.
 pub(super) fn fit(text: &str, width: usize) -> String {
     let cut = truncate_to_width(text, width);
-    let pad = width.saturating_sub(cells_of(&cut));
+    let pad = width.saturating_sub(cells(&cut));
     cut + &" ".repeat(pad)
 }
 
 fn size_of(char: char) -> usize {
-    cells_of(char.encode_utf8(&mut [0; 4]))
+    cells(char.encode_utf8(&mut [0; 4]))
 }
 
 /// Appends `word` to `line`, starting a new line in `lines` whenever the next char would
