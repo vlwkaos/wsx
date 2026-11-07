@@ -70,6 +70,7 @@ pub fn invoke(
     plugin: &PluginManifest,
     request: &ReviewRequest,
     cancelled: &AtomicBool,
+    timeout: Duration,
 ) -> io::Result<ReviewResponse> {
     super::validate(plugin).map_err(io::Error::other)?;
     request
@@ -86,7 +87,7 @@ pub fn invoke(
         Command::new(&plugin.command[0]).args(&plugin.command[1..]),
         &input,
         cancelled,
-        super::TIMEOUT,
+        timeout,
     )?;
     let response: ReviewResponse = serde_json::from_slice(&output)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -289,7 +290,13 @@ mod tests {
             limits: ReviewLimits::default(),
             operation: ReviewOperation::ListFiles,
         };
-        let result = invoke(&plugin, &request, &AtomicBool::new(false)).unwrap();
+        let result = invoke(
+            &plugin,
+            &request,
+            &AtomicBool::new(false),
+            Duration::from_secs(30),
+        )
+        .unwrap();
         let ReviewResult::Files(files) = result.result else {
             panic!("expected file list");
         };
@@ -299,7 +306,13 @@ mod tests {
             snapshot: files.snapshot,
             file_id: files.files[0].file_id.clone(),
         };
-        let result = invoke(&plugin, &request, &AtomicBool::new(false)).unwrap();
+        let result = invoke(
+            &plugin,
+            &request,
+            &AtomicBool::new(false),
+            Duration::from_secs(30),
+        )
+        .unwrap();
         let ReviewResult::Diff(diff) = result.result else {
             panic!("expected diff");
         };
