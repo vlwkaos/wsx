@@ -1,12 +1,12 @@
 // Projects: every project this site may reach. A project opens its worktrees and
 // their sessions (with task_view too, not its chat); Files and New session stay on each row.
-import { html, Loading, useNow } from "./lib.js";
+import { html, Loading, plural, useNow } from "./lib.js";
 import { can, listedSessions, shows, stateOf, useStore } from "./store.js";
 import { NewSession, SessionRow } from "./inbox.js";
 import { Back } from "./ui.js";
 import { PanelsButton } from "./panels.js";
 
-const counted = (count) => (count === 1 ? "1 session" : `${count} sessions`);
+const counted = (count) => plural(count, "session");
 // How many task items wait for the owner in a project, after its session count.
 const waiting = (store, project) => {
   const count = can("task_view") ? store.tasks[project.id]?.needs.length ?? 0 : 0;

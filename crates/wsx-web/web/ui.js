@@ -1,12 +1,12 @@
 // Notices, the confirmation dialog, and the device's light or dark choice.
-import { html, Icon, useEffect, useExit, useRef, useState } from "./lib.js";
+import { html, Icon, keep, kept, useEffect, useExit, useRef, useState } from "./lib.js";
 import { backTarget, can, goBack, parseRoute, reloadForBuild, state, update, useStore } from "./store.js";
 
 // A theme with a dark scheme is dark unless this device chose light (docs/web-themes.md).
 const SCHEME_KEY = "wsx-scheme";
 export const hasDarkScheme = () => document.querySelector("meta[name=color-scheme]").content.includes("dark");
 export function scheme() {
-  try { return localStorage.getItem(SCHEME_KEY) === "light" ? "light" : "dark"; } catch { return "dark"; }
+  return kept(SCHEME_KEY) === "light" ? "light" : "dark";
 }
 export function applyScheme() {
   if (!hasDarkScheme()) return;
@@ -17,7 +17,7 @@ export function applyScheme() {
   if (background) document.querySelector("meta[name=theme-color]").content = background;
 }
 export function setScheme(value) {
-  try { localStorage.setItem(SCHEME_KEY, value); } catch { /* a private window keeps the default */ }
+  keep(SCHEME_KEY, value);
   applyScheme();
 }
 
@@ -25,14 +25,13 @@ export function setScheme(value) {
 // the project chat reads `state.bar` to put its bar above the composer.
 const BAR_KEY = "wsx-bar";
 export function applyBar() {
-  let side = "top";
-  try { side = localStorage.getItem(BAR_KEY) === "bottom" ? "bottom" : "top"; } catch { /* the default */ }
+  const side = kept(BAR_KEY) === "bottom" ? "bottom" : "top";
   if (side === "bottom") document.documentElement.dataset.bar = "bottom";
   else delete document.documentElement.dataset.bar;
   update({ bar: side });
 }
 export function setBar(side) {
-  try { localStorage.setItem(BAR_KEY, side); } catch { /* a private window keeps the default */ }
+  keep(BAR_KEY, side);
   applyBar();
 }
 
@@ -42,14 +41,14 @@ const TABS_KEY = "wsx-tabs-hidden";
 export function applyTabs() {
   let hidden = [];
   try {
-    const stored = JSON.parse(localStorage.getItem(TABS_KEY));
+    const stored = JSON.parse(kept(TABS_KEY));
     if (Array.isArray(stored)) hidden = stored.filter((name) => typeof name === "string" && name !== "settings");
   } catch { /* the default */ }
   update({ hiddenTabs: hidden });
 }
 export function setTabHidden(name, hidden) {
   const rest = state.hiddenTabs.filter((other) => other !== name);
-  try { localStorage.setItem(TABS_KEY, JSON.stringify(hidden && name !== "settings" ? [...rest, name] : rest)); } catch { /* a private window keeps the default */ }
+  keep(TABS_KEY, JSON.stringify(hidden && name !== "settings" ? [...rest, name] : rest));
   applyTabs();
 }
 

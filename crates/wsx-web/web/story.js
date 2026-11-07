@@ -2,11 +2,10 @@
 // task (from the record and the result), in plain words written by wsx, never by a model
 // (docs/web-client-tasks.md "Task sheet").
 import { api } from "./api.js";
-import { ago, firstSentence, html, Icon, lastSentence, short, useEffect, useRef, useState } from "./lib.js";
+import { ago, firstSentence, html, Icon, lastSentence, plural, short, useEffect, useRef, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { agentWords, running, statusTone } from "./tasks.js";
 
-const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 // `refs/heads/main` reads as `main`, `refs/remotes/origin/main` as `origin/main`.
 const branchName = (ref) => (ref ?? "").replace(/^refs\/(heads|remotes)\//, "");
 

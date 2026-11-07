@@ -92,9 +92,19 @@ export function lastSentence(text) {
   return (whole?.at(-1) ?? text ?? "").trim();
 }
 
+// `3 files`, `1 file`: the count with its noun; `many` when the plural is not `one` + s.
+export const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
+
 // A commit hash shortened for reading.
 export const short = (commit) => (commit ?? "").slice(0, 8);
 
+// A line of text kept per device; a private window reads as none and a failed write is dropped.
+export function kept(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+export function keep(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* kept in memory only */ }
+}
 // A map kept per device. A private window, cleared site data or a broken value reads as
 // empty, and a write that fails keeps the page working without it.
 export function readMap(key) {
