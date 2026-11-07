@@ -3108,7 +3108,8 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   fs.writeFileSync(release, "go");
   await stateIs(working, "ready");
   await shows(working, "ready", { health: "Ready, waiting for you to land it", steps: "+plan +build +review", age: "", said: "" });
-  if (await timers(30000)) await fail("a ready task's sheet still has an age timer");
+  // ^ The sheet clears its timer in an effect after the render: wait for it, do not read once.
+  await until("[...window.__timers.values()].filter((delay) => delay === 30000).length === 0", "a ready task's sheet still has an age timer");
 
   // Running checks, and a second task that waits for the machine's one check slot. Neither has
   // workflow steps, so neither has a step row.
