@@ -973,11 +973,13 @@ def pdf_fixture(tag):
 
 
 def compact_tools(*names):
-    """The tools the compact copies of a PDF and a video need. CI installs them (ci.yml), so a
-    tool missing there fails the run instead of skipping the step."""
+    """The tools the compact copies of a PDF and a video need. ci.yml installs them and sets
+    WSX_REQUIRE_COMPACT_TOOLS, so a tool missing there fails the run instead of skipping the step.
+    ^ Not keyed on CI: scripts/ci-scenario.py runs origin/main's workflow, which lacks the install
+    until the change lands; a check-run before that would fail for good."""
     tools = {name: shutil.which(name) for name in names}
     missing = [name for name, found in tools.items() if not found]
-    assert not (missing and os.environ.get('CI')), 'the compact copy steps need %s on the PATH' % ', '.join(missing)
+    assert not (missing and os.environ.get('WSX_REQUIRE_COMPACT_TOOLS')), 'the compact copy steps need %s on the PATH' % ', '.join(missing)
     return tools
 
 
