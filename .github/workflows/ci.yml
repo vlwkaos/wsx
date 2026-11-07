@@ -219,6 +219,8 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           key: web-scenario-linux
+          # ^ A scenario branch's cache is read by no later run (the branch is deleted): no save.
+          save-if: false
 
       # ^ The scenario checks the compact copies of a PDF and a video (docs/web-client.md "Media").
       - name: Install poppler and ffmpeg
