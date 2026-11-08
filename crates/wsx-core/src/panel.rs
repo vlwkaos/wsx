@@ -476,15 +476,13 @@ pub fn machine_view(
     projects: &[(String, PathBuf)],
     run: bool,
 ) -> Result<PanelView, String> {
-    let name = match request(client, None, Action::List)? {
-        Response::Panels { panels, .. } => panels
-            .into_iter()
-            .find(|info| info.scope == PanelScope::Machine)
-            .map(|info| info.name)
-            .ok_or("wsxd has no machine panel")?,
-        _ => return Err("unexpected wsxd answer".into()),
-    };
-    let mut view = read_panel(client, None, name, run)?;
+    let name = list(client, None)?
+        .0
+        .into_iter()
+        .find(|info| info.scope == PanelScope::Machine)
+        .map(|info| info.name)
+        .ok_or("wsxd has no machine panel")?;
+    let mut view = get(client, None, name, run)?;
     let (mut due, mut busy) = (None, false);
     let mut note = |read: &PanelView| {
         busy |= read.running || read.run.status == PanelStatus::Pending;
@@ -496,14 +494,14 @@ pub fn machine_view(
     note(&view);
     let mut sections = Vec::new();
     for (project, path) in projects {
-        let Ok(Response::Panels { panels, .. }) = request(client, Some(path), Action::List) else {
+        let Ok((panels, _)) = list(client, Some(path)) else {
             continue;
         };
         for info in panels
             .into_iter()
             .filter(|i| i.scope == PanelScope::Machine)
         {
-            let result = read_panel(client, Some(path), info.name.clone(), run);
+            let result = get(client, Some(path), info.name.clone(), run);
             if let Ok(read) = &result {
                 note(read);
             }
@@ -542,7 +540,19 @@ pub fn machine_view(
     Ok(view)
 }
 
-fn read_panel(
+/// `project`'s panels and its config notice. No project: wsxd's built-in machine panels.
+pub fn list(
+    client: &crate::runtime::Client,
+    project: Option<&Path>,
+) -> Result<(Vec<PanelInfo>, Option<String>), String> {
+    match request(client, project, Action::List)? {
+        Response::Panels { panels, notice } => Ok((panels, notice)),
+        _ => Err("unexpected wsxd answer".into()),
+    }
+}
+
+/// The last result of the panel `name`, with `run` to start a run now.
+pub fn get(
     client: &crate::runtime::Client,
     project: Option<&Path>,
     name: String,

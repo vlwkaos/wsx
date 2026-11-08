@@ -8,7 +8,7 @@ use std::{
     sync::mpsc,
     time::{Duration, Instant},
 };
-use wsx_core::panel::{self, Action, PanelInfo, PanelScope, PanelStatus};
+use wsx_core::panel::{self, PanelInfo, PanelScope, PanelStatus};
 
 /// A view read while a run is in flight is read again this often.
 const RUNNING_POLL: Duration = Duration::from_secs(1);
@@ -104,20 +104,16 @@ impl PanelsView {
         let machine = self.machine.is_some();
         self.fetch(move || {
             let client = wsx_core::runtime::Client::local();
-            match panel::request(&client, path.as_deref(), Action::List)? {
-                panel::Response::Panels { panels, notice } => {
-                    let entries = (panels.into_iter())
-                        .filter(|info| !machine || info.scope == PanelScope::Machine)
-                        .take(if machine { 1 } else { usize::MAX })
-                        .map(|info| Entry {
-                            path: path.clone(),
-                            info,
-                        })
-                        .collect();
-                    Ok(Answer::List(entries, notice.filter(|_| !machine)))
-                }
-                _ => Err("unexpected wsxd answer".into()),
-            }
+            let (panels, notice) = panel::list(&client, path.as_deref())?;
+            let entries = (panels.into_iter())
+                .filter(|info| !machine || info.scope == PanelScope::Machine)
+                .take(if machine { 1 } else { usize::MAX })
+                .map(|info| Entry {
+                    path: path.clone(),
+                    info,
+                })
+                .collect();
+            Ok(Answer::List(entries, notice.filter(|_| !machine)))
         });
     }
 
@@ -184,17 +180,7 @@ impl PanelsView {
                         if let Some(projects) = machine {
                             return panel::machine_view(&client, &projects, run).map(Answer::Panel);
                         }
-                        match panel::request(
-                            &client,
-                            path.as_deref(),
-                            Action::Get {
-                                name: info.name,
-                                run,
-                            },
-                        )? {
-                            panel::Response::Panel(view) => Ok(Answer::Panel(view)),
-                            _ => Err("unexpected wsxd answer".into()),
-                        }
+                        panel::get(&client, path.as_deref(), info.name, run).map(Answer::Panel)
                     });
                 }
             }
