@@ -84,7 +84,7 @@ def unescape(literal):
 
 
 def instructions(source, project, notes, page):
-    """The manager's instructions as instructions() in that manager.rs formats them."""
+    """The manager's instructions as instructions() in task/instructions.rs formats them (manager.rs before BEFORE_COMMIT)."""
     body = source.split('fn instructions(', 1)[1]
     literal = re.search(r'format!\(\s*"(You are the manager(?:[^"\\]|\\.)*)"', body, re.S).group(1)
     # ^ The default workflow (no review) and the shared presentation rule.
@@ -361,7 +361,7 @@ def run_once(mode, number, out, cases):
                BENCH_CALLS=str(calls), GIT_OPTIONAL_LOCKS='0')
     source = (subprocess.run(['git', 'show', '%s:crates/wsx/src/task/manager.rs' % BEFORE_COMMIT], cwd=ROOT,
                              capture_output=True, text=True, check=True).stdout if mode == 'before'
-              else (ROOT / 'crates/wsx/src/task/manager.rs').read_text())
+              else (ROOT / 'crates/wsx/src/task/instructions.rs').read_text())
     launch = instructions(source, 'bench', str(notes), str(page))
     rows, index = [], 0
     for history, conversation in conversations:
