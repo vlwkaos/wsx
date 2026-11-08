@@ -15,13 +15,9 @@ pub struct LocalTime {
 
 impl LocalTime {
     pub fn at(epoch: i64) -> Self {
-        let timestamp = epoch as libc::time_t;
-        let mut out = std::mem::MaybeUninit::<libc::tm>::zeroed();
-        // ^ localtime_r fills the whole tm it is given.
-        let out = unsafe {
-            libc::localtime_r(&timestamp, out.as_mut_ptr());
-            out.assume_init()
-        };
+        // ^ A time the zone cannot tell reads as an all-zero tm.
+        // SAFETY: an all-zero libc::tm is valid (integers and a null zone pointer).
+        let out = super::local::local_tm(epoch).unwrap_or_else(|| unsafe { std::mem::zeroed() });
         Self {
             minute: out.tm_min as u8,
             hour: out.tm_hour as u8,

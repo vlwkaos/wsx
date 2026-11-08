@@ -25,7 +25,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
                 "revision {revision}\nname: {}\nenabled: {}\ntrigger: {}\ncommand: {}\nprompt: {}",
                 routine.routine.name,
                 routine.routine.enabled,
-                wsx_core::task::ledger::trigger_text(&routine.routine.trigger),
+                wsx_core::routine::local::trigger_text(&routine.routine.trigger),
                 format_argv(&routine.routine.command),
                 routine.routine.prompt
             );
@@ -301,7 +301,7 @@ pub(super) fn print_routine_response(
                     } else {
                         "disabled"
                     },
-                    wsx_core::task::ledger::trigger_text(&view.routine.trigger),
+                    wsx_core::routine::local::trigger_text(&view.routine.trigger),
                     format_argv(&view.routine.command)
                 );
             }
@@ -340,7 +340,7 @@ impl TriggerArgs {
             (_, Some(kind), _) => Trigger::Event { kind },
             (_, _, Some(at)) => {
                 let epoch_minute =
-                    wsx_core::task::ledger::local_minute(&at, now).map_err(anyhow::Error::msg)?;
+                    wsx_core::routine::local::local_minute(&at, now).map_err(anyhow::Error::msg)?;
                 if epoch_minute * 60 <= now {
                     bail!("--at {at} has passed");
                 }

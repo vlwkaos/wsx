@@ -34,7 +34,7 @@ pub fn reason(adapter: &str, until_ms: u64, now_ms: u64) -> String {
 
 /// The time of day (and the date when it is not within a day) the wait ends.
 pub fn resume_time(until_ms: u64, now_ms: u64) -> String {
-    local_time(until_ms / 1000).map_or_else(
+    wsx_core::routine::local::local_tm((until_ms / 1000) as i64).map_or_else(
         || {
             format!(
                 "in {} min",
@@ -54,15 +54,3 @@ pub fn resume_time(until_ms: u64, now_ms: u64) -> String {
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
-
-/// `secs` (unix) in this machine's zone.
-pub fn local_time(secs: u64) -> Option<libc::tm> {
-    let secs = libc::time_t::try_from(secs).ok()?;
-    let mut tm = std::mem::MaybeUninit::<libc::tm>::uninit();
-    // SAFETY: both pointers are valid for the call; localtime_r is thread-safe.
-    if unsafe { libc::localtime_r(&secs, tm.as_mut_ptr()) }.is_null() {
-        return None;
-    }
-    // SAFETY: localtime_r filled it.
-    Some(unsafe { tm.assume_init() })
-}

@@ -3096,19 +3096,7 @@ fn recent_exchanges(log: &[ManagerEntry], limit: usize) -> Vec<String> {
 
 /// `2026-10-28 03:00` in this machine's zone.
 fn clock(secs: i64) -> String {
-    limit::local_time(secs.max(0) as u64).map_or_else(
-        || secs.to_string(),
-        |tm| {
-            format!(
-                "{}-{:02}-{:02} {:02}:{:02}",
-                tm.tm_year + 1900,
-                tm.tm_mon + 1,
-                tm.tm_mday,
-                tm.tm_hour,
-                tm.tm_min
-            )
-        },
-    )
+    wsx_core::routine::local::local_stamp(secs.max(0)).unwrap_or_else(|| secs.to_string())
 }
 
 /// An event line the chat shows as its first clause (`Short::plain`).

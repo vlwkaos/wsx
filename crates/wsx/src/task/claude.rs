@@ -686,7 +686,7 @@ fn text_reset(text: &str, now: u64) -> Option<u64> {
     if !(1..=12).contains(&hour) || !(0..60).contains(&minute) {
         return None;
     }
-    let mut tm = super::limit::local_time(now)?;
+    let mut tm = wsx_core::routine::local::local_tm(now as i64)?;
     tm.tm_hour = hour % 12 + if pm { 12 } else { 0 };
     tm.tm_min = minute;
     tm.tm_sec = 0;
