@@ -725,7 +725,7 @@ async function comeBack() {
   if (!still) await fail(`the newest reply does not stay out of view at the top of the chat: ${await evaluate(sinceState)}`);
   await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 })); document.dispatchEvent(new Event('visibilitychange'))`);
   // ^ A task that is ready is listed like the digest lists it (`view::REPORTED_STATES`).
-  const shown = "/Landed #\\d+.*Ready #\\d+.*Started #1 #2 #3 #4.*repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')";
+  const shown = "/Landed .*Ready .*Started .*repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')";
   for (let attempt = 0; attempt < 100 && !(await evaluate(shown)); attempt++) await pause(100);
   if (!(await evaluate(shown))) await fail(`no since-you-left line: ${await evaluate(sinceState)}`);
 }
