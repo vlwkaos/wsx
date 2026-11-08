@@ -3,7 +3,8 @@
 //!
 //! The manager host is the only writer of these files; `wsx task chat` reads the log.
 
-use super::{TaskRecord, TaskState, TurnUsage};
+use super::status::STOPPED_BY_REQUEST;
+use super::{TaskRecord, TaskState, TurnUsage, WaitOn};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -193,6 +194,19 @@ pub struct Short {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<u32>,
+    /// Whether the event needs the manager's judgment now: false for a landing, a close, a wait
+    /// that ends by itself, a stop someone asked for and an automatic deploy that worked. Those
+    /// go along with the manager's next turn and cost none. ref: docs/tasks.md "Manager"
+    #[serde(default = "wakes_default", skip_serializing_if = "is_wakes")]
+    pub wakes: bool,
+}
+
+fn wakes_default() -> bool {
+    true
+}
+
+fn is_wakes(wakes: &bool) -> bool {
+    *wakes
 }
 
 impl Short {
@@ -202,7 +216,20 @@ impl Short {
         Self {
             text: line.split("; ").next().unwrap_or(line).trim().to_string(),
             task: None,
+            wakes: true,
         }
+    }
+
+    /// The event starts no turn of its own.
+    pub fn quiet(mut self) -> Self {
+        self.wakes = false;
+        self
+    }
+
+    /// Whether a message of events starts a turn: one of its lines does, or `short` says
+    /// nothing (a message logged before `short`).
+    pub fn any_wakes(short: &[Self]) -> bool {
+        short.is_empty() || short.iter().any(|short| short.wakes)
     }
 
     /// A task's event: `#<task> <words>`.
@@ -210,6 +237,7 @@ impl Short {
         Self {
             text: format!("#{task} {words}"),
             task: Some(task),
+            wakes: true,
         }
     }
 }
@@ -237,27 +265,21 @@ pub fn says_nothing(text: &str) -> bool {
     matches!(text.trim(), "" | "-")
 }
 
-/// Whether an event line needs the manager's judgment now. The others (a landing, a close, a
-/// wait that ends by itself, a stop the owner or the manager asked for, an automatic deploy that
-/// worked) go along with its next turn, so they cost no turn. `deploy_auto`: `tasks.deploy.auto`;
-/// a deploy the manager started may be what it waits for. ref: docs/tasks.md "Manager"
-pub fn event_wakes(line: &str, deploy_auto: bool) -> bool {
-    let task = line.strip_prefix('#').and_then(|rest| {
-        let (id, rest) = rest.split_once(' ')?;
-        id.bytes().all(|byte| byte.is_ascii_digit()).then_some(rest)
-    });
-    match task {
-        Some(rest) if rest.starts_with("landed ") || rest.starts_with("closed ") => false,
-        Some(rest) if rest.starts_with("waiting ") => {
-            // ^ The wait and its sentence, up to the summary's next part.
-            let wait = rest.split_once("; waits on ").map_or("", |(_, wait)| wait);
-            let wait = wait.split("; ").next().unwrap_or_default();
-            !(wait.starts_with("limit:")
-                || wait.starts_with("disk:")
-                || (wait.starts_with("owner:") && wait.contains(super::status::STOPPED_BY_REQUEST)))
-        }
-        Some(_) => true,
-        None => !(deploy_auto && line.starts_with("deploy of ") && line.contains(" succeeded")),
+/// Whether a task's new state needs the manager's judgment now. The others (a landing, a close,
+/// a wait on `limit` or `disk`, a stop the owner or the manager asked for) go along with its next
+/// turn. ref: docs/tasks.md "Manager"
+pub fn state_wakes(record: &TaskRecord) -> bool {
+    match record.state {
+        TaskState::Landed | TaskState::Closed => false,
+        TaskState::Waiting => !record
+            .waiting
+            .as_ref()
+            .is_some_and(|waiting| match waiting.on {
+                WaitOn::Limit | WaitOn::Disk => true,
+                WaitOn::Owner => waiting.reason == STOPPED_BY_REQUEST,
+                _ => false,
+            }),
+        _ => true,
     }
 }
 

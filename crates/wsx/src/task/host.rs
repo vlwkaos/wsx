@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::git::{git_cmd, output_with_timeout_tail};
 use wsx_core::runtime;
+use wsx_core::task::status::STOPPED_BY_REQUEST;
 use wsx_core::task::view::{checked_files, short_commit};
 use wsx_core::task::{
     build, call_host, checks,
@@ -1057,9 +1058,9 @@ impl Host {
         let dropped = self.pending.len();
         self.pending.clear();
         self.log(LogEvent::Stopped {
-            reason: "stopped by request".into(),
+            reason: STOPPED_BY_REQUEST.into(),
         });
-        self.wait(WaitOn::Owner, "stopped by request".into());
+        self.wait(WaitOn::Owner, STOPPED_BY_REQUEST.into());
         Ok(if dropped == 0 {
             "stopped; the next add resumes the same conversation".into()
         } else {

@@ -2531,7 +2531,7 @@ def part_core(created=None):
         assert context.count('lesson %d kept' % i) == 1 and '- #%d: ' % n in context, context
     # ^ One close alone, after the turns above have ended, is the case that costs no turn. A stop
     # by request costs none either: its wait on owner is a chat line that joins the next turn,
-    # while a ready event still starts one (docs/tasks.md "Manager", `event_wakes`).
+    # while a ready event still starts one (docs/tasks.md "Manager", `state_wakes`).
     lone = js('task', 'new', 'WORK lone.txt')['id']
     halted = js('task', 'new', 'WAIT %s NOOP' % (base / 'never'))['id']
     assert wait_state(lone, 'ready', 'failed')['state'] == 'ready'

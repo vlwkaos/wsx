@@ -3668,7 +3668,7 @@ def task_journey(args):
 
             # A deploy of the default branch tip: the brief says it is up to date until a task lands.
             # A deploy by hand answers that it started; its detached run records the result.
-            # ^ A landing wakes no turn (`event_wakes`; the host sees a task that is ready and lands
+            # ^ A landing wakes no turn (`state_wakes`; the host sees a task that is ready and lands
             # within one second only as landed), so the lands wait for a waking event. The deploy's
             # is one, and it comes before any message of another manager, whose turn would take the
             # lands along and answer them in its own reply (manager.rs `accept`).
