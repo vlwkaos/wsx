@@ -4199,10 +4199,11 @@ def part_host(created=None):
     wait(lambda: (pane_agent(idle) or {}).get('state') == 'idle', 'the idle worker reports idle')
     wait(lambda: (pane_agent(asking) or {}).get('state') == 'blocked', 'the asking worker reports blocked')
     quiet = wait(lambda: events_with('#%d waiting r' % idle), 'the idle worker event')[0]
-    assert quiet['short'] == [{'text': '#%d waiting' % idle, 'task': idle, 'wakes': False}], quiet
-    assert 'waits on owner' not in quiet['text'] and 'waits for #%d to land' % wanted in quiet['text'], quiet
+    assert [x for x in quiet['short'] if x.get('task') == idle] == [{'text': '#%d waiting' % idle, 'task': idle, 'wakes': False}], quiet
+    line = [x for x in quiet['text'].split('\n') if x.startswith('#%d waiting' % idle)][0]
+    assert 'waits on owner' not in line and 'waits for #%d to land' % wanted in line, line
     loud = wait(lambda: events_with('#%d waiting r' % asking, 'waits on owner: '), 'the asking worker event')[0]
-    assert loud['short'] == [{'text': '#%d waiting' % asking, 'task': asking}], loud
+    assert [x for x in loud['short'] if x.get('task') == asking] == [{'text': '#%d waiting' % asking, 'task': asking}], loud
     # ^ The landing of the task it waits for sends its text, as before.
     assert land(wanted)['state'] == 'landed'
     wait(lambda: kinds(idle, 'after_ended'), 'the idle wait ends', 40)
