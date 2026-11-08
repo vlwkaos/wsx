@@ -660,57 +660,23 @@ const SHEETS = {
   panels: { Page: PanelsPage, label: "Panels", fit: true },
 };
 
-// The project screen with task_view: the manager chat as messages, what is open in the
-// reservoir, and with a task or the page in the route its sheet over the chat. With `role`, a
-// role's chat (#/p/<project>/r/<role>): the same bubbles without the manager's reservoir,
-// approvals and To check items (docs/web-client-tasks.md "Roles").
-export function Manager({ project: id, sheet = null, task = null, item = null, role = null }) {
-  const store = useStore();
-  const project = store.projects.find((candidate) => candidate.id === id);
-  const overview = store.tasks[id];
+// ^ The conversation of a manager (or a role) as the rows the page holds. A read asks after the
+// last entry it has; one read at a time, one more after a change during it. `search` is the one
+// record of what the rows were read for: `words` and `around` are what is asked, `read` and
+// `readAround` what the shown rows hold. A find's words read the conversation from the oldest entry
+// that shows them, not only its newest 400 entries, and those rows stay after the find closes
+// (docs/web-client-chat.md "Find"). `around` is the message a tap on a quote opened the chat at
+// (docs/web-client-chat.md "Replies"): the rows are a snapshot of that part, no later read adds to
+// them, until `back` reads the newest part.
+function useManagerLog(id, role) {
   const [chat, setChat] = useState(null);
-  // ^ The To check items, each a bubble at the time it was added; read again when the open
-  // count changes (a new item, a pass or a fail).
-  const [checkItems, setCheckItems] = useState(role ? [] : null);
-  const toCheck = overview?.to_check;
-  useEffect(() => {
-    if (role) return undefined;
-    let live = true;
-    api(`api/tasks/${id}/checks`).then((value) => { if (live) setCheckItems(value.items); }, () => { if (live) setCheckItems((now) => now ?? []); });
-    return () => { live = false; };
-  }, [id, toCheck]);
-  const ready = Boolean(chat) && checkItems !== null;
   const [failure, setFailure] = useState("");
-  const [sent, setSent] = useState(null);
-  const place = role ? `project-${id}-r-${role}` : `project-${id}`;
-  const { log, node: logNode, away, unread, since, scrolled, toEnd, reveal } = useFollowEnd(place, ready);
-  const field = useRef();
-  const [reply, setReply] = useState(null);
-  const [gestures, menu] = useReply((line, id) => { setReply({ line, id: id ? Number(id) : null }); field.current?.focus(); });
-  // ^ A task's Answer: the composer takes the mention as typed text, so its own input handler
-  // keeps the draft (docs/web-client-tasks.md "Project screen").
-  const mention = (n, words = "") => {
-    const node = field.current;
-    const [mentioned, at] = withMention(node.value, n);
-    const text = mentioned.slice(0, at) + words + mentioned.slice(at);
-    const caret = at + words.length;
-    node.focus({ preventScroll: true });
-    node.value = text;
-    node.setSelectionRange(caret, caret);
-    node.dispatchEvent(new Event("input", { bubbles: true }));
-  };
+  const [finding, setFinding] = useState(false);
+  const [, renew] = useState(0);
   const shown = useRef([]);
   const cut = useRef(false);
-  // ^ A find's words read the conversation from the oldest entry that shows them, not only
-  // its newest 400 entries; those rows stay after the find closes (docs/web-client-chat.md "Find").
-  const [finding, setFinding] = useState(false);
-  // ^ `words`: what the find asks; `read`: what the shown rows were read for.
-  // ^ `around`: the message a tap on a quote opened the chat at (docs/web-client-chat.md "Replies"):
-  // the rows are a snapshot of that part, no later read adds to them, until Back to newest.
-  const [around, setAround] = useState(null);
   const search = useRef({ words: "", read: "", around: null, readAround: null });
-
-  // Reads after the last entry it has; one read at a time, one more after a change during it.
+  const aim = (change) => { Object.assign(search.current, change); renew((count) => count + 1); };
   const load = useCoalescedLoad(async (current) => {
     const { words, around: at } = search.current;
     const fresh = words !== search.current.read || at !== search.current.readAround;
@@ -724,8 +690,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
       cut.current = Boolean(next.skipped);
       if (at != null && !words && !next.rows.some((row) => row.id === at)) {
         // ^ The log no longer has it: the newest part shows.
-        search.current.around = search.current.readAround = null;
-        setAround(null);
+        aim({ around: null, readAround: null });
         toast("That message is no longer in the conversation.");
       }
       shown.current = next.rows;
@@ -745,30 +710,103 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
     setChat({ ...next, rows: shown.current });
     setFailure("");
   }, (error) => setFailure(error.message), [id]);
-  useEffect(() => { if (!overview) loadTasks(id, { missing: true }); }, [id]);
   useEventLoad("manager", load, (detail) => detail.project == null
     || (detail.project === id && (!role || detail.role === role)), [id]);
   // ^ A tap on a quote whose message is not among the rows (`Quote`, reply.js) reads the chat
-  // around it; the way back reads the newest part.
-  const jump = useRef(null);
-  jump.current = (message) => {
-    search.current.words = "";
-    search.current.around = message;
+  // around it; `back` reads the newest part.
+  const jump = (message) => {
     setFinding(false);
-    setAround(message);
+    aim({ words: "", around: message });
     load();
   };
-  const newest = () => {
-    search.current.around = null;
-    setAround(null);
-    toEnd();
-    load();
-  };
+  const jumping = useRef(null);
+  jumping.current = jump;
   useEffect(() => {
-    const on = (event) => jump.current(event.detail);
+    const on = (event) => jumping.current(event.detail);
     addEventListener("quote-jump", on);
     return () => removeEventListener("quote-jump", on);
   }, []);
+  const back = () => {
+    aim({ around: null });
+    load();
+  };
+  // ^ The find's words, as typed: the chat reads again for them.
+  const findWords = (words) => {
+    search.current.words = words.trim();
+    if (search.current.words !== search.current.read) load();
+  };
+  const { around, readAround, words, read } = search.current;
+  return { chat, failure, around, aroundRead: around != null && readAround === around, finding, setFinding, cut: cut.current, loading: words !== read, jump, back, findWords };
+}
+
+// ^ A read rebuilds every row from the entries it keeps: a row whose fields are the ones it was
+// drawn with gives back the same node, which Preact does not render again (docs/web-client-chat.md
+// "Long chats"). `context` is what every row reads besides its own fields: a new one starts the
+// rows over. Rows that arrive after the first read slide in (`isNew`); the ones of the first read
+// and the rows `own` names (the message this device just sent) do not. Returns `show(row)`.
+function useRowNodes(rows, { ready, own, context, draw }) {
+  const known = useRef(null);
+  const fresh = useRef(new Set());
+  const drawn = useRef(null);
+  if (ready) {
+    if (!known.current) known.current = new Set(rows.map((row) => row.key));
+    for (const row of rows) {
+      if (known.current.has(row.key)) continue;
+      known.current.add(row.key);
+      if (!own(row)) fresh.current.add(row.key);
+    }
+  }
+  if (drawn.current?.context !== context || drawn.current.rows.size > rows.length + 200) drawn.current = { context, rows: new Map() };
+  return (row) => {
+    const isNew = fresh.current.has(row.key);
+    const kept = drawn.current.rows.get(row.key);
+    if (kept && kept.isNew === isNew && sameFields(kept.row, row)) return kept.node;
+    const node = draw(row, isNew);
+    drawn.current.rows.set(row.key, { row, isNew, node });
+    return node;
+  };
+}
+
+// The project screen with task_view: the manager chat as messages, what is open in the
+// reservoir, and with a task or the page in the route its sheet over the chat. With `role`, a
+// role's chat (#/p/<project>/r/<role>): the same bubbles without the manager's reservoir,
+// approvals and To check items (docs/web-client-tasks.md "Roles").
+export function Manager({ project: id, sheet = null, task = null, item = null, role = null }) {
+  const store = useStore();
+  const project = store.projects.find((candidate) => candidate.id === id);
+  const overview = store.tasks[id];
+  const { chat, failure, around, aroundRead, finding, setFinding, cut, loading, jump, back, findWords } = useManagerLog(id, role);
+  // ^ The To check items, each a bubble at the time it was added; read again when the open
+  // count changes (a new item, a pass or a fail).
+  const [checkItems, setCheckItems] = useState(role ? [] : null);
+  const toCheck = overview?.to_check;
+  useEffect(() => {
+    if (role) return undefined;
+    let live = true;
+    api(`api/tasks/${id}/checks`).then((value) => { if (live) setCheckItems(value.items); }, () => { if (live) setCheckItems((now) => now ?? []); });
+    return () => { live = false; };
+  }, [id, toCheck]);
+  const ready = Boolean(chat) && checkItems !== null;
+  const [sent, setSent] = useState(null);
+  const place = role ? `project-${id}-r-${role}` : `project-${id}`;
+  const { log, node: logNode, away, unread, since, scrolled, toEnd, reveal } = useFollowEnd(place, ready);
+  const field = useRef();
+  const [reply, setReply] = useState(null);
+  const [gestures, menu] = useReply((line, id) => { setReply({ line, id: id ? Number(id) : null }); field.current?.focus(); });
+  // ^ A task's Answer: the composer takes the mention as typed text, so its own input handler
+  // keeps the draft (docs/web-client-tasks.md "Project screen").
+  const mention = (n, words = "") => {
+    const node = field.current;
+    const [mentioned, at] = withMention(node.value, n);
+    const text = mentioned.slice(0, at) + words + mentioned.slice(at);
+    const caret = at + words.length;
+    node.focus({ preventScroll: true });
+    node.value = text;
+    node.setSelectionRange(caret, caret);
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  useEffect(() => { if (!overview) loadTasks(id, { missing: true }); }, [id]);
+  const newest = () => { toEnd(); back(); };
   // ^ A message of the rows shows in the middle, marked; false when the rows do not hold it.
   const showRow = (messageId) => {
     const node = logNode.current?.querySelector(`:scope > [data-id="${messageId}"]`);
@@ -779,8 +817,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   };
   // ^ The quoted message shows once its part is read.
   useLayoutEffect(() => {
-    if (around == null || search.current.readAround !== around) return;
-    showRow(around);
+    if (aroundRead) showRow(around);
   }, [around, chat]);
   // Closing the sheet gives the focus back to the composer, in the same commit: after a paint
   // it took the focus from a button tapped in the meantime (a reservoir row's Land).
@@ -821,32 +858,14 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   const firstNew = since == null ? null : rows.find((row) => row.kind === "message" && row.author !== "owner" && !row.pending && row.at > since);
   const [recent, earlier] = useRecent(place, rows, firstNew, { all: finding || around != null, away });
   const find = () => setFinding(!finding);
-  // ^ The find's words, as typed: the chat reads again for them (`load`).
-  const findWords = (words) => {
-    search.current.words = words.trim();
-    if (search.current.words !== search.current.read) load();
-  };
   // ^ A question's label: its reply is among the rows and shows marked, else the chat reads
   // around it as a quote jump does (`jump`, a log without it says so in a toast).
   const goToReply = (replyId) => {
-    if (!showRow(replyId)) jump.current(replyId);
+    if (!showRow(replyId)) jump(replyId);
   };
   // ^ The typing bubble leaves in the commit that brings the reply: a bubble that stayed to fade
   // out would move the reply down when it went.
   const typing = Boolean(chat?.busy);
-  // ^ Rows that arrive after the first read slide in; the ones of the first read, and the
-  // message this device just sent, do not.
-  const known = useRef(null);
-  const fresh = useRef(new Set());
-  const drawn = useRef(null);
-  if (ready) {
-    if (!known.current) known.current = new Set(rows.map((row) => row.key));
-    for (const row of rows) {
-      if (known.current.has(row.key)) continue;
-      known.current.add(row.key);
-      if (!(sent && row.id === sent.id) && row.key !== "sending") fresh.current.add(row.key);
-    }
-  }
   const names = { manager: chat?.manager.name };
   const stopped = chat && !chat.running && entries.at(-1)?.danger;
   // ^ The manager's state only when it matters: typing or stopped (docs/web-client-tasks.md "Project screen").
@@ -857,21 +876,10 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
     : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} all=${finding} />`
     : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${isNew} onMention=${mention} />`
     : html`<${Note} key=${row.key} row=${row} />`;
-  // ^ A read rebuilds every row from the entries it keeps: a row whose fields are the ones it was
-  // drawn with gives back the same node, which Preact does not render again (docs/web-client-chat.md
-  // "Long chats"). What every row reads besides its own fields starts the rows over, also a new
-  // day: a row's time says its day once it is not today's (lib.js `clock`); the project names are
-  // what `<project> #n` reads (`withChips`).
+  // ^ What the rows read besides their own fields: a new day (a row's time says its day once it is
+  // not today's, lib.js `clock`) and the project names (what `<project> #n` reads, `withChips`).
   const context = `${id} ${finding} ${names.manager} ${store.projects.map((other) => `${other.id}:${other.name}`)} ${new Date().toDateString()}`;
-  if (drawn.current?.context !== context || drawn.current.rows.size > rows.length + 200) drawn.current = { context, rows: new Map() };
-  const show = (row) => {
-    const isNew = fresh.current.has(row.key);
-    const kept = drawn.current.rows.get(row.key);
-    if (kept && kept.isNew === isNew && sameFields(kept.row, row)) return kept.node;
-    const node = draw(row, isNew);
-    drawn.current.rows.set(row.key, { row, isNew, node });
-    return node;
-  };
+  const show = useRowNodes(rows, { ready, own: (row) => (sent && row.id === sent.id) || row.key === "sending", context, draw });
   // ^ A sheet closes as Back does: to the entry under it, else to this chat.
   const leave = () => goBack(`#/p/${id}`);
   // ^ A sheet's Answer goes to this chat, also when another screen is under the sheet.
@@ -901,12 +909,12 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
     <div class="page manager">
       ${!low && header}
       <div class="chat">
-        ${finding && html`<${FindBar} log=${logNode} reveal=${reveal} loading=${search.current.words !== search.current.read} onQuery=${findWords} onClose=${() => setFinding(false)} />`}
+        ${finding && html`<${FindBar} log=${logNode} reveal=${reveal} loading=${loading} onQuery=${findWords} onClose=${() => setFinding(false)} />`}
         ${!role && html`<${SinceLine} project=${id} reply=${rows.findLast((row) => row.kind === "message" && row.author !== "owner")?.at} sent=${sent} />`}
         ${around != null && html`<p class="note around" role="status">Showing an earlier part of the conversation. <button class="link-action" type="button" onClick=${newest}>Back to newest</button></p>`}
         <div class="log-wrap">
           <div class="log" ref=${log} onScroll=${scrolled} role="log" aria-label=${`Conversation with ${role ?? "the manager"}`} tabindex="0" ...${gestures}>
-            ${cut.current ? html`<p class="note">Older messages are not shown.</p>` : null}
+            ${cut ? html`<p class="note">Older messages are not shown.</p>` : null}
             ${ready && !rows.length ? html`<p class="empty">${role
               ? `No messages yet. Ask ${role} about its work; it answers from the ledger.`
               : "No messages yet. Ask the manager for a task or a status; it answers from the ledger."}</p>` : null}
@@ -922,7 +930,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
         ${!role && !can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
         ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
           pills=${!role && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} />`}
-          onSent=${(message) => { search.current.around = null; setAround(null); toEnd(); setSent(message); load(); }} />`}
+          onSent=${(message) => { toEnd(); setSent(message); back(); }} />`}
       </div>
       ${menu}
       ${over && html`
