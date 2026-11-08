@@ -2843,7 +2843,7 @@ def part_worker(created=None):
         (r'WORKSPACE', b't'),
         (r'\(m\)anager', b'm'),
         # ^ The heading names the manager as the chat rows do: its shown name, `Atlas` here.
-        (r'(?s)%s demo · (?:opus|fake-manager) high +1 to check  1 approval\n.*▸ %s' % (js('task', 'manager')['name'], item['id']), b'i'),
+        (r'(?s)%s demo · opus high +1 to check  1 approval\n.*▸ %s' % (js('task', 'manager')['name'], item['id']), b'i'),
         (r'Enter: send', b'hello from the tui'),
         (r'> hello from the tui', b'\r'),
         # ^ "Sent" comes before the next read draws the message: wait for both.
