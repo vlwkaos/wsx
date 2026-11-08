@@ -115,18 +115,17 @@ pub struct OverviewKey {
 /// A built overview and when, by project.
 pub type Overviews = HashMap<u64, (OverviewKey, Instant, Value)>;
 
+/// A chat's agent status; `None` when its manager or role is not running.
+fn manager_status(dir: &ManagerDir) -> Option<ManagerResponse> {
+    call_socket::<_, ManagerResponse>(&dir.socket_path(), &ManagerRequest::Status, STATUS_TIMEOUT)
+        .ok()
+}
+
 fn manager_busy(scope: &Scope) -> bool {
     ManagerDir::existing(&scope.store)
         .ok()
         .flatten()
-        .and_then(|dir| {
-            call_socket::<_, ManagerResponse>(
-                &dir.socket_path(),
-                &ManagerRequest::Status,
-                STATUS_TIMEOUT,
-            )
-            .ok()
-        })
+        .and_then(|dir| manager_status(&dir))
         .is_some_and(|status| status.busy)
 }
 
@@ -220,8 +219,7 @@ fn build_overview(
         }
         needs.push((rank, record.updated_unix_ms, row));
     }
-    let lines = store::read_approvals(&scope.store).unwrap_or_default();
-    for line in pending_approvals(&lines) {
+    for line in pending {
         let ApprovalLine::Request {
             id,
             action,
@@ -278,7 +276,7 @@ fn build_overview(
         .into_iter()
         .chain(last_reply.clone())
         .max_by_key(|(unix_ms, _)| *unix_ms)
-        .map(|(unix_ms, text)| json!({ "unix_ms": unix_ms, "text": text }));
+        .map(news_value);
     // ^ The owner-facing activity the home row orders by: the newest message, the owner's own
     // message, a task entering its state and, in the page, an agent session's state change.
     // Record saves and the manager's `agent`, event and quiet entries do not count.
@@ -304,8 +302,8 @@ fn build_overview(
         "to_check": open_checks.len(),
         "check_items": open_checks,
         "tasks": listed.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
-        "decisions": decisions(&lines),
-        "resolutions": resolutions(&check_items, &tasks, &lines, now),
+        "decisions": decisions(&approvals),
+        "resolutions": resolutions(&check_items, &tasks, &approvals, now),
         "last_reply": last_reply.map(|(_, text)| text),
         "news": news,
         "asks": asks,
@@ -519,20 +517,8 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     if record.state == TaskState::Ready {
         summary["land_blocked_by"] = json!(ledger::land_blockers(&record));
     }
-    // ^ This task's items of the project's "To check" list, and the task a fail started.
     let items = checks::read(&scope.store).unwrap_or_default();
-    // ^ A decided item's capture goes after 7 days: the row says so (docs/tasks.md "To check").
-    summary["to_check"] = json!(items
-        .iter()
-        .filter(|item| item.task == task)
-        .map(|item| {
-            let mut row = json!(item);
-            if checks::capture_removed(&dir, item) {
-                row["capture_removed"] = json!(true);
-            }
-            row
-        })
-        .collect::<Vec<_>>());
+    summary["to_check"] = to_check_rows(&dir, &items, task);
     summary["fixes"] = json!(record
         .fixes
         .as_ref()
@@ -563,7 +549,34 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
         Value::Null
     };
     summary["landed_commit"] = json!(landed);
-    summary["approvals"] = json!(approvals
+    summary["approvals"] = approval_rows(&approvals);
+    summary["actions"] = if can_act {
+        json!(actions(&record))
+    } else {
+        json!([])
+    };
+    Ok(summary)
+}
+
+/// This task's items of the project's "To check" list. A decided item's capture goes after 7
+/// days: the row says so (docs/tasks.md "To check").
+fn to_check_rows(dir: &TaskDir, items: &[checks::CheckItem], task: u32) -> Value {
+    json!(items
+        .iter()
+        .filter(|item| item.task == task)
+        .map(|item| {
+            let mut row = json!(item);
+            if checks::capture_removed(dir, item) {
+                row["capture_removed"] = json!(true);
+            }
+            row
+        })
+        .collect::<Vec<_>>())
+}
+
+/// A task's pending approvals; a request carries its label.
+fn approval_rows(lines: &[&ApprovalLine]) -> Value {
+    json!(lines
         .iter()
         .map(|line| {
             let mut row = json!(line);
@@ -572,13 +585,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
             }
             row
         })
-        .collect::<Vec<_>>());
-    summary["actions"] = if can_act {
-        json!(actions(&record))
-    } else {
-        json!([])
-    };
-    Ok(summary)
+        .collect::<Vec<_>>())
 }
 
 /// What the top of an open task's sheet shows: its workflow steps, whether it is stuck, the
@@ -705,10 +712,42 @@ pub fn chat(
     let log = task::chat::read_chat(&dir, &window).map_err(internal)?;
     let activity = activity(&log).map(str::to_string);
     let asks = task::chat::asking(&dir, now).map_err(internal)?;
-    let (window, skipped) = task::chat::chat_window(&log, &window, &names);
-    // ^ An owner message's files show as attachments, not as their paths.
-    let mut attachments: std::collections::HashMap<u64, Value> = std::collections::HashMap::new();
-    let window: Vec<task::manager::ManagerEntry> = window
+    let (shown, skipped) = task::chat::chat_window(&log, &window, &names);
+    let (entries, attachments) = with_attachments(shown, media);
+    // ^ To check items and approvals are the manager's (docs/tasks.md "Roles").
+    let approvals = match role {
+        Some(_) => Vec::new(),
+        None => store::read_approvals(&scope.store).unwrap_or_default(),
+    };
+    let rows = row_values(
+        &entries,
+        &attachments,
+        &pending_approvals(&approvals),
+        &asks,
+        &names,
+    );
+    let status = manager_status(&dir);
+    let busy = status.as_ref().is_some_and(|status| status.busy);
+    Ok(json!({
+        "manager": manager,
+        "roles": roles,
+        "rows": rows,
+        "skipped": skipped,
+        "asks": asks.iter().map(|ask| ask.id).collect::<Vec<_>>(),
+        "running": status.is_some(),
+        "busy": busy,
+        "activity": if busy { activity } else { None },
+    }))
+}
+
+/// An owner message's files show as attachments, not as their paths: the entries with the
+/// paths cut, and the files by message id.
+fn with_attachments(
+    window: Vec<&ManagerEntry>,
+    media: &crate::media::Media,
+) -> (Vec<ManagerEntry>, HashMap<u64, Value>) {
+    let mut attachments = HashMap::new();
+    let entries = window
         .into_iter()
         .cloned()
         .map(|mut entry| {
@@ -728,44 +767,28 @@ pub fn chat(
             entry
         })
         .collect();
-    // ^ To check items and approvals are the manager's (docs/tasks.md "Roles").
-    let approvals = match role {
-        Some(_) => Vec::new(),
-        None => store::read_approvals(&scope.store).unwrap_or_default(),
-    };
-    let rows: Vec<Value> = task::chat::chat_rows(
-        &window.iter().collect::<Vec<_>>(),
-        &pending_approvals(&approvals),
-        &asks,
-        &names,
-    )
-    .into_iter()
-    .map(|row| {
-        let files = row.id.and_then(|id| attachments.get(&id)).cloned();
-        let mut value = serde_json::to_value(row).unwrap_or_default();
-        if let Some(files) = files {
-            value["attachments"] = files;
-        }
-        value
-    })
-    .collect();
-    let status = call_socket::<_, ManagerResponse>(
-        &dir.socket_path(),
-        &ManagerRequest::Status,
-        STATUS_TIMEOUT,
-    )
-    .ok();
-    let busy = status.as_ref().is_some_and(|status| status.busy);
-    Ok(json!({
-        "manager": manager,
-        "roles": roles,
-        "rows": rows,
-        "skipped": skipped,
-        "asks": asks.iter().map(|ask| ask.id).collect::<Vec<_>>(),
-        "running": status.is_some(),
-        "busy": busy,
-        "activity": if busy { activity } else { None },
-    }))
+    (entries, attachments)
+}
+
+/// The chat's rows as json, each with the files of its message.
+fn row_values(
+    entries: &[ManagerEntry],
+    attachments: &HashMap<u64, Value>,
+    approvals: &[&ApprovalLine],
+    asks: &[task::chat::OpenAsk],
+    names: &task::chat::Names,
+) -> Vec<Value> {
+    task::chat::chat_rows(&entries.iter().collect::<Vec<_>>(), approvals, asks, names)
+        .into_iter()
+        .map(|row| {
+            let files = row.id.and_then(|id| attachments.get(&id)).cloned();
+            let mut value = serde_json::to_value(row).unwrap_or_default();
+            if let Some(files) = files {
+                value["attachments"] = files;
+            }
+            value
+        })
+        .collect()
 }
 
 /// The newest reply of a chat that counts as news (when, text): one that is not quiet. A ping and
@@ -783,6 +806,11 @@ fn newest_news(tail: &[ManagerEntry]) -> Option<(u64, String)> {
     })
 }
 
+/// A news item as the page reads it: `{unix_ms, text}`.
+fn news_value((unix_ms, text): (u64, String)) -> Value {
+    json!({ "unix_ms": unix_ms, "text": text })
+}
+
 /// The open roles as contacts: name, the first line of the last reply and `news` (as a
 /// project's: `{unix_ms, text}` of the newest reply that is news, or `null`)
 /// (docs/web-client-tasks.md "Roles").
@@ -791,7 +819,7 @@ fn role_contacts(scope: &Scope) -> Vec<Value> {
         .iter()
         .map(|dir| {
             let tail = dir.read_tail(MANAGER_TAIL_BYTES).unwrap_or_default();
-            let news = newest_news(&tail).map(|(unix_ms, text)| json!({ "unix_ms": unix_ms, "text": text }));
+            let news = newest_news(&tail).map(news_value);
             let last = tail
                 .into_iter()
                 .rev()
