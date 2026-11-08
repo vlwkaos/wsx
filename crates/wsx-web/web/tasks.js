@@ -709,23 +709,24 @@ function SinceLine({ project, reply, sent }) {
     };
   }, [project]);
   useEffect(() => { if (sent) setSince(null); }, [sent]);
-  // ids shown per group: null shows all, then fewer until the text fits SINCE_LINES lines.
-  const [cap, setCap] = useState(null);
+  // ids shown per group: all, then fewer, at last only the count, until the text fits SINCE_LINES
+  // lines. The cap belongs to one answer (`for`), so a new answer starts with all ids.
+  const [fit, setFit] = useState({ for: null, cap: null });
+  const cap = fit.for === since ? fit.cap : null;
   const box = useRef(null);
   const width = useRef(0);
-  useEffect(() => setCap(null), [since]);
   useLayoutEffect(() => {
     const text = box.current?.querySelector("p");
     if (!text) return;
     const most = Math.max(0, ...Object.values(since.tasks).map((ids) => ids.length));
     const fits = text.scrollHeight <= SINCE_LINES * parseFloat(getComputedStyle(text).lineHeight) + 1;
-    if (!fits && (cap ?? most) > 1) setCap((cap ?? most) - 1);
+    if (!fits && (cap ?? most) > 0) setFit({ for: since, cap: (cap ?? most) - 1 });
   }, [since, cap]);
   useLayoutEffect(() => {
     if (!box.current) return undefined;
     const watch = new ResizeObserver(([one]) => {
       const next = Math.round(one.contentRect.width);
-      if (width.current && next !== width.current) setCap(null);
+      if (width.current && next !== width.current) setFit({ for: null, cap: null });
       width.current = next;
     });
     watch.observe(box.current);
@@ -743,7 +744,7 @@ function SinceLine({ project, reply, sent }) {
   }, [left, reply]);
   if (!since) return null;
   const parts = SINCE_WORDS.filter(([key]) => since.tasks[key]?.length).map(([key, words]) => html`
-    <span key=${key}>${words} ${since.tasks[key].slice(0, cap ?? undefined).map((id) => html`<a href=${taskLink(project, id)}>#${id}</a> `)}${cap && since.tasks[key].length > cap ? html`<span class="since-more">+${since.tasks[key].length - cap} more</span>` : ""}</span>`);
+    <span key=${key}>${words} ${cap === 0 ? since.tasks[key].length : html`${since.tasks[key].slice(0, cap ?? undefined).map((id) => html`<a href=${taskLink(project, id)}>#${id}</a> `)}${cap && since.tasks[key].length > cap ? html`<span class="since-more">+${since.tasks[key].length - cap} more</span>` : ""}`}</span>`);
   if (since.replies) parts.push(html`<span key="replies">${plural(since.replies, "reply", "replies")}</span>`);
   if (!parts.length) return null;
   return html`
