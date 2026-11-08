@@ -571,16 +571,12 @@ pub fn limits(now_ms: u64) -> Value {
 /// The start of `now_ms`'s day in this machine's zone; 24 hours back when that cannot be told.
 pub fn local_midnight_ms(now_ms: u64) -> u64 {
     let fallback = now_ms.saturating_sub(DAY_MS);
-    let Ok(secs) = libc::time_t::try_from(now_ms / 1000) else {
+    let Some(mut tm) = i64::try_from(now_ms / 1000)
+        .ok()
+        .and_then(crate::routine::local::local_tm)
+    else {
         return fallback;
     };
-    let mut tm = std::mem::MaybeUninit::<libc::tm>::uninit();
-    // SAFETY: both pointers are valid for the call; localtime_r is thread-safe.
-    if unsafe { libc::localtime_r(&secs, tm.as_mut_ptr()) }.is_null() {
-        return fallback;
-    }
-    // SAFETY: localtime_r filled it.
-    let mut tm = unsafe { tm.assume_init() };
     (tm.tm_hour, tm.tm_min, tm.tm_sec) = (0, 0, 0);
     tm.tm_isdst = -1;
     // SAFETY: tm is a valid, filled struct.

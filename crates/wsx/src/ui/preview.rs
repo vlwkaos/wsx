@@ -567,7 +567,7 @@ pub fn render_routines_preview(frame: &mut Frame, area: Rect, project: &Project)
                 ),
                 Span::raw(format!(
                     "  {}  last: {last}",
-                    wsx_core::task::ledger::trigger_text(&view.routine.trigger)
+                    wsx_core::routine::local::trigger_text(&view.routine.trigger)
                 )),
             ])
         })
@@ -609,7 +609,9 @@ pub fn render_routine_preview(
         ]),
         Line::from(vec![
             Span::styled("Trigger: ", label),
-            Span::raw(wsx_core::task::ledger::trigger_text(&view.routine.trigger)),
+            Span::raw(wsx_core::routine::local::trigger_text(
+                &view.routine.trigger,
+            )),
         ]),
         Line::from(vec![Span::styled("Next:    ", label), Span::raw(next)]),
         Line::from(vec![
@@ -703,20 +705,7 @@ pub fn render_routine_preview(
 }
 
 fn format_epoch(epoch: i64) -> String {
-    let timestamp = epoch as libc::time_t;
-    let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
-    unsafe {
-        libc::localtime_r(&timestamp, local.as_mut_ptr());
-    }
-    let local = unsafe { local.assume_init() };
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}",
-        local.tm_year + 1900,
-        local.tm_mon + 1,
-        local.tm_mday,
-        local.tm_hour,
-        local.tm_min
-    )
+    wsx_core::routine::local::local_stamp(epoch).unwrap_or_else(|| epoch.to_string())
 }
 
 #[cfg(test)]

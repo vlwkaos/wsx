@@ -4,6 +4,7 @@
 //! ref: docs/tasks.md "Routines"
 
 pub mod cron;
+pub mod local;
 pub mod store;
 
 use serde::{Deserialize, Serialize};

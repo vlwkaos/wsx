@@ -2673,7 +2673,7 @@ fn checkin(project: Option<&str>, after: Option<&str>, at: Option<&str>, why: &s
     let at_secs = match (after, at) {
         (Some(after), _) => now + duration_secs(after)?,
         (None, Some(at)) => {
-            wsx_core::task::ledger::local_minute(at, now).map_err(anyhow::Error::msg)? * 60
+            wsx_core::routine::local::local_minute(at, now).map_err(anyhow::Error::msg)? * 60
         }
         (None, None) => bail!("pass --in or --at"),
     };
@@ -2706,7 +2706,7 @@ fn checkin(project: Option<&str>, after: Option<&str>, at: Option<&str>, why: &s
     crate::cli::send_routine(&path, action)?;
     println!(
         "check-in {}",
-        wsx_core::task::ledger::trigger_text(&Trigger::At { epoch_minute })
+        wsx_core::routine::local::trigger_text(&Trigger::At { epoch_minute })
     );
     Ok(())
 }

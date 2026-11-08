@@ -418,11 +418,12 @@ fn usage_rows(ledger: &Value, width: usize, tokens: bool) -> Vec<Line<'static>> 
     }
     let mut lines = vec![Line::from(legend)];
     for day in days {
-        let date = crate::task::limit::local_time(day["day_ms"].as_u64().unwrap_or(0) / 1000)
-            .map_or_else(String::new, |tm| {
-                let name = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-                format!("{} {:>2}", name[tm.tm_wday as usize % 7], tm.tm_mday)
-            });
+        let date =
+            wsx_core::routine::local::local_tm((day["day_ms"].as_u64().unwrap_or(0) / 1000) as i64)
+                .map_or_else(String::new, |tm| {
+                    let name = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+                    format!("{} {:>2}", name[tm.tm_wday as usize % 7], tm.tm_mday)
+                });
         let mut spans = vec![Span::styled(
             format!("{date:<DATE_WIDTH$}"),
             Style::default().fg(theme::TEXT_SUBTLE),

@@ -301,7 +301,7 @@ fn status(chat: &ManagerChat, width: usize) -> Line<'static> {
 
 /// "14:05" in this machine's zone.
 fn clock(unix_ms: u64) -> String {
-    crate::task::limit::local_time(unix_ms / 1000).map_or_else(String::new, |tm| {
+    wsx_core::routine::local::local_tm((unix_ms / 1000) as i64).map_or_else(String::new, |tm| {
         format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
     })
 }
