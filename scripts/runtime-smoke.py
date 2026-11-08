@@ -1401,25 +1401,25 @@ assert frames_bytes < view_bytes, (frames_bytes, view_bytes)
 print(f"preview poll with {len(preview_sessions)} sessions: view {view_bytes} bytes, frames {frames_bytes} bytes", flush=True)
 
 quiet_with, quiet_without = preview_sessions[1][1], preview_sessions[2][1]
-asking = frame_subscribe(quiet_with, 80, heartbeat=True)
-silent = frame_subscribe(quiet_without, 81)
-heard = {"asking": [], "silent": []}
-for stream in (asking, silent):
-    stream.settimeout(0.5)
+hb_asking = frame_subscribe(quiet_with, 80, heartbeat=True)
+hb_silent = frame_subscribe(quiet_without, 81)
+hb_heard = {"asking": [], "silent": []}
+for hb_stream in (hb_asking, hb_silent):
+    hb_stream.settimeout(0.5)
 deadline = time.monotonic() + 5
 while time.monotonic() < deadline:
-    for name, stream in (("asking", asking), ("silent", silent)):
-        send_stream(stream, {"type": "heartbeat"})
+    for hb_name, hb_stream in (("asking", hb_asking), ("silent", hb_silent)):
+        send_stream(hb_stream, {"type": "heartbeat"})
         try:
-            heard[name].append(recv_line(stream)["type"])
+            hb_heard[hb_name].append(recv_line(hb_stream)["type"])
         except socket.timeout:
             pass
-assert "heartbeat" in heard["asking"], heard
-assert "heartbeat" not in heard["silent"], heard
-asking.close()
-silent.close()
-for session_id, _ in preview_sessions:
-    close_session(session_id)
+assert "heartbeat" in hb_heard["asking"], hb_heard
+assert "heartbeat" not in hb_heard["silent"], hb_heard
+hb_asking.close()
+hb_silent.close()
+for preview_session_id, _ in preview_sessions:
+    close_session(preview_session_id)
 print("frames reply and stream heartbeat: PASS", flush=True)
 
 
