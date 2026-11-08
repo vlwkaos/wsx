@@ -1,7 +1,8 @@
 //! The clap types of `wsx task`: the subcommand enums and the argument groups they share.
 //! ref: docs/tasks.md
 
-use super::{post_key, Size};
+use super::cmd::new::Size;
+use super::post_key;
 use crate::cli::PromptSource;
 use clap::Subcommand;
 use std::path::PathBuf;
