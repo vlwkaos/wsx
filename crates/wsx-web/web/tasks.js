@@ -6,7 +6,7 @@ import { api } from "./api.js";
 import { html, Icon, keepIn, plural, readMap, unreadNews, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
 import { can, goBack, leaveFor, shows, state, touch, useEventLoad, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
-import { AttachButton, FileChips, grow, inlinePasted, isolate, JumpButton, pasteFiles, release, Suggestions, uploadFiles, useRecent, withNewLine } from "./chat.js";
+import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, useDraft, useListKeys, useRecent, withNewLine } from "./chat.js";
 import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, Typing } from "./bubbles.js";
 import { FindBar, FindButton } from "./find.js";
 import { markFound, QuoteChip, quoteSplit, useReply, withQuote } from "./reply.js";
@@ -357,16 +357,14 @@ function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent
   const draft = role ? `${project}/${role}` : project;
   const [text, setText] = useState(() => readMap(DRAFTS_KEY)[draft] ?? "");
   const [caret, setCaret] = useState(0);
-  const [active, setActive] = useState(0);
-  const [closed, setClosed] = useState(null);
-  const [error, setError] = useState("");
+  const { active, setActive, shut, keys } = useListKeys(text);
   const [busy, setBusy] = useState(false);
   // ^ Files to send with the next message; they are lost on leaving the project.
   const files = useRef({ attachments: [], uploads: [] }).current;
   const [, renew] = useState(0);
   const filesChanged = () => renew((count) => count + 1);
   const tasks = store.tasks[project]?.tasks ?? [];
-  const typed = closed === text ? null : wordQuery(text, caret);
+  const typed = shut ? null : wordQuery(text, caret);
   const [mentions, setMentions] = useState(null);
   // ^ A failed read shows its error and a Retry in the list, not "Loading…" for ever.
   const [failed, setFailed] = useState("");
@@ -388,9 +386,7 @@ function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent
     : within(mentions?.skills ?? [], typed.query, (skill) => skill.name)
       .map((skill) => ({ key: skill.name, name: `/${skill.name}`, description: skill.description, source: "skill", insert: typed.start ? `owner:${skill.name} ` : `Use owner:${skill.name}: ` }));
   const listOpen = Boolean(options);
-  useLayoutEffect(() => { field.current.value = text; grow(field.current); }, [project]);
   useLayoutEffect(() => { if (listOpen) document.getElementById(`slash-${active}`)?.scrollIntoView({ block: "nearest" }); }, [active, listOpen]);
-  useEffect(() => release, []);
   const changed = () => {
     const node = field.current;
     setText(node.value);
@@ -399,6 +395,7 @@ function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent
     keepIn(DRAFTS_KEY, draft, node.value);
     grow(node);
   };
+  const { error, setError, upload, inline, remove, focusField } = useDraft(field, files, { text, key: project, filesChanged, inlined: () => { changed(); filesChanged(); } });
   const pick = ({ insert }) => {
     const node = field.current;
     node.value = text.slice(0, typed.start) + insert + text.slice(caret);
@@ -430,38 +427,14 @@ function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent
   };
   const keydown = (event) => {
     if (event.isComposing || event.keyCode === 229) return;
-    if (listOpen) {
-      const move = { ArrowDown: 1, ArrowUp: -1 }[event.key];
-      if (move && options.length) {
-        event.preventDefault();
-        setActive((active + move + options.length) % options.length);
-        return;
-      }
-      if ((event.key === "Tab" || event.key === "Enter") && !event.shiftKey && options[active]) {
-        event.preventDefault();
-        pick(options[active]);
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setClosed(text);
-        return;
-      }
-    }
+    if (listOpen && keys(event, options, pick)) return;
     if (event.key !== "Enter" || event.shiftKey || touch()) return;
     event.preventDefault();
     send();
   };
-  const upload = (picked) => { setError(""); uploadFiles(picked, files, filesChanged, setError); };
-  const inline = (item) => inlinePasted(item, field.current, files).then(() => { changed(); filesChanged(); }, (failure) => setError(failure.message));
-  const focusField = (event) => {
-    if (event.target.closest("button, textarea, input")) return;
-    event.preventDefault();
-    field.current.focus();
-  };
   return html`
     <div class="composer">
-      <${FileChips} files=${files} onInline=${inline} onRemove=${(item) => { files.attachments = files.attachments.filter((other) => other !== item); filesChanged(); }} />
+      <${FileChips} files=${files} onInline=${inline} onRemove=${remove} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
       <${QuoteChip} quote=${reply?.line} onRemove=${() => onReply(null)} />
       ${listOpen && html`<${Suggestions} label=${LIST_LABELS[mark]} active=${active} onHover=${setActive} onPick=${pick}
