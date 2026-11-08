@@ -708,49 +708,20 @@ pub fn chat(
         peer: &peer,
     };
     let window = task::chat::Window::new(find, after, around);
-    let now = task::now_unix_ms();
-    let log = task::chat::read_chat(&dir, &window).map_err(internal)?;
-    let activity = activity(&log).map(str::to_string);
-    let asks = task::chat::asking(&dir, now).map_err(internal)?;
-    let (shown, skipped) = task::chat::chat_window(&log, &window, &names);
-    let (entries, attachments) = with_attachments(shown, media);
     // ^ To check items and approvals are the manager's (docs/tasks.md "Roles").
     let approvals = match role {
         Some(_) => Vec::new(),
         None => store::read_approvals(&scope.store).unwrap_or_default(),
     };
-    let rows = row_values(
-        &entries,
-        &attachments,
-        &pending_approvals(&approvals),
-        &asks,
+    // ^ An owner message's files show as attachments, not as their paths.
+    let mut attachments: HashMap<u64, Value> = HashMap::new();
+    let page = task::chat::page(
+        &dir,
+        &window,
         &names,
-    );
-    let status = manager_status(&dir);
-    let busy = status.as_ref().is_some_and(|status| status.busy);
-    Ok(json!({
-        "manager": manager,
-        "roles": roles,
-        "rows": rows,
-        "skipped": skipped,
-        "asks": asks.iter().map(|ask| ask.id).collect::<Vec<_>>(),
-        "running": status.is_some(),
-        "busy": busy,
-        "activity": if busy { activity } else { None },
-    }))
-}
-
-/// An owner message's files show as attachments, not as their paths: the entries with the
-/// paths cut, and the files by message id.
-fn with_attachments(
-    window: Vec<&ManagerEntry>,
-    media: &crate::media::Media,
-) -> (Vec<ManagerEntry>, HashMap<u64, Value>) {
-    let mut attachments = HashMap::new();
-    let entries = window
-        .into_iter()
-        .cloned()
-        .map(|mut entry| {
+        &pending_approvals(&approvals),
+        task::now_unix_ms(),
+        |entry| {
             if let ManagerEvent::Message {
                 id,
                 from: Author::Owner,
@@ -764,21 +735,12 @@ fn with_attachments(
                     attachments.insert(*id, json!(files));
                 }
             }
-            entry
-        })
-        .collect();
-    (entries, attachments)
-}
-
-/// The chat's rows as json, each with the files of its message.
-fn row_values(
-    entries: &[ManagerEntry],
-    attachments: &HashMap<u64, Value>,
-    approvals: &[&ApprovalLine],
-    asks: &[task::chat::OpenAsk],
-    names: &task::chat::Names,
-) -> Vec<Value> {
-    task::chat::chat_rows(&entries.iter().collect::<Vec<_>>(), approvals, asks, names)
+        },
+    )
+    .map_err(internal)?;
+    let activity = activity(&page.log).map(str::to_string);
+    let rows: Vec<Value> = page
+        .rows
         .into_iter()
         .map(|row| {
             let files = row.id.and_then(|id| attachments.get(&id)).cloned();
@@ -788,7 +750,19 @@ fn row_values(
             }
             value
         })
-        .collect()
+        .collect();
+    let status = manager_status(&dir);
+    let busy = status.as_ref().is_some_and(|status| status.busy);
+    Ok(json!({
+        "manager": manager,
+        "roles": roles,
+        "rows": rows,
+        "skipped": page.skipped,
+        "asks": page.asks.iter().map(|ask| ask.id).collect::<Vec<_>>(),
+        "running": status.is_some(),
+        "busy": busy,
+        "activity": if busy { activity } else { None },
+    }))
 }
 
 /// The newest reply of a chat that counts as news (when, text): one that is not quiet. A ping and

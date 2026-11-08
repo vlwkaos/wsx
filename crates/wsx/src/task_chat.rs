@@ -17,7 +17,7 @@ use std::{
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::{
     call_socket,
-    chat::{self, chat_rows, ChatRow, Names, RowKind, Window},
+    chat::{self, ChatRow, Names, Page, RowKind, Window},
     checks::{self, CheckItem, CheckState},
     manager::{activity, pending_approvals, ManagerRequest, ManagerResponse},
     owner,
@@ -661,11 +661,6 @@ fn read(
     (searched, around): (&str, Option<u64>),
 ) -> anyhow::Result<View> {
     let window = Window::new(Some(searched), None, around);
-    let now = wsx_core::task::now_unix_ms();
-    let (log, asks) = match dir {
-        Some(dir) => (chat::read_chat(dir, &window)?, chat::asking(dir, now)?),
-        None => (Vec::new(), Vec::new()),
-    };
     let settings = load_task_config(main).unwrap_or_default();
     let manager = settings.manager_shown_name(project).to_string();
     let role = dir.and_then(|dir| dir.role.clone());
@@ -698,8 +693,19 @@ fn read(
         manager: &manager,
         peer: &peer,
     };
-    let (entries, _) = chat::chat_window(&log, &window, &names);
-    let rows = chat_rows(&entries, &pending_approvals(&approvals), &asks, &names);
+    let Page {
+        log, asks, rows, ..
+    } = match dir {
+        Some(dir) => chat::page(
+            dir,
+            &window,
+            &names,
+            &pending_approvals(&approvals),
+            wsx_core::task::now_unix_ms(),
+            |_| {},
+        )?,
+        None => Page::default(),
+    };
     if role.is_some() {
         return Ok(View {
             rows,

@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::git::output_with_timeout_tail;
-use wsx_core::task::chat::{self, Names, Window};
+use wsx_core::task::chat::{self, chat_rows, Names, Window};
 use wsx_core::task::checks::{self, CheckItem, CheckState};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
 use wsx_core::task::manager::{
@@ -2992,7 +2992,6 @@ fn chat(
     };
     let window = Window::new(find, after, around);
     let now = wsx_core::task::now_unix_ms();
-    let log = chat::read_chat(&dir, &window)?;
     let shown = load_task_config(&main)
         .unwrap_or_default()
         .manager_shown_name(&name)
@@ -3003,30 +3002,28 @@ fn chat(
         manager: &shown,
         peer: &|other: &str| other.to_string(),
     };
-    let (entries, skipped) = chat::chat_window(&log, &window, &names);
-    let asks: Vec<u64> = chat::asking(&dir, now)?.iter().map(|ask| ask.id).collect();
+    let page = chat::page(&dir, &window, &names, &[], now, |_| {})?;
+    let asks: Vec<u64> = page.asks.iter().map(|ask| ask.id).collect();
     if json {
-        return print_json(&json!({ "entries": entries, "skipped": skipped, "asks": asks }));
+        return print_json(
+            &json!({ "entries": page.entries, "skipped": page.skipped, "asks": asks }),
+        );
     }
-    for entry in entries {
+    for entry in &page.entries {
         match &entry.event {
             ManagerEvent::Message { id, from, text, .. } => println!("[{id}] {from:?}: {text}"),
             ManagerEvent::Reply { id, text, .. } if asks.contains(id) => {
                 println!("[{id}] manager (asks): {text}")
             }
             ManagerEvent::Reply { id, text, .. } => println!("[{id}] manager: {text}"),
-            ManagerEvent::Rotated {
-                reason: Some(reason),
-                ..
-            } => println!("(new conversation: {reason})"),
-            ManagerEvent::Rotated { tokens, .. } => {
-                println!("(new conversation after {tokens} tokens)")
+            // ^ A pause, a new conversation and a stop read as the other chats say them.
+            ManagerEvent::Limit { .. }
+            | ManagerEvent::Rotated { .. }
+            | ManagerEvent::Stopped { .. } => {
+                for row in chat_rows(&[entry], &[], &[], &names) {
+                    println!("({})", row.text);
+                }
             }
-            ManagerEvent::Limit { until: Some(until) } => {
-                println!("(manager paused: usage limit, resumes at {until})")
-            }
-            ManagerEvent::Limit { until: None } => println!("(manager resumed)"),
-            ManagerEvent::Stopped { reason } => println!("(manager stopped: {reason})"),
             _ => {}
         }
     }
