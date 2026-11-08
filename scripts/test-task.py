@@ -1814,7 +1814,7 @@ def part_core(created=None):
     # ^ A failed deploy or release is an event with the end of its output.
     js('task', 'check', 'pass', '--all')
     ran('release')
-    wait(lambda: events_with('release of %s failed (exit 3); its output ends:\n    52\n' % git('rev-parse', 'main')[:12],
+    wait(lambda: events_with('release of %s failed (exit 3); its output ends:\n    53\n' % git('rev-parse', 'main')[:12],
                              '\n    60\n    release broke here'), 'the failed release event')
     # ^ A release longer than a call through the manager's broker: the call answers that it
     # started while the command runs, a second one is refused, and the result is recorded and
