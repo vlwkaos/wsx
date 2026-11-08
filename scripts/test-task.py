@@ -442,7 +442,7 @@ def run(wsx, wsxd, work, owned, part):
             if value:
                 return value
             time.sleep(0.1)
-        raise RuntimeError(label + ' timeout')
+        raise RuntimeError((label() if callable(label) else label) + ' timeout')
 
     def stays(positive, absent, label, seconds=60):
         """Something did not happen: first wait for `positive`, an event that comes after the
@@ -2323,7 +2323,9 @@ def part_core(created=None):
     assert rows['board']['post'] is True and rows['hushed']['post'] is False, rows
     js('task', 'routine', 'run', 'board', '-p', 'demo')
     event_message = wait(lambda: events_with('routine board succeeded after ', '; for the owner; output ends: '),
-                         'the board routine event', 60)[0]
+                         lambda: 'the board routine event (routine: %s; log end: %s)' % (
+                             next(r for r in js('task', 'ledger')['routines'] if r['name'] == 'board'),
+                             [(e['kind'], str(e.get('text', ''))[:160]) for e in manager_entries()[-6:]]), 60)[0]
     event = next(line for line in event_message['text'].split('\n') if line.startswith('routine board'))
     assert '{"ok": true}' in event and '\n' not in event, event
     assert '; files: [board.html](files/routine-out/board.html)' in event and 'none.html]' not in event, event
