@@ -47,3 +47,11 @@ Confirmed by a command I ran on HEAD:
 - `git blame` and `git log -S` for every commit above; `awk` for function lengths (4, 11).
 
 Read only, not run: the panel duplication (6), the media and compact details (8), the sheet and composer shapes (9 to 11), the missing scrollbar variable (12), the helper drift (15). A sub-agent pass found no other unused export, CSS class, CSS variable or theme token; I re-ran only the `.need-form` grep. No scenario was run: this task changes no code.
+
+## Done (task #334)
+
+- 9: `parseRoute` returns `sheet`; `Manager` draws it from `SHEETS` in `tasks.js`; `page.js` is `overview.js`, `.project-page` is `.project-overview`. The route `#/p/<id>/page`, `api/tasks/<id>/page` and the `page` event keep their names.
+- 10: `SheetPage` and `useSheetRead` in `ui.js` serve the overview, To check, routines and panels sheets; usage takes `SheetPage` only (its `UsageView` reads with filters and is shared with Settings).
+- 11: `useManagerLog`, `useRowNodes` (`tasks.js`), `useListKeys` and `useDraft` (`chat.js`); the task words are in `task-words.js`, the overview load and fixed actions in `task-api.js`. Only `main.js` imports `tasks.js`: the 10 import cycles through it are gone.
+- 12: the `--log-scrollbar` observer is in `useFollowEnd` (`lib.js`); `web-tasks-check.mjs` asserts it on the manager log.
+- 264-F2 (one `showRow`) was already done by e928fb22; the second `onClose` on `<Reservoir>` is dropped.
