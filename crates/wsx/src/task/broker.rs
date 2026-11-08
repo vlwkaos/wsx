@@ -95,7 +95,10 @@ fn forward(socket: &Path, argv: Vec<String>) -> Result<i32> {
     let check_run = argv.get(1).is_some_and(|sub| sub == "check-run");
     stream.set_read_timeout((!check_run).then_some(RUN_LIMIT + Duration::from_secs(30)))?;
     stream.write_all(&serde_json::to_vec(&Request { argv, stdin, cwd })?)?;
-    stream.shutdown(std::net::Shutdown::Write)?;
+    // ^ The host reads one JSON value and needs no end mark. One that refuses the command at once has
+    // answered and closed before this: macOS then fails the shutdown with ENOTCONN (os error 57),
+    // and its answer is still readable.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
     let response: Response =
         read_one(&stream, MAX_RESPONSE_BYTES).context("the host did not answer")?;
     print!("{}", response.stdout);
