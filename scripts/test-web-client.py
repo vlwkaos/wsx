@@ -4107,9 +4107,12 @@ merge_seconds = 3
         assert sent_row['text'] == 'STATUS with the report' and [a['hash'] for a in sent_row['attachments']] == [report['hash']], sent_row
         # --- The overview and the chat read little (docs/design/web-server-health-audit.md findings 4, 5): the
         # server traces each whole-log read on stderr (WSX_TRACE_READ_LOG).
+        def traced(suffix=''):
+            return [line for line in (work / 'owner.log').read_text().splitlines()
+                    if line.startswith('wsx-trace read_log ') and line.endswith(suffix)]
+
         def full_reads(suffix=''):
-            return sum(1 for line in (work / 'owner.log').read_text().splitlines()
-                       if line.startswith('wsx-trace read_log ') and line.endswith(suffix))
+            return len(traced(suffix))
 
         def observer_idle():
             seen = full_reads()
@@ -4123,12 +4126,18 @@ merge_seconds = 3
         assert full_reads('/manager') == manager_reads, 'a chat call without after reads the whole log'
         last_id = max(row['id'] for row in whole_chat['rows'] if row.get('id') is not None)
         warm = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
+        # ^ Every project's overview is built again after OVERVIEW_TTL (60 s) even with its stamp unchanged: the observer builds
+        # one only when its stamp changes, so a slow run reaches `/api/tasks` below with the other projects' overviews older than
+        # that. Warm them all here, so the reads below are the ones an unchanged stamp must not cause.
+        steady(owner, 'GET', '/api/tasks')
         reads = full_reads()
+        traced_before = traced()
         for _ in range(3):
             assert steady(owner, 'GET', '/api/tasks/%d' % demo)[1] == warm
         steady(owner, 'GET', '/api/tasks')
         assert steady(owner, 'GET', chat_route + '?after=%d' % last_id)[1]['rows'] == []
-        assert full_reads() == reads, 'unchanged stamp: no whole-log read for the overview or a chat with a recent after'
+        assert full_reads() == reads, ('unchanged stamp: no whole-log read for the overview or a chat with a recent after',
+                                       traced()[len(traced_before):])
         # A manager line changes the overview and the chat; the answers equal a cold build.
         posted = subprocess.run([str(wsx), 'task', 'post', '-p', 'demo'], input='cache check line', env=env, cwd=project,
                                 capture_output=True, text=True, timeout=60)
