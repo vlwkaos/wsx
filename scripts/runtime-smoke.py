@@ -1991,7 +1991,7 @@ try:
     wait_socket_stopped()
     time.sleep(35)
     assert not SOCKET.exists(), "the TUI started wsxd again after `wsx daemon stop`"
-    assert b"restart failed" not in tui_screen[mark:], bytes(tui_screen[mark:])[-600:]
+    assert b"restart failed" not in tui.raw[mark:], bytes(tui.raw[mark:])[-600:]
     print("tui stop: wsxd was still stopped 35 s after `wsx daemon stop` with the TUI running", flush=True)
     cursor_daemon = start()
 finally:
