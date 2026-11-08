@@ -372,6 +372,45 @@ impl ChatRow {
     }
 }
 
+/// A chat window read once: what the web, the TUI and `wsx task chat` all need.
+#[derive(Default)]
+pub struct Page {
+    /// The log as `read_chat` returned it; `activity` reads its end.
+    pub log: Vec<ManagerEntry>,
+    /// The entries of the window, after the caller's `edit`.
+    pub entries: Vec<ManagerEntry>,
+    /// How many older entries the window left out.
+    pub skipped: usize,
+    pub asks: Vec<OpenAsk>,
+    pub rows: Vec<ChatRow>,
+}
+
+/// Read `dir`'s chat at `window` and classify it: the log, the window's entries, the open
+/// questions and the rows. `edit` changes each entry of the window before its row is made (the
+/// web turns an owner message's file paths into attachments). `approvals`: see `chat_rows`.
+pub fn page(
+    dir: &ManagerDir,
+    window: &Window,
+    names: &Names,
+    approvals: &[&ApprovalLine],
+    now: u64,
+    mut edit: impl FnMut(&mut ManagerEntry),
+) -> Result<Page> {
+    let log = read_chat(dir, window)?;
+    let asks = asking(dir, now)?;
+    let (entries, skipped) = chat_window(&log, window, names);
+    let mut entries: Vec<ManagerEntry> = entries.into_iter().cloned().collect();
+    entries.iter_mut().for_each(&mut edit);
+    let rows = chat_rows(&entries.iter().collect::<Vec<_>>(), approvals, &asks, names);
+    Ok(Page {
+        log,
+        entries,
+        skipped,
+        asks,
+        rows,
+    })
+}
+
 /// The chat window's entries (`chat_window`) as rows. `approvals`: the pending approvals
 /// (`pending_approvals`); a quiet reply that carries one is a message. `asks`: the open
 /// questions (`open_asks`), whose rows ask.
@@ -408,200 +447,218 @@ pub fn chat_rows(
             carried[index].push(id.to_string());
         }
     }
-    let peer_name = |key: &str| match key.strip_prefix("role:") {
-        Some("manager") => names.manager.to_string(),
-        Some(role) => role.to_string(),
-        None => (names.peer)(key),
-    };
     let mut rows: Vec<ChatRow> = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
-        let key = |kind: &str| match entry.id() {
-            Some(id) => format!("{kind}-{id}"),
-            None => format!("{kind}-{}", entry.unix_ms),
-        };
         match &entry.event {
-            ManagerEvent::Message {
-                from: Author::Owner,
-                text,
-                ..
-            } => rows.push(ChatRow::said(
-                key("message"),
-                entry,
-                Speaker::Owner,
-                "You".into(),
-                text,
-            )),
-            ManagerEvent::Message {
-                from: Author::Recap,
-                ..
-            } => {}
-            ManagerEvent::Message {
-                from: Author::Manager { project, reply },
-                text,
-                ..
-            } => rows.push(ChatRow {
-                tag: reply.then(|| "Reply".into()),
-                ..ChatRow::said(
-                    key("message"),
-                    entry,
-                    Speaker::Peer(project.clone()),
-                    peer_name(project),
-                    text,
-                )
-            }),
-            ManagerEvent::Message {
-                from: Author::Role { name, reply },
-                text,
-                ..
-            } => {
-                let peer = format!("role:{name}");
-                rows.push(ChatRow {
-                    tag: reply.then(|| "Reply".into()),
-                    ..ChatRow::said(
-                        key("message"),
-                        entry,
-                        Speaker::Peer(peer.clone()),
-                        peer_name(&peer),
-                        text,
-                    )
-                })
-            }
             ManagerEvent::Message {
                 from: Author::Events,
                 text,
                 short,
                 ..
-            } => {
-                // ^ A line logged before `short` shows its first clause.
-                let lines: Vec<Short> = match short.is_empty() {
-                    false => short.clone(),
-                    true => text
-                        .lines()
-                        .filter(|line| !line.trim().is_empty())
-                        .map(Short::plain)
-                        .collect(),
-                };
-                for (nth, line) in lines.into_iter().enumerate() {
-                    let repeat = rows.last().is_some_and(|last| {
-                        last.kind == RowKind::Line
-                            && last.text == line.text
-                            && entry.unix_ms.saturating_sub(last.unix_ms) < REPEAT_MS
-                    });
-                    if !repeat {
-                        rows.push(ChatRow {
-                            task: line.task,
-                            ..ChatRow::new(
-                                RowKind::Line,
-                                format!("{}-{nth}", key("message")),
-                                entry,
-                                line.text,
-                            )
-                        });
-                    }
-                }
+            } => event_rows(&mut rows, entry, text, short),
+            ManagerEvent::Message { from, text, .. } => {
+                rows.extend(message_row(entry, from, text, names))
             }
-            ManagerEvent::Reply {
-                to,
-                text,
-                quiet,
-                id,
-                provisional,
-                post,
-                level,
-                ..
-            } => {
-                let approvals = std::mem::take(&mut carried[index]);
-                // ^ A quiet reply is a muted line under the manager's name unless it carries an
-                // approval; `-` or nothing says nothing changed and shows nothing.
-                if *quiet && approvals.is_empty() {
-                    if !says_nothing(text) {
-                        rows.push(ChatRow {
-                            author: Some(Speaker::Manager),
-                            name: Some(names.own.to_string()),
-                            ..ChatRow::new(
-                                RowKind::Quiet,
-                                key("reply"),
-                                entry,
-                                text.trim().to_string(),
-                            )
-                        });
-                    }
-                    continue;
-                }
-                rows.push(ChatRow {
-                    tag: to
-                        .iter()
-                        .any(|id| recaps.contains(id))
-                        .then(|| "Recap".into()),
-                    asks: asks.iter().any(|ask| ask.id == *id),
-                    post: *post,
-                    level: *level,
-                    approvals,
-                    provisional: provisional.clone(),
-                    ..ChatRow::said(
-                        key("reply"),
-                        entry,
-                        Speaker::Manager,
-                        names.own.to_string(),
-                        text,
-                    )
-                })
-            }
-            // ^ An empty `sent` (older hosts logged one without --json) shows nothing.
-            ManagerEvent::Sent { text, .. } if text.trim().is_empty() => {}
-            ManagerEvent::Sent { to, text, reply } => rows.push(ChatRow {
-                tag: Some(format!(
-                    "{} {}",
-                    if *reply { "Reply to" } else { "To" },
-                    peer_name(to)
-                )),
-                ..ChatRow::said(
-                    key("sent"),
-                    entry,
-                    Speaker::Manager,
-                    names.own.to_string(),
-                    text,
-                )
-            }),
-            ManagerEvent::Limit { until } => rows.push(ChatRow::new(
-                RowKind::Line,
-                key("limit"),
+            ManagerEvent::Reply { .. } => rows.extend(reply_row(
                 entry,
-                match until {
-                    Some(until) => format!("{} paused: usage limit, resumes at {until}", names.own),
-                    None => format!("{} resumed", names.own),
-                },
+                std::mem::take(&mut carried[index]),
+                &recaps,
+                asks,
+                names,
             )),
-            ManagerEvent::Rotated { tokens, reason } => rows.push(ChatRow::new(
-                RowKind::Note,
-                key("rotated"),
-                entry,
-                match reason {
-                    Some(reason) => {
-                        format!("New conversation: {reason}; the ledger carries the state.")
-                    }
-                    None => format!(
-                        "New conversation after {} tokens; the ledger carries the state.",
-                        grouped(*tokens)
-                    ),
-                },
-            )),
-            ManagerEvent::Stopped { reason } => rows.push(ChatRow {
-                danger: true,
-                ..ChatRow::new(
-                    RowKind::Note,
-                    key("stopped"),
-                    entry,
-                    format!("{} stopped: {reason}", names.own),
-                )
-            }),
-            ManagerEvent::Delivered { .. }
-            | ManagerEvent::Agent { .. }
-            | ManagerEvent::Ping { .. }
-            | ManagerEvent::Answered { .. } => {}
+            _ => rows.extend(note_row(entry, names)),
         }
     }
     rows
+}
+
+/// The key of an entry's row: its kind and id, else its time.
+fn row_key(entry: &ManagerEntry, kind: &str) -> String {
+    match entry.id() {
+        Some(id) => format!("{kind}-{id}"),
+        None => format!("{kind}-{}", entry.unix_ms),
+    }
+}
+
+/// A peer's name: a role of this project, or another project's manager.
+fn peer_name(key: &str, names: &Names) -> String {
+    match key.strip_prefix("role:") {
+        Some("manager") => names.manager.to_string(),
+        Some(role) => role.to_string(),
+        None => (names.peer)(key),
+    }
+}
+
+/// The row of a message from the owner, a manager or a role. Events have `event_rows`; a recap
+/// request shows nothing.
+fn message_row(entry: &ManagerEntry, from: &Author, text: &str, names: &Names) -> Option<ChatRow> {
+    let key = row_key(entry, "message");
+    let (peer, reply) = match from {
+        Author::Owner => {
+            return Some(ChatRow::said(
+                key,
+                entry,
+                Speaker::Owner,
+                "You".into(),
+                text,
+            ))
+        }
+        Author::Manager { project, reply } => (project.clone(), reply),
+        Author::Role { name, reply } => (format!("role:{name}"), reply),
+        Author::Events | Author::Recap => return None,
+    };
+    Some(ChatRow {
+        tag: reply.then(|| "Reply".into()),
+        ..ChatRow::said(
+            key,
+            entry,
+            Speaker::Peer(peer.clone()),
+            peer_name(&peer, names),
+            text,
+        )
+    })
+}
+
+/// The lines of an events message, one row each unless the line repeats the one before it.
+fn event_rows(rows: &mut Vec<ChatRow>, entry: &ManagerEntry, text: &str, short: &[Short]) {
+    // ^ A line logged before `short` shows its first clause.
+    let lines: Vec<Short> = match short.is_empty() {
+        false => short.to_vec(),
+        true => text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(Short::plain)
+            .collect(),
+    };
+    for (nth, line) in lines.into_iter().enumerate() {
+        let repeat = rows.last().is_some_and(|last| {
+            last.kind == RowKind::Line
+                && last.text == line.text
+                && entry.unix_ms.saturating_sub(last.unix_ms) < REPEAT_MS
+        });
+        if !repeat {
+            rows.push(ChatRow {
+                task: line.task,
+                ..ChatRow::new(
+                    RowKind::Line,
+                    format!("{}-{nth}", row_key(entry, "message")),
+                    entry,
+                    line.text,
+                )
+            });
+        }
+    }
+}
+
+/// The row of a manager reply. `approvals`: the ids of the pending approvals it carries.
+fn reply_row(
+    entry: &ManagerEntry,
+    approvals: Vec<String>,
+    recaps: &HashSet<u64>,
+    asks: &[OpenAsk],
+    names: &Names,
+) -> Option<ChatRow> {
+    let ManagerEvent::Reply {
+        to,
+        text,
+        quiet,
+        id,
+        provisional,
+        post,
+        level,
+        ..
+    } = &entry.event
+    else {
+        return None;
+    };
+    // ^ A quiet reply is a muted line under the manager's name unless it carries an
+    // approval; `-` or nothing says nothing changed and shows nothing.
+    if *quiet && approvals.is_empty() {
+        return (!says_nothing(text)).then(|| ChatRow {
+            author: Some(Speaker::Manager),
+            name: Some(names.own.to_string()),
+            ..ChatRow::new(
+                RowKind::Quiet,
+                row_key(entry, "reply"),
+                entry,
+                text.trim().to_string(),
+            )
+        });
+    }
+    Some(ChatRow {
+        tag: to
+            .iter()
+            .any(|id| recaps.contains(id))
+            .then(|| "Recap".into()),
+        asks: asks.iter().any(|ask| ask.id == *id),
+        post: *post,
+        level: *level,
+        approvals,
+        provisional: provisional.clone(),
+        ..ChatRow::said(
+            row_key(entry, "reply"),
+            entry,
+            Speaker::Manager,
+            names.own.to_string(),
+            text,
+        )
+    })
+}
+
+/// The row of what the manager itself did: a message it sent, a pause, a new conversation or a
+/// stop. The other entries have none.
+fn note_row(entry: &ManagerEntry, names: &Names) -> Option<ChatRow> {
+    match &entry.event {
+        // ^ An empty `sent` (older hosts logged one without --json) shows nothing.
+        ManagerEvent::Sent { text, .. } if text.trim().is_empty() => None,
+        ManagerEvent::Sent { to, text, reply } => Some(ChatRow {
+            tag: Some(format!(
+                "{} {}",
+                if *reply { "Reply to" } else { "To" },
+                peer_name(to, names)
+            )),
+            ..ChatRow::said(
+                row_key(entry, "sent"),
+                entry,
+                Speaker::Manager,
+                names.own.to_string(),
+                text,
+            )
+        }),
+        ManagerEvent::Limit { until } => Some(ChatRow::new(
+            RowKind::Line,
+            row_key(entry, "limit"),
+            entry,
+            match until {
+                Some(until) => format!("{} paused: usage limit, resumes at {until}", names.own),
+                None => format!("{} resumed", names.own),
+            },
+        )),
+        ManagerEvent::Rotated { tokens, reason } => Some(ChatRow::new(
+            RowKind::Note,
+            row_key(entry, "rotated"),
+            entry,
+            match reason {
+                Some(reason) => {
+                    format!("New conversation: {reason}; the ledger carries the state.")
+                }
+                None => format!(
+                    "New conversation after {} tokens; the ledger carries the state.",
+                    grouped(*tokens)
+                ),
+            },
+        )),
+        ManagerEvent::Stopped { reason } => Some(ChatRow {
+            danger: true,
+            ..ChatRow::new(
+                RowKind::Note,
+                row_key(entry, "stopped"),
+                entry,
+                format!("{} stopped: {reason}", names.own),
+            )
+        }),
+        _ => None,
+    }
 }
 
 /// `n` with a comma between each group of three digits: `152,000`.
