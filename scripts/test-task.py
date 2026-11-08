@@ -4544,10 +4544,11 @@ def part_host(created=None):
     # no manager turn (`state_wakes`); its first ready, from its own worker, did.
     def ready_short(n, revision):
         event = wait(lambda: events_with('#%d ready r%d' % (n, revision)), 'the ready event of r%d' % revision)[0]
-        # ^ A message of several events holds one short per line: this task's only.
+        # ^ A message of several events holds one short per line (r1 and r2 of the parent can share
+        # one): this task's only, oldest first.
         return [x for x in event['short'] if x.get('task') == n]
     assert ready_short(parent, 1)[0].get('wakes', True), 'the held parent\'s own first ready wakes'
-    assert ready_short(parent, 2) == [{'text': '#%d ready' % parent, 'task': parent, 'wakes': False}]
+    assert ready_short(parent, 2)[-1] == {'text': '#%d ready' % parent, 'task': parent, 'wakes': False}, ready_short(parent, 2)
     # The second child rebases onto the moved parent, is checked, lands, and the parent checks again;
     # with its gate closed the checks fail, and that wakes.
     gate.unlink()
@@ -4555,11 +4556,11 @@ def part_host(created=None):
     assert wait_state(second, 'landed', 'ready', 'failed')['state'] == 'landed', log(second)
     assert wait_state(parent, 'failed')['state'] == 'failed' and show(parent)['record']['revision'] == 3
     failed_event = wait(lambda: events_with('#%d failed r3' % parent), 'the failed event of r3')[0]
-    assert [x.get('wakes', True) for x in failed_event['short'] if x.get('task') == parent] == [True], failed_event
+    assert [x.get('wakes', True) for x in failed_event['short'] if x.get('task') == parent][-1], failed_event
     gate.touch()
     assert js('task', 'add', parent, 'WORK again.txt')['ok']
     wait(lambda: (r := show(parent))['state'] == 'ready' and r['record']['revision'] == 4, 'the parent r4', 60)
-    assert ready_short(parent, 4)[0].get('wakes', True), 'a ready from the parent\'s own worker wakes'
+    assert ready_short(parent, 4)[-1].get('wakes', True), ready_short(parent, 4)
     for n in (first, second):
         wait_closed(n)
     ours = lambda: [i for i in js('task', 'check')['open'] if i['task'] in (parent, first, second)]
