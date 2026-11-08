@@ -4560,7 +4560,7 @@ def part_host(created=None):
     failed_event = wait(lambda: events_with('#%d failed r3' % parent), 'the failed event of r3')[0]
     assert [x.get('wakes', True) for x in failed_event['short'] if x.get('task') == parent][-1], failed_event
     broken.unlink()
-    assert js('task', 'add', parent, 'WORK again.txt')['ok']
+    assert js('task', 'add', parent, 'HV WORK again.txt')['ok']
     wait(lambda: (r := show(parent))['state'] == 'ready' and r['record']['revision'] == 4, 'the parent r4', 60)
     assert ready_short(parent, 4)[-1].get('wakes', True), ready_short(parent, 4)
     for n in (first, second):
