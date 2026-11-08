@@ -197,7 +197,11 @@ async function viewImages(name, links, many = 2, saves = false) {
   const place = "JSON.stringify([location.pathname, location.search, location.hash, [...document.querySelectorAll('.scroll, .log')].map((node) => Math.round(node.scrollTop))])";
   // ^ The set's images are in and the log has followed them to its end before the page's place is read.
   await evaluate(`Promise.all([...document.querySelectorAll(${JSON.stringify(links)})].map((link) => link.querySelector('img').decode().catch(() => {})))`);
-  await evaluate(`document.querySelector(${JSON.stringify(links)}).scrollIntoView({ block: 'nearest' })`);
+  // ^ The first image is in view and nothing (a toast, a menu on its way out) lies over its middle: the click lands on it.
+  const topmost = `(() => { const link = document.querySelector(${JSON.stringify(links)}); link.scrollIntoView({ block: 'nearest' }); const box = link.getBoundingClientRect();
+    return [link, document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)]; })()`;
+  await until(`(() => { const [link, hit] = ${topmost}; return link.contains(hit); })()`,
+    async () => `${what}: the first image is covered by ${await evaluate(`(() => { const hit = ${topmost}[1]; return hit ? hit.tagName + '.' + hit.className : 'nothing'; })()`)}`);
   await pause(500);
   const before = await evaluate(place);
   const sources = await evaluate(`[...document.querySelectorAll(${JSON.stringify(links)})].map((link) => link.href)`);
