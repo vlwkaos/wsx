@@ -3590,7 +3590,8 @@ await toLatest("390 px");
 const asked = await say('RUN wsx task new "WORK z.txt" -p ui');
 if (asked !== 200) await fail(`the manager was not asked for a task: ${asked}`);
 await openReservoir("running");
-await until(`!![...document.querySelectorAll('.reservoir-list[aria-label=Running] .need')].find((row) => /waiting for the manager's review/.test(row.textContent))`, "a manager-created ready task is not under Running with the review words", 300);
+await until(`!![...document.querySelectorAll('.reservoir-list[aria-label=Running] .need')].find((row) => /waiting for the manager's review/.test(row.textContent))`, "a manager-created ready task is not under Running with the review words", 900);
+// ^ The manager turn, the worker's build and its checks on a loaded CI runner took over 30 s once.
 const reviewed = await evaluate(`(() => { const row = [...document.querySelectorAll('.reservoir-list[aria-label=Running] .need')].find((row) => /waiting for the manager's review/.test(row.textContent));
   return { running: row.querySelector('.mark').hasAttribute('data-running'), needs: !!document.querySelector('.reservoir-list[aria-label="Needs you"]')?.contains(row) } })()`);
 if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${JSON.stringify(reviewed)}`);
