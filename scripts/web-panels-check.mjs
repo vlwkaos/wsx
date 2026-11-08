@@ -46,6 +46,8 @@ await until("!!document.querySelector('dialog[open] .panel-output') && /device r
 const first = Number(await run());
 // The status row: the words as one muted line, Refresh a button at its end, apart from the words.
 const stateRow = async (where, words) => {
+  // ^ The merged machine card reads "Running…" while any project panel runs (panel::machine_view): wait for the runs to end.
+  await until("document.querySelector('.panel-state .panel-refresh')?.textContent === 'Refresh'", `the Refresh button did not come back ${where}`, 300);
   const row = await evaluate(`(() => { const text = document.querySelector('.panel-state-text'); const button = document.querySelector('.panel-state .panel-refresh');
     const range = document.createRange(); range.selectNodeContents(text); const words = [...range.getClientRects()]; const box = button.getBoundingClientRect(); const row = document.querySelector('.panel-state').getBoundingClientRect();
     return { text: text.textContent, button: button.textContent, gap: Math.round(box.left - Math.max(...words.map((rect) => rect.right))), height: Math.round(box.height), end: Math.round(row.right - box.right),

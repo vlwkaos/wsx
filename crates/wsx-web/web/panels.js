@@ -13,7 +13,8 @@ const projectPanels = (project) => `api/projects/${project}/panels`;
 const url = (base, name = "", run = false) => `${base}${name ? `/${encodeURIComponent(name)}` : ""}${run ? "?run=1" : ""}`;
 
 // "12 s ago", "3 min ago": the age of a result.
-const age = (ms) => (ms < 60000 ? `${Math.floor(ms / 1000)} s ago` : `${Math.floor(ms / 60000)} min ago`);
+// ^ The clock tick can be older than the read that was just made: never below 0 s.
+const age = (ms) => (ms < 60000 ? `${Math.max(0, Math.floor(ms / 1000))} s ago` : `${Math.floor(ms / 60000)} min ago`);
 
 export function PanelsButton({ project }) {
   const [names, setNames] = useState([]);
