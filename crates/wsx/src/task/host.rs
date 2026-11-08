@@ -862,6 +862,9 @@ impl Host {
                 if task == self.record.id {
                     bail!("a task cannot wait for itself");
                 }
+                let Some(because) = because else {
+                    bail!("a wait needs a reason: --because needs|files|check");
+                };
                 Some(After {
                     task,
                     text: text.clone(),

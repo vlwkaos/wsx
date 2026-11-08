@@ -6,7 +6,7 @@
 use super::manager::ApprovalLine;
 use super::store::TaskDir;
 use super::view::{check_outcomes, clip, read_result, resolving_conflict};
-use super::{AfterKind, LogEvent, TaskRecord, TaskState, WaitOn};
+use super::{AfterKind, LogEvent, TaskRecord, TaskState, WaitOn, Waiting};
 use crate::config::project::load_task_config;
 use serde::Serialize;
 use serde_json::Value;
@@ -43,8 +43,7 @@ pub struct Status {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Waiter {
     pub task: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub because: Option<AfterKind>,
+    pub because: AfterKind,
 }
 
 /// The open tasks of `records` that wait for task `id`, by number.
@@ -97,9 +96,9 @@ fn waited_by_sentence(waiters: &[Waiter]) -> String {
         .any(|waiter| waiter.because != waiters[0].because);
     let list: Vec<String> = waiters
         .iter()
-        .map(|waiter| match (differ, waiter.because) {
-            (true, Some(kind)) => format!("#{} ({})", waiter.task, kind_words(kind)),
-            _ => format!("#{}", waiter.task),
+        .map(|waiter| match differ {
+            true => format!("#{} ({})", waiter.task, kind_words(waiter.because)),
+            false => format!("#{}", waiter.task),
         })
         .collect();
     format!("Waited for by {}.", list.join(", "))
@@ -136,16 +135,14 @@ pub fn status_with_result(
     let mut status = status_of(dir, record, facts, result, now_ms);
     if let (Some(after), true) = (&record.after, record.state.is_open()) {
         // ^ A ready row already says "Waiting for #m to land"; the reason is what it adds.
-        status.wait = match (after.because, record.state == TaskState::Ready) {
-            (Some(kind), true) => Some(kind_words(kind).to_string()),
-            (Some(kind), false) => Some(format!(
+        status.wait = Some(match record.state == TaskState::Ready {
+            true => kind_words(after.because).to_string(),
+            false => format!(
                 "then waits for #{}: {}",
                 after.task,
-                kind_words(kind)
-            )),
-            (None, false) => Some(format!("then waits for #{}", after.task)),
-            (None, true) => None,
-        };
+                kind_words(after.because)
+            ),
+        });
     }
     if !facts.waiters.is_empty() && record.state.is_open() {
         status.sentence.push(' ');
@@ -201,85 +198,14 @@ fn status_of(
             now_ms,
         );
     }
-    let waiting = record.waiting.as_ref();
-    let mut status = match (record.state, waiting) {
-        (_, Some(waiting)) if waiting.on == WaitOn::CheckSlot => {
-            slot(dir, record, &waiting.reason, entered, now_ms)
+    let mut status = match (record.state, record.waiting.as_ref()) {
+        // ^ A check wait holds in any state; every other wait only in Waiting.
+        (state, Some(waiting))
+            if state == TaskState::Waiting
+                || matches!(waiting.on, WaitOn::CheckSlot | WaitOn::CheckRun) =>
+        {
+            waiting_on(dir, record, waiting, entered, now_ms)
         }
-        (_, Some(waiting)) if waiting.on == WaitOn::CheckRun => held(&waiting.reason, now_ms),
-        (TaskState::Waiting, Some(waiting)) => match waiting.on {
-            WaitOn::Owner => {
-                let stopped = dir
-                    .last_event(|event| match event {
-                        LogEvent::Stopped { reason } => Some(Some(reason.clone())),
-                        LogEvent::Blocked { .. } | LogEvent::Result { .. } => Some(None),
-                        _ => None,
-                    })
-                    .ok()
-                    .flatten()
-                    .flatten();
-                match stopped {
-                    Some(reason) if reason == STOPPED_BY_REQUEST => words(
-                        "stopped",
-                        "Stopped",
-                        Some(entered),
-                        STOPPED_BY_REQUEST,
-                        "Tell the manager to resume or close it.",
-                        now_ms,
-                    ),
-                    Some(reason) => words(
-                        "interrupted",
-                        "Interrupted",
-                        Some(entered),
-                        &reason,
-                        "The manager resumes it or tells you why not.",
-                        now_ms,
-                    ),
-                    None => words(
-                        "owner",
-                        "Waiting for your answer",
-                        Some(entered),
-                        &waiting.reason,
-                        "Answer the manager; the worker goes on then.",
-                        now_ms,
-                    ),
-                }
-            }
-            WaitOn::Plan => words(
-                "plan",
-                "Plan ready, waiting for the manager's review",
-                Some(entered),
-                "the worker wrote its plan",
-                "The manager answers go or what to change, then the build starts.",
-                now_ms,
-            ),
-            WaitOn::Hand => words(
-                "hand",
-                "Waiting for you to hand it back",
-                Some(entered),
-                "you work on it in its session and no agent runs",
-                "Commit, then hand it back: its checks run and it lands as usual.",
-                now_ms,
-            ),
-            WaitOn::Disk => words(
-                "disk",
-                "Waiting for disk space",
-                Some(entered),
-                &queue_words(record, &waiting.reason, "goes on first"),
-                "It goes on by itself once there is space.",
-                now_ms,
-            ),
-            WaitOn::Limit => words(
-                "limit",
-                "Waiting for the usage limit",
-                Some(entered),
-                &queue_words(record, &waiting.reason, "goes on first"),
-                "It goes on by itself then, one task at a time.",
-                now_ms,
-            ),
-            WaitOn::CheckSlot => slot(dir, record, &waiting.reason, entered, now_ms),
-            WaitOn::CheckRun => held(&waiting.reason, now_ms),
-        },
         (TaskState::Checking, _) => words(
             "checking",
             "Running checks",
@@ -300,58 +226,9 @@ fn status_of(
             "It lands when its checks pass.",
             now_ms,
         ),
-        (TaskState::Working | TaskState::Waiting, _) => {
-            let label = match record.steps.get(record.step as usize) {
-                Some(step) => format!(
-                    "Working on {} ({} of {})",
-                    step.name,
-                    record.step + 1,
-                    record.steps.len()
-                ),
-                None => "Working".into(),
-            };
-            let next = if record.plan {
-                "Its plan goes to the manager after its result."
-            } else if record.checks.is_empty() {
-                "It is ready after its result."
-            } else {
-                "Its checks run after its result."
-            };
-            words(
-                "working",
-                &label,
-                None,
-                "the worker runs its turn",
-                next,
-                now_ms,
-            )
-        }
+        (TaskState::Working | TaskState::Waiting, _) => working(record, now_ms),
         (TaskState::Ready, _) => ready(dir, record, result, entered, now_ms),
-        (TaskState::Failed, _) => {
-            let outcomes = outcomes(dir, result);
-            let failed = outcomes.iter().filter(|(_, o)| *o != "passed").count();
-            match failed {
-                0 => words(
-                    "failed",
-                    "Failed",
-                    None,
-                    "the worker could not finish",
-                    "Tell the manager what to do next.",
-                    now_ms,
-                ),
-                _ => words(
-                    "failed",
-                    "Failed",
-                    None,
-                    &format!(
-                        "{failed} of {} failed after the worker's retries",
-                        count(outcomes.len(), "check")
-                    ),
-                    "Tell the manager, so the worker fixes it.",
-                    now_ms,
-                ),
-            }
-        }
+        (TaskState::Failed, _) => failed(dir, result, now_ms),
         (TaskState::Landed, _) => words(
             "landed",
             "Landed",
@@ -387,15 +264,152 @@ fn status_of(
             status
                 .sentence
                 .push_str(&format!(" Then it waits for #{} to land.", after.task));
-            if let Some(kind) = after.because {
-                status.sentence.push(' ');
-                status
-                    .sentence
-                    .push_str(&because_sentence(kind, after.task));
-            }
+            status.sentence.push(' ');
+            status
+                .sentence
+                .push_str(&because_sentence(after.because, after.task));
         }
     }
     status
+}
+
+/// A task that waits on `waiting`: the owner, its plan reviewed, the owner's hand, disk,
+/// the usage limit, a slot for its checks or a check run.
+fn waiting_on(
+    dir: &TaskDir,
+    record: &TaskRecord,
+    waiting: &Waiting,
+    entered: u64,
+    now_ms: u64,
+) -> Status {
+    match waiting.on {
+        WaitOn::Owner => {
+            let stopped = dir
+                .last_event(|event| match event {
+                    LogEvent::Stopped { reason } => Some(Some(reason.clone())),
+                    LogEvent::Blocked { .. } | LogEvent::Result { .. } => Some(None),
+                    _ => None,
+                })
+                .ok()
+                .flatten()
+                .flatten();
+            match stopped {
+                Some(reason) if reason == STOPPED_BY_REQUEST => words(
+                    "stopped",
+                    "Stopped",
+                    Some(entered),
+                    STOPPED_BY_REQUEST,
+                    "Tell the manager to resume or close it.",
+                    now_ms,
+                ),
+                Some(reason) => words(
+                    "interrupted",
+                    "Interrupted",
+                    Some(entered),
+                    &reason,
+                    "The manager resumes it or tells you why not.",
+                    now_ms,
+                ),
+                None => words(
+                    "owner",
+                    "Waiting for your answer",
+                    Some(entered),
+                    &waiting.reason,
+                    "Answer the manager; the worker goes on then.",
+                    now_ms,
+                ),
+            }
+        }
+        WaitOn::Plan => words(
+            "plan",
+            "Plan ready, waiting for the manager's review",
+            Some(entered),
+            "the worker wrote its plan",
+            "The manager answers go or what to change, then the build starts.",
+            now_ms,
+        ),
+        WaitOn::Hand => words(
+            "hand",
+            "Waiting for you to hand it back",
+            Some(entered),
+            "you work on it in its session and no agent runs",
+            "Commit, then hand it back: its checks run and it lands as usual.",
+            now_ms,
+        ),
+        WaitOn::Disk => words(
+            "disk",
+            "Waiting for disk space",
+            Some(entered),
+            &queue_words(record, &waiting.reason, "goes on first"),
+            "It goes on by itself once there is space.",
+            now_ms,
+        ),
+        WaitOn::Limit => words(
+            "limit",
+            "Waiting for the usage limit",
+            Some(entered),
+            &queue_words(record, &waiting.reason, "goes on first"),
+            "It goes on by itself then, one task at a time.",
+            now_ms,
+        ),
+        WaitOn::CheckSlot => slot(dir, record, &waiting.reason, entered, now_ms),
+        WaitOn::CheckRun => held(&waiting.reason, now_ms),
+    }
+}
+
+/// A working task: the step it is on and what follows its result.
+fn working(record: &TaskRecord, now_ms: u64) -> Status {
+    let label = match record.steps.get(record.step as usize) {
+        Some(step) => format!(
+            "Working on {} ({} of {})",
+            step.name,
+            record.step + 1,
+            record.steps.len()
+        ),
+        None => "Working".into(),
+    };
+    let next = if record.plan {
+        "Its plan goes to the manager after its result."
+    } else if record.checks.is_empty() {
+        "It is ready after its result."
+    } else {
+        "Its checks run after its result."
+    };
+    words(
+        "working",
+        &label,
+        None,
+        "the worker runs its turn",
+        next,
+        now_ms,
+    )
+}
+
+/// A failed task: how many of its checks failed after the worker's retries.
+fn failed(dir: &TaskDir, result: Option<&Option<Value>>, now_ms: u64) -> Status {
+    let outcomes = outcomes(dir, result);
+    let failed = outcomes.iter().filter(|(_, o)| *o != "passed").count();
+    match failed {
+        0 => words(
+            "failed",
+            "Failed",
+            None,
+            "the worker could not finish",
+            "Tell the manager what to do next.",
+            now_ms,
+        ),
+        _ => words(
+            "failed",
+            "Failed",
+            None,
+            &format!(
+                "{failed} of {} failed after the worker's retries",
+                count(outcomes.len(), "check")
+            ),
+            "Tell the manager, so the worker fixes it.",
+            now_ms,
+        ),
+    }
 }
 
 /// A ready task: its landing stopped, it is held, it waits for another task, the manager
@@ -446,11 +460,8 @@ fn ready(
             Some(after.since_unix_ms),
             &format!("#{} is {other}", after.task),
             &format!(
-                "{}When it lands, wsx sends the task the manager's next instruction. If it is closed instead, the manager is told.",
-                after
-                    .because
-                    .map(|kind| because_sentence(kind, after.task) + " ")
-                    .unwrap_or_default()
+                "{} When it lands, wsx sends the task the manager's next instruction. If it is closed instead, the manager is told.",
+                because_sentence(after.because, after.task)
             ),
             now_ms,
         );
