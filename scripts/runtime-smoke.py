@@ -1952,12 +1952,9 @@ try:
     time.sleep(0.5)
     os.kill(cursor_daemon.pid, signal.SIGSTOP)
     try:
-        mark = len(tui.raw)
         failing = time.monotonic()
         tui.send(b"\r")
-        while not tui_sees(b"Terminal stream failed", mark):
-            assert time.monotonic() - failing < 30, "the open did not report that wsxd did not answer"
-            time.sleep(0.05)
+        tui.wait_text(r"Terminal stream failed", "the open did not report that wsxd did not answer", 30)
         print(f"tui wedged wsxd: the open reported its failure after {time.monotonic() - failing:.1f} s", flush=True)
     finally:
         os.kill(cursor_daemon.pid, signal.SIGCONT)
