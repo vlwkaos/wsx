@@ -3,7 +3,7 @@
 import { ago, html, Icon, Loading, READ_EVENT, unreadNews, useEffect, useFlip, useNow, useRef, useState } from "./lib.js";
 import { api } from "./api.js";
 import { isAgent, listedSessions, stateOf, useStore } from "./store.js";
-import { needTone, needWords } from "./tasks.js";
+import { needTone, needWords } from "./task-words.js";
 import { Dots } from "./bubbles.js";
 import { slid } from "./ui.js";
 

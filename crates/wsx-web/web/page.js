@@ -6,7 +6,7 @@ import { ago, html, Loading, useCoalescedLoad, useNow, useState } from "./lib.js
 import { useEventLoad, useStore } from "./store.js";
 import { SheetBar } from "./ui.js";
 import { Markdown } from "./markdown.js";
-import { withChips } from "./tasks.js";
+import { withChips } from "./task-words.js";
 import { ProjectFacts } from "./story.js";
 
 export function ProjectOverview({ project, onClose, grip }) {

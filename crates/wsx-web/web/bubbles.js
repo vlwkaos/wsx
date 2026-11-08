@@ -5,7 +5,7 @@ import { clock, firstSentence, html, Icon, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { Quote } from "./reply.js";
-import { NeedTags, TaskChip, withChips } from "./tasks.js";
+import { TaskChip, withChips } from "./task-words.js";
 import { CheckRow } from "./checks.js";
 import { can, sessionLink, shows } from "./store.js";
 
@@ -128,6 +128,14 @@ const relativeOf = (project) => {
   }
   return relatives.get(project);
 };
+
+// The approvals a manager reply asked for, as one small tag each under the bubble: it opens the
+// Needs you list at that approval's row, the one place to approve (docs/web-client-tasks.md
+// "Project screen"). A decided approval is no longer in `items`, so its tag goes.
+const NeedTags = ({ items, onShow }) => items.map((item) => html`
+  <button class="bubble-need" type="button" key=${item.approval} onClick=${() => onShow(item.approval)} aria-label=${`Show in Needs you: ${item.label}`}>
+    <span>Needs you: ${item.label}</span>
+  </button>`);
 
 // One message. `home` turns its text runs into task chips; a message of another project's
 // manager (not a role) reads its bare `#n` as that project's task.
