@@ -74,7 +74,7 @@ One function, `task::status::status` in `crates/wsx-core/src/task/status.rs`, pu
 | `working`, resolving a landing conflict | Resolving a conflict | the worker rebases it onto main. It lands when its checks pass. |
 | `working` | Working on build (2 of 3), or Working | the worker runs its turn. Its checks run after its result (or: it is ready after its result; its plan goes to the manager). |
 | `ready`, its landing stopped | Landing stopped | <why>. Land it again when that is fixed. |
-| `ready`, waiting for another task (`after`) | Waiting for #12 to land | #12 is working. Its checks fail on main until #12 lands (the reason of `--because`; none for an old wait). When it lands, wsx sends the task the manager's next instruction. If it is closed instead, the manager is told. |
+| `ready`, waiting for another task (`after`) | Waiting for #12 to land | #12 is working. Its checks fail on main until #12 lands (the reason of `--because`). When it lands, wsx sends the task the manager's next instruction. If it is closed instead, the manager is told. |
 | `ready`, held | Held | <the hold>. It lands only when you say so, or after a trial you pass. |
 | `ready`, the manager reviews it (see Landing) | Ready, waiting for the manager's review | checks 3 of 3 passed. The manager reads the diff, then lands it or asks for changes. |
 | `ready`, otherwise | Ready, waiting for you to land it | checks 3 of 3 passed (or: no checks prove it). Land it to put it on main. |

@@ -114,9 +114,8 @@ pub struct After {
     /// What the task does then: the manager's add.
     pub text: String,
     pub since_unix_ms: u64,
-    /// Why it waits; none for a wait set before the kind existed. ref: docs/tasks.md "After another task"
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub because: Option<AfterKind>,
+    /// Why it waits. ref: docs/tasks.md "After another task"
+    pub because: AfterKind,
 }
 
 /// Why a task waits for another to land (`wsx task after --because`).

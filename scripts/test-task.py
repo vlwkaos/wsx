@@ -4110,14 +4110,7 @@ def part_host(created=None):
     record_file = Path(show(e)['log']).parent / 'task.json'
     record = json.loads(record_file.read_text())
     record['after']['since_unix_ms'] -= 25 * 3600 * 1000
-    # ^ A wait from before the reason existed: no kind in the record, no reason in the words.
-    del record['after']['because']
     record_file.write_text(json.dumps(record))
-    old = show(e)['status']
-    assert old['kind'] == 'after' and 'wait' not in old and 'Its checks' not in old['sentence'], old
-    assert 'because' not in show(e)['record']['after'], show(e)['record']
-    assert [x['task'] for x in show(f)['status']['waited_by']] == [e], show(f)['status']
-    assert show(f)['status']['waited_by'][0].get('because') is None, show(f)['status']
     # ^ Past the review limit (0.2 min) and the grace: a task that waits for a landing is no
     # "ready, not reviewed", and one that waits past 24 h is the only stall reported.
     # ^ a and c are ready past the review limit for two sweeps after the grace, and the sweep that
