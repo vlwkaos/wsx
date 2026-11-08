@@ -2650,12 +2650,17 @@ try:
     wait_for(lambda: b"this-mac" in panel_screen[mark:] and b"Load" in panel_screen[mark:], "M did not draw the card", 20)
     # ^ The TUI writes only the cells that changed, so a line is not whole in the bytes: the text is read from the screen they make.
     wait_for(lambda: all(line in screen_text(panel_screen) for line in (
-        "smoke · Swap holders", "Slack 1.2 GB", "smoke · machine", "machine-ok", "machine-down: failed (exit 3)")),
+        "smoke · Swap holders", "Slack 1.2 GB", "smoke · machine", "machine-ok")),
         lambda: "the machine card did not show the project's sections:\n" + screen_text(panel_screen), 20)
     card = screen_text(panel_screen)
-    assert "device-ok" not in card, "a project panel showed in the machine view"
-    assert "Pizza" not in card, "the project panel's own title showed in the card"
     assert re.search(r"This (Mac|machine) +bad", card), "the card title shows no state\n" + card
+    # ^ The card is taller than the PTY: scroll to the failing panel's line.
+    os.write(panel_master, b"j" * 20)
+    wait_for(lambda: "machine-down: failed (exit 3)" in screen_text(panel_screen),
+             lambda: "the machine card did not show the failing panel's line:\n" + screen_text(panel_screen), 20)
+    for text in (card, screen_text(panel_screen)):
+        assert "device-ok" not in text, "a project panel showed in the machine view"
+        assert "Pizza" not in text, "the project panel's own title showed in the card"
     os.write(panel_master, b"\x1b")
     wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the machine panels")
 finally:
