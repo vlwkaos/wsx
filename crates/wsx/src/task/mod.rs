@@ -10,6 +10,7 @@ mod claude;
 mod cmd;
 pub mod host;
 mod hosting;
+mod instructions;
 mod ledger;
 pub(crate) mod limit;
 pub mod manager;
