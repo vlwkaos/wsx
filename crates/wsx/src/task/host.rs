@@ -2192,6 +2192,26 @@ impl Host {
             return refuse("the checks after your result run now".into());
         }
         self.follow_checks();
+        let (picked, label) = match self.pick_checks(&numbers, &part) {
+            Ok(picked) => picked,
+            Err(message) => return refuse(message),
+        };
+        let indexes: Vec<usize> = picked.iter().map(|(index, _)| *index).collect();
+        let commit = head(&self.record.working_copy).unwrap_or_default();
+        let Some(reply) = self.join_check_run(argv, (&indexes, &part, &commit), reply) else {
+            return;
+        };
+        self.start_check_run(picked, (label, indexes, part, commit), reply);
+    }
+
+    /// The checks a `check-run` names, as (index, command) with `--part` applied, and the label
+    /// of the run. A scenario's number or name comes after the checks; a scenario runs only when
+    /// named. Refuses with the reason for the worker.
+    fn pick_checks(
+        &self,
+        numbers: &[&String],
+        part: &Option<String>,
+    ) -> Result<(Vec<(usize, String)>, String), String> {
         // ^ The scenarios come after the checks, numbered on from them, and run only when
         // named: like the checks, they are the main checkout's, never the worker's.
         let scenarios = load_task_config(&self.record.project_path)
@@ -2200,7 +2220,7 @@ impl Host {
         let mut runnable = self.record.checks.clone();
         runnable.extend(scenarios.values().cloned());
         let checks = self.record.checks.len();
-        let picked: Result<Vec<(usize, String)>, String> = match numbers.as_slice() {
+        let picked: Result<Vec<(usize, String)>, String> = match numbers {
             [] => Ok(runnable.iter().take(checks).cloned().enumerate().collect()),
             numbers => numbers
                 .iter()
@@ -2231,17 +2251,14 @@ impl Host {
                 })
                 .collect(),
         };
-        let picked = match picked {
-            Ok(picked) if picked.is_empty() => {
-                return refuse("the project declares no checks".into())
-            }
-            Ok(picked) => picked,
-            Err(message) => return refuse(message),
-        };
+        let picked = picked?;
+        if picked.is_empty() {
+            return Err("the project declares no checks".into());
+        }
         // ^ A part is one scenario's: the command runs with `WSX_SCENARIO_PART`.
         let picked = match &part {
             Some(_) if !matches!(picked.as_slice(), [(index, _)] if *index >= checks) => {
-                return refuse(
+                return Err(
                     "--part needs exactly one scenario, such as `check-run web --part tasks`"
                         .into(),
                 )
@@ -2252,10 +2269,31 @@ impl Host {
                 .collect(),
             None => picked,
         };
-        // ^ Never two runs in one working copy: the same checks on the same commit join, other
-        // checks wait, and a newer commit's run starts when the pending one ends.
-        let indexes: Vec<usize> = picked.iter().map(|(index, _)| *index).collect();
-        let commit = head(&self.record.working_copy).unwrap_or_default();
+        let checks = self.record.checks.len();
+        let label = picked
+            .iter()
+            .map(|(index, _)| match index.checked_sub(checks) {
+                Some(at) => scenarios.keys().nth(at).cloned().unwrap_or_default(),
+                None => (index + 1).to_string(),
+            })
+            .chain(part.iter().map(|part| format!("--part {part}")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        Ok((picked, label))
+    }
+
+    /// A `check-run` while one is pending in this working copy: the same checks on the same
+    /// commit join it, other checks wait, and a newer commit's run starts when the pending one
+    /// ends. Gives the reply back when none is pending.
+    fn join_check_run(
+        &mut self,
+        argv: &[String],
+        (indexes, part, commit): (&[usize], &Option<String>, &str),
+        reply: Sender<broker::Response>,
+    ) -> Option<Sender<broker::Response>> {
+        let refuse = |message: String| {
+            let _ = reply.send(broker::refused(message));
+        };
         if let Some(run) = self.check_run.as_ref().filter(|run| run.commit != commit) {
             let _ = reply.send(broker::Response {
                 stdout: format!(
@@ -2267,18 +2305,18 @@ impl Host {
             });
             self.say("check-run: on a newer commit, it starts when the pending run ends");
             self.check_run_next = Some(argv.to_vec());
-            return;
+            return None;
         }
         if let Some(run) = &mut self.check_run {
             // ^ A queued run answers only after the result, also when it already ended.
-            if run.queued && run.indexes == indexes && run.part == part {
+            if run.queued && run.indexes == indexes && run.part == *part {
                 let _ = reply.send(queued_response(run.ci));
-                return;
+                return None;
             }
-            if run.indexes != indexes || run.part != part {
+            if run.indexes != indexes || run.part != *part {
                 let numbers: Vec<String> =
                     run.indexes.iter().map(|i| (i + 1).to_string()).collect();
-                return refuse(format!(
+                refuse(format!(
                     "a check-run of checks {}{} still runs; run it again to wait for its answer",
                     numbers.join(" "),
                     run.part
@@ -2286,11 +2324,24 @@ impl Host {
                         .map(|p| format!(" --part {p}"))
                         .collect::<String>()
                 ));
+                return None;
             }
             run.replies.push(reply);
             self.say("check-run: joined the run of the same checks");
-            return;
+            return None;
         }
+        Some(reply)
+    }
+
+    /// Run the picked checks in a thread and answer the worker (or `queued` for a CI scenario);
+    /// no revision is recorded. `label` names the run in the replies that wait for it.
+    fn start_check_run(
+        &mut self,
+        picked: Vec<(usize, String)>,
+        (label, indexes, part, commit): (String, Vec<usize>, Option<String>, String),
+        reply: Sender<broker::Response>,
+    ) {
+        let checks = self.record.checks.len();
         let working_copy = self.record.working_copy.clone();
         let (tree, stored, to_run) = self.kept_checks(&picked);
         if to_run.is_empty() {
@@ -2299,10 +2350,11 @@ impl Host {
             return;
         }
         if let Some((free_mb, min_gb)) = self.low_disk() {
-            return refuse(format!(
+            let _ = reply.send(broker::refused(format!(
                 "not run, disk space is low: {}",
                 disk_full(free_mb, min_gb)
-            ));
+            )));
+            return;
         }
         // ^ A `ci:` scenario runs on CI: it takes no slot and answers `queued` at once.
         // ref: docs/tasks.md "Scenarios"
@@ -2321,15 +2373,7 @@ impl Host {
             result_waits: false,
             queued: false,
             answer: None,
-            label: picked
-                .iter()
-                .map(|(index, _)| match index.checked_sub(checks) {
-                    Some(at) => scenarios.keys().nth(at).cloned().unwrap_or_default(),
-                    None => (index + 1).to_string(),
-                })
-                .chain(part.iter().map(|part| format!("--part {part}")))
-                .collect::<Vec<_>>()
-                .join(" "),
+            label,
             part: part.clone(),
             ci,
             limit,
@@ -2349,38 +2393,13 @@ impl Host {
             self.start_check_run_clock();
         }
         let events = self.events.clone();
-        self.spawn_checks(priority, "check-run", to_run.clone(), move |results| {
-            let ran: BTreeMap<usize, CheckResult> = to_run
-                .iter()
-                .map(|(index, _)| *index)
-                .zip(results.iter().cloned())
-                .collect();
-            let mut response = check_run_response(&picked, &stored, &ran);
-            // ^ A part's pass is not the scenario's pass: nothing is stored, so no later run or
-            // evidence answers for the full run.
-            if part.is_some() {
-                response.stdout.push_str(
-                    "this ran one part: it is not a full pass; the full result still gates the \
-                     task (run the scenario without --part)\n",
-                );
-            }
-            // ^ A tree that changed during the run, a timeout or a full disk is not stored.
-            let unchanged = tree.filter(|tree| {
-                part.is_none()
-                    && copy::clean_tree(&working_copy).ok().flatten().as_ref() == Some(tree)
-            });
-            let ran = ran
-                .into_iter()
-                .filter(|(_, check)| {
-                    check.exit.is_some()
-                        && check.exit != Some(TEMPFAIL)
-                        && !check.output.contains(NO_SPACE)
-                })
-                .collect();
-            let _ = events.send(Event::CheckRunDone(
+        let kept = (tree, stored, to_run.clone());
+        self.spawn_checks(priority, "check-run", to_run, move |results| {
+            let _ = events.send(check_run_event(
+                &picked,
+                kept,
+                (&part, &working_copy),
                 results,
-                response,
-                unchanged.map(|tree| (tree, ran)),
             ));
         });
         if ci {
@@ -3525,6 +3544,42 @@ fn head(working_copy: &Path) -> Option<String> {
 
 /// A tree id and the check results that ran on it, by check index.
 type StoredChecks = (String, BTreeMap<usize, CheckResult>);
+/// The event of a finished `check-run`: the worker's answer, and the results to keep when the
+/// tree did not change. `kept` is what the tree already had and what ran; a part's pass is
+/// stored for no one.
+fn check_run_event(
+    picked: &[(usize, String)],
+    (tree, stored, to_run): KeptChecks,
+    (part, working_copy): (&Option<String>, &Path),
+    results: Vec<CheckResult>,
+) -> Event {
+    let ran: BTreeMap<usize, CheckResult> = to_run
+        .iter()
+        .map(|(index, _)| *index)
+        .zip(results.iter().cloned())
+        .collect();
+    let mut response = check_run_response(picked, &stored, &ran);
+    // ^ A part's pass is not the scenario's pass: nothing is stored, so no later run or
+    // evidence answers for the full run.
+    if part.is_some() {
+        response.stdout.push_str(
+            "this ran one part: it is not a full pass; the full result still gates the \
+             task (run the scenario without --part)\n",
+        );
+    }
+    // ^ A tree that changed during the run, a timeout or a full disk is not stored.
+    let unchanged = tree.filter(|tree| {
+        part.is_none() && copy::clean_tree(working_copy).ok().flatten().as_ref() == Some(tree)
+    });
+    let ran = ran
+        .into_iter()
+        .filter(|(_, check)| {
+            check.exit.is_some() && check.exit != Some(TEMPFAIL) && !check.output.contains(NO_SPACE)
+        })
+        .collect();
+    Event::CheckRunDone(results, response, unchanged.map(|tree| (tree, ran)))
+}
+
 type KeptChecks = (
     Option<String>,
     BTreeMap<usize, CheckResult>,
