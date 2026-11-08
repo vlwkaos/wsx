@@ -4540,10 +4540,25 @@ def part_host(created=None):
     gate.touch()
     assert wait_state(parent, 'ready', 'failed')['state'] == 'ready' and show(parent)['record']['revision'] == 2
     assert 'has open child tasks #%d' % second in land(parent, ok=False)['message']
-    # The second child rebases onto the moved parent, is checked, lands, and the parent checks again.
+    # ^ The held parent that is ready again because a child landed with its checks passed wakes
+    # no manager turn (`state_wakes`); its first ready, from its own worker, did.
+    def ready_short(n, revision):
+        event = wait(lambda: events_with('#%d ready r%d' % (n, revision)), 'the ready event of r%d' % revision)[0]
+        return event['short']
+    assert ready_short(parent, 1)[0].get('wakes', True), 'the held parent\'s own first ready wakes'
+    assert ready_short(parent, 2) == [{'text': '#%d ready' % parent, 'task': parent, 'wakes': False}]
+    # The second child rebases onto the moved parent, is checked, lands, and the parent checks again;
+    # with its gate closed the checks fail, and that wakes.
+    gate.unlink()
     assert 'checks run on the new revision' in land(second)['message']
     assert wait_state(second, 'landed', 'ready', 'failed')['state'] == 'landed', log(second)
-    wait(lambda: (r := show(parent))['state'] == 'ready' and r['record']['revision'] == 3, 'the parent r3', 30)
+    assert wait_state(parent, 'failed')['state'] == 'failed' and show(parent)['record']['revision'] == 3
+    failed_event = wait(lambda: events_with('#%d failed r3' % parent), 'the failed event of r3')[0]
+    assert failed_event['short'][0].get('wakes', True), failed_event
+    gate.touch()
+    assert js('task', 'add', parent, 'WORK again.txt')['ok']
+    wait(lambda: (r := show(parent))['state'] == 'ready' and r['record']['revision'] == 4, 'the parent r4', 60)
+    assert ready_short(parent, 4)[0].get('wakes', True), 'a ready from the parent\'s own worker wakes'
     for n in (first, second):
         wait_closed(n)
     ours = lambda: [i for i in js('task', 'check')['open'] if i['task'] in (parent, first, second)]

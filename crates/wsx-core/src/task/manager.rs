@@ -5,7 +5,7 @@
 
 use super::status::{owner_waits_after, STOPPED_BY_REQUEST};
 use super::store::TaskDir;
-use super::{TaskRecord, TaskState, TurnUsage, WaitOn};
+use super::{LogEvent, TaskRecord, TaskState, TurnUsage, WaitOn};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -268,10 +268,21 @@ pub fn says_nothing(text: &str) -> bool {
 
 /// Whether a task's new state needs the manager's judgment now. The others (a landing, a close,
 /// a wait on `limit` or `disk`, a stop the owner or the manager asked for, an idle worker whose
-/// task waits for another to land) go along with its next turn. ref: docs/tasks.md "Manager"
+/// task waits for another to land, a held parent that is ready again because a child landed on
+/// it with its checks passed) go along with its next turn. ref: docs/tasks.md "Manager"
 pub fn state_wakes(dir: &TaskDir, record: &TaskRecord) -> bool {
     match record.state {
         TaskState::Landed | TaskState::Closed => false,
+        // ^ Ready means the checks passed; failed ones are `Failed` and wake. The newest of a
+        // child's land, a handback and a worker result made the current revision.
+        TaskState::Ready if record.hold.is_some() => !matches!(
+            dir.last_event(|event| match event {
+                LogEvent::ChildLanded { .. } => Some(true),
+                LogEvent::Handback { .. } | LogEvent::Result { .. } => Some(false),
+                _ => None,
+            }),
+            Ok(Some(true))
+        ),
         TaskState::Waiting => {
             !owner_waits_after(dir, record)
                 && !record
