@@ -24,26 +24,26 @@ mod trial;
 use crate::cli::load_config;
 use anyhow::{bail, Context, Result};
 pub use args::TaskCmd;
-use cmd::approve::{approve, ask_covering, ask_owner, deny, owner_only, request_of};
-use cmd::chat::{chat, dismiss, ensure_manager, role, say, search, From};
+use args::{DeployArgs, ReleaseArgs};
+use cmd::approve::{approve, deny};
+use cmd::chat::{boundary_profile, chat, dismiss, manager_command, role, say_command, search};
 use cmd::check::check;
 pub(crate) use cmd::check::fail_check;
 use cmd::deploy::{deploy, deployed, push, trial_command};
-use cmd::land::{after_command, land_batch};
-use cmd::new::{new, Size, Steps};
-use cmd::routine::{checkin, digest, post};
-use cmd::work::{close, hand, handback, list, show};
-use serde_json::json;
+use cmd::land::{after_command, hold_command, land_command, run_batch};
+use cmd::new::new;
+use cmd::routine::{checkin, digest, post, routine_command};
+use cmd::work::{
+    add_command, close_command, hand, handback, list, preview_command, show, steer_command,
+    stop_command,
+};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use wsx_core::config::project::load_task_config;
-use wsx_core::task::manager::ApprovalAction;
-use wsx_core::task::owner::{self, HOST_TIMEOUT, LAND_TIMEOUT};
-use wsx_core::task::view::checked_files;
+use wsx_core::task::owner::{HOST_TIMEOUT, LAND_TIMEOUT};
 use wsx_core::task::{
     call_host,
     store::{self, TaskDir},
-    Actor, DeployKind, HostRequest, HostResponse, MAX_MESSAGE_BYTES,
+    Actor, DeployKind, HostRequest, HostResponse,
 };
 use wsx_core::{ops, runtime};
 
@@ -53,37 +53,7 @@ const RECORDED_BY_HOST: &str = "(recorded by the host)";
 const HOST_START_WAIT: Duration = Duration::from_secs(10);
 pub fn run(command: TaskCmd) -> Result<()> {
     match command {
-        TaskCmd::New {
-            prompt,
-            from,
-            into,
-            title,
-            model,
-            size,
-            hold,
-            files,
-            plan,
-            skip,
-            no_steps,
-            project,
-            json,
-        } => new(
-            prompt,
-            from.as_deref(),
-            into,
-            title.as_deref(),
-            model.as_deref(),
-            hold,
-            files,
-            plan,
-            match (no_steps, size) {
-                (true, _) => Steps::None,
-                (false, Size::Small) => Steps::Small,
-                (false, Size::Full) => Steps::Skip(skip),
-            },
-            project.as_deref(),
-            json,
-        ),
+        TaskCmd::New(args) => new(args),
         TaskCmd::List { project, all, json } => list(project.as_deref(), all, json),
         TaskCmd::Show {
             task,
@@ -95,32 +65,19 @@ pub fn run(command: TaskCmd) -> Result<()> {
             text,
             project,
             json,
-        } => {
-            let dir = open_owned(project.as_deref(), &task)?;
-            let text = text.read(MAX_MESSAGE_BYTES)?;
-            send(&dir, HostRequest::Steer { text }, json)
-        }
+        } => steer_command(&task, text, project.as_deref(), json),
         TaskCmd::Add {
             task,
             text,
             files,
             project,
             json,
-        } => {
-            let dir = open_owned(project.as_deref(), &task)?;
-            let text = text.read(MAX_MESSAGE_BYTES)?;
-            let files = checked_files(&dir.read_record()?.files, &files)?;
-            send(&dir, HostRequest::Add { text, files }, json)
-        }
+        } => add_command(&task, text, &files, project.as_deref(), json),
         TaskCmd::Stop {
             task,
             project,
             json,
-        } => send(
-            &open_owned(project.as_deref(), &task)?,
-            HostRequest::Stop,
-            json,
-        ),
+        } => stop_command(&task, project.as_deref(), json),
         TaskCmd::Check {
             action,
             project,
@@ -129,77 +86,18 @@ pub fn run(command: TaskCmd) -> Result<()> {
         TaskCmd::Land {
             task,
             tried,
-            said: _,
-            project,
-            json,
-        } if task.len() > 1 => land_batch(project.as_deref(), &task, tried, json),
-        TaskCmd::LandBatch { tasks, project } => batch::run(
-            tasks
-                .iter()
-                .map(|task| open(project.as_deref(), task))
-                .collect::<Result<_>>()?,
-        ),
-        TaskCmd::Land {
-            task,
-            tried,
             said,
             project,
             json,
-        } => {
-            let dir = open_owned(project.as_deref(), &task[0])?;
-            // ^ Only the owner tries a trial, so only the owner passes one.
-            if tried && acting_as_manager() {
-                bail!("only the owner passes a trial; ask the owner to try it");
-            }
-            let record = dir.read_record()?;
-            // ^ A role lands only into a parent task; the manager lands onto the default branch.
-            if actor().role().is_some() && record.parent.is_none() {
-                bail!(
-                    "a role lands only a child into its parent task; #{} lands onto {}, which is the manager's",
-                    record.id,
-                    record.default_branch
-                );
-            }
-            let settings = load_task_config(&record.project_path)
-                .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
-            if acting_as_manager()
-                && settings.land_approve
-                && ask_owner(
-                    &dir.project_id,
-                    ApprovalAction::Land,
-                    Some(&record),
-                    None,
-                    None,
-                    None,
-                    said.owner_said,
-                    json,
-                )?
-            {
-                return Ok(());
-            }
-            send(
-                &dir,
-                HostRequest::Land {
-                    tried,
-                    batch_tree: None,
-                },
-                json,
-            )
-        }
+        } => land_command(task, tried, said, project.as_deref(), json),
+        TaskCmd::LandBatch { tasks, project } => run_batch(project.as_deref(), &tasks),
         TaskCmd::Hold {
             task,
             reason,
             off: _,
             project,
             json,
-        } => send(
-            &open_owned(project.as_deref(), &task)?,
-            HostRequest::Hold {
-                reason,
-                by: actor(),
-            },
-            json,
-        ),
+        } => hold_command(&task, reason, project.as_deref(), json),
         TaskCmd::After {
             task,
             on,
@@ -214,38 +112,14 @@ pub fn run(command: TaskCmd) -> Result<()> {
             end,
             project,
             json,
-        } => {
-            not_for_roles("trial")?;
-            trial_command(&open(project.as_deref(), &task)?, end, json)
-        }
+        } => trial_command(&task, end, project.as_deref(), json),
         TaskCmd::Close {
             task,
             discard,
             said,
             project,
             json,
-        } => {
-            let dir = open_owned(project.as_deref(), &task)?;
-            if discard {
-                not_for_roles("close --discard")?;
-            }
-            // ^ Discarding work cannot be undone: the manager always asks first, or names
-            // the owner's message that asked for it.
-            let record = dir.read_record()?;
-            if discard
-                && acting_as_manager()
-                && ask_covering(
-                    &record.project_path,
-                    &dir.project_id,
-                    request_of(ApprovalAction::Discard, Some(&record), None, None, None),
-                    said.owner_said,
-                    json,
-                )?
-            {
-                return Ok(());
-            }
-            close(&dir, discard, json)
-        }
+        } => close_command(&task, discard, said, project.as_deref(), json),
         TaskCmd::Hand {
             task,
             project,
@@ -263,55 +137,26 @@ pub fn run(command: TaskCmd) -> Result<()> {
             project,
             json,
         } => deny(project.as_deref(), &id, note, json),
-        TaskCmd::Deploy {
-            commit,
-            if_new,
-            trial,
-            run,
-            said,
-            project,
-            json,
-        } => deploy(
-            DeployKind::Deploy,
-            project.as_deref(),
-            commit.as_deref(),
-            if_new,
-            trial,
-            run.run_locked,
-            said.owner_said,
-            json,
-        ),
-        TaskCmd::Release {
+        TaskCmd::Deploy(args) => deploy(DeployKind::Deploy, args),
+        TaskCmd::Release(ReleaseArgs {
             commit,
             run,
             said,
             project,
             json,
-        } => deploy(
+        }) => deploy(
             DeployKind::Release,
-            project.as_deref(),
-            commit.as_deref(),
-            false,
-            None,
-            run.run_locked,
-            said.owner_said,
-            json,
+            DeployArgs {
+                commit,
+                if_new: false,
+                trial: None,
+                run,
+                said,
+                project,
+                json,
+            },
         ),
-        TaskCmd::Push {
-            commit,
-            force,
-            lease,
-            said,
-            project,
-            json,
-        } => push(
-            project.as_deref(),
-            commit.as_deref(),
-            force,
-            lease.as_deref(),
-            said.owner_said,
-            json,
-        ),
+        TaskCmd::Push(args) => push(args),
         TaskCmd::Deployed { project, json } => deployed(project.as_deref(), json),
         TaskCmd::Digest { project, since } => digest(project.as_deref(), since),
         TaskCmd::Post {
@@ -328,40 +173,8 @@ pub fn run(command: TaskCmd) -> Result<()> {
         } => checkin(project.as_deref(), after.as_deref(), at.as_deref(), &why),
         TaskCmd::Role { action } => role(action),
         TaskCmd::Ledger { project, .. } => ledger::ledger(project.as_deref()),
-        TaskCmd::Routine { action, owner_said } => {
-            use crate::cli::RoutineCmd::{Add, Delete, Disable, Edit, Enable};
-            // ^ A role changes nothing of the project's own (docs/tasks.md "Roles").
-            if let Add { .. } | Edit { .. } | Delete { .. } | Enable { .. } | Disable { .. } =
-                &action
-            {
-                not_for_roles("routine changes")?;
-            }
-            // ^ wsxd runs a routine outside the agent boundary: only the owner writes one.
-            if let Add { project, .. } | Edit { project, .. } | Delete { project, .. } = &action {
-                if acting_as_manager() {
-                    let said = owner_said.context(
-                        "the owner adds, edits and deletes routines: pass --owner-said <id> \
-                         when the owner's message of this turn asks for it; nothing was run",
-                    )?;
-                    let (name, main) = project_entry(project.as_deref())?;
-                    owner::check_owner_said(&store::project_id(&name, &main), said)?;
-                }
-            }
-            crate::cli::cmd_routine(action)
-        }
-        TaskCmd::Manager { project, json } => {
-            let (started, dir) = ensure_manager(project.as_deref())?;
-            let state = if started { "started" } else { "running" };
-            if json {
-                let (project, main) = project_entry(project.as_deref())?;
-                let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
-                let name = settings.manager_shown_name(&project);
-                print_json(&json!({ "state": state, "socket": dir.socket_path(), "name": name }))
-            } else {
-                println!("manager {state}");
-                Ok(())
-            }
-        }
+        TaskCmd::Routine { action, owner_said } => routine_command(action, owner_said),
+        TaskCmd::Manager { project, json } => manager_command(project.as_deref(), json),
         TaskCmd::Say {
             text,
             role,
@@ -370,23 +183,13 @@ pub fn run(command: TaskCmd) -> Result<()> {
             reply,
             project,
             json,
-        } => {
-            if reply && !from_manager && !from_role {
-                bail!("--reply answers with --from-manager or --from-role");
-            }
-            let from = match (from_manager, from_role) {
-                (true, _) => Some(From::Manager(reply)),
-                (_, true) => Some(From::Role(reply)),
-                _ => None,
-            };
-            say(
-                project.as_deref(),
-                role.as_deref(),
-                text.read(MAX_MESSAGE_BYTES)?,
-                from,
-                json,
-            )
-        }
+        } => say_command(
+            project.as_deref(),
+            role.as_deref(),
+            text,
+            (from_manager, from_role, reply),
+            json,
+        ),
         TaskCmd::Chat {
             after,
             find,
@@ -427,39 +230,12 @@ pub fn run(command: TaskCmd) -> Result<()> {
             stop,
             project,
             json,
-        } => {
-            let dir = open(project.as_deref(), &task)?;
-            let (value, message) = if stop {
-                let stopped = preview::stop(&dir)?;
-                let message = match stopped {
-                    true => "stopped the preview",
-                    false => "no preview was running",
-                };
-                (
-                    json!({ "stopped": stopped, "message": message }),
-                    message.to_string(),
-                )
-            } else {
-                let running = preview::start(&dir)?;
-                let message = format!("try it at {} until it stops in an hour", running.url);
-                let mut value = serde_json::to_value(&running)?;
-                value["message"] = json!(message);
-                (value, message)
-            };
-            if json {
-                return print_json(&value);
-            }
-            println!("{message}");
-            Ok(())
-        }
+        } => preview_command(&task, stop, project.as_deref(), json),
         TaskCmd::PreviewHost { project_id, task } => {
             preview::host(&project_id, store::parse_task_number(&task)?)
         }
         TaskCmd::ManagerHost { project_id, role } => manager::run(&project_id, role.as_deref()),
-        TaskCmd::BoundaryProfile { project } => {
-            let (name, main) = project_entry(project.as_deref())?;
-            manager::print_profile(&name, &main)
-        }
+        TaskCmd::BoundaryProfile { project } => boundary_profile(project.as_deref()),
         TaskCmd::Host { project_id, task } => {
             host::run(&project_id, store::parse_task_number(&task)?)
         }

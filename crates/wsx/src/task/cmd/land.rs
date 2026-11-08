@@ -1,8 +1,11 @@
 //! `wsx task land`, `after` and `hold` (docs/tasks.md "Landing").
 
-use crate::task::{acting_as_manager, actor, open, open_owned, send};
+use super::approve::{ask_owner, request_of};
+use crate::task::args::OwnerSaid;
+use crate::task::{acting_as_manager, actor, batch, open, open_owned, send};
 use anyhow::{bail, Context, Result};
 use wsx_core::config::project::load_task_config;
+use wsx_core::task::manager::ApprovalAction;
 use wsx_core::task::{AfterKind, HostRequest, TaskState};
 
 /// `land <a> <b>...`: refuse what one land would refuse, then ask the first task's host to
@@ -81,4 +84,80 @@ pub(crate) fn after_command(
         by: actor(),
     };
     send(&dir, request, json)
+}
+
+/// `wsx task land`: several tasks land as one batch; one asks the owner first when the manager
+/// lands onto a project that approves lands.
+pub(crate) fn land_command(
+    task: Vec<String>,
+    tried: bool,
+    said: OwnerSaid,
+    project: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    if task.len() > 1 {
+        return land_batch(project, &task, tried, json);
+    }
+    let dir = open_owned(project, &task[0])?;
+    // ^ Only the owner tries a trial, so only the owner passes one.
+    if tried && acting_as_manager() {
+        bail!("only the owner passes a trial; ask the owner to try it");
+    }
+    let record = dir.read_record()?;
+    // ^ A role lands only into a parent task; the manager lands onto the default branch.
+    if actor().role().is_some() && record.parent.is_none() {
+        bail!(
+            "a role lands only a child into its parent task; #{} lands onto {}, which is the manager's",
+            record.id,
+            record.default_branch
+        );
+    }
+    let settings = load_task_config(&record.project_path)
+        .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
+    if acting_as_manager()
+        && settings.land_approve
+        && ask_owner(
+            &dir.project_id,
+            request_of(ApprovalAction::Land, Some(&record), None, None, None),
+            said.owner_said,
+            json,
+        )?
+    {
+        return Ok(());
+    }
+    send(
+        &dir,
+        HostRequest::Land {
+            tried,
+            batch_tree: None,
+        },
+        json,
+    )
+}
+
+/// `wsx task hold`: hold a task for the owner to try, or release it with `--off`.
+pub(crate) fn hold_command(
+    task: &str,
+    reason: Option<String>,
+    project: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    send(
+        &open_owned(project, task)?,
+        HostRequest::Hold {
+            reason,
+            by: actor(),
+        },
+        json,
+    )
+}
+
+/// The hidden `wsx task land-batch`: the detached run of a batch land.
+pub(crate) fn run_batch(project: Option<&str>, tasks: &[String]) -> Result<()> {
+    batch::run(
+        tasks
+            .iter()
+            .map(|task| open(project, task))
+            .collect::<Result<_>>()?,
+    )
 }

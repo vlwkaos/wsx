@@ -1,7 +1,8 @@
 //! `wsx task new`: a task and its worker (docs/tasks.md).
 
-use crate::cli::{load_full_workspace, resolve_project, PromptSource};
+use crate::cli::{load_full_workspace, resolve_project};
 use crate::task::agent;
+use crate::task::args::NewArgs;
 use crate::task::{actor, ask_host, ask_host_ok, print_json, wait_for_host};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
@@ -14,31 +15,54 @@ use wsx_core::task::{
 };
 use wsx_core::{ops, runtime};
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn new(
-    prompt: PromptSource,
-    from: Option<&str>,
-    into: Option<u32>,
-    title: Option<&str>,
-    model: Option<&str>,
-    hold: Option<String>,
-    files: Vec<String>,
-    plan: bool,
-    steps: Steps,
-    project: Option<&str>,
-    json: bool,
-) -> Result<()> {
+pub(crate) fn new(args: NewArgs) -> Result<()> {
+    let NewArgs {
+        prompt,
+        from,
+        into,
+        title,
+        model,
+        size,
+        hold,
+        files,
+        plan,
+        skip,
+        no_steps,
+        project,
+        json,
+    } = args;
+    let steps = match (no_steps, size) {
+        (true, _) => Steps::None,
+        (false, Size::Small) => Steps::Small,
+        (false, Size::Full) => Steps::Skip(skip),
+    };
     let prompt = prompt.read(MAX_MESSAGE_BYTES)?;
-    let title = title.map(wsx_core::task::view::checked_title).transpose()?;
-    let model = model.map(wsx_core::task::view::checked_model).transpose()?;
+    let title = title
+        .as_deref()
+        .map(wsx_core::task::view::checked_title)
+        .transpose()?;
+    let model = model
+        .as_deref()
+        .map(wsx_core::task::view::checked_model)
+        .transpose()?;
     let hold = hold
         .as_deref()
         .map(wsx_core::task::view::checked_hold)
         .transpose()?;
     let files = checked_files(&[], &files)?;
-    let (dir, record, answered) = create(
-        prompt, from, into, title, model, None, hold, files, plan, steps, project,
-    )?;
+    let (dir, record, answered) = create(NewTask {
+        prompt,
+        from,
+        into,
+        title,
+        model,
+        fixes: None,
+        hold,
+        files,
+        plan,
+        steps,
+        project,
+    })?;
     let state = answered.unwrap_or(TaskState::Working);
     let id = dir.id;
     if json {
@@ -148,26 +172,43 @@ pub(crate) enum Size {
     Full,
 }
 
+/// What `create` starts a task from. `new` builds it from the command line (checked); a failed
+/// To check item builds it for its fix task.
+pub(crate) struct NewTask {
+    pub(crate) prompt: String,
+    pub(crate) from: Option<String>,
+    pub(crate) into: Option<u32>,
+    pub(crate) title: Option<String>,
+    pub(crate) model: Option<String>,
+    /// The "To check" item it fixes.
+    pub(crate) fixes: Option<String>,
+    pub(crate) hold: Option<String>,
+    pub(crate) files: Vec<String>,
+    pub(crate) plan: bool,
+    pub(crate) steps: Steps,
+    pub(crate) project: Option<String>,
+}
+
 /// Create a task and start its host; `fixes` names the "To check" item it fixes; with `plan`
 /// its first turn writes a plan; `steps` picks its turns from `tasks.workflow.steps`, with
 /// `context` and `memo` folded (docs/tasks.md "Workflow"). The state is none when the host
 /// did not answer in time.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn create(
-    prompt: String,
-    from: Option<&str>,
-    into: Option<u32>,
-    title: Option<String>,
-    model: Option<String>,
-    fixes: Option<String>,
-    hold: Option<String>,
-    files: Vec<String>,
-    plan: bool,
-    steps: Steps,
-    project: Option<&str>,
-) -> Result<(TaskDir, TaskRecord, Option<TaskState>)> {
+pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskState>)> {
+    let NewTask {
+        prompt,
+        from,
+        into,
+        title,
+        model,
+        fixes,
+        hold,
+        files,
+        plan,
+        steps,
+        project,
+    } = task;
     let (config, workspace) = load_full_workspace()?;
-    let project = resolve_project(&workspace, project)?;
+    let project = resolve_project(&workspace, project.as_deref())?;
     let settings = load_task_config(&project.path)
         .map_err(|error| anyhow::anyhow!("{error}; no task was created"))?;
     // ^ A missing profile folder would fail the host's start after the ID is taken.
@@ -226,7 +267,11 @@ pub(crate) fn create(
             }
             None => project.default_branch.clone(),
         };
-        let working_copy = copy::create(&project.path, from.unwrap_or(&default_branch), id)?;
+        let working_copy = copy::create(
+            &project.path,
+            from.as_deref().unwrap_or(&default_branch),
+            id,
+        )?;
         Ok((default_branch, working_copy))
     })();
     let (default_branch, working_copy) = match created {

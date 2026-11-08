@@ -28,48 +28,7 @@ pub struct RunLocked {
 #[derive(Subcommand)]
 pub enum TaskCmd {
     /// Start a worker on a new branch in its own working copy
-    New {
-        #[command(flatten)]
-        prompt: PromptSource,
-        /// Start from this branch, tag or commit instead of the default branch
-        #[arg(long, value_name = "REF")]
-        from: Option<String>,
-        /// Start from this open task's branch and land into it, not the default branch; the
-        /// task is held so it lands only on the owner's word (docs/tasks.md "Parent tasks")
-        #[arg(long, value_name = "TASK", conflicts_with = "from")]
-        into: Option<u32>,
-        /// A short title in plain words (at most 60 characters); default: the prompt's first line
-        #[arg(long)]
-        title: Option<String>,
-        /// The worker's model; default: tasks.agent.model (opus), or tasks.agent.smallModel
-        /// (sonnet) with --size small
-        #[arg(long, value_name = "NAME")]
-        model: Option<String>,
-        /// small: a change you can state (what, where, how it proves itself) runs only the
-        /// build step on tasks.agent.smallModel; full (default): every step
-        #[arg(long, value_enum, default_value_t = Size::Full, conflicts_with = "skip")]
-        size: Size,
-        /// Hold the task for the owner to try before it lands, and say why
-        #[arg(long, value_name = "WHY")]
-        hold: Option<String>,
-        /// A glob of the paths it expects to change, relative to the checkout (repeatable)
-        #[arg(long, value_name = "GLOB")]
-        files: Vec<String>,
-        /// The first turn writes a plan and stops without editing; an `add` continues it
-        #[arg(long)]
-        plan: bool,
-        /// Leave out this `tasks.workflow.steps` step (repeatable), for a prompt that already
-        /// carries the context and the plan
-        #[arg(long, value_name = "STEP")]
-        skip: Vec<String>,
-        /// One turn without `tasks.workflow.steps`: the manager's idle task
-        #[arg(long, hide = true)]
-        no_steps: bool,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    New(NewArgs),
     /// List a project's tasks (closed ones with --all)
     List {
         #[arg(short, long)]
@@ -229,57 +188,11 @@ pub enum TaskCmd {
         json: bool,
     },
     /// Run tasks.deploy.command in a temporary copy of one default-branch commit and record it
-    Deploy {
-        /// Commit, tag or branch to deploy; default: the default branch tip
-        #[arg(long, value_name = "REF")]
-        commit: Option<String>,
-        /// Only when the default branch tip is not deployed yet, after a running deploy ends
-        #[arg(long, conflicts_with = "commit")]
-        if_new: bool,
-        /// Deploy the revision in this task's trial slot (the task host starts it)
-        #[arg(long, hide = true, value_name = "TASK", conflicts_with_all = ["commit", "if_new"])]
-        trial: Option<u32>,
-        #[command(flatten)]
-        run: RunLocked,
-        #[command(flatten)]
-        said: OwnerSaid,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    Deploy(DeployArgs),
     /// Run tasks.release.command the same way and record it
-    Release {
-        /// Commit, tag or branch to release; default: the default branch tip
-        #[arg(long, value_name = "REF")]
-        commit: Option<String>,
-        #[command(flatten)]
-        run: RunLocked,
-        #[command(flatten)]
-        said: OwnerSaid,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    Release(ReleaseArgs),
     /// Push the default branch, or one commit, to origin's default branch and move the local one there (the manager asks the owner first)
-    Push {
-        /// Commit, tag or branch to push; default: the default branch tip
-        #[arg(long, value_name = "REF")]
-        commit: Option<String>,
-        /// Rewrite origin's default branch (a squash): --force-with-lease on the tip seen now
-        #[arg(long)]
-        force: bool,
-        /// The origin tip an approved request saw; the push refuses when origin moved since
-        #[arg(long, hide = true, requires = "force", value_name = "COMMIT")]
-        lease: Option<String>,
-        #[command(flatten)]
-        said: OwnerSaid,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    Push(PushArgs),
     /// Print the bounded project state a manager reads first (JSON, at most 16 KiB)
     Ledger {
         #[arg(short, long)]
@@ -486,6 +399,105 @@ pub enum TaskCmd {
     },
 }
 
+#[derive(clap::Args)]
+pub struct NewArgs {
+    #[command(flatten)]
+    pub(crate) prompt: PromptSource,
+    /// Start from this branch, tag or commit instead of the default branch
+    #[arg(long, value_name = "REF")]
+    pub(crate) from: Option<String>,
+    /// Start from this open task's branch and land into it, not the default branch; the
+    /// task is held so it lands only on the owner's word (docs/tasks.md "Parent tasks")
+    #[arg(long, value_name = "TASK", conflicts_with = "from")]
+    pub(crate) into: Option<u32>,
+    /// A short title in plain words (at most 60 characters); default: the prompt's first line
+    #[arg(long)]
+    pub(crate) title: Option<String>,
+    /// The worker's model; default: tasks.agent.model (opus), or tasks.agent.smallModel
+    /// (sonnet) with --size small
+    #[arg(long, value_name = "NAME")]
+    pub(crate) model: Option<String>,
+    /// small: a change you can state (what, where, how it proves itself) runs only the
+    /// build step on tasks.agent.smallModel; full (default): every step
+    #[arg(long, value_enum, default_value_t = Size::Full, conflicts_with = "skip")]
+    pub(crate) size: Size,
+    /// Hold the task for the owner to try before it lands, and say why
+    #[arg(long, value_name = "WHY")]
+    pub(crate) hold: Option<String>,
+    /// A glob of the paths it expects to change, relative to the checkout (repeatable)
+    #[arg(long, value_name = "GLOB")]
+    pub(crate) files: Vec<String>,
+    /// The first turn writes a plan and stops without editing; an `add` continues it
+    #[arg(long)]
+    pub(crate) plan: bool,
+    /// Leave out this `tasks.workflow.steps` step (repeatable), for a prompt that already
+    /// carries the context and the plan
+    #[arg(long, value_name = "STEP")]
+    pub(crate) skip: Vec<String>,
+    /// One turn without `tasks.workflow.steps`: the manager's idle task
+    #[arg(long, hide = true)]
+    pub(crate) no_steps: bool,
+    #[arg(short, long)]
+    pub(crate) project: Option<String>,
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+#[derive(clap::Args)]
+pub struct DeployArgs {
+    /// Commit, tag or branch to deploy; default: the default branch tip
+    #[arg(long, value_name = "REF")]
+    pub(crate) commit: Option<String>,
+    /// Only when the default branch tip is not deployed yet, after a running deploy ends
+    #[arg(long, conflicts_with = "commit")]
+    pub(crate) if_new: bool,
+    /// Deploy the revision in this task's trial slot (the task host starts it)
+    #[arg(long, hide = true, value_name = "TASK", conflicts_with_all = ["commit", "if_new"])]
+    pub(crate) trial: Option<u32>,
+    #[command(flatten)]
+    pub(crate) run: RunLocked,
+    #[command(flatten)]
+    pub(crate) said: OwnerSaid,
+    #[arg(short, long)]
+    pub(crate) project: Option<String>,
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+#[derive(clap::Args)]
+pub struct ReleaseArgs {
+    /// Commit, tag or branch to release; default: the default branch tip
+    #[arg(long, value_name = "REF")]
+    pub(crate) commit: Option<String>,
+    #[command(flatten)]
+    pub(crate) run: RunLocked,
+    #[command(flatten)]
+    pub(crate) said: OwnerSaid,
+    #[arg(short, long)]
+    pub(crate) project: Option<String>,
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+#[derive(clap::Args)]
+pub struct PushArgs {
+    /// Commit, tag or branch to push; default: the default branch tip
+    #[arg(long, value_name = "REF")]
+    pub(crate) commit: Option<String>,
+    /// Rewrite origin's default branch (a squash): --force-with-lease on the tip seen now
+    #[arg(long)]
+    pub(crate) force: bool,
+    /// The origin tip an approved request saw; the push refuses when origin moved since
+    #[arg(long, hide = true, requires = "force", value_name = "COMMIT")]
+    pub(crate) lease: Option<String>,
+    #[command(flatten)]
+    pub(crate) said: OwnerSaid,
+    #[arg(short, long)]
+    pub(crate) project: Option<String>,
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
 #[derive(Subcommand)]
 pub enum RoleCmd {
     /// Open a role (the manager asks the owner first; at most tasks.roles.max)
@@ -521,7 +533,10 @@ pub enum RoleCmd {
 impl TaskCmd {
     pub fn json_output(&self) -> bool {
         match self {
-            Self::New { json, .. }
+            Self::New(NewArgs { json, .. })
+            | Self::Deploy(DeployArgs { json, .. })
+            | Self::Release(ReleaseArgs { json, .. })
+            | Self::Push(PushArgs { json, .. })
             | Self::List { json, .. }
             | Self::Show { json, .. }
             | Self::Steer { json, .. }
@@ -535,9 +550,6 @@ impl TaskCmd {
             | Self::Handback { json, .. }
             | Self::Check { json, .. }
             | Self::Close { json, .. }
-            | Self::Deploy { json, .. }
-            | Self::Release { json, .. }
-            | Self::Push { json, .. }
             | Self::Deployed { json, .. }
             | Self::Preview { json, .. } => *json,
             Self::Role { action } => match action {
@@ -570,7 +582,7 @@ impl TaskCmd {
     pub fn without_daemon(&self) -> bool {
         !matches!(
             self,
-            Self::New { .. }
+            Self::New(_)
                 | Self::Check {
                     action: Some(CheckAction::Fail { .. }),
                     ..

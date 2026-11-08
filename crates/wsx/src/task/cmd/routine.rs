@@ -1,5 +1,6 @@
 //! `digest`, `checkin` and `post`: what a routine does for the chat (docs/tasks.md "Routines").
 
+use crate::cli::RoutineCmd;
 use crate::task::{acting_as_manager, not_for_roles, project_entry};
 use anyhow::{bail, Context, Result};
 use std::time::{Duration, Instant};
@@ -227,4 +228,26 @@ pub(crate) fn post_when_free(
         }
         std::thread::sleep(DIGEST_TURN_POLL);
     }
+}
+
+/// `wsx task routine`: the project's routines. A role changes nothing of the project's own, and
+/// the manager writes one only with the owner's word (docs/tasks.md "Roles", "Routines").
+pub(crate) fn routine_command(action: RoutineCmd, owner_said: Option<u64>) -> Result<()> {
+    use RoutineCmd::{Add, Delete, Disable, Edit, Enable};
+    // ^ A role changes nothing of the project's own (docs/tasks.md "Roles").
+    if let Add { .. } | Edit { .. } | Delete { .. } | Enable { .. } | Disable { .. } = &action {
+        not_for_roles("routine changes")?;
+    }
+    // ^ wsxd runs a routine outside the agent boundary: only the owner writes one.
+    if let Add { project, .. } | Edit { project, .. } | Delete { project, .. } = &action {
+        if acting_as_manager() {
+            let said = owner_said.context(
+                "the owner adds, edits and deletes routines: pass --owner-said <id> \
+                 when the owner's message of this turn asks for it; nothing was run",
+            )?;
+            let (name, main) = project_entry(project.as_deref())?;
+            owner::check_owner_said(&store::project_id(&name, &main), said)?;
+        }
+    }
+    crate::cli::cmd_routine(action)
 }

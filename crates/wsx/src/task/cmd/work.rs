@@ -1,17 +1,24 @@
 //! The commands on one task: list, show, hand, close (docs/tasks.md).
 
+use super::approve::{ask_covering, owner_only, request_of};
+use crate::cli::PromptSource;
 use crate::cli::{existing_daemon_snapshot, load_config};
+use crate::task::args::OwnerSaid;
+use crate::task::{acting_as_manager, not_for_roles, open, open_owned, send};
 use crate::task::{ask_host_ok, print_json, project_entry};
-use crate::task::{owner_only, preview, trial};
+use crate::task::{preview, trial};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use wsx_core::task::checks::{self};
+use wsx_core::task::manager::ApprovalAction;
 use wsx_core::task::owner::HOST_TIMEOUT;
+use wsx_core::task::view::checked_files;
 use wsx_core::task::view::{
     overlaps, project_tasks, refuse_open_children, task_summary, MAX_RESULT_READ_BYTES,
 };
+use wsx_core::task::MAX_MESSAGE_BYTES;
 use wsx_core::task::{
     call_host, copy, now_unix_ms,
     store::{self, TaskDir, REPORT_FILE, RESULT_FILE},
@@ -429,4 +436,97 @@ pub(crate) fn delete_revision_refs(main: &Path, id: u32) {
             .args(["update-ref", "-d", reference])
             .status();
     }
+}
+
+/// `wsx task steer`: a message into the running turn.
+pub(crate) fn steer_command(
+    task: &str,
+    text: PromptSource,
+    project: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let dir = open_owned(project, task)?;
+    let text = text.read(MAX_MESSAGE_BYTES)?;
+    send(&dir, HostRequest::Steer { text }, json)
+}
+
+/// `wsx task add`: a message after the current turn, with more paths it expects to change.
+pub(crate) fn add_command(
+    task: &str,
+    text: PromptSource,
+    files: &[String],
+    project: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let dir = open_owned(project, task)?;
+    let text = text.read(MAX_MESSAGE_BYTES)?;
+    let files = checked_files(&dir.read_record()?.files, files)?;
+    send(&dir, HostRequest::Add { text, files }, json)
+}
+
+/// `wsx task stop`: interrupt the worker.
+pub(crate) fn stop_command(task: &str, project: Option<&str>, json: bool) -> Result<()> {
+    send(&open_owned(project, task)?, HostRequest::Stop, json)
+}
+
+/// `wsx task close`: remove the task; `--discard` of unlanded commits is the owner's word.
+pub(crate) fn close_command(
+    task: &str,
+    discard: bool,
+    said: OwnerSaid,
+    project: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let dir = open_owned(project, task)?;
+    if discard {
+        not_for_roles("close --discard")?;
+    }
+    // ^ Discarding work cannot be undone: the manager always asks first, or names
+    // the owner's message that asked for it.
+    let record = dir.read_record()?;
+    if discard
+        && acting_as_manager()
+        && ask_covering(
+            &record.project_path,
+            &dir.project_id,
+            request_of(ApprovalAction::Discard, Some(&record), None, None, None),
+            said.owner_said,
+            json,
+        )?
+    {
+        return Ok(());
+    }
+    close(&dir, discard, json)
+}
+
+/// `wsx task preview`: serve the task for a person to try, or stop the preview.
+pub(crate) fn preview_command(
+    task: &str,
+    stop: bool,
+    project: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let dir = open(project, task)?;
+    let (value, message) = if stop {
+        let stopped = preview::stop(&dir)?;
+        let message = match stopped {
+            true => "stopped the preview",
+            false => "no preview was running",
+        };
+        (
+            json!({ "stopped": stopped, "message": message }),
+            message.to_string(),
+        )
+    } else {
+        let running = preview::start(&dir)?;
+        let message = format!("try it at {} until it stops in an hour", running.url);
+        let mut value = serde_json::to_value(&running)?;
+        value["message"] = json!(message);
+        (value, message)
+    };
+    if json {
+        return print_json(&value);
+    }
+    println!("{message}");
+    Ok(())
 }
