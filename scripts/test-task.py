@@ -4505,7 +4505,8 @@ def part_host(created=None):
     # checks each child's commits and lands on main once, with the children's To check items.
     gate = base / 'parent-gate'
     gate.touch()
-    configure(LAND_CONFIG.replace('"test ! -e broken.txt"', '"%s"' % gate_cmd(gate)),
+    # ^ The second check fails in the parent's copy only, when 32q puts a broken.txt there.
+    configure(LAND_CONFIG.replace('"test ! -e broken.txt"', '"%s"\n    - "test ! -e broken.txt"' % gate_cmd(gate)),
               'a parent gate')
     parent = js('task', 'new', 'HV WORK parent.txt')['id']
     assert wait_state(parent, 'ready', 'failed')['state'] == 'ready', show(parent)
@@ -4550,14 +4551,15 @@ def part_host(created=None):
     assert ready_short(parent, 1)[0].get('wakes', True), 'the held parent\'s own first ready wakes'
     assert ready_short(parent, 2)[-1] == {'text': '#%d ready' % parent, 'task': parent, 'wakes': False}, ready_short(parent, 2)
     # The second child rebases onto the moved parent, is checked, lands, and the parent checks again;
-    # with its gate closed the checks fail, and that wakes.
-    gate.unlink()
+    # with a broken.txt in the parent's copy its checks fail, and that wakes.
+    broken = Path(show(parent)['record']['working_copy']) / 'broken.txt'
+    broken.touch()
     assert 'checks run on the new revision' in land(second)['message']
     assert wait_state(second, 'landed', 'ready', 'failed')['state'] == 'landed', log(second)
     assert wait_state(parent, 'failed')['state'] == 'failed' and show(parent)['record']['revision'] == 3
     failed_event = wait(lambda: events_with('#%d failed r3' % parent), 'the failed event of r3')[0]
     assert [x.get('wakes', True) for x in failed_event['short'] if x.get('task') == parent][-1], failed_event
-    gate.touch()
+    broken.unlink()
     assert js('task', 'add', parent, 'WORK again.txt')['ok']
     wait(lambda: (r := show(parent))['state'] == 'ready' and r['record']['revision'] == 4, 'the parent r4', 60)
     assert ready_short(parent, 4)[-1].get('wakes', True), ready_short(parent, 4)
