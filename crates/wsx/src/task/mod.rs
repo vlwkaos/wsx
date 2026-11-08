@@ -1492,6 +1492,7 @@ fn create(
         adapter,
         model,
         effort,
+        fallback: false,
         checks: settings.checks,
         steps,
         step: 0,

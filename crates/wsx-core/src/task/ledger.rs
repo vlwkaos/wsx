@@ -188,7 +188,7 @@ fn open_row(
         "title": title,
         "state": record.state,
         "revision": record.revision,
-        "agent": task_agent(dir, record),
+        "agent": task_agent(record),
         "overlaps": overlaps(record, records, false),
         "human_verify": result.as_ref().map_or(0, |r| r["result"]["human_verify"].as_array().map_or(0, Vec::len)),
         "summary": result.as_ref().and_then(|r| r["result"]["summary"].as_str()).map(|s| clip(s, SUMMARY_CHARS)),

@@ -2128,6 +2128,7 @@ impl Host {
         };
         self.record.adapter = next.adapter;
         self.record.model = next.model;
+        self.record.fallback = true;
         self.limit_attempt = 0;
         let waiting = format!(
             "The earlier conversation's agent reached its usage limit during this turn and \
