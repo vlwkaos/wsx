@@ -688,6 +688,8 @@ await shot("sessions");
 await click(".tabbar a[href='#/']");
 await until("location.hash === '#/' && !!document.querySelector('.home-row')", "the Home tab did not return home");
 await go(chat);
+// ^ The manager's log sets --log-scrollbar as the session chat does (useFollowEnd in lib.js): its wide blocks leave a classic scrollbar out.
+await until("(() => { const log = document.querySelector('.manager .log'); return !!log && parseFloat(getComputedStyle(log.parentElement).getPropertyValue('--log-scrollbar') || '-1') === log.offsetWidth - log.clientWidth; })()", "the manager's log did not take its scrollbar width for the wide blocks");
 await click(".more-button");
 await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Sessions').click()");
 await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.worktree')`, "the ⋯ menu did not open the worktrees");

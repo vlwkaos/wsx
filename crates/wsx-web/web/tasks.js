@@ -1094,7 +1094,7 @@ export function Manager({ project: id, task, page, checks, checkItem = null, usa
           ${away && html`<${JumpButton} unread=${unread} onClick=${around != null ? newest : toEnd} />`}
         </div>
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
-        ${!role && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} checks=${overview?.check_items ?? []} onMention=${mention} onReply=${(line, id) => { setReply({ line, id }); field.current?.focus(); }} onShow=${goToReply} onClose=${() => toggleTray(tray)} />`}
+        ${!role && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} checks=${overview?.check_items ?? []} onMention=${mention} onReply=${(line, id) => { setReply({ line, id }); field.current?.focus(); }} onShow=${goToReply} />`}
         ${low && header}
         ${!role && !can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
         ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
