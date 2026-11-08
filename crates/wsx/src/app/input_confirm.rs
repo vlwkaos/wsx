@@ -42,7 +42,7 @@ impl App {
                     session_label,
                 } => {
                     let cmd = if value.is_empty() { None } else { Some(value) };
-                    self.do_create_session(project_idx, worktree_idx, session_label, cmd)?;
+                    self.do_create_session(project_idx, worktree_idx, session_label, cmd, false);
                 }
                 InputContext::SetAlias {
                     project_idx,
@@ -134,19 +134,19 @@ impl App {
                     self.do_delete_session(project_idx, worktree_idx, session_idx)?;
                 }
                 PendingAction::ClosePane { pane_id, revision } => {
-                    match self.runtime_client.call(&runtime::Request::PaneClose {
-                        pane_id,
-                        expected_revision: revision,
-                    })? {
-                        runtime::Response::Ack { .. } => {
-                            self.spawn_runtime_session_refresh();
-                            self.set_status("Pane closed");
+                    let client = self.runtime_client.clone();
+                    self.spawn_bg("close pane", move || {
+                        match client.call(&runtime::Request::PaneClose {
+                            pane_id,
+                            expected_revision: revision,
+                        })? {
+                            runtime::Response::Ack { .. } => {
+                                Ok(BgOutcome::Refresh(Some("Pane closed")))
+                            }
+                            runtime::Response::Error(error) => bail!(api_error_text(&error)),
+                            _ => bail!("Unexpected pane close response"),
                         }
-                        runtime::Response::Error(error) => {
-                            self.set_error(api_error_text(&error));
-                        }
-                        _ => self.set_error("Unexpected pane close response"),
-                    }
+                    });
                 }
                 PendingAction::DeleteWorktree {
                     project_idx: pi,

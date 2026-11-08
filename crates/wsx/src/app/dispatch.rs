@@ -380,8 +380,8 @@ impl App {
 
     pub(super) fn send_terminal_stream(&mut self, message: runtime::TerminalClientMessage) {
         let Some(active) = self.terminal_stream.as_ref() else {
-            // Input typed while the terminal reattaches is dropped, as during entry.
-            if self.pending_terminal_resume.is_none() {
+            // Input typed while the terminal connects or reattaches is dropped.
+            if self.pending_terminal_resume.is_none() && self.pending_terminal_entry.is_none() {
                 self.set_error("Terminal stream is unavailable");
             }
             return;

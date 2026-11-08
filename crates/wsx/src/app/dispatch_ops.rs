@@ -27,39 +27,83 @@ impl App {
         Ok(())
     }
 
+    /// Creates a session on a worker. The reply expands the worktree and, for `open_shell`,
+    /// waits for the refresh to list it and enters it (`pending_shell`).
     pub(super) fn do_create_session(
         &mut self,
         pi: usize,
         wi: usize,
         session_label: String,
         command: Option<String>,
-    ) -> Result<Option<runtime::SessionId>> {
+        open_shell: bool,
+    ) {
         let Some((proj_name, wt_path, wt_slug)) = self.workspace.projects.get(pi).and_then(|p| {
             let wt = p.worktrees.get(wi)?;
             Some((p.name.clone(), wt.path.clone(), wt.session_slug(&p.name)))
         }) else {
             self.set_status("Worktree is no longer available");
-            return Ok(None);
+            return;
         };
         let explicit_name = if session_label.is_empty() {
             None
         } else {
             Some(session_label)
         };
-        let (session_id, display_name) = ops::create_session(
-            &self.runtime_client,
-            &self.config,
-            &proj_name,
-            &wt_slug,
-            &wt_path,
-            explicit_name,
-            command,
-        )?;
-        self.set_status(format!("Session '{}' created", display_name));
-        // Expand before the authoritative Runtime refresh reveals the new pane.
-        self.set_worktree_expanded(pi, wi, true);
+        let client = self.runtime_client.clone();
+        let config = self.config.clone();
+        self.spawn_bg("create session", move || {
+            let (session_id, display_name) = ops::create_session(
+                &client,
+                &config,
+                &proj_name,
+                &wt_slug,
+                &wt_path,
+                explicit_name,
+                command,
+            )?;
+            Ok(BgOutcome::SessionCreated {
+                worktree: wt_path,
+                session_id,
+                display_name,
+                open_shell,
+            })
+        });
+    }
+
+    pub(super) fn apply_session_created(
+        &mut self,
+        worktree: &Path,
+        session_id: runtime::SessionId,
+        display_name: &str,
+        open_shell: bool,
+    ) {
+        self.set_status(format!("Session '{display_name}' created"));
+        self.expand_worktree_at(worktree);
         self.spawn_runtime_refresh();
-        Ok(Some(session_id))
+        if open_shell {
+            // ^ Entering needs the cursor on the session's row, which the refresh adds.
+            self.pending_shell = Some((session_id, Instant::now()));
+        }
+    }
+
+    /// Expands the worktree at `path` before the refresh reveals a new pane; the rows may
+    /// have moved since the request.
+    pub(super) fn expand_worktree_at(&mut self, path: &Path) {
+        let found = self
+            .workspace
+            .projects
+            .iter()
+            .enumerate()
+            .find_map(|(pi, project)| {
+                project
+                    .worktrees
+                    .iter()
+                    .position(|worktree| worktree.path == path)
+                    .map(|wi| (pi, wi))
+            });
+        if let Some((pi, wi)) = found {
+            self.set_worktree_expanded(pi, wi, true);
+        }
     }
 
     pub(super) fn do_delete_project(&mut self, pi: usize, halt: bool) -> Result<()> {
@@ -72,21 +116,43 @@ impl App {
             self.set_status("Project is no longer available");
             return Ok(());
         };
+        if !halt {
+            return self.unregister_project_at(&path, &name, None);
+        }
         // ^ The same close the web's Remove runs with its halt choice; hidden task sessions too.
-        let halted = if halt {
-            ops::halt_project_sessions(&self.runtime_client, &path)?
-        } else {
-            0
+        let client = self.runtime_client.clone();
+        self.spawn_bg(format!("halt {name}"), move || {
+            let halted = ops::halt_project_sessions(&client, &path)?;
+            Ok(BgOutcome::ProjectHalted { path, name, halted })
+        });
+        Ok(())
+    }
+
+    /// Drops the project at `path` from the config and the rows. `halted` is how many
+    /// sessions were closed first, when the owner chose to.
+    pub(super) fn unregister_project_at(
+        &mut self,
+        path: &PathBuf,
+        name: &str,
+        halted: Option<usize>,
+    ) -> Result<()> {
+        let Some(pi) = self
+            .workspace
+            .projects
+            .iter()
+            .position(|project| &project.path == path)
+        else {
+            self.set_status("Project is no longer available");
+            return Ok(());
         };
         self.workspace.projects.remove(pi);
         self.rebuild_flat();
-        ops::unregister_project(&path, &mut self.config);
+        ops::unregister_project(path, &mut self.config);
         self.config.save()?;
         self.clamp_selected();
-        self.set_status(if halt {
-            format!("Unregistered: {name}, halted {halted} sessions")
-        } else {
-            format!("Unregistered: {}", name)
+        self.set_status(match halted {
+            Some(halted) => format!("Unregistered: {name}, halted {halted} sessions"),
+            None => format!("Unregistered: {name}"),
         });
         Ok(())
     }
@@ -148,12 +214,14 @@ impl App {
         let session_id = session.session_id;
         let pane_id = session.pane_id;
         self.unmute_on_interaction(pane_id);
-        ops::rename_session(&self.runtime_client, session_id, &new_name)?;
-        if let Some(session) = self.workspace.session_mut(pi, wi, si) {
-            session.display_name = new_name.clone();
-        }
-        self.mark_dirty();
-        self.set_status(format!("Session renamed to '{}'", new_name));
+        let client = self.runtime_client.clone();
+        self.spawn_bg("rename session", move || {
+            ops::rename_session(&client, session_id, &new_name)?;
+            Ok(BgOutcome::SessionRenamed {
+                session_id,
+                name: new_name,
+            })
+        });
         Ok(())
     }
 }

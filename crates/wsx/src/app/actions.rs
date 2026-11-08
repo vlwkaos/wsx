@@ -129,7 +129,7 @@ impl App {
             .terminal_target_label(pi, wi, si, pane_id)
             .unwrap_or_else(|| format!("pane {}", pane_id.0));
         self.touch_project(pi);
-        self.enter_terminal(pane_id, terminal_id, target, terminal)
+        self.enter_terminal(pane_id, terminal_id, target, terminal, None)
     }
 
     pub(super) fn attach_pane(
@@ -153,34 +153,13 @@ impl App {
             self.set_status("Pane not found");
             return Ok(());
         };
-        let focus_revision = match self.runtime_client.call(&runtime::Request::PaneFocus {
-            session_id,
-            pane_id,
-        })? {
-            runtime::Response::Ack { revision } => revision,
-            runtime::Response::Error(error) => {
-                self.set_error(api_error_text(&error));
-                return Ok(());
-            }
-            _ => {
-                self.set_error("Unexpected pane focus response");
-                return Ok(());
-            }
-        };
-        if let Some(session) = self.workspace.session_mut(pi, wi, si) {
-            if let Some(pane) = session.panes.get(pane_idx) {
-                session.pane_id = pane.pane_id;
-                session.terminal_id = pane.terminal_id;
-                session.agent = pane.agent.clone();
-                session.agent_status = pane.agent_status;
-                session.revision = focus_revision;
-            }
-        }
         let target = self
             .terminal_target_label(pi, wi, si, pane_id)
             .unwrap_or_else(|| format!("pane {}", pane_id.0));
         self.touch_project(pi);
-        self.enter_terminal(pane_id, terminal_id, target, terminal)
+        // ^ The pane is the selection, so `selected_terminal_identity` names it before wsxd
+        // has answered the focus; the session row follows the reply (`apply_terminal_connect`).
+        self.enter_terminal(pane_id, terminal_id, target, terminal, Some(session_id))
     }
 
     pub(super) fn terminal_target_label(
@@ -203,12 +182,16 @@ impl App {
         ))
     }
 
+    /// Starts entering a pane. wsxd is asked on a worker (`connect_terminal`): the screen
+    /// shows the job in the status bar and the pending entry holds the keys until the reply.
+    /// `focus` is the session whose focused pane changes to this one.
     pub(super) fn enter_terminal(
         &mut self,
         pane_id: runtime::PaneId,
         terminal_id: runtime::TerminalId,
         target: String,
         terminal: &Tui,
+        focus: Option<runtime::SessionId>,
     ) -> Result<()> {
         self.pending_terminal_entry = None;
         self.pending_terminal_resume = None;
@@ -221,57 +204,155 @@ impl App {
             self.unmute_on_interaction(left);
         }
         self.unmute_on_interaction(pane_id);
-        // ^ docs/terminal-exit-ordering.md: an exited pane keeps its last screen, often empty
-        // after an agent quits. Opening it starts its saved command again (an agent resumes
-        // its conversation), so the session is usable at once.
-        if self.pane_mut(pane_id).is_some_and(|pane| pane.exited) {
-            if let Err(error) = self.restart_exited_pane(pane_id) {
-                self.set_error(format!("Cannot start {target} again: {error:#}"));
-                return Ok(());
-            }
-        }
+        let restart = self.pane_mut(pane_id).is_some_and(|pane| pane.exited);
         let (rows, cols) = self.terminal_pane_size(terminal);
-        match runtime::TerminalStream::connect(
-            &self.runtime_client,
+        self.terminal_stream_generation = self.terminal_stream_generation.wrapping_add(1);
+        let generation = self.terminal_stream_generation;
+        self.pending_terminal_entry = Some(PendingTerminalEntry {
             pane_id,
-            self.terminal_controller_id,
-            TerminalControlIntent::Explicit.takeover(),
+            terminal_id,
+            generation,
             rows,
             cols,
-        ) {
+        });
+        self.terminal_escape_chord.reset();
+        self.spawn_terminal_connect(
+            format!("open {target}"),
+            ConnectRequest {
+                kind: ConnectKind::Entry,
+                generation,
+                pane_id,
+                terminal_id,
+                controller_id: self.terminal_controller_id,
+                size: (rows, cols),
+                target,
+                focus_session: focus,
+                restart,
+            },
+        );
+        Ok(())
+    }
+
+    pub(super) fn spawn_terminal_connect(&mut self, label: String, request: ConnectRequest) {
+        let client = self.runtime_client.clone();
+        self.spawn_bg(label, move || {
+            Ok(BgOutcome::TerminalConnect(Box::new(connect_terminal(
+                &client, request,
+            ))))
+        });
+    }
+
+    /// A connect worker answered. A reply whose entry or reattach is gone (another Enter, a
+    /// moved selection, a newer reattach) drops its stream; wsxd's focus and restart stay.
+    pub(super) fn apply_terminal_connect(&mut self, done: TerminalConnect) {
+        let TerminalConnect {
+            kind,
+            generation,
+            pane_id,
+            terminal_id,
+            size,
+            focus,
+            restart_revision,
+            stream,
+        } = done;
+        if let Some((session_id, revision)) = focus {
+            self.apply_pane_focus(session_id, pane_id, revision);
+        }
+        // ^ A refresh read before the restart still says exited and would end the new stream.
+        if let (Some(revision), Some((_, applied))) =
+            (restart_revision, self.applied_revision.as_mut())
+        {
+            *applied = (*applied).max(revision);
+        }
+        let wanted = match kind {
+            ConnectKind::Entry => self.pending_terminal_entry.is_some_and(|pending| {
+                pending.generation == generation && self.pending_terminal_entry_is_current(pending)
+            }),
+            ConnectKind::Resume => self
+                .pending_terminal_resume
+                .as_ref()
+                .is_some_and(|resume| resume.connecting && resume.generation == generation),
+        };
+        if !wanted {
+            // ^ Dropping a stream joins its threads, which can wait on a wedged wsxd.
+            if let Ok(stream) = stream {
+                std::thread::spawn(move || drop(stream));
+            }
+            return;
+        }
+        match stream {
             Ok(stream) => {
-                self.terminal_stream_generation = self.terminal_stream_generation.wrapping_add(1);
-                let generation = self.terminal_stream_generation;
                 self.terminal_stream = Some(ActiveTerminalStream {
                     epoch: stream.epoch(),
                     pane_id,
                     terminal_id,
                     generation,
                     stream,
-                    size: (rows, cols),
-                });
-                self.pending_terminal_entry = Some(PendingTerminalEntry {
-                    pane_id,
-                    terminal_id,
-                    generation,
-                    rows,
-                    cols,
+                    size,
                 });
                 self.terminal_escape_chord.reset();
+                if kind == ConnectKind::Resume {
+                    self.pending_terminal_resume = None;
+                    self.mode = Mode::Terminal { pane_id };
+                }
+                // ^ A resize while the connect ran had no stream to go to.
+                self.request_terminal_resize();
             }
-            Err(error) => self.set_error(terminal_stream_error_notice(&error, &target)),
+            Err((level, message)) => {
+                match kind {
+                    ConnectKind::Entry => {
+                        self.pending_terminal_entry = None;
+                        if matches!(self.mode, Mode::Terminal { pane_id: open } if open == pane_id)
+                        {
+                            self.mode = self.mode_after_terminal(Some(pane_id));
+                        }
+                    }
+                    ConnectKind::Resume => {
+                        self.pending_terminal_resume = None;
+                        self.mode = Mode::Workspace;
+                    }
+                }
+                self.set_notice(level, message);
+            }
         }
-        Ok(())
     }
 
-    /// `SessionRestart` with the pane's revision as wsxd has it now: the exit itself moved it.
-    pub(super) fn restart_exited_pane(&mut self, pane_id: runtime::PaneId) -> Result<()> {
-        let revision = ops::restart_session(&self.runtime_client, pane_id)?;
-        // ^ A refresh read before the restart still says exited and would end the new stream.
-        if let Some((_, applied)) = self.applied_revision.as_mut() {
-            *applied = (*applied).max(revision);
-        }
-        Ok(())
+    /// The session's focused pane after wsxd answered a `PaneFocus`. Found by id: the rows
+    /// may have moved while the call ran.
+    fn apply_pane_focus(
+        &mut self,
+        session_id: runtime::SessionId,
+        pane_id: runtime::PaneId,
+        revision: u64,
+    ) {
+        let Some(session) = self.session_by_id_mut(session_id) else {
+            return;
+        };
+        let Some((terminal_id, agent, status)) = session
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .map(|pane| (pane.terminal_id, pane.agent.clone(), pane.agent_status))
+        else {
+            return;
+        };
+        session.pane_id = pane_id;
+        session.terminal_id = terminal_id;
+        session.agent = agent;
+        session.agent_status = status;
+        session.revision = revision;
+    }
+
+    pub(super) fn session_by_id_mut(
+        &mut self,
+        session_id: runtime::SessionId,
+    ) -> Option<&mut wsx_core::model::workspace::SessionInfo> {
+        self.workspace
+            .projects
+            .iter_mut()
+            .flat_map(|project| &mut project.worktrees)
+            .flat_map(|worktree| &mut worktree.sessions)
+            .find(|session| session.session_id == session_id)
     }
 
     pub(super) fn pane_mut(
@@ -488,7 +569,7 @@ impl App {
         let session = &project.worktrees[wi].sessions[si];
         let rows = self.terminal_area.height.max(1);
         let cols = self.terminal_area.width.max(1);
-        match self.runtime_client.call(&runtime::Request::PaneSplit {
+        let request = runtime::Request::PaneSplit {
             session_id: session.session_id,
             target,
             axis,
@@ -498,16 +579,13 @@ impl App {
             rows,
             cols,
             expected_revision: session.revision,
-        })? {
-            runtime::Response::Created { .. } => {
-                self.spawn_runtime_session_refresh();
-                self.set_status("Pane created");
-            }
-            runtime::Response::Error(error) => {
-                self.set_error(api_error_text(&error));
-            }
-            _ => self.set_error("Unexpected pane split response"),
-        }
+        };
+        let client = self.runtime_client.clone();
+        self.spawn_bg("split pane", move || match client.call(&request)? {
+            runtime::Response::Created { .. } => Ok(BgOutcome::Refresh(Some("Pane created"))),
+            runtime::Response::Error(error) => bail!(api_error_text(&error)),
+            _ => bail!("Unexpected pane split response"),
+        });
         Ok(())
     }
 
@@ -861,12 +939,14 @@ impl App {
     }
 
     pub(super) fn reload_plugins(&mut self) {
-        if matches!(
-            self.runtime_client.call(&runtime::Request::PluginReload),
-            Ok(runtime::Response::Plugins(_))
-        ) {
-            self.spawn_runtime_session_refresh();
-        }
+        let client = self.runtime_client.clone();
+        self.spawn_bg("reload plugins", move || {
+            match client.call(&runtime::Request::PluginReload)? {
+                runtime::Response::Plugins(_) => Ok(BgOutcome::Refresh(None)),
+                runtime::Response::Error(error) => bail!(api_error_text(&error)),
+                _ => bail!("Unexpected plugin reload response"),
+            }
+        });
     }
 
     pub(super) fn edit_raw_global_config(&mut self, terminal: &mut Tui) {
@@ -1332,11 +1412,18 @@ impl App {
         if worker.is_none() {
             // ^ The main checkout's is the project's one shell (ops.rs `project_shell`).
             let main = self.workspace.projects[pi].worktrees[wi].path.clone();
-            let session_id = ops::project_shell(&self.runtime_client, &self.config, &main)?;
-            self.set_worktree_expanded(pi, wi, true);
-            self.spawn_runtime_refresh();
-            self.pending_shell = Some((session_id, Instant::now()));
-            return self.open_pending_shell(terminal);
+            let client = self.runtime_client.clone();
+            let config = self.config.clone();
+            self.spawn_bg("open shell", move || {
+                let session_id = ops::project_shell(&client, &config, &main)?;
+                Ok(BgOutcome::SessionCreated {
+                    worktree: main,
+                    session_id,
+                    display_name: "shell".into(),
+                    open_shell: true,
+                })
+            });
+            return Ok(());
         }
         // ^ A shell by identity, not by label: no agent, nothing in its foreground, and not
         // the task's own worker pane.
@@ -1356,10 +1443,7 @@ impl App {
             self.pending_shell = Some((session_id, Instant::now()));
             return self.open_pending_shell(terminal);
         }
-        if let Some(session_id) = self.do_create_session(pi, wi, String::new(), None)? {
-            // ^ Entering needs the cursor on the session's row, which the next refresh adds.
-            self.pending_shell = Some((session_id, Instant::now()));
-        }
+        self.do_create_session(pi, wi, String::new(), None, true);
         Ok(())
     }
 

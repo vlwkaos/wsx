@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use ratatui::{
     layout::{Position, Rect},
@@ -154,6 +154,8 @@ struct PendingTerminalResume {
     terminal_id: runtime::TerminalId,
     generation: u64,
     snapshot_ready: bool,
+    /// The stream connects on a worker; its reply is matched by `generation`.
+    connecting: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -659,6 +661,140 @@ pub enum BgOutcome {
     },
     /// A one-shot terminal input failed on the worker thread (`TerminalInputWorker`).
     TerminalInputFailed(String),
+    /// A terminal entry or reattach connected, or failed, on a worker.
+    TerminalConnect(Box<TerminalConnect>),
+    /// wsxd changed a session or pane: the status line, then a session refresh.
+    Refresh(Option<&'static str>),
+    SessionCreated {
+        worktree: PathBuf,
+        session_id: runtime::SessionId,
+        display_name: String,
+        open_shell: bool,
+    },
+    SessionRenamed {
+        session_id: runtime::SessionId,
+        name: String,
+    },
+    ProjectHalted {
+        path: PathBuf,
+        name: String,
+        halted: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectKind {
+    /// Enter: focus the pane, start an exited one, connect with a takeover.
+    Entry,
+    /// Reattach after a sleep: connect without a takeover.
+    Resume,
+}
+
+struct ConnectRequest {
+    kind: ConnectKind,
+    generation: u64,
+    pane_id: runtime::PaneId,
+    terminal_id: runtime::TerminalId,
+    controller_id: u64,
+    size: (u16, u16),
+    target: String,
+    focus_session: Option<runtime::SessionId>,
+    restart: bool,
+}
+
+/// What a connect worker brings back. Focus and restart happened in wsxd, so they apply
+/// even when the stream itself is no longer wanted.
+pub struct TerminalConnect {
+    kind: ConnectKind,
+    generation: u64,
+    pane_id: runtime::PaneId,
+    terminal_id: runtime::TerminalId,
+    size: (u16, u16),
+    focus: Option<(runtime::SessionId, u64)>,
+    restart_revision: Option<u64>,
+    stream: std::result::Result<runtime::TerminalStream, (NoticeLevel, String)>,
+}
+
+// ^ docs/design/tui-health-audit.md finding 7: every wsxd call here waits up to the 5 s IO
+// timeout, so none runs on the UI thread.
+fn connect_terminal(client: &runtime::Client, request: ConnectRequest) -> TerminalConnect {
+    let ConnectRequest {
+        kind,
+        generation,
+        pane_id,
+        terminal_id,
+        controller_id,
+        size,
+        target,
+        focus_session,
+        restart,
+    } = request;
+    let mut focus = None;
+    let mut restart_revision = None;
+    let stream = (|| {
+        if let Some(session_id) = focus_session {
+            match client.call(&runtime::Request::PaneFocus {
+                session_id,
+                pane_id,
+            }) {
+                Ok(runtime::Response::Ack { revision }) => focus = Some((session_id, revision)),
+                Ok(runtime::Response::Error(error)) => {
+                    return Err((NoticeLevel::Error, api_error_text(&error)));
+                }
+                Ok(_) => {
+                    return Err((NoticeLevel::Error, "Unexpected pane focus response".into()));
+                }
+                Err(error) => return Err((NoticeLevel::Error, format!("{error:#}"))),
+            }
+        }
+        // ^ docs/terminal-exit-ordering.md: opening an exited pane starts its saved command
+        // again. The exit itself moved the revision, so `restart_session` reads it fresh.
+        if restart {
+            match ops::restart_session(client, pane_id) {
+                Ok(revision) => restart_revision = Some(revision),
+                Err(error) => {
+                    let notice = format!("Cannot start {target} again: {error:#}");
+                    return Err((NoticeLevel::Error, notice));
+                }
+            }
+        }
+        let intent = match kind {
+            ConnectKind::Entry => TerminalControlIntent::Explicit,
+            ConnectKind::Resume => TerminalControlIntent::Resume,
+        };
+        runtime::TerminalStream::connect(
+            client,
+            pane_id,
+            controller_id,
+            intent.takeover(),
+            size.0,
+            size.1,
+        )
+        .map_err(|error| match kind {
+            ConnectKind::Entry => (
+                NoticeLevel::Error,
+                terminal_stream_error_notice(&error, &target),
+            ),
+            ConnectKind::Resume if error.to_string().starts_with("terminal_busy:") => (
+                NoticeLevel::Warning,
+                "Terminal control is active in another wsx instance".into(),
+            ),
+            ConnectKind::Resume => (
+                NoticeLevel::Error,
+                format!("Terminal resume failed: {error}"),
+            ),
+        })
+    })();
+    TerminalConnect {
+        kind,
+        generation,
+        pane_id,
+        terminal_id,
+        size,
+        focus,
+        restart_revision,
+        stream,
+    }
 }
 
 /// Result id for work that never had a `BgJob`, so it clears no job.
@@ -1600,6 +1736,31 @@ impl App {
             }
             Ok(BgOutcome::TerminalInputFailed(error)) => {
                 self.set_error(format!("Action failed: {error}"));
+            }
+            Ok(BgOutcome::TerminalConnect(done)) => self.apply_terminal_connect(*done),
+            Ok(BgOutcome::Refresh(status)) => {
+                self.spawn_runtime_session_refresh();
+                if let Some(status) = status {
+                    self.set_status(status);
+                }
+            }
+            Ok(BgOutcome::SessionCreated {
+                worktree,
+                session_id,
+                display_name,
+                open_shell,
+            }) => self.apply_session_created(&worktree, session_id, &display_name, open_shell),
+            Ok(BgOutcome::SessionRenamed { session_id, name }) => {
+                if let Some(session) = self.session_by_id_mut(session_id) {
+                    session.display_name = name.clone();
+                }
+                self.mark_dirty();
+                self.set_status(format!("Session renamed to '{name}'"));
+            }
+            Ok(BgOutcome::ProjectHalted { path, name, halted }) => {
+                if let Err(error) = self.unregister_project_at(&path, &name, Some(halted)) {
+                    self.set_error(format!("Unregister {name}: {error:#}"));
+                }
             }
             Ok(BgOutcome::IntegrationsInstalled {
                 installed,

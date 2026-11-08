@@ -1923,6 +1923,46 @@ try:
                                   "expected_revision": closing["revision"]})["type"] == "ack"
     cursor_session("keep-d")
     assert settled_cursor() == viewed, ("the cursor left the viewed session", cursor_sessions, CURSOR_CACHE.read_text())
+
+    # docs/design/tui-health-audit.md finding 7: wsxd stops (SIGSTOP) and does not answer. Enter
+    # opens the session on a worker, so keys still move the selection, an open the selection left
+    # is dropped when wsxd answers late, and an open that stays wanted reports its failure.
+    def tui_sees(text, since):
+        return text in tui.raw[since:]
+
+    os.kill(cursor_daemon.pid, signal.SIGSTOP)
+    try:
+        tui.send(b"\r")
+        time.sleep(0.5)  # the open job and its draw
+        mark = len(tui.raw)
+        sent = time.monotonic()
+        tui.send(b"k")  # the highlight moves to keep-b: its cells are drawn again
+        while not tui_sees(b"keep-b", mark):
+            assert time.monotonic() - sent < 5, "a key did not move the selection while wsxd was silent"
+            time.sleep(0.005)
+        key_ms = (time.monotonic() - sent) * 1000
+        print(f"tui wedged wsxd: the selection moved {key_ms:.0f} ms after the key (was a freeze of up to 5 s)", flush=True)
+        assert key_ms < 200, f"the selection moved {key_ms:.0f} ms after the key while wsxd was silent"
+        time.sleep(1)
+    finally:
+        os.kill(cursor_daemon.pid, signal.SIGCONT)
+    time.sleep(1)
+    assert not in_terminal_mode(), "an open the selection had left entered Terminal mode"
+    tui.send(b"j")
+    time.sleep(0.5)
+    os.kill(cursor_daemon.pid, signal.SIGSTOP)
+    try:
+        mark = len(tui.raw)
+        failing = time.monotonic()
+        tui.send(b"\r")
+        while not tui_sees(b"Terminal stream failed", mark):
+            assert time.monotonic() - failing < 30, "the open did not report that wsxd did not answer"
+            time.sleep(0.05)
+        print(f"tui wedged wsxd: the open reported its failure after {time.monotonic() - failing:.1f} s", flush=True)
+    finally:
+        os.kill(cursor_daemon.pid, signal.SIGCONT)
+    time.sleep(1)
+    assert not in_terminal_mode(), "a failed open entered Terminal mode"
     tui.send(b"\r")
     wait_for(in_terminal_mode, "the TUI did not open keep-c")
     viewed_shell_answers("opened", 1)
