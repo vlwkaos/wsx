@@ -327,7 +327,7 @@ fn project_latest_activity_unix_ms(
         .max()
 }
 
-fn project_has_active_sessions(project: &Project) -> bool {
+pub(crate) fn project_has_active_sessions(project: &Project) -> bool {
     session_state::folded_status(
         project
             .worktrees
@@ -1772,17 +1772,10 @@ impl App {
         &self.manager_asks
     }
 
-    pub(crate) fn stale_project_indices(&self) -> HashSet<usize> {
-        self.workspace
-            .projects
-            .iter()
-            .enumerate()
-            .filter_map(|(index, project)| {
-                (self.stale_collapsed_projects.contains(&project.path)
-                    && !project_has_active_sessions(project))
-                .then_some(index)
-            })
-            .collect()
+    /// Projects the inactivity timer collapsed. The tree shows one as stale only while it has no
+    /// active session, and checks that for the rows it draws.
+    pub(crate) fn stale_collapsed_projects(&self) -> &HashSet<PathBuf> {
+        &self.stale_collapsed_projects
     }
 
     fn rebuild_flat(&mut self) {

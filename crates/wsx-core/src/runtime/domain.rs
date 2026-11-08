@@ -517,6 +517,8 @@ pub struct Capabilities {
     pub exchange_command: bool,
     // ^ docs/agent-orchestration.md "Steer": types a message into a working Claude.
     pub agent_steer: bool,
+    // ^ A frame stream subscriber that asks gets a heartbeat while its pane is quiet.
+    pub stream_heartbeat: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -852,10 +854,14 @@ impl TerminalUpdate {
         {
             return Err("terminal patch baseline does not match");
         }
+        // ^ Check every row before the first write: a bad patch leaves the frame as it was.
+        if changed_rows
+            .iter()
+            .any(|patch| patch.row >= rows || patch.cells.len() != usize::from(cols))
+        {
+            return Err("terminal patch row is invalid");
+        }
         for patch in changed_rows {
-            if patch.row >= rows || patch.cells.len() != usize::from(cols) {
-                return Err("terminal patch row is invalid");
-            }
             let start = usize::from(patch.row) * usize::from(cols);
             current.cells[start..start + usize::from(cols)].clone_from_slice(&patch.cells);
         }

@@ -613,8 +613,9 @@ pub(crate) fn serve_client(mut stream: UnixStream, daemon: Arc<Daemon>) -> io::R
                 takeover,
                 rows,
                 cols,
+                heartbeat,
             } => (
-                TerminalStreamKind::Frames,
+                TerminalStreamKind::Frames { heartbeat },
                 (pane_id, client_id, takeover),
                 (rows, cols),
             ),

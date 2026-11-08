@@ -1065,10 +1065,11 @@ def stall_session(label, command):
                 if item["id"] == created["data"]["id"])
 
 
-def frame_subscribe(pane_id, client_id, takeover=False):
+def frame_subscribe(pane_id, client_id, takeover=False, heartbeat=False):
     stream = wsxd_client.connect(SOCKET, 10)
     wsxd_client.send(stream, "terminal_subscribe", {
         "pane_id": pane_id, "client_id": client_id, "takeover": takeover, "rows": 6, "cols": 60,
+        "heartbeat": heartbeat,
     })
     acked = recv_line(stream)
     assert acked["type"] == "ack", acked
@@ -1372,6 +1373,54 @@ missing = [n for n in range(10_001, 20_001) if n not in kept]
 assert not missing, f"scrollback lost {len(missing)} of the newest 10,000 lines, first {missing[:3]}"
 raw_close(scrollback_client)
 close_session(scrollback_session)
+
+
+# ^ docs/design/tui-health-audit.md #9 and #15. The TUI preview polls one pane twice a second: its
+# `frames` reply carries the screen and the epoch, not the snapshot of every session. A frame stream
+# that asked for it hears a heartbeat while its pane is quiet; one that did not hears none.
+preview_sessions = [pane_session(["/bin/sh", "-c", "sleep 120"]) for _ in range(50)]
+probe_pane = preview_sessions[0][1]
+
+
+def reply_size(method):
+    with wsxd_client.connect(SOCKET) as client:
+        wsxd_client.send(client, method, {"pane_ids": [probe_pane]})
+        data = b""
+        while not data.endswith(b"\n"):
+            data += client.recv(65536)
+    return len(data), json.loads(data)
+
+
+view_bytes, view_reply = reply_size("view")
+frames_bytes, frames_reply = reply_size("frames")
+assert view_reply["type"] == "view" and frames_reply["type"] == "frames", (view_reply["type"], frames_reply["type"])
+assert frames_reply["data"]["epoch"] == view_reply["data"]["snapshot"]["epoch"], frames_reply["data"]["epoch"]
+assert [frame["pane_id"] for frame in frames_reply["data"]["frames"]] == [probe_pane], frames_reply
+assert "snapshot" not in frames_reply["data"], list(frames_reply["data"])
+assert frames_bytes < view_bytes, (frames_bytes, view_bytes)
+print(f"preview poll with {len(preview_sessions)} sessions: view {view_bytes} bytes, frames {frames_bytes} bytes", flush=True)
+
+quiet_with, quiet_without = preview_sessions[1][1], preview_sessions[2][1]
+asking = frame_subscribe(quiet_with, 80, heartbeat=True)
+silent = frame_subscribe(quiet_without, 81)
+heard = {"asking": [], "silent": []}
+for stream in (asking, silent):
+    stream.settimeout(0.5)
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    for name, stream in (("asking", asking), ("silent", silent)):
+        send_stream(stream, {"type": "heartbeat"})
+        try:
+            heard[name].append(recv_line(stream)["type"])
+        except socket.timeout:
+            pass
+assert "heartbeat" in heard["asking"], heard
+assert "heartbeat" not in heard["silent"], heard
+asking.close()
+silent.close()
+for session_id, _ in preview_sessions:
+    close_session(session_id)
+print("frames reply and stream heartbeat: PASS", flush=True)
 
 
 raw_done.set()

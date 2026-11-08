@@ -4516,7 +4516,7 @@ fn missing_activity_does_not_make_projects_immediately_stale() {
         .projects
         .iter()
         .all(|project| project.expanded));
-    assert!(app.stale_project_indices().is_empty());
+    assert!(app.stale_collapsed_projects().is_empty());
 }
 
 #[test]
@@ -4528,7 +4528,10 @@ fn expired_user_touch_collapses_a_project_without_sessions() {
     app.collapse_stale_projects();
 
     assert!(!app.workspace.projects[0].expanded);
-    assert_eq!(app.stale_project_indices(), HashSet::from([0]));
+    assert_eq!(
+        app.stale_collapsed_projects(),
+        &HashSet::from([app.workspace.projects[0].path.clone()])
+    );
     assert!(app.cache_dirty);
 }
 
@@ -4549,7 +4552,9 @@ fn missing_activity_timestamps_do_not_stale_a_project_with_an_available_session(
     app.collapse_stale_projects();
 
     assert!(app.workspace.projects[0].expanded);
-    assert!(!app.stale_project_indices().contains(&0));
+    assert!(!app
+        .stale_collapsed_projects()
+        .contains(&app.workspace.projects[0].path));
 }
 
 #[test]
@@ -4580,7 +4585,10 @@ fn active_project_does_not_auto_collapse_or_project_stale_provenance() {
         !app.workspace.projects[0].expanded,
         "manual fold must remain"
     );
-    assert!(app.stale_project_indices().is_empty());
+    // ^ The set keeps the intent; the tree shows a project as stale only while nothing runs in it.
+    assert!(crate::app::project_has_active_sessions(
+        &app.workspace.projects[0]
+    ));
     assert!(
         app.stale_collapsed_projects.contains(&path),
         "projection must not rewrite intent"
@@ -4804,14 +4812,18 @@ fn manually_expanded_project_refreshes_timer_and_clears_stale_cause() {
     let path = app.workspace.projects[0].path.clone();
     app.stale_collapsed_projects.insert(path);
     let mut terminal = workspace_terminal();
-    assert!(app.stale_project_indices().contains(&0));
+    assert!(app
+        .stale_collapsed_projects()
+        .contains(&app.workspace.projects[0].path));
 
     app.dispatch(Action::Select, &mut terminal).unwrap();
     app.collapse_stale_projects();
     app.collapse_stale_projects();
 
     assert!(app.workspace.projects[0].expanded);
-    assert!(!app.stale_project_indices().contains(&0));
+    assert!(!app
+        .stale_collapsed_projects()
+        .contains(&app.workspace.projects[0].path));
 }
 
 #[test]
@@ -4821,15 +4833,18 @@ fn stale_marker_records_collapse_cause_not_current_elapsed_time() {
     app.workspace.projects[0].expanded = false;
     app.project_touched_unix_ms.insert(path.clone(), 0);
 
-    assert!(app.stale_project_indices().is_empty());
+    assert!(app.stale_collapsed_projects().is_empty());
 
     app.stale_collapsed_projects.insert(path.clone());
     app.config.auto_collapse = AutoCollapsePolicy::Disabled;
     app.workspace.projects[0].last_terminal_active_unix_ms = Some(u64::MAX);
-    assert_eq!(app.stale_project_indices(), HashSet::from([0]));
+    assert_eq!(
+        app.stale_collapsed_projects(),
+        &HashSet::from([app.workspace.projects[0].path.clone()])
+    );
 
     app.manually_expand_project(0);
-    assert!(app.stale_project_indices().is_empty());
+    assert!(app.stale_collapsed_projects().is_empty());
 }
 
 #[test]
@@ -4842,7 +4857,10 @@ fn stale_marker_survives_reconstruction_until_explicit_interaction() {
     let mut reconstructed = make_test_app(GlobalConfig::default(), app.workspace.clone(), None);
     reconstructed.stale_collapsed_projects = app.stale_collapsed_projects.clone();
 
-    assert_eq!(reconstructed.stale_project_indices(), HashSet::from([0]));
+    assert_eq!(
+        reconstructed.stale_collapsed_projects(),
+        &HashSet::from([reconstructed.workspace.projects[0].path.clone()])
+    );
     reconstructed.manually_expand_project(0);
     assert!(!reconstructed.stale_collapsed_projects.contains(&path));
 
@@ -4870,7 +4888,9 @@ fn manual_collapse_refreshes_staleness_and_survives_reconstruction() {
     reconstructed.collapse_stale_projects();
 
     assert!(!reconstructed.workspace.projects[0].expanded);
-    assert!(!reconstructed.stale_project_indices().contains(&0));
+    assert!(!reconstructed
+        .stale_collapsed_projects()
+        .contains(&reconstructed.workspace.projects[0].path));
     assert!(reconstructed.project_touched_unix_ms[&path] > 0);
 }
 
@@ -4888,7 +4908,9 @@ fn recent_project_touch_and_expansion_survive_app_reconstruction() {
     reconstructed.collapse_stale_projects();
 
     assert!(reconstructed.workspace.projects[0].expanded);
-    assert!(!reconstructed.stale_project_indices().contains(&0));
+    assert!(!reconstructed
+        .stale_collapsed_projects()
+        .contains(&reconstructed.workspace.projects[0].path));
 }
 
 #[test]

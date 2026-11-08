@@ -234,6 +234,7 @@ impl Client {
             request,
             Request::Snapshot
                 | Request::View { .. }
+                | Request::Frames { .. }
                 | Request::LifecycleStatus
                 | Request::AgentExchangeWait { .. }
         );
@@ -254,6 +255,27 @@ impl Client {
             explain_stuck_handoff(self, error);
         }
         result
+    }
+
+    /// The screens of some panes and the daemon epoch, as `Response::Frames` or an error. A
+    /// daemon older than revision 48 does not know `Frames`: it answers `invalid_json`, and the
+    /// snapshot of its `View` reply is dropped here.
+    pub fn frames(&self, pane_ids: Vec<super::domain::PaneId>) -> io::Result<Response> {
+        let response = self.call(&Request::Frames {
+            pane_ids: pane_ids.clone(),
+        })?;
+        match response {
+            Response::Error(error) if error.code == "invalid_json" => {
+                Ok(match self.call(&Request::View { pane_ids })? {
+                    Response::View { snapshot, frames } => Response::Frames {
+                        epoch: snapshot.epoch,
+                        frames,
+                    },
+                    other => other,
+                })
+            }
+            other => Ok(other),
+        }
     }
 
     fn call_once(&self, request: &Request) -> io::Result<Response> {
@@ -337,13 +359,19 @@ fn reply_timeout(request: &Request) -> Duration {
 
 struct Handshake {
     epoch: u64,
+    capabilities: super::domain::Capabilities,
 }
 
 fn validate_hello(response: Response, expected_protocol: u32) -> io::Result<Handshake> {
     match response {
         Response::Hello {
-            protocol, epoch, ..
-        } if protocol == expected_protocol => Ok(Handshake { epoch }),
+            protocol,
+            epoch,
+            capabilities,
+        } if protocol == expected_protocol => Ok(Handshake {
+            epoch,
+            capabilities,
+        }),
         Response::Hello { protocol, .. } => Err(io::Error::other(format!(
             "protocol_mismatch: client {expected_protocol}, daemon {protocol}"
         ))),
@@ -407,6 +435,9 @@ fn read_json_line<T: serde::de::DeserializeOwned>(
 }
 
 const TERMINAL_INPUT_QUEUE: usize = 1024;
+// ^ wsxd sends a heartbeat after 2 s without a frame (`STREAM_HEARTBEAT` in wsx-daemon), so a
+// stream that stays silent this long has a wsxd that is connected but stuck.
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 const TERMINAL_UPDATE_QUEUE: usize = 64;
 
 /// What the stream reader must know about a server message type.
@@ -464,6 +495,7 @@ impl TerminalStream {
                 takeover,
                 rows,
                 cols,
+                heartbeat: true,
             },
         )
     }
@@ -541,7 +573,16 @@ impl<M: TerminalStreamMessage> TerminalStream<M> {
         }
         // ^ macOS answers EINVAL to setsockopt on a socket whose peer already closed: an exited
         // pane sends its last screen and ends the stream. The reader still reads what was sent.
-        match stream.set_read_timeout(None) {
+        // A frame stream that asked for heartbeats from a daemon that sends them reads with an idle
+        // limit; any other stream waits as long as its pane is quiet.
+        let idle = matches!(
+            request,
+            Request::TerminalSubscribe {
+                heartbeat: true,
+                ..
+            }
+        ) && handshake.capabilities.stream_heartbeat;
+        match stream.set_read_timeout(idle.then_some(STREAM_IDLE_TIMEOUT)) {
             Err(error) if error.kind() == io::ErrorKind::InvalidInput => {}
             result => result?,
         }
@@ -659,9 +700,15 @@ fn terminal_reader<M: TerminalStreamMessage>(
         let message: M = match read_buffered_json_line(&mut reader, MAX_RESPONSE_BYTES) {
             Ok(message) => message,
             Err(error) => {
+                let error = match error.kind() {
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
+                        format!("wsxd sent nothing for {} s", STREAM_IDLE_TIMEOUT.as_secs())
+                    }
+                    _ => error.to_string(),
+                };
                 let _ = updates.try_send(M::disconnected(super::protocol::ApiError::new(
                     "stream_disconnected",
-                    error.to_string(),
+                    error,
                 )));
                 break;
             }

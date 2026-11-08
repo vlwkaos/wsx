@@ -54,6 +54,7 @@ What the open tasks miss: #240 builds the chat rows in core, but it keeps the wh
    Files: `wsx/src/app/{actions,dispatch_ops,run_loop,input_confirm}.rs`. Proof: a `scripts/runtime-smoke.py` step with wsxd stopped by SIGSTOP. Keys still move the selection within 200 ms, and the action reports its failure after the timeout.
 5. **A lighter preview and tree (#9, #12, #15).** Add a frame-only view reply, draw only the visible tree rows, and add a stream idle timeout.
    Files: `wsx-core/src/runtime/{protocol,client}.rs`, `wsx-daemon` view handler, `wsx/src/app/runtime_sync.rs`, `wsx/src/ui/workspace_tree.rs`. Proof: the `scripts/runtime-smoke.py` preview and stream steps; reply bytes per poll before and after, with 50 sessions.
+   Status (#340): done. `frames` request, visible-row tree, stream heartbeat and idle timeout, in-place patch (daemon revision 48). Numbers: `scripts/runtime-smoke.py` prints the `view` and `frames` reply sizes with 50 sessions.
 
 ## Checked and found fine
 

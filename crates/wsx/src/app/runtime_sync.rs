@@ -572,15 +572,10 @@ impl App {
         let tx = self.runtime_tx.clone();
         let client = self.runtime_client.clone();
         std::thread::spawn(move || {
-            let frame = match client.call(&runtime::Request::View {
-                pane_ids: vec![pane_id],
-            }) {
-                Ok(runtime::Response::View {
-                    snapshot,
-                    mut frames,
-                }) => frames
+            let frame = match client.frames(vec![pane_id]) {
+                Ok(runtime::Response::Frames { epoch, mut frames }) => frames
                     .pop()
-                    .map(|frame| (snapshot.epoch, frame))
+                    .map(|frame| (epoch, frame))
                     .ok_or_else(|| anyhow::anyhow!("pane frame is unavailable")),
                 Ok(runtime::Response::Error(error)) => Err(api_error(error)),
                 Ok(_) => Err(anyhow::anyhow!("unexpected daemon view response")),

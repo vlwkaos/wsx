@@ -1,6 +1,6 @@
 // Left sidebar — 3-level tree (Project -> Worktree -> Session) using ratatui List.
 
-use crate::session_state;
+use crate::{app::project_has_active_sessions, session_state};
 use ratatui::{
     prelude::*,
     widgets::{List, ListItem, ListState},
@@ -8,7 +8,7 @@ use ratatui::{
 use std::{collections::HashSet, path::PathBuf};
 use wsx_core::{
     config::global::PortVisibility,
-    model::workspace::{FlatEntry, SessionInfo, WorkspaceState},
+    model::workspace::{FlatEntry, Project, SessionInfo, WorkspaceState},
 };
 
 use super::{
@@ -161,7 +161,7 @@ pub struct TreeView<'a> {
     pub muted_terminals: &'a HashSet<String>,
     pub workspace: &'a WorkspaceState,
     pub flat: &'a [FlatEntry],
-    pub stale_projects: &'a HashSet<usize>,
+    pub stale_projects: &'a HashSet<PathBuf>,
     /// Projects whose manager's last reply asks the owner: their name takes the accent.
     pub asking: &'a HashSet<PathBuf>,
     pub selected: usize,
@@ -176,13 +176,30 @@ pub struct CompactTreeView<'a> {
     pub muted_terminals: &'a HashSet<String>,
     pub workspace: &'a WorkspaceState,
     pub flat: &'a [FlatEntry],
-    pub stale_projects: &'a HashSet<usize>,
+    pub stale_projects: &'a HashSet<PathBuf>,
     /// Projects whose manager's last reply asks the owner: their name takes the accent.
     pub asking: &'a HashSet<PathBuf>,
     pub selected: usize,
     pub scroll_offset: usize,
     pub animation_frame: usize,
     pub search: Option<SearchFeedback<'a>>,
+}
+
+/// The inactivity timer collapsed the project and nothing runs in it. Checked for the rows that are
+/// drawn, not for every project on each frame.
+fn is_stale(stale_projects: &HashSet<PathBuf>, project: &Project) -> bool {
+    stale_projects.contains(&project.path) && !project_has_active_sessions(project)
+}
+
+/// The rows of `len` that a list of `height` rows shows from `offset`, as `(start, end)`. A
+/// selection outside them lets the list scroll to it, which needs every row.
+fn visible_rows(len: usize, selected: usize, offset: usize, height: usize) -> (usize, usize) {
+    let selected = selected.min(len.saturating_sub(1));
+    if selected >= offset && selected < offset.saturating_add(height) {
+        (offset, offset.saturating_add(height).min(len))
+    } else {
+        (0, len)
+    }
 }
 
 /// A project's name is bold text; it takes the accent while its manager asks the owner, as the
@@ -196,7 +213,7 @@ fn project_style(asks: bool) -> Style {
 fn compact_tree_cell(
     workspace: &WorkspaceState,
     entry: &FlatEntry,
-    stale_projects: &HashSet<usize>,
+    stale_projects: &HashSet<PathBuf>,
     asking: &HashSet<PathBuf>,
     muted_terminals: &HashSet<String>,
     animation_frame: usize,
@@ -217,7 +234,7 @@ fn compact_tree_cell(
             }
             if project.missing {
                 ("!", Style::default().fg(theme::BLOCKED))
-            } else if stale_projects.contains(idx) {
+            } else if is_stale(stale_projects, project) {
                 ("·", theme::stale_project())
             } else {
                 (
@@ -296,8 +313,13 @@ fn compact_tree_cell(
 }
 
 pub fn render_compact_tree(frame: &mut Frame, layout: SidebarLayout, view: CompactTreeView<'_>) {
-    let items = view
-        .flat
+    let (start, end) = visible_rows(
+        view.flat.len(),
+        view.selected,
+        view.scroll_offset,
+        usize::from(layout.list.height),
+    );
+    let items = view.flat[start..end]
         .iter()
         .map(|entry| {
             let (symbol, style) = compact_tree_cell(
@@ -311,16 +333,19 @@ pub fn render_compact_tree(frame: &mut Frame, layout: SidebarLayout, view: Compa
             ListItem::new(Span::styled(symbol, style))
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default().with_offset(view.scroll_offset);
+    let mut state =
+        ListState::default().with_offset(view.scroll_offset - start.min(view.scroll_offset));
     if !view.flat.is_empty() {
-        state.select(Some(view.selected.min(view.flat.len().saturating_sub(1))));
+        state.select(Some(
+            view.selected.min(view.flat.len().saturating_sub(1)) - start,
+        ));
     }
     let list = List::new(items)
         .highlight_style(theme::selected_row(false))
         .highlight_symbol("");
     frame.render_stateful_widget(list, layout.list, &mut state);
     if let Some(search) = view.search {
-        search.render(frame, layout.list, layout.list, state.offset());
+        search.render(frame, layout.list, layout.list, start + state.offset());
     }
 }
 
@@ -343,7 +368,13 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
         list: search.map_or(layout.list, |feedback| feedback.content_area(layout.list)),
         ..layout
     };
-    let items: Vec<ListItem> = flat
+    let (start, end) = visible_rows(
+        flat.len(),
+        selected,
+        scroll_offset,
+        usize::from(layout.list.height),
+    );
+    let items: Vec<ListItem> = flat[start..end]
         .iter()
         .map(|entry| match entry {
             FlatEntry::Project { idx } => {
@@ -370,7 +401,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                         format!("{} {} (missing)", icon, p.name),
                         Style::default().fg(theme::TEXT_SUBTLE),
                     )
-                } else if stale_projects.contains(idx) && summary.active_sessions == 0 {
+                } else if is_stale(stale_projects, p) && summary.active_sessions == 0 {
                     (
                         stale_project_label(icon, &p.name, &count, label_width),
                         theme::stale_project(),
@@ -546,9 +577,9 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
         })
         .collect();
 
-    let mut list_state = ListState::default().with_offset(scroll_offset);
+    let mut list_state = ListState::default().with_offset(scroll_offset - start.min(scroll_offset));
     if !flat.is_empty() {
-        list_state.select(Some(selected.min(flat.len().saturating_sub(1))));
+        list_state.select(Some(selected.min(flat.len().saturating_sub(1)) - start));
     }
 
     // ^ The selection paints its row in text color: a selected project that asks keeps the accent.
@@ -566,7 +597,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
 
     frame.render_stateful_widget(list, layout.list, &mut list_state);
     if let Some(search) = search {
-        search.render(frame, search_area, layout.list, list_state.offset());
+        search.render(frame, search_area, layout.list, start + list_state.offset());
     }
     render_scrollbar(
         frame,
@@ -709,6 +740,69 @@ mod tests {
     }
 
     #[test]
+    fn visible_rows_window_the_list_and_keep_a_scrolled_to_selection_whole() {
+        assert_eq!(super::visible_rows(100, 42, 40, 5), (40, 45));
+        assert_eq!(super::visible_rows(43, 42, 40, 5), (40, 43));
+        // ^ Selected above or below the view: the list scrolls to it, so it gets every row.
+        assert_eq!(super::visible_rows(100, 10, 40, 5), (0, 100));
+        assert_eq!(super::visible_rows(100, 60, 40, 5), (0, 100));
+        assert_eq!(super::visible_rows(0, 0, 0, 5), (0, 0));
+    }
+
+    #[test]
+    fn a_long_tree_draws_the_rows_of_its_scroll_offset() {
+        let project = |name: String| Project {
+            path: PathBuf::from(format!("/{name}")),
+            name,
+            default_branch: "main".into(),
+            last_agent_active_unix_ms: None,
+            last_terminal_active_unix_ms: None,
+            worktrees: vec![],
+            routines: vec![],
+            routine_revision: 0,
+            routines_expanded: false,
+            config: None,
+            expanded: false,
+            missing: false,
+        };
+        let workspace = WorkspaceState {
+            projects: (0..100).map(|n| project(format!("p{n:03}"))).collect(),
+        };
+        let flat = (0..100)
+            .map(|idx| FlatEntry::Project { idx })
+            .collect::<Vec<_>>();
+        for (selected, offset, first) in [(42, 40, "p040"), (10, 40, "p010"), (60, 40, "p056")] {
+            let mut terminal = Terminal::new(TestBackend::new(30, 5)).unwrap();
+            terminal
+                .draw(|frame| {
+                    render_tree(
+                        frame,
+                        SidebarLayout::new(frame.area()),
+                        TreeView {
+                            workspace: &workspace,
+                            flat: &flat,
+                            stale_projects: &HashSet::new(),
+                            asking: &HashSet::new(),
+                            muted_terminals: &HashSet::new(),
+                            selected,
+                            scroll_offset: offset,
+                            is_move_mode: false,
+                            port_visibility: PortVisibility::default(),
+                            animation_frame: 0,
+                            search: None,
+                        },
+                    );
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let row = |y| (0..30).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+            assert!(row(0).contains(first), "{selected}/{offset}: {:?}", row(0));
+            let shown = (0..5).position(|y| row(y).contains(&format!("p{selected:03}")));
+            assert!(shown.is_some(), "{selected}/{offset} is not on screen");
+        }
+    }
+
+    #[test]
     fn stale_and_manual_collapse_rows_have_distinct_readable_projection() {
         let project = |name: &str| Project {
             name: name.into(),
@@ -740,7 +834,8 @@ mod tests {
             FlatEntry::Project { idx: 2 },
             FlatEntry::Project { idx: 3 },
         ];
-        let stale_projects = HashSet::from([0, 3]);
+        let stale_projects =
+            HashSet::from([PathBuf::from("/stale-one"), PathBuf::from("/missing")]);
         let backend = TestBackend::new(40, 4);
         let mut terminal = Terminal::new(backend).unwrap();
 
@@ -867,7 +962,7 @@ mod tests {
             for width in [1, 2, 4, 8, 18, 26, 60] {
                 let mut terminal =
                     Terminal::new(TestBackend::new(width, flat.len() as u16)).unwrap();
-                let stale_projects = HashSet::from([0]);
+                let stale_projects = HashSet::from([workspace.projects[0].path.clone()]);
                 terminal
                     .draw(|frame| {
                         render_tree(
@@ -918,7 +1013,7 @@ mod tests {
                 compact_tree_cell(
                     &workspace,
                     entry,
-                    &HashSet::from([0]),
+                    &HashSet::from([workspace.projects[0].path.clone()]),
                     &HashSet::new(),
                     &HashSet::new(),
                     0

@@ -101,13 +101,17 @@ impl TerminalSurfaces {
                 return SurfaceUpdate::Resync;
             }
         }
-        let mut candidate = self.frames.get(&pane_id).cloned();
-        if update.apply_to(&mut candidate).is_err() {
-            return SurfaceUpdate::Resync;
+        // ^ `apply_to` checks a patch before it writes, so the frame is patched where it is
+        // and an invalid patch leaves it unchanged.
+        let mut current = self.frames.remove(&pane_id);
+        let applied = update.apply_to(&mut current);
+        if let Some(frame) = current {
+            self.frames.insert(pane_id, frame);
         }
-        self.frames
-            .insert(pane_id, candidate.expect("applied patch has a baseline"));
-        SurfaceUpdate::Applied
+        match applied {
+            Ok(()) => SurfaceUpdate::Applied,
+            Err(_) => SurfaceUpdate::Resync,
+        }
     }
 
     pub(crate) fn frame(&self, pane_id: PaneId, terminal_id: TerminalId) -> Option<&TerminalFrame> {
