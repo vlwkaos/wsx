@@ -19,7 +19,7 @@ Tests that open a PTY or a Unix socket fail inside a command sandbox. Rerun them
 
 ## Crates
 
-- `crates/wsx-core/` — published library: `cache`, `config`, `fs_util`, `git`, `hooks`, `integration`, `model`, `ops`, `panel`, `routine`, `runtime` (wire protocol and client), `task`.
+- `crates/wsx-core/` — published library: `cache`, `config`, `fs_util`, `git`, `hooks`, `integration`, `model`, `ops`, `panel`, `process` (bounded runs and process-group stops), `routine` (store, cron, `local` clock and trigger text), `runtime` (wire protocol and client), `task`.
 - `crates/wsx-terminal/` — PTY runtime and embedded `libghostty-vt` (`vendor/libghostty-vt`).
 - `crates/wsx-daemon/` — `wsxd`: state, leases, streams, agent lifecycle, live handoff.
 - `crates/wsx/` — TUI (`app.rs`, `ui/`) and CLI (`cli.rs`).

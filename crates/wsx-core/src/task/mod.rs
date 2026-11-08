@@ -236,6 +236,10 @@ pub struct TaskRecord {
     /// ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub effort: String,
+    /// The task runs on a fallback agent: a usage limit switched it (`LogEvent::AgentSwitch`).
+    /// Not set on a record from before it. ref: docs/tasks.md "Agents"
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fallback: bool,
     pub checks: Vec<String>,
     /// `tasks.workflow.steps` as they were when the task was created, and the index of the
     /// step the worker is on. ref: docs/tasks.md "Workflow"

@@ -336,12 +336,12 @@ fn bracketed(lead: &str) -> Option<&str> {
 }
 
 /// The agent a task runs on now, not the configured one: its record follows a switch to a
-/// fallback, which the log tells.
+/// fallback.
 /// ref: docs/tasks.md "Agents"
-pub fn task_agent(dir: &TaskDir, record: &TaskRecord) -> Value {
+pub fn task_agent(record: &TaskRecord) -> Value {
     json!({
         "adapter": record.adapter, "model": record.model, "effort": record.effort,
-        "fallback": super::usage::task_switched(dir),
+        "fallback": record.fallback,
     })
 }
 

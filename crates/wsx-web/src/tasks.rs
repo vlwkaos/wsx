@@ -195,7 +195,7 @@ fn build_overview(
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
                 "waiting": record.waiting,
                 "status": status,
-                "agent": record.state.is_open().then(|| view::task_agent(dir, record)),
+                "agent": record.state.is_open().then(|| view::task_agent(record)),
             }),
         ));
         let item = |kind: &str| {
@@ -510,7 +510,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["progress"] = progress(&dir, &record, &log, stuck.as_deref());
     summary["goal"] = goal(&dir);
     let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
-    summary["agent"] = view::task_agent(&dir, &record);
+    summary["agent"] = view::task_agent(&record);
     summary["stage"] = json!(stage(&record, land_auto));
     summary["conflict"] =
         json!(record.state == TaskState::Working && view::resolving_conflict(&dir));
