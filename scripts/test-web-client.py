@@ -2375,6 +2375,8 @@ capabilities = ["terminal_view"]
         open_gate('result')
         open_gate('answer')
         wait(lambda: delivered()[-1] == 'after the note', 'the message after a failed one', timeout=20)
+        # ^ The queue follows the delivery a moment later: 'after the note' is delivered but may still be listed.
+        wait(lambda: [item['id'] for item in root_queue()] == [expired], 'the delivered message left the queue', timeout=20)
         stuck = root_queue()
         assert [item['id'] for item in stuck] == [expired] and stuck[0]['failed'].startswith('an attachment expired'), stuck
         settle('owner')
