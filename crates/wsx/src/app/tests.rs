@@ -325,6 +325,9 @@ fn make_test_app(
         fetch_rx,
         fetch_pending: HashSet::new(),
         cache_dirty: false,
+        cache_retry: None,
+        terminal_resize_due: None,
+        routine_refresh_pending: HashSet::new(),
         cache_path: test_cache_path(),
         cache_changes: Default::default(),
         cache_cursor: (0, None),
@@ -887,7 +890,7 @@ fn terminal_sidebar_toggle_is_process_local_and_resizes_the_active_stream() {
         let prefix_expanded = read_terminal_client_message(&mut reader);
         let prefix_compact = read_terminal_client_message(&mut reader);
         let command_prefix_expanded = read_terminal_client_message(&mut reader);
-        let toggled_expanded = read_terminal_client_message(&mut reader);
+        // ^ The toggle to Expanded repeats the size the prefix already sent: not sent again.
         let toggled_compact = read_terminal_client_message(&mut reader);
         drop(listener);
         let _ = std::fs::remove_file(server_path);
@@ -896,7 +899,6 @@ fn terminal_sidebar_toggle_is_process_local_and_resizes_the_active_stream() {
             prefix_expanded,
             prefix_compact,
             command_prefix_expanded,
-            toggled_expanded,
             toggled_compact,
         )
     });
@@ -931,14 +933,16 @@ fn terminal_sidebar_toggle_is_process_local_and_resizes_the_active_stream() {
         app.terminal_escape_chord.terminal_key(prefix),
         crate::event::TerminalEscapeAction::Pending
     );
-    app.sync_terminal_sidebar_geometry(compact_before_prefix, &terminal);
+    app.sync_terminal_sidebar_geometry(compact_before_prefix);
+    assert!(app.flush_terminal_resize(&terminal));
     assert_eq!(app.effective_terminal_sidebar(), TerminalSidebar::Expanded);
     let expanded_before_suffix = Some(app.effective_terminal_sidebar());
     assert!(matches!(
         app.terminal_escape_chord.terminal_key(unknown_suffix),
         crate::event::TerminalEscapeAction::Forward(_)
     ));
-    app.sync_terminal_sidebar_geometry(expanded_before_suffix, &terminal);
+    app.sync_terminal_sidebar_geometry(expanded_before_suffix);
+    assert!(app.flush_terminal_resize(&terminal));
     assert_eq!(app.effective_terminal_sidebar(), TerminalSidebar::Compact);
 
     let compact_before_command = Some(app.effective_terminal_sidebar());
@@ -946,7 +950,8 @@ fn terminal_sidebar_toggle_is_process_local_and_resizes_the_active_stream() {
         app.terminal_escape_chord.terminal_key(prefix),
         crate::event::TerminalEscapeAction::Pending
     );
-    app.sync_terminal_sidebar_geometry(compact_before_command, &terminal);
+    app.sync_terminal_sidebar_geometry(compact_before_command);
+    assert!(app.flush_terminal_resize(&terminal));
     let toggle = crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('b'),
         crossterm::event::KeyModifiers::NONE,
@@ -957,6 +962,7 @@ fn terminal_sidebar_toggle_is_process_local_and_resizes_the_active_stream() {
     );
     app.dispatch(Action::ToggleTerminalSidebar, &mut terminal)
         .unwrap();
+    assert!(app.flush_terminal_resize(&terminal));
     assert_eq!(app.effective_terminal_sidebar(), TerminalSidebar::Expanded);
 
     assert_eq!(
@@ -970,17 +976,12 @@ fn terminal_sidebar_toggle_is_process_local_and_resizes_the_active_stream() {
     );
     app.dispatch(Action::ToggleTerminalSidebar, &mut terminal)
         .unwrap();
+    assert!(app.flush_terminal_resize(&terminal));
     assert_eq!(app.effective_terminal_sidebar(), TerminalSidebar::Compact);
     assert_eq!(app.config.terminal_sidebar, TerminalSidebar::Compact);
 
-    let (
-        initial,
-        prefix_expanded,
-        prefix_compact,
-        command_prefix_expanded,
-        toggled_expanded,
-        toggled_compact,
-    ) = server.join().unwrap();
+    let (initial, prefix_expanded, prefix_compact, command_prefix_expanded, toggled_compact) =
+        server.join().unwrap();
     app.terminal_stream = None;
     let expanded_resize = runtime::TerminalClientMessage::Resize {
         rows: initial.0,
@@ -993,7 +994,6 @@ fn terminal_sidebar_toggle_is_process_local_and_resizes_the_active_stream() {
     assert_eq!(prefix_expanded, expanded_resize);
     assert_eq!(prefix_compact, compact_resize);
     assert_eq!(command_prefix_expanded, expanded_resize);
-    assert_eq!(toggled_expanded, expanded_resize);
     assert_eq!(toggled_compact, compact_resize);
 }
 
@@ -1225,6 +1225,7 @@ fn terminal_sibling_switch_waits_for_the_target_baseline_before_accepting_input(
 
     app.dispatch(Action::ToggleTerminalSidebar, &mut terminal)
         .unwrap();
+    assert!(app.flush_terminal_resize(&terminal));
     app.dispatch(
         Action::TerminalKey(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('x'),
@@ -5158,4 +5159,39 @@ fn pending_deletion_matches_exact_paths_only() {
 
     assert_eq!(visible[0].1.len(), 1);
     assert!(pending.is_empty());
+}
+
+#[test]
+fn a_failing_cache_save_waits_between_tries_and_shows_one_notice() {
+    // ^ docs/design/tui-health-audit.md, note under the findings: every key used to retry
+    // the save and bring the notice back.
+    let mut app = make_test_app(GlobalConfig::default(), projects_for_tree(1), None);
+    let blocker = app.cache_path.with_extension("blocker");
+    std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+    std::fs::write(&blocker, "a file, so the cache folder cannot exist").unwrap();
+    app.cache_path = blocker.join("cache.toml");
+    app.mark_dirty();
+
+    app.write_cache_if_dirty();
+    let (retry_at, _) = app.cache_retry.expect("the failed save sets a retry time");
+    assert!(app
+        .notice
+        .as_ref()
+        .is_some_and(|n| n.title.starts_with("Cache save failed")));
+    app.notice = None;
+    for _ in 0..5 {
+        app.write_cache_if_dirty();
+    }
+
+    assert_eq!(
+        app.cache_retry.map(|(at, _)| at),
+        Some(retry_at),
+        "a key tried the save again"
+    );
+    assert!(
+        app.notice.is_none() && app.notice_queue.is_empty(),
+        "the notice came back"
+    );
+    assert!(app.cache_dirty);
+    std::fs::remove_file(blocker).unwrap();
 }

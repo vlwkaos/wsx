@@ -207,9 +207,19 @@ pub(crate) fn send_routine(
     project: &Path,
     action: wsx_core::routine::Action,
 ) -> Result<wsx_core::routine::Response> {
+    send_routine_with(project, action, runtime::ensure_available)
+}
+
+/// `availability` is `ensure_available`, or `ensure_background_available` for a timer that
+/// must leave a stopped wsxd stopped.
+pub(crate) fn send_routine_with(
+    project: &Path,
+    action: wsx_core::routine::Action,
+    availability: fn(&runtime::Client) -> std::io::Result<runtime::Availability>,
+) -> Result<wsx_core::routine::Response> {
     // ^ wsxd runs the scheduler: start it, or upgrade one older than the scheduler.
     let client = runtime::Client::local();
-    runtime::ensure_available(&client)?;
+    availability(&client)?;
     Ok(wsx_core::routine::request(&client, project, action)?)
 }
 

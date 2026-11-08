@@ -2542,6 +2542,10 @@ impl EventMonitor {
                 let mut connected = false;
                 let mut recovery_availability = None;
                 let mut retried = false;
+                // ^ One reason per outage; the pause between failed polls grows to
+                // OUTAGE_RETRY_MAX_MS and starts over once the daemon answers.
+                let mut last_reason: Option<String> = None;
+                let mut retry_ms = OUTAGE_RETRY_MIN_MS;
                 while !stop.load(Ordering::Acquire) {
                     // The monitor must see a replaced daemon itself, so it does not use the
                     // retrying call: a reconnect is what tells the TUI to take a new snapshot.
@@ -2555,6 +2559,8 @@ impl EventMonitor {
                             events,
                         }) => {
                             retried = false;
+                            last_reason = None;
+                            retry_ms = OUTAGE_RETRY_MIN_MS;
                             if !connected {
                                 connected = true;
                                 let _ = sender
@@ -2583,20 +2589,28 @@ impl EventMonitor {
                             if stuck {
                                 explain_stuck_handoff(&client, &mut error);
                             }
-                            let _ = sender.send(EventSignal::Disconnected(if stuck {
-                                error.message
-                            } else {
-                                format!("{}: {}", error.code, error.message)
-                            }));
-                            thread::sleep(Duration::from_millis(if stuck { 1_000 } else { 250 }));
+                            report_outage(
+                                &sender,
+                                &mut last_reason,
+                                if stuck {
+                                    error.message
+                                } else {
+                                    format!("{}: {}", error.code, error.message)
+                                },
+                            );
+                            pause_unless_stopped(&stop, if stuck { 1_000 } else { retry_ms });
+                            retry_ms = (retry_ms * 2).min(OUTAGE_RETRY_MAX_MS);
                         }
                         Ok(_) => {
                             connected = false;
                             revision = 0;
-                            let _ = sender.send(EventSignal::Disconnected(
+                            report_outage(
+                                &sender,
+                                &mut last_reason,
                                 "unexpected daemon poll response".into(),
-                            ));
-                            thread::sleep(Duration::from_millis(250));
+                            );
+                            pause_unless_stopped(&stop, retry_ms);
+                            retry_ms = (retry_ms * 2).min(OUTAGE_RETRY_MAX_MS);
                         }
                         Err(error) => {
                             connected = false;
@@ -2610,23 +2624,27 @@ impl EventMonitor {
                             {
                                 continue;
                             }
-                            let _ = sender.send(EventSignal::Disconnected(error.to_string()));
+                            let mut reason = error.to_string();
                             if daemon_is_stopped_error(&error)
                                 && background_recovery_allowed(client.socket())
                             {
                                 match ensure_background_available(&client) {
                                     Ok(availability) => {
+                                        report_outage(&sender, &mut last_reason, reason);
                                         recovery_availability = Some(availability);
                                         continue;
                                     }
+                                    // ^ The disconnect and the failed restart are one reason,
+                                    // not two texts that replace each other every pass.
                                     Err(recovery_error) => {
-                                        let _ = sender.send(EventSignal::Disconnected(
-                                            recovery_error.to_string(),
-                                        ));
+                                        reason =
+                                            format!("{reason}; restart failed: {recovery_error}");
                                     }
                                 }
                             }
-                            thread::sleep(Duration::from_millis(250));
+                            report_outage(&sender, &mut last_reason, reason);
+                            pause_unless_stopped(&stop, retry_ms);
+                            retry_ms = (retry_ms * 2).min(OUTAGE_RETRY_MAX_MS);
                         }
                     }
                 }
@@ -2641,6 +2659,31 @@ impl EventMonitor {
         ))
     }
 }
+const OUTAGE_RETRY_MIN_MS: u64 = 250;
+const OUTAGE_RETRY_MAX_MS: u64 = 2_000;
+
+/// Sends `reason` unless it is the one already sent for this outage.
+fn report_outage(
+    sender: &mpsc::Sender<EventSignal>,
+    last_reason: &mut Option<String>,
+    reason: String,
+) {
+    if last_reason.as_deref() != Some(reason.as_str()) {
+        *last_reason = Some(reason.clone());
+        let _ = sender.send(EventSignal::Disconnected(reason));
+    }
+}
+
+/// Sleeps in short slices so dropping the monitor does not wait out a long pause.
+fn pause_unless_stopped(stop: &AtomicBool, ms: u64) {
+    let mut left = ms;
+    while left > 0 && !stop.load(Ordering::Acquire) {
+        let slice = left.min(OUTAGE_RETRY_MIN_MS);
+        thread::sleep(Duration::from_millis(slice));
+        left -= slice;
+    }
+}
+
 /// Output-only event: a PTY read in one pane. Stream and frame readers consume it; a snapshot
 /// reader has nothing to refresh for it.
 fn is_terminal_output(event: &super::protocol::Event) -> bool {

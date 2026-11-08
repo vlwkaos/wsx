@@ -108,11 +108,7 @@ impl App {
         }
     }
 
-    pub(super) fn sync_terminal_sidebar_geometry(
-        &mut self,
-        previous: Option<TerminalSidebar>,
-        terminal: &Tui,
-    ) {
+    pub(super) fn sync_terminal_sidebar_geometry(&mut self, previous: Option<TerminalSidebar>) {
         let current =
             matches!(self.mode, Mode::Terminal { .. }).then(|| self.effective_terminal_sidebar());
         let (Some(previous), Some(current)) = (previous, current) else {
@@ -121,15 +117,7 @@ impl App {
         if previous == current {
             return;
         }
-        let pane_id = match &self.mode {
-            Mode::Terminal { pane_id } => *pane_id,
-            _ => return,
-        };
-        if self.pending_terminal_entry.is_some() {
-            self.resize_pending_terminal_entry(terminal);
-        } else {
-            self.resize_terminal_pane(pane_id, terminal);
-        }
+        self.request_terminal_resize();
         self.force_terminal_redraw = true;
         self.needs_redraw = true;
     }

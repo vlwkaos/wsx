@@ -298,11 +298,7 @@ impl App {
             Action::InputEscape => self.leave_terminal_mode(pane_id),
             Action::Quit => self.should_quit = true,
             Action::Resize => {
-                if self.pending_terminal_entry.is_some() {
-                    self.resize_pending_terminal_entry(terminal);
-                } else {
-                    self.resize_terminal_pane(pane_id, terminal);
-                }
+                self.request_terminal_resize();
                 self.force_terminal_redraw = true;
                 self.needs_redraw = true;
             }
@@ -361,11 +357,7 @@ impl App {
                     TerminalSidebar::Compact => TerminalSidebar::Expanded,
                     TerminalSidebar::Expanded => TerminalSidebar::Compact,
                 });
-                if self.pending_terminal_entry.is_some() {
-                    self.resize_pending_terminal_entry(terminal);
-                } else {
-                    self.resize_terminal_pane(pane_id, terminal);
-                }
+                self.request_terminal_resize();
                 self.force_terminal_redraw = true;
                 self.needs_redraw = true;
             }
@@ -492,7 +484,7 @@ impl App {
             Action::Refresh => self.refresh_all()?,
             Action::Resize => {
                 if self.pending_terminal_entry.is_some() {
-                    self.resize_pending_terminal_entry(terminal);
+                    self.request_terminal_resize();
                 }
                 self.force_terminal_redraw = true;
                 self.needs_redraw = true;

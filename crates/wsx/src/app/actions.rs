@@ -248,6 +248,7 @@ impl App {
                     terminal_id,
                     generation,
                     stream,
+                    size: (rows, cols),
                 });
                 self.pending_terminal_entry = Some(PendingTerminalEntry {
                     pane_id,
@@ -368,19 +369,38 @@ impl App {
         (viewport.height.max(1), viewport.width.max(1))
     }
 
-    pub(super) fn resize_terminal_pane(&mut self, _pane_id: runtime::PaneId, terminal: &Tui) {
-        let (rows, cols) = self.terminal_pane_size(terminal);
-        self.send_terminal_stream(runtime::TerminalClientMessage::Resize { rows, cols });
+    /// Notes that the pane size may have changed. The size goes out in
+    /// `flush_terminal_resize`, once the queued events are read.
+    pub(super) fn request_terminal_resize(&mut self) {
+        self.terminal_resize_due.get_or_insert_with(Instant::now);
     }
 
-    pub(super) fn resize_pending_terminal_entry(&mut self, terminal: &Tui) {
-        let (rows, cols) = self.terminal_pane_size(terminal);
-        let Some(pending) = self.pending_terminal_entry.as_mut() else {
-            return;
+    /// Sends the pane size to wsxd once, and only when it differs from the last one sent.
+    /// Returns false while resize events are still queued (at most `RESIZE_MERGE_MAX`), so
+    /// the loop skips the draw and reads the next one. ^ audit #5 docs/design/tui-health-audit.md
+    pub(super) fn flush_terminal_resize(&mut self, terminal: &Tui) -> bool {
+        let Some(since) = self.terminal_resize_due else {
+            return true;
         };
-        pending.rows = rows;
-        pending.cols = cols;
+        if since.elapsed() < RESIZE_MERGE_MAX
+            && crossterm::event::poll(Duration::ZERO).unwrap_or(false)
+        {
+            return false;
+        }
+        self.terminal_resize_due = None;
+        let (rows, cols) = self.terminal_pane_size(terminal);
+        if let Some(pending) = self.pending_terminal_entry.as_mut() {
+            pending.rows = rows;
+            pending.cols = cols;
+        }
+        if let Some(active) = self.terminal_stream.as_mut() {
+            if active.size == (rows, cols) {
+                return true;
+            }
+            active.size = (rows, cols);
+        }
         self.send_terminal_stream(runtime::TerminalClientMessage::Resize { rows, cols });
+        true
     }
 
     pub(super) fn action_hard_quit(&mut self) {

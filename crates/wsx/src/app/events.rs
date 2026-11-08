@@ -43,6 +43,9 @@ impl App {
     }
 
     pub(super) fn apply_routine_result(&mut self, result: RoutineRefreshResult) {
+        if matches!(result.kind, RoutineResultKind::Refresh { .. }) {
+            self.routine_refresh_pending.remove(&result.project_path);
+        }
         let Some(project_idx) = self
             .workspace
             .projects
@@ -326,7 +329,15 @@ impl App {
             .map(|project| project.path.clone())
             .collect();
         for path in paths {
-            self.spawn_routine_project_refresh(path, false, RoutineSelection::Preserve);
+            if self.routine_refresh_pending.contains(&path) {
+                continue;
+            }
+            self.spawn_routine_project_refresh_with(
+                path,
+                false,
+                RoutineSelection::Preserve,
+                runtime::ensure_background_available,
+            );
         }
     }
 
