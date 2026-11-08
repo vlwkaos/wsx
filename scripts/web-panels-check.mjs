@@ -8,17 +8,13 @@
 // (format json: every kind, a bad level and an unknown kind) and `badjson` (not a document);
 // `device`, `broken` and `gauges` are `scope: machine`: the Machine tab has one card, This Mac, with their
 // sections after its own (docs/panels.md "Machine panels").
-import { designLint, launch } from "./web-cdp.mjs";
+import { designLint, launch, pair } from "./web-cdp.mjs";
 
 const [adminUrl, adminCode, ownerUrl, ownerCode, captures, project, scopedUrl, scopedCode] = process.argv.slice(2);
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({ captures, prefix: "panels-", timeoutSeconds: 120 });
+const cdp = await launch({ captures, prefix: "panels-", timeoutSeconds: 120 });
+const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = cdp;
 
-async function open(url, code) {
-  await send("Page.navigate", { url });
-  await until("!!document.querySelector('#pair-code')", "pairing form did not render");
-  await evaluate(`(() => { const input = document.querySelector('#pair-code'); input.value = ${JSON.stringify(code)}; input.form.requestSubmit(); })()`);
-  await until("!!document.querySelector('.home-row')", "Home did not list projects after pairing");
-}
+const open = (url, code) => pair(cdp, url, code, { ready: ".home-row" });
 const linter = designLint({ evaluate, captures, file: "panels" });
 const run = () => evaluate("/device run (\\d+)/.exec(document.querySelector('.panel-output')?.textContent ?? '')?.[1] ?? null");
 

@@ -1,5 +1,5 @@
 // A headless Chrome driven over the Chrome DevTools Protocol with Node's built-in
-// WebSocket. Shared by web-browser-check.mjs, web-tasks-check.mjs and web-terminal-check.mjs.
+// WebSocket. Shared by every web-*-check.mjs.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -82,6 +82,105 @@ export function designLint({ evaluate, captures, file }) {
     }
   }
   return { lint, finish };
+}
+
+// Pairs the page with a site: opens `url`, types `code` into the pairing form and waits for `ready` (a
+// selector). `form` runs once the form shows, for a check of the form itself.
+export async function pair({ send, evaluate, until }, url, code, { ready = ".app", form } = {}) {
+  await send("Page.navigate", { url });
+  await until("!!document.querySelector('#pair-code')", "pairing form did not render");
+  await form?.();
+  await evaluate(`(() => { const input = document.querySelector('#pair-code'); input.value = ${JSON.stringify(code)}; input.form.requestSubmit(); })()`);
+  await until(`!!document.querySelector(${JSON.stringify(ready)})`, `the page did not show ${ready} after pairing`);
+}
+
+// The page's fetch, wrapped: it waits when the device's request budget is spent (429,
+// `act_budget` in crates/wsx-web/src/http.rs: 10 at once, then one per 3 s) by asking again
+// every half second for up to 20 s, so a check never sleeps to let the budget refill; and
+// `globalThis.wsxFetching` counts the requests in flight, so a check can wait for them to end.
+export async function watchFetch({ send, evaluate }) {
+  const source = `(() => { const real = globalThis.fetch;
+    globalThis.wsxFetching = 0;
+    globalThis.fetch = async (...args) => {
+      globalThis.wsxFetching += 1;
+      try {
+        for (let turn = 0; ; turn++) {
+          const response = await real(...args);
+          if (response.status !== 429 || turn >= 40 || String(args[0]?.url ?? args[0]).includes('/pair')) return response;
+          await new Promise((done) => setTimeout(done, 500));
+        }
+      } finally { globalThis.wsxFetching -= 1; }
+    }; })()`;
+  await send("Page.addScriptToEvaluateOnNewDocument", { source });
+  await evaluate(source);
+}
+
+// Layout rules of every screen: nothing past the right edge, no raw null, one scroll container
+// and the page itself never scrolls. `free`: selectors whose nodes may pass the edge or scroll
+// sideways; `apart`: selectors whose nodes hold scrollers of their own; `settle`: runs first.
+export function soundCheck({ evaluate, fail }, size, { free, apart, settle }) {
+  return async (label) => {
+    await settle?.(label);
+    const seen = await evaluate(`(() => {
+      const free = (node) => node.closest(${JSON.stringify(free)});
+      const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
+      const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest(${JSON.stringify(apart)})
+        && /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1);
+      return { wide: wide.slice(0, 3).map((node) => node.className || node.tagName), scrollers: scrollers.map((node) => node.className),
+        raw: /\\b(null|undefined|NaN)\\b/.test(document.querySelector('#app').innerText), page: document.scrollingElement.scrollTop + document.scrollingElement.scrollLeft };
+    })()`);
+    const where = `${label} at ${size()[0]}x${size()[1]}`;
+    if (seen.wide.length) await fail(`${where}: elements pass the right edge: ${seen.wide}`);
+    if (seen.scrollers.length > 1) await fail(`${where}: more than one scroll container: ${seen.scrollers}`);
+    if (seen.raw) await fail(`${where} shows a raw null`);
+    if (seen.page) await fail(`${where}: the page itself scrolled`);
+  };
+}
+
+// One capture with its audits. At most one filled accent control, no sideways scroll, no zooming
+// field, and no other field in the way of the composer's iOS arrows. `size()` is the viewport as
+// [width, height]; `fileOf(name)` is the capture's name; `before(name)` runs first; `record(file,
+// mobile)` gets the mobile audit (null off a phone); `linted` is the set of names that get the design lint.
+export function shooter({ evaluate, fail, capture }, { captures, prefix, size, fileOf, linter, linted, auditSource, mobileSource, before, record }) {
+  return async (name, primary) => {
+    await before?.(name);
+    const label = `${name} at ${size()[0]}x${size()[1]}`;
+    const file = fileOf(name);
+    let mobile = null;
+    if (auditSource) {
+      await evaluate(`globalThis.SLOP_AUDIT_PRIMARY = ${JSON.stringify(primary ?? null)}`);
+      // ^ Behind an open modal dialog (the task sheet beside the chat at 1280 px) the page is
+      // inert, so the audit, which does not know modal dialogs, sees only the dialog.
+      // The page's CSP refuses a style element; CSSOM properties are allowed.
+      const audit = await evaluate(`(() => { const modal = document.querySelector('dialog[open]:modal');
+        if (modal) { document.body.style.visibility = 'hidden'; modal.style.visibility = 'visible'; }
+        try { return (
+${auditSource}
+); } finally { if (modal) { document.body.style.visibility = ''; modal.style.visibility = ''; } } })()`);
+      fs.writeFileSync(path.join(captures, `${prefix}${file}.slop.json`), JSON.stringify(audit, null, 1));
+      if (audit.horizontalOverflow) await fail(`${label} overflows sideways`);
+      if (audit.primaryAction.filledInViewport > 1) await fail(`${label} shows ${audit.primaryAction.filledInViewport} filled accent controls: ${JSON.stringify(audit.primaryAction.filled)}`);
+      if (primary && !audit.primaryAction.inFirstViewport) await fail(`${label}: the primary action is not in view`);
+    }
+    if (mobileSource && size()[0] < 600) {
+      await evaluate("globalThis.MOBILE_AUDIT_GUTTER = 16");
+      mobile = await evaluate(mobileSource);
+      fs.writeFileSync(path.join(captures, `${prefix}${file}.mobile.json`), JSON.stringify(mobile, null, 1));
+      if (mobile.horizontalOverflow) await fail(`${label}: the page scrolls sideways (mobile audit)`);
+      if (mobile.zoomingFields.count) await fail(`${label}: a field makes iOS zoom: ${JSON.stringify(mobile.zoomingFields.items)}`);
+      // ^ A field outside an open modal dialog (the task sheet) is inert, so the iOS form bar
+      // cannot reach it; the mobile audit does not know about modal dialogs.
+      const reachable = await evaluate(`(() => { const modal = document.querySelector('dialog[open]:modal');
+        return [...document.querySelectorAll('input:not([type=hidden]), textarea, select')].filter((el) => el !== document.activeElement
+          && !el.disabled && el.tabIndex >= 0 && !(modal && !modal.contains(el))).length; })()`);
+      if (mobile.focusedField?.startsWith("textarea.composer-field") && mobile.otherFocusableFields?.count && reachable) {
+        await fail(`${label}: other fields can take the focus from the composer: ${JSON.stringify(mobile.otherFocusableFields.items)}`);
+      }
+    }
+    record?.(file, mobile);
+    if (linted.has(name)) await linter.lint(name);
+    await capture(file);
+  };
 }
 
 // captures: directory for screenshots. prefix: file name prefix. timeoutSeconds: whole-run limit.

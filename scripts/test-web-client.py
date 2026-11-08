@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 import zlib
 
 import wsxd_client
@@ -1490,9 +1491,10 @@ capabilities = ["terminal_view"]
         dark_rule = ':root:not([data-scheme="light"]),[data-scheme="dark"]{color-scheme:dark;'
         assert '--color-bg:#f7f7f8;' in css and dark_rule in css and '@font-face' not in css
         assert css.split(dark_rule)[1].startswith('--color-accent:#6fe3c1;')
-        # The token contract is the default theme's list: 64 tokens, 16 of them the terminal palette.
+        # The token contract is the default theme's list (its [tokens] table), 16 of them the terminal palette.
+        listed = tomllib.loads((ROOT / 'crates/wsx-web/web/themes/default/theme.toml').read_text())['tokens']
         light_tokens = re.findall(r'--([a-z0-9-]+):', css.split(dark_rule)[0])
-        assert len(light_tokens) == 75 and len([token for token in light_tokens if token.startswith('color-ansi-')]) == 16, len(light_tokens)
+        assert len(light_tokens) == len(listed) and len([token for token in light_tokens if token.startswith('color-ansi-')]) == 16, len(light_tokens)
         assert 'prefers-color-scheme' not in css
         # The page is dark by default, so the installed app's splash and toolbar are dark too.
         assert (manifest['background_color'], manifest['theme_color']) == ('#0a0b0d', '#0a0b0d')
@@ -1998,7 +2000,7 @@ capabilities = ["terminal_view"]
             expiring = root.request('PUT', '/api/media?name=gone.pdf', pdf_fixture('delta'))[1]
             root_media = work / 'state/wsx/web/root/media'
             assert (root_media / (expiring['hash'] + '.pdf.md')).is_file()
-            time.sleep(5)
+            wait(lambda: root.request('GET', '/' + expiring['url'])[0] == 404, 'the expired entry is gone')
             assert root.request('PUT', '/api/media?name=trigger.txt', b'sweep\n')[0] == 200  # a write sweeps
             assert not list(root_media.glob(expiring['hash'] + '*')), list(root_media.iterdir())
             assert expiring['hash'] not in (root_media / 'index.json').read_text()
@@ -2371,7 +2373,7 @@ capabilities = ["terminal_view"]
         assert status == 200 and 'queued' in waiting, (status, waiting)
         expired = waiting['queued']['id']
         assert 'queued' in via_root('after the note')[1]
-        time.sleep(5)
+        wait(lambda: root.request('GET', '/' + note['url'])[0] == 404, 'the note expired')
         open_gate('result')
         open_gate('answer')
         wait(lambda: delivered()[-1] == 'after the note', 'the message after a failed one', timeout=20)
@@ -2440,8 +2442,7 @@ capabilities = ["terminal_view"]
         assert sorted(p.suffix for p in media_dir.iterdir()) == ['.json', '.png', '.png']
         max_age = int(steady(root, 'GET', urls[2], raw=True)[1]['cache-control'].split('max-age=')[1].split(',')[0])
         assert 0 < max_age <= 4
-        time.sleep(4.2)
-        assert steady(root, 'GET', urls[1])[0] == 404 and steady(root, 'GET', urls[2])[0] == 404
+        wait(lambda: steady(root, 'GET', urls[1])[0] == 404 and steady(root, 'GET', urls[2])[0] == 404, 'the entries expired')
         status, entry = steady(root, 'PUT', '/api/media?name=late.png', png(9, 99))
         assert status == 200 and [p.name for p in media_dir.glob('*.png')] == [entry['url'].split('/')[1]]
         ok('media: oldest-first quota eviction, TTL expiry, sweep removes files')
@@ -3814,7 +3815,6 @@ merge_seconds = 3
             # ^ The owner's public origin is the relay's: every browser check of it goes through it, the panels check too.
         owner, viewer, plain = sites['owner'], sites['viewer'], sites['plain']
         # ^ The browser check restarts the owner's server under another name (a new build).
-        owner_name = 'owner'
         session = owner.request('GET', '/api/session')[1]
         assert 'task_view' in session['site']['capabilities'] and 'task_act' in session['site']['capabilities']
         events = Events(owner)
@@ -4490,7 +4490,6 @@ merge_seconds = 3
             assert (work / 'restart-owner.done').exists()
             events = Events(owner)
             events.expect('workspace')
-            owner_name = 'owner next'
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
             # ^ The page only read the plain worktree: the same git entry, branch head and files.
             assert plain_git() == plain_before, (plain_git(), plain_before)

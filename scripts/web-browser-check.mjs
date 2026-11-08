@@ -6,16 +6,17 @@
 // Each capture is saved with the slop audit of /ui-view-standards beside it.
 import fs from "node:fs";
 import path from "node:path";
-import { designLint, jumps, launch, mobileAudit, pause } from "./web-cdp.mjs";
+import { designLint, jumps, launch, mobileAudit, pair, pause, shooter, soundCheck } from "./web-cdp.mjs";
 
 const [mode, siteUrl, code, ...rest] = process.argv.slice(2);
 //   restart <site-url> <code> <capture-dir> <signal-dir> [slop-audit.js]   (the caller restarts the server)
 const [emptyUrl, emptyCode, sessionsJson, captures, auditPath] = mode === "tour" ? rest
   : mode === "restart" ? [null, null, "{}", rest[0], rest[2]] : [null, null, "{}", ...rest];
 const ids = JSON.parse(sessionsJson);
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched, setMotion } = await launch({
+const cdp = await launch({
   captures, prefix: "", timeoutSeconds: mode === "tour" ? 420 : 100,
 });
+const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched, setMotion } = cdp;
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
 const mobileSource = mobileAudit().source;
 // The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
@@ -40,56 +41,15 @@ async function pixel(x, y) {
 }
 const near = (seen, want) => seen.every((value, index) => Math.abs(value - want[index]) <= 8);
 
-// One capture with its slop audit. A screen may not scroll sideways and may show at
-// most one filled accent control.
-async function shot(name, primary) {
-  const label = `${name} at ${size[0]} px`;
-  if (auditSource) {
-    await evaluate(`globalThis.SLOP_AUDIT_PRIMARY = ${JSON.stringify(primary ?? null)}`);
-    const audit = await evaluate(auditSource);
-    fs.writeFileSync(path.join(captures, `${size[0]}-${name}.slop.json`), JSON.stringify(audit, null, 1));
-    if (audit.horizontalOverflow) await fail(`${label} overflows sideways`);
-    if (audit.primaryAction.filledInViewport > 1) await fail(`${label} shows ${audit.primaryAction.filledInViewport} filled accent controls: ${JSON.stringify(audit.primaryAction.filled)}`);
-    if (primary && !audit.primaryAction.inFirstViewport) await fail(`${label}: the primary action is not in view`);
-  }
-  // On a phone: no sideways scroll, no field that makes iOS zoom, and no other field in the
-  // way of iOS's previous and next arrows while the composer has the focus. The rest is printed.
-  if (mobileSource && phone()) {
-    await evaluate("globalThis.MOBILE_AUDIT_GUTTER = 16");
-    const mobile = await evaluate(mobileSource);
-    fs.writeFileSync(path.join(captures, `${size[0]}-${name}.mobile.json`), JSON.stringify(mobile, null, 1));
-    if (mobile.horizontalOverflow) await fail(`${label}: the page scrolls sideways (mobile audit)`);
-    if (mobile.zoomingFields.count) await fail(`${label}: a field makes iOS zoom: ${JSON.stringify(mobile.zoomingFields.items)}`);
-    if (mobile.focusedField?.startsWith("textarea.composer-field") && mobile.otherFocusableFields?.count) {
-      await fail(`${label}: other fields can take the focus from the composer: ${JSON.stringify(mobile.otherFocusableFields.items)}`);
-    }
-    console.log(`mobile audit ${name} at ${mobile.viewport.join("x")}: contentShare ${mobile.contentShare}, smallTargets ${mobile.smallTargets.count} ${JSON.stringify(mobile.smallTargets.items.map((item) => `${item.label || item.el} ${item.size.join("x")}`))}, tinyText ${mobile.tinyText.count}, outsideGutter ${mobile.outsideGutter.count}`);
-  }
-  if (LINTED.has(name)) await linter.lint(name);
-  await capture(`${size[0]}-${name}`);
-}
+const shot = shooter(cdp, { captures, prefix: "", size: () => size, fileOf: (name) => `${size[0]}-${name}`, linter, linted: LINTED, auditSource, mobileSource,
+  record: (file, mobile) => mobile && console.log(`mobile audit ${file} at ${mobile.viewport.join("x")}: contentShare ${mobile.contentShare}, smallTargets ${mobile.smallTargets.count} ${JSON.stringify(mobile.smallTargets.items.map((item) => `${item.label || item.el} ${item.size.join("x")}`))}, tinyText ${mobile.tinyText.count}, outsideGutter ${mobile.outsideGutter.count}`) });
 // The composer enlarged three times, to judge its insets and the round Send.
 async function zoom(name) {
   const box = await evaluate("(({ x, y, width, height }) => ({ x, y, width, height }))(document.querySelector('.composer').getBoundingClientRect())");
   await capture(`${size[0]}-${name}-zoom`, { ...box, scale: 3 });
 }
-// Layout rules of every screen: nothing past the right edge, no raw null, one scroll container
-// (the wide layout's rail is a list of its own, and a tall question sheet is bounded: both may scroll).
-async function sound(label) {
-  const seen = await evaluate(`(() => {
-    const free = (node) => node.closest('.crumbs, .terminal-keys, .row-slide, .code, .xterm, .code-block pre, .table-wrap, .diagram, .question-screen');
-    const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
-    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .question, .slash')
-      && /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1);
-    return { wide: wide.slice(0, 3).map((node) => node.className || node.tagName), scrollers: scrollers.map((node) => node.className),
-      raw: /\\b(null|undefined|NaN)\\b/.test(document.querySelector('#app').innerText), page: document.scrollingElement.scrollTop + document.scrollingElement.scrollLeft };
-  })()`);
-  const where = `${label} at ${size[0]} px`;
-  if (seen.wide.length) await fail(`${where}: elements pass the right edge: ${seen.wide}`);
-  if (seen.scrollers.length > 1) await fail(`${where}: more than one scroll container: ${seen.scrollers}`);
-  if (seen.raw) await fail(`${where} shows a raw null`);
-  if (seen.page) await fail(`${where}: the page itself scrolled`);
-}
+// ^ The wide layout's rail is a list of its own, and a tall question sheet is bounded: both may scroll.
+const sound = soundCheck(cdp, () => size, { free: ".crumbs, .terminal-keys, .row-slide, .code, .xterm, .code-block pre, .table-wrap, .diagram, .question-screen", apart: ".rail, .question, .slash" });
 // A focused text field on a phone must not make the browser zoom or pan:
 // iOS zooms when the field's font is below 16 px.
 async function steadyOnFocus(selector, label) {
@@ -117,14 +77,12 @@ const pasteInto = (selector, what) => evaluate(`(async () => {
   field.focus();
   return field.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
 })()`);
-async function pair(url, pairingCode) {
-  await send("Page.navigate", { url });
-  await until("!!document.querySelector('#pair-code')", "pairing form did not render");
-  await sound("pairing form");
-  await steadyOnFocus("#pair-code", "the pairing code field");
-  await steadyOnFocus("#pair-name", "the device name field");
-  await evaluate(`(() => { const input = document.querySelector('#pair-code'); input.value = ${JSON.stringify(pairingCode)}; input.form.requestSubmit(); })()`);
-  await until("!!document.querySelector('.app')", "the app did not open after pairing");
+async function pairForm(url, pairingCode) {
+  await pair(cdp, url, pairingCode, { form: async () => {
+    await sound("pairing form");
+    await steadyOnFocus("#pair-code", "the pairing code field");
+    await steadyOnFocus("#pair-name", "the device name field");
+  } });
   if (await evaluate("document.cookie.includes('wsx_web')")) await fail("credential cookie is readable by scripts");
 }
 async function resize(next) {
@@ -145,7 +103,7 @@ async function alone(label) {
 if (mode === "restart") {
   const signals = rest[1];
   await resize(SIZES[1]);
-  await pair(siteUrl, code);
+  await pairForm(siteUrl, code);
   await alone("after pairing");
   await evaluate("navigator.serviceWorker.ready.then(() => true)");
   await until("!!navigator.serviceWorker.controller", "the service worker does not control the page");
@@ -222,7 +180,7 @@ if (mode === "shell") {
   const project = Number(rest[2]);
   const button = ".bar-tools .project-shell";
   await resize(SIZES[1]);
-  await pair(siteUrl, code);
+  await pairForm(siteUrl, code);
   const opened = [];
   for (const next of [SIZES[1], SIZES[2]]) {
     await resize(next);
@@ -243,7 +201,7 @@ if (mode === "shell") {
 
 if (mode === "down") {
   await resize(SIZES[1]);
-  await pair(siteUrl, code);
+  await pairForm(siteUrl, code);
   for (const next of SIZES) {
     await resize(next);
     await until("document.querySelector('#app').innerText.includes('wsx is not running on the host')", "the page does not say that wsx is stopped");
@@ -792,7 +750,9 @@ async function diagrams(light = false) {
   if (!(await evaluate("document.activeElement.classList.contains('diagram-open')"))) await fail("focus did not return to the diagram");
 }
 
-// A 200 KB answer on a slow phone: one parse, measured with the processor slowed four times.
+// A 200 KB answer on a slow phone: one parse, with the processor slowed four times.
+// ^ The pass is a count, not a time: the first render creates many nodes, an unchanged render
+// (the memo of Markdown) only its own; the times are printed.
 async function largeAnswer() {
   await openSession("large");
   await until("document.querySelectorAll('.markdown .code-block').length > 100", "the large answer did not render");
@@ -800,28 +760,30 @@ async function largeAnswer() {
   const cost = await evaluate(`(async () => {
     const { Markdown } = await import(new URL('markdown.js', document.querySelector('script[type=module]').src));
     const { render, html } = await import(new URL('lib.js', document.querySelector('script[type=module]').src));
+    const { options } = await import(new URL('preact.js', document.querySelector('script[type=module]').src));
     const data = await (await fetch(new URL('api/chat/${ids.large}/timeline', document.baseURI))).json();
     const text = data.items.findLast((item) => item.kind === 'assistant').text;
     const host = document.createElement('div');
     host.className = 'message';
     document.querySelector('.log').append(host);
+    let made = 0;
+    const was = options.vnode;
+    options.vnode = (vnode) => { made += 1; was?.(vnode); };
     let started = performance.now();
     render(html\`<\${Markdown} text=\${text} />\`, host);
     host.getBoundingClientRect();
-    const first = performance.now() - started;
-    // ^ The least of three: a collection pause on a loaded runner is not the cost of an unchanged render.
-    let again = Infinity;
-    for (let turn = 0; turn < 3; turn++) {
-      started = performance.now();
-      render(html\`<\${Markdown} text=\${text} />\`, host);
-      again = Math.min(again, performance.now() - started);
-    }
+    const first = performance.now() - started, firstMade = made;
+    made = 0;
+    started = performance.now();
+    for (let turn = 0; turn < 3; turn++) render(html\`<\${Markdown} text=\${text} />\`, host);
+    const again = (performance.now() - started) / 3;
+    options.vnode = was;
     render(null, host);
     host.remove();
-    return { bytes: new TextEncoder().encode(text).length, first: Math.round(first), again: Math.round(again * 10) / 10 };
+    return { bytes: new TextEncoder().encode(text).length, firstNodes: firstMade, againNodes: made, firstMs: Math.round(first), againMs: Math.round(again * 10) / 10 };
   })()`);
   await send("Emulation.setCPUThrottlingRate", { rate: 1 });
-  if (cost.bytes < 200_000 || cost.first > 1500 || cost.again > 20) await fail(`a large answer is too slow: ${JSON.stringify(cost)}`);
+  if (cost.bytes < 200_000 || cost.firstNodes < 1000 || cost.againNodes > 10) await fail(`a large answer is wrong: ${JSON.stringify(cost)}`);
   console.log(`large answer at ${size[0]} px, processor slowed 4 times: ${JSON.stringify(cost)}`);
 }
 
@@ -924,7 +886,7 @@ await send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
   navigator.setAppBadge = (count) => { calls.push(count); return Promise.resolve(); };
   navigator.clearAppBadge = () => { calls.push(0); return Promise.resolve(); };
 })()` });
-await pair(siteUrl, code);
+await pairForm(siteUrl, code);
 // Two sessions ask for input (a question and a permission): the badge says 2.
 await until("globalThis.BADGE_CALLS?.at(-1) === 2", "the app badge does not count the two blocked sessions");
 const background = await evaluate("getComputedStyle(document.body).backgroundColor");
@@ -1422,7 +1384,7 @@ const defects = problems.filter((problem) => !/status of 401/.test(problem)
 if (defects.length) await fail(`console errors: ${defects.join(" | ")}`);
 
 // A site with no session: its project is still listed with the create action.
-await pair(emptyUrl, emptyCode);
+await pairForm(emptyUrl, emptyCode);
 for (const next of SIZES) {
   await resize(next);
   await until("!!document.querySelector('.group-head .new-session')", "the empty inbox has no New session action");
