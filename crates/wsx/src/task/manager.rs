@@ -396,6 +396,47 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// The messages of one manager turn, taken off the queue by `take_batch`.
+struct Batch {
+    /// The author the turn answers.
+    first: Author,
+    ids: Vec<u64>,
+    text: String,
+    /// What left the queue, to put back when the agent does not start.
+    taken: Vec<(u64, Author, String, bool)>,
+    /// A routine event for the owner is among them.
+    for_owner: bool,
+}
+
+/// The heading of a message in the turn's text.
+fn author_heading(author: &Author) -> String {
+    match author {
+        Author::Owner => "Owner".to_string(),
+        Author::Events => "Events".to_string(),
+        Author::Recap => "Recap request from wsx".to_string(),
+        Author::Manager {
+            project,
+            reply: false,
+        } => format!("Manager {project}"),
+        Author::Manager {
+            project,
+            reply: true,
+        } => format!("Manager {project} replies"),
+        // ^ A role's or this project's manager's message is answered once, as a
+        // manager's (docs/tasks.md "Roles").
+        Author::Role { name, reply } => {
+            let who = match name.as_str() {
+                "manager" => "Manager".to_string(),
+                name => format!("Role {name}"),
+            };
+            match reply {
+                true => format!("{who} replies"),
+                false => who,
+            }
+        }
+    }
+}
+
 impl Manager {
     fn run(&mut self, receiver: Receiver<Event>) -> Result<()> {
         while let Ok(event) = receiver.recv() {
@@ -1540,17 +1581,9 @@ impl Manager {
     }
 
     /// Start a turn with every waiting owner message, or else with the waiting events.
-    fn next_turn(&mut self) {
-        // ^ A start that failed waits: its messages are back in the queue.
-        if self
-            .start_failed
-            .is_some_and(|failed| failed.elapsed() < START_RETRY)
-        {
-            return;
-        }
-        self.choose_agent();
-        // ^ During a limit the messages wait, also when another host met it or a budget is
-        // spent; after it they go with the held ones.
+    /// During a limit the messages wait, also when another host met it or a budget is spent;
+    /// after it they go with the held ones. True while they wait.
+    fn waits_for_limit(&mut self) -> bool {
         let now = now_unix_ms();
         let waits_until = self
             .state
@@ -1574,19 +1607,14 @@ impl Manager {
                 self.save();
             }
             self.stand_in();
-            return;
+            return true;
         }
-        let held = self.state.limit.clone();
-        if held.is_none() && !self.work_waiting() {
-            return;
-        }
-        // ^ A replaced binary: exec it before this turn. The messages stay logged and not
-        // delivered, so the new host queues them again (`restore`).
-        if self.binary.as_ref().is_some_and(hosting::Binary::replaced) {
-            self.say("the wsx binary was replaced: the manager restarts with it");
-            self.reexec = true;
-            return;
-        }
+        false
+    }
+
+    /// The messages of the next turn, off the queue: those of the first author that wakes the
+    /// manager, then the events that need no judgment, which go along after them.
+    fn take_batch(&mut self) -> Batch {
         let first = self
             .queue
             .iter()
@@ -1617,31 +1645,7 @@ impl Manager {
             .is_some_and(|(_, author, ..)| *author == first)
         {
             let (id, author, body, wakes) = self.queue.pop_front().expect("checked above");
-            let heading = match &author {
-                Author::Owner => "Owner".to_string(),
-                Author::Events => "Events".to_string(),
-                Author::Recap => "Recap request from wsx".to_string(),
-                Author::Manager {
-                    project,
-                    reply: false,
-                } => format!("Manager {project}"),
-                Author::Manager {
-                    project,
-                    reply: true,
-                } => format!("Manager {project} replies"),
-                // ^ A role's or this project's manager's message is answered once, as a
-                // manager's (docs/tasks.md "Roles").
-                Author::Role { name, reply } => {
-                    let who = match name.as_str() {
-                        "manager" => "Manager".to_string(),
-                        name => format!("Role {name}"),
-                    };
-                    match reply {
-                        true => format!("{who} replies"),
-                        false => who,
-                    }
-                }
-            };
+            let heading = author_heading(&author);
             for_owner |= author == Author::Events && body.lines().any(routine_for_owner);
             text.push_str(&format!("{heading} (message {id}):\n{body}\n\n"));
             if author == Author::Owner {
@@ -1669,6 +1673,45 @@ impl Manager {
             ids.push(id);
             taken.push((id, author, body, wakes));
         }
+        Batch {
+            first,
+            ids,
+            text,
+            taken,
+            for_owner,
+        }
+    }
+
+    fn next_turn(&mut self) {
+        // ^ A start that failed waits: its messages are back in the queue.
+        if self
+            .start_failed
+            .is_some_and(|failed| failed.elapsed() < START_RETRY)
+        {
+            return;
+        }
+        self.choose_agent();
+        if self.waits_for_limit() {
+            return;
+        }
+        let held = self.state.limit.clone();
+        if held.is_none() && !self.work_waiting() {
+            return;
+        }
+        // ^ A replaced binary: exec it before this turn. The messages stay logged and not
+        // delivered, so the new host queues them again (`restore`).
+        if self.binary.as_ref().is_some_and(hosting::Binary::replaced) {
+            self.say("the wsx binary was replaced: the manager restarts with it");
+            self.reexec = true;
+            return;
+        }
+        let Batch {
+            first,
+            ids,
+            mut text,
+            taken,
+            for_owner,
+        } = self.take_batch();
         // ^ The limit preface is no owner message: a held turn is events-only when its
         // held and its new messages all are. Another manager's or a role's reply is used, not
         // answered: like events. ref: docs/tasks.md "Manager"
