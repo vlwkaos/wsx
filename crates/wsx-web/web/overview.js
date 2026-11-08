@@ -27,7 +27,7 @@ export function ProjectOverview({ project, onClose, grip }) {
         <span class="bar-label">Overview</span>
         ${page?.unix_ms && html`<span class="bar-state">Updated ${ago(now - page.unix_ms)}</span>`}
       </${SheetBar}>
-      <div class="scroll project-page">
+      <div class="scroll project-overview">
         <${ProjectFacts} project=${project} overview=${tasks} />
         ${failure ? html`<p class="error empty" role="alert">${failure}</p>`
           : !page ? html`<${Loading} />`

@@ -452,7 +452,7 @@ div.steps .steps-summary { cursor: default; }
   .steps .icon { transition: transform var(--motion-duration) var(--motion-easing); }
   /* Purposeful motion (docs/web-client.md "Motion"): something arrives, changes or leaves.
      Reduced motion keeps the static page; script-driven motion (lib.js `motion`) is off too. */
-  .scroll > :is(.rows, .group, .check-list, .task-body, .file-markdown, .file-page, .file-source), .project-page > .task-body { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
+  .scroll > :is(.rows, .group, .check-list, .task-body, .file-markdown, .file-page, .file-source), .project-overview > .task-body { animation: arrive calc(var(--motion-duration) * 2) var(--motion-easing); }
     .skeleton { background-image: linear-gradient(90deg, transparent, var(--color-raised), transparent); background-size: 200% 100%; animation: shimmer calc(var(--motion-duration) * 10) linear infinite; }
   .row-context[data-loading] { animation: pulse calc(var(--motion-duration) * 8) ease-in-out infinite; }
   .row-context { animation: arrive var(--motion-duration) var(--motion-easing); }
@@ -914,8 +914,8 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .task-next { flex: 0 1 auto; min-width: 0; margin-left: auto; display: flex; flex-direction: column; gap: var(--space-2); overflow-wrap: anywhere; }
 .task-next .actions { padding: 0; justify-content: flex-end; }
 .task-approval { flex-basis: 100%; overflow-wrap: anywhere; }
-.project-page { padding-top: var(--space-3); }
-.project-page .facts-line { padding: 0 var(--space-4) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
+.project-overview { padding-top: var(--space-3); }
+.project-overview .facts-line { padding: 0 var(--space-4) var(--space-3); font-size: var(--font-size-sm); color: var(--color-muted); overflow-wrap: anywhere; }
 .deploy-output pre { max-height: 50vh; overflow-y: auto; color: var(--color-text); }
 .task-body { padding: 0 var(--space-4); max-width: calc(var(--size-prose) + 2 * var(--space-4)); }
 /* A closed fold says what it holds: "4 checks passed", "2 open". */
