@@ -122,6 +122,7 @@ pub(crate) fn fail_check(
         prompt,
         from: None,
         into: None,
+        after: None,
         title: Some(fix_title(&item.check)),
         model: None,
         fixes: Some(item.id.clone()),

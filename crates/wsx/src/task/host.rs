@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
 use wsx_core::git::{git_cmd, output_with_timeout_tail};
 use wsx_core::runtime;
-use wsx_core::task::status::STOPPED_BY_REQUEST;
+use wsx_core::task::status::{self, STOPPED_BY_REQUEST};
 use wsx_core::task::view::{checked_files, short_commit};
 use wsx_core::task::{
     build, call_host, checks,
@@ -639,19 +639,57 @@ impl Host {
         Some(named.unwrap_or((text, TurnTrigger::Restart)))
     }
 
+    /// The first turn of a new task: its prompt, the context and the first step.
+    fn first_turn(&mut self) -> Result<()> {
+        let prompt = self.dir.prompt()?.context("the task log has no prompt")?;
+        let mut text = vec![prompt];
+        text.extend(self.task_context());
+        text.extend(self.step_text());
+        if self.record.plan {
+            text.push(PLAN_REQUEST.into());
+        }
+        self.start_turn(&text.join("\n\n"), TurnTrigger::Step);
+        Ok(())
+    }
+
+    /// Whether the task was created with `new --after` and has not had its first turn: it
+    /// waits on the owner only in name, with no conversation and no result.
+    fn awaits_start(&self) -> bool {
+        self.record.waits_on(WaitOn::Owner)
+            && self.record.agent_session.is_none()
+            && self
+                .dir
+                .last_event(|event| matches!(event, LogEvent::Result { .. }).then_some(()))
+                .ok()
+                .flatten()
+                .is_none()
+    }
+
+    /// The wait of a task that has not started is over: its copy follows the default branch,
+    /// where the task it waited for landed, and its first turn starts.
+    fn start_after_wait(&mut self) -> Result<()> {
+        let tip = self.default_tip()?;
+        if let Rebase::Conflict(paths) = copy::rebase(&self.record.working_copy, &tip)? {
+            bail!("cannot move the copy onto {tip:.12}: {}", paths.join(", "));
+        }
+        self.say(&format!(
+            "starts on {} at {tip:.12}",
+            self.record.default_branch
+        ));
+        self.first_turn()
+    }
+
     fn resume_state(&mut self) -> Result<()> {
         match self.record.state {
             // ^ A new task: no conversation yet, so its first turn has not run.
-            TaskState::Working if self.record.agent_session.is_none() => {
-                let prompt = self.dir.prompt()?.context("the task log has no prompt")?;
-                let mut text = vec![prompt];
-                text.extend(self.task_context());
-                text.extend(self.step_text());
-                if self.record.plan {
-                    text.push(PLAN_REQUEST.into());
+            // ^ One created with `new --after` waits for that task first.
+            TaskState::Working if self.record.agent_session.is_none() => match &self.record.after {
+                Some(after) => {
+                    let reason = format!("waits for #{} to land", after.task);
+                    self.wait(WaitOn::Owner, reason);
                 }
-                self.start_turn(&text.join("\n\n"), TurnTrigger::Step);
-            }
+                None => self.first_turn()?,
+            },
             // ^ The checks of a result do not depend on the host that lost them: they run
             // again on the worker's last result, as the land or retry that follows would.
             TaskState::Checking => {
@@ -753,8 +791,23 @@ impl Host {
         }
     }
 
+    /// A landed or closed task takes no message: a turn would make it `working` again, and the
+    /// close that follows its landing would then leave it `closed`, its commits on the default
+    /// branch.
+    fn require_open(&self) -> Result<()> {
+        if !self.record.state.is_open() {
+            bail!(
+                "task t{} is {}: it takes no more messages",
+                self.record.id,
+                self.state_words()
+            );
+        }
+        Ok(())
+    }
+
     fn steer(&mut self, text: String) -> Result<String> {
         check_message(&text)?;
+        self.require_open()?;
         if !self.turn_active {
             self.log(LogEvent::Message {
                 mode: MessageKind::Add,
@@ -775,6 +828,7 @@ impl Host {
 
     fn add(&mut self, text: String, files: Vec<String>) -> Result<String> {
         check_message(&text)?;
+        self.require_open()?;
         if !files.is_empty() {
             self.record.files = checked_files(&self.record.files, &files)?;
             self.save();
@@ -891,6 +945,9 @@ impl Host {
             by,
         });
         self.say(&message);
+        if task.is_none() && self.awaits_start() {
+            self.start_after_wait()?;
+        }
         Ok(message)
     }
 
@@ -911,6 +968,12 @@ impl Host {
             task,
             landed: text.is_some(),
         });
+        // ^ A task that has not started starts, also when `task` was closed: the manager hears
+        // of it from the event of the closing.
+        if self.awaits_start() {
+            self.start_after_wait()?;
+            return Ok(format!("#{task} is over: the first turn started"));
+        }
         match text {
             Some(text) => self.add(text, Vec::new()),
             None => Ok(format!("#{task} was closed: the wait is over")),
@@ -1191,7 +1254,12 @@ impl Host {
     }
 
     fn start_turn(&mut self, text: &str, trigger: TurnTrigger) {
-        // ^ Every path that starts a turn ends here: none runs while the owner works by hand.
+        // ^ Every path that starts a turn ends here: none runs for a task that left (`landed`),
+        // and none while the owner works by hand.
+        if !self.record.state.is_open() {
+            self.say(&format!("{}: no agent turn starts", self.state_words()));
+            return;
+        }
         if self.record.waits_on(WaitOn::Hand) {
             self.say("by hand: no agent turn starts until handback");
             return;
@@ -3211,6 +3279,7 @@ impl Host {
         self.log(LogEvent::Landed {
             commit: commit.to_string(),
         });
+        self.refuse_queued(commit);
         self.end_trial(if tried {
             "the owner passed it and it landed"
         } else {
@@ -3223,6 +3292,29 @@ impl Host {
             self.tell_overlaps(commit);
         }
         self.after_landing();
+    }
+
+    /// The adds that waited for the worker while the checks of this land ran are not delivered:
+    /// the task is `landed`. Each is logged as it came; the manager hears of them once, with
+    /// their first lines, since their sender was told "queued".
+    fn refuse_queued(&mut self, commit: &str) {
+        let adds: Vec<String> = self.pending.drain(..).collect();
+        self.notices.clear();
+        if adds.is_empty() {
+            return;
+        }
+        let lines: Vec<String> = adds
+            .iter()
+            .map(|add| format!("\n  {}", view::clip(first_line(add), 120)))
+            .collect();
+        let text = format!(
+            "#{} landed at {commit:.12} while {} add(s) to it waited for the worker; they were not delivered because the task landed:{}",
+            self.record.id,
+            adds.len(),
+            lines.concat()
+        );
+        self.say(&text);
+        self.tell_manager(format!("add-dropped-{}-{commit}", self.record.id), text);
     }
 
     /// Add the revision's Human Verify items, with their captures, to "To check", then those
@@ -3441,50 +3533,45 @@ impl Host {
     fn shared_failures(&self, results: &[CheckResult]) -> String {
         let now = now_unix_ms();
         let found = failure::shared_failures(&self.record.project_id, self.record.id, results, now);
-        let (project, main) = (
-            self.record.project.clone(),
-            self.record.project_path.clone(),
-        );
-        let project_id = self.record.project_id.clone();
         for failure in &found {
-            let (failure, project, main, project_id) = (
-                failure.clone(),
-                project.clone(),
-                main.clone(),
-                project_id.clone(),
-            );
-            // ^ The manager starts if it does not run, and a busy host takes a while to answer.
-            std::thread::spawn(move || {
-                let Ok(exe) = std::env::current_exe() else {
-                    return;
-                };
-                let _ = store::post_once(
-                    &project_id,
-                    &failure.key(),
-                    now / 1000,
-                    SHARED_WINDOW_SECS,
-                    || {
-                        let sent = owner::say(
-                            &project,
-                            &main,
-                            &exe,
-                            None,
-                            super::launch_manager(&main),
-                            failure.event(),
-                            Some(Author::Events),
-                            vec![Short::plain(&failure.event())],
-                        )?;
-                        anyhow::ensure!(sent.ok, "{}", sent.message);
-                        Ok(())
-                    },
-                );
-            });
+            self.tell_manager(failure.key(), failure.event());
         }
         found
             .iter()
             .map(|failure| failure.sentence(self.record.id))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Post `text` to the manager as one event that wakes a turn, once per `key` a day. The
+    /// manager starts if it does not run, and a busy host takes a while to answer, so it goes
+    /// from its own thread.
+    fn tell_manager(&self, key: String, text: String) {
+        let (project, main, project_id) = (
+            self.record.project.clone(),
+            self.record.project_path.clone(),
+            self.record.project_id.clone(),
+        );
+        let now = now_unix_ms();
+        std::thread::spawn(move || {
+            let Ok(exe) = std::env::current_exe() else {
+                return;
+            };
+            let _ = store::post_once(&project_id, &key, now / 1000, SHARED_WINDOW_SECS, || {
+                let sent = owner::say(
+                    &project,
+                    &main,
+                    &exe,
+                    None,
+                    super::launch_manager(&main),
+                    text.clone(),
+                    Some(Author::Events),
+                    vec![Short::plain(&text)],
+                )?;
+                anyhow::ensure!(sent.ok, "{}", sent.message);
+                Ok(())
+            });
+        });
     }
 
     fn log(&self, event: LogEvent) {
@@ -3511,12 +3598,14 @@ impl Host {
         let Some(pane_id) = self.record.pane_id else {
             return;
         };
+        // ^ An idle worker whose task waits for another to land asks nobody.
+        let idle = status::owner_waits_after(&self.dir, &self.record);
         let state = match (
             self.record.state,
             self.record.waiting.as_ref().map(|w| w.on),
         ) {
             (TaskState::Working | TaskState::Checking, _) => runtime::AgentState::Working,
-            (TaskState::Waiting, Some(WaitOn::Owner)) => runtime::AgentState::Blocked,
+            (TaskState::Waiting, Some(WaitOn::Owner)) if !idle => runtime::AgentState::Blocked,
             (TaskState::Waiting, _) | (TaskState::Closed, _) => runtime::AgentState::Idle,
             (TaskState::Ready | TaskState::Landed, _) => runtime::AgentState::Done,
             (TaskState::Failed, _) => runtime::AgentState::Error,

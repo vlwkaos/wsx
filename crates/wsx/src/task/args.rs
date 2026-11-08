@@ -410,6 +410,24 @@ pub struct NewArgs {
     /// task is held so it lands only on the owner's word (docs/tasks.md "Parent tasks")
     #[arg(long, value_name = "TASK", conflicts_with = "from")]
     pub(crate) into: Option<u32>,
+    /// Start only when this open task has landed: the worker waits with no turn, then starts
+    /// on the default branch with it (docs/tasks.md "After another task")
+    #[arg(
+        long,
+        value_name = "TASK",
+        requires = "because",
+        conflicts_with_all = ["from", "into"]
+    )]
+    pub(crate) after: Option<String>,
+    /// Why it waits for --after: needs (builds on its change), files (changes the same files,
+    /// lands after it), check (its checks fail on main until it lands)
+    #[arg(
+        long,
+        value_name = "needs|files|check",
+        value_parser = AfterKind::parse,
+        requires = "after"
+    )]
+    pub(crate) because: Option<AfterKind>,
     /// A short title in plain words (at most 60 characters); default: the prompt's first line
     #[arg(long)]
     pub(crate) title: Option<String>,

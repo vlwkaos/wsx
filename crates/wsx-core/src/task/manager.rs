@@ -3,7 +3,8 @@
 //!
 //! The manager host is the only writer of these files; `wsx task chat` reads the log.
 
-use super::status::STOPPED_BY_REQUEST;
+use super::status::{owner_waits_after, STOPPED_BY_REQUEST};
+use super::store::TaskDir;
 use super::{TaskRecord, TaskState, TurnUsage, WaitOn};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -266,19 +267,22 @@ pub fn says_nothing(text: &str) -> bool {
 }
 
 /// Whether a task's new state needs the manager's judgment now. The others (a landing, a close,
-/// a wait on `limit` or `disk`, a stop the owner or the manager asked for) go along with its next
-/// turn. ref: docs/tasks.md "Manager"
-pub fn state_wakes(record: &TaskRecord) -> bool {
+/// a wait on `limit` or `disk`, a stop the owner or the manager asked for, an idle worker whose
+/// task waits for another to land) go along with its next turn. ref: docs/tasks.md "Manager"
+pub fn state_wakes(dir: &TaskDir, record: &TaskRecord) -> bool {
     match record.state {
         TaskState::Landed | TaskState::Closed => false,
-        TaskState::Waiting => !record
-            .waiting
-            .as_ref()
-            .is_some_and(|waiting| match waiting.on {
-                WaitOn::Limit | WaitOn::Disk => true,
-                WaitOn::Owner => waiting.reason == STOPPED_BY_REQUEST,
-                _ => false,
-            }),
+        TaskState::Waiting => {
+            !owner_waits_after(dir, record)
+                && !record
+                    .waiting
+                    .as_ref()
+                    .is_some_and(|waiting| match waiting.on {
+                        WaitOn::Limit | WaitOn::Disk => true,
+                        WaitOn::Owner => waiting.reason == STOPPED_BY_REQUEST,
+                        _ => false,
+                    })
+        }
         _ => true,
     }
 }

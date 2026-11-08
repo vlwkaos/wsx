@@ -84,9 +84,10 @@ fn internal(error: anyhow::Error) -> Fault {
 
 /// The three states the owner sees (docs/web-client-tasks.md); the store keeps the rest.
 /// A ready task waits for a land by hand: auto land is off, there are no checks, or it stopped.
-/// One the manager created waits for the manager's review, not the owner.
-fn stage(record: &TaskRecord, land_auto: bool) -> &'static str {
-    if record.manager_reviews(land_auto) {
+/// One the manager created waits for the manager's review, not the owner. An idle worker whose
+/// task waits for another to land asks nobody either.
+fn stage(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> &'static str {
+    if record.manager_reviews(land_auto) || status::owner_waits_after(dir, record) {
         return "working";
     }
     match record.state {
@@ -191,7 +192,7 @@ fn build_overview(
             order,
             u64::MAX - record.updated_unix_ms,
             json!({
-                "id": record.id, "title": title, "state": record.state, "stage": stage(record, land_auto),
+                "id": record.id, "title": title, "state": record.state, "stage": stage(dir, record, land_auto),
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
                 "waiting": record.waiting,
                 "status": status,
@@ -204,7 +205,7 @@ fn build_overview(
                 "revision": record.revision, "unix_ms": record.updated_unix_ms,
             })
         };
-        if stage(record, land_auto) == "working" {
+        if stage(dir, record, land_auto) == "working" {
             working += 1;
             continue;
         }
@@ -511,7 +512,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["goal"] = goal(&dir);
     let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
     summary["agent"] = view::task_agent(&record);
-    summary["stage"] = json!(stage(&record, land_auto));
+    summary["stage"] = json!(stage(&dir, &record, land_auto));
     summary["conflict"] =
         json!(record.state == TaskState::Working && view::resolving_conflict(&dir));
     if record.state == TaskState::Ready {
@@ -1298,7 +1299,7 @@ fn attention(project: u64, overview: &Value) -> Vec<Open> {
 fn notice(scope: &Scope, watch: &mut Watch) {
     let first = !watch.seen.contains_key(&scope.project);
     let seen = watch.seen.entry(scope.project).or_default();
-    for (_, record) in view::project_tasks(&scope.store).unwrap_or_default() {
+    for (dir, record) in view::project_tasks(&scope.store).unwrap_or_default() {
         let Ok(record) = record else { continue };
         let now = (record.state, record.revision);
         let before = seen.insert(record.id, now);
@@ -1309,6 +1310,7 @@ fn notice(scope: &Scope, watch: &mut Watch) {
             && !record.waits_on(WaitOn::Hand)
             && !record.waits_on(WaitOn::Plan)
             && !record.waits_on(WaitOn::Limit)
+            && !status::owner_waits_after(&dir, &record)
         {
             watch.pending.add((scope.project, Key::Task(record.id)));
         }

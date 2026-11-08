@@ -135,14 +135,16 @@ pub fn status_with_result(
     let mut status = status_of(dir, record, facts, result, now_ms);
     if let (Some(after), true) = (&record.after, record.state.is_open()) {
         // ^ A ready row already says "Waiting for #m to land"; the reason is what it adds.
-        status.wait = Some(match record.state == TaskState::Ready {
-            true => kind_words(after.because).to_string(),
-            false => format!(
-                "then waits for #{}: {}",
-                after.task,
-                kind_words(after.because)
-            ),
-        });
+        status.wait = Some(
+            match record.state == TaskState::Ready || status.kind == "after" {
+                true => kind_words(after.because).to_string(),
+                false => format!(
+                    "then waits for #{}: {}",
+                    after.task,
+                    kind_words(after.because)
+                ),
+            },
+        );
     }
     if !facts.waiters.is_empty() && record.state.is_open() {
         status.sentence.push(' ');
@@ -260,7 +262,7 @@ fn status_of(
     }
     // ^ A wait for another task matters once it is ready; before, the sentence says it follows.
     if let (Some(after), true) = (&record.after, record.state.is_open()) {
-        if record.state != TaskState::Ready {
+        if record.state != TaskState::Ready && status.kind != "after" {
             status
                 .sentence
                 .push_str(&format!(" Then it waits for #{} to land.", after.task));
@@ -271,6 +273,29 @@ fn status_of(
         }
     }
     status
+}
+
+/// Why the task stopped without the worker's answer: the reason of its last `stopped`, none when
+/// the worker answered last (blocked, or a result).
+fn stop_reason(dir: &TaskDir) -> Option<String> {
+    dir.last_event(|event| match event {
+        LogEvent::Stopped { reason } => Some(Some(reason.clone())),
+        LogEvent::Blocked { .. } | LogEvent::Result { .. } => Some(None),
+        _ => None,
+    })
+    .ok()
+    .flatten()
+    .flatten()
+}
+
+/// Whether the task waits on the owner only in name: its worker is idle or blocked and the task
+/// waits for another to land (`after`). It asks nobody and wakes nobody; `waiting_on` says
+/// "Waiting for #m to land". A stop, or an interrupted host, is no such wait.
+pub fn owner_waits_after(dir: &TaskDir, record: &TaskRecord) -> bool {
+    record.after.is_some()
+        && record.state == TaskState::Waiting
+        && record.waits_on(WaitOn::Owner)
+        && stop_reason(dir).is_none()
 }
 
 /// A task that waits on `waiting`: the owner, its plan reviewed, the owner's hand, disk,
@@ -284,16 +309,7 @@ fn waiting_on(
 ) -> Status {
     match waiting.on {
         WaitOn::Owner => {
-            let stopped = dir
-                .last_event(|event| match event {
-                    LogEvent::Stopped { reason } => Some(Some(reason.clone())),
-                    LogEvent::Blocked { .. } | LogEvent::Result { .. } => Some(None),
-                    _ => None,
-                })
-                .ok()
-                .flatten()
-                .flatten();
-            match stopped {
+            match stop_reason(dir) {
                 Some(reason) if reason == STOPPED_BY_REQUEST => words(
                     "stopped",
                     "Stopped",
@@ -310,6 +326,9 @@ fn waiting_on(
                     "The manager resumes it or tells you why not.",
                     now_ms,
                 ),
+                // ^ A worker that answered blocked or idle while its task waits for another has
+                // no question: the wait for that task is the status.
+                None if record.after.is_some() => after_wait(record, now_ms),
                 None => words(
                     "owner",
                     "Waiting for your answer",
@@ -412,6 +431,25 @@ fn failed(dir: &TaskDir, result: Option<&Option<Value>>, now_ms: u64) -> Status 
     }
 }
 
+/// A task that waits for another to land (`wsx task after`), ready or with an idle worker.
+fn after_wait(record: &TaskRecord, now_ms: u64) -> Status {
+    let after = record.after.as_ref().expect("the caller checked `after`");
+    let other = TaskDir::open(&record.project_id, after.task)
+        .and_then(|dir| dir.read_record())
+        .map_or("unknown", |other| other.state.as_str());
+    words(
+        "after",
+        &format!("Waiting for #{} to land", after.task),
+        Some(after.since_unix_ms),
+        &format!("#{} is {other}", after.task),
+        &format!(
+            "{} When it lands, wsx sends the task the manager's next instruction. If it is closed instead, the manager is told.",
+            because_sentence(after.because, after.task)
+        ),
+        now_ms,
+    )
+}
+
 /// A ready task: its landing stopped, it is held, it waits for another task, the manager
 /// reviews it, or the owner lands it.
 fn ready(
@@ -450,21 +488,8 @@ fn ready(
             now_ms,
         );
     }
-    if let Some(after) = &record.after {
-        let other = TaskDir::open(&record.project_id, after.task)
-            .and_then(|dir| dir.read_record())
-            .map_or("unknown", |other| other.state.as_str());
-        return words(
-            "after",
-            &format!("Waiting for #{} to land", after.task),
-            Some(after.since_unix_ms),
-            &format!("#{} is {other}", after.task),
-            &format!(
-                "{} When it lands, wsx sends the task the manager's next instruction. If it is closed instead, the manager is told.",
-                because_sentence(after.because, after.task)
-            ),
-            now_ms,
-        );
+    if record.after.is_some() {
+        return after_wait(record, now_ms);
     }
     let outcomes = outcomes(dir, result);
     let passed = outcomes.iter().filter(|(_, o)| *o == "passed").count();
