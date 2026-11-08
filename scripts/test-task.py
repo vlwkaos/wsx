@@ -16,19 +16,15 @@ import json
 import os
 import pwd
 from pathlib import Path
-import pty
 import re
-import select
 import shutil
 import socket
-import struct
 import subprocess
 import sys
-import termios
 import time
-import unicodedata
 
 import wsxd_client
+from tui_pty import Screen, TuiPty
 
 ROOT = Path(__file__).resolve().parents[1]
 # ^ Parts other than 16 land by hand (`land.auto: false`) so a ready task stays ready.
@@ -97,34 +93,6 @@ DEPLOY_CONFIG = LAND_CONFIG + '''  deploy:
 '''
 
 
-def tui_run(wsx, env, cwd, done, cols=120, seconds=15):
-    """The real TUI in a private PTY (`cols`x40). `done(output, write, idle)` sees all output so
-    far after each read, and with `idle` true after 0.1 s without output, and may write keys; the
-    TUI quits when it returns true or the time is up."""
-    master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 40, cols, 0, 0))
-    proc = subprocess.Popen([str(wsx)], cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave,
-                            start_new_session=True)
-    output, deadline = bytearray(), time.monotonic() + seconds
-    try:
-        while time.monotonic() < deadline and proc.poll() is None:
-            idle = not select.select([master], [], [], 0.1)[0]
-            if not idle:
-                output += os.read(master, 65536)
-            if done(output, lambda keys: os.write(master, keys), idle):
-                break
-    finally:
-        if proc.poll() is None:
-            os.write(master, b'\x01q')
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=3)
-        os.close(master)
-        os.close(slave)
-
-
 # ^ What a worker tries inside wsx's boundary (docs/tasks.md "Permissions"), run as the worker's
 # own command by the fake worker (part 23) and by the real Claude (part 32h). A write to a file
 # that exists only opens it for appending, so nothing changes when it is allowed.
@@ -174,18 +142,17 @@ PROBE_EXPECTED = {'read_ssh': False, 'write_ssh': False, 'write_state': False, '
                   'signal_own': True, 'signal_outside': False}
 
 
-def tui_text(wsx, env, cwd, until, seconds=15):
-    """The TUI's output as text without escapes, read until `until` (a regex) matches."""
-    text = ''
+# ^ Ctrl-A q: quits the TUI.
+QUIT = b'\x01q'
 
-    def done(output, _write, _idle):
-        nonlocal text
-        # ^ Cells of one style are written in one run; escapes split the runs.
-        text = re.sub(r'\x1b(\[[0-9;?<>=]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[()][0-9A-Za-z]|.)', '\n',
-                      output.decode('utf-8', 'replace'))
-        return re.search(until, text)
-    tui_run(wsx, env, cwd, done, seconds=seconds)
-    return text
+
+def tui_text(wsx, env, cwd, until, seconds=15):
+    """The TUI's screen as text, read until `until` (a regex) matches."""
+    tui = TuiPty([str(wsx)], cwd, env)
+    try:
+        return tui.wait_text(until, 'the TUI did not show %r' % until, seconds)
+    finally:
+        tui.close(QUIT)
 
 
 # ^ The scenario runs as these parts (`--part`, or WSX_SCENARIO_PART); none runs all, in order. A part
@@ -224,90 +191,21 @@ STALL_GRACE = 4
 SWEEP = 10
 
 
-def screen(output, cols, rows=40, styled=False, colors=False):
-    """The screen `output` leaves: the cursor moves, clears and prints the TUI writes, without
-    styles. ratatui writes only the cells that changed, so the raw text alone can split words.
-    With `styled`, a list of rows of `(char, bold, background)` cells instead; with `colors`,
-    of `(char, (r, g, b) or None)`, the true-colour foreground."""
-    grid = [[' '] * cols for _ in range(rows)]
-    styles = [[(False, False, None)] * cols for _ in range(rows)]
-    bold = background = False
-    fg = None
-    row = col = 0
-    tokens = re.finditer(r'\x1b\[([0-9;?<>=]*)([ -/]*[@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b.|(.)',
-                         output.decode('utf-8', 'replace'), re.S)
-    for token in tokens:
-        params, final, char = token.group(1), token.group(2), token.group(3)
-        if final == 'm':
-            # ^ SGR: 1/22 bold, 4x/10x/48 a background, 49 none, 0 resets; 38/48 carry a colour.
-            codes = [int(n) if n.isdigit() else 0 for n in params.split(';')] if params else [0]
-            index = 0
-            while index < len(codes):
-                code = codes[index]
-                if code == 0:
-                    bold = background = False
-                    fg = None
-                elif code == 39:
-                    fg = None
-                elif code == 38 and codes[index + 1:index + 2] == [2] and index + 4 < len(codes):
-                    fg = tuple(codes[index + 2:index + 5])
-                elif code == 1:
-                    bold = True
-                elif code == 22:
-                    bold = False
-                elif 40 <= code <= 47 or 100 <= code <= 107:
-                    background = True
-                elif code == 49:
-                    background = False
-                if code in (38, 48):
-                    background = background or code == 48
-                    index += 2 if index + 1 < len(codes) and codes[index + 1] == 5 else 4
-                index += 1
-        elif final == 'H':
-            numbers = [int(n) if n else 1 for n in params.split(';')] if params else [1, 1]
-            row, col = numbers[0] - 1, (numbers[1] if len(numbers) > 1 else 1) - 1
-        elif final == 'J' and params == '2':
-            grid = [[' '] * cols for _ in range(rows)]
-        elif final == 'K':
-            grid[row][col:] = [' '] * (cols - col)
-        elif char == '\r':
-            col = 0
-        elif char == '\n':
-            row = min(row + 1, rows - 1)
-        elif char is not None and char.isprintable() and 0 <= row < rows and col < cols:
-            grid[row][col] = char
-            styles[row][col] = (bold, background, fg)
-            col += 2 if unicodedata.east_asian_width(char) in 'WF' else 1
-    if colors:
-        return [[(c, s[2]) for c, s in zip(line, style)] for line, style in zip(grid, styles)]
-    if styled:
-        return [[(c, *s[:2]) for c, s in zip(line, style)] for line, style in zip(grid, styles)]
-    return '\n'.join(''.join(line).rstrip() for line in grid)
-
-
 def tui_screens(wsx, env, cwd, steps, cols=120, raw=None):
     """For each `(regex, keys)` step: wait until the drawn screen matches, keep it, send the
     keys. Returns the kept screens. A screen counts once output pauses: a frame can arrive in
     several reads. `raw`, a list, gets the output so far at each kept screen."""
-    screens, shown = [], ''
-
-    def done(output, write, idle):
-        nonlocal shown
-        if not idle:
-            return False
-        shown = screen(output, cols)
-        if re.search(steps[len(screens)][0], shown):
-            screens.append(shown)
+    tui = TuiPty([str(wsx)], cwd, env, cols=cols)
+    screens = []
+    try:
+        for index, (pattern, keys) in enumerate(steps):
+            screens.append(tui.wait_text(pattern, 'TUI step %d %r not shown' % (index, pattern), 40, idle=0.1))
             if raw is not None:
-                raw.append(bytes(output))
-            if len(screens) == len(steps):
-                return True
-            keys = steps[len(screens) - 1][1]
-            write(keys() if callable(keys) else keys)
-        return False
-    tui_run(wsx, env, cwd, done, cols=cols, seconds=40)
-    assert len(screens) == len(steps), 'TUI step %d %r not shown:\n%s' % (
-        len(screens), steps[len(screens)][0], shown)
+                raw.append(bytes(tui.raw))
+            if index < len(steps) - 1:
+                tui.send(keys() if callable(keys) else keys)
+    finally:
+        tui.close(QUIT)
     return screens
 
 
@@ -2967,24 +2865,28 @@ def part_worker(created=None):
     accent, plain = (102, 153, 255), (224, 229, 237)
     seen_names = []
 
-    def name_color(output):
+    def name_color(tui):
         """The foreground of `demo` in the project row, once the Workspace is drawn."""
-        for line in screen(output, 120, colors=True):
+        for line in tui.cells(colors=True):
             text = ''.join(c for c, _ in line)
             hit = re.search(r'[▼▶] demo', text)
             if hit:
                 return line[hit.end() - 4][1]
 
-    def row_colors(output, write, idle):
-        color = name_color(output) if idle else None
-        if color == accent and not seen_names:
-            seen_names.append(color)
-            reply_to(js('task', 'say', 'hello again')['id'])
-        elif color == plain and seen_names:
-            seen_names.append(color)
-        return len(seen_names) == 2
-    tui_run(wsx, env, project, row_colors, seconds=40)
-    assert seen_names == [accent, plain], 'the project row did not show ask, then answer: %s' % seen_names
+    tui = TuiPty([str(wsx)], project, env)
+    try:
+        def row_colors(_text):
+            color = name_color(tui)
+            if color == accent and not seen_names:
+                seen_names.append(color)
+                reply_to(js('task', 'say', 'hello again')['id'])
+            elif color == plain and seen_names:
+                seen_names.append(color)
+            return len(seen_names) == 2
+        tui.wait_text(row_colors, lambda: 'the project row did not show ask, then answer: %s' % seen_names, 40, idle=0.1)
+    finally:
+        tui.close(QUIT)
+    assert seen_names == [accent, plain], seen_names
     # `o` opens the project's overview.md read-only, from the list and from the chat: the text as
     # written, the mermaid graph as a code block; `j` and PageDown scroll, `Esc` returns to what
     # was under it (docs/tasks.md "TUI"). The file is longer than the window.
@@ -4891,7 +4793,9 @@ def part_host(created=None):
     assert 'profile = "default"' in selection.read_text(), selection.read_text()
     # ^ The title leads row 1: bold, on the terminal's own background, then a gap, then the
     # group chips on their chip background.
-    cells = screen(header[0], 120, styled=True)[0]
+    painted = Screen(40, 120)
+    painted.feed(header[0])
+    cells = painted.cells()[0]
     text = ''.join(c for c, _, _ in cells)
     assert text.startswith(' work ▾  ungrouped'), text
     assert all(bold and not background for _, bold, background in cells[1:7]), cells[:10]

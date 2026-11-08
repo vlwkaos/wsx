@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import atexit
-import codecs
 import fcntl
 import hashlib
 import json
@@ -11,15 +10,13 @@ import resource
 import shutil
 import signal
 import socket
-import struct
 import subprocess
 import sys
-import termios
 import threading
 import time
-import unicodedata
 
 import wsxd_client
+from tui_pty import TuiPty
 from wsxd_client import PROTOCOL, heartbeat_streams, recv_line, send_stream, stream_send_lock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1858,38 +1855,25 @@ def settled_cursor():
     # cursor to its cache then.
     time.sleep(2.5)
     return cursor_terminal()
-tui_master, tui_slave = os.openpty()
-fcntl.ioctl(tui_slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-# ^ crossterm reads the window size from /dev/tty when the process has one. The pty is the TUI's
-# controlling terminal, as in a real terminal, so a resize of it is the size the TUI reads.
-tui = subprocess.Popen([str(WSX)], cwd=PROJECT, env={k: v for k, v in env.items() if k != "WSX_PANE_ID"},
-                       stdin=tui_slave, stdout=tui_slave, stderr=tui_slave, close_fds=True,
-                       start_new_session=True, preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0))
-os.close(tui_slave)
-tui_screen = bytearray()
 
 
-def read_tui():
-    # ^ Read the TUI's output all the time: a full PTY blocks its draw, and then its keys.
-    try:
-        while chunk := os.read(tui_master, 65536):
-            tui_screen.extend(chunk)
-    except OSError:
-        pass
+def smoke_tui(wsx=WSX, tui_env=None):
+    # ^ The WSX_PANE_ID of this run would make the TUI a pane of a session.
+    return TuiPty([str(wsx)], PROJECT, tui_env or {k: v for k, v in env.items() if k != "WSX_PANE_ID"})
 
 
-threading.Thread(target=read_tui, daemon=True).start()
+tui = smoke_tui()
 
 
 def in_terminal_mode():
     # ^ The mode line drawn last names the mode.
-    return tui_screen.rfind(b"TERMINAL") > tui_screen.rfind(b"WORKSPACE")
+    return tui.raw.rfind(b"TERMINAL") > tui.raw.rfind(b"WORKSPACE")
 
 
 try:
     # The last row is keep-c, the newest session.
-    wait_for(lambda: b"keep-c" in tui_screen, "the TUI did not show keep-c")
-    os.write(tui_master, b"j" * 12)
+    wait_for(lambda: b"keep-c" in tui.raw, "the TUI did not show keep-c")
+    tui.send(b"j" * 12)
     wait_for(lambda: cursor_terminal() == cursor_sessions["keep-c"][0],
              "the cursor did not reach keep-c")
     viewed = cursor_sessions["keep-c"][0]
@@ -1905,9 +1889,9 @@ try:
     connect_ms = sorted(connect_ms)[10]
     printer = cursor_session("printer", ("/bin/sh", "-c", "while :; do date; sleep 0.02; done"))
     time.sleep(2)
-    drawn_from = len(tui_screen)
+    drawn_from = len(tui.raw)
     time.sleep(5)
-    draws = tui_screen[drawn_from:].count(b"\x1b[?2026h")
+    draws = tui.raw[drawn_from:].count(b"\x1b[?2026h")
     print(f"tui refresh: connect median {connect_ms:.1f} ms, {draws} draws in 5 s of output", flush=True)
     assert connect_ms < 5, f"a new connection waited {connect_ms:.1f} ms for its hello"
     assert draws <= 5, f"the TUI drew {draws} times in 5 s while only a pane printed"
@@ -1923,11 +1907,11 @@ try:
         time.sleep(2.5)
         answer = f"{marker}-{40 + value}".encode()
         deadline = time.monotonic() + 20
-        while answer not in tui_screen:
+        while answer not in tui.raw:
             assert time.monotonic() < deadline, f"the TUI does not show the viewed shell's answer {marker}"
             # ^ Keys typed outside Terminal mode are commands ('e' opens an editor).
             if in_terminal_mode():
-                os.write(tui_master, f"echo {marker}-$((40+{value}))\r".encode())
+                tui.send(f"echo {marker}-$((40+{value}))\r".encode())
             time.sleep(1)
         assert settled_cursor() == viewed, (marker, CURSOR_CACHE.read_text())
 
@@ -1939,7 +1923,7 @@ try:
                                   "expected_revision": closing["revision"]})["type"] == "ack"
     cursor_session("keep-d")
     assert settled_cursor() == viewed, ("the cursor left the viewed session", cursor_sessions, CURSOR_CACHE.read_text())
-    os.write(tui_master, b"\r")
+    tui.send(b"\r")
     wait_for(in_terminal_mode, "the TUI did not open keep-c")
     viewed_shell_answers("opened", 1)
     # wsxd stops for longer than a lease lasts (3 s), as when it is busy: the lease runs out and
@@ -1965,14 +1949,14 @@ try:
     # ^ As in viewed_shell_answers: a key typed while the stream reattaches is dropped. A pane
     # that already exited gets no second line: its Enter would start the program again.
     exit_deadline = time.monotonic() + 20
-    while b"Enter starts it again" not in tui_screen:
+    while b"Enter starts it again" not in tui.raw:
         assert time.monotonic() < exit_deadline, (
-            "the TUI did not say the program exited", viewed_exited(), bytes(tui_screen[-600:]))
+            "the TUI did not say the program exited", viewed_exited(), bytes(tui.raw[-600:]))
         if in_terminal_mode() and not viewed_exited():
-            os.write(tui_master, b"exit\r")
+            tui.send(b"exit\r")
         time.sleep(1)
     assert viewed_exited()
-    os.write(tui_master, b"\r")
+    tui.send(b"\r")
     viewed_shell_answers("restarted", 3)
     assert not viewed_exited()
 
@@ -1980,30 +1964,28 @@ try:
     # last size, not one resize per event. The raw fixture prints a line at each SIGWINCH it gets.
     viewed_pane = next(pane["id"] for pane in call("snapshot")["data"]["panes"]
                        if pane["terminal_id"] == viewed)
-    os.write(tui_master, f"python3 {RAW_FIXTURE}; stty sane\r".encode())
+    tui.send(f"python3 {RAW_FIXTURE}; stty sane\r")
     wait_for(lambda: "raw-ready" in pane_text(viewed_pane), "the resize fixture did not start", 30)
     time.sleep(1)
     sizes_before = pane_text(viewed_pane).count("[size ")
     for step in range(20):
-        fcntl.ioctl(tui_master, termios.TIOCSWINSZ, struct.pack("HHHH", 30 + step, 100 + step, 0, 0))
-        os.kill(tui.pid, signal.SIGWINCH)
+        tui.resize(30 + step, 100 + step)
     # ^ A loaded host reads the burst late: wait for the first resize, then let the rest settle.
     wait_for(lambda: pane_text(viewed_pane).count("[size ") > sizes_before,
-             lambda: ("no resize reached the pane", pane_text(viewed_pane)[-300:], bytes(tui_screen[-400:])), 30)
+             lambda: ("no resize reached the pane", pane_text(viewed_pane)[-300:], bytes(tui.raw[-400:])), 30)
     time.sleep(3)
     resizes = pane_text(viewed_pane).count("[size ") - sizes_before
     print(f"tui resize: a burst of 20 window sizes gave wsxd {resizes} resize(s)", flush=True)
     assert 1 <= resizes <= 3, f"20 window sizes in a burst reached the pane as {resizes} resizes"
-    fcntl.ioctl(tui_master, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-    os.kill(tui.pid, signal.SIGWINCH)
+    tui.resize(40, 120)
     time.sleep(1)
-    os.write(tui_master, b"\x04")
+    tui.send(b"\x04")
     wait_for(lambda: "[bye]" in pane_text(viewed_pane), "the resize fixture did not end", 30)
     viewed_shell_answers("resized", 5)
 
     # audit #6 and #8: after `wsx daemon stop` the TUI's 30 s routine refresh and its event
     # monitor leave wsxd stopped, and the outage shows no restart failure.
-    mark = len(tui_screen)
+    mark = len(tui.raw)
     stopped_by_owner = wsx("daemon", "stop", "--force")
     assert stopped_by_owner.returncode == 0, stopped_by_owner
     wait_socket_stopped()
@@ -2013,9 +1995,7 @@ try:
     print("tui stop: wsxd was still stopped 35 s after `wsx daemon stop` with the TUI running", flush=True)
     cursor_daemon = start()
 finally:
-    tui.terminate()
-    tui.wait(timeout=5)
-    os.close(tui_master)
+    tui.close()
 
 # `d` on a project asks; `y` only unregisters it (its sessions keep running), `H` also halts all
 # its sessions, the hidden `task-manager` one included (docs/web-client.md "Projects").
@@ -2026,84 +2006,7 @@ for name, folder in removal.items():
 with (CONFIG_DIR / "config-v2.toml").open("a") as config_file:
     for name, folder in removal.items():
         config_file.write(f"[[projects]]\nname = \"{name}\"\npath = {json.dumps(str(folder))}\n")
-remove_master, remove_slave = os.openpty()
-fcntl.ioctl(remove_slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-remove_tui = subprocess.Popen([str(WSX)], cwd=PROJECT, env={k: v for k, v in env.items() if k != "WSX_PANE_ID"},
-                              stdin=remove_slave, stdout=remove_slave, stderr=remove_slave, close_fds=True)
-os.close(remove_slave)
-class Screen:
-    """The rows a TUI has painted, from its output stream.
-
-    ratatui repaints only the cells that changed and skips the rest with a cursor move, so a
-    word it draws over blank cells (a space of "Unregister project" over a blank) is not one run
-    of bytes in the stream: only the grid shows the text the user sees.
-    """
-    TOKEN = re.compile(r"\x1b\[([0-9;?]*)[ -/]*([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[^\[\]]|[\r\n]|[^\x00-\x1f]+")
-
-    def __init__(self, rows, cols):
-        self.rows, self.cols = rows, cols
-        self.grid = [[" "] * cols for _ in range(rows)]
-        self.row = self.col = 0
-        self.lock = threading.Lock()
-        self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        self.pending = ""
-
-    def feed(self, data):
-        with self.lock:
-            text = self.pending + self.decoder.decode(data)
-            self.pending = ""
-            # ^ An escape sequence cut by the read waits for the rest of it.
-            cut = text.rfind("\x1b")
-            if cut >= 0 and not self.TOKEN.match(text, cut):
-                text, self.pending = text[:cut], text[cut:]
-            for token in self.TOKEN.finditer(text):
-                self.apply(token)
-
-    def apply(self, token):
-        params, final = token.group(1), token.group(2)
-        if final:
-            numbers = [int(part) if part.isdigit() else 0 for part in params.lstrip("?").split(";")]
-            first = numbers[0] or 1
-            if final in "Hf":
-                self.row = min((numbers[0] or 1) - 1, self.rows - 1)
-                self.col = min(((numbers[1] if len(numbers) > 1 else 0) or 1) - 1, self.cols - 1)
-            elif final == "A": self.row = max(self.row - first, 0)
-            elif final == "B": self.row = min(self.row + first, self.rows - 1)
-            elif final == "C": self.col = min(self.col + first, self.cols - 1)
-            elif final == "D": self.col = max(self.col - first, 0)
-            elif final == "G": self.col = min(first - 1, self.cols - 1)
-            elif final == "J" and numbers[0] in (2, 3):
-                self.grid = [[" "] * self.cols for _ in range(self.rows)]
-            elif final == "K":
-                start, end = {0: (self.col, self.cols), 1: (0, self.col + 1), 2: (0, self.cols)}[numbers[0]]
-                self.grid[self.row][start:end] = [" "] * (end - start)
-            return
-        text = token.group(0)
-        if text == "\r": self.col = 0
-        elif text == "\n": self.row = min(self.row + 1, self.rows - 1)
-        elif not text.startswith("\x1b"):
-            for char in text:
-                if self.col < self.cols:
-                    self.grid[self.row][self.col] = char
-                    self.col += 1
-
-    def text(self):
-        with self.lock:
-            return "\n".join("".join(row) for row in self.grid)
-
-
-remove_view = Screen(40, 120)
-
-
-def read_remove_tui():
-    try:
-        while chunk := os.read(remove_master, 65536):
-            remove_view.feed(chunk)
-    except OSError:
-        pass
-
-
-threading.Thread(target=read_remove_tui, daemon=True).start()
+remove_tui = smoke_tui()
 
 
 def project_sessions(name):
@@ -2119,25 +2022,25 @@ def select_in_tui(name):
     # no sleep sits between them: each wait is for what the screen shows, and for long. (An Esc
     # followed at once by `]` would read as Alt-`]`.)
     asked = re.compile(r"Unregister project '([^']+)'")
-    os.write(remove_master, b"[" * 6)
+    remove_tui.send(b"[" * 6)
     for _ in range(8):
-        os.write(remove_master, b"d")
-        wait_for(lambda: asked.search(remove_view.text()), "the TUI asked no project question", seconds=60)
-        shown = asked.search(remove_view.text()).group(1)
-        os.write(remove_master, b"q")
-        wait_for(lambda: "Unregister project" not in remove_view.text(), "the question stayed after q", seconds=60)
+        remove_tui.send(b"d")
+        wait_for(lambda: asked.search(remove_tui.text()), "the TUI asked no project question", seconds=60)
+        shown = asked.search(remove_tui.text()).group(1)
+        remove_tui.send(b"q")
+        wait_for(lambda: "Unregister project" not in remove_tui.text(), "the question stayed after q", seconds=60)
         if shown == name:
             return
-        os.write(remove_master, b"]")
-    raise AssertionError(f"the cursor never reached {name}:\n{remove_view.text()}")
+        remove_tui.send(b"]")
+    raise AssertionError(f"the cursor never reached {name}:\n{remove_tui.text()}")
 
 
 def remove_from_tui(name, key):
     select_in_tui(name)
-    os.write(remove_master, b"d")
-    wait_for(lambda: f"Unregister project '{name}'" in remove_view.text(), "the TUI asked no project question", seconds=60)
-    assert "halt all its sessions" in remove_view.text(), remove_view.text()
-    os.write(remove_master, key)
+    remove_tui.send(b"d")
+    wait_for(lambda: f"Unregister project '{name}'" in remove_tui.text(), "the TUI asked no project question", seconds=60)
+    assert "halt all its sessions" in remove_tui.text(), remove_tui.text()
+    remove_tui.send(key)
 
 
 def config_names():
@@ -2153,7 +2056,7 @@ try:
             created = call("session_create", {"worktree_id": tree, "label": label, "command": ["/bin/sh"], "rows": 24, "cols": 80})
             assert created["type"] == "created", created
         assert sorted(project_sessions(name)) == ["shell", "task-manager"], project_sessions(name)
-    wait_for(lambda: "halt-me" in remove_view.text(), "the TUI did not list halt-me", seconds=60)
+    wait_for(lambda: "halt-me" in remove_tui.text(), "the TUI did not list halt-me", seconds=60)
     # The TUI's Tasks view (`t`) sums the usage of every project (docs/tasks.md "TUI"): two
     # projects with a manager reply each, 0.03 and 0.012 USD today, show as $0.04 in one line.
     # ^ The store id is `<name>-<first 8 hex of sha256(path)>` (wsx-core task/store.rs `project_id`).
@@ -2172,17 +2075,17 @@ try:
         "status": "allowed", "resetsAt": now + 3600, "rateLimitType": "five_hour", "unifiedWindows": {
             "five_hour": {"utilization": 0.25, "resetsAt": now + 3600, "status": "allowed"},
             "seven_day": {"utilization": 0.47, "resetsAt": now + 3 * 86400, "status": "allowed"}}}}))
-    os.write(remove_master, b"[t")
-    wait_for(lambda: "All projects" in remove_view.text(), "the Tasks view showed no all-projects usage", seconds=60)
-    all_projects = next(row.strip() for row in remove_view.text().splitlines() if "All projects" in row)
+    remove_tui.send(b"[t")
+    wait_for(lambda: "All projects" in remove_tui.text(), "the Tasks view showed no all-projects usage", seconds=60)
+    all_projects = next(row.strip() for row in remove_tui.text().splitlines() if "All projects" in row)
     assert re.search(r"All projects Today \$0\.04 \(manager \$0\.04\) · 7 days \$0\.04 \(manager \$0\.04\)", all_projects), all_projects
-    limit = next((row.strip() for row in remove_view.text().splitlines() if "Claude limit" in row), "")
-    assert re.search(r"Claude limit 5 hours 25%, resets \d\d:\d\d · 7 days 47%", limit), remove_view.text()
+    limit = next((row.strip() for row in remove_tui.text().splitlines() if "Claude limit" in row), "")
+    assert re.search(r"Claude limit 5 hours 25%, resets \d\d:\d\d · 7 days 47%", limit), remove_tui.text()
     # ^ `a` counts the first agent of the 7 days, `claude`: only halt-me's 0.03 USD.
-    os.write(remove_master, b"a")
-    wait_for(lambda: "All projects Today $0.03" in remove_view.text(), "a did not count one agent", seconds=60)
-    os.write(remove_master, b"q")
-    wait_for(lambda: "All projects" not in remove_view.text(), "q did not close the Tasks view", seconds=60)
+    remove_tui.send(b"a")
+    wait_for(lambda: "All projects Today $0.03" in remove_tui.text(), "a did not count one agent", seconds=60)
+    remove_tui.send(b"q")
+    wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close the Tasks view", seconds=60)
     # The TUI's manager chat renders wsx-core `chat_rows`, the rows the web gets (docs/tasks.md
     # "TUI"): keep-me's manager is named Atlas, and its log holds each kind of row.
     (removal["keep-me"] / "wsx.config.yml").write_text("tasks:\n  manager:\n    name: Atlas\n")
@@ -2223,31 +2126,31 @@ try:
         (keep_store / str(number) / "task.json").write_text(json.dumps(record))
         (keep_store / str(number) / "log.jsonl").write_text("")
     select_in_tui("keep-me")
-    os.write(remove_master, b"t")
-    wait_for(lambda: "All projects" in remove_view.text(), "t opened no Tasks view for keep-me", seconds=60)
-    wait_for(lambda: re.search(r"#2\s+ready\s+Waiting for #1 to land · its checks fail", remove_view.text()),
-             lambda: f"the Tasks view row did not give the reason of the wait:\n{remove_view.text()}", seconds=60)
-    os.write(remove_master, b"\r")
+    remove_tui.send(b"t")
+    wait_for(lambda: "All projects" in remove_tui.text(), "t opened no Tasks view for keep-me", seconds=60)
+    wait_for(lambda: re.search(r"#2\s+ready\s+Waiting for #1 to land · its checks fail", remove_tui.text()),
+             lambda: f"the Tasks view row did not give the reason of the wait:\n{remove_tui.text()}", seconds=60)
+    remove_tui.send(b"\r")
     # ^ A narrow detail wraps the sentence: the words are read with their line breaks as one space.
-    wait_for(lambda: "Its checks fail" in " ".join(remove_view.text().split()),
-             lambda: f"the detail did not give the reason:\n{remove_view.text()}", seconds=60)
-    os.write(remove_master, b"\x1b")
-    wait_for(lambda: "Its checks fail" not in " ".join(remove_view.text().split()), "Esc did not close the detail", seconds=60)
-    os.write(remove_master, b"j\r")
-    wait_for(lambda: re.search(r"Waited by\s+#2", remove_view.text()),
-             lambda: f"the detail of #1 did not list who waits for it:\n{remove_view.text()}", seconds=60)
-    os.write(remove_master, b"\x1b")
-    wait_for(lambda: "Waited by" not in remove_view.text(), "Esc did not close the detail of #1", seconds=60)
+    wait_for(lambda: "Its checks fail" in " ".join(remove_tui.text().split()),
+             lambda: f"the detail did not give the reason:\n{remove_tui.text()}", seconds=60)
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "Its checks fail" not in " ".join(remove_tui.text().split()), "Esc did not close the detail", seconds=60)
+    remove_tui.send(b"j\r")
+    wait_for(lambda: re.search(r"Waited by\s+#2", remove_tui.text()),
+             lambda: f"the detail of #1 did not list who waits for it:\n{remove_tui.text()}", seconds=60)
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "Waited by" not in remove_tui.text(), "Esc did not close the detail of #1", seconds=60)
     shutil.rmtree(keep_store / "1")
     shutil.rmtree(keep_store / "2")
-    os.write(remove_master, b"m")
-    wait_for(lambda: "Atlas stopped: agent exited" in remove_view.text(), "the TUI chat did not show keep-me's log", seconds=60)
+    remove_tui.send(b"m")
+    wait_for(lambda: "Atlas stopped: agent exited" in remove_tui.text(), "the TUI chat did not show keep-me's log", seconds=60)
     # ^ Each row in order, by its kind and shown name: an owner message, a short event line, a
     # quiet reply under the manager's name, the recap answer tagged, a peer, a rotation with its
     # reason, an asking reply and a stop, both by the shown name. The recap request and the ping
     # show nothing.
     def rows_in_order(expected):
-        chat_screen = remove_view.text()
+        chat_screen = remove_tui.text()
         shown = [row.strip() for row in chat_screen.splitlines() if row.strip()]
         found, at_row = [], 0
         for pattern in expected:
@@ -2264,42 +2167,42 @@ try:
     # ^ Two questions, then an owner message with no quote: it answers the newer one only; the
     # older one waits under the chat, counted in the heading. `r` starts a reply that quotes
     # it, Esc drops that, and `d` dismisses it (docs/tasks.md "Questions" under "Manager").
-    chat_screen = remove_view.text()
+    chat_screen = remove_tui.text()
     assert "1 question  0 to check  0 approvals" in chat_screen, chat_screen
     assert re.search(r"▸ asks +Should I land #4\?", chat_screen) and not re.search(r"asks +Shall I deploy", chat_screen), chat_screen
     assert "(r)eply" in chat_screen and "(d)ismiss" in chat_screen, chat_screen
     # ^ Enter on the question item scrolls the chat to its reply (docs/tasks.md "TUI"): from the
     # top of the chat, where the item's own line is the only place the question shows.
     def question_in_chat():
-        return any(re.search(r"^Should I land #4\?", row.strip().lstrip("│ ")) for row in remove_view.text().splitlines())
-    os.write(remove_master, b"k" * 200)
-    wait_for(lambda: "Where is #3?" in remove_view.text(), "k did not scroll the TUI chat to its top", seconds=60)
-    assert not question_in_chat(), remove_view.text()
-    os.write(remove_master, b"\r")
+        return any(re.search(r"^Should I land #4\?", row.strip().lstrip("│ ")) for row in remove_tui.text().splitlines())
+    remove_tui.send(b"k" * 200)
+    wait_for(lambda: "Where is #3?" in remove_tui.text(), "k did not scroll the TUI chat to its top", seconds=60)
+    assert not question_in_chat(), remove_tui.text()
+    remove_tui.send(b"\r")
     wait_for(question_in_chat, "Enter on the question item did not show its reply in the chat", seconds=60)
-    os.write(remove_master, b"r")
-    wait_for(lambda: "Reply to “Should I land #4?”:" in remove_view.text(), "r did not start a reply to the question", seconds=60)
-    os.write(remove_master, b"\x1b")
-    wait_for(lambda: "Reply to" not in remove_view.text(), "Esc did not drop the reply", seconds=60)
-    os.write(remove_master, b"d")
-    wait_for(lambda: "1 question" not in remove_view.text() and "▸ asks" not in remove_view.text(),
+    remove_tui.send(b"r")
+    wait_for(lambda: "Reply to “Should I land #4?”:" in remove_tui.text(), "r did not start a reply to the question", seconds=60)
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "Reply to" not in remove_tui.text(), "Esc did not drop the reply", seconds=60)
+    remove_tui.send(b"d")
+    wait_for(lambda: "1 question" not in remove_tui.text() and "▸ asks" not in remove_tui.text(),
              "d did not dismiss the open question", seconds=60)
     assert [json.loads(line)["id"] for line in keep_log.read_text().splitlines()
             if '"kind":"answered"' in line] == [16], keep_log.read_text()[-400:]
     # ^ The chat opens at its end; on a short screen the first rows are above it, and k scrolls
     # up one line at a time to the top.
-    os.write(remove_master, b"k" * 200)
-    wait_for(lambda: "Where is #3?" in remove_view.text(), "k did not scroll the TUI chat to its top", seconds=60)
+    remove_tui.send(b"k" * 200)
+    wait_for(lambda: "Where is #3?" in remove_tui.text(), "k did not scroll the TUI chat to its top", seconds=60)
     rows_in_order([r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 done$", r"^Atlas$", r"^#3 is on main\.$",
                    r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.", r"^elsewhere\s+\d\d:\d\d",
                    r"^Hello from elsewhere\."])
-    os.write(remove_master, b"\x1b")
-    wait_for(lambda: "press i to write a message" not in remove_view.text(), "Esc did not close the manager chat", seconds=60)
-    os.write(remove_master, b"q")
-    wait_for(lambda: "All projects" not in remove_view.text(), "q did not close keep-me's Tasks view", seconds=60)
-    # docs/design/tui-health-audit.md #1, #2, #10, #11, #14: the chat of a manager log of about 7.5
-    # MiB (the log rolls over at 8 MiB) reads only the end of it, the whole log only while a
-    # find is open, and a 20 KB line in the composer costs the same as a short one.
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "press i to write a message" not in remove_tui.text(), "Esc did not close the manager chat", seconds=60)
+    remove_tui.send(b"q")
+    wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close keep-me's Tasks view", seconds=60)
+    # docs/design/tui-health-audit.md #1, #2, #10, #14: the chat of a manager log of about 7.5
+    # MiB (the log rolls over at 8 MiB) reads only the end of it, and a 20 KB line in the
+    # composer costs the same as a short one. The find in the chat is in scripts/test-task.py.
     MiB = 1024 * 1024
     halt_log = STATE / "wsx" / "tasks" / f"halt-me-{hashlib.sha256(str(removal['halt-me']).encode()).hexdigest()[:8]}" / "manager" / "log.jsonl"
     filler = "lorem ipsum dolor sit amet " * 11
@@ -2307,7 +2210,7 @@ try:
     base = int(time.time() * 1000) - 7_200_000
     with halt_log.open("a") as log_file:
         while log_file.tell() < 7.5 * MiB:
-            text = f"old-{filler_count:05d} " + ("NEEDLE-oldest " if filler_count == 0 else "") + filler
+            text = f"old-{filler_count:05d} " + filler
             log_file.write(json.dumps({"unix_ms": base + filler_count, "kind": "message", "id": 100 + filler_count,
                                        "from": "owner", "text": text}) + "\n")
             filler_count += 1
@@ -2315,10 +2218,10 @@ try:
                                    "from": "owner", "text": "LAST-ENTRY-0"}) + "\n")
     assert 7 * MiB < halt_log.stat().st_size < 8 * MiB - 64 * 1024, halt_log.stat().st_size
     select_in_tui("halt-me")
-    os.write(remove_master, b"t")
-    wait_for(lambda: "All projects" in remove_view.text(), "t opened no Tasks view for halt-me", seconds=120)
-    os.write(remove_master, b"m")
-    wait_for(lambda: "LAST-ENTRY-0" in remove_view.text(), "the TUI chat did not show the end of the 7.5 MiB log", seconds=120)
+    remove_tui.send(b"t")
+    wait_for(lambda: "All projects" in remove_tui.text(), "t opened no Tasks view for halt-me", seconds=120)
+    remove_tui.send(b"m")
+    wait_for(lambda: "LAST-ENTRY-0" in remove_tui.text(), "the TUI chat did not show the end of the 7.5 MiB log", seconds=120)
     # ^ A new entry shows within the poll interval (1 s) and one read of the end: a read of the
     # whole log, about 20,000 entries here, takes far longer in this build.
     REFRESH_SECONDS = 4
@@ -2326,52 +2229,40 @@ try:
     with halt_log.open("a") as log_file:
         log_file.write(json.dumps({"unix_ms": base + filler_count + 1, "kind": "message", "id": 100 + filler_count + 1,
                                    "from": "owner", "text": "LAST-ENTRY-1"}) + "\n")
-    wait_for(lambda: "LAST-ENTRY-1" in remove_view.text(), "the chat did not show the new entry", seconds=60)
+    wait_for(lambda: "LAST-ENTRY-1" in remove_tui.text(), "the chat did not show the new entry", seconds=60)
     refresh = time.monotonic() - started
     print(f"smoke: the chat of a {halt_log.stat().st_size / MiB:.1f} MiB log refreshed in {refresh:.2f} s", flush=True)
     assert refresh < REFRESH_SECONDS, f"the chat refresh took {refresh:.2f} s"
-    # ^ `/` reads the whole log: the oldest entry is found. Esc clears the find and returns to
-    # the newest 200 entries (LAST-ENTRY-1 and -0 and 198 filler entries): scrolled to the top,
-    # the chat starts at old-(count - 198), not at the oldest.
-    os.write(remove_master, b"/NEEDLE-oldest")
-    wait_for(lambda: re.search(r"/NEEDLE-oldest\s+1/1", remove_view.text()), "the find did not reach the oldest entry", seconds=120)
-    os.write(remove_master, b"\x1b")
-    wait_for(lambda: "NEEDLE-oldest" not in remove_view.text() and "LAST-ENTRY-1" in remove_view.text(),
-             "Esc did not return the chat to the end", seconds=60)
-    top = filler_count - 198
-    os.write(remove_master, b"k" * 2000)
-    wait_for(lambda: f"old-{top:05d}" in remove_view.text(), "the chat after a find did not return to its newest 200 entries", seconds=120)
-    assert f"old-{top - 1:05d}" not in remove_view.text() and "NEEDLE-oldest" not in remove_view.text(), remove_view.text()
     # ^ A 20 KB line typed (a terminal without bracketed paste sends a paste as keys), in ten
     # parts of 2,000 characters, each ending in a mark that shows when the TUI has taken the
     # part. Each key costs one redraw (the first part sets the cost of that), so the last part
     # must take about as long as the first; a cost that grows with the line (the old loop, which
     # cut the line one character at a time) makes it take many times as long.
-    os.write(remove_master, b"i")
-    wait_for(lambda: "Enter: send" in remove_view.text(), "i did not open the composer", seconds=60)
+    remove_tui.send(b"i")
+    wait_for(lambda: "Enter: send" in remove_tui.text(), "i did not open the composer", seconds=60)
     part_seconds = []
     for part in range(10):
         mark = f"<<{part}>>"
         started = time.monotonic()
-        os.write(remove_master, ("paste0123 " * 199 + "paste012 ").encode())
-        os.write(remove_master, mark.encode())
+        remove_tui.send(("paste0123 " * 199 + "paste012 ").encode())
+        remove_tui.send(mark.encode())
         # ^ A wait that fails says whether the TUI is alive and what it shows: the CI log of a
         # piped run carries no timing, and a hang and a slow redraw look alike without them.
-        wait_for(lambda: mark in remove_view.text(),
+        wait_for(lambda: mark in remove_tui.text(),
                  lambda: f"the composer did not show the end of part {part} of a 20 KB paste "
-                         f"(TUI exit status {remove_tui.poll()}, {time.monotonic() - started:.0f} s):\n{remove_view.text()}",
+                         f"(TUI exit status {remove_tui.proc.poll()}, {time.monotonic() - started:.0f} s):\n{remove_tui.text()}",
                  seconds=180)
         part_seconds.append(time.monotonic() - started)
         print(f"smoke: part {part} of the 20 KB line shown after {part_seconds[-1]:.1f} s", flush=True)
     print("smoke: 20 KB typed in the composer, seconds per 2,000 characters: " + " ".join(f"{sec:.1f}" for sec in part_seconds), flush=True)
     assert part_seconds[-1] < 3 * part_seconds[0] + 2, part_seconds
     # ^ Two Escs in one write read as Alt-Esc: the first leaves the composer, the second the chat.
-    os.write(remove_master, b"\x1b")
-    wait_for(lambda: "Enter: send" not in remove_view.text(), "Esc did not leave the composer", seconds=60)
-    os.write(remove_master, b"\x1b")
-    wait_for(lambda: "All projects" in remove_view.text(), "Esc did not close the manager chat", seconds=60)
-    os.write(remove_master, b"q")
-    wait_for(lambda: "All projects" not in remove_view.text(), "q did not close halt-me's Tasks view", seconds=60)
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "Enter: send" not in remove_tui.text(), "Esc did not leave the composer", seconds=60)
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "All projects" in remove_tui.text(), "Esc did not close the manager chat", seconds=60)
+    remove_tui.send(b"q")
+    wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close halt-me's Tasks view", seconds=60)
     remove_from_tui("halt-me", b"H")
     wait_for(lambda: "halt-me" not in config_names(), "H did not unregister halt-me")
     wait_for(lambda: project_sessions("halt-me") == [], "H did not halt the sessions of halt-me")
@@ -2382,9 +2273,7 @@ try:
     assert sorted(project_sessions("keep-me")) == ["shell", "task-manager"], "y halted the sessions of keep-me"
     assert (removal["halt-me"] / ".git").is_dir() and (removal["keep-me"] / ".git").is_dir()
 finally:
-    remove_tui.terminate()
-    remove_tui.wait(timeout=5)
-    os.close(remove_master)
+    remove_tui.close()
 shutdown(cursor_daemon)
 
 # docs/panels.md: a project's panels run in wsxd; the clients only ask. A real project config
@@ -2599,131 +2488,75 @@ assert bad_scope["panels"] == [] and "panels[0].scope" in bad_scope["notice"], b
 print("panels in wsxd: PASS", flush=True)
 
 
-def screen_text(data, rows=40, cols=120):
-    """The screen a TUI's bytes leave, as text: cursor moves, clears and printable text; colours are dropped."""
-    grid = [[" "] * cols for _ in range(rows)]
-    row = col = 0
-    token = re.compile(r"\x1b\[([0-9;?]*)([A-Za-z])|\x1b\][^\x07]*\x07|\x1b.|([^\x1b\r\n]+)|(\r)|(\n)")
-    for found in token.finditer(data.decode(errors="replace")):
-        params, command, text, cr, lf = found.groups()
-        if command:
-            numbers = [int(n) if n.isdigit() else 0 for n in params.lstrip("?").split(";")]
-            n = numbers[0] or 1
-            if command in "Hf":
-                row, col = n - 1, (numbers[1] or 1) - 1 if len(numbers) > 1 else 0
-            elif command == "C":
-                col += n
-            elif command == "D":
-                col -= n
-            elif command == "A":
-                row -= n
-            elif command == "B":
-                row += n
-            elif command == "G":
-                col = n - 1
-            elif command == "J" and numbers[0] in (2, 3):
-                grid = [[" "] * cols for _ in range(rows)]
-            elif command == "K" and 0 <= row < rows:
-                start, end = {0: (col, cols), 1: (0, col + 1), 2: (0, cols)}.get(numbers[0], (col, cols))
-                grid[row][max(start, 0):end] = [" "] * (min(end, cols) - max(start, 0))
-        elif text:
-            for char in text:
-                if 0 <= row < rows and 0 <= col < cols:
-                    grid[row][col] = char
-                col += 2 if unicodedata.east_asian_width(char) in "WF" else 1
-        elif cr:
-            col = 0
-        elif lf:
-            row += 1
-    return "\n".join("".join(line).rstrip() for line in grid)
-
-
 def tui_over_pty(registry):
     # ^ The TUI reads this registry, and its screen is the bytes it wrote.
     (CONFIG_DIR / "config-v2.toml").write_text(
         "resume_agents_on_restore = false\n" + "".join(
             f'[[projects]]\nname = "{name}"\npath = {json.dumps(str(path))}\n' for name, path in registry))
-    master, slave = os.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-    process = subprocess.Popen([str(WSX)], cwd=PROJECT, env={k: v for k, v in env.items() if k != "WSX_PANE_ID"},
-                               stdin=slave, stdout=slave, stderr=slave, close_fds=True)
-    os.close(slave)
-    screen = bytearray()
-
-    def read_all():
-        try:
-            while chunk := os.read(master, 65536):
-                screen.extend(chunk)
-        except OSError:
-            pass
-
-    threading.Thread(target=read_all, daemon=True).start()
-    return process, master, screen
+    return smoke_tui()
 
 
 # The TUI shows a bad panel where it shows every config problem: the project notice.
-bad_tui, bad_master, bad_screen = tui_over_pty([("bad", BAD)])
+bad_tui = tui_over_pty([("bad", BAD)])
 try:
     # ^ The toast is 48 columns by 3 lines: it shows the start; wsxd's list above proves the cause text.
-    wait_for(lambda: b"Could not parse" in bad_screen, "the TUI did not show the bad panel's notice", 20)
+    wait_for(lambda: b"Could not parse" in bad_tui.raw, "the TUI did not show the bad panel's notice", 20)
 finally:
-    bad_tui.terminate()
-    bad_tui.wait(timeout=5)
-    os.close(bad_master)
+    bad_tui.close()
 
 # `v` on the project opens its panels; Tab shows the next; Esc goes back.
-panel_tui, panel_master, panel_screen = tui_over_pty([("smoke", PROJECT)])
+panel_tui = tui_over_pty([("smoke", PROJECT)])
 try:
-    wait_for(lambda: b"WORKSPACE" in panel_screen, "the TUI did not start", 20)
-    os.write(panel_master, b"v")
+    wait_for(lambda: b"WORKSPACE" in panel_tui.raw, "the TUI did not start", 20)
+    panel_tui.send(b"v")
     # ^ ratatui writes only changed cells: a plain space over a blank cell is skipped, so each
     # asserted string is one word or one run in a single style.
     try:
-        wait_for(lambda: b"smoke panels" in panel_screen and b"device-ok" in panel_screen,
+        wait_for(lambda: b"smoke panels" in panel_tui.raw and b"device-ok" in panel_tui.raw,
                  "the TUI did not show the panel's output", 20)
     except AssertionError:
-        print("screen tail:", re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"|", bytes(panel_screen))[-1500:].decode("utf8", "replace"))
+        print("screen:", panel_tui.text())
         raise
-    wait_for(lambda: b"updated" in panel_screen and b"ago" in panel_screen and b"open" in panel_screen,
+    wait_for(lambda: b"updated" in panel_tui.raw and b"ago" in panel_tui.raw and b"open" in panel_tui.raw,
              "the TUI did not show the state with its age")
-    wait_for(lambda: b"scroll" in panel_screen and b"next" in panel_screen and b"close" in panel_screen,
+    wait_for(lambda: b"scroll" in panel_tui.raw and b"next" in panel_tui.raw and b"close" in panel_tui.raw,
              "the TUI did not show the panels' key hints")
-    assert b"\x1b[32mdevice" not in panel_screen.split(b"smoke panels", 1)[1], "ANSI reached the screen"
+    assert b"\x1b[32mdevice" not in panel_tui.raw.split(b"smoke panels", 1)[1], "ANSI reached the screen"
     # ^ The capture of this screen for the review: its bytes drawn by the web client's xterm.js.
     CAPTURES = ROOT / ".work" / "web-captures"
-    (WORK / "panels-tui.bytes").write_bytes(bytes(panel_screen))
+    (WORK / "panels-tui.bytes").write_bytes(bytes(panel_tui.raw))
     if shutil.which("node"):
         drawn = subprocess.run(["node", str(ROOT / "scripts/render-ansi.mjs"), str(WORK / "panels-tui.bytes"), str(CAPTURES),
                                 "panels-tui", "120", "40"], capture_output=True, text=True, timeout=90)
         print("panels TUI capture:", "written" if drawn.returncode == 0 else "not drawn: " + drawn.stderr.strip()[-300:], flush=True)
-    os.write(panel_master, b"\t")
-    wait_for(lambda: b"failed" in panel_screen and b"(exit" in panel_screen and b"boom" in panel_screen,
+    panel_tui.send(b"\t")
+    wait_for(lambda: b"failed" in panel_tui.raw and b"(exit" in panel_tui.raw and b"boom" in panel_tui.raw,
              "the TUI did not show the failing panel with its exit code", 20)
     # A `format: json` panel is drawn: boxed sections, a bar with its percent and the level word.
-    os.write(panel_master, b"\t")
-    wait_for(lambda: all(word in panel_screen for word in (b"Memory", b"85%", b"warn", b"Macintosh", "┌".encode(), "█".encode())),
+    panel_tui.send(b"\t")
+    wait_for(lambda: all(word in panel_tui.raw for word in (b"Memory", b"85%", b"warn", b"Macintosh", "┌".encode(), "█".encode())),
              "the TUI did not draw the json panel", 20)
-    wait_for(lambda: b"chart" in panel_screen, "the TUI did not show the skipped item's notice")
-    (WORK / "panels-tui-json.bytes").write_bytes(bytes(panel_screen))
+    wait_for(lambda: b"chart" in panel_tui.raw, "the TUI did not show the skipped item's notice")
+    (WORK / "panels-tui-json.bytes").write_bytes(bytes(panel_tui.raw))
     if shutil.which("node"):
         drawn = subprocess.run(["node", str(ROOT / "scripts/render-ansi.mjs"), str(WORK / "panels-tui-json.bytes"), str(CAPTURES),
                                 "panels-tui-json", "120", "40"], capture_output=True, text=True, timeout=90)
         print("panels TUI json capture:", "written" if drawn.returncode == 0 else "not drawn: " + drawn.stderr.strip()[-300:], flush=True)
     # Not valid JSON: the text as written and the notice.
-    os.write(panel_master, b"\t")
-    wait_for(lambda: b"oops" in panel_screen and b"document:" in panel_screen,
+    panel_tui.send(b"\t")
+    wait_for(lambda: b"oops" in panel_tui.raw and b"document:" in panel_tui.raw,
              "the TUI did not show the broken json panel's text and notice", 20)
-    os.write(panel_master, b"\x1b")
-    wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the panels")
+    panel_tui.send(b"\x1b")
+    wait_for(lambda: panel_tui.raw.rfind(b"WORKSPACE") > panel_tui.raw.rfind(b"PANELS"), "Esc did not leave the panels")
     # `M` with no project declaring a machine panel: wsxd's built-in panel alone, drawn as a document.
     (PROJECT / "wsx.config.yml").write_text(PANEL_CONFIG.replace("  - name: machine\n    command: [scripts/machine.sh]\n    scope: machine\n", ""))
-    mark = len(panel_screen)
-    os.write(panel_master, b"M")
-    wait_for(lambda: all(word in panel_screen[mark:] for word in (b"Machine", b"this-mac", b"Load", b"Disks", "█".encode())),
+    mark = len(panel_tui.raw)
+    panel_tui.send(b"M")
+    wait_for(lambda: all(word in panel_tui.raw[mark:] for word in (b"Machine", b"this-mac", b"Load", b"Disks", "█".encode())),
              "M did not draw the built-in machine panel", 20)
-    assert b"smoke \xc2\xb7" not in panel_screen[mark:], "M showed a project with no machine panel"
-    os.write(panel_master, b"\x1b")
-    wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the machine panels")
+    assert b"smoke \xc2\xb7" not in panel_tui.raw[mark:], "M showed a project with no machine panel"
+    panel_tui.send(b"\x1b")
+    wait_for(lambda: panel_tui.raw.rfind(b"WORKSPACE") > panel_tui.raw.rfind(b"PANELS"), "Esc did not leave the machine panels")
     # With machine panels (docs/panels.md "Machine panels"): one card, This Mac first, then the project's
     # sections headed `smoke · ...`: a document, a text panel and a failing one as one line; no project
     # panel of scope `project` is in it. The card's state is the worst level of all items.
@@ -2734,28 +2567,26 @@ try:
     (PROJECT / "wsx.config.yml").write_text(PANEL_CONFIG
         + "  - name: machine-doc\n    command: [scripts/machine-doc.sh]\n    format: json\n    scope: machine\n"
         + "  - name: machine-down\n    command: [scripts/fail.sh]\n    scope: machine\n")
-    mark = len(panel_screen)
-    os.write(panel_master, b"M")
-    wait_for(lambda: b"this-mac" in panel_screen[mark:] and b"Load" in panel_screen[mark:], "M did not draw the card", 20)
+    mark = len(panel_tui.raw)
+    panel_tui.send(b"M")
+    wait_for(lambda: b"this-mac" in panel_tui.raw[mark:] and b"Load" in panel_tui.raw[mark:], "M did not draw the card", 20)
     # ^ The TUI writes only the cells that changed, so a line is not whole in the bytes: the text is read from the screen they make.
-    wait_for(lambda: all(line in screen_text(panel_screen) for line in (
+    wait_for(lambda: all(line in panel_tui.text() for line in (
         "smoke · Swap holders", "Slack 1.2 GB", "smoke · machine", "machine-ok")),
-        lambda: "the machine card did not show the project's sections:\n" + screen_text(panel_screen), 20)
-    card = screen_text(panel_screen)
+        lambda: "the machine card did not show the project's sections:\n" + panel_tui.text(), 20)
+    card = panel_tui.text()
     assert re.search(r"This (Mac|machine) +bad", card), "the card title shows no state\n" + card
     # ^ The card is taller than the PTY: scroll to the failing panel's line.
-    os.write(panel_master, b"j" * 20)
-    wait_for(lambda: "machine-down: failed (exit 3)" in screen_text(panel_screen),
-             lambda: "the machine card did not show the failing panel's line:\n" + screen_text(panel_screen), 20)
-    for text in (card, screen_text(panel_screen)):
+    panel_tui.send(b"j" * 20)
+    wait_for(lambda: "machine-down: failed (exit 3)" in panel_tui.text(),
+             lambda: "the machine card did not show the failing panel's line:\n" + panel_tui.text(), 20)
+    for text in (card, panel_tui.text()):
         assert "device-ok" not in text, "a project panel showed in the machine view"
         assert "Pizza" not in text, "the project panel's own title showed in the card"
-    os.write(panel_master, b"\x1b")
-    wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the machine panels")
+    panel_tui.send(b"\x1b")
+    wait_for(lambda: panel_tui.raw.rfind(b"WORKSPACE") > panel_tui.raw.rfind(b"PANELS"), "Esc did not leave the machine panels")
 finally:
-    panel_tui.terminate()
-    panel_tui.wait(timeout=5)
-    os.close(panel_master)
+    panel_tui.close()
 (CONFIG_DIR / "config-v2.toml").write_text(
     "resume_agents_on_restore = false\n"
     "[[projects]]\n"
@@ -2992,28 +2823,14 @@ if RELEASED:
         refused = installed("session", "list")
         assert refused.returncode != 0 and time.monotonic() - started < 15, refused
         assert "did not finish" in refused.stderr and "wsx daemon stop --force" in refused.stderr, refused.stderr
-        stuck_master, stuck_slave = os.openpty()
-        fcntl.ioctl(stuck_slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-        stuck_tui = subprocess.Popen([str(INSTALL / "bin" / "wsx")], cwd=PROJECT, env=install_env,
-                                     stdin=stuck_slave, stdout=stuck_slave, stderr=stuck_slave, close_fds=True)
-        os.close(stuck_slave)
-        stuck_screen = bytearray()
-
-        def read_stuck_tui():
-            try:
-                while chunk := os.read(stuck_master, 65536):
-                    stuck_screen.extend(chunk)
-            except OSError:
-                pass
-        threading.Thread(target=read_stuck_tui, daemon=True).start()
+        stuck_tui = smoke_tui(INSTALL / "bin" / "wsx", install_env)
+        stuck_screen = stuck_tui.raw
         try:
             wait_for(lambda: all(word in re.sub(rb"\x1b\[[0-9;?]*[ -/]*[@-~]", b"", stuck_screen)
                                  for word in (b"finish", b"--force")),
                      "the TUI did not say the handoff did not finish", seconds=60)
         finally:
-            stuck_tui.terminate()
-            stuck_tui.wait(timeout=5)
-            os.close(stuck_master)
+            stuck_tui.close()
         # The next step the notice names ends the released daemon, and a new one starts.
         install("6-fresh", WSX, DAEMON)
         forced = installed("daemon", "stop", "--force")
