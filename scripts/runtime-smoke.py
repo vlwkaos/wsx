@@ -17,6 +17,7 @@ import sys
 import termios
 import threading
 import time
+import unicodedata
 
 import wsxd_client
 from wsxd_client import PROTOCOL, heartbeat_streams, recv_line, send_stream, stream_send_lock
@@ -2509,6 +2510,45 @@ assert bad_scope["panels"] == [] and "panels[0].scope" in bad_scope["notice"], b
 print("panels in wsxd: PASS", flush=True)
 
 
+def screen_text(data, rows=40, cols=120):
+    """The screen a TUI's bytes leave, as text: cursor moves, clears and printable text; colours are dropped."""
+    grid = [[" "] * cols for _ in range(rows)]
+    row = col = 0
+    token = re.compile(r"\x1b\[([0-9;?]*)([A-Za-z])|\x1b\][^\x07]*\x07|\x1b.|([^\x1b\r\n]+)|(\r)|(\n)")
+    for found in token.finditer(data.decode(errors="replace")):
+        params, command, text, cr, lf = found.groups()
+        if command:
+            numbers = [int(n) if n.isdigit() else 0 for n in params.lstrip("?").split(";")]
+            n = numbers[0] or 1
+            if command in "Hf":
+                row, col = n - 1, (numbers[1] or 1) - 1 if len(numbers) > 1 else 0
+            elif command == "C":
+                col += n
+            elif command == "D":
+                col -= n
+            elif command == "A":
+                row -= n
+            elif command == "B":
+                row += n
+            elif command == "G":
+                col = n - 1
+            elif command == "J" and numbers[0] in (2, 3):
+                grid = [[" "] * cols for _ in range(rows)]
+            elif command == "K" and 0 <= row < rows:
+                start, end = {0: (col, cols), 1: (0, col + 1), 2: (0, cols)}.get(numbers[0], (col, cols))
+                grid[row][max(start, 0):end] = [" "] * (min(end, cols) - max(start, 0))
+        elif text:
+            for char in text:
+                if 0 <= row < rows and 0 <= col < cols:
+                    grid[row][col] = char
+                col += 2 if unicodedata.east_asian_width(char) in "WF" else 1
+        elif cr:
+            col = 0
+        elif lf:
+            row += 1
+    return "\n".join("".join(line).rstrip() for line in grid)
+
+
 def tui_over_pty(registry):
     # ^ The TUI reads this registry, and its screen is the bytes it wrote.
     (CONFIG_DIR / "config-v2.toml").write_text(
@@ -2608,24 +2648,14 @@ try:
     mark = len(panel_screen)
     os.write(panel_master, b"M")
     wait_for(lambda: b"this-mac" in panel_screen[mark:] and b"Load" in panel_screen[mark:], "M did not draw the card", 20)
-    # ^ The first open starts every panel's run. The TUI draws only the cells that changed, so the sections are
-    # read from a second open, whose first frame shows wsxd's cached results whole.
-    for name in ("machine", "machine-doc", "machine-down"):
-        wait_for(lambda: panel_get(name)["run"]["status"] != "pending" and not panel_get(name)["running"], f"{name} did not finish", 20)
-    os.write(panel_master, b"\x1b")
-    wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the machine panels")
-    mark = len(panel_screen)
-    os.write(panel_master, b"M")
-    # ^ The TUI skips a cell that did not change, a blank one among them: words of a line can have a cursor move between.
-    def seen(*words):
-        gap = rb"(?:\x1b\[[0-9;?]*[A-Za-z]| )*"
-        return re.search(gap.join(re.escape(word.encode()) for word in words), panel_screen[mark:]) is not None
-
-    wait_for(lambda: seen("smoke", "·", "Swap", "holders") and seen("Slack", "1.2", "GB") and seen("smoke", "·", "machine") and seen("machine-ok")
-             and seen("machine-down:", "failed", "(exit", "3)"), "the machine card did not show the project's sections", 20)
-    assert b"device-ok" not in panel_screen[mark:], "a project panel showed in the machine view"
-    assert b"Pizza" not in panel_screen[mark:], "the project panel's own title showed in the card"
-    assert re.search(rb"This (Mac|machine)[\s\S]{0,40}?bad", panel_screen[mark:]), "the card title shows no state"
+    # ^ The TUI writes only the cells that changed, so a line is not whole in the bytes: the text is read from the screen they make.
+    wait_for(lambda: all(line in screen_text(panel_screen) for line in (
+        "smoke · Swap holders", "Slack 1.2 GB", "smoke · machine", "machine-ok", "machine-down: failed (exit 3)")),
+        lambda: "the machine card did not show the project's sections:\n" + screen_text(panel_screen), 20)
+    card = screen_text(panel_screen)
+    assert "device-ok" not in card, "a project panel showed in the machine view"
+    assert "Pizza" not in card, "the project panel's own title showed in the card"
+    assert re.search(r"This (Mac|machine) +bad", card), "the card title shows no state\n" + card
     os.write(panel_master, b"\x1b")
     wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the machine panels")
 finally:
