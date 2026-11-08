@@ -1230,6 +1230,8 @@ pub struct Watch {
     replies: HashMap<(u64, String), u64>,
     /// New items for "Manager needs me" that wait for the merge window.
     pending: crate::events::Pending<(u64, Key)>,
+    /// New posts with a level, by project; each is a push of its own.
+    alerts: crate::events::Pending<(u64, Alert)>,
     /// What waits on the owner now, by project, with the project's name.
     open: HashMap<u64, (String, Vec<Open>)>,
     /// How many items need the owner, by project: the overview's `needs`.
@@ -1252,12 +1254,10 @@ enum Key {
     /// A reply the manager or a role started on its own: its line `<name> wrote to you`, or the
     /// lines of one wsx wrote, and the chat it opens.
     Wrote(String, String),
-    /// A post with a level (`wsx task post --level warn|bad`): a push of its own, with the
-    /// reply's id.
-    Alert(Alert),
 }
 
-/// The text of an alert push, as `wrote` cut it, and the chat it opens.
+/// A post with a level (`wsx task post --level warn|bad`): a push of its own. The text as
+/// `wrote` cut it, the reply's id and the chat it opens.
 #[derive(Clone, PartialEq, Eq)]
 struct Alert {
     reply: u64,
@@ -1407,14 +1407,14 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
                     // ^ Push text is written by wsx: `<project>: <title>` over the first line.
                     (true, Some(_)) => {
                         let title = to.first().and_then(event_of).unwrap_or_default();
-                        watch.pending.add((
+                        watch.alerts.add((
                             scope.project,
-                            Key::Alert(Alert {
+                            Alert {
                                 reply: *id,
                                 title: view::clip(&format!("{}: {title}", scope.name), 60),
                                 body: view::clip(text.trim(), 160),
                                 url: url.clone(),
-                            }),
+                            },
                         ));
                     }
                     (true, None) => watch
@@ -1440,14 +1440,17 @@ fn wrote(scope: &Scope, watch: &mut Watch) {
 /// every new item is skipped. `badge` is what needs the owner now, for the app badge.
 pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
     let merge = Duration::from_secs(app.site.notify.manager.merge_seconds);
-    let Some(new) = watch.pending.due(merge) else {
-        return;
-    };
-    let (alerts, new): (Vec<_>, Vec<_>) = new
-        .into_iter()
-        .partition(|(_, key)| matches!(key, Key::Alert(_)));
-    for (project, key) in alerts {
-        let Key::Alert(alert) = key else { continue };
+    if let Some(alerts) = watch.alerts.due(merge) {
+        flush_alerts(app, alerts, badge);
+    }
+    if let Some(new) = watch.pending.due(merge) {
+        flush_needs(app, watch, new, badge);
+    }
+}
+
+/// One push for each post with a level, to the devices whose page does not show its project.
+fn flush_alerts(app: &Arc<App>, alerts: Vec<(u64, Alert)>, badge: usize) {
+    for (project, alert) in alerts {
         let showing = app.showing(project);
         let payload = json!({
             "kind": "manager",
@@ -1461,6 +1464,10 @@ pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
             (!showing.contains(&device.device_id)).then(|| payload.clone())
         });
     }
+}
+
+/// The "Manager needs me" push for `new`, once per merge window.
+fn flush_needs(app: &Arc<App>, watch: &Watch, new: Vec<(u64, Key)>, badge: usize) {
     // ^ An item answered within the window is no news.
     let new: Vec<(u64, Key)> = new
         .into_iter()
@@ -1552,6 +1559,75 @@ pub fn flush(app: &Arc<App>, watch: &mut Watch, badge: usize) {
     });
 }
 
+/// Build the project's overview: note what needs the owner, and publish `tasks` when it
+/// differs from the last one published.
+fn watch_overview(app: &Arc<App>, scope: &Scope, watch: &mut Watch) {
+    let overview = overview(app, scope);
+    let text = overview.to_string();
+    let needs = overview["needs"].as_array().map_or(0, Vec::len);
+    watch.needs.insert(scope.project, needs);
+    let open = attention(scope.project, &overview);
+    let checks = |items: &[Open]| {
+        items
+            .iter()
+            .find(|item| item.key == Key::Checks)
+            .map_or(0, |item| item.count)
+    };
+    // ^ New To check items are news; a project first seen is not.
+    if let Some((_, before)) = watch.open.get(&scope.project) {
+        if checks(&open) > checks(before) {
+            watch.pending.add((scope.project, Key::Checks));
+        }
+    }
+    watch.open.insert(scope.project, (scope.name.clone(), open));
+    if watch.overviews.get(&scope.project) != Some(&text) {
+        watch.overviews.insert(scope.project, text);
+        crate::events::publish_json(app, "tasks", overview);
+    }
+}
+
+/// Publish `page`, `manager` or `task` for each file of the project's store that changed.
+fn publish_changes(app: &Arc<App>, scope: &Scope, changed: Vec<&PathBuf>) {
+    let mut tasks: HashSet<u32> = HashSet::new();
+    for path in changed {
+        let Some(parent) = path.parent() else {
+            continue;
+        };
+        if path
+            .file_name()
+            .is_some_and(|name| name == store::OVERVIEW_FILE)
+        {
+            crate::events::publish_json(app, "page", json!({ "project": scope.project }));
+        } else if parent.file_name().is_some_and(|name| name == "manager") {
+            crate::events::publish_json(app, "manager", json!({ "project": scope.project }));
+        } else if parent
+            .parent()
+            .and_then(|roles| roles.file_name())
+            .is_some_and(|name| name == "roles")
+        {
+            // ^ A role's chat: the role's page reads it, the manager's its contacts.
+            let role = parent.file_name().and_then(|name| name.to_str());
+            crate::events::publish_json(
+                app,
+                "manager",
+                json!({ "project": scope.project, "role": role }),
+            );
+        } else if let Some(id) = parent
+            .file_name()
+            .and_then(|name| name.to_str()?.parse::<u32>().ok())
+        {
+            tasks.insert(id);
+        }
+    }
+    for task in tasks {
+        crate::events::publish_json(
+            app,
+            "task",
+            json!({ "project": scope.project, "task": task }),
+        );
+    }
+}
+
 /// One observer step: publish `tasks` when a project's overview changed, `task` for each
 /// task whose record or log changed, and `manager` when the conversation changed.
 pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
@@ -1608,70 +1684,12 @@ pub fn watch(app: &Arc<App>, snapshot: &Snapshot, watch: &mut Watch) {
                         .is_some_and(|id| !ready(id))
             });
         if !progress_only {
-            let overview = overview(app, scope);
-            let text = overview.to_string();
-            let needs = overview["needs"].as_array().map_or(0, Vec::len);
-            watch.needs.insert(scope.project, needs);
-            let open = attention(scope.project, &overview);
-            let checks = |items: &[Open]| {
-                items
-                    .iter()
-                    .find(|item| item.key == Key::Checks)
-                    .map_or(0, |item| item.count)
-            };
-            // ^ New To check items are news; a project first seen is not.
-            if let Some((_, before)) = watch.open.get(&scope.project) {
-                if checks(&open) > checks(before) {
-                    watch.pending.add((scope.project, Key::Checks));
-                }
-            }
-            watch.open.insert(scope.project, (scope.name.clone(), open));
-            if watch.overviews.get(&scope.project) != Some(&text) {
-                watch.overviews.insert(scope.project, text);
-                crate::events::publish_json(app, "tasks", overview);
-            }
+            watch_overview(app, scope, watch);
         }
         if before.is_none() {
             continue;
         }
-        let mut tasks: HashSet<u32> = HashSet::new();
-        for path in changed {
-            let Some(parent) = path.parent() else {
-                continue;
-            };
-            if path
-                .file_name()
-                .is_some_and(|name| name == store::OVERVIEW_FILE)
-            {
-                crate::events::publish_json(app, "page", json!({ "project": scope.project }));
-            } else if parent.file_name().is_some_and(|name| name == "manager") {
-                crate::events::publish_json(app, "manager", json!({ "project": scope.project }));
-            } else if parent
-                .parent()
-                .and_then(|roles| roles.file_name())
-                .is_some_and(|name| name == "roles")
-            {
-                // ^ A role's chat: the role's page reads it, the manager's its contacts.
-                let role = parent.file_name().and_then(|name| name.to_str());
-                crate::events::publish_json(
-                    app,
-                    "manager",
-                    json!({ "project": scope.project, "role": role }),
-                );
-            } else if let Some(id) = parent
-                .file_name()
-                .and_then(|name| name.to_str()?.parse::<u32>().ok())
-            {
-                tasks.insert(id);
-            }
-        }
-        for task in tasks {
-            crate::events::publish_json(
-                app,
-                "task",
-                json!({ "project": scope.project, "task": task }),
-            );
-        }
+        publish_changes(app, scope, changed);
     }
     let alive: HashSet<u64> = scopes.iter().map(|scope| scope.project).collect();
     watch.overviews.retain(|project, _| alive.contains(project));
