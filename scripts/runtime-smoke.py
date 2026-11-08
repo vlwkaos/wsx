@@ -1860,8 +1860,11 @@ def settled_cursor():
     return cursor_terminal()
 tui_master, tui_slave = os.openpty()
 fcntl.ioctl(tui_slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+# ^ crossterm reads the window size from /dev/tty when the process has one. The pty is the TUI's
+# controlling terminal, as in a real terminal, so a resize of it is the size the TUI reads.
 tui = subprocess.Popen([str(WSX)], cwd=PROJECT, env={k: v for k, v in env.items() if k != "WSX_PANE_ID"},
-                       stdin=tui_slave, stdout=tui_slave, stderr=tui_slave, close_fds=True)
+                       stdin=tui_slave, stdout=tui_slave, stderr=tui_slave, close_fds=True,
+                       start_new_session=True, preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0))
 os.close(tui_slave)
 tui_screen = bytearray()
 
@@ -1984,7 +1987,10 @@ try:
     for step in range(20):
         fcntl.ioctl(tui_master, termios.TIOCSWINSZ, struct.pack("HHHH", 30 + step, 100 + step, 0, 0))
         os.kill(tui.pid, signal.SIGWINCH)
-    time.sleep(2)
+    # ^ A loaded host reads the burst late: wait for the first resize, then let the rest settle.
+    wait_for(lambda: pane_text(viewed_pane).count("[size ") > sizes_before,
+             lambda: ("no resize reached the pane", pane_text(viewed_pane)[-300:], bytes(tui_screen[-400:])), 30)
+    time.sleep(3)
     resizes = pane_text(viewed_pane).count("[size ") - sizes_before
     print(f"tui resize: a burst of 20 window sizes gave wsxd {resizes} resize(s)", flush=True)
     assert 1 <= resizes <= 3, f"20 window sizes in a burst reached the pane as {resizes} resizes"
