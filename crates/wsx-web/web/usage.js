@@ -3,7 +3,7 @@
 import { api } from "./api.js";
 import { html, plural, useEffect, useState } from "./lib.js";
 import { useStore } from "./store.js";
-import { SheetBar } from "./ui.js";
+import { SheetPage } from "./ui.js";
 
 export const usd = (micro) => `$${(micro / 1e6).toFixed(2)}`;
 
@@ -224,14 +224,10 @@ function UsageView({ url, all = false }) {
     </div>`;
 }
 
-export function UsagePage({ project, onClose, grip }) {
-  useEffect(() => { grip.ready(); }, []);
-  return html`
-    <div class="page task-page">
-      <${SheetBar} grip=${grip} onClose=${onClose}><span class="bar-label">Usage</span></${SheetBar}>
-      <div class="scroll usage"><${UsageView} url=${`api/tasks/${project}/usage`} /></div>
-    </div>`;
-}
+export const UsagePage = ({ project, onClose, grip }) => html`
+  <${SheetPage} grip=${grip} onClose=${onClose} bar=${html`<span class="bar-label">Usage</span>`} className="usage">
+    <${UsageView} url=${`api/tasks/${project}/usage`} />
+  </${SheetPage}>`;
 
 // Settings > Usage: every project this device may see, summed in Rust (`usage::all`), the
 // same filters and charts as a project's sheet, Claude's limit state, and the cost per
