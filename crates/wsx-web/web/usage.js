@@ -125,7 +125,7 @@ function Limits({ limits }) {
   return html`
     <section class="usage-limits" aria-label="Usage limit">
       ${limits.filter((limit) => limit.windows.length).map((limit) => html`
-        <div key=${limit.agent} class="usage-limit">
+        <div key=${limit.agent}>
           ${limit.windows.map((window) => {
             const name = WINDOW_NAMES[window.kind] ?? window.kind.replaceAll("_", " ");
             const used = window.utilization == null ? null : Math.round(window.utilization * 100);
@@ -135,7 +135,7 @@ function Limits({ limits }) {
                 aria-valuenow=${used ?? undefined} aria-valuetext=${used == null ? "unknown" : `${used}%${status ? ` ${status}` : ""}`} data-tone=${TONES[window.status]}>
                 <span class="usage-meter-name">${name}</span>
                 <span class="usage-meter-resets">resets ${at(window.resets_ms)}</span>
-                <span class="usage-meter-used">${used == null ? "-" : `${used}%`}${status && html` <span class="usage-meter-status">${status}</span>`}</span>
+                <span class="usage-meter-used">${used == null ? "-" : `${used}%`}${status && html` <span>${status}</span>`}</span>
                 <span class="usage-meter-track"><i style=${{ width: `${Math.min(100, Math.max(0, used ?? 0))}%` }}></i></span>
               </div>`;
           })}
