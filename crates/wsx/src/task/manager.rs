@@ -993,7 +993,13 @@ impl Manager {
                 };
                 // ^ `waits on <on>` is the record's key; the sentence is the words every view
                 // shows (docs/tasks.md "Status").
-                if let Some(waiting) = &record.waiting {
+                // ^ An idle worker whose task waits for another has no wait of its own: the
+                // `waits for #m to land` below says it.
+                if let Some(waiting) = record
+                    .waiting
+                    .as_ref()
+                    .filter(|_| !wsx_core::task::status::owner_waits_after(&dir, &record))
+                {
                     let status = wsx_core::task::status::status(
                         &dir,
                         &record,
@@ -1063,7 +1069,7 @@ impl Manager {
                 state => state.as_str(),
             };
             let mut short = Short::task(record.id, words);
-            short.wakes = state_wakes(&record);
+            short.wakes = state_wakes(&dir, &record);
             self.task_event(&record, &open_roles, line, short);
             let state = record.state.as_str();
             self.fire(
@@ -1239,14 +1245,18 @@ impl Manager {
         }
         if text.is_none() {
             let line = format!(
-                "#{} wait over: #{} {}; nothing was added to #{}",
+                "#{} wait over: #{} {}; {}",
                 record.id,
                 after.task,
                 match state {
                     Some(_) => "was closed without landing",
                     None => "is not a task",
                 },
-                record.id
+                // ^ A task made with `new --after` has no text: its first turn starts instead.
+                match after.text.is_empty() {
+                    true => format!("#{} started without it", record.id),
+                    false => format!("nothing was added to #{}", record.id),
+                }
             );
             let short = Short::task(record.id, "wait over");
             self.task_event(record, open_roles, line, short);

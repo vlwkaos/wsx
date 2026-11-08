@@ -4152,6 +4152,100 @@ def part_host(created=None):
     for n in (a, w, c, e, f, g, parked, unparked):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'after wait over')
+    # 32ag. A landed task stays landed: an add that waited for the worker while the checks of its
+    # land ran is not delivered, the manager is told, and the close that follows leaves `landed`.
+    # Before, the queued add started a turn on the landed task, and the close made it `closed`.
+    mark('32ag')
+    land_gate = base / 'land-gate'
+    land_gate.touch()
+    configure(LAND_CONFIG.replace('  checks:\n', '  checks:\n    - "%s"\n' % gate_cmd(land_gate)), 'land gate')
+    gated = js('task', 'new', 'WORK ag-q.txt')['id']
+    assert wait_state(gated, 'ready', 'failed')['state'] == 'ready', log(gated)
+    (project / 'ag-moved.txt').write_text('moved\n')
+    git('add', 'ag-moved.txt')
+    git('commit', '-q', '-m', 'main moves for the gated land')
+    land_gate.unlink()
+    assert 'checks run on the new revision' in land(gated)['message'], show(gated)
+    wait_state(gated, 'checking')
+    results_before = len(kinds(gated, 'result'))
+    queued = js('task', 'add', gated, 'ADD-DURING-LAND\nand a second line')
+    assert queued['ok'] and 'queued until the current turn ends' in queued['message'], queued
+    land_gate.touch()
+    assert wait_state(gated, 'landed', 'ready', 'failed')['state'] == 'landed', log(gated)
+    wait_closed(gated)
+    assert show(gated)['state'] == 'landed' and show(gated)['status']['kind'] == 'landed', show(gated)
+    assert main_has('ag-q.txt') and len(kinds(gated, 'result')) == results_before, log(gated)
+    assert not [t for t in traces() if 'ADD-DURING-LAND' in t.get('message', '')], 'the add reached the worker'
+    told = wait(lambda: events_with('#%d landed at' % gated, 'not delivered because the task landed', 'ADD-DURING-LAND'),
+                'the dropped add event', 40)
+    assert len(told) == 1 and told[0]['short'][0].get('wakes', True), told
+    configure(LAND_CONFIG, 'land gate over')
+    # 32ah. A worker that is idle or blocked while its task waits for another to land asks nobody:
+    # the status is the wait, the manager's event wakes no turn, the agent is idle, and the
+    # overview lists no need. The same worker with no wait is "Waiting for your answer".
+    mark('32ah')
+    idle_gate = base / 'idle-gate'
+    wanted = manager_new('WORK ah-w.txt')
+    assert wait_state(wanted, 'ready', 'failed')['state'] == 'ready', log(wanted)
+    idle, asking = (manager_new('WAIT %s NEEDS WebSearch WORK ah-%s.txt' % (idle_gate, name)) for name in ('i', 'a'))
+    manager_after(idle, wanted, 'WORK ah-i2.txt', because='needs')
+    idle_gate.touch()
+    for n in (idle, asking):
+        wait_state(n, 'waiting')
+    status = show(idle)['status']
+    assert status['kind'] == 'after' and status['label'] == 'Waiting for #%d to land' % wanted, status
+    assert 'Waiting for your answer' not in status['sentence'] and status['wait'] == 'builds on it', status
+    assert show(asking)['status']['kind'] == 'owner', show(asking)['status']
+    wait(lambda: (pane_agent(idle) or {}).get('state') == 'idle', 'the idle worker reports idle')
+    wait(lambda: (pane_agent(asking) or {}).get('state') == 'blocked', 'the asking worker reports blocked')
+    quiet = wait(lambda: events_with('#%d waiting r' % idle), 'the idle worker event')[0]
+    assert quiet['short'] == [{'text': '#%d waiting' % idle, 'task': idle, 'wakes': False}], quiet
+    assert 'waits on owner' not in quiet['text'] and 'waits for #%d to land' % wanted in quiet['text'], quiet
+    loud = wait(lambda: events_with('#%d waiting r' % asking, 'waits on owner: '), 'the asking worker event')[0]
+    assert loud['short'] == [{'text': '#%d waiting' % asking, 'task': asking}], loud
+    # ^ The landing of the task it waits for sends its text, as before.
+    assert land(wanted)['state'] == 'landed'
+    wait(lambda: kinds(idle, 'after_ended'), 'the idle wait ends', 40)
+    assert [x['text'] for x in log(idle) if x['kind'] == 'message' and x['mode'] == 'add'] == ['WORK ah-i2.txt'], log(idle)
+    for n in (idle, asking):
+        js('task', 'close', n, '--discard')
+    wait_closed(wanted)
+    # 32ai. `new --after`: the task has no turn until the other one lands, then starts on the
+    # default branch with it. `--off` and a close of the other task start it too.
+    mark('32ai')
+    refused = cli('task', 'new', '--after', str(wanted), 'WORK ai-x.txt', ok=False).stderr
+    assert '--because' in refused, refused
+    base_a, base_b, base_c = (manager_new('WORK ai-%s.txt' % name) for name in 'abc')
+    for n in (base_a, base_b, base_c):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    seen = len(traces())
+    follower, freed, orphan = (
+        manager_new('WORK ai-f%d.txt' % i, '--after', str(other), '--because', 'needs')
+        for i, other in enumerate((base_a, base_b, base_c)))
+    for n in (follower, freed, orphan):
+        waiting = wait_state(n, 'waiting')
+        assert waiting['status']['kind'] == 'after' and waiting['record']['after']['task'] in (base_a, base_b, base_c), waiting
+        assert waiting['record']['after']['because'] == 'needs' and not waiting['record'].get('agent_session'), waiting
+        assert [x['kind'] for x in log(n)].count('after') == 1, log(n)
+    time.sleep(3)
+    assert not [t for t in traces()[seen:] if 'ai-f' in t.get('message', '')], 'a waiting task started'
+    assert js('task', 'after', freed, '--off')['ok']
+    assert wait_state(freed, 'ready', 'failed')['state'] == 'ready', log(freed)
+    assert land(base_a)['state'] == 'landed'
+    js('task', 'close', base_c, '--discard')
+    for n in (follower, orphan):
+        wait(lambda: kinds(n, 'after_ended'), 'the wait of t%s ends' % n, 40)
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    tip = git('rev-parse', 'main')
+    assert main_has('ai-a.txt'), 'the other task landed'
+    for n in (follower, orphan):
+        assert subprocess.run(['git', 'merge-base', '--is-ancestor', tip, 'wsx/t%d' % n], cwd=project, env=env).returncode == 0, n
+    over = wait(lambda: events_with('#%d wait over: #%d was closed without landing; #%d started without it' % (orphan, base_c, orphan)),
+                'the wait-over event', 40)
+    assert len(over) == 1, over
+    for n in (follower, freed, orphan, base_b):
+        js('task', 'close', n, '--discard')
+    wait_closed(base_a)
     # 32e. Approval from the owner's words (docs/tasks.md "Approvals"): in a turn that began with
     # an owner message, the manager names that message and the action runs without a new request;
     # approvals.jsonl records it as approved by that message, and no event repeats it. A message

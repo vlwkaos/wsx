@@ -184,7 +184,7 @@ export function TaskPage({ project, task, onClose, onMention, grip }) {
     // ^ The owner talks to the manager: the composer gets the mention, and the dialog closes in
     // the tap, since a modal dialog makes the composer inert and a phone raises its keyboard
     // only for a focus in the tap (docs/web-client-tasks.md "Task sheet").
-    (detail.waiting?.on === "owner" || detail.state === "failed") && button("Answer", (event) => {
+    ((detail.waiting?.on === "owner" && detail.status?.kind !== "after") || detail.state === "failed") && button("Answer", (event) => {
       event.currentTarget.closest("dialog").close();
       onMention(task);
     }, { "aria-label": `Answer #${task}: mention it to the manager` }, "reply"),

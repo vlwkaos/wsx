@@ -11,7 +11,7 @@ use wsx_core::task::view::checked_files;
 use wsx_core::task::{
     copy, now_unix_ms,
     store::{self, TaskDir},
-    HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
+    After, AfterKind, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, MAX_MESSAGE_BYTES,
 };
 use wsx_core::{ops, runtime};
 
@@ -20,6 +20,8 @@ pub(crate) fn new(args: NewArgs) -> Result<()> {
         prompt,
         from,
         into,
+        after,
+        because,
         title,
         model,
         size,
@@ -50,10 +52,15 @@ pub(crate) fn new(args: NewArgs) -> Result<()> {
         .map(wsx_core::task::view::checked_hold)
         .transpose()?;
     let files = checked_files(&[], &files)?;
+    let after = match (after, because) {
+        (Some(task), Some(because)) => Some((store::parse_task_number(&task)?, because)),
+        _ => None,
+    };
     let (dir, record, answered) = create(NewTask {
         prompt,
         from,
         into,
+        after,
         title,
         model,
         fixes: None,
@@ -178,6 +185,8 @@ pub(crate) struct NewTask {
     pub(crate) prompt: String,
     pub(crate) from: Option<String>,
     pub(crate) into: Option<u32>,
+    /// It starts when this open task has landed (`new --after`).
+    pub(crate) after: Option<(u32, AfterKind)>,
     pub(crate) title: Option<String>,
     pub(crate) model: Option<String>,
     /// The "To check" item it fixes.
@@ -198,6 +207,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         prompt,
         from,
         into,
+        after,
         title,
         model,
         fixes,
@@ -247,6 +257,20 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
                 bail!("--into: task t{parent} lands into #{grandparent}, and a child takes no children; no task was created");
             }
             Ok((parent_dir, record))
+        })
+        .transpose()?;
+    let wait = after
+        .map(|(task, because)| -> Result<After> {
+            let state = TaskDir::open(&project_id, task)?.read_record()?.state;
+            if !state.is_open() {
+                bail!("--after: task t{task} is {}; a task waits for another open task; no task was created", state.as_str());
+            }
+            Ok(After {
+                task,
+                text: String::new(),
+                since_unix_ms: now_unix_ms(),
+                because,
+            })
         })
         .transpose()?;
     let dir = TaskDir::allocate(&project_id)?;
@@ -322,7 +346,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         fixes,
         created_by: actor(),
         hold: hold.clone(),
-        after: None,
+        after: wait.clone(),
         parent: into,
         plan,
         waiting: None,
@@ -343,6 +367,14 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         if hold.is_some() {
             dir.append(LogEvent::Hold {
                 reason: hold,
+                by: record.created_by.clone(),
+            })?;
+        }
+        if let Some(wait) = wait {
+            dir.append(LogEvent::After {
+                task: Some(wait.task),
+                text: wait.text,
+                because: Some(wait.because),
                 by: record.created_by.clone(),
             })?;
         }
