@@ -435,6 +435,10 @@ def run(wsx, wsxd, work, owned, part):
     def js(*argv):
         return json.loads(cli(*argv, '--json').stdout)
 
+    def cli_env(extra, *argv):
+        return subprocess.run([str(wsx), *map(str, argv)], cwd=project, env={**env, **extra}, capture_output=True,
+                              text=True, timeout=60, check=True)
+
     def wait(test, label, seconds=20):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
@@ -1459,6 +1463,30 @@ def part_core(created=None):
     git('worktree', 'prune')
     git('branch', '-D', 'stray-merged', 'stray-dirty', 'stray-gone')
     assert js('task', 'ledger')['stray_worktrees'] == []
+    # 14c1. A ledger build parses each task log once: the agent's fallback flag comes with the
+    # usage, not from a second read (docs/tasks.md "Agents"). It was two reads per open task.
+    mark('14c1')
+    traced = cli_env({'WSX_TRACE_READ_LOG': '1'}, 'task', 'ledger', '--json').stderr.splitlines()
+    reads = [line.split(' ', 2)[2] for line in traced if line.startswith('wsx-trace read_log ')]
+    task_logs = [path for path in reads if path.endswith('/log.jsonl') and '/manager/' not in path]
+    assert task_logs and len(task_logs) == len(set(task_logs)), task_logs
+    print('14c1 task log reads per ledger build: %d for %d logs' % (len(task_logs), len(set(task_logs))), file=sys.stderr)
+    # 14c2. A git that hangs: the ledger answers after the 10 s wait with a note, its rows kept
+    # and the main checkout's changed files left out (docs/tasks.md "Ledger").
+    mark('14c2')
+    real_git = shutil.which('git', path=env['PATH'])
+    hang = tmp / 'hang-git'
+    hang.mkdir()
+    (hang / 'git').write_text('#!/bin/sh\ncase " $* " in *" status "*) exec sleep 60;; esac\nexec ' + real_git + ' "$@"\n')
+    (hang / 'git').chmod(0o755)
+    started = time.monotonic()
+    hung = json.loads(cli_env({'PATH': str(hang) + ':' + env['PATH']}, 'task', 'ledger', '--json').stdout)
+    took = time.monotonic() - started
+    assert 9 < took < 40, took
+    assert len(hung['notes']) == 1 and 'git did not answer in 10 s' in hung['notes'][0], hung.get('notes')
+    assert hung['main']['branch'] == 'main' and hung['main']['changed_files'] is None, hung['main']
+    assert [row['id'] for row in hung['open']] == [row['id'] for row in js('task', 'ledger')['open']]
+    assert 'notes' not in js('task', 'ledger')
     # 14d. The TUI's Tasks view: open tasks in attention order with their state word and what
     # they wait for, then the recent ones; Enter shows one read-only; the list follows the
     # ledger as it changes; a narrow width keeps title and state (docs/tasks.md "TUI").
@@ -5100,6 +5128,8 @@ def part_host(created=None):
     shown = wait_state(switched, 'ready', 'failed')
     assert shown['state'] == 'ready', shown
     assert shown['record']['adapter'] == 'pi' and shown['record']['model'] == 'fake/pi-model', shown['record']
+    # ^ The ledger row shows the fallback, read from the log once per change.
+    assert {r['id']: r for r in js('task', 'ledger')['open']}[switched]['agent']['fallback'] is True
     switch = next(e for e in log(switched) if e['kind'] == 'agent_switch')
     assert switch['to'] == 'fake-pi (pi/fake/pi-model)' and 'claude usage limit until' in switch['reason'], switch
     assert kinds(switched, 'agent_switch', 'rotated', 'result', 'limit_wait') == ['agent_switch', 'rotated', 'result'], log(switched)

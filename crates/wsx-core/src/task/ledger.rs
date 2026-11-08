@@ -23,6 +23,46 @@ const TITLE_CHARS: usize = 80;
 pub const MEMO_CHARS: usize = 600;
 const STRAY_WORKTREES: usize = 20;
 
+/// The ledger's git calls, each bounded. A folder whose git timed out is not asked again in
+/// this build, and the timeout is a note on the ledger, so a hung git costs one wait and a
+/// line, not a list that stops updating.
+#[derive(Default)]
+struct Git {
+    hung: Vec<PathBuf>,
+    notes: Vec<String>,
+}
+
+impl Git {
+    /// `args` in `dir`: its stdout when git succeeded, else none.
+    fn run(&mut self, dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
+        if self.hung.iter().any(|hung| hung == dir) {
+            return None;
+        }
+        match crate::git::output_with_timeout(
+            crate::git::git_cmd(dir).args(args),
+            copy::READ_TIMEOUT,
+        ) {
+            Ok(output) => output.status.success().then_some(output.stdout),
+            Err(error) => {
+                self.timed_out(dir, &error);
+                None
+            }
+        }
+    }
+
+    /// Note a timeout of git in `dir`; any other error is not one.
+    fn timed_out(&mut self, dir: &Path, error: &std::io::Error) {
+        if error.kind() == std::io::ErrorKind::TimedOut {
+            self.hung.push(dir.to_path_buf());
+            self.notes.push(format!(
+                "git did not answer in {} s in {}; its facts are left out",
+                copy::READ_TIMEOUT.as_secs(),
+                dir.display()
+            ));
+        }
+    }
+}
+
 /// The ledger of one project. ref: docs/tasks.md "Ledger"
 pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     let settings = load_task_config(main).map_err(|error| anyhow::anyhow!(error))?;
@@ -35,6 +75,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
     let approvals = super::store::read_approvals(&project_id).unwrap_or_default();
     let pending = super::manager::pending_approvals(&approvals);
     let now = super::now_unix_ms();
+    let mut git = Git::default();
     let mut open = Vec::new();
     let mut recent = Vec::new();
     for (dir, record) in &tasks {
@@ -44,7 +85,12 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         // ^ Read once; the memo, the counts and the status all come from it.
         let result = read_result(dir);
         if record.state.is_open() {
-            let row = open_row(dir, record, &title, &result, &records, &pending, now);
+            let mut row = open_row(dir, record, &title, &result, &records, &pending, now);
+            // ^ The main checkout's changed files this land would overwrite: pressing
+            // Land refuses until they are committed or stashed (docs/tasks.md "Ledger").
+            if record.state == TaskState::Ready {
+                row["land_blocked_by"] = json!(land_blockers_noted(record, &mut git));
+            }
             open.push((attention(record.state), record.id, row));
         } else {
             recent.push((record.updated_unix_ms, closed_row(record, &title, &result)));
@@ -64,7 +110,8 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         .filter(|record| record.state.is_open())
         .map(|record| record.working_copy.as_path())
         .collect();
-    let (strays, stray_omitted) = stray_worktrees(main, &copies);
+    let main_checkout = main_checkout(main, &mut git);
+    let (strays, stray_omitted) = stray_worktrees(main, &copies, &mut git);
     let mut ledger = json!({
         "project": project_name,
         // ^ A ready task lands by itself unless this is false (docs/tasks.md "Landing").
@@ -73,7 +120,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         "to_check": checks::open_items(&project_id).map_or(0, |items| items.len()),
         // ^ Spend today and in 7 days, workers and manager apart (docs/tasks.md "Usage").
         "usage": usage::project(&project_id, now),
-        "main": main_checkout(main),
+        "main": main_checkout,
         "stray_worktrees": strays,
         "stray_worktrees_omitted": stray_omitted,
         "deploys": deploy_status(project_name, main, &settings).unwrap_or(Value::Null),
@@ -98,6 +145,10 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
             .filter(|row| row["state"] != "closed")
             .collect::<Vec<_>>(),
     });
+    // ^ Set after `fit_size` counted the rest, and kept: a few short lines.
+    if !git.notes.is_empty() {
+        ledger["notes"] = json!(git.notes);
+    }
     fit_size(&mut ledger)?;
     Ok(ledger)
 }
@@ -159,9 +210,6 @@ fn open_row(
         // ^ Held for the owner to try before it lands (docs/tasks.md "Hold and trial").
         "hold": record.hold,
         "after": record.after,
-        // ^ The main checkout's changed files this land would overwrite: pressing
-        // Land refuses until they are committed or stashed (docs/tasks.md "Ledger").
-        "land_blocked_by": (record.state == TaskState::Ready).then(|| land_blockers(record)),
         "usage": usage::task(dir),
     });
     // ^ A parent task and its open children (docs/tasks.md "Parent tasks").
@@ -200,9 +248,21 @@ fn fit_size(ledger: &mut Value) -> Result<()> {
 /// The main checkout's changed files that landing `record`'s revision would overwrite;
 /// none when that cannot be told. ref: docs/tasks.md "Landing"
 pub fn land_blockers(record: &TaskRecord) -> Vec<String> {
+    land_blockers_noted(record, &mut Git::default())
+}
+
+fn land_blockers_noted(record: &TaskRecord, git: &mut Git) -> Vec<String> {
+    if git.hung.contains(&record.project_path) {
+        return Vec::new();
+    }
     copy::resolve_commit(&record.working_copy, "HEAD")
         .and_then(|head| copy::land_blockers(&record.project_path, &record.default_branch, &head))
-        .unwrap_or_default()
+        .unwrap_or_else(|error| {
+            if let Some(io) = error.root_cause().downcast_ref::<std::io::Error>() {
+                git.timed_out(&record.project_path, io);
+            }
+            Vec::new()
+        })
 }
 
 /// At most `chars` characters of `text`, its lines kept.
@@ -214,31 +274,32 @@ fn clip_lines(text: &str, chars: usize) -> String {
 }
 
 /// The main checkout's branch and how many files it has changed (tracked or new).
-fn main_checkout(main: &Path) -> Value {
-    let git = |args: &[&str]| {
-        crate::git::git_cmd(main)
-            .args(args)
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+fn main_checkout(main: &Path, git: &mut Git) -> Value {
+    let mut text = |args: &[&str]| {
+        git.run(main, args)
+            .map(|stdout| String::from_utf8_lossy(&stdout).into_owned())
     };
     json!({
         "path": main,
-        "branch": git(&["rev-parse", "--abbrev-ref", "HEAD"]).map(|branch| branch.trim().to_string()),
-        "changed_files": git(&["status", "--porcelain"]).map(|status| status.lines().count()),
+        "branch": text(&["rev-parse", "--abbrev-ref", "HEAD"]).map(|branch| branch.trim().to_string()),
+        "changed_files": text(&["status", "--porcelain"]).map(|status| status.lines().count()),
     })
 }
 
 /// The project's worktrees, from git and wsxd, that are neither the main checkout nor an
 /// open task's working copy: the owner's cleanup candidates. Nothing here deletes one.
 /// ref: docs/tasks.md "Ledger"
-fn stray_worktrees(main: &Path, copies: &[&Path]) -> (Vec<Value>, usize) {
+fn stray_worktrees(main: &Path, copies: &[&Path], git: &mut Git) -> (Vec<Value>, usize) {
     let same = |a: &Path, b: &Path| {
         a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
     };
     let mut found: Vec<(PathBuf, String)> = crate::git::worktree::list_worktrees(main)
-        .unwrap_or_default()
+        .unwrap_or_else(|error| {
+            if let Some(io) = error.root_cause().downcast_ref::<std::io::Error>() {
+                git.timed_out(main, io);
+            }
+            Vec::new()
+        })
         .into_iter()
         .map(|entry| (entry.path, entry.branch))
         .collect();
@@ -274,14 +335,7 @@ fn stray_worktrees(main: &Path, copies: &[&Path]) -> (Vec<Value>, usize) {
         .take(STRAY_WORKTREES)
         .map(|(path, branch)| {
             let missing = !path.is_dir();
-            let succeeds = |dir: &Path, args: &[&str]| {
-                crate::git::git_cmd(dir)
-                    .args(args)
-                    .output()
-                    .ok()
-                    .filter(|output| output.status.success())
-                    .map(|output| output.stdout)
-            };
+            let mut succeeds = |dir: &Path, args: &[&str]| git.run(dir, args);
             // ^ A detached worktree is judged by its own HEAD, so it needs its folder.
             let merged = if branch != "HEAD" {
                 let tip = format!("refs/heads/{branch}");
