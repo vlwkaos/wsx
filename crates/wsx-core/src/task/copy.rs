@@ -55,6 +55,17 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
     finished(args, output)
 }
 
+/// How long a read-only git call of the ledger and the land check waits.
+pub const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `git` that reads and gives up after `READ_TIMEOUT`: a git that hangs is an error (an
+/// `io::Error` of kind `TimedOut` at the root), not a caller that waits for ever.
+fn read_git(repo: &Path, args: &[&str]) -> Result<String> {
+    let output = crate::git::output_with_timeout(git_cmd(repo).args(args), READ_TIMEOUT)
+        .with_context(|| format!("cannot run git {}", args.join(" ")))?;
+    finished(args, output)
+}
+
 /// `git` for a step that takes the checkout's index lock; a stale one is cleared and the
 /// step runs again. ref: docs/tasks.md "Landing"
 fn git_clearing_lock(repo: &Path, args: &[&str]) -> Result<(String, Option<LockCleared>)> {
@@ -433,10 +444,10 @@ fn checkout_of(main: &Path, branch: &str) -> Result<Option<PathBuf>> {
 /// HEAD) changes too: moving the checkout there would overwrite them. Other changes stay as
 /// they are. ref: docs/tasks.md "Landing"
 fn overlapping_changes(checkout: &Path, landing: &str) -> Result<Vec<String>> {
-    let landing = git(checkout, &["diff", "--name-only", "--no-renames", landing])?;
+    let landing = read_git(checkout, &["diff", "--name-only", "--no-renames", landing])?;
     let landing: std::collections::HashSet<&str> = landing.lines().collect();
-    let tracked = git(checkout, &["diff", "--name-only", "--no-renames", "HEAD"])?;
-    let new = git(checkout, &["ls-files", "--others", "--exclude-standard"])?;
+    let tracked = read_git(checkout, &["diff", "--name-only", "--no-renames", "HEAD"])?;
+    let new = read_git(checkout, &["ls-files", "--others", "--exclude-standard"])?;
     Ok(tracked
         .lines()
         .chain(new.lines())

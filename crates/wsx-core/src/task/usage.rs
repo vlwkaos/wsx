@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 const DAY_MS: u64 = 24 * 3_600_000;
 
@@ -195,12 +195,32 @@ fn turns<'a>(
 
 type Stamp = Vec<Option<(u64, SystemTime)>>;
 type Turns = Arc<Vec<Turn>>;
+/// What one read of a log gives: its turns, and whether it holds an `agent_switch`.
+type Logged = (Turns, bool);
+
+/// A cached log not asked for in this long is dropped at the next read of a log.
+const CACHE_IDLE: std::time::Duration = std::time::Duration::from_secs(600);
+
+struct Entry {
+    stamp: Stamp,
+    logged: Logged,
+    used: Instant,
+}
 
 /// ^ Each log's turns, read again only when one of its files changed size or mtime: the web
-/// server and the TUI ask for them on every poll.
-static CACHE: Mutex<Option<HashMap<PathBuf, (Stamp, Turns)>>> = Mutex::new(None);
+/// server and the TUI ask for them on every poll. A log that nobody asked for in
+/// `CACHE_IDLE` (a task or project that is gone, a project the view left) leaves it, so a
+/// long session over many projects does not keep every log it ever saw.
+static CACHE: Mutex<Option<HashMap<PathBuf, Entry>>> = Mutex::new(None);
 
-fn cached(files: &[PathBuf], read: impl FnOnce() -> Vec<Turn>) -> Turns {
+/// The cache, also after a panic while it was held: an entry is whole or absent.
+fn cache() -> std::sync::MutexGuard<'static, Option<HashMap<PathBuf, Entry>>> {
+    CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn cached(files: &[PathBuf], read: impl FnOnce() -> (Vec<Turn>, bool)) -> Logged {
     let stamp: Stamp = files
         .iter()
         .map(|path| {
@@ -209,29 +229,50 @@ fn cached(files: &[PathBuf], read: impl FnOnce() -> Vec<Turn>) -> Turns {
         })
         .collect();
     let key = files[files.len() - 1].clone();
-    if let Some((old, turns)) = CACHE.lock().unwrap().get_or_insert_default().get(&key) {
-        if *old == stamp {
-            return turns.clone();
+    if let Some(entry) = cache().get_or_insert_default().get_mut(&key) {
+        if entry.stamp == stamp {
+            entry.used = Instant::now();
+            return entry.logged.clone();
         }
     }
-    let turns = Arc::new(read());
-    CACHE
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .insert(key, (stamp, turns.clone()));
-    turns
+    let (turns, switched) = read();
+    let logged = (Arc::new(turns), switched);
+    let mut cache = cache();
+    let map = cache.get_or_insert_default();
+    map.retain(|_, entry| entry.used.elapsed() < CACHE_IDLE);
+    map.insert(
+        key,
+        Entry {
+            stamp,
+            logged: logged.clone(),
+            used: Instant::now(),
+        },
+    );
+    logged
 }
 
 /// The worker turns of a task: its log's `result` and `ping` lines. A line from before
 /// `adapter` counts under the task's adapter. ref: docs/tasks.md "Usage"
 pub fn task_turns(dir: &TaskDir) -> Turns {
+    task_log(dir).0
+}
+
+/// True once the task's log has an `agent_switch`: it runs on a fallback agent. Read with the
+/// turns, so the whole log is parsed once per change. ref: docs/tasks.md "Agents"
+pub fn task_switched(dir: &TaskDir) -> bool {
+    task_log(dir).1
+}
+
+fn task_log(dir: &TaskDir) -> Logged {
     cached(&[dir.file(store::LOG_FILE)], || {
         let log = dir.read_log().unwrap_or_default();
         let adapter = dir
             .read_record()
             .map(|record| record.adapter)
             .unwrap_or_default();
+        let switched = log
+            .iter()
+            .any(|entry| matches!(entry.event, LogEvent::AgentSwitch { .. }));
         let lines = log.iter().filter_map(|entry| match &entry.event {
             LogEvent::Result { usage, step, .. } => {
                 let part = step
@@ -244,7 +285,7 @@ pub fn task_turns(dir: &TaskDir) -> Turns {
             LogEvent::Ping { usage } => Some((entry.unix_ms, PART_OTHER, usage.as_ref(), true)),
             _ => None,
         });
-        turns(lines, &adapter)
+        (turns(lines, &adapter), switched)
     })
 }
 
@@ -257,8 +298,12 @@ pub fn task(dir: &TaskDir) -> Usage {
 /// is `unknown`: no record tells which agent the manager ran then.
 pub fn manager_turns(dir: &ManagerDir) -> Turns {
     cached(&dir.log_files(), || {
-        manager_log_turns(&dir.read_log().unwrap_or_default())
+        (
+            manager_log_turns(&dir.read_log().unwrap_or_default()),
+            false,
+        )
     })
+    .0
 }
 
 pub fn manager_log_turns(log: &[ManagerEntry]) -> Vec<Turn> {

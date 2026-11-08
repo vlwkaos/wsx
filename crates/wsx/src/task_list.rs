@@ -17,8 +17,13 @@ use wsx_core::task::{
 /// How often the store's files are compared with the last read.
 const CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
-/// A check's answer: none when no stamp changed, else the new stamps and the ledger read.
-type Read = Option<(Stamp, Result<Value, String>)>;
+/// How often the spend lines are summed again; a ledger read between keeps the last ones. The
+/// sum reads the logs of every project of the workspace.
+const USAGE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// A check's answer: none when nothing is due, else the new stamps, the ledger read when a
+/// stamp changed, and the spend lines (`usage`, `usage_all`) when they were due.
+type Read = Option<(Stamp, Option<Result<Value, String>>, Option<[Value; 2]>)>;
 
 /// The project's `overview.md` in a read-only scroll view, markdown as written (a mermaid
 /// graph reads as the code block it is). ref: docs/tasks.md "TUI"
@@ -114,6 +119,10 @@ pub struct TaskList {
     stamp: Option<Stamp>,
     pending: Option<mpsc::Receiver<Read>>,
     last_check: Instant,
+    /// When the spend lines were summed last (none: due now), and whether a ledger read since
+    /// holds older ones.
+    usage_at: Option<Instant>,
+    usage_stale: bool,
 }
 
 impl TaskList {
@@ -137,6 +146,8 @@ impl TaskList {
             stamp: None,
             pending: None,
             last_check: Instant::now(),
+            usage_at: None,
+            usage_stale: false,
         };
         list.check();
         list
@@ -156,28 +167,30 @@ impl TaskList {
             agent: self.agent.clone(),
             ..usage::Filter::default()
         };
+        let usage_due = self
+            .usage_at
+            .is_none_or(|at| self.usage_stale && at.elapsed() >= USAGE_INTERVAL);
         self.pending = Some(rx);
         self.last_check = Instant::now();
         std::thread::spawn(move || {
             let now = store::stamp(&store);
-            let read = (last.as_ref() != Some(&now)).then(|| {
-                let mut ledger =
-                    ledger::build(&project, &main).map_err(|error| format!("{error:#}"));
-                // ^ Every project's spend summed, read with the ledger: it follows this
-                // project's changes, not the others'. Both count the chosen agent's turns.
-                // ref: docs/tasks.md "TUI"
-                if let Ok(ledger) = &mut ledger {
-                    let stores: Vec<(String, String)> = projects
-                        .iter()
-                        .map(|(name, path)| (name.clone(), store::project_id(name, path)))
-                        .collect();
-                    let now = now_unix_ms();
-                    ledger["usage"] = usage::all(&[(project, store)], now, &filter);
-                    ledger["usage_all"] = usage::all(&stores, now, &filter);
-                }
-                (now, ledger)
+            let changed = last.as_ref() != Some(&now);
+            let ledger = changed
+                .then(|| ledger::build(&project, &main).map_err(|error| format!("{error:#}")));
+            // ^ Every project's spend summed: the slowest part of a read, so on its own timer.
+            // It counts the chosen agent's turns. ref: docs/tasks.md "TUI"
+            let usage = usage_due.then(|| {
+                let stores: Vec<(String, String)> = projects
+                    .iter()
+                    .map(|(name, path)| (name.clone(), store::project_id(name, path)))
+                    .collect();
+                let now = now_unix_ms();
+                [
+                    usage::all(&[(project, store)], now, &filter),
+                    usage::all(&stores, now, &filter),
+                ]
             });
-            let _ = tx.send(read);
+            let _ = tx.send((changed || usage.is_some()).then_some((now, ledger, usage)));
         });
     }
 
@@ -201,6 +214,7 @@ impl TaskList {
         };
         self.agent = agents.get(next).cloned();
         self.stamp = None;
+        self.usage_at = None;
         self.check();
     }
 
@@ -247,7 +261,7 @@ impl TaskList {
             return match rx.try_recv() {
                 Ok(read) => {
                     self.pending = None;
-                    read.is_some_and(|(stamp, ledger)| self.apply(stamp, ledger))
+                    read.is_some_and(|(stamp, ledger, usage)| self.apply(stamp, ledger, usage))
                 }
                 Err(mpsc::TryRecvError::Empty) => false,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -262,9 +276,39 @@ impl TaskList {
         false
     }
 
-    fn apply(&mut self, stamp: Stamp, ledger: Result<Value, String>) -> bool {
+    fn apply(
+        &mut self,
+        stamp: Stamp,
+        ledger: Option<Result<Value, String>>,
+        usage: Option<[Value; 2]>,
+    ) -> bool {
+        let Some(ledger) = ledger else {
+            // ^ Only the spend lines were due.
+            if let (Some(ledger), Some(sums)) = (&mut self.ledger, usage) {
+                self.usage_at = Some(Instant::now());
+                self.usage_stale = false;
+                [ledger["usage"], ledger["usage_all"]] = sums;
+                return true;
+            }
+            return false;
+        };
         match ledger {
-            Ok(ledger) => {
+            Ok(mut ledger) => {
+                // ^ A read with no new sums keeps the last ones.
+                match (usage, &self.ledger) {
+                    (Some(sums), _) => {
+                        self.usage_at = Some(Instant::now());
+                        self.usage_stale = false;
+                        [ledger["usage"], ledger["usage_all"]] = sums;
+                    }
+                    (None, old) => {
+                        self.usage_stale = true;
+                        if let Some(old) = old {
+                            ledger["usage"] = old["usage"].clone();
+                            ledger["usage_all"] = old["usage_all"].clone();
+                        }
+                    }
+                }
                 let selected = self
                     .rows
                     .get(self.selected)

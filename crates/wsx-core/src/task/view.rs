@@ -2,7 +2,7 @@
 //! ref: docs/tasks.md "Ledger", docs/web-client-tasks.md
 
 use super::store::{self, TaskDir, RESULT_FILE};
-use super::{DeployKind, LogEvent, TaskRecord, TaskState, WaitOn};
+use super::{DeployKind, TaskRecord, TaskState, WaitOn};
 use crate::model::workspace::TaskConfig;
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -339,13 +339,9 @@ fn bracketed(lead: &str) -> Option<&str> {
 /// fallback, which the log tells.
 /// ref: docs/tasks.md "Agents"
 pub fn task_agent(dir: &TaskDir, record: &TaskRecord) -> Value {
-    let fallback = dir.read_log().is_ok_and(|log| {
-        log.iter()
-            .any(|entry| matches!(entry.event, LogEvent::AgentSwitch { .. }))
-    });
     json!({
         "adapter": record.adapter, "model": record.model, "effort": record.effort,
-        "fallback": fallback,
+        "fallback": super::usage::task_switched(dir),
     })
 }
 

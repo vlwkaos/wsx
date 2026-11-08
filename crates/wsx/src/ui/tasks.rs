@@ -60,6 +60,20 @@ pub fn render(frame: &mut Frame, area: Rect, list: &TaskList) {
             Style::default().fg(theme::ERROR),
         ));
     }
+    // ^ What the ledger could not read, such as a git that did not answer. ref: docs/tasks.md "Ledger"
+    for note in list
+        .ledger
+        .as_ref()
+        .and_then(|ledger| ledger["notes"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        lines.push(Line::styled(
+            truncate_to_width(note, width),
+            Style::default().fg(theme::WARNING),
+        ));
+    }
     lines.push(Line::raw(""));
     let chrome = lines.len();
     if let Some(task) = list.detail_task() {
