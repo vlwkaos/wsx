@@ -341,7 +341,13 @@ export function useFollowEnd(name, ready) {
     node.current = element;
     if (!element) return;
     height.current = element.clientHeight;
-    const sizes = new ResizeObserver(settle);
+    // ^ A classic scrollbar takes its width from the log once the log scrolls: wide blocks leave it
+    // out (app.css .markdown). An overlay scrollbar takes none. Its coming and going resizes the
+    // log's content box, so the log's own entry sets the variable on `.log-wrap`.
+    const sizes = new ResizeObserver((entries) => {
+      if (entries.some((entry) => entry.target === element)) element.parentElement.style.setProperty("--log-scrollbar", `${element.offsetWidth - element.clientWidth}px`);
+      settle();
+    });
     sizes.observe(element);
     for (const row of element.children) sizes.observe(row);
     const rows = new MutationObserver((changes) => {

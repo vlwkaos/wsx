@@ -343,7 +343,7 @@ async function inbox() {
   await shot("inbox");
 }
 
-// A classic scrollbar comes with the content, and chat.js sets --log-scrollbar from a ResizeObserver
+// A classic scrollbar comes with the content, and useFollowEnd (lib.js) sets --log-scrollbar from a ResizeObserver
 // a frame later: wait until the two agree before a wide block's width is read.
 async function scrollbarSettled() {
   await until("(() => { const log = document.querySelector('.log'); return parseFloat(getComputedStyle(log.parentElement).getPropertyValue('--log-scrollbar') || '0') === log.offsetWidth - log.clientWidth; })()",

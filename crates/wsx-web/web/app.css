@@ -307,7 +307,7 @@ html[data-bar="bottom"] .more-menu { top: auto; bottom: 100%; }
 /* Prose keeps its reading width. A table, a code block or a diagram may be as wide as the
    conversation minus the gutter, centered on the reading column (a centered flex item
    overflows both sides alike); wider content scrolls inside its own block. The log's classic
-   scrollbar is not part of the conversation (--log-scrollbar, set by chat.js). */
+   scrollbar is not part of the conversation (--log-scrollbar, set by useFollowEnd in lib.js). */
 .markdown > :is(.code-block, .table-wrap, .diagram-failed) {
   align-self: center; width: max-content; min-width: 100%; max-width: calc(100cqi - var(--log-scrollbar, 0%) - 2 * var(--space-4));
 }
