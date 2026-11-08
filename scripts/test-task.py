@@ -4544,7 +4544,8 @@ def part_host(created=None):
     # no manager turn (`state_wakes`); its first ready, from its own worker, did.
     def ready_short(n, revision):
         event = wait(lambda: events_with('#%d ready r%d' % (n, revision)), 'the ready event of r%d' % revision)[0]
-        return event['short']
+        # ^ A message of several events holds one short per line: this task's only.
+        return [x for x in event['short'] if x.get('task') == n]
     assert ready_short(parent, 1)[0].get('wakes', True), 'the held parent\'s own first ready wakes'
     assert ready_short(parent, 2) == [{'text': '#%d ready' % parent, 'task': parent, 'wakes': False}]
     # The second child rebases onto the moved parent, is checked, lands, and the parent checks again;
@@ -4554,7 +4555,7 @@ def part_host(created=None):
     assert wait_state(second, 'landed', 'ready', 'failed')['state'] == 'landed', log(second)
     assert wait_state(parent, 'failed')['state'] == 'failed' and show(parent)['record']['revision'] == 3
     failed_event = wait(lambda: events_with('#%d failed r3' % parent), 'the failed event of r3')[0]
-    assert failed_event['short'][0].get('wakes', True), failed_event
+    assert [x.get('wakes', True) for x in failed_event['short'] if x.get('task') == parent] == [True], failed_event
     gate.touch()
     assert js('task', 'add', parent, 'WORK again.txt')['ok']
     wait(lambda: (r := show(parent))['state'] == 'ready' and r['record']['revision'] == 4, 'the parent r4', 60)
