@@ -5,21 +5,17 @@
 // The admin site reaches every project and types into a terminal; the viewer site has neither.
 import fs from "node:fs";
 import path from "node:path";
-import { designLint, launch, pause } from "./web-cdp.mjs";
+import { designLint, launch, pair, pause } from "./web-cdp.mjs";
 
 const [adminUrl, adminCode, viewerUrl, viewerCode, captures, repo, busy] = process.argv.slice(2);
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = await launch({ captures, prefix: "projects-", timeoutSeconds: 200 });
+const cdp = await launch({ captures, prefix: "projects-", timeoutSeconds: 200 });
+const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = cdp;
 const linter = designLint({ evaluate, captures, file: "projects" });
 const name = path.basename(repo);
 const rows = "[...document.querySelectorAll('.home-rows > .row')]";
 const rowOf = (project) => `${rows}.find((row) => row.querySelector('.row-label').firstChild.textContent === ${JSON.stringify(project)})`;
 
-async function open(url, code) {
-  await send("Page.navigate", { url });
-  await until("!!document.querySelector('#pair-code')", "pairing form did not render");
-  await evaluate(`(() => { const input = document.querySelector('#pair-code'); input.value = ${JSON.stringify(code)}; input.form.requestSubmit(); })()`);
-  await until("!!document.querySelector('.home-row')", "Home did not list projects after pairing");
-}
+const open = (url, code) => pair(cdp, url, code, { ready: ".home-row" });
 // A swipe left: the browser's own scroll, as a finger moves it.
 const slide = (project) => evaluate(`(() => { const row = ${rowOf(project)}; row.scrollLeft = row.scrollWidth; })()`);
 const submit = (value) => evaluate(`(() => { const field = document.querySelector('dialog.sheet input[name=path]'); field.value = ${JSON.stringify(value)};

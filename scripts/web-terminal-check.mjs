@@ -5,12 +5,13 @@
 // Usage: node web-terminal-check.mjs <site-url> <pairing-code> <session-id> <capture-dir> <wsxd-socket> <pane-id> <keys-trace> <server-pid>
 import fs from "node:fs";
 import net from "node:net";
-import { designLint, launch, pause } from "./web-cdp.mjs";
+import { designLint, launch, pair, pause } from "./web-cdp.mjs";
 
 const [siteUrl, code, sessionId, captures, daemonSocket, paneId, keysTrace, serverPid] = process.argv.slice(2);
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems, keyboard } = await launch({
+const cdp = await launch({
   captures, prefix: "terminal-", timeoutSeconds: 210,
 });
+const { send, evaluate, until, viewport, capture, fail, cleanup, problems, keyboard } = cdp;
 const linter = designLint({ evaluate, captures, file: "terminal" });
 // wsxd's protocol version, read from its source (crates/wsx-core/src/runtime/protocol.rs).
 const PROTOCOL = Number(/PROTOCOL_VERSION: u32 = (\d+);/.exec(fs.readFileSync(new URL("../crates/wsx-core/src/runtime/protocol.rs", import.meta.url), "utf8"))[1]);
@@ -222,10 +223,7 @@ const focusTerminal = () => evaluate("document.querySelector('.xterm-helper-text
 
 // --- Pair, then the phone: 390x844, touch, key row.
 await viewport(390, 844, 2);
-await send("Page.navigate", { url: siteUrl });
-await until("!!document.querySelector('#pair-code')", "pairing form did not render");
-await evaluate(`(() => { const input = document.querySelector('#pair-code'); input.value = ${JSON.stringify(code)}; input.form.requestSubmit(); })()`);
-await until("!!document.querySelector('.app')", "the app did not open after pairing");
+await pair(cdp, siteUrl, code);
 await open(390, 844, 2);
 
 // The frame: the session's one top row, then the terminal down to the key row, all dark.

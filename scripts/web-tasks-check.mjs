@@ -18,13 +18,15 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { designLint, jumps, launch, mobileAudit, pause } from "./web-cdp.mjs";
+import { designLint, jumps, launch, mobileAudit, pair, pause, shooter, soundCheck, watchFetch } from "./web-cdp.mjs";
 
 const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, plansCheckout, longName, relayFile, wsxCli, newsFile] = process.argv.slice(2);
 const project = Number(projectArg);
-const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched, setMotion } = await launch({
+const cdp = await launch({
   captures, prefix: "tasks-", timeoutSeconds: 840,
 });
+const { send, evaluate, until, viewport, capture, fail, cleanup, problems, go, text, count, key, keyboard, watch, watched, setMotion } = cdp;
+await watchFetch(cdp);
 const auditSource = auditPath ? fs.readFileSync(auditPath, "utf8") : null;
 const { file: mobilePath, source: mobileSource } = mobileAudit();
 if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_AUDIT`);
@@ -72,69 +74,12 @@ const pasteInto = (selector, what) => evaluate(`(async () => {
   return field.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
 })()`);
 
-// Layout rules of every screen: nothing past the right edge, no raw null, one scroll container
-// besides the bounded strip and the suggestion list, and the page itself never scrolls.
-async function sound(label) {
-  // ^ A sheet that is still sliding in passes the edge.
-  await until("(document.querySelector('dialog.task-sheet')?.getAnimations().length ?? 0) === 0", `${label}: the sheet kept moving`);
-  const seen = await evaluate(`(() => {
-    const free = (node) => node.closest('.code-block pre, .table-wrap, .diagram, .since p');
-    const wide = [...document.querySelectorAll('#app *')].filter((node) => !free(node) && node.getBoundingClientRect().right > innerWidth + 0.5);
-    const scrollers = [...document.querySelectorAll('#app *')].filter((node) => node.tagName !== 'TEXTAREA' && !free(node) && !node.closest('.rail, .reservoir, .slash, .task-sheet')
-      && /auto|scroll/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight + 1);
-    return { wide: wide.slice(0, 3).map((node) => node.className || node.tagName), scrollers: scrollers.map((node) => node.className),
-      raw: /\\b(null|undefined|NaN)\\b/.test(document.querySelector('#app').innerText), page: document.scrollingElement.scrollTop + document.scrollingElement.scrollLeft };
-  })()`);
-  const where = `${label} at ${size[0]}x${size[1]}`;
-  if (seen.wide.length) await fail(`${where}: elements pass the right edge: ${seen.wide}`);
-  if (seen.scrollers.length > 1) await fail(`${where}: more than one scroll container: ${seen.scrollers}`);
-  if (seen.raw) await fail(`${where} shows a raw null`);
-  if (seen.page) await fail(`${where}: the page itself scrolled`);
-}
-
-// One capture with its audits. At most one filled accent control, no sideways scroll, no
-// zooming field, and no other field in the way of the composer's iOS arrows.
-async function shot(name, primary) {
-  await sound(name);
-  const label = `${name} at ${size[0]}x${size[1]}`;
-  const file = `${size[0]}x${size[1]}-${name}`;
-  const row = { capture: file };
-  if (auditSource) {
-    await evaluate(`globalThis.SLOP_AUDIT_PRIMARY = ${JSON.stringify(primary ?? null)}`);
-    // ^ Behind an open modal dialog (the task sheet beside the chat at 1280 px) the page is
-    // inert, so the audit, which does not know modal dialogs, sees only the dialog.
-    // The page's CSP refuses a style element; CSSOM properties are allowed.
-    const audit = await evaluate(`(() => { const modal = document.querySelector('dialog[open]:modal');
-      if (modal) { document.body.style.visibility = 'hidden'; modal.style.visibility = 'visible'; }
-      try { return (
-${auditSource}
-); } finally { if (modal) { document.body.style.visibility = ''; modal.style.visibility = ''; } } })()`);
-    fs.writeFileSync(path.join(captures, `tasks-${file}.slop.json`), JSON.stringify(audit, null, 1));
-    if (audit.horizontalOverflow) await fail(`${label} overflows sideways`);
-    if (audit.primaryAction.filledInViewport > 1) await fail(`${label} shows ${audit.primaryAction.filledInViewport} filled accent controls: ${JSON.stringify(audit.primaryAction.filled)}`);
-    if (primary && !audit.primaryAction.inFirstViewport) await fail(`${label}: the primary action is not in view`);
-  }
-  if (mobileSource && phone()) {
-    await evaluate("globalThis.MOBILE_AUDIT_GUTTER = 16");
-    const mobile = await evaluate(mobileSource);
-    fs.writeFileSync(path.join(captures, `tasks-${file}.mobile.json`), JSON.stringify(mobile, null, 1));
-    if (mobile.horizontalOverflow) await fail(`${label}: the page scrolls sideways (mobile audit)`);
-    if (mobile.zoomingFields.count) await fail(`${label}: a field makes iOS zoom: ${JSON.stringify(mobile.zoomingFields.items)}`);
-    // ^ A field outside an open modal dialog (the task sheet) is inert, so the iOS form bar
-    // cannot reach it; the mobile audit does not know about modal dialogs.
-    const reachable = await evaluate(`(() => { const modal = document.querySelector('dialog[open]:modal');
-      return [...document.querySelectorAll('input:not([type=hidden]), textarea, select')].filter((el) => el !== document.activeElement
-        && !el.disabled && el.tabIndex >= 0 && !(modal && !modal.contains(el))).length; })()`);
-    if (mobile.focusedField?.startsWith("textarea.composer-field") && mobile.otherFocusableFields?.count && reachable) {
-      await fail(`${label}: other fields can take the focus from the composer: ${JSON.stringify(mobile.otherFocusableFields.items)}`);
-    }
-    Object.assign(row, { contentShare: mobile.contentShare, smallTargets: mobile.smallTargets.items.map((item) => `${item.label || item.el} ${item.size.join("x")}`),
-      tinyText: mobile.tinyText.count, outsideGutter: mobile.outsideGutter.count });
-  }
-  audits.push(row);
-  if (LINTED.has(name)) await linter.lint(name);
-  await capture(file);
-}
+// ^ A sheet that is still sliding in passes the edge.
+const sound = soundCheck(cdp, () => size, { free: ".code-block pre, .table-wrap, .diagram, .since p", apart: ".rail, .reservoir, .slash, .task-sheet",
+  settle: (label) => until("(document.querySelector('dialog.task-sheet')?.getAnimations().length ?? 0) === 0", `${label}: the sheet kept moving`) });
+const shot = shooter(cdp, { captures, prefix: "tasks-", size: () => size, fileOf: (name) => `${size[0]}x${size[1]}-${name}`, linter, linted: LINTED, auditSource, mobileSource, before: sound,
+  record: (file, mobile) => audits.push(mobile ? { capture: file, contentShare: mobile.contentShare, smallTargets: mobile.smallTargets.items.map((item) => `${item.label || item.el} ${item.size.join("x")}`),
+    tinyText: mobile.tinyText.count, outsideGutter: mobile.outsideGutter.count } : { capture: file }) });
 
 // Every working state on screen has the one working color (--color-working in app.css): marks,
 // pulses, typing dots and words. `least` is how many working elements this screen must show.
@@ -158,13 +103,6 @@ async function managerWidth(where) {
     return { column, width: box.getBoundingClientRect().width, border: look.borderTopWidth, edge: look.borderTopColor, fill: look.backgroundColor }; })()`);
   if (!(seen.width > 0.88 * seen.column + 1 && seen.width <= seen.column)) await fail(`${where}: a manager bubble is ${seen.width}px in a ${seen.column}px column`);
   if (parseFloat(seen.border) < 1 || seen.edge === "rgba(0, 0, 0, 0)" || seen.fill === "rgba(0, 0, 0, 0)") await fail(`${where}: the bubble lost its box: ${JSON.stringify(seen)}`);
-}
-
-async function pair() {
-  await send("Page.navigate", { url: siteUrl });
-  await until("!!document.querySelector('#pair-code')", "pairing form did not render");
-  await evaluate(`(() => { const input = document.querySelector('#pair-code'); input.value = ${JSON.stringify(code)}; input.form.requestSubmit(); })()`);
-  await until("!!document.querySelector('.app')", "the app did not open after pairing");
 }
 
 // The top of the task sheet as words: what changed, what to know next, and whether a step path is left.
@@ -446,7 +384,7 @@ const bubbles = () => evaluate(`[...document.querySelectorAll('.log .bubble')].m
   last: node.hasAttribute('data-last'), author: node.querySelector('.bubble-author')?.textContent ?? '', tag: node.querySelector('.bubble-tag')?.textContent ?? '', text: node.querySelector('.bubble-box').textContent.trim().replace(/\\s+/g, ' ') }))`);
 
 await resize([390, 844, 2]);
-await pair();
+await pair(cdp, siteUrl, code);
 const chat = `#/p/${project}`;
 const page = (n) => `#/p/${project}/t/${n}`;
 
@@ -1051,8 +989,8 @@ await openReservoir();
 for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
   await resize([width, height, scale]);
   await openReservoir();
-  // ^ The read ahead of every item's task (`readTaskAhead`) leaves no mark the page shows: it has time.
-  await pause(1500);
+  // ^ The read ahead of every item's task (`readTaskAhead`) leaves no mark the page shows: wait for the page's requests to end.
+  await until("globalThis.wsxFetching === 0", "the read ahead of the tasks did not end");
   const atOnce = await evaluate(`new Promise((done) => { ${rowOf("#2")}.querySelector('.row-open').click();
     requestAnimationFrame(() => requestAnimationFrame(() => done({ open: !!document.querySelector('dialog.task-sheet'),
       loading: !!document.querySelector('dialog.task-sheet .loading'), story: !!document.querySelector('dialog.task-sheet .story') }))); })`);
@@ -1122,7 +1060,6 @@ await shot("reservoir-narrow", ".composer-send");
 for (const [width, height, scale] of [[390, 560, 2], [1280, 520, 1]]) {
   await resize([width, height, scale]);
   await openReservoir();
-  await pause(300);
   const scrolled = await evaluate(`(async () => { const list = document.querySelector('.reservoir-scroll');
     list.scrollTop = list.scrollHeight; await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
     return { scrolls: list.scrollHeight > list.clientHeight + 1, moved: list.scrollTop > 0, composer: document.querySelector('.composer').getBoundingClientRect().bottom <= innerHeight + 0.5 }; })()`);
@@ -1875,10 +1812,9 @@ await resize([390, 844, 2]);
 // --- Following the end (docs/web-client-chat.md "Following the end"). A reply arrives the way
 // another device's message does (not the composer, which goes to the end).
 // ^ Each one spends the task-action budget (10 at once, 20 a minute, crates/wsx-web/src/http.rs
-// act_budget); followEnd gives back what it spent, so the actions after it are not refused.
-let said = 0;
-const say = (words) => (said += 1, evaluate(`fetch('api/tasks/${project}/say', { method: 'POST', headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ text: ${JSON.stringify(words)} }) }).then((response) => response.status)`));
+// act_budget); the page waits when it is spent (`watchFetch`), so a say or a tap is never refused.
+const say = (words, of = project) => evaluate(`fetch('api/tasks/${of}/say', { method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ text: ${JSON.stringify(words)} }) }).then((response) => response.status)`);
 const fromEnd = () => evaluate("(() => { const log = document.querySelector('.log'); return Math.round(log.scrollHeight - log.scrollTop - log.clientHeight); })()");
 const drawnDiagrams = "document.querySelectorAll('.log .bubble .diagram img').length";
 // The manager answers with a diagram; the bubble shows "Drawing the diagram…" first.
@@ -1930,7 +1866,6 @@ const barAt = async (side) => {
   await pause(300);
 };
 async function followEnd(where) {
-  said = 0;
   const moves = [];
   // (a) At the end, a reply whose diagram draws after it shows: still at the end. From the frame
   // it shows, the reply keeps its place over the composer: the typing bubble it replaces does
@@ -2051,7 +1986,6 @@ async function followEnd(where) {
   }
   fs.appendFileSync(path.join(captures, "follow-end.txt"), `steady scroll, ${where}: ${moves.join("; ") || "no move"}\n`);
   if (moves.length) await fail(`${where}: the chat moved without the reader: ${moves.join("; ")}`);
-  await pause(said * 3000);
 }
 await followEnd("390 px");
 
@@ -2094,7 +2028,6 @@ async function touch(from, dx, hold = 0) {
 const pressPoint = (bubble) => evaluate(`(() => { const first = ${bubble}.querySelector('.bubble-body p'); first.scrollIntoView({ block: 'center' }); const rect = first.getBoundingClientRect();
   return { x: Math.round(rect.left + 12), y: Math.round(rect.top + 8) }; })()`);
 async function readAndReply(where) {
-  said = 0;
   await toLatest(where);
   // (a) Scrolled up: a reply below moves nothing, and the button counts it.
   await evaluate("document.querySelector('.log').scrollTop = 0");
@@ -2179,7 +2112,6 @@ async function readAndReply(where) {
   if (await evaluate("document.activeElement?.matches('.composer-field')") !== true) await fail(`${where}: the reply did not focus the composer`);
   await shot("reply-quote", ".composer-send");
   await typeInto(".composer-field", "my answer");
-  said += 1;
   // ^ Only a bubble this send adds counts: the one of an earlier round quotes the same words.
   const sentReplies = "[...document.querySelectorAll('.log > .bubble[data-side=out]:not([data-pending])')].filter((node) => node.querySelector('.quote')?.textContent === 'Five columns:')";
   const sentBefore = JSON.stringify(await evaluate(`${sentReplies}.map((node) => node.dataset.key)`));
@@ -2195,7 +2127,6 @@ async function readAndReply(where) {
   await until(`(() => { const log = document.querySelector('.log').getBoundingClientRect(), box = ${fiveColumns}.getBoundingClientRect();
     return ${fiveColumns}.hasAttribute('data-found') && box.top < log.bottom && box.bottom > log.top; })()`, `${where}: the quote did not go to its message`);
   await toLatest(where);
-  await pause(said * 3000);
 }
 await readAndReply("390 px");
 
@@ -2454,8 +2385,6 @@ async function failTellsManager(back) {
 
 // --- To check: the reservoir's row opens the list; Fail needs a note and starts a task that
 // fixes it; Pass in a To check row changes its bubble in place; Skip closes the last without a verdict.
-// ^ The actions above spent this device's burst (10, then one per 3 s); this part sends four.
-await pause(12000);
 await go(chat);
 await until("!!document.querySelector('.pill')", "the chat did not come back for To check");
 await openReservoir("check");
@@ -2653,7 +2582,6 @@ for (let attempt = 0; attempt < 600 && runningSince < 20; attempt++) {
 }
 if (!(await evaluate(onlyRunning))) await fail(`Running is not the only pill: ${await pillWords()}`);
 await openReservoir("running");
-await pause(400);
 await firstRowInside("with only running tasks");
 await shot("reservoir-running-first", ".composer-send");
 await closeReservoir();
@@ -2821,8 +2749,6 @@ if (safari.sent.join() !== "true,true" || !safari.viewport.includes("maximum-sca
 // the answer, the field says so, and the answer is a bubble; then the list cleared one row
 // after another: Land #2, Land #1, and then no reservoir with the focus on the composer.
 const plans = Number(plansArg);
-// ^ The actions above spent this device's burst (10, then one per 3 s); this part sends three.
-await pause(12000);
 await go(`#/p/${plans}`);
 await until("!!document.querySelector('.pill')", "plans has no reservoir");
 await until("document.querySelectorAll('.log .bubble').length >= 2", "plans' chat shows no managers' bubbles", 30);
@@ -3571,10 +3497,8 @@ await until("!!document.querySelector('.pill')", "the ui chat did not come back"
 // A long chat renders its newest 60 rows; "Show N earlier" adds rows above and keeps the reader
 // on the row they read (docs/web-client.md "Screens").
 const named = "document.querySelectorAll('.log > [data-key]').length";
-// ^ The say route limits a burst: a refused message waits and goes again.
 for (let n = 0; n < 35; n++) {
-  let status = await say(`NOOP ${n}`);
-  for (let attempt = 0; attempt < 20 && status !== 200; attempt++) { await pause(1000); status = await say(`NOOP ${n}`); }
+  const status = await say(`NOOP ${n}`);
   if (status !== 200) await fail(`message ${n} of the long chat was not taken: ${status}`);
 }
 await until(`!document.querySelector('.log .typing')`, "the manager did not answer the long chat", 120);
@@ -3599,10 +3523,8 @@ if (Math.abs(shifted) > 2) await fail(`Show earlier moved the row in view by ${s
 await toLatest("390 px");
 // --- The manager quotes an earlier message by id (docs/tasks.md "Manager"): its reply shows the
 // quote as one line over its words, and a tap goes to the quoted message.
-// ^ The say route limits a burst: a refused message waits and goes again.
 const sayAgain = async (words) => {
-  let status = 0;
-  for (let attempt = 0; attempt < 20 && status !== 200; attempt++) { status = await say(words); if (status !== 200) await pause(1000); }
+  const status = await say(words);
   if (status !== 200) await fail(`the manager was not told ${JSON.stringify(words)}: ${status}`);
 };
 await sayAgain("the plan is on the overview");
@@ -3655,9 +3577,7 @@ await setMotion("no-preference");
 }
 await toLatest("390 px");
 // A ready task the manager created waits for the manager's review: under Running, with those words and a calm dot.
-// ^ The say route limits a burst: a refused message waits and goes again.
-let asked = 0;
-for (let attempt = 0; attempt < 20 && asked !== 200; attempt++) { asked = await say('RUN wsx task new "WORK z.txt" -p ui'); if (asked !== 200) await pause(1000); }
+const asked = await say('RUN wsx task new "WORK z.txt" -p ui');
 if (asked !== 200) await fail(`the manager was not asked for a task: ${asked}`);
 await openReservoir("running");
 await until(`!![...document.querySelectorAll('.reservoir-list[aria-label=Running] .need')].find((row) => /waiting for the manager's review/.test(row.textContent))`, "a manager-created ready task is not under Running with the review words", 300);
@@ -3709,13 +3629,8 @@ await closeSheet("the page", `#/p/${plansArg}`);
   // ^ The chip reads "plans #1" there, so the bubble is found by the words after it.
   const peerWords = "waits for you";
   const pageModule = (name) => `import(new URL(${JSON.stringify(name)}, [...document.scripts].find((script) => script.type === 'module').src))`;
-  // ^ plans' manager says it to ui's; the say route limits a burst, so a refused message goes again.
-  let asked = 0;
-  for (let attempt = 0; attempt < 20 && asked !== 200; attempt++) {
-    asked = await evaluate(`fetch('api/tasks/${plansArg}/say', { method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: ${JSON.stringify(`RUN wsx task say -p ui --from-manager "${fromPlans}" --json`)} }) }).then((response) => response.status)`);
-    if (asked !== 200) await pause(1000);
-  }
+  // ^ plans' manager says it to ui's.
+  const asked = await say(`RUN wsx task say -p ui --from-manager "${fromPlans}" --json`, plansArg);
   if (asked !== 200) await fail(`plans' manager was not asked to write to ui's: ${asked}`);
   await go(chat);
   const chipsIn = (needle) => evaluate(`(() => { const bubble = [...document.querySelectorAll('.log .bubble')].find((node) => node.textContent.includes(${JSON.stringify(needle)}));
