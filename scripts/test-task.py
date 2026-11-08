@@ -2541,7 +2541,8 @@ def part_core(created=None):
     assert js('task', 'stop', halted)['ok']
     stop_event = wait(lambda: events_with('#%d waiting r' % halted, 'waits on owner: Stopped', 'stopped by request'),
                       'the stop event')[0]
-    assert stop_event['short'] == [{'text': '#%d waiting' % halted, 'task': halted}], stop_event
+    # ^ A stop someone asked for starts no manager turn: the line says `wakes: False`.
+    assert stop_event['short'] == [{'text': '#%d waiting' % halted, 'task': halted, 'wakes': False}], stop_event
     js('task', 'close', lone, '--discard')
     last_close = wait(lambda: events_with('#%d closed r1' % lone), 'the lone close event')[0]
     time.sleep(5)
