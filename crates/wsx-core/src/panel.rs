@@ -485,8 +485,15 @@ pub fn machine_view(
         _ => return Err("unexpected wsxd answer".into()),
     };
     let mut view = read_panel(client, None, name, run)?;
-    let mut due = (view.refresh > 0).then(|| (remaining(&view), view.refresh, view.age_ms));
-    let mut busy = false;
+    let (mut due, mut busy) = (None, false);
+    let mut note = |read: &PanelView| {
+        busy |= read.running || read.run.status == PanelStatus::Pending;
+        if read.refresh > 0 && read.run.status != PanelStatus::Pending {
+            let this = (remaining(read), read.refresh, read.age_ms);
+            due = Some(due.map_or(this, |was: (u64, u64, u64)| was.min(this)));
+        }
+    };
+    note(&view);
     let mut sections = Vec::new();
     for (project, path) in projects {
         let Ok(Response::Panels { panels, .. }) = request(client, Some(path), Action::List) else {
@@ -498,13 +505,7 @@ pub fn machine_view(
         {
             let result = read_panel(client, Some(path), info.name.clone(), run);
             if let Ok(read) = &result {
-                busy |= read.running || read.run.status == PanelStatus::Pending;
-                if read.refresh > 0 && read.run.status != PanelStatus::Pending {
-                    due = Some(due.map_or_else(
-                        || (remaining(read), read.refresh, read.age_ms),
-                        |was| was.min((remaining(read), read.refresh, read.age_ms)),
-                    ));
-                }
+                note(read);
             }
             sections.extend(project_sections(project, &info.name, result));
         }
