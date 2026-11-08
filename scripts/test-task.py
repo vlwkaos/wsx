@@ -2822,6 +2822,9 @@ def part_worker(created=None):
     assert 'The quasar notes are in docs.' in found[4], found[4]
     assert 'Where did the Quasar notes go?' in found[6], found[6]
     assert '/QUASAR' not in found[8] and 'press i to write' in found[8], found[8]
+    # ^ Esc leaves the whole-log find and reads the newest entries again: the owner's last message
+    # shows, and the two entries only the older log holds do not.
+    assert 'hello from the tui' in found[8] and 'quasar' not in found[8].lower(), found[8]
     # A quote reaches a message of any age (docs/tasks.md "Log window"): the log rolls to
     # log.1, log.2 and so on, and every file stays. `agent` lines (not in the chat) fill the
     # current log just past the roll size; the host rolls it at its next write. A rotation entry
