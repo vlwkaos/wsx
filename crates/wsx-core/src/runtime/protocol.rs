@@ -84,7 +84,10 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // (docs/panels.md "Machine panels").
 // Revision 47 no longer takes a `!` shell line as a command round and drops the capability
 // `exchange_shell`; the web server runs the line itself (docs/web-client-chat.md "Shell lines").
-pub const DAEMON_REVISION: u32 = 47;
+// Revision 48 answers `Frames` with the screens and the epoch only, in place of the snapshot of
+// `View`, and sends `TerminalServerMessage::Heartbeat` to a frame subscriber that asked, so the
+// client can time out a stream that goes silent (capability `stream_heartbeat`).
+pub const DAEMON_REVISION: u32 = 48;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
@@ -346,6 +349,10 @@ pub enum Request {
         takeover: bool,
         rows: u16,
         cols: u16,
+        // ^ Ask wsxd to send `TerminalServerMessage::Heartbeat` while the pane is quiet. Only
+        // a daemon with the capability `stream_heartbeat` does; an older one ignores the field.
+        #[serde(default)]
+        heartbeat: bool,
     },
     // ^ docs/terminal-raw-stream.md: same handshake and lease as `TerminalSubscribe`.
     // `rows` and `cols` both 0 keep the pane's current size.
@@ -383,6 +390,10 @@ pub enum Request {
         cols: u16,
     },
     View {
+        pane_ids: Vec<PaneId>,
+    },
+    // ^ The frames of `View` without the snapshot: a poll that needs only the screens.
+    Frames {
         pane_ids: Vec<PaneId>,
     },
     AgentReport {
@@ -664,6 +675,10 @@ pub enum Response {
         snapshot: Snapshot,
         frames: Vec<TerminalFrame>,
     },
+    Frames {
+        epoch: u64,
+        frames: Vec<TerminalFrame>,
+    },
     Events {
         revision: u64,
         events: Vec<Event>,
@@ -725,6 +740,8 @@ pub enum TerminalServerMessage {
     ClipboardWrite(Vec<u8>),
     Error(ApiError),
     Exited,
+    /// Sent only to a subscriber that asked for it, after a quiet while: the stream is alive.
+    Heartbeat,
 }
 
 /// The terminal state a client emulator starts from. Output that follows

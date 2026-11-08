@@ -2,6 +2,8 @@
 
 `wsxd` gives a client that runs its own terminal emulator the bytes the pane's program wrote. The hosted web client uses it for xterm.js (`docs/web-client-terminal.md`). The TUI keeps the frame stream (`terminal_subscribe`), which is unchanged.
 
+The frame stream has one addition (daemon revision 48, capability `stream_heartbeat`): `terminal_subscribe` takes `heartbeat: true`, and wsxd then sends `{"type":"heartbeat"}` after 2 s without another message. A client that asked and sees the capability reads with a 10 s idle limit, so a wsxd that stays connected but sends nothing ends the stream as `stream_disconnected` ("wsxd sent nothing for 10 s"); the TUI then reattaches once. The TUI's preview poll of an unattached pane uses the `frames` request, which answers `{epoch, frames}` without the snapshot of `view`. A wsxd older than revision 48 answers `frames` with `invalid_json`, and `Client::frames` asks `view` instead.
+
 Protocol 16 (an added request, no protocol change), daemon revision 23, capability `raw_terminal_stream`. A client reads the capability from `hello` or a snapshot before it subscribes; a daemon without it does not know the request.
 
 ## Request

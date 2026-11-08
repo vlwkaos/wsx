@@ -4,11 +4,15 @@ use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TerminalStreamKind {
-    /// Rendered cell frames for the TUI.
-    Frames,
+    /// Rendered cell frames for the TUI. `heartbeat`: the client times out a silent stream.
+    Frames { heartbeat: bool },
     /// PTY bytes for a client that runs its own emulator (docs/terminal-raw-stream.md).
     Raw,
 }
+
+// ^ Well under the client's 10 s idle limit (`STREAM_IDLE_TIMEOUT` in wsx-core); the stream
+// loop wakes at least every 250 ms to send it.
+const STREAM_HEARTBEAT: Duration = Duration::from_secs(2);
 
 pub(crate) fn serve_terminal_stream(
     mut stream: UnixStream,
@@ -132,9 +136,15 @@ pub(crate) fn serve_terminal_stream(
         generation: lease_generation,
     };
     let result = match kind {
-        TerminalStreamKind::Frames => {
-            stream_terminal_updates(&mut stream, &daemon, lease, &active, &resync, &input_error)
-        }
+        TerminalStreamKind::Frames { heartbeat } => stream_terminal_updates(
+            &mut stream,
+            &daemon,
+            lease,
+            &active,
+            &resync,
+            &input_error,
+            heartbeat,
+        ),
         TerminalStreamKind::Raw => {
             stream_raw_terminal_output(&mut stream, &daemon, lease, &active, &resync, &input_error)
         }
@@ -153,9 +163,11 @@ pub(crate) fn stream_terminal_updates(
     active: &AtomicBool,
     resync: &AtomicBool,
     input_error: &Mutex<Option<ApiError>>,
+    heartbeat: bool,
 ) -> io::Result<()> {
     let mut baseline = None;
     let mut last_frame_sent = Instant::now();
+    let mut last_written = Instant::now();
     while active.load(Ordering::Acquire) {
         // The handoff holds every pane operation lock, so tell the client before waiting on one.
         let handoff = terminal_stream_lease_error(&lock(&daemon.state), lease, Instant::now())
@@ -220,8 +232,15 @@ pub(crate) fn stream_terminal_updates(
             }
         }
         drop(operation);
+        // ^ A quiet pane sends nothing else: the client reads a silent stream as a stuck wsxd.
+        if heartbeat && messages.is_empty() && last_written.elapsed() >= STREAM_HEARTBEAT {
+            messages.push(TerminalServerMessage::Heartbeat);
+        }
         for message in &messages {
             write_stream_message(stream, message)?;
+        }
+        if !messages.is_empty() {
+            last_written = Instant::now();
         }
         if frame_sent {
             last_frame_sent = Instant::now();

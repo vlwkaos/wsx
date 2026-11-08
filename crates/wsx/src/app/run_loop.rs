@@ -212,6 +212,8 @@ impl App {
                     }
                     break;
                 }
+                // ^ Only proof that wsxd still sends; the reader's idle limit is the use.
+                runtime::TerminalServerMessage::Heartbeat => {}
                 runtime::TerminalServerMessage::Exited => {
                     self.clear_active_terminal_selection();
                     // ^ The stream says it before the next snapshot does, and Enter on the

@@ -281,7 +281,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 },
             );
         } else {
-            let stale_projects = app.stale_project_indices();
             let search = if let Mode::Search { query, .. } = &app.mode {
                 Some(SearchFeedback {
                     query,
@@ -298,7 +297,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         muted_terminals: app.muted_terminals(),
                         workspace: &app.workspace,
                         flat: app.flat(),
-                        stale_projects: &stale_projects,
+                        stale_projects: app.stale_collapsed_projects(),
                         asking: app.manager_asks(),
                         selected: app.tree_selected,
                         scroll_offset: app.tree_scroll,
@@ -314,7 +313,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         muted_terminals: app.muted_terminals(),
                         workspace: &app.workspace,
                         flat: app.flat(),
-                        stale_projects: &stale_projects,
+                        stale_projects: app.stale_collapsed_projects(),
                         asking: app.manager_asks(),
                         selected: app.tree_selected,
                         scroll_offset: app.tree_scroll,

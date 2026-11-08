@@ -983,6 +983,7 @@ fn displaced_terminal_stream_receives_transfer_notice() {
             &stream_active,
             &stream_resync,
             &stream_input_error,
+            false,
         )
     });
 

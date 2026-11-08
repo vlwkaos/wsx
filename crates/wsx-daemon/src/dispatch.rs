@@ -30,6 +30,7 @@ pub(crate) fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Res
             | Request::Snapshot
             | Request::Poll { .. }
             | Request::View { .. }
+            | Request::Frames { .. }
             | Request::AgentExchangeWait { .. }
             | Request::PluginList
             | Request::LifecycleStatus
@@ -236,6 +237,7 @@ pub(crate) fn handle_inner(daemon: &Arc<Daemon>, request: Request) -> Result<Res
             cols,
         } => resize_terminal(daemon, pane_id, LeaseAccess::Client(client_id), rows, cols),
         Request::View { pane_ids } => view(daemon, pane_ids),
+        Request::Frames { pane_ids } => frames(daemon, pane_ids),
         Request::AgentReport {
             pane_id,
             runtime_generation,
@@ -676,6 +678,7 @@ pub(crate) fn capabilities() -> Capabilities {
         daemon_restart: true,
         exchange_command: true,
         agent_steer: true,
+        stream_heartbeat: true,
     }
 }
 
@@ -813,6 +816,27 @@ pub(crate) fn event_revision(event: &Event) -> u64 {
 }
 
 pub(crate) fn view(daemon: &Daemon, pane_ids: Vec<PaneId>) -> Result<Response, ApiError> {
+    let (snapshot, frames) = view_frames(daemon, pane_ids, true)?;
+    Ok(Response::View {
+        snapshot: snapshot.expect("view builds its snapshot"),
+        frames,
+    })
+}
+
+// ^ The screens without the snapshot of every session: the TUI preview polls this twice a second.
+pub(crate) fn frames(daemon: &Daemon, pane_ids: Vec<PaneId>) -> Result<Response, ApiError> {
+    let (_, frames) = view_frames(daemon, pane_ids, false)?;
+    Ok(Response::Frames {
+        epoch: daemon.epoch,
+        frames,
+    })
+}
+
+fn view_frames(
+    daemon: &Daemon,
+    pane_ids: Vec<PaneId>,
+    with_snapshot: bool,
+) -> Result<(Option<Snapshot>, Vec<TerminalFrame>), ApiError> {
     if pane_ids.len() > MAX_VIEW_PANES {
         return Err(api("invalid_request", "too many panes requested"));
     }
@@ -823,7 +847,7 @@ pub(crate) fn view(daemon: &Daemon, pane_ids: Vec<PaneId>) -> Result<Response, A
             .into_iter()
             .filter_map(|id| state.runtimes.get(&id).cloned())
             .collect::<Vec<_>>();
-        (snapshot(daemon, &state), runtimes)
+        (with_snapshot.then(|| snapshot(daemon, &state)), runtimes)
     };
     let mut frames = Vec::with_capacity(runtimes.len());
     let mut total_cells = 0;
@@ -832,7 +856,7 @@ pub(crate) fn view(daemon: &Daemon, pane_ids: Vec<PaneId>) -> Result<Response, A
         total_cells = add_view_cells(total_cells, frame.cells.len())?;
         frames.push(frame);
     }
-    Ok(Response::View { snapshot, frames })
+    Ok((snapshot, frames))
 }
 
 pub(crate) fn unique_view_pane_ids(pane_ids: Vec<PaneId>) -> Vec<PaneId> {

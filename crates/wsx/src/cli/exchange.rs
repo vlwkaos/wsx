@@ -703,10 +703,8 @@ pub(super) fn wait_for_prompt_agent(
 }
 
 pub(super) fn pane_frame(pane_id: runtime::PaneId) -> Result<runtime::TerminalFrame> {
-    match runtime::Client::local().call(&runtime::Request::View {
-        pane_ids: vec![pane_id],
-    })? {
-        runtime::Response::View { mut frames, .. } => {
+    match runtime::Client::local().frames(vec![pane_id])? {
+        runtime::Response::Frames { mut frames, .. } => {
             frames.pop().context("terminal frame is unavailable")
         }
         other => unexpected_response(other, "wsxd returned an unexpected view response"),

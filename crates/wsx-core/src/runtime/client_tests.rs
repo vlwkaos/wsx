@@ -1615,3 +1615,75 @@ fn terminal_reader_shutdown_interrupts_full_update_queue() {
     drop(receiver);
     reader.join().unwrap();
 }
+
+// ^ docs/design/tui-health-audit.md #15: a frame stream from a daemon that sends heartbeats ends
+// as `stream_disconnected` when nothing, not even a heartbeat, arrives within the idle limit.
+#[test]
+fn terminal_stream_ends_when_a_heartbeat_daemon_goes_silent() {
+    let (path, listener) = test_listener("silent-subscribe");
+    let server_path = path.clone();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap();
+        let hello = Response::Hello {
+            protocol: PROTOCOL_VERSION,
+            epoch: 1,
+            capabilities: super::super::domain::Capabilities {
+                stream_heartbeat: true,
+                ..Default::default()
+            },
+        };
+        stream.write_all(&encode_line(&hello).unwrap()).unwrap();
+        assert!(matches!(
+            read_json_line::<Request>(&mut stream, MAX_RESPONSE_BYTES).unwrap(),
+            Request::TerminalSubscribe {
+                heartbeat: true,
+                ..
+            }
+        ));
+        stream
+            .write_all(&encode_line(&Response::Ack { revision: 1 }).unwrap())
+            .unwrap();
+        // The connection stays open and sends nothing until the client has given up. The client's
+        // own heartbeats and its detach are read and dropped.
+        let mut line = String::new();
+        let mut reader = BufReader::new(stream);
+        while std::io::BufRead::read_line(&mut reader, &mut line).is_ok_and(|read| read > 0) {
+            line.clear();
+        }
+        drop(listener);
+        std::fs::remove_file(server_path).unwrap();
+    });
+
+    let stream = TerminalStream::connect(
+        &Client::new(path),
+        super::super::domain::PaneId(1),
+        7,
+        false,
+        24,
+        80,
+    )
+    .unwrap();
+    let started = Instant::now();
+    let message = loop {
+        match stream.try_recv() {
+            Ok(message) => break message,
+            Err(mpsc::TryRecvError::Empty) if started.elapsed() < Duration::from_secs(20) => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!("no end of a silent stream: {error}"),
+        }
+    };
+    let TerminalServerMessage::Error(error) = message else {
+        panic!("unexpected terminal message: {message:?}");
+    };
+    assert_eq!(error.code, "stream_disconnected");
+    assert!(error.message.contains("sent nothing"), "{}", error.message);
+    assert!(
+        started.elapsed() >= Duration::from_secs(9),
+        "{:?}",
+        started.elapsed()
+    );
+    drop(stream);
+    server.join().unwrap();
+}
