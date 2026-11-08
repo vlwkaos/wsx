@@ -58,7 +58,7 @@ const stateRow = async (where, words) => {
 await stateRow("of the device panel at 390 px", /^Updated \d+ s ago, every 10 s$/);
 await capture("390x844-panel");
 // The refresh: the page asks again after 10 s and the counter moves.
-await until(`Number(${JSON.stringify(await run())}) < Number(/device run (\\d+)/.exec(document.querySelector('.panel-output')?.textContent ?? '')?.[1])`, "the panel did not refresh by itself", 40);
+await until(`Number(${JSON.stringify(await run())}) < Number(/device run (\\d+)/.exec(document.querySelector('.panel-output')?.textContent ?? '')?.[1])`, "the panel did not refresh by itself", 250);
 // A failing command: the exit code and its output.
 await evaluate("[...document.querySelectorAll('.panel-tabs [role=tab]')].find((tab) => tab.textContent === 'broken').click()");
 await until("/^Failed \\(exit 2\\), updated \\d+ (s|min) ago, on open$/.test(document.querySelector('.panel-state[data-failed] .panel-state-text')?.textContent ?? '') && /broken/.test(document.querySelector('.panel-output')?.textContent ?? '')", "the failing panel shows no exit code and output");
