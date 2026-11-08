@@ -790,6 +790,11 @@ pub fn run_routine_run(mut arguments: impl Iterator<Item = OsString>) -> io::Res
     if let Some(payload) = &spec.payload {
         command.env(EVENT_PAYLOAD_ENV, payload);
     }
+    // ^ wsxd keeps the environment of its first shell: a routine's git and ssh get the
+    // agent that answers, as wsx's push does. ref: docs/tasks.md "Push"
+    if let (Some(socket), _) = wsx_core::git::ssh_agent() {
+        command.env("SSH_AUTH_SOCK", socket);
+    }
     let finish = |exit_code, spawn_failed, final_output| {
         let result = RunResult {
             exit_code,

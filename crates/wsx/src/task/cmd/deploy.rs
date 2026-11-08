@@ -12,7 +12,7 @@ use serde_json::json;
 use std::os::unix::io::AsRawFd;
 use std::time::{Duration, Instant};
 use wsx_core::config::project::load_task_config;
-use wsx_core::git::output_with_timeout_tail;
+use wsx_core::git::{output_with_timeout_tail, ssh_agent};
 use wsx_core::ops;
 use wsx_core::task::checks::{self};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
@@ -359,19 +359,23 @@ pub(crate) fn deploy(kind: DeployKind, args: DeployArgs) -> Result<()> {
         .map_err(|error| error.context(format!("nothing was run or recorded for this {name}")))?;
     let started = Instant::now();
     // ^ The output's tail is kept like a check's: a failed deploy records it for the ledger.
-    let ran = output_with_timeout_tail(
-        std::process::Command::new("/bin/sh")
-            .args(["-c", &command])
-            .current_dir(&path)
-            .env("WSX_DEPLOY_COMMIT", &commit)
-            .stdin(std::process::Stdio::null()),
-        DEPLOY_TIMEOUT,
-        host::CHECK_OUTPUT_BYTES,
-    );
+    // ^ Like wsx's own push, the command's git and ssh reach the login session's agent when
+    // this host's environment has none that answers. ref: docs/tasks.md "Push"
+    let (agent, no_key) = ssh_agent();
+    let mut process = std::process::Command::new("/bin/sh");
+    process
+        .args(["-c", &command])
+        .current_dir(&path)
+        .env("WSX_DEPLOY_COMMIT", &commit)
+        .stdin(std::process::Stdio::null());
+    if let Some(socket) = agent {
+        process.env("SSH_AUTH_SOCK", socket);
+    }
+    let ran = output_with_timeout_tail(&mut process, DEPLOY_TIMEOUT, host::CHECK_OUTPUT_BYTES);
     let duration_ms = started.elapsed().as_millis() as u64;
     ops::cargo_clean(&path);
     let removed = copy::remove(&main, &path, None);
-    let (status, output) = match &ran {
+    let (status, mut output) = match &ran {
         Ok(output) => (Some(output.status), host::output_text(output)),
         Err(error) if error.kind() == std::io::ErrorKind::TimedOut => (
             None,
@@ -379,6 +383,11 @@ pub(crate) fn deploy(kind: DeployKind, args: DeployArgs) -> Result<()> {
         ),
         Err(error) => (None, format!("cannot run tasks.{name}.command: {error}")),
     };
+    if status.is_some_and(|status| !status.success())
+        && output.contains("Permission denied (publickey")
+    {
+        output = format!("{output}\n{no_key}");
+    }
     // ^ JSON callers parse stdout, so the command's output goes to stderr then.
     if !output.is_empty() {
         if json {
