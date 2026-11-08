@@ -5028,7 +5028,8 @@ def part_host(created=None):
     shown = wait_state(switched, 'ready', 'failed')
     assert shown['state'] == 'ready', shown
     assert shown['record']['adapter'] == 'pi' and shown['record']['model'] == 'fake/pi-model', shown['record']
-    # ^ The ledger row shows the fallback, read from the log once per change.
+    assert shown['record']['fallback'] is True, shown['record']
+    # ^ The ledger row shows the fallback, from the record's flag.
     assert {r['id']: r for r in js('task', 'ledger')['open']}[switched]['agent']['fallback'] is True
     switch = next(e for e in log(switched) if e['kind'] == 'agent_switch')
     assert switch['to'] == 'fake-pi (pi/fake/pi-model)' and 'claude usage limit until' in switch['reason'], switch
