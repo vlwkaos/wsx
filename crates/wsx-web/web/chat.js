@@ -393,10 +393,60 @@ export function grow(node) {
   node.style.height = `${Math.min(node.scrollHeight, line * 6 + (node.offsetHeight - node.clientHeight))}px`;
 }
 
+// ^ The suggestion list of a composer: the active row, Escape closing the list until the text
+// changes (`shut`), and the keys that move in it. `keys(event, options, pick)` is true when it took
+// the key: Arrows move, Tab and Enter pick, Escape closes.
+export function useListKeys(text) {
+  const [active, setActive] = useState(0);
+  const [closed, setClosed] = useState(null);
+  const keys = (event, options, pick) => {
+    const move = { ArrowDown: 1, ArrowUp: -1 }[event.key];
+    if (move && options.length) {
+      event.preventDefault();
+      setActive((active + move + options.length) % options.length);
+      return true;
+    }
+    if ((event.key === "Tab" || event.key === "Enter") && !event.shiftKey && options[active]) {
+      event.preventDefault();
+      pick(options[active]);
+      return true;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setClosed(text);
+      return true;
+    }
+    return false;
+  };
+  return { active, setActive, shut: closed === text, keys };
+}
+
+// ^ What a composer does with its field and the files of the next message: the field takes `text`
+// when `key` (the session or the project) changes, uploads, "Paste as text" and Remove go through
+// `files` ({attachments, uploads}), and `filesChanged` / `inlined` tell the composer what to keep
+// and draw. A tap on the card outside its controls puts the caret in the field when `ready`.
+export function useDraft(field, files, { text, key, ready = true, filesChanged, inlined }) {
+  const [error, setError] = useState("");
+  useLayoutEffect(() => { field.current.value = text; grow(field.current); }, [key]);
+  // A composer that goes away with the focus gives the other fields back.
+  useEffect(() => release, []);
+  return {
+    error,
+    setError,
+    upload: (picked) => { setError(""); uploadFiles(picked, files, filesChanged, setError); },
+    inline: (item) => inlinePasted(item, field.current, files).then(inlined, (failure) => setError(failure.message)),
+    remove: (item) => { files.attachments = files.attachments.filter((other) => other !== item); filesChanged(); },
+    focusField: (event) => {
+      if (event.target.closest("button, textarea, input") || !ready) return;
+      event.preventDefault();
+      field.current.focus();
+    },
+  };
+}
+
 function Composer({ session, working, reply, onReply, onSent }) {
   const draft = draftFor(session.id);
   const [, renew] = useState(0);
-  const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const field = useRef();
   const mirror = useRef();
@@ -404,10 +454,8 @@ function Composer({ session, working, reply, onReply, onSent }) {
   const resumes = !session.agent?.attached && Boolean(session.conversation);
   const ready = (Boolean(session.agent?.attached && session.agent.prompt) || resumes) && !session.exited;
   const [listing, setListing] = useState(null);
-  const [active, setActive] = useState(0);
-  // Escape closes the list until the text changes.
-  const [closed, setClosed] = useState(null);
-  const matches = closed === draft.text ? null : matching(listing, draft.text);
+  const { active, setActive, shut, keys } = useListKeys(draft.text);
+  const matches = shut ? null : matching(listing, draft.text);
   // ^ A listed command at the start of the field shows as one token in the accent colour
   // (an overlay behind the transparent field); the text the agent gets is unchanged.
   const token = tokenOf(listing, draft.text);
@@ -442,15 +490,10 @@ function Composer({ session, working, reply, onReply, onSent }) {
     field.current.setSelectionRange(text.length, text.length);
   };
 
-  // A tap anywhere on the composer card, outside its buttons, puts the caret in the field.
-  const focusField = (event) => {
-    if (event.target.closest("button, textarea, input") || !ready) return;
-    event.preventDefault();
-    field.current.focus();
-  };
-  useLayoutEffect(() => { field.current.value = draft.text; grow(field.current); }, [session.id]);
-  // A composer that goes away with the focus gives the other fields back.
-  useEffect(() => release, []);
+  const { error, setError, upload, inline, remove, focusField } = useDraft(field, draft, {
+    text: draft.text, key: session.id, ready, filesChanged: () => { keepDraft(session.id); renew((count) => count + 1); },
+    inlined: () => changed(field.current.value),
+  });
 
   const send = async () => {
     const body = field.current.value.trim();
@@ -473,32 +516,9 @@ function Composer({ session, working, reply, onReply, onSent }) {
     }
     setBusy(false);
   };
-  const upload = (files) => {
-    setError("");
-    uploadFiles(files, draft, () => { keepDraft(session.id); renew((count) => count + 1); }, setError);
-  };
-  const inline = (item) => inlinePasted(item, field.current, draft)
-    .then(() => changed(field.current.value), (failure) => setError(failure.message));
   const keydown = (event) => {
     if (event.isComposing || event.keyCode === 229) return;
-    if (listOpen) {
-      const move = { ArrowDown: 1, ArrowUp: -1 }[event.key];
-      if (move && matches.length) {
-        event.preventDefault();
-        setActive((active + move + matches.length) % matches.length);
-        return;
-      }
-      if ((event.key === "Tab" || event.key === "Enter") && !event.shiftKey && matches[active]) {
-        event.preventDefault();
-        pick(matches[active]);
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setClosed(draft.text);
-        return;
-      }
-    }
+    if (listOpen && keys(event, matches, pick)) return;
     // Backspace right after the token removes the whole command.
     const node = field.current;
     if (event.key === "Backspace" && token && node.selectionStart === token.length && node.selectionEnd === token.length) {
@@ -518,7 +538,7 @@ function Composer({ session, working, reply, onReply, onSent }) {
   return html`
     <div class="composer" data-shell=${shellMode ? "" : null}>
       <${FileChips} files=${draft} onInline=${inline}
-        onRemove=${(item) => { draft.attachments = draft.attachments.filter((other) => other !== item); keepDraft(session.id); renew((count) => count + 1); }} />
+        onRemove=${remove} />
       ${error && html`<p class="error" role="alert">${error}</p>`}
       <${QuoteChip} quote=${reply} onRemove=${() => onReply(null)} />
       ${listOpen && html`<${CommandList} listing=${listing} matches=${matches} active=${active} onPick=${pick} onHover=${setActive} />`}
