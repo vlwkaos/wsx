@@ -725,7 +725,7 @@ async function comeBack() {
   if (!still) await fail(`the newest reply does not stay out of view at the top of the chat: ${await evaluate(sinceState)}`);
   await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 })); document.dispatchEvent(new Event('visibilitychange'))`);
   // ^ A task that is ready is listed like the digest lists it (`view::REPORTED_STATES`).
-  const shown = "/Since you left: .*#\\d+ (#\\d+ )*ready.*#1 #2 #3 #4.* started.* repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')";
+  const shown = "/Landed #\\d+.*Ready #\\d+.*Started #1 #2 #3 #4.*repl(y|ies)/.test(document.querySelector('.since')?.textContent ?? '')";
   for (let attempt = 0; attempt < 100 && !(await evaluate(shown)); attempt++) await pause(100);
   if (!(await evaluate(shown))) await fail(`no since-you-left line: ${await evaluate(sinceState)}`);
 }
@@ -737,9 +737,12 @@ await go(chat);
 await until("!!document.querySelector('.log .bubble')", "the chat shows no bubble");
 await comeBack();
 if ((await evaluate("getComputedStyle(document.querySelector('.since')).animationName")) !== "since-in") await fail("the since line does not expand in");
-const sinceBox = await evaluate("(() => { const line = document.querySelector('.since'); const p = line.querySelector('p').getBoundingClientRect(), b = line.querySelector('button').getBoundingClientRect();"
-  + " return { height: line.getBoundingClientRect().height, inline: b.top < p.bottom && b.bottom > p.top }; })()");
-if (sinceBox.height > 40 || !sinceBox.inline) await fail(`the since line is not one compact line: ${JSON.stringify(sinceBox)}`);
+// ^ The line wraps and is never cut (`SinceLine`): at most two lines, no clipped text, the dismiss button beside it.
+const sinceFit = `(() => { const line = document.querySelector('.since'), p = line.querySelector('p'), b = line.querySelector('button').getBoundingClientRect(), r = p.getBoundingClientRect();
+  const lines = Math.round(p.scrollHeight / parseFloat(getComputedStyle(p).lineHeight));
+  return { text: p.textContent, lines, clipped: p.scrollWidth > p.clientWidth || p.scrollHeight > p.clientHeight + 1, inline: b.top < r.bottom && b.bottom > r.top, left: b.left >= r.right - 1 }; })()`;
+const sinceBox = await evaluate(sinceFit);
+if (sinceBox.lines > 2 || sinceBox.clipped || !sinceBox.inline || !sinceBox.left || /^Since you left/.test(sinceBox.text)) await fail(`the since line is not a short wrapped line: ${JSON.stringify(sinceBox)}`);
 await shot("since");
 await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
 for (let attempt = 0; attempt < 100 && (await count(".since")); attempt++) await pause(100);
@@ -750,6 +753,28 @@ if (await count(".since")) {
 await comeBack();
 await evaluate("[...document.querySelectorAll('.since button')].find((node) => node.title === 'Dismiss').click()");
 await until("!document.querySelector('.since')", "Dismiss did not close the line");
+// A long list at 390 px: six landed tasks, ready, blocked, started and replies. Every group word is
+// shown whole on at most two lines, and the ids that do not fit become "+N more".
+// ^ The answer is rewritten, as a log with that many events would give it (the fixture has two landed).
+{
+  await evaluate(`(() => { const real = window.fetch; window.__sinceFetch = real; window.fetch = async (url, ...rest) => String(url).includes('/since')
+    ? new Response(JSON.stringify({ after: 0, replies: 3, tasks: { landed: [322, 324, 325, 326, 327, 329], ready: [330], blocked: [331, 332], started: [333, 334, 335, 336, 337, 338, 339, 340] } }), { headers: { 'content-type': 'application/json' } })
+    : real(url, ...rest); })()`);
+  await evaluate(`localStorage.setItem('wsx-project-left', JSON.stringify({ ${project}: Date.now() - 2 * 3600 * 1000 })); document.dispatchEvent(new Event('visibilitychange'))`);
+  await until("!!document.querySelector('.since')", "no since line for the long list");
+  const long = async () => {
+    await until(`(() => { const p = document.querySelector('.since p'); return !!p && p.textContent.includes('Landed') && p.textContent.includes('replies'); })()`, 'no long since line at 390 px');
+    await pause(300);
+    return evaluate(sinceFit);
+  };
+  const phone = await long();
+  const words = ["Landed", "Ready", "Blocked", "Started", "3 replies"];
+  if (phone.lines > 2 || phone.clipped || words.some((word) => !phone.text.includes(word)) || !/\+\d+ more/.test(phone.text)) await fail(`the long since line at 390 px: ${JSON.stringify(phone)}`);
+  await shot("since-long");
+  await evaluate("window.fetch = window.__sinceFetch");
+  await evaluate("document.querySelector('.since button[title=Dismiss]').click()");
+  await until("!document.querySelector('.since')", "Dismiss did not close the long line");
+}
 // ^ The chat opens where it was left: at its end again for what follows.
 await evaluate("document.querySelector('.log').scrollTop = document.querySelector('.log').scrollHeight");
 await pause(300);
