@@ -197,6 +197,12 @@ async function viewImages(name, links, many = 2, saves = false) {
   const place = "JSON.stringify([location.pathname, location.search, location.hash, [...document.querySelectorAll('.scroll, .log')].map((node) => Math.round(node.scrollTop))])";
   // ^ The set's images are in and the log has followed them to its end before the page's place is read.
   await evaluate(`Promise.all([...document.querySelectorAll(${JSON.stringify(links)})].map((link) => link.querySelector('img').decode().catch(() => {})))`);
+  // ^ Other rows still settle (images outside the set, a late row): the log follows its end until its place holds for a moment.
+  for (let tries = 0; tries < 20; tries++) {
+    const was = await evaluate(place);
+    await pause(250);
+    if (was === await evaluate(place)) break;
+  }
   const sources = await evaluate(`[...document.querySelectorAll(${JSON.stringify(links)})].map((link) => link.href)`);
   if (sources.length !== many) await fail(`${what}: the set has ${sources.length} image links, not ${many}`);
   const shown = "document.querySelector('dialog.viewer[open] .viewer-stage img:not([data-loading])')";

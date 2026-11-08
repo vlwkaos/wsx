@@ -4175,7 +4175,7 @@ def part_host(created=None):
     wait_closed(gated)
     assert show(gated)['state'] == 'landed' and show(gated)['status']['kind'] == 'landed', show(gated)
     assert main_has('ag-q.txt') and len(kinds(gated, 'result')) == results_before, log(gated)
-    assert not [t for t in traces() if 'ADD-DURING-LAND' in t.get('message', '')], 'the add reached the worker'
+    assert not [t for t in traces() if 'ADD-DURING-LAND' in t.get('message', '') and not t.get('manager')], 'the add reached the worker'
     told = wait(lambda: events_with('#%d landed at' % gated, 'not delivered because the task landed', 'ADD-DURING-LAND'),
                 'the dropped add event', 40)
     assert len(told) == 1 and told[0]['short'][0].get('wakes', True), told
