@@ -693,6 +693,73 @@ fn pending_terminal_entry_cancels_on_selection_change_and_suspend() {
     assert!(matches!(app.mode, Mode::Workspace));
 }
 
+/// docs/design/tui-health-audit.md finding 7: a wsxd that accepts and never answers holds the
+/// connect on its worker. The UI thread returns at once, shows the job, and a reply that comes
+/// after the selection moved is dropped.
+#[test]
+fn terminal_entry_does_not_wait_for_a_silent_wsxd_and_drops_a_late_reply() {
+    let mut project = make_project("silent-entry");
+    let mut worktree = make_worktree("/tmp/silent-entry");
+    for _ in 0..2 {
+        worktree
+            .sessions
+            .push(make_sess(false, runtime::AgentState::Idle));
+    }
+    worktree.sessions[1].pane_id = runtime::PaneId(2);
+    worktree.sessions[1].terminal_id = runtime::TerminalId(2);
+    project.worktrees.push(worktree);
+    let mut app = make_test_app(
+        GlobalConfig::default(),
+        WorkspaceState {
+            projects: vec![project],
+        },
+        None,
+    );
+    let first = app
+        .flat()
+        .iter()
+        .position(|entry| matches!(entry, FlatEntry::Session { .. }))
+        .unwrap();
+    app.tree_selected = first;
+    let (socket_path, listener) = terminal_stream_listener("silent-entry");
+    app.runtime_client = runtime::Client::new(socket_path.clone());
+    let accepted = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+    });
+    let mut terminal = workspace_terminal();
+
+    let started = Instant::now();
+    app.action_select(&mut terminal).unwrap();
+    assert!(started.elapsed() < Duration::from_millis(200));
+    assert!(app.is_busy(), "the open job shows while wsxd is silent");
+    assert!(app.pending_terminal_entry.is_some());
+    assert!(app.terminal_stream.is_none());
+
+    // The selection moves on; wsxd then ends the connection (a late failure).
+    app.tree_selected = first + 1;
+    app.cancel_pending_terminal_entry_if_stale();
+    assert!(app.pending_terminal_entry.is_none());
+    drop(accepted.join().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.is_busy() && Instant::now() < deadline {
+        app.drain_async_results();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!app.is_busy());
+    assert!(app.terminal_stream.is_none());
+    assert!(matches!(app.mode, Mode::Workspace));
+    assert!(
+        app.notice.is_none()
+            || app
+                .notice
+                .as_ref()
+                .is_some_and(|n| n.level != NoticeLevel::Error),
+        "a reply for an entry that is gone says nothing"
+    );
+    let _ = std::fs::remove_file(socket_path);
+}
+
 #[test]
 fn terminal_entry_waits_for_the_resized_full_baseline_before_switching_mode() {
     let pane_id = runtime::PaneId(1);
@@ -804,7 +871,7 @@ fn terminal_entry_waits_for_the_resized_full_baseline_before_switching_mode() {
     patch_tx.send(()).unwrap();
     let resync_deadline = Instant::now() + Duration::from_secs(1);
     while resync_rx.try_recv().is_err() && Instant::now() < resync_deadline {
-        app.drain_terminal_stream();
+        app.drain_async_results();
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(matches!(app.mode, Mode::Workspace));
@@ -814,7 +881,7 @@ fn terminal_entry_waits_for_the_resized_full_baseline_before_switching_mode() {
     // ^ This checks eventual delivery, not latency; loaded CI runners can exceed one second.
     let baseline_deadline = Instant::now() + Duration::from_secs(5);
     while !matches!(app.mode, Mode::Terminal { .. }) && Instant::now() < baseline_deadline {
-        app.drain_terminal_stream();
+        app.drain_async_results();
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(matches!(app.mode, Mode::Terminal { pane_id: id } if id == pane_id));
@@ -911,11 +978,18 @@ fn terminal_sidebar_toggle_is_process_local_and_resizes_the_active_stream() {
     )
     .unwrap();
 
-    app.enter_terminal(pane_id, terminal_id, "sidebar toggle".into(), &terminal)
-        .unwrap();
+    app.enter_terminal(
+        pane_id,
+        terminal_id,
+        "sidebar toggle".into(),
+        &terminal,
+        None,
+    )
+    .unwrap();
     let deadline = Instant::now() + Duration::from_secs(1);
+    // ^ The connect runs on a worker; its reply comes through the bg channel.
     while !matches!(app.mode, Mode::Terminal { .. }) && Instant::now() < deadline {
-        app.drain_terminal_stream();
+        app.drain_async_results();
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(matches!(app.mode, Mode::Terminal { .. }));
@@ -1222,6 +1296,13 @@ fn terminal_sibling_switch_waits_for_the_target_baseline_before_accepting_input(
     assert!(matches!(app.mode, Mode::Terminal { pane_id } if pane_id == runtime::PaneId(2)));
     assert!(app.pending_terminal_entry.is_some());
     assert!(app.terminal_cursor().is_none());
+    // ^ The connect runs on a worker: the stream exists once its reply is applied.
+    let connect_deadline = Instant::now() + Duration::from_secs(5);
+    while app.terminal_stream.is_none() && Instant::now() < connect_deadline {
+        app.drain_async_results();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(app.terminal_stream.is_some());
 
     app.dispatch(Action::ToggleTerminalSidebar, &mut terminal)
         .unwrap();
@@ -1239,7 +1320,7 @@ fn terminal_sibling_switch_waits_for_the_target_baseline_before_accepting_input(
 
     let deadline = Instant::now() + Duration::from_secs(1);
     while app.pending_terminal_entry.is_some() && Instant::now() < deadline {
-        app.drain_terminal_stream();
+        app.drain_async_results();
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(app.pending_terminal_entry.is_none());
@@ -1262,6 +1343,7 @@ fn repeated_suspend_restarts_pending_terminal_resume_with_the_same_identity() {
         terminal_id,
         generation: 2,
         snapshot_ready: true,
+        connecting: false,
     });
 
     assert_eq!(app.prepare_terminal_resume(), Some(3));
@@ -1307,6 +1389,7 @@ fn resume_snapshot_must_confirm_the_exact_live_terminal_before_reconnect() {
         terminal_id,
         generation: 2,
         snapshot_ready: false,
+        connecting: false,
     });
     app.apply_resume_refresh(
         2,
@@ -1331,6 +1414,7 @@ fn resume_snapshot_must_confirm_the_exact_live_terminal_before_reconnect() {
         terminal_id,
         generation: 3,
         snapshot_ready: false,
+        connecting: false,
     });
     app.apply_resume_refresh(3, Ok(snapshot(vec![])));
     assert!(app.pending_terminal_resume.is_none());

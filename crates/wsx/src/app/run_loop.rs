@@ -455,6 +455,7 @@ impl App {
             terminal_id: active_identity.1,
             generation,
             snapshot_ready: false,
+            connecting: false,
         });
         Some(generation)
     }
@@ -521,43 +522,28 @@ impl App {
     pub(super) fn reconnect_terminal_after_resume(&mut self, terminal: &Tui) {
         let Some(target) = self
             .pending_terminal_resume
-            .as_ref()
-            .filter(|target| target.snapshot_ready)
+            .as_mut()
+            .filter(|target| target.snapshot_ready && !target.connecting)
         else {
             return;
         };
-        let (pane_id, terminal_id) = (target.pane_id, target.terminal_id);
-        self.pending_terminal_resume = None;
-        let (rows, cols) = self.terminal_pane_size(terminal);
-        match runtime::TerminalStream::connect(
-            &self.runtime_client,
-            pane_id,
-            self.terminal_controller_id,
-            TerminalControlIntent::Resume.takeover(),
-            rows,
-            cols,
-        ) {
-            Ok(stream) => {
-                self.terminal_stream_generation = self.terminal_stream_generation.wrapping_add(1);
-                self.terminal_stream = Some(ActiveTerminalStream {
-                    epoch: stream.epoch(),
-                    pane_id,
-                    terminal_id,
-                    generation: self.terminal_stream_generation,
-                    stream,
-                    size: (rows, cols),
-                });
-                self.mode = Mode::Terminal { pane_id };
-                self.terminal_escape_chord.reset();
-            }
-            Err(error) => {
-                self.mode = Mode::Workspace;
-                if error.to_string().starts_with("terminal_busy:") {
-                    self.set_warning("Terminal control is active in another wsx instance");
-                } else {
-                    self.set_error(format!("Terminal resume failed: {error}"));
-                }
-            }
-        }
+        target.connecting = true;
+        let (pane_id, terminal_id, generation) =
+            (target.pane_id, target.terminal_id, target.generation);
+        let size = self.terminal_pane_size(terminal);
+        self.spawn_terminal_connect(
+            "reconnect terminal".into(),
+            ConnectRequest {
+                kind: ConnectKind::Resume,
+                generation,
+                pane_id,
+                terminal_id,
+                controller_id: self.terminal_controller_id,
+                size,
+                target: String::new(),
+                focus_session: None,
+                restart: false,
+            },
+        );
     }
 }

@@ -354,7 +354,9 @@ impl App {
         self.collapse_stale_projects();
         if let (Mode::Terminal { pane_id }, true) = (
             &self.mode,
-            self.terminal_stream.is_none() && self.pending_terminal_resume.is_none(),
+            self.terminal_stream.is_none()
+                && self.pending_terminal_resume.is_none()
+                && self.pending_terminal_entry.is_none(),
         ) {
             self.mode = self.mode_after_terminal(Some(*pane_id));
             self.set_warning("Terminal closed");
