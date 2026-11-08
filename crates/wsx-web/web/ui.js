@@ -1,6 +1,7 @@
 // Notices, the confirmation dialog, and the device's light or dark choice.
-import { html, Icon, keep, kept, useEffect, useExit, useRef, useState } from "./lib.js";
-import { backTarget, can, goBack, parseRoute, reloadForBuild, state, update, useStore } from "./store.js";
+import { api } from "./api.js";
+import { html, Icon, keep, kept, Loading, useCoalescedLoad, useEffect, useExit, useRef, useState } from "./lib.js";
+import { backTarget, can, goBack, parseRoute, reloadForBuild, state, update, useEventLoad, useStore } from "./store.js";
 
 // A theme with a dark scheme is dark unless this device chose light (docs/web-themes.md).
 const SCHEME_KEY = "wsx-scheme";
@@ -180,3 +181,34 @@ export const SheetBar = ({ grip, onClose, tools, children }) => html`
     <div class="bar-title">${children}</div>
     ${tools}
   </header>`;
+
+// ^ A sheet page's one read of `path`: [value, failure, read]. It reads on open and when
+// `again` changes, and on each stream event in `on` that `wanted` accepts (`useEventLoad`).
+export function useSheetRead(path, { on = [], wanted = () => true, again = [] } = {}) {
+  const [value, setValue] = useState(null);
+  const [failure, setFailure] = useState("");
+  const read = useCoalescedLoad(async (current) => {
+    const next = await api(path);
+    if (!current()) return;
+    setValue(next);
+    setFailure("");
+  }, (error) => setFailure(error.message), [path]);
+  useEventLoad(on, read, wanted, [path, ...again]);
+  return [value, failure, read];
+}
+
+// ^ A sheet page: the bar (`bar` is its title block, `tools` follow it), then the scrolling body
+// (`className`, `scroll` the ref). The sheet opens once the page is `loaded` or has a `failure`
+// (tasks.js `Sheet`; `grip` is absent when the page is a screen). A failure or the wait takes the
+// body, under `head`; `children` show once loaded.
+export function SheetPage({ grip, onClose, tools, bar, className = "", scroll, head, loaded = true, failure = "", children }) {
+  useEffect(() => { if (loaded || failure) grip?.ready(); }, [loaded, Boolean(failure)]);
+  return html`
+    <div class="page task-page">
+      <${SheetBar} grip=${grip} onClose=${onClose} tools=${tools}>${bar}</${SheetBar}>
+      <div class=${`scroll ${className}`.trim()} ref=${scroll}>
+        ${head}
+        ${failure ? html`<p class="error empty" role="alert">${failure}</p>` : !loaded ? html`<${Loading} />` : children}
+      </div>
+    </div>`;
+}

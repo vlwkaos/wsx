@@ -6,7 +6,7 @@
 import { api } from "./api.js";
 import { html, Icon, Loading, useEffect, useNow, useState } from "./lib.js";
 import { can, goBack, useStore } from "./store.js";
-import { SheetBar } from "./ui.js";
+import { SheetPage, useSheetRead } from "./ui.js";
 
 // `base`: a project's panels, or the machine card (api/machine).
 const projectPanels = (project) => `api/projects/${project}/panels`;
@@ -131,30 +131,21 @@ function Panel({ base, name }) {
 
 // The page: the project's panels, one at a time.
 export function PanelsPage({ project, onClose, grip }) {
-  const [list, setList] = useState(null);
-  const [failure, setFailure] = useState("");
+  const [list, failure] = useSheetRead(projectPanels(project));
   const [open, setOpen] = useState(null);
-  useEffect(() => {
-    api(url(projectPanels(project))).then((value) => { setList(value); setOpen((was) => was ?? value.panels?.[0]?.name ?? null); }, (error) => setFailure(error.message));
-  }, [project]);
-  useEffect(() => { if (list || failure) grip?.ready?.(); }, [Boolean(list), failure]);
   const panels = list?.panels ?? [];
+  // ^ The first panel until another is chosen.
+  const shown = open ?? panels[0]?.name ?? null;
   return html`
-    <div class="page task-page">
-      <${SheetBar} grip=${grip} onClose=${onClose}><span class="bar-label">Panels</span></${SheetBar}>
-      <div class="scroll panels">
-        ${failure ? html`<p class="error empty" role="alert">${failure}</p>`
-          : !list ? html`<${Loading} />`
-          : html`
-            ${list.notice && html`<p class="note">${list.notice}</p>`}
-            ${!panels.length ? html`<p class="empty">No panels</p>`
-              : html`
-                ${panels.length > 1 && html`<div class="panel-tabs" role="tablist" aria-label="Panels">
-                  ${panels.map((panel) => html`<button type="button" role="tab" key=${panel.name} aria-selected=${open === panel.name} onClick=${() => setOpen(panel.name)}>${panel.name}</button>`)}
-                </div>`}
-                ${open && html`<${Panel} key=${open} base=${projectPanels(project)} name=${open} />`}`}`}
-      </div>
-    </div>`;
+    <${SheetPage} grip=${grip} onClose=${onClose} bar=${html`<span class="bar-label">Panels</span>`} className="panels" loaded=${Boolean(list)} failure=${failure}>
+      ${list?.notice && html`<p class="note">${list.notice}</p>`}
+      ${!panels.length ? html`<p class="empty">No panels</p>`
+        : html`
+          ${panels.length > 1 && html`<div class="panel-tabs" role="tablist" aria-label="Panels">
+            ${panels.map((panel) => html`<button type="button" role="tab" key=${panel.name} aria-selected=${shown === panel.name} onClick=${() => setOpen(panel.name)}>${panel.name}</button>`)}
+          </div>`}
+          ${shown && html`<${Panel} key=${shown} base=${projectPanels(project)} name=${shown} />`}`}
+    </${SheetPage}>`;
 }
 
 // The Machine tab: one card, This Mac, with the sections of the granted projects' machine panels after
