@@ -3,7 +3,8 @@
 import { api } from "./api.js";
 import { html, Icon, Loading, useCoalescedLoad, useEffect, useRef, useState } from "./lib.js";
 import { can, useStore } from "./store.js";
-import { loadTasks, TaskChip } from "./tasks.js";
+import { loadTasks } from "./task-api.js";
+import { TaskChip } from "./task-words.js";
 import { markFound } from "./reply.js";
 import { SheetBar } from "./ui.js";
 
