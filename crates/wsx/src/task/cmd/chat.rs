@@ -1,9 +1,11 @@
 //! The manager and role chats: `say`, `chat`, `search`, `role` (docs/tasks.md "Manager", "Roles").
 
-use super::approve::{ask_owner, owner_only};
+use super::approve::{ask_owner, owner_only, request_of};
 use crate::cli::load_config;
+use crate::cli::PromptSource;
 use crate::task::args::RoleCmd;
 use crate::task::broker;
+use crate::task::manager;
 use crate::task::{
     acting_as_manager, actor, launch_manager, not_for_roles, open, print_json, project_entry,
 };
@@ -17,6 +19,7 @@ use wsx_core::task::manager::{ApprovalAction, ManagerEvent, ManagerRequest, Mana
 use wsx_core::task::owner::{self};
 use wsx_core::task::roles;
 use wsx_core::task::store::ManagerDir;
+use wsx_core::task::MAX_MESSAGE_BYTES;
 use wsx_core::task::{search, text};
 use wsx_core::task::{
     store::{self, TaskDir},
@@ -323,11 +326,13 @@ pub(crate) fn role(action: RoleCmd) -> Result<()> {
             if actor() == Actor::Manager
                 && ask_owner(
                     &project_id,
-                    ApprovalAction::Role,
-                    None,
-                    None,
-                    Some((&name, &brief)),
-                    None,
+                    request_of(
+                        ApprovalAction::Role,
+                        None,
+                        None,
+                        Some((&name, &brief)),
+                        None,
+                    ),
                     said.owner_said,
                     json,
                 )?
@@ -405,4 +410,44 @@ pub(crate) fn read_brief(path: &Path) -> Result<String> {
     let brief = String::from_utf8(bytes).context("the brief is not UTF-8 text")?;
     roles::checked_brief(&brief)?;
     Ok(brief)
+}
+
+/// `wsx task manager`: start the project's manager, or say that it runs.
+pub(crate) fn manager_command(project: Option<&str>, json: bool) -> Result<()> {
+    let (started, dir) = ensure_manager(project)?;
+    let state = if started { "started" } else { "running" };
+    if json {
+        let (project, main) = project_entry(project)?;
+        let settings = load_task_config(&main).map_err(|error| anyhow::anyhow!(error))?;
+        let name = settings.manager_shown_name(&project);
+        print_json(&json!({ "state": state, "socket": dir.socket_path(), "name": name }))
+    } else {
+        println!("manager {state}");
+        Ok(())
+    }
+}
+
+/// `wsx task say`: to the manager or a role, from the owner, a manager or a role.
+pub(crate) fn say_command(
+    project: Option<&str>,
+    role: Option<&str>,
+    text: PromptSource,
+    (from_manager, from_role, reply): (bool, bool, bool),
+    json: bool,
+) -> Result<()> {
+    if reply && !from_manager && !from_role {
+        bail!("--reply answers with --from-manager or --from-role");
+    }
+    let from = match (from_manager, from_role) {
+        (true, _) => Some(From::Manager(reply)),
+        (_, true) => Some(From::Role(reply)),
+        _ => None,
+    };
+    say(project, role, text.read(MAX_MESSAGE_BYTES)?, from, json)
+}
+
+/// `wsx task boundary-profile`: the manager's Seatbelt profile (hidden; the boundary scenario).
+pub(crate) fn boundary_profile(project: Option<&str>) -> Result<()> {
+    let (name, main) = project_entry(project)?;
+    manager::print_profile(&name, &main)
 }

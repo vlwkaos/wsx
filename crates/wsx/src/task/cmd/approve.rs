@@ -39,18 +39,12 @@ pub(crate) fn request_of(
 /// The manager's action that needs the owner: approved by the owner's message `owner_said`
 /// of its running turn (recorded; `false`: run it), else a request (`true`: the owner was
 /// asked). ref: docs/tasks.md "Approvals"
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn ask_owner(
     project_id: &str,
-    action: ApprovalAction,
-    task: Option<&TaskRecord>,
-    commit: Option<&str>,
-    role: Option<(&str, &str)>,
-    lease: Option<&str>,
+    request: ApprovalLine,
     owner_said: Option<u64>,
     json: bool,
 ) -> Result<bool> {
-    let request = request_of(action, task, commit, role, lease);
     Ok(submit(project_id, request, owner_said, json)?.1)
 }
 

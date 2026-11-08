@@ -1,6 +1,8 @@
 //! `wsx task push`, `deploy`, `release`, `trial` and `deployed` (docs/tasks.md).
 
 use super::approve::{ask_covering, request_of};
+use crate::task::args::{DeployArgs, PushArgs};
+use crate::task::open;
 use crate::task::{
     acting_as_manager, actor, ask_host, not_for_roles, print_json, project_entry, report_response,
 };
@@ -35,14 +37,21 @@ pub(crate) const PUSH_REMOTE: &str = "origin";
 /// `--force-with-lease` on origin's tip seen when it was asked (`lease`). The manager always
 /// asks the owner (or names the owner's message); its broker runs this in the manager host,
 /// outside the boundary, so the owner's ssh setup applies. ref: docs/tasks.md "Push"
-pub(crate) fn push(
-    project: Option<&str>,
-    commit: Option<&str>,
-    force: bool,
-    lease: Option<&str>,
-    owner_said: Option<u64>,
-    json: bool,
-) -> Result<()> {
+pub(crate) fn push(args: PushArgs) -> Result<()> {
+    let PushArgs {
+        commit,
+        force,
+        lease,
+        said,
+        project,
+        json,
+    } = args;
+    let (project, commit, lease, owner_said) = (
+        project.as_deref(),
+        commit.as_deref(),
+        lease.as_deref(),
+        said.owner_said,
+    );
     not_for_roles("push")?;
     let (project_name, main) = project_entry(project)?;
     let project_id = store::project_id(&project_name, &main);
@@ -188,17 +197,18 @@ pub(crate) fn push(
 /// One by hand checks, takes the lock and answers at once: a detached `wsx task` holding the
 /// lock (`run_locked`) runs and records it, so no caller's time limit (the manager's broker)
 /// cuts a long release.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn deploy(
-    kind: DeployKind,
-    project: Option<&str>,
-    commit: Option<&str>,
-    if_new: bool,
-    trial: Option<u32>,
-    run_locked: Option<i32>,
-    owner_said: Option<u64>,
-    json: bool,
-) -> Result<()> {
+pub(crate) fn deploy(kind: DeployKind, args: DeployArgs) -> Result<()> {
+    let DeployArgs {
+        commit,
+        if_new,
+        trial,
+        run,
+        said,
+        project,
+        json,
+    } = args;
+    let (project, commit) = (project.as_deref(), commit.as_deref());
+    let (run_locked, owner_said) = (run.run_locked, said.owner_said);
     let by_hand = !if_new && trial.is_none() && run_locked.is_none();
     let name = kind_name(kind);
     not_for_roles(name)?;
@@ -427,7 +437,14 @@ pub(crate) fn deploy(
 /// `wsx task trial <n>`: take the project's trial slot and have the host put the ready
 /// revision on the live site; `--end` frees the slot and deploys the default branch again.
 /// ref: docs/tasks.md "Hold and trial"
-pub(crate) fn trial_command(dir: &TaskDir, end: bool, json: bool) -> Result<()> {
+pub(crate) fn trial_command(
+    task: &str,
+    end: bool,
+    project: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    not_for_roles("trial")?;
+    let dir = open(project, task)?;
     let record = dir.read_record()?;
     if end {
         let ended = trial::end(
@@ -475,7 +492,7 @@ pub(crate) fn trial_command(dir: &TaskDir, end: bool, json: bool) -> Result<()> 
         println!("{message}");
         return Ok(());
     }
-    let response = ask_host(dir, &HostRequest::Trial);
+    let response = ask_host(&dir, &HostRequest::Trial);
     // ^ A host that refused or did not answer leaves the slot free again.
     if !response.as_ref().is_ok_and(|response| response.ok) {
         let _ = store::change_trial(&dir.project_id, |current| match current {
@@ -483,7 +500,7 @@ pub(crate) fn trial_command(dir: &TaskDir, end: bool, json: bool) -> Result<()> 
             other => (other, ()),
         });
     }
-    report_response(dir, response?, json)
+    report_response(&dir, response?, json)
 }
 
 /// The last successful deploy and release and how many default-branch commits each lacks.

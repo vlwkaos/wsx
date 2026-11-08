@@ -1,8 +1,8 @@
 //! `wsx task check`: the owner's To check list (docs/tasks.md "To check").
 
-use super::new::{create, Steps};
+use super::approve::owner_only;
+use super::new::{create, NewTask, Steps};
 use crate::task::args::{CheckAction, Chosen};
-use crate::task::owner_only;
 use crate::task::{acting_as_manager, print_json, project_entry};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
@@ -118,19 +118,19 @@ pub(crate) fn fail_check(
         pass_if = item.pass_if,
         report = report.display(),
     );
-    let (dir, ..) = create(
+    let (dir, ..) = create(NewTask {
         prompt,
-        None,
-        None,
-        Some(fix_title(&item.check)),
-        None,
-        Some(item.id.clone()),
-        None,
-        Vec::new(),
-        false,
-        Steps::Skip(Vec::new()),
-        Some(project),
-    )?;
+        from: None,
+        into: None,
+        title: Some(fix_title(&item.check)),
+        model: None,
+        fixes: Some(item.id.clone()),
+        hold: None,
+        files: Vec::new(),
+        plan: false,
+        steps: Steps::Skip(Vec::new()),
+        project: Some(project.to_string()),
+    })?;
     checks::fail(project_id, id, note, dir.id).with_context(|| {
         format!(
             "#{} was started to fix {id}, but the item was not marked failed",
