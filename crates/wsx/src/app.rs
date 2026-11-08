@@ -126,6 +126,8 @@ struct ActiveTerminalStream {
     terminal_id: runtime::TerminalId,
     generation: u64,
     stream: runtime::TerminalStream,
+    /// The last size wsxd was given (rows, cols): attach or a later resize.
+    size: (u16, u16),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -304,6 +306,11 @@ fn lifecycle_clock_sample() -> Option<LifecycleClockSample> {
 }
 
 const TICK_MS: u64 = 100;
+/// A burst of resize events waits for its last size at most this long.
+const RESIZE_MERGE_MAX: Duration = Duration::from_millis(100);
+/// The first pause after a failed cache save; it doubles up to the maximum.
+const CACHE_RETRY_MIN: Duration = Duration::from_secs(2);
+const CACHE_RETRY_MAX: Duration = Duration::from_secs(60);
 const TERMINAL_TICK_MS: u64 = 4;
 const MODE_PROBE_IDLE: Duration = Duration::from_secs(1);
 const FAST_INTERVAL_MS: u64 = 500;
@@ -743,6 +750,9 @@ struct RoutineRefreshResult {
     response: Result<wsx_core::routine::Response>,
 }
 
+type RoutineAvailability =
+    fn(&wsx_core::runtime::Client) -> std::io::Result<wsx_core::runtime::Availability>;
+
 fn routine_error_kind(error: &anyhow::Error) -> Option<wsx_core::routine::RoutineErrorKind> {
     error
         .downcast_ref::<wsx_core::routine::RoutineError>()
@@ -1048,6 +1058,13 @@ pub struct App {
     fetch_pending: HashSet<PathBuf>,
     /// Retry pending commands without publishing the surrounding presentation snapshot.
     cache_dirty: bool,
+    /// After a failed cache save: when the next automatic try may run, and the pause after it.
+    /// Some also means the failure notice was shown already.
+    cache_retry: Option<(Instant, Duration)>,
+    /// Set by a resize event; `flush_terminal_resize` sends one size once events stop.
+    terminal_resize_due: Option<Instant>,
+    /// Projects with a routine list request in flight.
+    routine_refresh_pending: HashSet<PathBuf>,
     /// ^ docs/ui-state-ownership.md "Test isolation": every cache read and write uses this file.
     cache_path: PathBuf,
     cache_changes: wsx_core::cache::WorkspaceCacheChanges,
@@ -1297,6 +1314,9 @@ impl App {
             fetch_rx,
             fetch_pending: HashSet::new(),
             cache_dirty: false,
+            cache_retry: None,
+            terminal_resize_due: None,
+            routine_refresh_pending: HashSet::new(),
             cache_path,
             cache_changes: Default::default(),
             cache_cursor: (raw_selected, cursor_identity.clone()),
@@ -1817,9 +1837,24 @@ impl App {
         action: wsx_core::routine::Action,
         kind: RoutineResultKind,
     ) {
+        self.spawn_routine_request_with(
+            project_path,
+            action,
+            kind,
+            wsx_core::runtime::ensure_available,
+        );
+    }
+
+    fn spawn_routine_request_with(
+        &mut self,
+        project_path: PathBuf,
+        action: wsx_core::routine::Action,
+        kind: RoutineResultKind,
+        availability: RoutineAvailability,
+    ) {
         let tx = self.routine_tx.clone();
         std::thread::spawn(move || {
-            let response = crate::cli::send_routine(&project_path, action);
+            let response = crate::cli::send_routine_with(&project_path, action, availability);
             let _ = tx.send(RoutineRefreshResult {
                 project_path,
                 kind,
@@ -1834,8 +1869,26 @@ impl App {
         expand: bool,
         selection: RoutineSelection,
     ) {
+        self.spawn_routine_project_refresh_with(
+            project_path,
+            expand,
+            selection,
+            wsx_core::runtime::ensure_available,
+        );
+    }
+
+    /// The timer refresh passes `ensure_background_available`: it must not start a wsxd that
+    /// `wsx daemon stop` ended.
+    fn spawn_routine_project_refresh_with(
+        &mut self,
+        project_path: PathBuf,
+        expand: bool,
+        selection: RoutineSelection,
+        availability: RoutineAvailability,
+    ) {
         let generation = self.invalidate_routine_refresh(&project_path);
-        self.spawn_routine_request(
+        self.routine_refresh_pending.insert(project_path.clone());
+        self.spawn_routine_request_with(
             project_path,
             wsx_core::routine::Action::List,
             RoutineResultKind::Refresh {
@@ -1843,6 +1896,7 @@ impl App {
                 expand,
                 selection,
             },
+            availability,
         );
     }
 

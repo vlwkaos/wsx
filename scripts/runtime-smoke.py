@@ -1972,6 +1972,40 @@ try:
     os.write(tui_master, b"\r")
     viewed_shell_answers("restarted", 3)
     assert not viewed_exited()
+
+    # docs/design/tui-health-audit.md #5: a window drag sends many resize events; wsxd gets the
+    # last size, not one resize per event. The raw fixture prints a line at each SIGWINCH it gets.
+    viewed_pane = next(pane["id"] for pane in call("snapshot")["data"]["panes"]
+                       if pane["terminal_id"] == viewed)
+    os.write(tui_master, f"python3 {RAW_FIXTURE}; stty sane\r".encode())
+    wait_for(lambda: "raw-ready" in pane_text(viewed_pane), "the resize fixture did not start", 30)
+    time.sleep(1)
+    sizes_before = pane_text(viewed_pane).count("[size ")
+    for step in range(20):
+        fcntl.ioctl(tui_master, termios.TIOCSWINSZ, struct.pack("HHHH", 30 + step, 100 + step, 0, 0))
+        os.kill(tui.pid, signal.SIGWINCH)
+    time.sleep(2)
+    resizes = pane_text(viewed_pane).count("[size ") - sizes_before
+    print(f"tui resize: a burst of 20 window sizes gave wsxd {resizes} resize(s)", flush=True)
+    assert 1 <= resizes <= 3, f"20 window sizes in a burst reached the pane as {resizes} resizes"
+    fcntl.ioctl(tui_master, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    os.kill(tui.pid, signal.SIGWINCH)
+    time.sleep(1)
+    os.write(tui_master, b"\x04")
+    wait_for(lambda: "[bye]" in pane_text(viewed_pane), "the resize fixture did not end", 30)
+    viewed_shell_answers("resized", 5)
+
+    # audit #6 and #8: after `wsx daemon stop` the TUI's 30 s routine refresh and its event
+    # monitor leave wsxd stopped, and the outage shows no restart failure.
+    mark = len(tui_screen)
+    stopped_by_owner = wsx("daemon", "stop", "--force")
+    assert stopped_by_owner.returncode == 0, stopped_by_owner
+    wait_socket_stopped()
+    time.sleep(35)
+    assert not SOCKET.exists(), "the TUI started wsxd again after `wsx daemon stop`"
+    assert b"restart failed" not in tui_screen[mark:], bytes(tui_screen[mark:])[-600:]
+    print("tui stop: wsxd was still stopped 35 s after `wsx daemon stop` with the TUI running", flush=True)
+    cursor_daemon = start()
 finally:
     tui.terminate()
     tui.wait(timeout=5)

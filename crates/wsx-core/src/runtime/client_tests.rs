@@ -1687,3 +1687,21 @@ fn terminal_stream_ends_when_a_heartbeat_daemon_goes_silent() {
     drop(stream);
     server.join().unwrap();
 }
+
+#[test]
+fn event_monitor_reports_one_reason_per_outage_when_the_restart_fails() {
+    // ^ A custom client cannot restart wsxd, so each pass fails the poll and then the restart.
+    // The monitor must say it once (docs/design/tui-health-audit.md #8), not flip between two texts.
+    let (path, listener) = test_listener("monitor-one-reason");
+    drop(listener);
+    std::fs::remove_file(&path).unwrap();
+    let (monitor, signals) = EventMonitor::start(Client::new(path)).unwrap();
+    thread::sleep(Duration::from_millis(2_500));
+    drop(monitor);
+    let reasons: Vec<EventSignal> = signals.try_iter().collect();
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    match &reasons[0] {
+        EventSignal::Disconnected(reason) => assert!(reason.contains("restart failed"), "{reason}"),
+        other => panic!("{other:?}"),
+    }
+}

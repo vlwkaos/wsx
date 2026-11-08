@@ -22,7 +22,7 @@ A script that copies its caller's environment and wants its own daemon removes `
 
 ## Errors name the socket
 
-A failed connect reads `<ErrorKind> at <socket>: <error>`, for example `NotFound at /Users/me/.local/state/wsx/wsx.sock: No such file or directory (os error 2)`. The TUI's sticky "Runtime disconnected; retrying" notice shows that line, also before the first snapshot. A path that is not the one the daemon uses means the client's environment differs from the daemon's.
+A failed connect reads `<ErrorKind> at <socket>: <error>`, for example `NotFound at /Users/me/.local/state/wsx/wsx.sock: No such file or directory (os error 2)`. The TUI's sticky "Runtime disconnected; retrying" notice shows that line, also before the first snapshot. The notice names one reason per outage; a failed restart joins it as `; restart failed: ...`. A path that is not the one the daemon uses means the client's environment differs from the daemon's.
 
 Verified by `scripts/runtime-smoke.py` (the "daemon-discovery" steps).
 

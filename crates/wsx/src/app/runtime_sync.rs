@@ -22,7 +22,15 @@ impl App {
         let committed = match self.cache_changes.save(&self.cache_path, sync) {
             Ok(committed) => committed,
             Err(error) => {
-                self.set_error(format!("Cache save failed: {error}"));
+                // ^ A save that keeps failing is tried again after a growing pause, and the
+                // notice shows once, not on every key (audit note, docs/design/tui-health-audit.md).
+                let pause = self
+                    .cache_retry
+                    .map_or(CACHE_RETRY_MIN, |(_, last)| (last * 2).min(CACHE_RETRY_MAX));
+                if self.cache_retry.is_none() {
+                    self.set_error(format!("Cache save failed: {error}"));
+                }
+                self.cache_retry = Some((Instant::now() + pause, pause));
                 self.cache_dirty = true;
                 return Err(error.context("could not persist UI intent"));
             }
@@ -63,6 +71,7 @@ impl App {
         self.cache_changes = Default::default();
         self.cache_cursor = cursor;
         self.cache_dirty = false;
+        self.cache_retry = None;
         Ok(())
     }
 
@@ -77,7 +86,10 @@ impl App {
     }
 
     pub(super) fn write_cache_if_dirty(&mut self) {
-        if self.cache_dirty {
+        let waiting = self
+            .cache_retry
+            .is_some_and(|(retry_at, _)| Instant::now() < retry_at);
+        if self.cache_dirty && !waiting {
             let _ = self.persist_state(false);
         }
     }

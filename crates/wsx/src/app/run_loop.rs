@@ -25,14 +25,18 @@ impl App {
 
             // ^ docs/ui-state-ownership.md: resume, focus and resize write the modes again;
             // an idle window asks the terminal, because a reset sends no event.
-            let mode_check = if std::mem::take(&mut self.reassert_terminal_modes) {
+            // ^ A drag sends many resize events: read them all, send one size, draw once.
+            let resize_queued = !self.flush_terminal_resize(terminal);
+            let mode_check = if resize_queued {
+                tui::ModeCheck::Skip
+            } else if std::mem::take(&mut self.reassert_terminal_modes) {
                 tui::ModeCheck::Reassert
             } else if self.last_terminal_event.elapsed() >= MODE_PROBE_IDLE && session.probe_due() {
                 tui::ModeCheck::Probe
             } else {
                 tui::ModeCheck::Skip
             };
-            if self.needs_redraw || mode_check != tui::ModeCheck::Skip {
+            if !resize_queued && (self.needs_redraw || mode_check != tui::ModeCheck::Skip) {
                 self.ensure_flat();
                 let clear_terminal = self.force_terminal_redraw;
                 let clear_preview = self.force_preview_redraw;
@@ -140,7 +144,7 @@ impl App {
                 self.needs_redraw = true;
             }
             if !terminal_sidebar_action {
-                self.sync_terminal_sidebar_geometry(terminal_sidebar_before, terminal);
+                self.sync_terminal_sidebar_geometry(terminal_sidebar_before);
             }
             if self.should_quit {
                 break;
@@ -541,6 +545,7 @@ impl App {
                     terminal_id,
                     generation: self.terminal_stream_generation,
                     stream,
+                    size: (rows, cols),
                 });
                 self.mode = Mode::Terminal { pane_id };
                 self.terminal_escape_chord.reset();

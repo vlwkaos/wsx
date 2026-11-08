@@ -40,6 +40,8 @@ flowchart LR
 
 Seen in the source, not run: if a cache save keeps failing (a corrupt TOML or a busy lock), `persist_state` sets `cache_dirty` back to true (`app/runtime_sync.rs:22-26`). Every terminal key then retries the lock, read and parse (`app/dispatch.rs:232`), and the "Cache save failed" notice comes back each time.
 
+**Fixed in #338 (fix task 3).** #5: a resize only sets a flag; `flush_terminal_resize` (`app/actions.rs`) sends one size after the queued events (at most 100 ms), and not a size wsxd already has. #6: the 30 s refresh skips a project with a request in flight and uses `ensure_background_available`. #8: the event monitor sends one reason per outage (the disconnect and a failed restart in one text) and backs off 250 ms to 2 s. Cache save: after a failure `persist_state` waits 2 s, doubling to 60 s, and shows the notice once (`cache_retry`).
+
 What the open tasks miss: #240 builds the chat rows in core, but it keeps the whole-log read (#1), the `whole` flag that stays on (#2) and the wrap per frame (#11). #241 covers web timers only. The TUI spinner redraw (#12) is outside it.
 
 ## Fix tasks, in priority order
