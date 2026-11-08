@@ -2616,9 +2616,13 @@ try:
     wait_for(lambda: panel_screen.rfind(b"WORKSPACE") > panel_screen.rfind(b"PANELS"), "Esc did not leave the machine panels")
     mark = len(panel_screen)
     os.write(panel_master, b"M")
-    wait_for(lambda: all(word in panel_screen[mark:] for word in (
-        "smoke · Swap holders".encode(), b"Slack 1.2 GB", "smoke · machine".encode(), b"machine-ok", b"machine-down: failed (exit 3)")),
-        "the machine card did not show the project's sections", 20)
+    # ^ The TUI skips a cell that did not change, a blank one among them: words of a line can have a cursor move between.
+    def seen(*words):
+        gap = rb"(?:\x1b\[[0-9;?]*[A-Za-z]| )*"
+        return re.search(gap.join(re.escape(word.encode()) for word in words), panel_screen[mark:]) is not None
+
+    wait_for(lambda: seen("smoke", "·", "Swap", "holders") and seen("Slack", "1.2", "GB") and seen("smoke", "·", "machine") and seen("machine-ok")
+             and seen("machine-down:", "failed", "(exit", "3)"), "the machine card did not show the project's sections", 20)
     assert b"device-ok" not in panel_screen[mark:], "a project panel showed in the machine view"
     assert b"Pizza" not in panel_screen[mark:], "the project panel's own title showed in the card"
     assert re.search(rb"This (Mac|machine)[\s\S]{0,40}?bad", panel_screen[mark:]), "the card title shows no state"
