@@ -2,7 +2,7 @@
 //! ref: docs/tasks.md
 
 use super::cmd::new::Size;
-use super::post_key;
+use super::cmd::routine::post_key;
 use crate::cli::PromptSource;
 use clap::Subcommand;
 use std::path::PathBuf;
