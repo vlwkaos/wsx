@@ -42,7 +42,7 @@ const FILES: &[(&str, &str, &str)] = &[
     ("bubbles.js", JS, include_str!("../web/bubbles.js")),
     ("find.js", JS, include_str!("../web/find.js")),
     ("reply.js", JS, include_str!("../web/reply.js")),
-    ("page.js", JS, include_str!("../web/page.js")),
+    ("overview.js", JS, include_str!("../web/overview.js")),
     ("markdown.js", JS, include_str!("../web/markdown.js")),
     ("diagram.js", JS, include_str!("../web/diagram.js")),
     ("viewer.js", JS, include_str!("../web/viewer.js")),

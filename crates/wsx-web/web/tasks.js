@@ -11,7 +11,7 @@ import { Bubble, CheckBubble, conversation, Dots, Fold, QuietReply, StatusLine, 
 import { FindBar, FindButton } from "./find.js";
 import { markFound, QuoteChip, quoteSplit, useReply, withQuote } from "./reply.js";
 import { readTaskAhead, TaskPage } from "./task.js";
-import { ProjectOverview } from "./page.js";
+import { ProjectOverview } from "./overview.js";
 import { ChecksPage, decideCheck } from "./checks.js";
 import { UsagePage } from "./usage.js";
 import { RoutinesButton, RoutinesPage } from "./routines.js";
@@ -648,11 +648,23 @@ function Sheet({ label, fit = false, onClose, children }) {
     </dialog>`;
 }
 
+// ^ The sheets over the chat, by the route's `sheet` (store.js parseRoute): the page, its label, `fit` (only
+// as high as its content) and `refocus` (closing it gives the composer the focus). A page takes the
+// props `project`, `task`, `item`, `onClose`, `onMention` and `grip`, and uses the ones it needs.
+const SHEETS = {
+  task: { Page: TaskPage, label: "Task", refocus: true },
+  overview: { Page: ProjectOverview, label: "Overview", refocus: true },
+  checks: { Page: ChecksPage, label: "To check", fit: true, refocus: true },
+  usage: { Page: UsagePage, label: "Usage", fit: true },
+  routines: { Page: RoutinesPage, label: "Routines", fit: true },
+  panels: { Page: PanelsPage, label: "Panels", fit: true },
+};
+
 // The project screen with task_view: the manager chat as messages, what is open in the
 // reservoir, and with a task or the page in the route its sheet over the chat. With `role`, a
 // role's chat (#/p/<project>/r/<role>): the same bubbles without the manager's reservoir,
 // approvals and To check items (docs/web-client-tasks.md "Roles").
-export function Manager({ project: id, task, page, checks, checkItem = null, usage, routines, panels, role = null }) {
+export function Manager({ project: id, sheet = null, task = null, item = null, role = null }) {
   const store = useStore();
   const project = store.projects.find((candidate) => candidate.id === id);
   const overview = store.tasks[id];
@@ -772,12 +784,13 @@ export function Manager({ project: id, task, page, checks, checkItem = null, usa
   }, [around, chat]);
   // Closing the sheet gives the focus back to the composer, in the same commit: after a paint
   // it took the focus from a button tapped in the meantime (a reservoir row's Land).
-  const sheet = task ?? (page || checks || null);
-  const sheetWas = useRef(sheet);
+  const over = SHEETS[sheet];
+  const refocus = Boolean(over?.refocus);
+  const refocusWas = useRef(refocus);
   useLayoutEffect(() => {
-    if (sheetWas.current && !sheet) field.current?.focus({ preventScroll: true });
-    sheetWas.current = sheet;
-  }, [sheet]);
+    if (refocusWas.current && !refocus) field.current?.focus({ preventScroll: true });
+    refocusWas.current = refocus;
+  }, [refocus]);
 
   // ^ What waits for the owner is the needs and the open questions (docs/web-client-tasks.md "Project screen").
   const asking = role ? [] : (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
@@ -912,29 +925,9 @@ export function Manager({ project: id, task, page, checks, checkItem = null, usa
           onSent=${(message) => { search.current.around = null; setAround(null); toEnd(); setSent(message); load(); }} />`}
       </div>
       ${menu}
-      ${task != null && html`
-        <${Sheet} key=${`t${task}`} label=${`Task #${task}`} onClose=${leave}>
-          ${(grip) => html`<${TaskPage} key=${task} project=${id} task=${task} onClose=${leave} onMention=${answer} grip=${grip} />`}
-        </${Sheet}>`}
-      ${page && html`
-        <${Sheet} key="page" label="Overview" onClose=${leave}>
-          ${(grip) => html`<${ProjectOverview} project=${id} onClose=${leave} grip=${grip} />`}
-        </${Sheet}>`}
-      ${checks && html`
-        <${Sheet} key="checks" label="To check" fit onClose=${leave}>
-          ${(grip) => html`<${ChecksPage} project=${id} item=${checkItem} onClose=${leave} onMention=${answer} grip=${grip} />`}
-        </${Sheet}>`}
-      ${usage && html`
-        <${Sheet} key="usage" label="Usage" fit onClose=${leave}>
-          ${(grip) => html`<${UsagePage} project=${id} onClose=${leave} grip=${grip} />`}
-        </${Sheet}>`}
-      ${routines && html`
-        <${Sheet} key="routines" label="Routines" fit onClose=${leave}>
-          ${(grip) => html`<${RoutinesPage} project=${id} onClose=${leave} grip=${grip} />`}
-        </${Sheet}>`}
-      ${panels && html`
-        <${Sheet} key="panels" label="Panels" fit onClose=${leave}>
-          ${(grip) => html`<${PanelsPage} project=${id} onClose=${leave} grip=${grip} />`}
+      ${over && html`
+        <${Sheet} key=${`${sheet}${task ?? ""}`} label=${task != null ? `${over.label} #${task}` : over.label} fit=${over.fit} onClose=${leave}>
+          ${(grip) => html`<${over.Page} project=${id} task=${task} item=${item} onClose=${leave} onMention=${answer} grip=${grip} />`}
         </${Sheet}>`}
     </div>`;
 }

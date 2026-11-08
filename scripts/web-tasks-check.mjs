@@ -1349,13 +1349,13 @@ await until(`location.hash === ${JSON.stringify(chat)} && !!document.querySelect
 
 // --- The project overview: markdown and a mermaid graph in the sheet, with its last change.
 await click('.manager a.icon-button[href$="/page"]');
-await until(`location.hash === '#/p/${project}/page' && !!document.querySelector('dialog.task-sheet[open] .project-page h1')`, "Overview did not open the project overview");
-await until("!!document.querySelector('.project-page .diagram img')", "the page's mermaid graph did not draw", 30);
+await until(`location.hash === '#/p/${project}/page' && !!document.querySelector('dialog.task-sheet[open] .project-overview h1')`, "Overview did not open the project overview");
+await until("!!document.querySelector('.project-overview .diagram img')", "the page's mermaid graph did not draw", 30);
 // ^ The button, the sheet's aria-label and its top-bar label all say Overview, and a file under the cap shows no note.
-const overviewLabels = await evaluate("({ sheet: document.querySelector('dialog.task-sheet[open]').getAttribute('aria-label'), bar: document.querySelector('dialog.task-sheet[open] .bar-label').textContent, note: !!document.querySelector('.project-page .over-limit') })");
+const overviewLabels = await evaluate("({ sheet: document.querySelector('dialog.task-sheet[open]').getAttribute('aria-label'), bar: document.querySelector('dialog.task-sheet[open] .bar-label').textContent, note: !!document.querySelector('.project-overview .over-limit') })");
 if (overviewLabels.sheet !== "Overview" || overviewLabels.bar !== "Overview" || overviewLabels.note) await fail(`the overview's labels read ${JSON.stringify(overviewLabels)}`);
 if (!/^Updated /.test(await sheetState())) await fail(`the page's top row reads ${await sheetState()}`);
-const pageHeads = await text(".project-page h2");
+const pageHeads = await text(".project-overview h2");
 if (pageHeads.join() !== "Goal,Tasks,Decisions,Open questions") await fail(`the page's sections are ${pageHeads}`);
 // ^ The deploy and the main checkout moved here from the reservoir, above the markdown. They
 // come from a separate brief request, which can answer after the page has drawn and again as
@@ -1364,7 +1364,7 @@ const factsRead = (facts) => /^Deploy: [0-9a-f]{8}, (up to date with main|\d+ co
 let facts = "";
 for (let attempt = 0; attempt < 300 && !factsRead(facts); attempt++) {
   if (attempt) await pause(100);
-  facts = (await text(".project-page .facts-line"))[0] ?? "";
+  facts = (await text(".project-overview .facts-line"))[0] ?? "";
 }
 if (!factsRead(facts)) await fail(`the page's facts read ${facts}`);
 await shot("page");
@@ -1539,7 +1539,7 @@ await closeSheet("the usage sheet", chat);
     const overview = await evaluate(`(() => { const node = document.querySelector('.manager a.icon-button[href$="/page"]'); return node && { label: node.getAttribute('aria-label'), title: node.title, icon: !!node.querySelector('svg.icon'), words: node.textContent.trim() }; })()`);
     if (!overview || overview.label !== "Overview" || overview.title !== "Overview" || !overview.icon || overview.words) await fail(`the Overview button is ${JSON.stringify(overview)}`);
     await click('.manager a.icon-button[href$="/page"]');
-    await until(`location.hash === '#/p/${project}/page' && !!document.querySelector('dialog.task-sheet[open] .project-page h1')`, "a tap on the Overview button did not open the overview");
+    await until(`location.hash === '#/p/${project}/page' && !!document.querySelector('dialog.task-sheet[open] .project-overview h1')`, "a tap on the Overview button did not open the overview");
     await closeSheet("the overview sheet", chat);
   } finally {
     routine("enable", "nightly");
@@ -1648,7 +1648,7 @@ await shot("project-reply", ".composer-send");
 // The second message's reply links "project overview"; the overview has the manager's edit.
 await until("document.querySelectorAll('.log .page-link').length > 0", "the reply about the page has no link", 60);
 await evaluate("[...document.querySelectorAll('.log .page-link')].at(-1).click()");
-await until("/Ship the chat/.test(document.querySelector('.project-page')?.textContent ?? '')", "the page does not show the manager's edit", 30);
+await until("/Ship the chat/.test(document.querySelector('.project-overview')?.textContent ?? '')", "the page does not show the manager's edit", 30);
 await closeSheet("the page");
 
 // --- A new conversation (BIG passes the manager's rotateTokens) shows once: it has no id, so
@@ -3061,7 +3061,7 @@ await closeSheet("the committed sheet", `#/p/${plans}`);
 
 // --- plans' failed deploy: its fold opens to the last lines, monospace, at most half the screen.
 await go(`#/p/${plans}/page`);
-await until("!!document.querySelector('.project-page .deploy-output summary')", "plans' page has no fold for the failed deploy", 30);
+await until("!!document.querySelector('.project-overview .deploy-output summary')", "plans' page has no fold for the failed deploy", 30);
 if (!/^How the deploy of [0-9a-f]{8} ended$/.test((await text(".deploy-output summary"))[0])) await fail(`the fold reads ${await text(".deploy-output summary")}`);
 await click(".deploy-output summary");
 await until("document.querySelector('.deploy-output').open", "the fold did not open");
@@ -3143,7 +3143,7 @@ if (panel.right !== 1280 || panel.left < 640 || panel.height !== 800) await fail
 await shot("sheet");
 await closeSheet("the wide sheet");
 await go(`#/p/${project}/page`);
-await until("!!document.querySelector('.project-page .diagram img')", "the wide page did not draw its graph", 30);
+await until("!!document.querySelector('.project-overview .diagram img')", "the wide page did not draw its graph", 30);
 await shot("page");
 await key("Escape", 27);
 await resize([390, 844, 2]);
@@ -3692,8 +3692,8 @@ if (reviewed.running || reviewed.needs) await fail(`the review-waiting row is ${
 // ^ Opened from plans' chat: the close is history back, which from ui's chat would return there.
 await go(`#/p/${plansArg}`);
 await go(`#/p/${plansArg}/page`);
-await until("!!document.querySelector('dialog.task-sheet[open] .project-page .over-limit')", "the over-cap overview shows no note", 60);
-const cut = await evaluate("({ lines: (document.querySelector('.project-page .task-body').textContent.match(/a line of the overview/g) ?? []).length, note: document.querySelector('.over-limit').textContent })");
+await until("!!document.querySelector('dialog.task-sheet[open] .project-overview .over-limit')", "the over-cap overview shows no note", 60);
+const cut = await evaluate("({ lines: (document.querySelector('.project-overview .task-body').textContent.match(/a line of the overview/g) ?? []).length, note: document.querySelector('.over-limit').textContent })");
 if (cut.lines > 59 || !/Over the size limit/.test(cut.note)) await fail(`the over-cap overview is not cut: ${JSON.stringify(cut)}`);
 await closeSheet("the page", `#/p/${plansArg}`);
 
