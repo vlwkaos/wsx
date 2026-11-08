@@ -87,9 +87,9 @@ LAND_CONFIG = '''tasks:
 '''
 # ^ Section 17's config, which the sections after it start from.
 DEPLOY_CONFIG = LAND_CONFIG + '''  deploy:
-    command: 'printf "%s %s\\n" "$WSX_DEPLOY_COMMIT" "$(pwd)" >> ../deploy.log'
+    command: 'printf "%s %s\\n" "$WSX_DEPLOY_COMMIT" "$(pwd)" >> ../deploy.log; printf "%s" "$SSH_AUTH_SOCK" > ../deploy-agent.log'
   release:
-    command: 'seq 1 60; echo release broke here >&2; exit 3'
+    command: 'seq 1 60; echo "release broke here: Permission denied (publickey)." >&2; exit 3'
 '''
 
 
@@ -517,6 +517,23 @@ def run(wsx, wsxd, work, owned, part):
     for name, body in (('core', part_core), ('worker', part_worker), ('host', part_host)):
         if part in (None, name):
             created = body(created)
+
+
+def login_agent_socket():
+    """The login session's ssh agent socket, as wsx finds it: launchd's on macOS when it answers."""
+    if sys.platform != 'darwin':
+        return None
+    printed = subprocess.run(['launchctl', 'print', 'gui/%d/com.openssh.ssh-agent' % os.getuid()],
+                             capture_output=True, text=True).stdout
+    found = re.search(r'SSH_AUTH_SOCK => (\S+)', printed)
+    if not found:
+        return None
+    with socket.socket(socket.AF_UNIX) as probe:
+        try:
+            probe.connect(found.group(1))
+        except OSError:
+            return None
+    return found.group(1)
 
 
 def store_up(created):
@@ -1731,6 +1748,11 @@ def part_core(created=None):
     commit_line, where = (base / 'deploy.log').read_text().split()
     assert commit_line == tip and Path(where) != project and not Path(where).exists()
     assert git('worktree', 'list', '--porcelain').count('worktree ') == 1
+    # ^ The fixture's wsxd has no SSH_AUTH_SOCK, as one first started from an ssh login has: the
+    # command gets the login session's agent socket (macOS), else none (Linux CI has no login agent).
+    assert 'SSH_AUTH_SOCK' not in env
+    login_sock = login_agent_socket()
+    assert (base / 'deploy-agent.log').read_text() == (login_sock or ''), (base / 'deploy-agent.log').read_text()
     assert js('task', 'deployed')['deploy']['behind'] == 0
     later = js('task', 'new', 'WORK w.txt')['id']
     assert wait_state(later, 'ready', 'failed')['state'] == 'ready'
@@ -1746,7 +1768,13 @@ def part_core(created=None):
     failed = release_status.pop('failed')
     assert release_status == {'commit': None, 'failed_since': 1, 'configured': True}, release_status
     assert failed['exit'] == 3 and failed['commit'] == git('rev-parse', 'main'), failed
-    assert failed['output'].splitlines() == [str(n) for n in range(22, 61)] + ['release broke here'], failed
+    # ^ The output says which agent ssh asked, or why there was none, as a refused push does.
+    *printed, agent_words = failed['output'].splitlines()
+    assert printed == [str(n) for n in range(23, 61)] + ['release broke here: Permission denied (publickey).'], failed
+    if login_sock:
+        assert agent_words.startswith("ssh offered the keys of the login session's ssh agent at %s " % login_sock), agent_words
+    else:
+        assert agent_words.startswith('ssh had no agent: SSH_AUTH_SOCK is not set'), agent_words
     assert js('task', 'ledger')['deploys']['release']['failed'] == failed
     older = git('rev-parse', 'main~3')
     assert ran('deploy', '--commit', older)['commit'] == older

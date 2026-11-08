@@ -23,25 +23,36 @@ pub fn git_cmd(repo: &Path) -> Command {
 }
 
 /// `git_cmd` for a call to a remote (fetch, ls-remote, push), and the words to add when ssh
-/// refuses the keys. wsxd, its hosts and the web server keep the environment of the shell
-/// that first started wsxd, such as an ssh login with no agent; the agent socket of the
-/// login session also moves at each login. So ssh gets `SSH_AUTH_SOCK` when it answers,
-/// else the login session's agent. ref: docs/tasks.md "Push"
+/// refuses the keys. ref: docs/tasks.md "Push"
 pub(crate) fn remote_cmd(repo: &Path) -> (Command, String) {
     let mut cmd = git_cmd(repo);
+    let (socket, words) = ssh_agent();
+    if let Some(socket) = socket {
+        cmd.env("SSH_AUTH_SOCK", socket);
+    }
+    (cmd, words)
+}
+
+/// The ssh agent socket a command of wsx's should get as `SSH_AUTH_SOCK`, and the words for
+/// a server that took no key: which agent ssh asked, or why there is none (no socket).
+/// wsxd, its hosts and the web server keep the environment of the shell that first started
+/// wsxd, such as an ssh login with no agent; the agent socket of the login session also
+/// moves at each login. So the answer is `SSH_AUTH_SOCK` when it answers, else the login
+/// session's agent. Every command wsx runs for a project (push, deploy, release, routines)
+/// gets it here. ref: docs/tasks.md "Push"
+pub fn ssh_agent() -> (Option<std::path::PathBuf>, String) {
     let answers = |path: &std::ffi::OsStr| std::os::unix::net::UnixStream::connect(path).is_ok();
     let inherited = std::env::var_os("SSH_AUTH_SOCK").filter(|path| !path.is_empty());
     if let Some(path) = inherited.as_deref().filter(|path| answers(path)) {
         let agent = format!("the ssh agent at {}", Path::new(path).display());
-        return (cmd, refused_by(&agent));
+        return (Some(path.into()), refused_by(&agent));
     }
     // SAFETY: getuid has no failure and touches no memory.
     let uid = unsafe { libc::getuid() };
     let login = login_agent(uid);
-    if let Some(path) = login.as_deref().filter(|path| answers(path.as_os_str())) {
-        cmd.env("SSH_AUTH_SOCK", path);
+    if let Some(path) = login.filter(|path| answers(path.as_os_str())) {
         let agent = format!("the login session's ssh agent at {}", path.display());
-        return (cmd, refused_by(&agent));
+        return (Some(path), refused_by(&agent));
     }
     let unset = match &inherited {
         None => "SSH_AUTH_SOCK is not set".to_string(),
@@ -58,7 +69,7 @@ pub(crate) fn remote_cmd(repo: &Path) -> (Command, String) {
         unset
     };
     (
-        cmd,
+        None,
         format!("ssh had no agent: {none}; log in to the Mac's desktop, or start wsxd from a shell whose ssh agent holds the key"),
     )
 }
