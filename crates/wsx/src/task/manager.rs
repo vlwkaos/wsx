@@ -25,8 +25,8 @@ use wsx_core::model::workspace::{manager_rotate_limit, TaskWorkflow};
 use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::runtime;
 use wsx_core::task::manager::{
-    asks_owner, decided_request, event_wakes, instructions_digest, pending_approvals, quiet_reply,
-    quoted_id, resolve_quote, says_nothing, ApprovalLine, QUOTE_REF,
+    asks_owner, decided_request, instructions_digest, pending_approvals, quiet_reply, quoted_id,
+    resolve_quote, says_nothing, state_wakes, ApprovalLine, QUOTE_REF,
 };
 use wsx_core::task::manager::{
     Author, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
@@ -152,7 +152,7 @@ struct Manager {
     main: PathBuf,
     /// `tasks.manager.adapter`: the headless adapter the manager runs on.
     adapter: String,
-    /// `tasks.deploy.auto`. ref: `event_wakes`
+    /// `tasks.deploy.auto`: a deploy that worked starts no turn. ref: `state_wakes`
     deploy_auto: bool,
     /// A stand-in's call runs: which agent and when it began.
     stand_in: Option<(agent::Choice, Instant)>,
@@ -172,7 +172,7 @@ struct Manager {
     agent: Option<Agent>,
     generation: u64,
     /// Logged messages not yet delivered, oldest first.
-    queue: VecDeque<(u64, Author, String)>,
+    queue: VecDeque<(u64, Author, String, bool)>,
     /// The ids of the messages in the running turn.
     turn: Option<Vec<u64>>,
     /// The running turn holds only events: its reply is quiet.
@@ -745,9 +745,16 @@ impl Manager {
             self.save();
         }
         for entry in log {
-            if let ManagerEvent::Message { id, from, text, .. } = entry.event {
+            if let ManagerEvent::Message {
+                id,
+                from,
+                text,
+                short,
+                ..
+            } = entry.event
+            {
                 if !delivered.contains(&id) {
-                    self.enqueue(id, from, text);
+                    self.enqueue(id, from, text, Short::any_wakes(&short));
                 }
             }
         }
@@ -867,6 +874,7 @@ impl Manager {
                 Short {
                     text: clip(&short, EVENT_SUMMARY_CHARS * 2),
                     task: None,
+                    wakes: true,
                 },
             ));
             self.last_event = Some(Instant::now());
@@ -911,7 +919,14 @@ impl Manager {
                     record.commit,
                     record.duration_ms / 1000
                 );
-                self.pending_events.push(plain_event(line));
+                let (line, short) = plain_event(line);
+                // ^ An automatic deploy that worked is no news; a release that worked is.
+                let short =
+                    match self.deploy_auto && record.kind == wsx_core::task::DeployKind::Deploy {
+                        true => short.quiet(),
+                        false => short,
+                    };
+                self.pending_events.push((line, short));
                 self.last_event = Some(Instant::now());
                 continue;
             }
@@ -1092,9 +1107,8 @@ impl Manager {
                     0 => format!("{recorded}{worker}"),
                     total => format!("checks {passed} of {total} passed; {recorded}{worker}"),
                 };
-                // ^ `waits on <on>` is the record's key, which `event_wakes` tests with a stop's
-                // reason in the sentence; the sentence is the words every view shows
-                // (docs/tasks.md "Status").
+                // ^ `waits on <on>` is the record's key; the sentence is the words every view
+                // shows (docs/tasks.md "Status").
                 if let Some(waiting) = &record.waiting {
                     let status = wsx_core::task::status::status(
                         &dir,
@@ -1164,7 +1178,9 @@ impl Manager {
                 TaskState::Landed => "done",
                 state => state.as_str(),
             };
-            self.task_event(&record, &open_roles, line, Short::task(record.id, words));
+            let mut short = Short::task(record.id, words);
+            short.wakes = state_wakes(&record);
+            self.task_event(&record, &open_roles, line, short);
             let state = record.state.as_str();
             self.fire(
                 &format!("task.{state}"),
@@ -1491,6 +1507,7 @@ impl Manager {
             anyhow::bail!("the message is larger than the limit of {MAX_MESSAGE_BYTES} bytes");
         }
         let id = self.next_id();
+        let wakes = Short::any_wakes(&short);
         self.dir.append(ManagerEvent::Message {
             id,
             from: from.clone(),
@@ -1502,7 +1519,7 @@ impl Manager {
         self.overview_asked &= from != Author::Owner;
         self.context_asked &= from != Author::Owner;
         self.thought_asked &= from != Author::Owner;
-        self.enqueue(id, from, text);
+        self.enqueue(id, from, text, wakes);
         Ok(id)
     }
 
@@ -1645,7 +1662,7 @@ impl Manager {
     }
 
     /// Owner messages go first, then other managers', then events.
-    fn enqueue(&mut self, id: u64, from: Author, text: String) {
+    fn enqueue(&mut self, id: u64, from: Author, text: String, wakes: bool) {
         let rank = |author: &Author| match author {
             Author::Owner => 0,
             Author::Manager { .. } | Author::Role { .. } => 1,
@@ -1655,9 +1672,9 @@ impl Manager {
         let at = self
             .queue
             .iter()
-            .position(|(_, author, _)| rank(author) > rank(&from))
+            .position(|(_, author, ..)| rank(author) > rank(&from))
             .unwrap_or(self.queue.len());
-        self.queue.insert(at, (id, from, text));
+        self.queue.insert(at, (id, from, text, wakes));
     }
 
     /// A message of a manager or a role is answered once (docs/tasks.md "Roles").
@@ -1730,9 +1747,9 @@ impl Manager {
         let first = self
             .queue
             .iter()
-            .find(|(_, author, text)| self.wakes(author, text))
+            .find(|(_, author, _, wakes)| *author != Author::Events || *wakes)
             .or(self.queue.front())
-            .map_or(Author::Owner, |(_, author, _)| author.clone());
+            .map_or(Author::Owner, |(_, author, ..)| author.clone());
         let mut ids = Vec::new();
         let mut text = String::new();
         let mut said = String::new();
@@ -1743,18 +1760,20 @@ impl Manager {
         let mut taken = Vec::new();
         let mut for_owner = false;
         if first != Author::Events {
-            while let Some(at) = self.queue.iter().position(|(_, author, text)| {
-                *author == Author::Events && !self.wakes(author, text)
-            }) {
+            while let Some(at) = self
+                .queue
+                .iter()
+                .position(|(_, author, _, wakes)| *author == Author::Events && !wakes)
+            {
                 along.push(self.queue.remove(at).expect("position is in the queue"));
             }
         }
         while self
             .queue
             .front()
-            .is_some_and(|(_, author, _)| *author == first)
+            .is_some_and(|(_, author, ..)| *author == first)
         {
-            let (id, author, body) = self.queue.pop_front().expect("checked above");
+            let (id, author, body, wakes) = self.queue.pop_front().expect("checked above");
             let heading = match &author {
                 Author::Owner => "Owner".to_string(),
                 Author::Events => "Events".to_string(),
@@ -1787,7 +1806,7 @@ impl Manager {
                 said.push('\n');
             }
             ids.push(id);
-            taken.push((id, author, body));
+            taken.push((id, author, body, wakes));
         }
         if !said.is_empty() {
             text.push_str(&self.notes_matching(&said));
@@ -1802,10 +1821,10 @@ impl Manager {
                 owner.join(", ")
             ));
         }
-        for (id, author, body) in along {
+        for (id, author, body, wakes) in along {
             text.push_str(&format!("Events (message {id}):\n{body}\n\n"));
             ids.push(id);
-            taken.push((id, author, body));
+            taken.push((id, author, body, wakes));
         }
         // ^ The limit preface is no owner message: a held turn is events-only when its
         // held and its new messages all are. Another manager's or a role's reply is used, not
@@ -1856,7 +1875,7 @@ impl Manager {
             return;
         }
         self.start_failed = None;
-        for (_, author, _) in &taken {
+        for (_, author, ..) in &taken {
             self.owe(author);
         }
         if held.as_ref().is_some_and(|hold| !hold.switched) {
@@ -1894,15 +1913,10 @@ impl Manager {
         }
     }
 
-    /// Whether a queued message starts a turn. ref: `event_wakes`
-    fn wakes(&self, author: &Author, text: &str) -> bool {
-        *author != Author::Events || text.lines().any(|line| event_wakes(line, self.deploy_auto))
-    }
-
     fn work_waiting(&self) -> bool {
         self.queue
             .iter()
-            .any(|(_, author, text)| self.wakes(author, text))
+            .any(|(_, author, _, wakes)| *author != Author::Events || *wakes)
     }
 
     /// Before every turn, the best agent that can take it: back on the own agent as soon as
@@ -1985,7 +1999,7 @@ impl Manager {
         let queued: Vec<u64> = self
             .queue
             .iter()
-            .filter(|(id, author, _)| *author == Author::Owner && *id > done)
+            .filter(|(id, author, ..)| *author == Author::Owner && *id > done)
             .map(|(id, ..)| *id)
             .collect();
         // ^ A hold of only events owes the owner nothing, and this runs on every tick.

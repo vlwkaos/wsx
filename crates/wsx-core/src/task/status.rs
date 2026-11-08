@@ -13,7 +13,7 @@ use serde_json::Value;
 
 const FACT_CHARS: usize = 240;
 /// The reason the host gives a stop the owner asked for. ref: crates/wsx/src/task/host.rs `stop`
-pub(crate) const STOPPED_BY_REQUEST: &str = "stopped by request";
+pub const STOPPED_BY_REQUEST: &str = "stopped by request";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Status {

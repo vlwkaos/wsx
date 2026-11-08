@@ -185,7 +185,7 @@ def task_row(task, events, turns):
     }
 
 
-# ^ Event kinds that start no turn (`event_wakes`, docs/tasks.md "Manager"): a turn they join is
+# ^ Event kinds that start no turn (`state_wakes`, docs/tasks.md "Manager"): a turn they join is
 # named by its other events.
 ALONG = ("landed", "closed", "stopped", "waiting:limit", "waiting:disk")
 # ^ `wsx task` verbs that only read.
