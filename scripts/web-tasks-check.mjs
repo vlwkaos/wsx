@@ -395,10 +395,13 @@ async function listHeaders() {
     const kept = await evaluate(`(() => { const scroll = document.querySelector('.reservoir-scroll'), head = document.querySelector('.reservoir-head'), before = head.getBoundingClientRect().top; scroll.scrollTop = 9999; return head.getBoundingClientRect().top === before; })()`);
     if (!kept) await fail(`the ${label} header moved with the rows`);
     await shot(`pills-${kind}-header`, ".composer-send");
+    // ^ An earlier step may have left the composer focused; a tap on iOS leaves the body focused.
+    await evaluate("document.activeElement?.blur()");
     await click(`.pill[data-kind=${kind}]`);
     await until("!document.querySelector('.reservoir')", `a tap on the open ${label} pill did not close its list`);
     if (await evaluate(textFocus)) await fail(`closing ${label} by its pill focused ${await evaluate("document.activeElement.className")}`);
     await openReservoir(kind);
+    await evaluate("document.activeElement?.blur()");
     await click(`.reservoir-head button[aria-label="Close ${label}"]`);
     await until("!document.querySelector('.reservoir')", `the close button of ${label} did not close the list`);
     if ((await pressed()) !== "" || await evaluate(textFocus)) await fail(`closing ${label} by its button leaves ${await pressed()} pressed, a text field focused: ${await evaluate(textFocus)}`);
