@@ -274,15 +274,8 @@ pub fn state_wakes(dir: &TaskDir, record: &TaskRecord) -> bool {
     match record.state {
         TaskState::Landed | TaskState::Closed => false,
         // ^ Ready means the checks passed; failed ones are `Failed` and wake. The newest of a
-        // child's land, a handback and a worker result made the current revision.
-        TaskState::Ready if record.hold.is_some() => !matches!(
-            dir.last_event(|event| match event {
-                LogEvent::ChildLanded { .. } => Some(true),
-                LogEvent::Handback { .. } | LogEvent::Result { .. } => Some(false),
-                _ => None,
-            }),
-            Ok(Some(true))
-        ),
+        // child's land, a handback and a worker result before the current revision made it.
+        TaskState::Ready if record.hold.is_some() => !revision_from_child(dir, record.revision),
         TaskState::Waiting => {
             !owner_waits_after(dir, record)
                 && !record
@@ -296,6 +289,25 @@ pub fn state_wakes(dir: &TaskDir, record: &TaskRecord) -> bool {
         }
         _ => true,
     }
+}
+
+/// Whether revision `revision` was made by a child's land: the newest `child_landed`, `handback`
+/// or worker `result` before its `revision` entry is the land. A log tail without it says no.
+fn revision_from_child(dir: &TaskDir, revision: u32) -> bool {
+    const TAIL_BYTES: u64 = 512 * 1024;
+    let Ok(entries) = dir.read_log_tail(TAIL_BYTES) else {
+        return false;
+    };
+    entries
+        .iter()
+        .rev()
+        .skip_while(|entry| !matches!(&entry.event, LogEvent::Revision { revision: r, .. } if *r == revision))
+        .find_map(|entry| match &entry.event {
+            LogEvent::ChildLanded { .. } => Some(true),
+            LogEvent::Handback { .. } | LogEvent::Result { .. } => Some(false),
+            _ => None,
+        })
+        .unwrap_or(false)
 }
 
 /// Whether a reply asks the owner: its last line ends with a question mark. A reply that ends with
