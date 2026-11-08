@@ -2686,14 +2686,10 @@ impl Host {
         self.save();
     }
 
-    fn on_checks(&mut self, epoch: u64, results: Vec<CheckResult>) {
-        // ^ A run a stop left running: its output is logged, it decides nothing.
-        if epoch != self.checks_epoch {
-            self.log(LogEvent::Checks { results });
-            return;
-        }
-        // ^ A result that came during the checks: a block keeps its wait, a turn that runs
-        // gives the next result, and a new commit runs them once more.
+    /// Results that decide nothing now: a result that came during the checks (a block keeps its
+    /// wait, a turn that runs gives the next result, a new commit runs the checks once more) or
+    /// a full disk, which is not the worker's failure. They are logged; true when they are.
+    fn checks_deferred(&mut self, results: &[CheckResult]) -> bool {
         // ref: docs/tasks.md "Checks, revisions and report"
         if let Some((commit, true)) = self.gate.take() {
             let blocked = self
@@ -2701,23 +2697,124 @@ impl Host {
                 .as_ref()
                 .is_some_and(|r| r.status == "blocked");
             if blocked || self.turn_active {
-                self.log(LogEvent::Checks { results });
-                return;
+                self.log(LogEvent::Checks {
+                    results: results.to_vec(),
+                });
+                return true;
             }
             if commit.is_none() || commit != head(&self.record.working_copy) {
                 self.say("a newer result is on another commit: the checks run again");
                 self.start_checks();
-                return;
+                return true;
             }
         }
         // ^ A full disk is not the worker's failure: the checks run again once there is space.
         if results.iter().any(|check| check.output.contains(NO_SPACE)) {
-            self.log(LogEvent::Checks { results });
+            self.log(LogEvent::Checks {
+                results: results.to_vec(),
+            });
             self.wait_for_disk(DiskWait::Checks);
             if self.disk_wait.is_none() {
                 self.disk_wait = Some(DiskWait::Checks);
                 self.wait(WaitOn::Disk, "a check ran out of disk space".into());
             }
+            return true;
+        }
+        false
+    }
+
+    /// The revision the checks produced is recorded: the result and report are written, then the
+    /// task is ready, sent back to the worker (a failed check, bounded), landed again (a
+    /// conflict it resolved) or continues the landing, trial or push that waited for them.
+    fn checked_revision(
+        &mut self,
+        (revision, commit): (u32, &str),
+        (result, results): (&WorkerResult, &[CheckResult]),
+        (passed, relands): (bool, bool),
+    ) {
+        let state = if passed {
+            TaskState::Ready
+        } else {
+            TaskState::Failed
+        };
+        let after_rebase = self.after_rebase.take();
+        // ^ Readers act on the state: the result and report must be complete before it.
+        self.write_result(result, results);
+        self.write_report(state);
+        self.say(&format!("revision r{revision} at {commit:.12}"));
+        // ^ A landing goes from checking straight to landed, or to ready with
+        // land_stopped: readers never see a ready task that is still landing.
+        let failed: Vec<&CheckResult> = results
+            .iter()
+            .filter(|check| check.exit != Some(0))
+            .collect();
+        match after_rebase {
+            // ^ A worker that says done but fails a check gets the failure back,
+            // bounded, before the task fails. ref: docs/tasks.md "Checks, revisions and report"
+            None if state == TaskState::Failed
+                && result.status == "done"
+                && !failed.is_empty()
+                && self.pending.is_empty()
+                && self.check_retries < MAX_CHECK_RETRIES =>
+            {
+                self.check_retries += 1;
+                let attempt = self.check_retries;
+                self.log(LogEvent::CheckRetry {
+                    revision,
+                    attempt,
+                    commands: failed.iter().map(|check| check.command.clone()).collect(),
+                });
+                self.say(&format!(
+                    "checks failed on r{revision}: sent back to the worker ({attempt} of {MAX_CHECK_RETRIES})"
+                ));
+                let text = check_retry_request(&failed, attempt);
+                self.start_turn(&text, TurnTrigger::CheckRetry);
+            }
+            // ^ Every ready task waits for the manager's review; one that resolved
+            // the conflict of a landing lands again at once when the project lands
+            // by itself and has checks to prove it, from checking to landed without
+            // a stop at ready. A message that waits for the worker comes first: its
+            // answer is a new revision. ref: docs/tasks.md "Landing"
+            None if state == TaskState::Ready
+                && relands
+                && !results.is_empty()
+                && self.record.hold.is_none()
+                && self.record.after.is_none()
+                && self.pending.is_empty()
+                && self.auto_land() =>
+            {
+                let landed = self.land(true, false, None);
+                self.finish_landing(landed, state);
+            }
+            None => self.set_state(state),
+            Some(AfterRebase::Land { tried }) => {
+                let finished = if state == TaskState::Ready {
+                    self.land_on_tip(tried, None)
+                } else {
+                    Err(anyhow::anyhow!("checks failed on the rebased revision"))
+                };
+                self.finish_landing(finished, state);
+            }
+            Some(AfterRebase::Trial) => {
+                self.set_state(state);
+                if state == TaskState::Ready {
+                    if let Err(error) = self.start_trial() {
+                        self.say(&format!("the trial did not start: {error:#}"));
+                    }
+                } else {
+                    self.end_trial("checks failed on the rebased revision");
+                }
+            }
+        }
+    }
+
+    fn on_checks(&mut self, epoch: u64, results: Vec<CheckResult>) {
+        // ^ A run a stop left running: its output is logged, it decides nothing.
+        if epoch != self.checks_epoch {
+            self.log(LogEvent::Checks { results });
+            return;
+        }
+        if self.checks_deferred(&results) {
             return;
         }
         for check in &results {
@@ -2740,80 +2837,7 @@ impl Host {
         let relands = view::resolving_conflict(&self.dir);
         match self.record_revision() {
             Ok((revision, commit)) => {
-                let state = if passed {
-                    TaskState::Ready
-                } else {
-                    TaskState::Failed
-                };
-                let after_rebase = self.after_rebase.take();
-                // ^ Readers act on the state: the result and report must be complete before it.
-                self.write_result(&result, &results);
-                self.write_report(state);
-                self.say(&format!("revision r{revision} at {commit:.12}"));
-                // ^ A landing goes from checking straight to landed, or to ready with
-                // land_stopped: readers never see a ready task that is still landing.
-                let failed: Vec<&CheckResult> = results
-                    .iter()
-                    .filter(|check| check.exit != Some(0))
-                    .collect();
-                match after_rebase {
-                    // ^ A worker that says done but fails a check gets the failure back,
-                    // bounded, before the task fails. ref: docs/tasks.md "Checks, revisions and report"
-                    None if state == TaskState::Failed
-                        && result.status == "done"
-                        && !failed.is_empty()
-                        && self.pending.is_empty()
-                        && self.check_retries < MAX_CHECK_RETRIES =>
-                    {
-                        self.check_retries += 1;
-                        let attempt = self.check_retries;
-                        self.log(LogEvent::CheckRetry {
-                            revision,
-                            attempt,
-                            commands: failed.iter().map(|check| check.command.clone()).collect(),
-                        });
-                        self.say(&format!(
-                            "checks failed on r{revision}: sent back to the worker ({attempt} of {MAX_CHECK_RETRIES})"
-                        ));
-                        let text = check_retry_request(&failed, attempt);
-                        self.start_turn(&text, TurnTrigger::CheckRetry);
-                    }
-                    // ^ Every ready task waits for the manager's review; one that resolved
-                    // the conflict of a landing lands again at once when the project lands
-                    // by itself and has checks to prove it, from checking to landed without
-                    // a stop at ready. A message that waits for the worker comes first: its
-                    // answer is a new revision. ref: docs/tasks.md "Landing"
-                    None if state == TaskState::Ready
-                        && relands
-                        && !results.is_empty()
-                        && self.record.hold.is_none()
-                        && self.record.after.is_none()
-                        && self.pending.is_empty()
-                        && self.auto_land() =>
-                    {
-                        let landed = self.land(true, false, None);
-                        self.finish_landing(landed, state);
-                    }
-                    None => self.set_state(state),
-                    Some(AfterRebase::Land { tried }) => {
-                        let finished = if state == TaskState::Ready {
-                            self.land_on_tip(tried, None)
-                        } else {
-                            Err(anyhow::anyhow!("checks failed on the rebased revision"))
-                        };
-                        self.finish_landing(finished, state);
-                    }
-                    Some(AfterRebase::Trial) => {
-                        self.set_state(state);
-                        if state == TaskState::Ready {
-                            if let Err(error) = self.start_trial() {
-                                self.say(&format!("the trial did not start: {error:#}"));
-                            }
-                        } else {
-                            self.end_trial("checks failed on the rebased revision");
-                        }
-                    }
-                }
+                self.checked_revision((revision, &commit), (&result, &results), (passed, relands))
             }
             Err(error) => {
                 self.say(&format!("cannot record a revision: {error:#}"));
