@@ -720,8 +720,8 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
   padding: var(--space-1) var(--column-inset, var(--space-4)); font-size: var(--font-size-sm);
   background: var(--color-surface); border-bottom: var(--border-width) solid var(--color-hairline);
 }
-/* One line: a long list is cut with an ellipsis, the dismiss button stays beside it. */
-.since p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Wraps, never cut: tasks.js keeps it to two lines with "+N more"; the dismiss button stays beside it. */
+.since p { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .since .icon-button { flex: none; margin-block: calc(-1 * var(--space-2)); }
 .since a { color: var(--color-accent); }
 .need-action { min-height: var(--size-control); display: inline-flex; align-items: center; padding: 0 var(--space-3); text-decoration: none; font-size: var(--font-size-sm); }

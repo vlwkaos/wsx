@@ -681,7 +681,11 @@ const readLeft = () => readMap(LEFT_KEY);
 const noteLeft = (project) => keepIn(LEFT_KEY, project, Date.now());
 // Shorter absences are a glance away, not an absence.
 const AWAY_MS = 60_000;
-const SINCE_WORDS = [["landed", "landed"], ["ready", "ready"], ["failed", "failed"], ["blocked", "blocked"], ["conflict", "conflicted"], ["revised", "got a new revision"], ["started", "started"]];
+// ^ The word leads each group, so a phone shows what happened before any ids.
+const SINCE_WORDS = [["landed", "Landed"], ["ready", "Ready"], ["failed", "Failed"], ["blocked", "Blocked"], ["conflict", "Conflicted"], ["revised", "Revised"], ["started", "Started"]];
+// The line never cuts what happened: it wraps to two lines, and when a group's ids would need more
+// it shows the first ones and "+N more" (docs/web-client-tasks.md "Since you left").
+const SINCE_LINES = 2;
 
 // "Since you left": what the task logs say happened while this device was away from the
 // project, on opening it or on coming back to it. Nothing runs while away. It goes by itself
@@ -705,6 +709,28 @@ function SinceLine({ project, reply, sent }) {
     };
   }, [project]);
   useEffect(() => { if (sent) setSince(null); }, [sent]);
+  // ids shown per group: null shows all, then fewer until the text fits SINCE_LINES lines.
+  const [cap, setCap] = useState(null);
+  const box = useRef(null);
+  const width = useRef(0);
+  useEffect(() => setCap(null), [since]);
+  useLayoutEffect(() => {
+    const text = box.current?.querySelector("p");
+    if (!text) return;
+    const most = Math.max(0, ...Object.values(since.tasks).map((ids) => ids.length));
+    const fits = text.scrollHeight <= SINCE_LINES * parseFloat(getComputedStyle(text).lineHeight) + 1;
+    if (!fits && (cap ?? most) > 1) setCap((cap ?? most) - 1);
+  }, [since, cap]);
+  useLayoutEffect(() => {
+    if (!box.current) return undefined;
+    const watch = new ResizeObserver(([one]) => {
+      const next = Math.round(one.contentRect.width);
+      if (width.current && next !== width.current) setCap(null);
+      width.current = next;
+    });
+    watch.observe(box.current);
+    return () => watch.disconnect();
+  }, [!since]);
   const left = since?.left;
   useEffect(() => {
     if (!left || !reply || reply <= left) return undefined;
@@ -717,12 +743,12 @@ function SinceLine({ project, reply, sent }) {
   }, [left, reply]);
   if (!since) return null;
   const parts = SINCE_WORDS.filter(([key]) => since.tasks[key]?.length).map(([key, words]) => html`
-    <span key=${key}>${since.tasks[key].map((id) => html`<a href=${taskLink(project, id)}>#${id}</a> `)}${words}</span>`);
+    <span key=${key}>${words} ${since.tasks[key].slice(0, cap ?? undefined).map((id) => html`<a href=${taskLink(project, id)}>#${id}</a> `)}${cap && since.tasks[key].length > cap ? html`<span class="since-more">+${since.tasks[key].length - cap} more</span>` : ""}</span>`);
   if (since.replies) parts.push(html`<span key="replies">${plural(since.replies, "reply", "replies")}</span>`);
   if (!parts.length) return null;
   return html`
-    <div class="since" role="status">
-      <p>Since you left: ${parts.map((part, index) => html`${index ? " · " : ""}${part}`)}</p>
+    <div class="since" role="status" ref=${box}>
+      <p>${parts.map((part, index) => html`${index ? " · " : ""}${part}`)}</p>
       <button class="icon-button" type="button" title="Dismiss" aria-label="Dismiss" onClick=${() => setSince(null)}><${Icon} name="fail" /></button>
     </div>`;
 }
