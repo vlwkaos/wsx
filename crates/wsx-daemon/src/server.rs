@@ -64,7 +64,7 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     install_shutdown_signals()?;
     raise_descriptor_limit();
     let socket = default_socket_path();
-    wsx_core::runtime::check_socket_path(&socket)?;
+    wsx_core::runtime::check_socket_path(&staging_path(&socket))?;
     let state_path = state_path(&socket);
     let socket_dir = socket
         .parent()
@@ -474,14 +474,19 @@ pub(crate) fn acquire_singleton_lock(path: &Path) -> io::Result<fs::File> {
     })
 }
 
+/// The name the socket is bound under before it is owner-only: one character longer.
+fn staging_path(socket: &Path) -> PathBuf {
+    let mut name = socket.file_name().unwrap_or_default().to_os_string();
+    name.push("~");
+    socket.with_file_name(name)
+}
+
 /// Listen on `socket`, which appears only once it is owner-only: a client refuses a socket
 /// another user could reach, so one that connected between a bind and a chmod failed.
 /// ^ The name gains one character, so it stays within the socket path limit; the
 /// singleton lock keeps a second wsxd from using the same name.
 pub(crate) fn bind_owner_only(socket: &Path) -> io::Result<UnixListener> {
-    let mut name = socket.file_name().unwrap_or_default().to_os_string();
-    name.push("~");
-    let staging = socket.with_file_name(name);
+    let staging = staging_path(socket);
     let _ = fs::remove_file(&staging);
     let listener = UnixListener::bind(&staging)?;
     if let Err(error) = fs::set_permissions(&staging, fs::Permissions::from_mode(0o600))
