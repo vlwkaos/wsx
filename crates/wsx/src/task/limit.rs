@@ -32,6 +32,17 @@ pub fn reason(adapter: &str, until_ms: u64, now_ms: u64) -> String {
     )
 }
 
+/// The words a sign-in wait's reason opens with.
+pub const SIGN_IN_WORDS: &str = "sign-in expired";
+
+/// "sign-in expired; tries again at 00:10": the wait for a failed sign-in's retry.
+pub fn sign_in_reason(until_ms: u64, now_ms: u64) -> String {
+    format!(
+        "{SIGN_IN_WORDS}; tries again at {}",
+        resume_time(until_ms, now_ms)
+    )
+}
+
 /// The time of day (and the date when it is not within a day) the wait ends.
 pub fn resume_time(until_ms: u64, now_ms: u64) -> String {
     wsx_core::routine::local::local_tm((until_ms / 1000) as i64).map_or_else(

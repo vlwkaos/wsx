@@ -251,12 +251,13 @@ pub fn blocked_until(account: &str, now_ms: u64) -> Option<u64> {
     store::limited_until(account, now_ms).max(store::sign_in_failed_until(account, now_ms))
 }
 
-/// Note that `account`'s sign-in failed, so every host skips it for a few minutes. Returns the
-/// message when the record cannot be written.
-pub fn record_sign_in_failed(adapter: &str, model: &str, now_ms: u64) -> Option<String> {
-    store::mark_sign_in_failed(&account(adapter, model), now_ms)
+/// Note that `account`'s sign-in failed, so every host skips it until the retry time returned
+/// (unix ms), and the message when the record cannot be written. ref: docs/tasks.md "Agents"
+pub fn record_sign_in_failed(adapter: &str, model: &str, now_ms: u64) -> (u64, Option<String>) {
+    let problem = store::mark_sign_in_failed(&account(adapter, model), now_ms)
         .err()
-        .map(|error| format!("cannot record the failed sign-in: {error:#}"))
+        .map(|error| format!("cannot record the failed sign-in: {error:#}"));
+    (now_ms + store::sign_in_retry_ms(), problem)
 }
 
 /// The first of `names` (the global `[[agents]]`) with a headless adapter and a model, and no

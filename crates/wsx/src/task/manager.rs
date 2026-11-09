@@ -92,8 +92,6 @@ const STAND_IN_RETRY_MS: u64 = 5 * 60_000;
 const STAND_IN_LOOK: Duration = Duration::from_secs(10);
 /// Agent errors in a row after which the conversation itself may be the cause.
 const ERROR_ROTATE_ATTEMPTS: u32 = 3;
-/// A failed sign-in retries this often: the owner's new sign-in is the only cause it waits for.
-const AUTH_RETRY_MS: u64 = 60_000;
 /// An idle task runs at most this often.
 const IDLE_EVERY_MS: u64 = 24 * 3_600_000;
 /// The title of the task `tasks.workflow.idle` starts.
@@ -2605,11 +2603,12 @@ impl Manager {
             self.say(&format!("agent error, attempt {attempt}: {reason}"));
             // ^ A failed sign-in waits for the owner's new one: no doubling backoff and no new
             // conversation, but a new process each try, since the running one keeps its old
-            // credentials. Logged once, not every minute.
+            // credentials. Logged once, not on each try.
             let auth = agent::auth_failed(&result.text);
             // ^ A failed sign-in moves to a fallback at once, and every host skips the account.
             if auth {
-                if let Some(message) = agent::record_sign_in_failed(&adapter, &model, now) {
+                let (_, problem) = agent::record_sign_in_failed(&adapter, &model, now);
+                if let Some(message) = problem {
                     self.say(&message);
                 }
                 if self.switch_after_sign_in(&to, self.turn_events) {
@@ -2620,7 +2619,7 @@ impl Manager {
             }
             let was_auth = self.state.limit.as_ref().is_some_and(|hold| hold.auth);
             let until_ms = match auth {
-                true => now + AUTH_RETRY_MS,
+                true => now + store::sign_in_retry_ms(),
                 false => limit::resume_at(None, attempt, now),
             };
             if auth {
@@ -2632,7 +2631,8 @@ impl Manager {
                 let stopped = match auth {
                     true => format!(
                         "{reason}. Sign in again (`claude /login`); the manager retries every \
-                         minute, and at once when you write."
+                         {} min, and at once when you write.",
+                        store::sign_in_retry_ms().div_ceil(60_000)
                     ),
                     false => reason.clone(),
                 };
