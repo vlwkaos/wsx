@@ -8,6 +8,7 @@ main=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
 live="$main/.work/web-live"
 test -x "$live/wsx" || { echo "no live site at $live" >&2; exit 1; }
 command -v pm2 >/dev/null || { echo "pm2 is not on PATH" >&2; exit 1; }
+command -v tmux >/dev/null || { echo "tmux is not on PATH (scripts/test-terminal-context.py needs it)" >&2; exit 1; }
 
 # ^ The whole output goes to $live/deploy.log (the run before stays as deploy.log.1) and to wsx,
 # which keeps only its tail. The script runs again under tee; its exit goes through a file
@@ -23,14 +24,18 @@ step=start
 step() { step=$1; echo "== deploy step: $1 ($(date '+%H:%M:%S'))"; }
 trap 'code=$?; [ $code -eq 0 ] || echo "deploy failed at step: $step (exit $code); full output in $live/deploy.log"' EXIT
 
-# ^ The deploy gate is the PTY and stream smoke test only, so a land reaches the live site in
-# minutes. The task and web end-to-end scripts are `tasks.scenarios`: the worker whose change
+# ^ The deploy gate is the PTY and stream smoke test and the live handoff scenario only, so a land
+# reaches the live site in minutes. The task and web end-to-end scripts are `tasks.scenarios`: the worker whose change
 # touches their area runs them by name (wsx.config.yml `workflow.build`).
 # ^ The smoke test holds the host-wide scenario test slot that a task scenario takes (scripts/check-slot.py).
 step "debug build"
 cargo build --locked -p wsx -p wsx-daemon
 step "runtime-smoke.py"
 python3 -B scripts/check-slot.py python3 -B scripts/runtime-smoke.py
+# ^ The live handoff from the newest installed release; it runs in the same slot, so a regression
+# surfaces after the land that caused it, not at the next release (scripts/terminal-context-check.sh).
+step "test-terminal-context.py"
+sh scripts/terminal-context-check.sh
 step "release build"
 cargo build --release --locked -p wsx -p wsx-daemon
 # ^ wsxd sits next to wsx so the web build and the daemon it hands off to stay one revision.

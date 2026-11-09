@@ -40,16 +40,8 @@ echo "release $tag of $commit over origin/main $origin_main"
 # ^ The live handoff from the last installed release (docs/daemon-live-upgrade.md), which a task
 # cannot run inside wsx's boundary. It opens PTYs and daemons, so it takes the scenario test slot.
 step "handoff from the installed release"
-cellar=$(brew --cellar wsx 2>/dev/null || true)
-older=$( { [ -n "$cellar" ] && ls "$cellar" 2>/dev/null || true; } | grep -Fvx "$version" \
-  | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
-if [ -n "$older" ] && [ -x "$cellar/$older/bin/wsx" ] && [ -x "$cellar/$older/bin/wsxd" ]; then
-  act cargo build --locked -p wsx -p wsx-daemon
-  act python3 -B scripts/check-slot.py python3 -B scripts/test-terminal-context.py \
-    --released-wsx "$cellar/$older/bin/wsx" --released-daemon "$cellar/$older/bin/wsxd"
-else
-  echo "skipped: no older wsx release is installed under Homebrew (${cellar:-no brew})"
-fi
+act cargo build --locked -p wsx -p wsx-daemon
+act sh scripts/terminal-context-check.sh "$version"
 
 step "push main"
 act git push origin "$commit:refs/heads/main"
