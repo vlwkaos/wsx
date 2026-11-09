@@ -342,6 +342,10 @@ pub struct AgentEntry {
     /// count as provisional. Needs the `pi` adapter. ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub minimal: bool,
+    /// An absolute path the Pi adapter loads as `-e <path>`, the lean runner's extension.
+    /// Needs the `pi` adapter. ref: docs/tasks.md "Pi adapter"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension: Option<PathBuf>,
 }
 
 fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
@@ -388,6 +392,19 @@ fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
         }
         if agent.minimal && agent.adapter.as_deref() != Some("pi") {
             return Err(format!("agent {}: minimal needs adapter pi", agent.name));
+        }
+        if let Some(path) = &agent.extension {
+            let text = path.to_string_lossy();
+            if agent.adapter.as_deref() != Some("pi")
+                || !path.is_absolute()
+                || text.len() > 4096
+                || text.chars().any(char::is_control)
+            {
+                return Err(format!(
+                    "agent {}: extension is an absolute path and needs adapter pi",
+                    agent.name
+                ));
+            }
         }
     }
     Ok(())

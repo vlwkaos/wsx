@@ -8,6 +8,8 @@ use super::agent::{
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use wsx_core::task::view::clip;
@@ -27,7 +29,6 @@ const KEPT_ENV: &[&str] = &[
     "TMPDIR",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
-    "PI_CODING_AGENT_DIR",
     "HTTPS_PROXY",
     "HTTP_PROXY",
     "NO_PROXY",
@@ -43,6 +44,70 @@ const KEPT_ENV: &[&str] = &[
 pub struct PiAgent {
     process: AgentProcess,
     requests: u64,
+    /// Dropped after the process: the launch's folder goes with its agent.
+    _home: LaunchHome,
+}
+
+/// Pi's own folder for one launch (`PI_CODING_AGENT_DIR`): only the owner's `models.json`, so
+/// their Pi settings, packages, keys and extensions are not loaded. Pi adds its own caches
+/// to it. ref: docs/design/local-model-fallback.md 6.1, 8 (W2)
+struct LaunchHome(PathBuf);
+
+static HOMES: AtomicU64 = AtomicU64::new(0);
+
+impl LaunchHome {
+    /// `source` is the owner's Pi folder; a missing `models.json` there leaves the folder empty.
+    fn create(source: &Path) -> Result<Self> {
+        let path = std::env::temp_dir().join(format!(
+            "wsx-pi-{}-{}",
+            std::process::id(),
+            HOMES.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+            .create(&path)
+            .with_context(|| format!("cannot create {}", path.display()))?;
+        let home = Self(path);
+        match std::fs::copy(source.join("models.json"), home.0.join("models.json")) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("cannot copy Pi's models.json"),
+        }
+        Ok(home)
+    }
+}
+
+impl Drop for LaunchHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The owner's Pi folder: `PI_CODING_AGENT_DIR` of the host, else `~/.pi/agent`.
+fn owner_dir() -> PathBuf {
+    std::env::var_os("PI_CODING_AGENT_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".pi/agent")))
+        .unwrap_or_default()
+}
+
+/// The `extension` of the first registry agent that runs `model` on the Pi adapter. A file
+/// that is gone fails the launch: a lean runner must not start as the plain one.
+fn extension_of(model: &str) -> Result<Option<PathBuf>> {
+    let Ok((config, _)) = wsx_core::config::global::GlobalConfig::load() else {
+        return Ok(None);
+    };
+    let Some(path) = config
+        .agents
+        .into_iter()
+        .find(|agent| {
+            agent.adapter.as_deref() == Some("pi") && agent.model.as_deref() == Some(model)
+        })
+        .and_then(|agent| agent.extension)
+    else {
+        return Ok(None);
+    };
+    anyhow::ensure!(path.is_file(), "extension {} is not a file", path.display());
+    Ok(Some(path))
 }
 
 impl PiAgent {
@@ -57,12 +122,22 @@ impl PiAgent {
     ) -> Result<Self> {
         // ^ A worker's check or a manager's quiet hour outlasts Pi's default 5-minute cache, and
         // then the whole context is written again. ref: docs/design/manager-efficiency.md
+        let source = owner_dir();
+        let home = LaunchHome::create(&source)?;
+        // ^ Best effort: Pi reports a folder it cannot write.
+        let _ = std::fs::create_dir_all(source.join("sessions/wsx"));
+        let dir = home.0.to_str().context("the Pi folder is not UTF-8")?;
         let (process, stdout) = AgentProcess::spawn(
             launch,
             "pi",
-            pi_args(launch, session),
+            pi_args(
+                launch,
+                session,
+                extension_of(&launch.model)?.as_deref(),
+                &source,
+            ),
             KEPT_ENV,
-            &[("PI_CACHE_RETENTION", "long")],
+            &[("PI_CACHE_RETENTION", "long"), ("PI_CODING_AGENT_DIR", dir)],
         )?;
         let init = session.to_string();
         std::thread::spawn(move || {
@@ -77,6 +152,7 @@ impl PiAgent {
         Ok(Self {
             process,
             requests: 0,
+            _home: home,
         })
     }
 
@@ -110,8 +186,15 @@ impl PiAgent {
 /// Headless and reproducible: no extensions, MCP, themes or templates of the owner's
 /// interactive Pi, and no global `AGENTS.md`. The project's own `AGENTS.md` is appended, as
 /// Claude reads only project settings. Skills: only the lent ones. A stand-in's one call has
-/// no tools, no stored conversation and only its own words.
-fn pi_args(launch: &Launch, session: &str) -> Vec<std::ffi::OsString> {
+/// no tools, no stored conversation and only its own words. `extension` is loaded with `-e`
+/// (an explicit path still loads under `--no-extensions`). Conversations live in `owner`'s
+/// `sessions/wsx`, since the launch's own folder goes away with it.
+fn pi_args(
+    launch: &Launch,
+    session: &str,
+    extension: Option<&Path>,
+    owner: &Path,
+) -> Vec<std::ffi::OsString> {
     let mut args: Vec<std::ffi::OsString> = [
         "--mode",
         "rpc",
@@ -127,12 +210,18 @@ fn pi_args(launch: &Launch, session: &str) -> Vec<std::ffi::OsString> {
     ]
     .map(Into::into)
     .to_vec();
+    if let Some(path) = extension {
+        args.extend(["-e".into(), path.into()]);
+    }
+    // ^ W1 hook: a tier 3 agent adds `--no-tools` here as a stand-in does, once `tier` is on
+    // the registry entry (docs/design/local-model-fallback.md 3.4, 8).
     // ^ A small model read Pi's coding prompt and said it could only work with files.
     if launch.minimal {
         args.extend(["--no-session", "--no-tools", "--thinking", "off"].map(Into::into));
         args.extend(["--system-prompt".into(), (&launch.instructions).into()]);
         return args;
     }
+    args.extend(["--session-dir".into(), owner.join("sessions/wsx").into()]);
     args.extend(["--session-id".into(), session.into()]);
     if !launch.effort.is_empty() {
         args.extend(["--thinking".into(), (&launch.effort).into()]);

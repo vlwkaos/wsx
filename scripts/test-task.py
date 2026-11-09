@@ -5201,8 +5201,17 @@ def part_host(created=None):
     # in a new conversation with the unfinished turn; it reports through `wsx task result -`
     # and the task stays there. The limit is on record for the machine, so the next task
     # starts on the fallback. A short limit is still waited out (part 27).
+    # ^ The Pi adapter (docs/tasks.md "Pi adapter"): `extension` becomes `-e`, and the launch's own
+    # PI_CODING_AGENT_DIR holds only the owner's models.json, not their settings.
+    lean = work / 'lean-runner.js'
+    lean.write_text('// the lean runner stands here\n')
+    owner_pi = home / '.pi/agent'
+    owner_pi.mkdir(parents=True)
+    (owner_pi / 'models.json').write_text('{"providers": {"fake": {}}}\n')
+    (owner_pi / 'settings.json').write_text('{"packages": ["npm:owner-extension"]}\n')
     with open(config_dir / 'config-v2.toml', 'a') as registry:
-        registry.write('[[agents]]\nname = "fake-pi"\ncommand = ["pi"]\nadapter = "pi"\nmodel = "fake/pi-model"\n')
+        registry.write('[[agents]]\nname = "fake-pi"\ncommand = ["pi"]\nadapter = "pi"\nmodel = "fake/pi-model"\n'
+                       'extension = ' + json.dumps(str(lean)) + '\n')
     configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi]\n    maxWaitMinutes: 1\n'),
               'fallback agent')
     # ^ Part 20 ran a Pi manager: only the Pi turns from here on are the worker's.
@@ -5224,6 +5233,12 @@ def part_host(created=None):
     assert any(t.get('adapter') == 'pi' and t.get('reported') == 0 for t in traces()), 'the result was not kept'
     # ^ The task's effort goes on the fallback's launch as Pi's --thinking.
     assert any(t.get('launch') and t.get('thinking') == 'high' for t in traces() if t.get('worker')), 'no --thinking on the pi launch'
+    pi_launch = next(t for t in traces()[traced_before:] if t.get('adapter') == 'pi' and t.get('launch') and t.get('worker'))
+    argv = pi_launch['argv']
+    assert argv[argv.index('-e') + 1] == str(lean) and '--no-extensions' in argv, argv
+    assert argv[argv.index('--session-dir') + 1] == str(owner_pi / 'sessions/wsx'), argv
+    assert pi_launch['agent_dir'] != str(owner_pi) and pi_launch['agent_dir_files'] == ['models.json'], pi_launch
+    assert pi_launch['models_json'] == (owner_pi / 'models.json').read_text(), pi_launch
     limit_file = state / 'wsx/tasks/agents/claude.json'
     assert json.loads(limit_file.read_text())['until_ms'] > time.time() * 1000 + 500_000, limit_file.read_text()
     on_pi = js('task', 'new', 'WORK fb.txt')['id']
