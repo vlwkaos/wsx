@@ -1844,7 +1844,15 @@ impl Manager {
     fn choose_agent(&mut self) {
         let now = now_unix_ms();
         let own = agent::account(&self.adapter, &self.model);
-        if self.state.agent.is_some() && store::limited_until(&own, now).is_none() {
+        // ^ After a failed sign-in the own agent is tried again with a turn to run, not on an
+        // idle manager: a try that fails again moves it back, and each move is a new conversation.
+        let idle_after_sign_in = self.state.agent.as_ref().is_some_and(|agent| agent.sign_in)
+            && self.state.limit.is_none()
+            && !self.work_waiting();
+        if self.state.agent.is_some()
+            && !idle_after_sign_in
+            && agent::blocked_until(&own, now).is_none()
+        {
             let reason = format!("back on {}", self.adapter);
             self.say(&reason);
             let held = self.state.limit.take();
@@ -1894,9 +1902,42 @@ impl Manager {
             self.current_adapter(),
             limit::resume_time(until_ms, now)
         );
+        self.move_to(next, reason, ids, events, false);
+        true
+    }
+
+    /// The manager's sign-in failed on its current account: it moves at once to the first
+    /// `tasks.manager.fallback` that is not `minimal` and not on a limited or signed-out account,
+    /// the same way a long limit does, and the held turn `ids` goes to it. False with none: the
+    /// sign-in hold retries. ref: docs/tasks.md "Agents"
+    fn switch_after_sign_in(&mut self, ids: &[u64], events: bool) -> bool {
+        let now = now_unix_ms();
+        let settings = load_task_config(&self.main).unwrap_or_default();
+        let Some(next) = agent::fallback(&settings.manager_fallback, now, false) else {
+            return false;
+        };
+        let reason = format!(
+            "{} moved to {}: sign-in expired",
+            self.current_adapter(),
+            next.name
+        );
+        self.move_to(next, reason, ids, events, true);
+        true
+    }
+
+    /// Continue the held turn `ids` in a new conversation on `next`, which opens with the
+    /// handover; `reason` is the one chat line.
+    fn move_to(
+        &mut self,
+        next: agent::Choice,
+        reason: String,
+        ids: &[u64],
+        events: bool,
+        sign_in: bool,
+    ) {
         self.say(&reason);
         self.state.limit = Some(LimitHold {
-            until_ms: now,
+            until_ms: now_unix_ms(),
             attempt: 0,
             ids: ids.to_vec(),
             events,
@@ -1908,8 +1949,8 @@ impl Manager {
             name: next.name,
             adapter: next.adapter,
             model: next.model,
+            sign_in,
         });
-        true
     }
 
     /// During a hold, an owner message with no answer yet gets one from a `minimal` agent, one
@@ -2566,6 +2607,17 @@ impl Manager {
             // conversation, but a new process each try, since the running one keeps its old
             // credentials. Logged once, not every minute.
             let auth = agent::auth_failed(&result.text);
+            // ^ A failed sign-in moves to a fallback at once, and every host skips the account.
+            if auth {
+                if let Some(message) = agent::record_sign_in_failed(&adapter, &model, now) {
+                    self.say(&message);
+                }
+                if self.switch_after_sign_in(&to, self.turn_events) {
+                    self.save();
+                    self.report(runtime::AgentState::Idle);
+                    return;
+                }
+            }
             let was_auth = self.state.limit.as_ref().is_some_and(|hold| hold.auth);
             let until_ms = match auth {
                 true => now + AUTH_RETRY_MS,
@@ -2610,6 +2662,7 @@ impl Manager {
             return;
         }
         self.state.limit = None;
+        store::clear_sign_in_failed(&agent::account(&adapter, &model));
         let id = self.next_id();
         // ^ The last model call's context: the summed usage counts it once per call.
         let context = result.usage.context_tokens;

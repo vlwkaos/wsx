@@ -477,6 +477,49 @@ pub fn limited_until(account: &str, now_ms: u64) -> Option<u64> {
     account_limit(account, now_ms).map(|limit| limit.until_ms)
 }
 
+/// How long a failed sign-in on record keeps other hosts from trying the account: the owner's
+/// new sign-in is checked again after it. ref: docs/tasks.md "Agents"
+const SIGN_IN_RETRY_MS: u64 = 5 * 60_000;
+
+/// `SIGN_IN_RETRY_MS`, or the seconds in `WSX_TEST_SIGN_IN_RETRY_SECS`: for the task scenario
+/// only, which would otherwise wait 5 minutes to see the return home.
+fn sign_in_retry_ms() -> u64 {
+    std::env::var("WSX_TEST_SIGN_IN_RETRY_SECS")
+        .ok()
+        .and_then(|secs| secs.parse::<u64>().ok())
+        .map_or(SIGN_IN_RETRY_MS, |secs| secs * 1000)
+}
+
+/// Record that `account`'s sign-in failed at `now_ms`: every host on this machine skips the
+/// account until `sign_in_retry_ms` has passed, with no call to learn it.
+pub fn mark_sign_in_failed(account: &str, now_ms: u64) -> Result<()> {
+    let path = account_file(account, ".auth.json")?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    write_atomic(
+        &path,
+        serde_json::json!({ "since_ms": now_ms, "until_ms": now_ms + sign_in_retry_ms() })
+            .to_string()
+            .as_bytes(),
+    )
+}
+
+/// When `account` may be tried again, while its failed sign-in is on record.
+pub fn sign_in_failed_until(account: &str, now_ms: u64) -> Option<u64> {
+    let bytes = read_bounded_if_exists(&account_file(account, ".auth.json").ok()?, 4096).ok()??;
+    let until_ms =
+        serde_json::from_slice::<serde_json::Value>(&bytes).ok()?["until_ms"].as_u64()?;
+    (until_ms > now_ms).then_some(until_ms)
+}
+
+/// A turn on `account` went through: its failed sign-in on record, if any, is over.
+pub fn clear_sign_in_failed(account: &str) {
+    if let Ok(path) = account_file(account, ".auth.json") {
+        let _ = fs::remove_file(path);
+    }
+}
+
 /// One task's folder. Every path inside it is fixed; no caller-given name reaches the disk.
 #[derive(Debug, Clone)]
 pub struct TaskDir {

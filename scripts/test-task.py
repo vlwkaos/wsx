@@ -188,6 +188,8 @@ def gate_cmd(path):
 # ^ The manager host's stall grace (60 s) and sweep (10 s): the scenario sets the grace to
 # STALL_GRACE through wsxd's environment, so a stall is reported on the second sweep.
 STALL_GRACE = 4
+# ^ How long a failed sign-in on record keeps the account skipped (store.rs `sign_in_retry_ms`).
+SIGN_IN_RETRY = 6
 SWEEP = 10
 
 
@@ -274,6 +276,7 @@ def run(wsx, wsxd, work, owned, part):
     env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
            'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(daemon_socket),
            'WSX_TEST_STALL_GRACE_SECS': str(STALL_GRACE), 'WSX_TEST_ALLOW_FILE_CLONE': '1',
+           'WSX_TEST_SIGN_IN_RETRY_SECS': str(SIGN_IN_RETRY),
            'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
            'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp),
            # ^ A fixture git command must never reach the repository this script runs in.
@@ -5526,6 +5529,69 @@ def part_host(created=None):
     limit_file.unlink()
     for name in ('pi-fake.json', 'pi-paid.json', 'pi-other.json'):
         (agents / name).unlink(missing_ok=True)
+    configure(CONFIG, 'no fallback')
+
+    # 37b. A failed sign-in moves the manager and a worker to the first usable fallback at once, and
+    # both go home on the first success once the record on the account ends (docs/tasks.md "Agents").
+    # fake-claude2 is on account `claude`, which the failed sign-in rules out; fake-pi is not.
+    mark('37b')
+    with open(config_dir / 'config-v2.toml', 'a') as registry:
+        registry.write('[[agents]]\nname = "fake-claude2"\ncommand = ["claude"]\nadapter = "claude"\nmodel = "other"\n')
+    both = with_fallback('fake-claude2, fake-pi').replace(
+        '    maxWaitMinutes: 1\n', '    maxWaitMinutes: 1\n    fallback: [fake-claude2, fake-pi]\n')
+    configure(both, 'sign-in fallback')
+    auth_record = agents / 'claude.auth.json'
+    record_ended = lambda: json.loads(auth_record.read_text())['until_ms'] < time.time() * 1000
+    assert 'agent' not in manager_state(), manager_state()
+    signed_in = work / 'signed-in-fallback'
+    signed_in.unlink(missing_ok=True)
+    away = js('task', 'say', 'AUTHFAIL %s STATUS away' % signed_in)
+    assert reply_to(away['id'])['text'].startswith('pi answers: '), chat()[-3:]
+    assert manager_state()['agent']['name'] == 'fake-pi', manager_state()
+    moves = lambda: [e['reason'] for e in manager_entries() if e['kind'] == 'rotated' and 'sign-in expired' in e.get('reason', '')]
+    assert moves() == ['claude moved to fake-pi: sign-in expired'], manager_entries()[-8:]
+    assert not any(e['kind'] == 'stopped' and 'Sign in again' in e.get('reason', '') for e in manager_entries()[-8:]), manager_entries()[-8:]
+    assert auth_record.exists(), list(agents.iterdir())
+    # ^ A sign-in still missing when the record ends: the try on the own agent fails and moves it back.
+    wait(record_ended, 'the sign-in record ends')
+    again = js('task', 'say', 'AUTHFAIL %s STATUS again' % signed_in)
+    assert reply_to(again['id'])['text'].startswith('pi answers: '), chat()[-3:]
+    assert len(moves()) == 2 and manager_state()['agent']['name'] == 'fake-pi', moves()
+    # ^ The worker: the first fallback on the failed account is skipped, the task continues on fake-pi
+    # in a new conversation, and the next task starts there with no call to Claude.
+    worker_in = work / 'worker-signed-in'
+    worker_in.unlink(missing_ok=True)
+    traced_before = len(traces())
+    sw = js('task', 'new', 'WAUTHFAIL %s WORK sa.txt' % worker_in)['id']
+    shown = wait_state(sw, 'ready', 'failed')
+    assert shown['state'] == 'ready' and shown['record']['adapter'] == 'pi', shown
+    assert shown['record']['fallback'] is True and shown['record']['sign_in'] is True, shown['record']
+    switch = next(e for e in log(sw) if e['kind'] == 'agent_switch')
+    assert switch['to'] == 'fake-pi (pi/fake/pi-model)' and switch['reason'] == 'sign-in expired', switch
+    assert kinds(sw, 'agent_switch', 'rotated', 'result') == ['agent_switch', 'rotated', 'result'], log(sw)
+    assert not any(e['kind'] == 'result' and e['status'] == 'failed' for e in log(sw)), log(sw)
+    pi_turns = [t for t in traces()[traced_before:] if t.get('adapter') == 'pi' and 'message' in t and 'WAUTHFAIL' in t['message']]
+    assert len(pi_turns) == 1 and 'could write no handoff notes' in pi_turns[0]['message'], pi_turns
+    skipped = js('task', 'new', 'WORK sb.txt')['id']
+    assert wait_state(skipped, 'ready', 'failed')['record']['adapter'] == 'pi', show(skipped)
+    assert not any(e['kind'] == 'agent_switch' for e in log(skipped)), log(skipped)
+    # ^ Signed in again: both go home once the record ends, on the first turn they have.
+    signed_in.touch()
+    worker_in.touch()
+    wait(record_ended, 'the sign-in record ends again')
+    home = js('task', 'say', 'AUTHFAIL %s STATUS home' % signed_in)
+    assert reply_to(home['id'])['text'].startswith('open: '), chat()[-3:]
+    assert 'agent' not in manager_state(), manager_state()
+    assert any(e['kind'] == 'rotated' and e.get('reason') == 'back on claude' for e in manager_entries()), manager_entries()[-6:]
+    assert not auth_record.exists(), 'the first success clears the record'
+    js('task', 'add', sw, 'WORK sc.txt')
+    wait(lambda: show(sw)['record']['adapter'] == 'claude', 'the worker goes home')
+    assert wait_state(sw, 'ready', 'failed')['state'] == 'ready', show(sw)
+    assert show(sw)['record']['fallback'] is False and not show(sw)['record'].get('sign_in'), show(sw)['record']
+    back = [e for e in log(sw) if e['kind'] == 'agent_switch'][-1]
+    assert back['to'].startswith('claude ') and back['reason'] == 'sign-in may work again', back
+    for n in (sw, skipped):
+        js('task', 'close', n, '--discard')
     configure(CONFIG, 'no fallback')
 
     # 38. A host that started before this wsx cannot read a request the newer CLI added

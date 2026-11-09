@@ -245,8 +245,22 @@ pub fn account(adapter: &str, model: &str) -> String {
     }
 }
 
+/// When `account` may be tried again: its usage limit or its failed sign-in on record, the
+/// later of the two. ref: docs/tasks.md "Agents"
+pub fn blocked_until(account: &str, now_ms: u64) -> Option<u64> {
+    store::limited_until(account, now_ms).max(store::sign_in_failed_until(account, now_ms))
+}
+
+/// Note that `account`'s sign-in failed, so every host skips it for a few minutes. Returns the
+/// message when the record cannot be written.
+pub fn record_sign_in_failed(adapter: &str, model: &str, now_ms: u64) -> Option<String> {
+    store::mark_sign_in_failed(&account(adapter, model), now_ms)
+        .err()
+        .map(|error| format!("cannot record the failed sign-in: {error:#}"))
+}
+
 /// The first of `names` (the global `[[agents]]`) with a headless adapter and a model, and no
-/// limit on record on its account that may do `operation` (`AgentEntry::allows`). A name the
+/// limit or failed sign-in on record on its account that may do `operation` (`AgentEntry::allows`). A name the
 /// registry does not hold is skipped. ref: docs/tasks.md "Agents"
 pub fn fallback(names: &[String], now_ms: u64, operation: Operation) -> Option<Choice> {
     if names.is_empty() {
@@ -260,7 +274,7 @@ pub fn fallback(names: &[String], now_ms: u64, operation: Operation) -> Option<C
         }
         let adapter = entry.adapter.clone()?;
         let model = entry.model.clone()?;
-        store::limited_until(&account(&adapter, &model), now_ms)
+        blocked_until(&account(&adapter, &model), now_ms)
             .is_none()
             .then(|| Choice {
                 name: name.clone(),
@@ -301,7 +315,7 @@ pub fn worker_next(
 ) -> Option<Choice> {
     let own = account(&settings.adapter, &settings.model);
     let current = account(adapter, model);
-    if current != own && store::limited_until(&own, now_ms).is_none() {
+    if current != own && blocked_until(&own, now_ms).is_none() {
         return Some(Choice {
             name: settings.adapter.clone(),
             adapter: settings.adapter.clone(),
