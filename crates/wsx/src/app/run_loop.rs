@@ -332,7 +332,6 @@ impl App {
         self.mode = Mode::Terminal {
             pane_id: pending.pane_id,
         };
-        self.terminal_escape_chord.reset();
     }
 
     pub(super) fn cancel_pending_terminal_entry_if_stale(&mut self) {
