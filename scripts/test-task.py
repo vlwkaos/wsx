@@ -5552,7 +5552,7 @@ def part_host(created=None):
     assert si_moves() == ['claude moved to fake-pi: sign-in expired'], manager_entries()[-8:]
     assert not any(e['kind'] == 'stopped' and 'Sign in again' in e.get('reason', '') for e in manager_entries()[-8:]), manager_entries()[-8:]
     assert si_auth_record.exists(), list(agents.iterdir())
-    # ^ A sign-in still missing when the record ends: the try on the own agent fails and si_moves it back.
+    # ^ A sign-in still missing when the record ends: the try on the own agent fails and moves it back.
     wait(si_record_ended, 'the sign-in record ends')
     si_again = js('task', 'say', 'AUTHFAIL %s STATUS again' % si_signed_in)
     assert reply_to(si_again['id'])['text'].startswith('pi answers: '), chat()[-3:]
