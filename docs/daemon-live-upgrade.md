@@ -150,6 +150,8 @@ python3 scripts/test-terminal-context.py --next-wsx <dir>/wsx --next-daemon <dir
 python3 scripts/test-terminal-context.py --released-wsx <path>/wsx --released-daemon <path>/wsxd
 ```
 
+A released `wsx` computes its own socket paths: before 0.42 the TUI connects to asched's `daemon-v1.sock`, in `ASCHED_ROOT` or `HOME/Library/Application Support/asched`. That is 107 bytes under a release copy (`wsx-release-<pid>`), so the script gives the released leg a short `ASCHED_ROOT` and checks the length of every socket it makes.
+
 - With `--next-wsx`, the same script starts a TUI of the higher revision while an older window blocks the handoff. The upgrade screen must appear at 80x24 and 40x12 without the workspace, `q` must quit, `Enter` must open the old daemon, and the TUI must open on the new daemon by itself when the blocking window quits. With `--released-wsx` it also starts a TUI whose handoff target refuses the transfer (`--next-daemon`, or a script that exits at once): the released daemon rolls back, the TUI opens on it with "wsxd upgrade failed", and a CLI command of this build then answers with the same notice, at once, without a new handoff and with the same daemon epoch.
 - `scripts/runtime-smoke.py` installs as a package manager does (a new keg, `bin/wsx` and `bin/wsxd` relinked, the old keg removed) under a daemon with two live sessions. Each session must take input after each step:
   1. the upgrade hands the sessions over;

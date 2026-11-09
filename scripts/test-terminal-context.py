@@ -81,8 +81,12 @@ class Fixture:
         self.config = config_dir / "config-v2.toml"
         self.configure(position="bottom")
         self.daemon_socket, self.tmux_socket = state / "wsx/wsx.sock", work / "t.sock"
+        # ^ A released wsx (before wsxd hosted the routines) connects to asched's socket, which
+        # defaults to HOME/Library/Application Support/asched: 107 bytes under a release copy
+        # (wsx-release-<pid>), past sun_path's 104. Its root is a short sibling.
+        asched_root = work / "a"
         # Every socket the fixture makes, the longest handoff name (h-<16 hex>.sock) included.
-        sockets = (self.daemon_socket, self.tmux_socket,
+        sockets = (self.daemon_socket, self.tmux_socket, asched_root / "daemon-v1.sock",
                    self.daemon_socket.parent / ("h-" + "f" * 16 + ".sock"))
         Fixture.longest_socket = max([Fixture.longest_socket, *(len(str(s)) for s in sockets)])
         assert Fixture.longest_socket < SUN_LEN, ("a fixture socket path is too long", sockets)
@@ -90,7 +94,7 @@ class Fixture:
         self.env = {"LANG": os.environ.get("LANG", "en_US.UTF-8")}
         self.env.update({"HOME": str(home), "WSX_EXIT_WITH_PID": str(os.getpid()), "XDG_STATE_HOME": str(state),
                          "XDG_CONFIG_HOME": str(work / "config"), "XDG_CACHE_HOME": str(work / "cache"),
-                         "WSX_DAEMON_BIN": str(daemon_bin), "WSX_SOCKET": str(self.daemon_socket),
+                         "ASCHED_ROOT": str(asched_root), "WSX_DAEMON_BIN": str(daemon_bin), "WSX_SOCKET": str(self.daemon_socket),
                          "SHELL": "/bin/sh", "TERM": "xterm-256color",
                          "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
                          # ^ A fixture git command must never reach the repository this runs in.

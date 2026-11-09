@@ -798,6 +798,24 @@ pub fn default_socket_path() -> PathBuf {
         .unwrap_or_else(|| state_dir().join("wsx.sock"))
 }
 
+/// Refuse a socket path that `sun_path` cannot hold (103 bytes on macOS, 107 on Linux), with
+/// the length and the way out. A bind or connect says only "path must be shorter than SUN_LEN".
+/// ^ docs/daemon-discovery.md "Long paths"
+pub fn check_socket_path(path: &Path) -> io::Result<()> {
+    let limit = if cfg!(target_os = "macos") { 103 } else { 107 };
+    let len = path.as_os_str().len();
+    if len <= limit {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "socket path {} is {len} bytes and a Unix socket takes {limit}: set WSX_SOCKET to a shorter path",
+            path.display()
+        ),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

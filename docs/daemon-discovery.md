@@ -26,6 +26,10 @@ A failed connect reads `<ErrorKind> at <socket>: <error>`, for example `NotFound
 
 Verified by `scripts/runtime-smoke.py` (the "daemon-discovery" steps).
 
+## Long paths
+
+A Unix socket path holds 103 bytes on macOS (107 on Linux). The daemon socket and its state files stay together, so wsx does not move the socket to another folder; a path over the limit fails at once with `socket path <path> is <n> bytes and a Unix socket takes 103: set WSX_SOCKET to a shorter path` (`runtime::check_socket_path`, checked by `wsxd` and by every client) in place of std's "path must be shorter than SUN_LEN". The handoff socket `h-<hex>.sock` is 24 bytes longer than the folder it sits in, so when it does not fit beside the daemon's socket it is bound in the task store's socket folder (`<TMPDIR>/wsx-<uid>`, [tasks.md](tasks.md) "Store"); the running daemon names it and hands the path to the new one. Task host sockets already live there. Verified by `live_handoff.rs`.
+
 ## Lifetime
 
 A wsxd stops by itself when what it serves goes away. Its routine scheduler stops with it (docs/tasks.md "Routines").

@@ -64,6 +64,7 @@ pub(crate) fn run_daemon(import: Option<handoff::Received>) -> io::Result<()> {
     install_shutdown_signals()?;
     raise_descriptor_limit();
     let socket = default_socket_path();
+    wsx_core::runtime::check_socket_path(&socket)?;
     let state_path = state_path(&socket);
     let socket_dir = socket
         .parent()

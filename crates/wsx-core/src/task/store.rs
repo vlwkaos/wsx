@@ -38,7 +38,7 @@ fn tasks_root() -> PathBuf {
 /// `TMPDIR` is too long for a socket name. A host and its callers must share `TMPDIR`.
 /// ^ `sun_path` holds 104 bytes on macOS, and a socket in the store passed that with a
 /// long `XDG_STATE_HOME` or project name. ref: docs/tasks.md "Store"
-fn socket_dir() -> PathBuf {
+pub fn socket_dir() -> PathBuf {
     // SAFETY: geteuid has no preconditions.
     let uid = unsafe { libc::geteuid() };
     let name = format!("wsx-{uid}");
