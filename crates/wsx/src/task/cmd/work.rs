@@ -409,7 +409,7 @@ pub(crate) fn sessions_in(
     let worktrees: Vec<_> = snapshot
         .worktrees
         .iter()
-        .filter(|worktree| worktree.path == working_copy)
+        .filter(|worktree| wsx_core::fs_util::same_folder(&worktree.path, working_copy))
         .map(|worktree| worktree.id)
         .collect();
     Ok(snapshot

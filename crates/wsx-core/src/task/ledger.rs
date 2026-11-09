@@ -289,9 +289,7 @@ fn main_checkout(main: &Path, git: &mut Git) -> Value {
 /// open task's working copy: the owner's cleanup candidates. Nothing here deletes one.
 /// ref: docs/tasks.md "Ledger"
 fn stray_worktrees(main: &Path, copies: &[&Path], git: &mut Git) -> (Vec<Value>, usize) {
-    let same = |a: &Path, b: &Path| {
-        a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
-    };
+    let same = crate::fs_util::same_folder;
     let mut found: Vec<(PathBuf, String)> = crate::git::worktree::list_worktrees(main)
         .unwrap_or_else(|error| {
             if let Some(io) = error.root_cause().downcast_ref::<std::io::Error>() {

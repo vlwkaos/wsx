@@ -866,7 +866,8 @@ fn host_session<'a>(
     snapshot.sessions.iter().find(|session| {
         session.label == label
             && snapshot.worktrees.iter().any(|worktree| {
-                worktree.id == session.worktree_id && worktree.path == record.working_copy
+                worktree.id == session.worktree_id
+                    && crate::fs_util::same_folder(&worktree.path, &record.working_copy)
             })
     })
 }

@@ -1388,8 +1388,6 @@ impl App {
                 return Ok(());
             }
         };
-        // ^ The record's path and git's can differ by a symlink (`/var` and `/private/var`).
-        let path = std::fs::canonicalize(&path).unwrap_or(path);
         let Some((pi, wi)) = self
             .workspace
             .projects
@@ -1398,10 +1396,7 @@ impl App {
             .find_map(|(pi, p)| {
                 p.worktrees
                     .iter()
-                    .position(|worktree| {
-                        worktree.path == path
-                            || std::fs::canonicalize(&worktree.path).is_ok_and(|real| real == path)
-                    })
+                    .position(|worktree| wsx_core::fs_util::same_folder(&worktree.path, &path))
                     .map(|wi| (pi, wi))
             })
         else {
