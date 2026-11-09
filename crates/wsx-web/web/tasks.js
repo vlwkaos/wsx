@@ -654,7 +654,11 @@ function useManagerLog(id, role) {
     const { words, around: at } = search.current;
     const fresh = words !== search.current.read || at !== search.current.readAround;
     if (at != null && !fresh) return;
-    const last = fresh ? null : shown.current.findLast((entry) => entry.id != null)?.id;
+    // ^ A queued row is read again until a turn takes it: the read starts after the newest row
+    // before the oldest queued one, and the later rows it brings join by their keys.
+    const taken = shown.current.filter((entry) => !entry.queued);
+    const oldest = Math.min(...shown.current.filter((entry) => entry.queued).map((entry) => entry.id));
+    const last = fresh ? null : taken.findLast((entry) => entry.id != null && entry.id < oldest)?.id;
     const next = await api(`api/tasks/${id}/chat`, { query: { ...(last != null && { after: last }), ...(fresh && words && { find: words }), ...(fresh && !words && at != null && { around: at }), ...(role && { role }) } });
     if (!current()) return;
     if (fresh) {
@@ -672,9 +676,12 @@ function useManagerLog(id, role) {
       return;
     }
     // ^ A rotation, a stop or a limit has no id, so every read after the last id returns it
-    // again until the next message: a row joins once, by its key.
-    const keys = new Set(shown.current.map((row) => row.key));
-    const joined = [...shown.current, ...next.rows.filter((row) => !keys.has(row.key))];
+    // again until the next message: a row joins once, by its key, with the newest read's words
+    // (a run of stops grows its count).
+    const again = new Map(next.rows.map((row) => [row.key, row]));
+    const kept = taken.map((row) => again.get(row.key) ?? row);
+    const keys = new Set(kept.map((row) => row.key));
+    const joined = [...kept, ...next.rows.filter((row) => !keys.has(row.key))];
     if (search.current.read) shown.current = joined;
     else {
       if (next.skipped || joined.length > 400) cut.current = true;
@@ -817,12 +824,16 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
         <p class="empty">${!store.daemon ? "wsx is not running on the host." : store.loaded ? "This project is not available." : "Loading…"}</p>
       </div>`;
   }
-  const entries = chat?.rows ?? [];
+  // ^ A message the held manager has not taken waits in the queue above the composer, as a
+  // session's does; it joins the conversation once a turn takes it (wsx-core `waiting_ids`).
+  const all = chat?.rows ?? [];
+  const entries = all.filter((row) => !row.queued);
+  const waiting = all.filter((row) => row.queued);
   const items = role ? [] : overview?.needs ?? [];
   const words = withChips(id);
   const rows = ready ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems, chat?.asks ?? []) : [];
   // The sent message shows until the log has it.
-  if (sent && !entries.some((row) => row.kind === "message" && row.id === sent.id)) {
+  if (sent && !all.some((row) => row.kind === "message" && row.id === sent.id)) {
     const last = rows.at(-1);
     const grouped = last?.kind === "message" && last.author === "owner";
     if (grouped) last.last = false;
@@ -898,6 +909,10 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
           ${away && html`<${JumpButton} unread=${unread} onClick=${around != null ? newest : toEnd} />`}
         </div>
         ${failure && html`<p class="error chat-error" role="alert">${failure}</p>`}
+        ${waiting.length > 0 && html`
+          <ul class="queue" aria-label=${`Messages waiting for ${role ?? "the manager"}`}>
+            ${waiting.map((row) => html`<li key=${row.key} class="queued" data-key=${row.key}><span class="queued-text">${row.text || `${row.attachments?.length ?? 0} files`}</span></li>`)}
+          </ul>`}
         ${!role && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} checks=${overview?.check_items ?? []} onMention=${mention} onReply=${(line, id) => { setReply({ line, id }); field.current?.focus(); }} onShow=${goToReply} />`}
         ${low && header}
         ${!role && !can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}

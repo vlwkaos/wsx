@@ -147,7 +147,7 @@ fn find_from(log: &[ManagerEntry], words: &str, names: &Names) -> Option<usize> 
     };
     log.iter().position(|entry| {
         in_chat(entry)
-            && chat_rows(&[entry], &[], &[], names).iter().any(|row| {
+            && chat_rows(&[entry], &[], &[], &[], names).iter().any(|row| {
                 row.text.to_lowercase().contains(&words)
                     || shows(&row.name)
                     || shows(&row.tag)
@@ -331,6 +331,10 @@ pub struct ChatRow {
     /// The manager stopped.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub danger: bool,
+    /// An owner message the held manager has not taken into a turn (`waiting_ids`): the chats
+    /// show it as waiting, after the other rows.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
 }
 
 impl ChatRow {
@@ -354,6 +358,7 @@ impl ChatRow {
             approvals: Vec::new(),
             provisional: None,
             danger: false,
+            queued: false,
         }
     }
 
@@ -401,7 +406,13 @@ pub fn page(
     let (entries, skipped) = chat_window(&log, window, names);
     let mut entries: Vec<ManagerEntry> = entries.into_iter().cloned().collect();
     entries.iter_mut().for_each(&mut edit);
-    let rows = chat_rows(&entries.iter().collect::<Vec<_>>(), approvals, &asks, names);
+    let rows = chat_rows(
+        &entries.iter().collect::<Vec<_>>(),
+        approvals,
+        &asks,
+        &waiting_ids(&log),
+        names,
+    );
     Ok(Page {
         log,
         entries,
@@ -411,13 +422,55 @@ pub fn page(
     })
 }
 
+/// The owner messages in `log` the manager has not taken into a turn while it is held (a usage
+/// limit, an agent error or a failed start: the newest `limit` or `stopped` entry that no
+/// resume or reply followed). Else none: a message waits only moments for a free manager.
+/// ref: docs/tasks.md "Manager"
+pub fn waiting_ids(log: &[ManagerEntry]) -> Vec<u64> {
+    let held = log.iter().rev().find_map(|entry| match &entry.event {
+        ManagerEvent::Limit { until } => Some(until.is_some()),
+        ManagerEvent::Stopped { .. } => Some(true),
+        // ^ A stand-in's reply and a post are written during a hold: they end none.
+        ManagerEvent::Reply {
+            provisional: None,
+            post: false,
+            ..
+        } => Some(false),
+        _ => None,
+    });
+    if held != Some(true) {
+        return Vec::new();
+    }
+    let taken: HashSet<u64> = log
+        .iter()
+        .filter_map(|entry| match &entry.event {
+            ManagerEvent::Delivered { ids } => Some(ids),
+            _ => None,
+        })
+        .flatten()
+        .copied()
+        .collect();
+    log.iter()
+        .filter_map(|entry| match &entry.event {
+            ManagerEvent::Message {
+                id,
+                from: Author::Owner,
+                ..
+            } if !taken.contains(id) => Some(*id),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The chat window's entries (`chat_window`) as rows. `approvals`: the pending approvals
 /// (`pending_approvals`); a quiet reply that carries one is a message. `asks`: the open
-/// questions (`open_asks`), whose rows ask.
+/// questions (`open_asks`), whose rows ask. `waiting`: the owner messages not taken into a
+/// turn (`waiting_ids`), whose rows come last, queued.
 pub fn chat_rows(
     entries: &[&ManagerEntry],
     approvals: &[&ApprovalLine],
     asks: &[OpenAsk],
+    waiting: &[u64],
     names: &Names,
 ) -> Vec<ChatRow> {
     // ^ wsx's recap request is not shown; the answer to it is tagged (docs/tasks.md "Recap").
@@ -448,7 +501,16 @@ pub fn chat_rows(
         }
     }
     let mut rows: Vec<ChatRow> = Vec::new();
+    let mut queued: Vec<ChatRow> = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
+        if held_kind(entry) {
+            // ^ A run of holds is folded where it starts (`hold_rows`).
+            if index == 0 || !held_kind(entries[index - 1]) {
+                let run = entries[index..].iter().take_while(|entry| held_kind(entry));
+                hold_rows(&mut rows, &run.copied().collect::<Vec<_>>(), names);
+            }
+            continue;
+        }
         match &entry.event {
             ManagerEvent::Message {
                 from: Author::Events,
@@ -457,7 +519,16 @@ pub fn chat_rows(
                 ..
             } => event_rows(&mut rows, entry, text, short),
             ManagerEvent::Message { from, text, .. } => {
-                rows.extend(message_row(entry, from, text, names))
+                let row = message_row(entry, from, text, names);
+                match row {
+                    Some(row) if row.id.is_some_and(|id| waiting.contains(&id)) => {
+                        queued.push(ChatRow {
+                            queued: true,
+                            ..row
+                        })
+                    }
+                    row => rows.extend(row),
+                }
             }
             ManagerEvent::Reply { .. } => rows.extend(reply_row(
                 entry,
@@ -469,6 +540,7 @@ pub fn chat_rows(
             _ => rows.extend(note_row(entry, names)),
         }
     }
+    rows.extend(queued);
     rows
 }
 
@@ -659,6 +731,96 @@ fn note_row(entry: &ManagerEntry, names: &Names) -> Option<ChatRow> {
         }),
         _ => None,
     }
+}
+
+/// Whether an entry is a hold: the manager stopped, paused or resumed, or began a new
+/// conversation.
+fn held_kind(entry: &ManagerEntry) -> bool {
+    matches!(
+        entry.event,
+        ManagerEvent::Stopped { .. } | ManagerEvent::Limit { .. } | ManagerEvent::Rotated { .. }
+    )
+}
+
+/// The rows of a run of hold entries with nothing shown between them. Those of one reason (a
+/// stop's, or the reason of the new conversation it brought) fold into one row when they hold
+/// twice or more: `wsx stopped 3 times: <reason>; next try 10:11`. A run of usage limits with
+/// no stop folds the same way. Else each entry has its own row (`note_row`).
+fn hold_rows(rows: &mut Vec<ChatRow>, run: &[&ManagerEntry], names: &Names) {
+    let mut segment: Vec<&ManagerEntry> = Vec::new();
+    let mut reason: Option<&str> = None;
+    for entry in run {
+        let own = match &entry.event {
+            ManagerEvent::Stopped { reason } => Some(reason.as_str()),
+            ManagerEvent::Rotated {
+                reason: Some(reason),
+                ..
+            } => Some(reason.as_str()),
+            _ => None,
+        };
+        if matches!(entry.event, ManagerEvent::Rotated { reason: None, .. })
+            || own.is_some_and(|own| !segment.is_empty() && reason != Some(own))
+        {
+            fold_segment(rows, &segment, reason, names);
+            segment.clear();
+            reason = None;
+        }
+        reason = own.or(reason);
+        segment.push(entry);
+    }
+    fold_segment(rows, &segment, reason, names);
+}
+
+/// One segment of `hold_rows`: `reason` is the stop's, none for a run of limits alone.
+fn fold_segment(
+    rows: &mut Vec<ChatRow>,
+    segment: &[&ManagerEntry],
+    reason: Option<&str>,
+    names: &Names,
+) {
+    let count =
+        |counts: fn(&ManagerEvent) -> bool| segment.iter().filter(|e| counts(&e.event)).count();
+    let stops = count(|event| matches!(event, ManagerEvent::Stopped { .. }));
+    let pauses = count(|event| matches!(event, ManagerEvent::Limit { until: Some(_) }));
+    let (Some(first), Some(last)) = (segment.first(), segment.last()) else {
+        return;
+    };
+    let times = if reason.is_some() { stops } else { pauses };
+    if times < 2 {
+        rows.extend(segment.iter().filter_map(|entry| note_row(entry, names)));
+        return;
+    }
+    // ^ How the run ended: paused until a time, resumed, or neither (a stop with no pause).
+    let end = segment.iter().rev().find_map(|entry| match &entry.event {
+        ManagerEvent::Limit { until } => Some(until.as_deref()),
+        ManagerEvent::Stopped { .. } => Some(None),
+        _ => None,
+    });
+    let own = names.own;
+    let (text, kind) = match (reason, end) {
+        (Some(reason), Some(Some(until))) => (
+            format!("{own} stopped {times} times: {reason}; next try {until}"),
+            RowKind::Note,
+        ),
+        (Some(reason), _) => (
+            format!("{own} stopped {times} times: {reason}"),
+            RowKind::Note,
+        ),
+        (None, Some(Some(until))) => (
+            format!("{own} paused {times} times: usage limit, resumes at {until}"),
+            RowKind::Line,
+        ),
+        (None, _) => (
+            format!("{own} paused {times} times: usage limit"),
+            RowKind::Line,
+        ),
+    };
+    // ^ The first entry keys the row, the last gives its time: a run that grows keeps its row.
+    rows.push(ChatRow {
+        danger: reason.is_some(),
+        unix_ms: last.unix_ms,
+        ..ChatRow::new(kind, row_key(first, "held"), first, text)
+    });
 }
 
 /// `n` with a comma between each group of three digits: `152,000`.

@@ -110,7 +110,11 @@ pub fn parts(text: &str) -> Vec<Part<'_>> {
 /// what it opens. The time and place name a link while rows come and go.
 pub fn links(rows: &[ChatRow]) -> Vec<(u64, usize, Target)> {
     let mut found = Vec::new();
-    for row in rows.iter().filter(|row| row.kind == RowKind::Message) {
+    // ^ A queued message shows as one waiting line: it has no links.
+    for row in rows
+        .iter()
+        .filter(|row| row.kind == RowKind::Message && !row.queued)
+    {
         // ^ The quote is link 0 of its message; `chat_lines` counts the same way.
         let quoted = row.quoted.clone().map(|line| Target::Quote {
             line,

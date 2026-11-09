@@ -2142,6 +2142,9 @@ try:
         {"kind": "reply", "id": 16, "to": [10], "text": "Should I land #4?", "asks": True},
         {"kind": "reply", "id": 17, "to": [10], "text": "Shall I deploy it too?", "asks": True},
         {"kind": "message", "id": 18, "from": "owner", "text": "Not yet."},
+        # ^ Two stops of one reason, nothing between: one row with the count. The stopped manager
+        # holds, so the owner message no turn took is a waiting line after it (`waiting_ids`).
+        {"kind": "stopped", "reason": "agent exited"},
         {"kind": "stopped", "reason": "agent exited"},
     ]
     keep_log = STATE / "wsx" / "tasks" / f"keep-me-{hashlib.sha256(str(removal['keep-me']).encode()).hexdigest()[:8]}" / "manager" / "log.jsonl"
@@ -2181,7 +2184,7 @@ try:
     shutil.rmtree(keep_store / "1")
     shutil.rmtree(keep_store / "2")
     remove_tui.send(b"m")
-    wait_for(lambda: "Atlas stopped: agent exited" in remove_tui.text(), "the TUI chat did not show keep-me's log", seconds=60)
+    wait_for(lambda: "Atlas stopped 2 times: agent exited" in remove_tui.text(), "the TUI chat did not show keep-me's log", seconds=60)
     # ^ Each row in order, by its kind and shown name: an owner message, a short event line, a
     # quiet reply under the manager's name, the recap answer tagged, a peer, a rotation with its
     # reason, an asking reply and a stop, both by the shown name. The recap request and the ping
@@ -2199,8 +2202,8 @@ try:
     # ^ The open question's row under the chat leaves no room for the first rows; they are
     # read after the scroll to the top below.
     rows_in_order([r"^New conversation: the launch changed; the ledger carries the state\.$",
-                   r"^Atlas\s+\d\d:\d\d", r"^Should I land #4\?", r"^Shall I deploy it too\?", r"^Not yet\.$",
-                   r"^Atlas stopped: agent exited$"])
+                   r"^Atlas\s+\d\d:\d\d", r"^Should I land #4\?", r"^Shall I deploy it too\?",
+                   r"^Atlas stopped 2 times: agent exited$", r"^You\s+waiting\s+Not yet\.$"])
     # ^ Two questions, then an owner message with no quote: it answers the newer one only; the
     # older one waits under the chat, counted in the heading. `r` starts a reply that quotes
     # it, Esc drops that, and `d` dismisses it (docs/tasks.md "Questions" under "Manager").
