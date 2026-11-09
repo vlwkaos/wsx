@@ -9,8 +9,9 @@ Claude stays the supervisor. When Claude is down, a local model of 9B or less ta
 
 | Part | Recommendation |
 |---|---|
-| Endpoint | One OpenAI-compatible base URL in Pi's `models.json`, whatever serves it. Start with a wsx-documented `llama-server` recipe. `kaos serve`, Locals or strata swap in later by editing one URL |
+| Endpoint | One OpenAI-compatible base URL in Pi's `models.json`, whatever serves it. Start with a wsx-documented `llama-server` recipe. `kaos serve` or Locals swap in later by editing one URL; strata adds a large tier on a second URL |
 | Models | Test Qwen3.5-9B (top tier candidate), Gemma 4 E4B and LFM3-1.7B. Our own test (section 3) decides |
+| Large local | strata (Niko1221/Strata) streams a much larger MoE model from the SSD: slower, a candidate for tier 1 (manager and plan fallback). Models of 9B or less (LFM3, Qwen3.5-9B, Gemma 4 E4B) serve the fast, small operations. Not installed or measured here; this Mac has 24 GiB RAM and 39 GB free disk (2.2, 2.5) |
 | Tiers | `tier` 1..3 on `[[agents]]` plus a minimum tier per operation in code. No passed test means no tier: the agent stays a stand-in as today |
 | Permissions | A Pi agent can run any model, so no rule relies on the model. One policy in wsx-core, rendered to the Seatbelt profile and the broker's command table; Pi's tool layer only reads it. Section 5 |
 | Runner | Pi plus a lean, headless pygmalion extension (section 6) |
@@ -44,7 +45,7 @@ flowchart TD
 
 - kaos: private monorepo `github.com/vlwkaos/kaos`, not cloned here. `@kaos/engines` spawns one `llama-server` per model on a random 127.0.0.1 port with a random key in a mode-600 file. `kaos serve` (stable port) and Kaos Hub (lease/release) are planned, not built. Kaos is a server only, not bound to wsx.
 - Locals (`github.com/Generated-Computers/Locals`, MLX): OpenAI, Anthropic `/v1/messages` and Ollama APIs on 127.0.0.1:8321, no key, continuous batching, grammar-forced tool calls (`--typed-tools`). Not installed.
-- strata (manager research 2026-11-10): no single project. `mehbul/strata` (Apache-2.0, Rust, Windows/Linux, ROCm/Vulkan/CUDA) places MoE weights across VRAM and RAM, owns a llama.cpp process and serves an OpenAI-compatible API on :8080; its README shows a Pi provider block. `ro99/strata` (C++20/CUDA) splits a checkpoint across VRAM, RAM and NVMe. None targets Apple Silicon. It does not apply to this Mac; it is a later option for a Linux or Windows machine with a small GPU (`docs/design/scale-out.md`). It speaks the same OpenAI API, so the serving layer stays one endpoint.
+- strata is `Niko1221/Strata` (manager reading 2026-11-10 of the GitHub API, README and `docs/MAC.md`). MIT, about 42.5k stars, created 2026-09-24, latest 0.2.13 with a `macos-arm64` .dmg. It runs large MoE models on consumer hardware by streaming experts from the SSD: Qwen3.8-Flash-Next (125B MoE, about 6B active), Qwen3.6-35B-A3B, DeepSeekV4.1-Flash (Mac with 64 GB or more only). On the Mac it has its own Metal engine, M1+, macOS 15+, marked "new". Server: OpenAI API at `http://127.0.0.1:8080/v1`, Anthropic API at `/v1/messages`, flags `--port`, `--api-key`, `--context`; `strata connect` lists pi.dev, Claude Code and Codex. Author's claims, not ours: decode 9.14 tok/s and prompt 109 tok/s on 4K tokens (M4 Mac mini 32 GB, experts streamed, Gyro-S pack); 7.9 tok/s decode and 186 tok/s prompt (M1 Max 34 GB, Q2_0). Packs are about 40 to 85 GB plus a 28.8 GB n-gram table.
 
 ### 2.2 Measured on this Mac (read-only; nothing downloaded or installed)
 
@@ -55,7 +56,7 @@ flowchart TD
 | ollama (`homebrew.mxcl.ollama`, `ollama serve`) | Not installed: `/opt/homebrew/opt/ollama` and `~/.ollama` do not exist; `ollama` is not on PATH. The plist is a leftover | Not verified | Not verified | None |
 | Locals | Not installed | per its README (2.1) | grammar-forced, per its README | MLX only: `Qwen3.5-9B-MLX-8bit` and `gemma-4-e4b-it-4bit` are in the HF cache |
 | `kaos serve` | Unbuilt | OpenAI (llama-server behind it) | as llama-server | as llama-server |
-| strata | Not for this Mac | OpenAI on :8080 | as its llama.cpp | n/a |
+| strata 0.2.13 | Not installed; nothing run (download size, `owner:sec` first). Default port :8080 collides with the running llama-server | OpenAI `/v1`, Anthropic `/v1/messages` (author) | Not verified | Its own packs only (Qwen3.6-35B-A3B, Qwen3.8-Flash-Next 125B; DeepSeekV4.1-Flash needs 64 GB). None on disk |
 
 Measured chat call, one tool, on the running LFM3-1.7B Q8_0 (a throwaway script run with `python3 -I`, deleted after; prompt "List the open tasks by running the wsx task list command", tool `run_wsx(argv[])`, temperature 0):
 
@@ -76,7 +77,55 @@ So one valid tool call came back on the first try. That is one sample on a trivi
 | Qwen3.5-9B now | Needs a GGUF download | Needs a GGUF download | Present (MLX 8-bit) | omlx: configured, cannot start |
 | Risk | Couples wsx timing to kaos | Owner runs a process; idle unload keeps memory low (`is_sleeping`) | Apple silicon only | Two dead services to repair |
 
-Recommendation: B. It already works on this Mac with LFM3-1.7B. A, C or strata replace it by editing one `baseUrl`. wsx never reads kaos internals (random port, key file). D is not worth repair effort unless the owner wants omlx's Qwen3.5-9B: the tier test takes the endpoint as a parameter, so it can compare B and C or omlx.
+Recommendation: B. It already works on this Mac with LFM3-1.7B. A or C replace it by editing one `baseUrl`; strata is a second, larger tier (2.5), not a replacement. wsx never reads kaos internals (random port, key file). D is not worth repair effort unless the owner wants omlx's Qwen3.5-9B: the tier test takes the endpoint as a parameter, so it can compare B and C or omlx.
+
+### 2.4 Prefix caching, measured on llama-server
+
+Three chat calls on the running LFM3-1.7B, one 10.2k-token system text (a ledger line repeated) and a different short user tail each time (`python3 -I` script, deleted after):
+
+| Call | Prompt tokens | Read from cache | Prompt time | Wall |
+|---|---|---|---|---|
+| 1 (cold) | 10,221 | 0 | 11.3 s (908 tok/s) | 11.3 s |
+| 2 (same prefix, new tail) | 10,222 | 9,705 | 0.67 s for the 517 new tokens | 0.83 s |
+| 3 | 10,224 | 9,706 | 0.70 s | 0.85 s |
+
+So llama-server reuses an unchanged prefix: a turn costs only what is new. strata's cache is not measured (not installed); the test in 2.5 repeats this script on it. Until then the large tier is sized for the cold case.
+
+### 2.5 The large local tier (strata): speed, prompt size, memory, Claude Code
+
+Speed decides what it can do. On the author's numbers (109 tok/s prompt, 9.14 tok/s decode; ours are not measured):
+
+| Prompt | Cold read at 109 tok/s | With a prefix cache hit of 95% (unverified) |
+|---|---|---|
+| Manager first turn, about 6.5k tokens (6.3) | about 60 s | about 3 s |
+| A grown manager conversation, 30k tokens | about 275 s (4.6 min) | about 14 s |
+| Claude Code's own prefix, about 33k tokens a call (vault audit 2026-11-04) | about 300 s | about 15 s |
+
+Decode at 9 tok/s makes a 300-token reply 33 s. A manager turn is then 1 to 5 minutes cold, and the stand-in's 180 s limit (`manager.rs`) is too short for a cold large-model turn; the host's turn timeouts for the manager and workers must be checked before this tier is used (task W8). Sizing rules that follow: the manager's prompt keeps its stable part first (rules, notes) and only appends; a fallback switch starts a fresh conversation, so it pays the cold read once, then turns append. The lean runner removes pygmalion's `task-context`, which rewrote its packet at the front of the messages (the vault records 31 full cache rewrites in one session). Rotation thresholds for the large tier are lower than for Claude (open question 11).
+
+Memory on this Mac, read from `sysctl hw.memsize`: 24 GiB (Apple M4), 39 GB free disk. The dgv3 note and the owner's message say 36 GB (the note's 45 tok/s Gemma 4 E4B figure came from an M4 Max 36 GB): this machine reports 24 GiB, so either the numbers belong to another Mac or the owner's figure is wrong (open question 10). With 24 GiB, the 9B Q8 or MLX 8-bit models (about 9 to 10 GB) and a streaming-experts server cannot be assumed to fit together. Who loads and unloads: wsx never starts or stops a model server. Each server owns its memory (llama-server unloads on idle, measured `is_sleeping`); at most one large server is resident; the owner or, later, Kaos Hub (lease/release, designed not built) starts it. An endpoint that is down counts as limited for 5 minutes (exists), so wsx falls back to the next entry. Until Hub exists the recipe in W5 is documented with the rule "small server always on, large server on demand".
+
+Claude Code at strata (`ANTHROPIC_BASE_URL`) against Pi plus the lean runner:
+
+| | Claude Code pointed at strata | Pi plus lean pygmalion |
+|---|---|---|
+| Prompt per call | about 33k tokens before work starts: 5 minutes cold at 109 tok/s | 6 to 7k including wsx's rules: about 1 minute cold |
+| Reuse | The Claude adapter, `--json-schema` result, hooks, stream recordings | The Pi adapter and its recordings, `wsx task result -` for results |
+| Cache dependence | Needs strata's `/v1/messages` to honour caching; unverified | Plain prefix reuse as in 2.4 |
+| Structured result | Depends on the model obeying `--json-schema` | The host validates `wsx task result -` input |
+| Permissions | Runs `bypassPermissions`; must be `untrusted` (5.2) | `untrusted` |
+| Cost to try | One env var, one probe | Section 6 |
+
+Recommendation: keep Pi plus the lean runner for both local tiers. Claude Code at strata stays a later probe: it is cheap to try only if strata is installed anyway, and its 33k prefix fits only a cache that the probe proves.
+
+What a strata test install needs (nothing installed in this task):
+
+1. `owner:sec` review first (a .dmg from a 0.2.13 release; check the signature and notarization with `codesign -dv` and `spctl -a -vv` before opening, and the release's checksums).
+2. Disk: packs of 40 to 85 GB plus 28.8 GB do not fit in 39 GB free. A test needs an external or freed disk of about 120 GB, or a smaller pack (its size is not read yet).
+3. RAM: macOS 15+ (this Mac runs Darwin 25.6, macOS 26) and enough memory; the author's runs used 32 GB and 34 GB, this Mac has 24 GiB. Stop the llama-server and other model servers first.
+4. Run on `--port 8081 --api-key <random>`; confirm with `lsof` it listens on 127.0.0.1 only and check for outbound connections.
+5. Measure: `/v1/models`; one tool call (the 2.2 script); prompt and decode speed at 4k and 7k tokens; the 2.4 cache script; resident memory and swap during a 30k-token turn; the same `bench-tier` cases at tier 1.
+6. Remove it afterwards and report the disk freed.
 
 ## 3. Models and tiers
 
@@ -89,6 +138,9 @@ Recommendation: B. It already works on this Mac with LFM3-1.7B. A, C or strata r
 | LFM3-1.7B (Liquid, 2026-10-27) | 1.73B | 256K (`n_ctx_train` 262144 measured on the running server) | BFCL V4 71.39, ToolSandbox 80.36, IFBench 73.03 (vendor); Liquid says not for agentic coding or complex multi-step reasoning | LFM Open License v1.0: free below $10M revenue | [Liquid blog](https://www.liquid.ai/blog/lfm3), [MarkTechPost](https://www.marktechpost.com/2026/10/27/liquid-ai-lfm3-open-weight-2b-multimodal-models/), [aicybr](https://aicybr.com/blog/liquid-ai-lfm3-1-7b-multimodal-local-deployment-license-guide) |
 | LFM2.5-2.6B | 2.6B | 131,072 | native tool calling; vendor says it tops instruction-following benchmarks against 4x larger models | LFM license | [HF blog](https://huggingface.co/blog/LiquidAI/lfm2-5-2-6b) |
 | LFM2.5-8B-A1B (MoE, 1B active) | 8B | about 300 pages | BFCL v3 64.36, v4 48.50 | LFM license | [Together](https://www.together.ai/models/liquid-lfm2-5-8b-a1b) |
+
+| Qwen3.6-35B-A3B (via strata, MoE) | 35B, about 3B active | not read | not measured; author's speed claim only (2.1) | not checked | strata README via the manager |
+| Qwen3.8-Flash-Next (via strata, MoE) | 125B, about 6B active | not read | not measured | not checked | same |
 
 The figures do not agree across sources (one listing gives Qwen3.5-9B BFCL as 55.89 against LFM3's 71.39), they are vendor or aggregator numbers, and a context length is a capacity, not a quality: Gemma 4 E4B retrieves 25.4% at 128k. wsx's turns are 6 to 7k tokens of rules and notes, so the window that matters is 16 to 32k, where only the one LFM3 call above is measured. Short list for our test: Qwen3.5-9B, Gemma 4 E4B, LFM3-1.7B, LFM2.5-2.6B.
 
@@ -110,6 +162,8 @@ The table is a hypothesis. Until a model passes the test (3.3) for a tier, it ho
 | Retrospect read | `scripts/retrospect.py:173`, calls `claude` directly, outside `[[agents]]` | none | JSON schema | 3, needs routing through the registry first |
 | Chat summaries | no model call exists today | | | not applicable |
 | Keep-warm ping | `manager.rs` `ping` (Claude only) | | | never on a fallback (exists) |
+
+The two strata models are above the owner's 9B limit; they are the large local tier, proposed as a tier 1 candidate for the manager and plan fallback, where capability matters more than speed. The 9B and smaller models serve tier 2 and 3. The same test (3.3) ranks them, and its latency dimension L uses the host's real turn timeouts (2.5).
 
 ### 3.3 The tier test: `scripts/bench-tier.py`
 
@@ -188,7 +242,7 @@ One owner: a new `wsx_core::task::policy` module computes `Policy` from three in
 
 | Input | Values |
 |---|---|
-| trust | `trusted` (the Claude adapter) or `untrusted` (the Pi adapter, any model). Set by the adapter, not by a config key or a tier |
+| trust | `trusted` only for the Claude adapter on Anthropic's own endpoint. `untrusted` for the Pi adapter with any model, and for the Claude adapter with `ANTHROPIC_BASE_URL` or a model that is not Claude (Claude Code pointed at strata). Derived by the host from the agent entry and its environment, not from a config key or a tier |
 | role | worker or manager (a manager role is a manager) |
 | tier | 1..3, of the agent in use now |
 
@@ -258,6 +312,7 @@ The adversary is scripted, not a hope: a fixture provider (the pattern of pygmal
 | F7 | Tier 3 run given a scripted `bash` call | refused: the argv has `--no-tools`, no tool exists |
 | F8 | Same F1 to F5 through the Claude adapter's `trusted` profile | unchanged from today; and the `untrusted` file-deny lines are a superset of the `trusted` ones (rendered text compared) |
 | F9 | Forced approval: an untrusted tier 1 manager runs `land` with `tasks.land.approve = false` | an approval request is appended; nothing lands |
+| F11 | Claude adapter with `ANTHROPIC_BASE_URL` set to a loopback server | the host renders the `untrusted` profile; F1 to F5 pass |
 | F10 | Real build task from `bench-tier` fixtures under the strict profile | the fixture task passes: the strict write list is not too tight |
 
 ### 5.7 Where each part lands
@@ -346,7 +401,7 @@ The tree is clean after the owner drops the 102 files. The refactor is destructi
 | **B. Policy, tier gate and Pi with lean pygmalion** (recommended) | W1 to W7 and P1 to P4; two projects | Small-model tool errors; mitigated by the gate, the profile, the checks and the review rule | manager fallback, tier 2 worker steps |
 | C. A new agent loop in wsx (Rust, OpenAI tool calls) | Highest: tool loop, edit tool, streaming, tests | Duplicates Pi and its recorded streams | same as B |
 
-Also rejected: Claude Code against a local Anthropic-compatible endpoint (Locals `/v1/messages`). Its prefix is about 33k tokens a call (vault audit 2026-11-04), more than a small window.
+Also compared in 2.5: Claude Code against a local Anthropic-compatible endpoint (strata or Locals `/v1/messages`). Its prefix is about 33k tokens a call (vault audit 2026-11-04): over any small window, and 5 minutes cold on strata. It is kept as a later probe, not the plan, and would run as `untrusted`.
 
 ## 8. Task split
 
@@ -359,6 +414,8 @@ Also rejected: Claude Code against a local Anthropic-compatible endpoint (Locals
 | W5 | wsx | Serving recipe doc, launchd plist, `models.json` entry, endpoint health check | none | `curl /v1/models`, then a tool-call smoke through Pi (output captured) |
 | W6 | wsx | Landing rule for untrusted-built work ("not reviewed") | W1 | `test-task.py` section: a fallback-built task stops at `ready` with the mark |
 | W7 | wsx | `task::policy` (`Policy::for`), strict Seatbelt renderer, broker class table, `WSX_TASK_TRUST`, forced approvals, wsxd socket deny | none | F1 to F10 in `test-task.py`; `trusted` profile text unchanged (golden compare); `cargo nextest` |
+| W8 | wsx | Large local tier: check the manager and worker turn timeouts against a 1 to 5 minute cold turn; lower rotation thresholds for it; `bench-tier` latency case | W4 | a fake endpoint that delays like 109 tok/s; the host does not time out a 4-minute turn and logs one |
+| W9 | wsx (owner action) | strata test install (2.5) after `owner:sec`; then the 2.4 cache script and `bench-tier` on it | owner, `owner:sec`, 120 GB disk | result file in `.work/bench-tier`; disk freed reported |
 | P1 | pygmalion | Owner drops the 102 files; branch | owner | `git status` clean |
 | P2 | pygmalion | Delete to the lean set; add the policy-file path gate and `headless` default | P1 | tests P1, P2, P3, P5 |
 | P3 | pygmalion | Scripted adversary provider; RPC replay; network test | P2 | tests P4, P6 |
@@ -369,6 +426,7 @@ Order: W1 after #348; W7, W2, W5, P1 start at once; P2, P3, W4 next; W3 and W6 l
 ## 9. Open questions for the owner
 
 1. Serving: B first (recommended; it already runs on this Mac with LFM3-1.7B), or wait for `kaos serve`? Do you want omlx repaired (its Python is missing) to use Qwen3.5-9B MLX, or a GGUF of it downloaded for llama-server? Nothing was downloaded here.
+   Is strata (the large local tier) worth a test install (about 120 GB of disk, `owner:sec` first), given this Mac's 24 GiB (10 and 12 below)?
 2. Is installing Locals acceptable if the tier test shows grammar-forced tool calls matter?
 3. May a task built on an untrusted agent land after only the host's checks, or must Claude review it first (the recommendation)?
 4. Is the LFM Open License (free below $10M revenue) acceptable? Qwen3.5 and Gemma 4 licenses were not checked.
@@ -377,3 +435,6 @@ Order: W1 after #348; W7, W2, W5, P1 start at once; P2, P3, W4 next; W3 and W6 l
 7. Should an untrusted tier 1 manager run `outward` commands only through an approval request (the recommendation), or never?
 8. Should retrospect (`scripts/retrospect.py`, which calls `claude` directly) go through the registry so a tier 3 local model can run it?
 9. Tier names: 1..3 with 1 most capable, or `plan`, `work`, `text`?
+10. This Mac reports 24 GiB RAM (`sysctl hw.memsize`, Apple M4), not 36 GB. Is the 36 GB machine another Mac? The design sizes memory for the one it runs on.
+11. For the large local tier: accept 1 to 5 minute manager turns on a fallback, and lower rotation thresholds (shorter conversations) so a cold read stays under 2 minutes?
+12. Who starts the large server: you by hand (the plan until Kaos Hub exists), or a launchd job that starts it on demand?
