@@ -240,6 +240,10 @@ pub struct TaskRecord {
     /// Not set on a record from before it. ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fallback: bool,
+    /// The fallback was a failed sign-in's: with a turn to start, the own agent is tried again
+    /// once its sign-in record ends. ref: docs/tasks.md "Agents"
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sign_in: bool,
     pub checks: Vec<String>,
     /// `tasks.workflow.steps` as they were when the task was created, and the index of the
     /// step the worker is on. ref: docs/tasks.md "Workflow"
@@ -420,7 +424,8 @@ pub enum LogEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
-    /// The agent's long usage limit moved the task to a fallback agent (`adapter`/`model`).
+    /// The agent's long usage limit or failed sign-in moved the task to a fallback agent
+    /// (`adapter`/`model`), or back to its own.
     /// ref: docs/tasks.md "Agents"
     AgentSwitch {
         from: String,

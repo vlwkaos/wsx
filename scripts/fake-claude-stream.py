@@ -35,6 +35,7 @@ Each user message is a small script of words:
                and trace what it wrote to <out>
   AUTHFAIL <file>  (manager) fail every turn as Claude's expired sign-in does until <file> exists;
                with AUTHSLOW the failure comes 4 s after the turn starts
+  WAUTHFAIL <file>  the same for a worker (a manager's event lines carry task titles, so its own word differs)
   BIG          a last model call of 400k tokens (two lines of one call), past the worker's rotateTokens
 The host's request for handoff notes ("Write <path> for that fresh conversation") makes it
 write "NOTES from the fixture" to <path>.
@@ -520,6 +521,9 @@ def main():
                   'total_cost_usd': round(spent, 6)})
             continue
         words = text.split()
+        if 'WAUTHFAIL' in words and not os.path.exists(words[words.index('WAUTHFAIL') + 1]):
+            auth_failure(session)
+            continue
         if no_result:
             no_result = end_without_result(session, no_result)
             continue

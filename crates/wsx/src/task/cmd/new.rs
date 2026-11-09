@@ -312,7 +312,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
     // ^ New work starts on an available agent: a task never begins on one whose usage limit
     // is on record. `--model` names the configured agent's model. ref: docs/tasks.md "Agents"
     let own = agent::account(&settings.adapter, &settings.model);
-    let (adapter, model) = match store::limited_until(&own, now)
+    let (adapter, model) = match agent::blocked_until(&own, now)
         .and_then(|_| agent::fallback(&settings.fallback, now, Operation::Worker))
     {
         Some(next) => (next.adapter, next.model),
@@ -332,6 +332,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         model,
         effort,
         fallback: false,
+        sign_in: false,
         checks: settings.checks,
         steps,
         step: 0,

@@ -1315,6 +1315,14 @@ impl Host {
         // On Claude the refusal costs nothing and the limit queue orders the resumes.
         // ref: docs/tasks.md "Agents"
         let now = now_unix_ms();
+        // ^ An account whose sign-in failed lately is skipped with no call; a task on a fallback
+        // for that reason goes home once the record ends.
+        if (store::sign_in_failed_until(&self.account(), now).is_some()
+            && self.move_after_sign_in(Some(text), now))
+            || self.go_home_after_sign_in(text, now)
+        {
+            return Ok(());
+        }
         let limited = (self.record.adapter != "claude")
             .then(|| store::limited_until(&self.account(), now))
             .flatten();
@@ -1579,8 +1587,23 @@ impl Host {
             self.wait_for_limit(text.join("\n\n"), until_ms);
             return;
         }
+        // ^ A failed sign-in moves the task to a fallback at once, with no wait.
+        if turn.is_error && super::agent::auth_failed(&turn.text) {
+            let now = now_unix_ms();
+            if let Some(message) =
+                super::agent::record_sign_in_failed(&self.record.adapter, &self.record.model, now)
+            {
+                self.say(&message);
+            }
+            if self.move_after_sign_in(None, now) {
+                return;
+            }
+        }
         self.limit_attempt = 0;
         self.spend(turn.usage.cost_micro_usd, now_unix_ms());
+        if !turn.is_error {
+            store::clear_sign_in_failed(&self.account());
+        }
         if let Some((waiting, idle)) = self.rotating.take() {
             self.log(LogEvent::Agent {
                 said: false,
@@ -2079,7 +2102,45 @@ impl Host {
         if let Some(text) = unfinished {
             self.turn_text = text.to_string();
         }
-        self.switch_agent(next, until_ms, now);
+        let reason = format!(
+            "{} usage limit until {}",
+            self.record.adapter,
+            limit::resume_time(until_ms, now)
+        );
+        self.switch_agent(next, reason, false);
+        true
+    }
+
+    /// The agent's sign-in failed: move at once to the first fallback that is not minimal, limited or signed out, continuing `unfinished` (else the
+    /// current turn). False with none: the caller goes on as before. ref: docs/tasks.md "Agents"
+    fn move_after_sign_in(&mut self, unfinished: Option<&str>, now: u64) -> bool {
+        let settings = load_task_config(&self.record.project_path).unwrap_or_default();
+        let Some(next) = super::agent::fallback(&settings.fallback, now, false) else {
+            return false;
+        };
+        if let Some(text) = unfinished {
+            self.turn_text = text.to_string();
+        }
+        self.switch_agent(next, "sign-in expired".into(), true);
+        true
+    }
+
+    /// A task on a fallback because of a failed sign-in tries its own agent again, with a turn
+    /// to start, once the sign-in record has ended. A try that fails moves it back.
+    /// ref: docs/tasks.md "Agents"
+    fn go_home_after_sign_in(&mut self, text: &str, now: u64) -> bool {
+        let settings = load_task_config(&self.record.project_path).unwrap_or_default();
+        let own = super::agent::account(&settings.adapter, &settings.model);
+        if !self.record.sign_in || super::agent::blocked_until(&own, now).is_some() {
+            return false;
+        }
+        self.turn_text = text.to_string();
+        let home = super::agent::Choice {
+            name: settings.adapter.clone(),
+            adapter: settings.adapter,
+            model: settings.model,
+        };
+        self.switch_agent(home, "sign-in may work again".into(), false);
         true
     }
 
@@ -2176,15 +2237,16 @@ impl Host {
     /// so the turn it could not finish opens it after the usual rotation context. The task
     /// stays on `next` until it ends: a second switch would cost another cold start.
     /// ref: docs/tasks.md "Agents"
-    fn switch_agent(&mut self, next: super::agent::Choice, until_ms: u64, now: u64) {
+    fn switch_agent(&mut self, next: super::agent::Choice, reason: String, sign_in: bool) {
         let from = format!("{}/{}", self.record.adapter, self.record.model);
         let to = format!("{} ({}/{})", next.name, next.adapter, next.model);
-        let reason = format!(
-            "{} usage limit until {}",
-            self.record.adapter,
-            limit::resume_time(until_ms, now)
-        );
-        self.say(&format!("switched to {to}: {reason}"));
+        match sign_in {
+            true => self.say(&format!(
+                "{} moved to {}: {reason}",
+                self.record.adapter, next.name
+            )),
+            false => self.say(&format!("switched to {to}: {reason}")),
+        }
         self.log(LogEvent::AgentSwitch {
             from,
             to,
@@ -2196,10 +2258,13 @@ impl Host {
         };
         self.record.adapter = next.adapter;
         self.record.model = next.model;
-        self.record.fallback = true;
+        let settings = load_task_config(&self.record.project_path).unwrap_or_default();
+        self.record.fallback = (self.record.adapter.as_str(), self.record.model.as_str())
+            != (&*settings.adapter, &*settings.model);
+        self.record.sign_in = sign_in;
         self.limit_attempt = 0;
         let waiting = format!(
-            "The earlier conversation's agent reached its usage limit during this turn and \
+            "The earlier conversation's agent could not continue ({reason}) during this turn and \
              could write no handoff notes; another agent continues. Check what the working copy \
              already holds before you redo anything. The turn it could not finish:\n{unfinished}"
         );
