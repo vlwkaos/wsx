@@ -151,14 +151,23 @@ pub(crate) fn chat(
     };
     let page = chat::page(&dir, &window, &names, &[], now, |_| {})?;
     let asks: Vec<u64> = page.asks.iter().map(|ask| ask.id).collect();
+    // ^ The owner messages a held manager has not taken into a turn, as the chats show them.
+    let waiting = chat::waiting_ids(&page.log);
     if json {
-        return print_json(
-            &json!({ "entries": page.entries, "skipped": page.skipped, "asks": asks }),
-        );
+        return print_json(&json!({
+            "entries": page.entries, "skipped": page.skipped, "asks": asks, "waiting": waiting,
+        }));
     }
     for entry in &page.entries {
         match &entry.event {
-            ManagerEvent::Message { id, from, text, .. } => println!("[{id}] {from:?}: {text}"),
+            ManagerEvent::Message { id, from, text, .. } => {
+                let held = if waiting.contains(id) {
+                    " (waiting)"
+                } else {
+                    ""
+                };
+                println!("[{id}] {from:?}{held}: {text}")
+            }
             ManagerEvent::Reply { id, text, .. } if asks.contains(id) => {
                 println!("[{id}] manager (asks): {text}")
             }

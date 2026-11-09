@@ -1784,7 +1784,12 @@ impl Manager {
         for (_, author, ..) in &taken {
             self.owe(author);
         }
-        if held.as_ref().is_some_and(|hold| !hold.switched) {
+        // ^ A sign-in hold logged no pause, so it logs no resume: the chat reads a `limit`
+        // without a time as the end of a hold (`waiting_ids`), and each retry would say it.
+        if held
+            .as_ref()
+            .is_some_and(|hold| !hold.switched && !hold.auth)
+        {
             self.log(ManagerEvent::Limit { until: None });
         }
         if !ids.is_empty() {
@@ -2552,9 +2557,13 @@ impl Manager {
                     false => reason.clone(),
                 };
                 self.log(ManagerEvent::Stopped { reason: stopped });
-                self.log(ManagerEvent::Limit {
-                    until: (!auth).then(|| limit::resume_time(until_ms, now)),
-                });
+                // ^ No pause for a sign-in: its retry time is not the owner's to wait for, and
+                // a `limit` without a time reads as a resume.
+                if !auth {
+                    self.log(ManagerEvent::Limit {
+                        until: Some(limit::resume_time(until_ms, now)),
+                    });
+                }
             }
             let rotate = !auth && attempt == ERROR_ROTATE_ATTEMPTS;
             if rotate {
