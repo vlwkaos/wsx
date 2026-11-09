@@ -290,7 +290,6 @@ impl App {
                     stream,
                     size,
                 });
-                self.terminal_escape_chord.reset();
                 if kind == ConnectKind::Resume {
                     self.pending_terminal_resume = None;
                     self.mode = Mode::Terminal { pane_id };

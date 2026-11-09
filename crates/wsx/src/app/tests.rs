@@ -1071,6 +1071,71 @@ fn terminal_sidebar_toggle_is_process_local_and_resizes_the_active_stream() {
     assert_eq!(toggled_compact, compact_resize);
 }
 
+// ^ A prefix typed while a session switch connects survives the reply that ends the wait:
+// the release scenario (scripts/test-terminal-context.py) sends C-a then an arrow at once.
+#[test]
+fn a_pending_prefix_survives_the_entry_that_activates() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut project = make_project("prefix-entry");
+    let mut worktree = make_worktree("/tmp/prefix-entry");
+    worktree
+        .sessions
+        .push(make_sess(false, runtime::AgentState::Idle));
+    project.worktrees.push(worktree);
+    let mut app = make_test_app(
+        GlobalConfig::default(),
+        WorkspaceState {
+            projects: vec![project],
+        },
+        None,
+    );
+    app.tree_selected = app
+        .flat()
+        .iter()
+        .position(|entry| matches!(entry, FlatEntry::Session { .. }))
+        .unwrap();
+    let pending = PendingTerminalEntry {
+        pane_id: runtime::PaneId(1),
+        terminal_id: runtime::TerminalId(1),
+        generation: 1,
+        rows: 24,
+        cols: 80,
+    };
+    let prefix = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    for (code, expected) in [
+        (
+            KeyCode::Right,
+            crate::event::TerminalEscapeAction::NextSession,
+        ),
+        (
+            KeyCode::Left,
+            crate::event::TerminalEscapeAction::PrevSession,
+        ),
+        (
+            KeyCode::Down,
+            crate::event::TerminalEscapeAction::NextSession,
+        ),
+        (KeyCode::Up, crate::event::TerminalEscapeAction::PrevSession),
+    ] {
+        app.pending_terminal_entry = Some(pending);
+        app.mode = Mode::Terminal {
+            pane_id: pending.pane_id,
+        };
+        assert_eq!(
+            app.terminal_escape_chord.terminal_key(prefix),
+            crate::event::TerminalEscapeAction::Pending
+        );
+        app.activate_pending_terminal_entry(pending);
+        assert!(app.pending_terminal_entry.is_none());
+        assert!(app.terminal_escape_chord.is_pending());
+        assert_eq!(
+            app.terminal_escape_chord
+                .terminal_key(KeyEvent::new(code, KeyModifiers::NONE)),
+            expected
+        );
+    }
+}
+
 #[test]
 fn prefix_sidebar_projection_respects_config_baseline_and_mobile_mode() {
     let prefix = crossterm::event::KeyEvent::new(
