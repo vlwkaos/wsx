@@ -5537,60 +5537,60 @@ def part_host(created=None):
     mark('37b')
     with open(config_dir / 'config-v2.toml', 'a') as registry:
         registry.write('[[agents]]\nname = "fake-claude2"\ncommand = ["claude"]\nadapter = "claude"\nmodel = "other"\n')
-    both = with_fallback('fake-claude2, fake-pi').replace(
+    si_both = with_fallback('fake-claude2, fake-pi').replace(
         '    maxWaitMinutes: 1\n', '    maxWaitMinutes: 1\n    fallback: [fake-claude2, fake-pi]\n')
-    configure(both, 'sign-in fallback')
-    auth_record = agents / 'claude.auth.json'
-    record_ended = lambda: json.loads(auth_record.read_text())['until_ms'] < time.time() * 1000
+    configure(si_both, 'sign-in fallback')
+    si_auth_record = agents / 'claude.auth.json'
+    si_record_ended = lambda: json.loads(si_auth_record.read_text())['until_ms'] < time.time() * 1000
     assert 'agent' not in manager_state(), manager_state()
-    signed_in = work / 'signed-in-fallback'
-    signed_in.unlink(missing_ok=True)
-    away = js('task', 'say', 'AUTHFAIL %s STATUS away' % signed_in)
-    assert reply_to(away['id'])['text'].startswith('pi answers: '), chat()[-3:]
+    si_signed_in = work / 'signed-in-fallback'
+    si_signed_in.unlink(missing_ok=True)
+    si_away = js('task', 'say', 'AUTHFAIL %s STATUS away' % si_signed_in)
+    assert reply_to(si_away['id'])['text'].startswith('pi answers: '), chat()[-3:]
     assert manager_state()['agent']['name'] == 'fake-pi', manager_state()
-    moves = lambda: [e['reason'] for e in manager_entries() if e['kind'] == 'rotated' and 'sign-in expired' in e.get('reason', '')]
-    assert moves() == ['claude moved to fake-pi: sign-in expired'], manager_entries()[-8:]
+    si_moves = lambda: [e['reason'] for e in manager_entries() if e['kind'] == 'rotated' and 'sign-in expired' in e.get('reason', '')]
+    assert si_moves() == ['claude moved to fake-pi: sign-in expired'], manager_entries()[-8:]
     assert not any(e['kind'] == 'stopped' and 'Sign in again' in e.get('reason', '') for e in manager_entries()[-8:]), manager_entries()[-8:]
-    assert auth_record.exists(), list(agents.iterdir())
-    # ^ A sign-in still missing when the record ends: the try on the own agent fails and moves it back.
-    wait(record_ended, 'the sign-in record ends')
-    again = js('task', 'say', 'AUTHFAIL %s STATUS again' % signed_in)
-    assert reply_to(again['id'])['text'].startswith('pi answers: '), chat()[-3:]
-    assert len(moves()) == 2 and manager_state()['agent']['name'] == 'fake-pi', moves()
+    assert si_auth_record.exists(), list(agents.iterdir())
+    # ^ A sign-in still missing when the record ends: the try on the own agent fails and si_moves it back.
+    wait(si_record_ended, 'the sign-in record ends')
+    si_again = js('task', 'say', 'AUTHFAIL %s STATUS again' % si_signed_in)
+    assert reply_to(si_again['id'])['text'].startswith('pi answers: '), chat()[-3:]
+    assert len(si_moves()) == 2 and manager_state()['agent']['name'] == 'fake-pi', si_moves()
     # ^ The worker: the first fallback on the failed account is skipped, the task continues on fake-pi
     # in a new conversation, and the next task starts there with no call to Claude.
-    worker_in = work / 'worker-signed-in'
-    worker_in.unlink(missing_ok=True)
-    traced_before = len(traces())
-    sw = js('task', 'new', 'WAUTHFAIL %s WORK sa.txt' % worker_in)['id']
-    shown = wait_state(sw, 'ready', 'failed')
-    assert shown['state'] == 'ready' and shown['record']['adapter'] == 'pi', shown
-    assert shown['record']['fallback'] is True and shown['record']['sign_in'] is True, shown['record']
-    switch = next(e for e in log(sw) if e['kind'] == 'agent_switch')
-    assert switch['to'] == 'fake-pi (pi/fake/pi-model)' and switch['reason'] == 'sign-in expired', switch
-    assert kinds(sw, 'agent_switch', 'rotated', 'result') == ['agent_switch', 'rotated', 'result'], log(sw)
-    assert not any(e['kind'] == 'result' and e['status'] == 'failed' for e in log(sw)), log(sw)
-    pi_turns = [t for t in traces()[traced_before:] if t.get('adapter') == 'pi' and 'message' in t and 'WAUTHFAIL' in t['message']]
-    assert len(pi_turns) == 1 and 'could write no handoff notes' in pi_turns[0]['message'], pi_turns
-    skipped = js('task', 'new', 'WORK sb.txt')['id']
-    assert wait_state(skipped, 'ready', 'failed')['record']['adapter'] == 'pi', show(skipped)
-    assert not any(e['kind'] == 'agent_switch' for e in log(skipped)), log(skipped)
+    si_worker_in = work / 'worker-signed-in'
+    si_worker_in.unlink(missing_ok=True)
+    si_traced_before = len(traces())
+    si_sw = js('task', 'new', 'WAUTHFAIL %s WORK sa.txt' % si_worker_in)['id']
+    si_shown = wait_state(si_sw, 'ready', 'failed')
+    assert si_shown['state'] == 'ready' and si_shown['record']['adapter'] == 'pi', si_shown
+    assert si_shown['record']['fallback'] is True and si_shown['record']['sign_in'] is True, si_shown['record']
+    si_switch = next(e for e in log(si_sw) if e['kind'] == 'agent_switch')
+    assert si_switch['to'] == 'fake-pi (pi/fake/pi-model)' and si_switch['reason'] == 'sign-in expired', si_switch
+    assert kinds(si_sw, 'agent_switch', 'rotated', 'result') == ['agent_switch', 'rotated', 'result'], log(si_sw)
+    assert not any(e['kind'] == 'result' and e['status'] == 'failed' for e in log(si_sw)), log(si_sw)
+    si_pi_turns = [t for t in traces()[si_traced_before:] if t.get('adapter') == 'pi' and 'message' in t and 'WAUTHFAIL' in t['message']]
+    assert len(si_pi_turns) == 1 and 'could write no handoff notes' in si_pi_turns[0]['message'], si_pi_turns
+    si_skipped = js('task', 'new', 'WORK sb.txt')['id']
+    assert wait_state(si_skipped, 'ready', 'failed')['record']['adapter'] == 'pi', show(si_skipped)
+    assert not any(e['kind'] == 'agent_switch' for e in log(si_skipped)), log(si_skipped)
     # ^ Signed in again: both go home once the record ends, on the first turn they have.
-    signed_in.touch()
-    worker_in.touch()
-    wait(record_ended, 'the sign-in record ends again')
-    home = js('task', 'say', 'AUTHFAIL %s STATUS home' % signed_in)
-    assert reply_to(home['id'])['text'].startswith('open: '), chat()[-3:]
+    si_signed_in.touch()
+    si_worker_in.touch()
+    wait(si_record_ended, 'the sign-in record ends again')
+    si_home = js('task', 'say', 'AUTHFAIL %s STATUS home' % si_signed_in)
+    assert reply_to(si_home['id'])['text'].startswith('open: '), chat()[-3:]
     assert 'agent' not in manager_state(), manager_state()
     assert any(e['kind'] == 'rotated' and e.get('reason') == 'back on claude' for e in manager_entries()), manager_entries()[-6:]
-    assert not auth_record.exists(), 'the first success clears the record'
-    js('task', 'add', sw, 'WORK sc.txt')
-    wait(lambda: show(sw)['record']['adapter'] == 'claude', 'the worker goes home')
-    assert wait_state(sw, 'ready', 'failed')['state'] == 'ready', show(sw)
-    assert show(sw)['record']['fallback'] is False and not show(sw)['record'].get('sign_in'), show(sw)['record']
-    back = [e for e in log(sw) if e['kind'] == 'agent_switch'][-1]
-    assert back['to'].startswith('claude ') and back['reason'] == 'sign-in may work again', back
-    for n in (sw, skipped):
+    assert not si_auth_record.exists(), 'the first success clears the record'
+    js('task', 'add', si_sw, 'WORK sc.txt')
+    wait(lambda: show(si_sw)['record']['adapter'] == 'claude', 'the worker goes home')
+    assert wait_state(si_sw, 'ready', 'failed')['state'] == 'ready', show(si_sw)
+    assert show(si_sw)['record']['fallback'] is False and not show(si_sw)['record'].get('sign_in'), show(si_sw)['record']
+    si_back = [e for e in log(si_sw) if e['kind'] == 'agent_switch'][-1]
+    assert si_back['to'].startswith('claude ') and si_back['reason'] == 'sign-in may work again', si_back
+    for n in (si_sw, si_skipped):
         js('task', 'close', n, '--discard')
     configure(CONFIG, 'no fallback')
 
