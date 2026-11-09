@@ -66,7 +66,7 @@ Measured chat call, one tool, on the running LFM3-1.7B Q8_0 (a throwaway script 
 | `reasoning_effort: "none"` | same call | 0.72 s | 46.5 tok/s |
 | `chat_template_kwargs.enable_thinking: false` | same call | 0.73 s | 45.7 tok/s |
 
-So one valid tool call came back on the first try. That is one sample on a trivial prompt, not a tier result. The vault note says LFM3 thinks by default and needs `reasoning_effort: none`; this build's template reports `supports_reasoning_effort: false`, and the short prompt produced no reasoning text in any run. Whether Pi's `--thinking off` changes anything for LFM3 on a long prompt is open (5.5, test E2E). The server's 16384 slot holds the manager's first turn (about 6 to 7k tokens, 6.3) with little to spare; the recipe uses 32768.
+So one valid tool call came back on the first try. That is one sample on a trivial prompt, not a tier result. The vault note says LFM3 thinks by default and needs `reasoning_effort: none`; this build's template reports `supports_reasoning_effort: false`, and the short prompt produced no reasoning text in any run. Whether Pi's `--thinking off` changes anything for LFM3 on a long prompt is open (6.5, test E2E). The server's 16384 slot holds the manager's first turn (about 6 to 7k tokens, 6.3) with little to spare; the recipe uses 32768.
 
 ### 2.3 Options for a stable endpoint
 
@@ -312,8 +312,8 @@ The adversary is scripted, not a hope: a fixture provider (the pattern of pygmal
 | F7 | Tier 3 run given a scripted `bash` call | refused: the argv has `--no-tools`, no tool exists |
 | F8 | Same F1 to F5 through the Claude adapter's `trusted` profile | unchanged from today; and the `untrusted` file-deny lines are a superset of the `trusted` ones (rendered text compared) |
 | F9 | Forced approval: an untrusted tier 1 manager runs `land` with `tasks.land.approve = false` | an approval request is appended; nothing lands |
-| F11 | Claude adapter with `ANTHROPIC_BASE_URL` set to a loopback server | the host renders the `untrusted` profile; F1 to F5 pass |
 | F10 | Real build task from `bench-tier` fixtures under the strict profile | the fixture task passes: the strict write list is not too tight |
+| F11 | Claude adapter with `ANTHROPIC_BASE_URL` set to a loopback server | the host renders the `untrusted` profile; F1 to F5 pass |
 
 ### 5.7 Where each part lands
 
@@ -398,7 +398,7 @@ The tree is clean after the owner drops the 102 files. The refactor is destructi
 | | Cost | Risk | Covers |
 |---|---|---|---|
 | A. Tier gate plus today's stand-in | W1 only | Chat answers only; tasks and the manager's real work wait for Claude | owner messages |
-| **B. Policy, tier gate and Pi with lean pygmalion** (recommended) | W1 to W7 and P1 to P4; two projects | Small-model tool errors; mitigated by the gate, the profile, the checks and the review rule | manager fallback, tier 2 worker steps |
+| **B. Policy, tier gate and Pi with lean pygmalion** (recommended) | W1 to W8 and P1 to P3 (W9 optional); two projects | Small-model tool errors; mitigated by the gate, the profile, the checks and the review rule | manager fallback, tier 2 worker steps |
 | C. A new agent loop in wsx (Rust, OpenAI tool calls) | Highest: tool loop, edit tool, streaming, tests | Duplicates Pi and its recorded streams | same as B |
 
 Also compared in 2.5: Claude Code against a local Anthropic-compatible endpoint (strata or Locals `/v1/messages`). Its prefix is about 33k tokens a call (vault audit 2026-11-04): over any small window, and 5 minutes cold on strata. It is kept as a later probe, not the plan, and would run as `untrusted`.
@@ -421,12 +421,12 @@ Also compared in 2.5: Claude Code against a local Anthropic-compatible endpoint 
 | P3 | pygmalion | Scripted adversary provider; RPC replay; network test | P2 | tests P4, P6 |
 | K | kaos | `kaos serve` (only if the owner picks option A of 2.3) | owner | `curl` from the wsx host; no wsx change |
 
-Order: W1 after #348; W7, W2, W5, P1 start at once; P2, P3, W4 next; W3 and W6 last; then run `bench-tier` on the short list and write the tiers into the owner's registry.
+Order: W1 after #348; W7, W2, W5, P1 start at once; P2, P3, W4 next; W3, W6 and W8 last; W9 only if the owner agrees; then run `bench-tier` on the short list and write the tiers into the owner's registry.
 
 ## 9. Open questions for the owner
 
 1. Serving: B first (recommended; it already runs on this Mac with LFM3-1.7B), or wait for `kaos serve`? Do you want omlx repaired (its Python is missing) to use Qwen3.5-9B MLX, or a GGUF of it downloaded for llama-server? Nothing was downloaded here.
-   Is strata (the large local tier) worth a test install (about 120 GB of disk, `owner:sec` first), given this Mac's 24 GiB (10 and 12 below)?
+   Is strata (the large local tier) worth a test install (about 120 GB of disk, `owner:sec` first), given this Mac's 24 GiB (10 and 11 below)?
 2. Is installing Locals acceptable if the tier test shows grammar-forced tool calls matter?
 3. May a task built on an untrusted agent land after only the host's checks, or must Claude review it first (the recommendation)?
 4. Is the LFM Open License (free below $10M revenue) acceptable? Qwen3.5 and Gemma 4 licenses were not checked.
