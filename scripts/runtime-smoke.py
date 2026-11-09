@@ -2129,6 +2129,8 @@ try:
     at = int(time.time() * 1000) - 600_000
     chat_log = [
         {"kind": "message", "id": 10, "from": "owner", "text": "Where is #3?"},
+        # ^ A turn took it (reply 16 answers it); only message 18 below is still waiting.
+        {"kind": "delivered", "ids": [10]},
         {"kind": "message", "id": 11, "from": "events", "text": "#3 landed r2: Chat rows; worker says: done",
          "short": [{"text": "#3 done", "task": 3}]},
         {"kind": "reply", "id": 12, "to": [11], "text": "#3 is on main.", "quiet": True},
