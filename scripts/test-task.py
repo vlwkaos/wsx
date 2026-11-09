@@ -662,6 +662,9 @@ def manager_up(created):
     assert [e['kind'] for e in entries() if e['kind'] == 'limit' and e['unix_ms'] >= failed_at()] == [], entries()[-12:]
     assert len([e for e in entries() if e['kind'] == 'stopped' and 'Sign in again' in e['reason']]) == 1, entries()[-12:]
     assert 'resumed' not in text.split('Sign in again')[-1], text
+    # ^ The slow turn fails and sets the next try a minute ahead: a message sent after that tries at once.
+    assert waits['busy'], waits
+    time.sleep(6)
     signed_in.touch()
     after_sign_in = js('task', 'say', 'STATUS')
     replied = reply_to(after_sign_in['id'])
