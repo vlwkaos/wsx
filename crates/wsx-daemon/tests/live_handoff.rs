@@ -1125,6 +1125,55 @@ fn a_failed_handoff_keeps_its_reason() {
 // docs/daemon-state-store.md "Live handoff": the old daemon holds its saver for the handoff.
 // A rollback must release it. A saver left held never writes again, so the reply of the next
 // change would wait for ever.
+// docs/daemon-discovery.md "Long paths": a socket that fits a Unix socket path while the
+// handoff name `h-<hex>.sock` beside it does not still hands off, through the short folder.
+#[test]
+fn a_handoff_socket_that_does_not_fit_beside_the_daemon_goes_to_the_short_folder() {
+    let mut fixture = Fixture::new();
+    // `d.sock~` is the longest name the daemon binds: 102 bytes fit macOS's 103.
+    let padding = 102usize
+        .checked_sub(fixture.root.as_os_str().len() + "//d.sock~".len() + 1)
+        .expect("the repository path leaves no room for a long socket folder");
+    let folder = fixture.root.join("p".repeat(padding.max(1)));
+    fs::create_dir(&folder).unwrap();
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o700)).unwrap();
+    fixture.socket = folder.join("d.sock");
+    let beside = folder.join("h-ffffffffffff.sock");
+    assert!(
+        wsx_core::runtime::check_socket_path(&fixture.socket).is_ok()
+            && wsx_core::runtime::check_socket_path(&beside).is_err(),
+        "the fixture folder must fit the daemon and not the handoff name"
+    );
+    let binary = fixture.wsxd();
+    let client = start(&mut fixture, &binary);
+    let before = lifecycle(&client).epoch;
+    let response = client
+        .call(&prepare_handoff(
+            binary_identity(&binary).unwrap(),
+            binary.clone(),
+            true,
+        ))
+        .unwrap();
+    assert!(
+        matches!(response, Response::Replacement { .. }),
+        "{response:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        // ^ The socket changes owner during the handoff, so a call can fail on the way.
+        if let Ok(Response::Lifecycle(status)) = client.call(&Request::LifecycleStatus) {
+            if status.epoch != before {
+                assert!(status.last_handoff_error.is_none(), "{status:?}");
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "the handoff did not finish");
+        thread::sleep(Duration::from_millis(50));
+    }
+    client.shutdown().unwrap();
+    wait_for_socket_removal(&fixture.socket);
+}
+
 #[test]
 fn a_rolled_back_handoff_saves_state_again() {
     let mut fixture = Fixture::new();

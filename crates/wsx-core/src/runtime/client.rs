@@ -1,7 +1,7 @@
 use super::protocol::{
-    binary_identity, binary_identity_with_version, encode_line, Request, Response,
-    TerminalClientMessage, TerminalRawServerMessage, TerminalServerMessage, MAX_RESPONSE_BYTES,
-    PROTOCOL_VERSION,
+    binary_identity, binary_identity_with_version, check_socket_path, encode_line, Request,
+    Response, TerminalClientMessage, TerminalRawServerMessage, TerminalServerMessage,
+    MAX_RESPONSE_BYTES, PROTOCOL_VERSION,
 };
 use std::{
     borrow::Cow,
@@ -759,6 +759,7 @@ fn validate_socket(path: &Path) -> io::Result<()> {
             "wsxd socket path must be absolute",
         ));
     }
+    check_socket_path(path)?;
     let metadata = std::fs::symlink_metadata(path)?;
     if !metadata.file_type().is_socket()
         || metadata.uid() != unsafe { libc::geteuid() }

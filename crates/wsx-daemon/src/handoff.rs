@@ -81,12 +81,22 @@ pub(super) fn manifest(
     }
 }
 
+/// The handoff socket beside the primary one, or in the task store's short socket folder
+/// when the longer name `h-<hex>.sock` would pass the socket path limit. Only the running
+/// daemon names it and gives the path to the importer.
 #[cfg(unix)]
 pub(super) fn socket_path(primary_socket: &Path, nonce: u64) -> io::Result<PathBuf> {
     let parent = primary_socket
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "wsxd socket has no parent"))?;
-    Ok(parent.join(format!("h-{nonce:x}.sock")))
+    let name = format!("h-{nonce:x}.sock");
+    let beside = parent.join(&name);
+    if wsx_core::runtime::check_socket_path(&beside).is_ok() {
+        return Ok(beside);
+    }
+    let short = wsx_core::task::store::socket_dir().join(name);
+    wsx_core::task::store::prepare_socket_dir(&short).map_err(io::Error::other)?;
+    Ok(short)
 }
 
 #[cfg(unix)]
