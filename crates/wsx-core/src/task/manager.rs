@@ -541,7 +541,7 @@ pub struct LimitHold {
     /// conversation at once, with its messages in full. ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub switched: bool,
-    /// The agent's sign-in failed: the turn retries every minute in a new agent process, and
+    /// The agent's sign-in failed: the turn retries in a new agent process every `store::sign_in_retry_ms`, and
     /// at once when the owner writes, until a sign-in lets it through. ref: docs/tasks.md "Manager"
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auth: bool,

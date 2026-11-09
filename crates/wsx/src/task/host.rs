@@ -95,6 +95,8 @@ struct LimitWait {
     until_ms: u64,
     /// When the host looks next: `until_ms`, later while another task holds the limit slot.
     next_ms: u64,
+    /// The wait is for a failed sign-in, not a usage limit: the try runs in a new agent process.
+    sign_in: bool,
 }
 
 /// A turn without a result that ended while background jobs ran: Claude starts its own turn
@@ -717,11 +719,21 @@ impl Host {
                 // moves to the fallback now instead of waiting days. ref: docs/tasks.md "Agents"
                 let now = now_unix_ms();
                 let account = self.account();
-                if self.move_after_limit(Some("Continue the task where it stopped."), until_ms, now)
+                let sign_in = self
+                    .record
+                    .waiting
+                    .as_ref()
+                    .is_some_and(|w| w.reason.starts_with(limit::SIGN_IN_WORDS));
+                if !sign_in
+                    && self.move_after_limit(
+                        Some("Continue the task where it stopped."),
+                        until_ms,
+                        now,
+                    )
                 {
                     let _ = store::mark_limited(&account, until_ms, now, true);
                 } else {
-                    self.wait_for_limit(LIMIT_CONTINUE.into(), until_ms);
+                    self.wait_for_limit(LIMIT_CONTINUE.into(), until_ms, sign_in);
                 }
             }
             state => {
@@ -1317,10 +1329,13 @@ impl Host {
         let now = now_unix_ms();
         // ^ An account whose sign-in failed lately is skipped with no call; a task on a fallback
         // for that reason goes home once the record ends.
-        if (store::sign_in_failed_until(&self.account(), now).is_some()
-            && self.move_after_sign_in(Some(text), now))
-            || self.go_home_after_sign_in(text, now)
-        {
+        if let Some(until_ms) = store::sign_in_failed_until(&self.account(), now) {
+            if !self.move_after_sign_in(Some(text), now) {
+                self.wait_for_sign_in(text.to_string(), until_ms);
+            }
+            return Ok(());
+        }
+        if self.go_home_after_sign_in(text, now) {
             return Ok(());
         }
         let limited = (self.record.adapter != "claude")
@@ -1330,7 +1345,7 @@ impl Host {
             if !self.move_after_limit(Some(text), until_ms, now) {
                 self.limit_slot = None;
                 self.log(LogEvent::LimitWait { until_ms });
-                self.wait_for_limit(text.to_string(), until_ms);
+                self.wait_for_limit(text.to_string(), until_ms, false);
             }
             return Ok(());
         }
@@ -1584,20 +1599,25 @@ impl Host {
             let mut text = vec![LIMIT_CONTINUE.to_string()];
             text.extend(self.pending.drain(..));
             self.log(LogEvent::LimitWait { until_ms });
-            self.wait_for_limit(text.join("\n\n"), until_ms);
+            self.wait_for_limit(text.join("\n\n"), until_ms, false);
             return;
         }
-        // ^ A failed sign-in moves the task to a fallback at once, with no wait.
+        // ^ A failed sign-in moves the task to a fallback at once. With none usable it waits
+        // like a limit, for the sign-in record's retry time, and does not end failed.
         if turn.is_error && super::agent::auth_failed(&turn.text) {
             let now = now_unix_ms();
-            if let Some(message) =
-                super::agent::record_sign_in_failed(&self.record.adapter, &self.record.model, now)
-            {
+            let (until_ms, problem) =
+                super::agent::record_sign_in_failed(&self.record.adapter, &self.record.model, now);
+            if let Some(message) = problem {
                 self.say(&message);
             }
             if self.move_after_sign_in(None, now) {
                 return;
             }
+            let mut text = vec![std::mem::take(&mut self.turn_text)];
+            text.extend(self.pending.drain(..));
+            self.wait_for_sign_in(text.join("\n\n"), until_ms);
+            return;
         }
         self.limit_attempt = 0;
         self.spend(turn.usage.cost_micro_usd, now_unix_ms());
@@ -2067,21 +2087,42 @@ impl Host {
         }
     }
 
-    /// Hold the turn `text` until `until_ms`, in the machine's limit queue.
-    fn wait_for_limit(&mut self, text: String, until_ms: u64) {
+    /// Hold the turn `text` until `until_ms`, in the machine's limit queue. `sign_in`: the wait
+    /// is for a failed sign-in, which only a new agent process can see end.
+    fn wait_for_limit(&mut self, text: String, until_ms: u64, sign_in: bool) {
+        let now = now_unix_ms();
         // ^ A wait on a fallback also looks for the task's own agent coming free.
         let next_ms = match self.record.adapter.as_str() {
+            _ if sign_in => until_ms,
             "claude" => until_ms,
-            _ => until_ms.min(now_unix_ms() + HOME_POLL_MS),
+            _ => until_ms.min(now + HOME_POLL_MS),
         };
         self.limit_wait = Some(LimitWait {
             text,
             until_ms,
             next_ms,
+            sign_in,
         });
-        let reason = limit::reason(&self.record.adapter, until_ms, now_unix_ms());
+        let reason = match sign_in {
+            true => limit::sign_in_reason(until_ms, now),
+            false => limit::reason(&self.record.adapter, until_ms, now),
+        };
         self.say(&reason);
         self.wait(WaitOn::Limit, reason);
+    }
+
+    /// The agent's sign-in failed and no fallback can take the turn: wait like a limit, until
+    /// the sign-in record ends (`until_ms`), then try the turn again in a new agent process that
+    /// resumes the conversation. ref: docs/tasks.md "Agents"
+    fn wait_for_sign_in(&mut self, text: String, until_ms: u64) {
+        // ^ The running process keeps its old credentials.
+        if let Some(agent) = self.agent.take() {
+            self.stop_requested = true;
+            agent.stop();
+        }
+        self.limit_slot = None;
+        self.log(LogEvent::LimitWait { until_ms });
+        self.wait_for_limit(text, until_ms, true);
     }
 
     /// After a limit on this task's account until `until_ms`, move to the agent
@@ -2156,7 +2197,7 @@ impl Host {
         let now = now_unix_ms();
         // ^ On a fallback, a wait ends as soon as the task's own agent is free.
         if let Some(wait) = self.limit_wait.take() {
-            if self.move_after_limit(Some(&wait.text), wait.until_ms, now) {
+            if !wait.sign_in && self.move_after_limit(Some(&wait.text), wait.until_ms, now) {
                 return;
             }
             self.limit_wait = Some(wait);
@@ -2185,7 +2226,10 @@ impl Host {
         }
         self.limit_queue = None;
         if let Some(wait) = self.limit_wait.take() {
-            self.say("the usage limit has reset: the agent continues");
+            self.say(match wait.sign_in {
+                true => "the sign-in record has ended: the agent tries again",
+                false => "the usage limit has reset: the agent continues",
+            });
             self.start_turn(&wait.text, TurnTrigger::Limit);
         }
     }

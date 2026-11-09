@@ -481,9 +481,10 @@ pub fn limited_until(account: &str, now_ms: u64) -> Option<u64> {
 /// new sign-in is checked again after it. ref: docs/tasks.md "Agents"
 const SIGN_IN_RETRY_MS: u64 = 5 * 60_000;
 
-/// `SIGN_IN_RETRY_MS`, or the seconds in `WSX_TEST_SIGN_IN_RETRY_SECS`: for the task scenario
+/// When a failed sign-in is tried again, for every host (the task hosts and the manager
+/// host): `SIGN_IN_RETRY_MS`, or the seconds in `WSX_TEST_SIGN_IN_RETRY_SECS`: for the task scenario
 /// only, which would otherwise wait 5 minutes to see the return home.
-fn sign_in_retry_ms() -> u64 {
+pub fn sign_in_retry_ms() -> u64 {
     std::env::var("WSX_TEST_SIGN_IN_RETRY_SECS")
         .ok()
         .and_then(|secs| secs.parse::<u64>().ok())

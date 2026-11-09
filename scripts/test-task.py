@@ -665,7 +665,7 @@ def manager_up(created):
     assert [e['kind'] for e in entries() if e['kind'] == 'limit' and e['unix_ms'] >= failed_at()] == [], entries()[-12:]
     assert len([e for e in entries() if e['kind'] == 'stopped' and 'Sign in again' in e['reason']]) == 1, entries()[-12:]
     assert 'resumed' not in text.split('Sign in again')[-1], text
-    # ^ The slow turn fails and sets the next try a minute ahead: a message sent after that tries at once.
+    # ^ The slow turn fails and sets the next try ahead: a message sent after that tries at once.
     assert waits['busy'], waits
     time.sleep(6)
     signed_in.touch()
@@ -5592,6 +5592,23 @@ def part_host(created=None):
     assert si_back['to'].startswith('claude ') and si_back['reason'] == 'sign-in may work again', si_back
     for n in (si_sw, si_skipped):
         js('task', 'close', n, '--discard')
+    # ^ With no usable fallback a worker does not end failed: it waits like a limit, on the sign-in
+    # record's retry time, says so in its waiting reason, and resumes by itself once a try succeeds.
+    configure(FALLBACK_CONFIG, 'sign-in without a fallback')
+    si_alone_in = work / 'alone-signed-in'
+    si_alone_in.unlink(missing_ok=True)
+    si_alone = js('task', 'new', 'WAUTHFAIL %s WORK sd.txt' % si_alone_in)['id']
+    waiting_reason = lambda: ((show(si_alone)['record'].get('waiting') or {}).get('reason') or '')
+    wait(lambda: re.fullmatch(r'sign-in expired; tries again at \d\d:\d\d', waiting_reason()), 'the worker waits for its sign-in')
+    assert show(si_alone)['state'] == 'waiting' and show(si_alone)['record']['adapter'] == 'claude', show(si_alone)
+    assert show(si_alone)['record']['waiting']['on'] == 'limit', show(si_alone)['record']['waiting']
+    assert not any(e['kind'] == 'result' for e in log(si_alone)), log(si_alone)
+    si_alone_in.touch()
+    assert wait_state(si_alone, 'ready', 'failed')['state'] == 'ready', show(si_alone)
+    assert next(e for e in log(si_alone) if e['kind'] == 'result')['status'] == 'done', log(si_alone)
+    assert 'limit_wait' in [e['kind'] for e in log(si_alone)], log(si_alone)
+    assert not (agents / 'claude.auth.json').exists(), 'the try that went through clears the record'
+    js('task', 'close', si_alone, '--discard')
     configure(CONFIG, 'no fallback')
 
     # 38. A host that started before this wsx cannot read a request the newer CLI added
