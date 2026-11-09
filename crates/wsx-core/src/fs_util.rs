@@ -10,6 +10,13 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+/// True when `a` and `b` name the same folder: equal, or one resolves to the other through a
+/// symlink. A project folder can be a symlink while wsxd stores the real path.
+/// ref: docs/daemon-discovery.md
+pub fn same_folder(a: &Path, b: &Path) -> bool {
+    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
 /// Distinguishes the temporary names of one process, so two threads never share one.
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Names to try before `write_atomic` gives up on a directory full of stale temporary files.

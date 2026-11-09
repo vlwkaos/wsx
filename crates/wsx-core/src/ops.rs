@@ -3,6 +3,7 @@
 
 use crate::{
     config::global::GlobalConfig,
+    fs_util::same_folder,
     git::{info as git_info, worktree as git_worktree},
     hooks,
     model::workspace::{
@@ -298,13 +299,13 @@ fn update_project_activity(workspace: &mut WorkspaceState, snapshot: &Snapshot) 
         let runtime_project = snapshot
             .projects
             .iter()
-            .find(|candidate| candidate.path == project.path)
+            .find(|candidate| same_folder(&candidate.path, &project.path))
             .or_else(|| {
                 let project_id = snapshot.worktrees.iter().find_map(|runtime_worktree| {
                     project
                         .worktrees
                         .iter()
-                        .any(|worktree| worktree.path == runtime_worktree.path)
+                        .any(|worktree| same_folder(&worktree.path, &runtime_worktree.path))
                         .then_some(runtime_worktree.project_id)
                 })?;
                 snapshot
@@ -327,7 +328,7 @@ fn sessions_for_worktree(
     let Some(worktree) = snapshot
         .worktrees
         .iter()
-        .find(|worktree| worktree.path == path)
+        .find(|worktree| same_folder(&worktree.path, path))
     else {
         return Ok(Vec::new());
     };
@@ -557,7 +558,7 @@ pub fn delete_worktree(
     if let Some(worktree) = snapshot
         .worktrees
         .iter()
-        .find(|worktree| worktree.path == wt_path)
+        .find(|worktree| same_folder(&worktree.path, wt_path))
     {
         for session in snapshot
             .sessions
@@ -602,7 +603,7 @@ where
     if let Some(id) = snapshot
         .worktrees
         .iter()
-        .find(|worktree| worktree.path == worktree_path)
+        .find(|worktree| same_folder(&worktree.path, worktree_path))
         .map(|worktree| worktree.id)
     {
         return Ok((snapshot, id));
@@ -611,7 +612,7 @@ where
     let id = refreshed
         .worktrees
         .iter()
-        .find(|worktree| worktree.path == worktree_path)
+        .find(|worktree| same_folder(&worktree.path, worktree_path))
         .map(|worktree| worktree.id)
         .ok_or_else(|| anyhow!("worktree is not synchronized with wsx daemon"))?;
     Ok((refreshed, id))

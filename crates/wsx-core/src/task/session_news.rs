@@ -32,7 +32,7 @@ pub struct SessionNews {
 /// The sessions of the project at `main` that are in an attention state now, with an agent
 /// that is not a task's or the manager's. The pane is the web's: the agent's, else the first.
 pub fn attention(snapshot: &Snapshot, main: &Path) -> Vec<SessionNews> {
-    let same = |path: &Path| path == main || path.canonicalize().ok() == main.canonicalize().ok();
+    let same = |path: &Path| crate::fs_util::same_folder(path, main);
     let Some(project) = snapshot.projects.iter().find(|p| same(&p.path)) else {
         return Vec::new();
     };

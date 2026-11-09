@@ -4933,8 +4933,11 @@ def part_host(created=None):
     # 33. Managers talk (docs/tasks.md "Managers talk"): a manager reads another project's
     mark('33')
     # ledger and messages its manager, which answers once; nothing else crosses projects.
+    # ^ Its folder is a link to the real one, as a project kept behind a symlink: wsxd stores the
+    # real path, so every compare with the registry's path must treat both as one folder.
     other = base / 'other'
-    other.mkdir(mode=0o700)
+    (base / 'other-real').mkdir(mode=0o700)
+    other.symlink_to(base / 'other-real')
     git('init', '-q', '-b', 'main', cwd=other)
     (other / 'README').write_text('other\n')
     # ^ A recap one quiet minute after its last message (docs/tasks.md "Recap").
