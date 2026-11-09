@@ -33,7 +33,8 @@ Each user message is a small script of words:
   MLIMIT <s>   (manager, in an events message; once per <s>) like LIMIT; DASH there answers "-"
   PROBE <script> <spec> <out>  run the test's boundary probe script (python3 <script> <spec> <out>)
                and trace what it wrote to <out>
-  AUTHFAIL <file>  (manager) fail every turn as Claude's expired sign-in does until <file> exists
+  AUTHFAIL <file>  (manager) fail every turn as Claude's expired sign-in does until <file> exists;
+               with AUTHSLOW the failure comes 4 s after the turn starts
   BIG          a last model call of 400k tokens (two lines of one call), past the worker's rotateTokens
 The host's request for handoff notes ("Write <path> for that fresh conversation") makes it
 write "NOTES from the fixture" to <path>.
@@ -469,6 +470,8 @@ def main():
             continue
         if project is not None and (signed := next((b for a, b in zip(text.split(), text.split()[1:])
                                                      if a == 'AUTHFAIL'), None)) and not os.path.exists(signed):
+            if 'AUTHSLOW' in text.split():
+                time.sleep(4)
             auth_failure(session)
             continue
         if project is not None:

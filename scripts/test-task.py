@@ -643,15 +643,30 @@ def manager_up(created):
     launches = lambda: [t for t in traces() if t.get('launch') and t.get('manager')]
     tried = lambda n: [t for t in traces() if t.get('manager') and 'AUTHFAIL' in str(t.get('message', ''))][n - 1:]
     first_launch = len(launches())
+    failed_at = lambda: next(e['unix_ms'] for e in entries() if e['kind'] == 'stopped' and 'Sign in again' in e['reason'])
     failing = js('task', 'say', 'AUTHFAIL %s' % signed_in)
     wait(lambda: any(e['kind'] == 'stopped' and 'Sign in again' in e.get('reason', '') for e in entries()),
          'the sign-in stopped entry')
     again = js('task', 'say', 'AUTHFAIL %s again' % signed_in)
     wait(lambda: tried(2) and len(launches()) >= first_launch + 1, 'the owner message retries in a new process', 20)
+    # ^ The hold logs no pause, so the chat has no "resumed" row for it, and an owner message that
+    # no turn has taken yet is queued (`waiting_ids`): a turn that fails 4 s after it starts keeps
+    # the next message waiting, in the JSON, in the text and in the log.
+    slow = js('task', 'say', 'AUTHFAIL %s AUTHSLOW' % signed_in)
+    wait(lambda: turn_with('AUTHSLOW'), 'the slow sign-in turn')
+    waits = js('task', 'say', 'AUTHFAIL %s waits' % signed_in)
+    held = js('task', 'chat')
+    assert held['waiting'] == [waits['id']], (held['waiting'], waits, slow)
+    text = cli('task', 'chat').stdout
+    assert re.search(r'\[%d\] Owner \(waiting\): AUTHFAIL' % waits['id'], text) and text.count('(waiting)') == 1, text
+    assert [e['kind'] for e in entries() if e['kind'] == 'limit' and e['unix_ms'] >= failed_at()] == [], entries()[-12:]
+    assert len([e for e in entries() if e['kind'] == 'stopped' and 'Sign in again' in e['reason']]) == 1, entries()[-12:]
+    assert 'resumed' not in text.split('Sign in again')[-1], text
     signed_in.touch()
     after_sign_in = js('task', 'say', 'STATUS')
     replied = reply_to(after_sign_in['id'])
-    assert {failing['id'], again['id']} <= set(replied['to']), replied
+    assert {failing['id'], again['id'], slow['id'], waits['id']} <= set(replied['to']), replied
+    assert js('task', 'chat')['waiting'] == [], 'a message the turn took is a bubble'
     failed = [e for e in entries() if 'OAuth session expired' in str(e)]
     assert [e['kind'] for e in failed] == ['agent', 'stopped'], failed
     assert not [e for e in entries() if e['kind'] == 'rotated' and e['unix_ms'] >= failed[0]['unix_ms']], entries()[-20:]
