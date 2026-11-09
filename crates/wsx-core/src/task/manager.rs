@@ -541,6 +541,10 @@ pub struct LimitHold {
     /// conversation at once, with its messages in full. ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub switched: bool,
+    /// The agent's sign-in failed: the turn retries every minute in a new agent process, and
+    /// at once when the owner writes, until a sign-in lets it through. ref: docs/tasks.md "Manager"
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auth: bool,
 }
 
 /// The fallback agent the manager runs on while its own is at a long usage limit.

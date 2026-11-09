@@ -65,6 +65,23 @@ pub struct UsageLimit {
     pub resets_at: Option<u64>,
 }
 
+/// An error result that says the agent's sign-in failed (Claude's `Failed to authenticate:
+/// OAuth session expired ...`). Only a new sign-in helps, and a running agent process keeps
+/// its old credentials, so the retry needs a new process. ref: docs/tasks.md "Manager"
+pub fn auth_failed(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    [
+        "failed to authenticate",
+        "authentication_failed",
+        "oauth token has expired",
+        "oauth session expired",
+        "invalid api key",
+        "please run /login",
+    ]
+    .iter()
+    .any(|sign| text.contains(sign))
+}
+
 /// The words of a turn: every text block the agent said, in order, joined with a blank line.
 /// A block of `-` or nothing is dropped, so a turn that says only `-` has no words and stays
 /// quiet. With no block seen, the stream's own `fallback` (Claude's `result`) is the text.

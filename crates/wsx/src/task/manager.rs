@@ -90,6 +90,8 @@ const STAND_IN_RETRY_MS: u64 = 5 * 60_000;
 const STAND_IN_LOOK: Duration = Duration::from_secs(10);
 /// Agent errors in a row after which the conversation itself may be the cause.
 const ERROR_ROTATE_ATTEMPTS: u32 = 3;
+/// A failed sign-in retries this often: the owner's new sign-in is the only cause it waits for.
+const AUTH_RETRY_MS: u64 = 60_000;
 /// An idle task runs at most this often.
 const IDLE_EVERY_MS: u64 = 24 * 3_600_000;
 /// The title of the task `tasks.workflow.idle` starts.
@@ -1413,6 +1415,13 @@ impl Manager {
         self.overview_asked &= from != Author::Owner;
         self.context_asked &= from != Author::Owner;
         self.thought_asked &= from != Author::Owner;
+        // ^ The owner may have just signed in again: a sign-in hold tries at once.
+        if from == Author::Owner {
+            if let Some(hold) = self.state.limit.as_mut().filter(|hold| hold.auth) {
+                hold.until_ms = hold.until_ms.min(now_unix_ms());
+                self.save();
+            }
+        }
         self.enqueue(id, from, text, wakes);
         Ok(id)
     }
@@ -1613,6 +1622,7 @@ impl Manager {
                     ids: Vec::new(),
                     events: true,
                     switched: false,
+                    auth: false,
                 });
                 self.save();
             }
@@ -1877,6 +1887,7 @@ impl Manager {
             ids: ids.to_vec(),
             events,
             switched: true,
+            auth: false,
         });
         self.rotate(0, Some(reason));
         self.state.agent = Some(ManagerAgent {
@@ -2440,6 +2451,13 @@ impl Manager {
                 }
             }
             Some(AgentLine::Progress { .. }) if self.pinging => {}
+            // ^ A sign-in failure again, during a hold for one: the chat already says so.
+            Some(AgentLine::Progress { text, .. })
+                if agent::auth_failed(&text)
+                    && self.state.limit.as_ref().is_some_and(|hold| hold.auth) =>
+            {
+                self.say(&text)
+            }
             Some(AgentLine::Progress { text, .. }) => {
                 self.say(&text);
                 self.log(ManagerEvent::Agent { text });
@@ -2498,6 +2516,7 @@ impl Manager {
                 ids: to,
                 events: self.turn_events,
                 switched: false,
+                auth: false,
             });
             self.save();
             self.report(runtime::AgentState::Idle);
@@ -2508,16 +2527,36 @@ impl Manager {
         // follows. ref: docs/tasks.md "Manager"
         if result.is_error && result.subtype != "aborted" {
             let attempt = self.state.limit.as_ref().map_or(0, |hold| hold.attempt) + 1;
-            let until_ms = limit::resume_at(None, attempt, now);
             let reason = clip(result.text.lines().next().unwrap_or_default(), 200);
             self.say(&format!("agent error, attempt {attempt}: {reason}"));
-            self.log(ManagerEvent::Stopped {
-                reason: reason.clone(),
-            });
-            self.log(ManagerEvent::Limit {
-                until: Some(limit::resume_time(until_ms, now)),
-            });
-            let rotate = attempt == ERROR_ROTATE_ATTEMPTS;
+            // ^ A failed sign-in waits for the owner's new one: no doubling backoff and no new
+            // conversation, but a new process each try, since the running one keeps its old
+            // credentials. Logged once, not every minute.
+            let auth = agent::auth_failed(&result.text);
+            let was_auth = self.state.limit.as_ref().is_some_and(|hold| hold.auth);
+            let until_ms = match auth {
+                true => now + AUTH_RETRY_MS,
+                false => limit::resume_at(None, attempt, now),
+            };
+            if auth {
+                if let Some(agent) = self.agent.take() {
+                    agent.stop();
+                }
+            }
+            if !(auth && was_auth) {
+                let stopped = match auth {
+                    true => format!(
+                        "{reason}. Sign in again (`claude /login`); the manager retries every \
+                         minute, and at once when you write."
+                    ),
+                    false => reason.clone(),
+                };
+                self.log(ManagerEvent::Stopped { reason: stopped });
+                self.log(ManagerEvent::Limit {
+                    until: (!auth).then(|| limit::resume_time(until_ms, now)),
+                });
+            }
+            let rotate = !auth && attempt == ERROR_ROTATE_ATTEMPTS;
             if rotate {
                 self.rotate(0, Some(reason));
             }
@@ -2527,6 +2566,7 @@ impl Manager {
                 ids: to,
                 events: self.turn_events,
                 switched: rotate || self.state.limit.as_ref().is_some_and(|hold| hold.switched),
+                auth,
             });
             self.save();
             self.report(runtime::AgentState::Error);

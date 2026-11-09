@@ -635,6 +635,28 @@ def manager_up(created):
     assert len(follow) == 1 and 'the cap is 60 / 4,000' in follow[0]['message'], follow
     assert len(Path(page).read_text().splitlines()) == 70
     Path(page).write_text('# demo\n\n## Goal\n\nshort\n')
+    # ^ An expired sign-in (docs/tasks.md "Manager"): one `stopped` that says to sign in, no new
+    # conversation, a new agent process for each try, and an owner message tries at once.
+    signed_in = work / 'signed-in'
+    manager_log = Path(page).parent / 'manager/log.jsonl'
+    entries = lambda: [json.loads(line) for line in manager_log.read_text().splitlines()]
+    launches = lambda: [t for t in traces() if t.get('launch') and t.get('manager')]
+    tried = lambda n: [t for t in traces() if t.get('manager') and 'AUTHFAIL' in str(t.get('message', ''))][n - 1:]
+    first_launch = len(launches())
+    failing = js('task', 'say', 'AUTHFAIL %s' % signed_in)
+    wait(lambda: any(e['kind'] == 'stopped' and 'Sign in again' in e.get('reason', '') for e in entries()),
+         'the sign-in stopped entry')
+    again = js('task', 'say', 'AUTHFAIL %s again' % signed_in)
+    wait(lambda: tried(2) and len(launches()) >= first_launch + 1, 'the owner message retries in a new process', 20)
+    signed_in.touch()
+    after_sign_in = js('task', 'say', 'STATUS')
+    replied = reply_to(after_sign_in['id'])
+    assert {failing['id'], again['id']} <= set(replied['to']), replied
+    failed = [e for e in entries() if 'OAuth session expired' in str(e)]
+    assert [e['kind'] for e in failed] == ['agent', 'stopped'], failed
+    assert not [e for e in entries() if e['kind'] == 'rotated' and e['unix_ms'] >= failed[0]['unix_ms']], entries()[-20:]
+    retries = launches()[first_launch:]
+    assert len({t['pid'] for t in retries}) == len(retries) >= 2 and all(t['resume'] for t in retries), retries
     assert launch['actor'] == 'manager' and launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], launch['wsx_env']
     assert launch['git_optional_locks'] == '0', launch
     # ^ README "Profiles": the manager and every Claude worker so far run under demo's profile

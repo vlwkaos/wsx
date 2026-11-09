@@ -33,6 +33,7 @@ Each user message is a small script of words:
   MLIMIT <s>   (manager, in an events message; once per <s>) like LIMIT; DASH there answers "-"
   PROBE <script> <spec> <out>  run the test's boundary probe script (python3 <script> <spec> <out>)
                and trace what it wrote to <out>
+  AUTHFAIL <file>  (manager) fail every turn as Claude's expired sign-in does until <file> exists
   BIG          a last model call of 400k tokens (two lines of one call), past the worker's rotateTokens
 The host's request for handoff notes ("Write <path> for that fresh conversation") makes it
 write "NOTES from the fixture" to <path>.
@@ -466,6 +467,10 @@ def main():
                 time.sleep(1)
             usage_limit(session, int(words[words.index('LIMIT') + 1]))
             continue
+        if project is not None and (signed := next((b for a, b in zip(text.split(), text.split()[1:])
+                                                     if a == 'AUTHFAIL'), None)) and not os.path.exists(signed):
+            auth_failure(session)
+            continue
         if project is not None:
             # ^ The host's ledger summary ends the message; its titles are not this turn's words.
             text = text.split('\n\nLedger summary from wsx', 1)[0]
@@ -732,6 +737,16 @@ def usage_limit(session, seconds):
     emit({'type': 'result', 'subtype': 'success', 'is_error': True, 'result': words, 'session_id': session,
           'api_error_status': 429, 'api_error': 'usage_limit_reached', 'permission_denials': [],
           'usage': {'input_tokens': 0, 'output_tokens': 0}})
+
+
+def auth_failure(session):
+    """Claude's expired sign-in: the synthetic API error and its result, before any model call."""
+    words = 'Failed to authenticate: OAuth session expired and could not be refreshed'
+    emit({'type': 'assistant', 'parent_tool_use_id': None, 'session_id': session, 'isApiErrorMessage': True,
+          'message': {'model': '<synthetic>', 'content': [{'type': 'text', 'text': words}],
+                      'usage': {'input_tokens': 0, 'output_tokens': 0}}})
+    emit({'type': 'result', 'subtype': 'success', 'is_error': True, 'result': words, 'session_id': session,
+          'permission_denials': [], 'usage': {'input_tokens': 0, 'output_tokens': 0}})
 
 
 def background_turn(session, model):
