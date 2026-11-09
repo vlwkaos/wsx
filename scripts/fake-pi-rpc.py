@@ -6,7 +6,8 @@ words of <file> as the error; `PICOST <usd>` reports that cost for the run; `PIC
 `WORK <file>` (writes and commits it) and sends its result to `wsx task result -`, as the
 Pi adapter's instructions ask; a manager answers "pi answers: <first line>". The run then
 streams Pi's own events: agent_start, an assistant message_end with usage, agent_settled.
-Launch arguments and messages go to $FAKE_CLAUDE_TRACE with `adapter: pi`.
+Launch arguments, the Pi folder (`PI_CODING_AGENT_DIR`: its files and `models.json`) and messages
+go to $FAKE_CLAUDE_TRACE with `adapter: pi`.
 ref: crates/wsx/src/task/pi.rs; Pi docs rpc.md, json.md
 """
 import json
@@ -62,15 +63,29 @@ def option(argv, name):
     return argv[argv.index(name) + 1] if name in argv else None
 
 
+def argv_shown(argv):
+    # ^ The instruction texts are long; their own words are checked as `worker` and `talk_rule`.
+    return [('<text>' if before in ('--append-system-prompt', '--system-prompt') and not os.path.isfile(value) else value)
+            for before, value in zip([''] + argv, argv)]
+
+
+def models_json(agent_dir):
+    path = os.path.join(agent_dir or '', 'models.json')
+    return open(path).read() if os.path.isfile(path) else None
+
+
 def main():
     argv = sys.argv[1:]
     session = option(argv, '--session-id')
     instructions = ' '.join(value for flag, value in zip(argv, argv[1:]) if flag == '--append-system-prompt')
+    agent_dir = os.environ.get('PI_CODING_AGENT_DIR')
     worker = 'You are a task worker' in instructions
     trace({'launch': True, 'session': session, 'model': option(argv, '--model'), 'cwd': os.getcwd(),
            'worker': worker, 'talk_rule': "Judge from the owner's words" in instructions, 'rpc': '--mode' in argv and option(argv, '--mode') == 'rpc',
            'no_tools': '--no-tools' in argv, 'no_session': '--no-session' in argv,
-           'thinking': option(argv, '--thinking')})
+           'thinking': option(argv, '--thinking'), 'argv': argv_shown(argv),
+           'agent_dir': agent_dir, 'agent_dir_files': sorted(os.listdir(agent_dir)) if agent_dir else None,
+           'models_json': models_json(agent_dir)})
     for line in sys.stdin:
         command = json.loads(line)
         if command.get('type') != 'prompt':
