@@ -3598,6 +3598,23 @@ def task_journey(args):
                           {'kind': 'limit', 'unix_ms': held_at + 1500}]
         # ^ Stored quiet before the length rule: a long reply to events reads as a message.
         event(93, 'landed', 'Release notes', 'Release notes are ready:\n\n| Part | State |\n|---|---|\n| wsx | built |\n\n- the notes are written')
+        # ^ A failed sign-in, three times in an hour: stopped, paused, a new conversation at the third,
+        # resumed. Nothing shows between them, so the chat folds them into one row
+        # (docs/tasks.md "Manager"); the first hold is a pause alone, a row of its own.
+        reason = 'Failed to authenticate. API Error: 401'
+        hold_at = old_log[-1]['unix_ms']
+        old_log.append({'kind': 'limit', 'until': '09:11', 'unix_ms': hold_at + 100})
+        old_log.append({'kind': 'limit', 'unix_ms': hold_at + 200})
+        # ^ A reply breaks the run (an owner message here would answer one more of the open questions).
+        old_log.append({'kind': 'reply', 'id': 9500, 'to': [], 'text': 'Trying again.', 'quiet': False, 'unix_ms': hold_at + 300})
+        for n, until in enumerate(('10:11', '11:11', '12:11')):
+            old_log.append({'kind': 'stopped', 'reason': reason, 'unix_ms': hold_at + 1000 + n * 1000})
+            old_log.append({'kind': 'limit', 'until': until, 'unix_ms': hold_at + 1100 + n * 1000})
+            if n == 2:
+                old_log.append({'kind': 'rotated', 'tokens': 0, 'reason': reason, 'unix_ms': hold_at + 1200 + n * 1000})
+            else:
+                old_log.append({'kind': 'limit', 'unix_ms': hold_at + 1200 + n * 1000})
+        old_log.append({'kind': 'reply', 'id': 9501, 'to': [], 'text': 'Back now.', 'quiet': False, 'unix_ms': hold_at + 6000})
         # ^ Older hosts logged a `-` reply to an owner message as a message, and a `sent` without
         # --json with no text: the page shows neither (docs/web-client-tasks.md "Project screen").
         logged('owner', 'Anything new?', '-', quiet=False)
@@ -4067,6 +4084,23 @@ merge_seconds = 3
         assert manager_usage['turns'] >= 1 and manager_usage['cost_micro_usd'] == 1000 * manager_usage['turns'], manager_usage
         later = steady(owner, 'GET', '/api/tasks/%d/chat?after=%d' % (demo, reply['id']))[1]
         assert all(r.get('id', reply['id'] + 1) > reply['id'] for r in later['rows']), later
+        # --- The usage limit holds the manager (docs/tasks.md "Manager"): the turn that met the limit
+        # keeps its bubble; a message sent meanwhile has not been taken into a turn, so its row is
+        # queued, after the others; once the manager resumes and takes it, it is a normal bubble.
+        held = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'LIMIT 8 STATUS held'})[1]
+        wait(lambda: any('paused: usage limit' in r['text'] for r in steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['rows']),
+             'the manager pause row', timeout=30)
+        waiting_said = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS while held'})[1]
+        rows = steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['rows']
+        queued = [r for r in rows if r.get('queued')]
+        assert [r['id'] for r in queued] == [waiting_said['id']] and queued[0]['text'] == 'STATUS while held' and rows[-1] is queued[0], rows[-4:]
+        assert queued[0]['author'] == 'owner' and not any(r.get('queued') for r in rows if r.get('id') == held['id']), rows[-4:]
+        taken = wait(lambda: next((r for r in steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['rows']
+                                   if r.get('id') == waiting_said['id'] and not r.get('queued')), None), 'the held message taken into a turn', timeout=40)
+        assert taken['kind'] == 'message', taken
+        # ^ A read after the message's id still brings the rows that follow it, none queued.
+        assert not any(r.get('queued') for r in steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['rows'])
+        ok('the manager held by a limit: a message sent meanwhile is a queued row, a bubble once a turn takes it')
         # --- A role (docs/tasks.md "Roles"): its chat by ?role=, a say to it starts it, and the
         # manager's chat lists it as a contact.
         notes_brief = work / 'notes-brief.md'
@@ -4357,6 +4391,15 @@ merge_seconds = 3
         assert detail['actions'] == ['hand'] and detail['talk'] == [] and 'brief' not in detail and 'phase' not in detail, detail
         assert steady(owner, 'POST', '/api/tasks/%d/t/1/start' % planned, {})[0] == 404
         ok('a waiting task: its need and reason, hand, no brief or start')
+        # ^ Three holds of one reason with nothing shown between them are one row with the count, the newest
+        # time and the next try; the pause before them and the reply after stay as they were.
+        plans_rows = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['plans'])[1]['rows']
+        stops = [r for r in plans_rows if 'stopped' in r['text']]
+        assert [r['text'] for r in stops] == ['plans stopped 3 times: Failed to authenticate. API Error: 401; next try 12:11'], stops
+        assert stops[0]['kind'] == 'note' and stops[0]['danger'], stops
+        assert not any('New conversation' in r['text'] or 'resumes at 1' in r['text'] for r in plans_rows), plans_rows
+        assert sum('resumes at 09:11' in r['text'] for r in plans_rows) == 1, plans_rows
+        ok('a run of repeated stops folds into one row in the chat route')
         if args.browser:
             # A worker's report stays in the task sheet: the chat route carries the events lines only.
             rows = steady(owner, 'GET', '/api/tasks/%d/chat' % ids['ui'])[1]['rows']

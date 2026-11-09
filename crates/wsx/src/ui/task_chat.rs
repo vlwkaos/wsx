@@ -326,6 +326,24 @@ pub fn chat_lines(
             _ => theme::DONE,
         };
         let name = row.name.clone().unwrap_or_default();
+        if row.queued {
+            // ^ A message the held manager has not taken: one marked line at the end, in the
+            // owner's color, as the web's queue above the composer shows it.
+            if before.is_some_and(|before| !before.queued) {
+                lines.push(Line::raw(""));
+            }
+            let head = format!("{name}  waiting  ");
+            let room = width.saturating_sub(head.chars().count()).max(1);
+            lines.push(Line::from(vec![
+                Span::styled(format!("{name}  "), Style::default().fg(color).bold()),
+                Span::styled("waiting  ", Style::default().fg(theme::TEXT_SUBTLE)),
+                Span::styled(
+                    truncate_to_width(&row.text.replace('\n', " "), room),
+                    Style::default().fg(theme::TEXT_SUBTLE),
+                ),
+            ]));
+            continue;
+        }
         if row.kind != RowKind::Message {
             // ^ Lines after a message start apart from it, at the author's column; a quiet
             // reply after another one keeps the name shown once.

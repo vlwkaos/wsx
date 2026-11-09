@@ -167,7 +167,7 @@ pub(crate) fn chat(
             ManagerEvent::Limit { .. }
             | ManagerEvent::Rotated { .. }
             | ManagerEvent::Stopped { .. } => {
-                for row in chat_rows(&[entry], &[], &[], &names) {
+                for row in chat_rows(&[entry], &[], &[], &[], &names) {
                     println!("({})", row.text);
                 }
             }
