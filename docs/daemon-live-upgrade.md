@@ -150,6 +150,8 @@ python3 scripts/test-terminal-context.py --next-wsx <dir>/wsx --next-daemon <dir
 python3 scripts/test-terminal-context.py --released-wsx <path>/wsx --released-daemon <path>/wsxd
 ```
 
+`scripts/terminal-context-check.sh` runs it in the check slot with the newest older Homebrew release, or without the released leg and a printed reason. `scripts/deploy-web-live.sh` runs it after every land and `scripts/release.sh` before a release.
+
 A released `wsx` computes its own socket paths: before 0.42 the TUI connects to asched's `daemon-v1.sock`, in `ASCHED_ROOT` or `HOME/Library/Application Support/asched`. That is 107 bytes under a release copy (`wsx-release-<pid>`), so the script gives the released leg a short `ASCHED_ROOT` and checks the length of every socket it makes.
 
 - With `--next-wsx`, the same script starts a TUI of the higher revision while an older window blocks the handoff. The upgrade screen must appear at 80x24 and 40x12 without the workspace, `q` must quit, `Enter` must open the old daemon, and the TUI must open on the new daemon by itself when the blocking window quits. With `--released-wsx` it also starts a TUI whose handoff target refuses the transfer (`--next-daemon`, or a script that exits at once): the released daemon rolls back, the TUI opens on it with "wsxd upgrade failed", and a CLI command of this build then answers with the same notice, at once, without a new handoff and with the same daemon epoch.
