@@ -2156,7 +2156,11 @@ impl Host {
     /// current turn). False with none: the caller goes on as before. ref: docs/tasks.md "Agents"
     fn move_after_sign_in(&mut self, unfinished: Option<&str>, now: u64) -> bool {
         let settings = load_task_config(&self.record.project_path).unwrap_or_default();
-        let Some(next) = super::agent::fallback(&settings.fallback, now, false) else {
+        let Some(next) = super::agent::fallback(
+            &settings.fallback,
+            now,
+            wsx_core::config::global::Operation::Worker,
+        ) else {
             return false;
         };
         if let Some(text) = unfinished {
