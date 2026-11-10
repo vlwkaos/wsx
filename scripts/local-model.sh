@@ -66,6 +66,9 @@ case ${1:-} in
   stop)
     alive || { echo "not running (by this script)"; rm -f "$pid_file"; exit 0; }
     pid=$(cat "$pid_file")
+    # ^ A stale pid file after a reboot may name an unrelated process: kill only the listener of our port.
+    lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | grep -qx "$pid" ||
+      { echo "pid $pid does not listen on $port; removed the stale pid file"; rm -f "$pid_file"; exit 0; }
     kill "$pid"
     n=0
     while kill -0 "$pid" 2>/dev/null; do
