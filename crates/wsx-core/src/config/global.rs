@@ -457,11 +457,8 @@ fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
         if !agent.roles.is_empty() && agent.adapter.as_deref() != Some("pi") {
             return Err(format!("agent {}: roles need adapter pi", agent.name));
         }
-        if let Some(role) = (1..agent.roles.len())
-            .map(|i| agent.roles[i])
-            .find(|role| agent.roles.iter().filter(|r| *r == role).count() > 1)
-        {
-            return Err(format!("agent {}: roles name {:?} twice", agent.name, role));
+        if (1..agent.roles.len()).any(|i| agent.roles[..i].contains(&agent.roles[i])) {
+            return Err(format!("agent {}: a role is named twice", agent.name));
         }
     }
     Ok(())
