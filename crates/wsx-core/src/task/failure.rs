@@ -27,7 +27,10 @@ const GENERIC: [&str; 4] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SharedFailure {
     pub command: String,
+    /// The line with digits as `0`: the compare and the key.
     pub line: String,
+    /// The newest task's line as printed (clipped): the event and the worker sentence.
+    pub shown: String,
     pub tasks: Vec<u32>,
 }
 
@@ -44,7 +47,7 @@ impl SharedFailure {
              not one per task",
             self.tasks(),
             clip(&self.command),
-            self.line
+            self.shown
         )
     }
 
@@ -89,36 +92,46 @@ fn log_text(line: &str) -> &str {
     text.trim().trim_start_matches("##[error]").trim_start()
 }
 
-/// The last line of a failed result's output that tells its cause, digits as `0`: a
-/// `FAIL`/`AssertionError` line, else an `error` line that is no generic summary.
-fn failure_line(result: &CheckResult) -> Option<String> {
+/// `FAIL` or `FAILED` as a whole word, as nextest and pytest print it: not the `FAIL` in the
+/// `CACHE_ON_FAILURE: false` that GitHub's env echo puts in every log.
+fn has_fail_word(line: &str) -> bool {
+    line.split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|word| word == "FAIL" || word == "FAILED")
+}
+
+/// The last line of a failed result's output that tells its cause, clipped, as printed and with
+/// digits as `0`: a `FAIL`/`FAILED`/`AssertionError` line, else an `error` line that is no
+/// generic summary.
+fn failure_line(result: &CheckResult) -> Option<(String, String)> {
     if result.exit == Some(0) || result.timed_out || result.output.contains(NO_SPACE) {
         return None;
     }
     let lines = || result.output.lines().rev().map(log_text);
     let line = lines()
-        .find(|line| line.contains("FAIL") || line.contains("AssertionError"))
+        .find(|line| has_fail_word(line) || line.contains("AssertionError"))
         .or_else(|| {
             lines().find(|line| {
                 let lower = line.to_lowercase();
                 lower.contains("error") && !GENERIC.iter().any(|g| lower.contains(g))
             })
         })?;
+    let shown: String = line.chars().take(LINE_CHARS).collect();
     let mut out = String::new();
-    for c in line.chars().take(LINE_CHARS) {
+    for c in shown.chars() {
         match (c.is_ascii_digit(), out.ends_with('0')) {
             (true, true) => {}
             (true, false) => out.push('0'),
             _ => out.push(c),
         }
     }
-    Some(out)
+    Some((shown, out))
 }
 
-/// What the latest result of each command of `results` says: its failure line, or none.
+/// What the latest result of each command of `results` says: its failure line (as printed, and
+/// with digits as `0`), or none.
 fn lines_of<'a>(
     results: impl IntoIterator<Item = &'a CheckResult>,
-) -> BTreeMap<String, Option<String>> {
+) -> BTreeMap<String, Option<(String, String)>> {
     results
         .into_iter()
         .map(|result| (result.command.clone(), failure_line(result)))
@@ -138,9 +151,12 @@ pub fn shared_failures(
     if own.values().all(Option::is_none) {
         return Vec::new();
     }
-    let mut found: BTreeMap<(String, String), Vec<u32>> = own
+    let mut found: BTreeMap<(String, String), (String, Vec<u32>)> = own
         .into_iter()
-        .filter_map(|(command, line)| Some(((command, line?), vec![task])))
+        .filter_map(|(command, line)| {
+            let (shown, line) = line?;
+            Some(((command, line), (shown, vec![task])))
+        })
         .collect();
     let numbers = super::store::task_numbers(project_id).unwrap_or_default();
     for other in numbers
@@ -167,19 +183,20 @@ pub fn shared_failures(
                 }),
         );
         for (command, line) in latest {
-            if let Some(tasks) = line.and_then(|line| found.get_mut(&(command, line))) {
+            if let Some((_, tasks)) = line.and_then(|(_, line)| found.get_mut(&(command, line))) {
                 tasks.push(other);
             }
         }
     }
     found
         .into_iter()
-        .filter(|(_, tasks)| tasks.len() > 1)
-        .map(|((command, line), mut tasks)| {
+        .filter(|(_, (_, tasks))| tasks.len() > 1)
+        .map(|((command, line), (shown, mut tasks))| {
             tasks.sort_unstable();
             SharedFailure {
                 command,
                 line,
+                shown,
                 tasks,
             }
         })
