@@ -4625,6 +4625,35 @@ def part_worker(created=None):
     time.sleep(1)
     assert kinds(twice, 'checks', 'revision') == ['checks', 'revision'], log(twice)
     js('task', 'close', twice, '--discard')
+    # 32ak. The simplify check (docs/tasks.md "Workflow"): a full task whose worker was lent the
+    # simplify skill and never loaded it is sent back once, and the ready event names it when it
+    # still did not; one that loads it goes ready at once; a small task is not checked.
+    mark('32ak')
+    simplify_skill = profile_root / 'skills/simplify'
+    simplify_skill.mkdir(parents=True)
+    (simplify_skill / 'SKILL.md').write_text('---\nname: simplify\ndescription: fixture\n---\nx\n')
+    configure(LAND_CONFIG + '  skills: owner\n  workflow:\n    steps:\n      - {name: build, prompt: build it}\n',
+              'simplify check')
+    never = js('task', 'new', 'WORK never.txt')['id']
+    ran = js('task', 'new', 'WORK ran.txt SIMPLIFY')['id']
+    late = js('task', 'new', 'WORK late.txt SIMPLIFYLATE')['id']
+    small = js('task', 'new', '--size', 'small', 'WORK small.txt')['id']
+    for n in (never, ran, late, small):
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready', log(n)
+    asked = lambda n: [e for e in log(n) if e['kind'] == 'result' and e.get('trigger') == 'simplify']
+    assert (len(asked(never)), len(asked(late))) == (1, 1) and not asked(ran) and not asked(small), \
+        [log(n) for n in (never, ran, late, small)]
+    sent = [t for t in traces() if 'The simplify skill did not run' in str(t.get('message'))]
+    assert len(sent) == 2 and all('owner:simplify' in t['message'] for t in sent), sent
+    ready_line = lambda n: wait(lambda: [line for e in events_with('#%d ready r1' % n) for line in e['text'].split('\n')
+                                         if line.startswith('#%d ready r1' % n)], 'the ready event of #%d' % n, 30)[0]
+    assert '; simplify did not run' in ready_line(never), manager_entries()[-6:]
+    assert 'simplify did not run' not in ' '.join(ready_line(n) for n in (ran, late, small))
+    assert 'simplify did not run' in show(never)['status']['sentence'], show(never)['status']
+    assert 'simplify did not run' not in show(late)['status']['sentence'], show(late)['status']
+    for n in (never, ran, late, small):
+        js('task', 'close', n, '--discard')
+    shutil.rmtree(profile_root / 'skills')
     configure(LAND_CONFIG, 'no scenario')
     return created
 

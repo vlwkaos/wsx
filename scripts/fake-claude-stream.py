@@ -37,6 +37,8 @@ Each user message is a small script of words:
                with AUTHSLOW the failure comes 4 s after the turn starts
   WAUTHFAIL <file>  the same for a worker (a manager's event lines carry task titles, so its own word differs)
   BIG          a last model call of 400k tokens (two lines of one call), past the worker's rotateTokens
+  SIMPLIFY     (worker) a Skill tool call of owner:simplify in the turn; SIMPLIFYLATE does it only in
+               the host's send-back ("The simplify skill did not run ...")
 The host's request for handoff notes ("Write <path> for that fresh conversation") makes it
 write "NOTES from the fixture" to <path>.
 The host's landing message ("rebased onto <tip>") makes it rebase and resolve every
@@ -104,6 +106,7 @@ def leak(session):
 SESSION = MODEL = None
 THOUGHT = ''  # ^ The words of the last `THINK` part: the manager's follow-up writes them as its answer.
 LINES = 0
+LATE_SIMPLIFY = False  # ^ SIMPLIFYLATE: the skill loads only on the host's send-back, not on its own.
 SPENT = 0.0  # ^ The process's running `total_cost_usd`: every result carries it.
 # ^ The fields the real CLI writes on every line, as recorded in
 # crates/wsx/tests/fixtures/agent-streams/claude (docs/tasks.md "Agent stream recordings"). A line
@@ -405,7 +408,7 @@ def interactive(options):
 
 
 def main():
-    global SESSION, MODEL, SPENT, THOUGHT
+    global SESSION, MODEL, SPENT, THOUGHT, LATE_SIMPLIFY
     options = parse_args(sys.argv[1:])
     if '-p' not in options:
         return interactive(options)
@@ -557,6 +560,13 @@ def main():
             deadline = time.monotonic() + 600
             while not os.path.exists(release) and time.monotonic() < deadline:
                 time.sleep(0.2)
+        # ^ A worker loads the simplify skill with the Skill tool: SIMPLIFY in a turn, or, after
+        # SIMPLIFYLATE, in the turn that is the host's send-back (docs/tasks.md "Workflow").
+        LATE_SIMPLIFY = LATE_SIMPLIFY or 'SIMPLIFYLATE' in words
+        if project is None and ('SIMPLIFY' in words or (LATE_SIMPLIFY and 'The simplify skill did not run' in text)):
+            emit({'type': 'assistant', 'message': {'content': [
+                {'type': 'tool_use', 'id': 'skill-1', 'name': 'Skill', 'input': {'skill': 'owner:simplify'}}]}})
+            tool_result('skill-1', 'ok', False)
         denials = []
         if 'NEEDS' in words:
             rule = words[words.index('NEEDS') + 1]
