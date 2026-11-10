@@ -220,10 +220,10 @@ def summary(state_dir, after, asked, repeated, pairs, judged, replies):
     if top:
         line += "; costliest " + ", ".join(f"#{n} ${usage.usd(c)}" for n, c in top)
     lines = [line]
-    # ^ A reply that opens with `> ` quotes an earlier message (docs/tasks.md "Manager"): is it used?
+    # ^ A quote the manager wrote (docs/tasks.md "A quote"): is it used? The host's own is not counted.
     recent = [e for e in replies if e["unix_ms"] > after]
     if recent:
-        lines.append(f"Quotes: {sum(1 for e in recent if (e['text'] or '').startswith('> '))} of {len(recent)} replies")
+        lines.append(f"Quotes: {sum(1 for e in recent if usage.own_quote(e))} of {len(recent)} replies")
     lines += [f"You asked {len(r['ids'])} times: \"{r['text']}\" ({ids('m', r['ids'])})" for r in asked[:SHOWN]]
     lines += [f"The manager repeated in {len(r['ids'])} replies: \"{r['text']}\" ({ids('r', r['ids'])})"
               for r in repeated[:SHOWN]]

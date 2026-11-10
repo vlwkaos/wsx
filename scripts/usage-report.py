@@ -27,6 +27,14 @@ WRITE_W, READ_W = 2.0, 0.10
 BIG_CTX = 200_000
 
 
+def own_quote(e):
+    """A reply that opens with a quote the manager wrote: wsx adds the quote of the owner message
+    a reply answers (`quote` is in `to`), which is not the manager's choice (docs/tasks.md "A quote")."""
+    if "quote" in e:
+        return e["quote"] not in e.get("to", [])
+    return (e.get("text") or "").startswith("> ")
+
+
 def read_log(folder):
     """Events of log.1.jsonl, log.2.jsonl ... (every roll, oldest first) then log.jsonl; bad lines
     are skipped."""
@@ -300,8 +308,7 @@ def main():
         for who, folder in managers:
             said = [e for e in read_log(folder) if e.get("kind") == "reply" and since <= e.get("unix_ms", 0) < until
                     and not e.get("post") and (e.get("text") or "").strip() not in ("", "-")]
-            # ^ A quote is the owner's format (`> <line>`); `quote` is the id stored since quotes keep one.
-            quoting = sum(1 for e in said if "quote" in e or (e.get("text") or "").startswith("> "))
+            quoting = sum(1 for e in said if own_quote(e))
             if said:
                 quotes.append([os.path.basename(os.path.normpath(state_dir)), who, len(said), quoting,
                                f"{100 * quoting / len(said):.1f}%"])
@@ -312,7 +319,7 @@ def main():
         # ^ Message ids are a project's own.
         mturns += manager_turns(events)
 
-    table("Quotes (replies that say something, and those that open with a quote, per manager)",
+    table("Quotes (replies that say something, and those that open with a quote the manager wrote, per manager)",
           ["project", "manager", "replies", "quoting", "share"], quotes)
 
     # Per day

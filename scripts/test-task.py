@@ -99,6 +99,16 @@ DEPLOY_CONFIG = LAND_CONFIG + '''  deploy:
 # that exists only opens it for appending, so nothing changes when it is allowed.
 PROBE_SCRIPT = '''import json, os, socket, subprocess, sys
 spec = json.load(open(sys.argv[1]))
+def unquoted(entry):
+    """A reply without the quote wsx adds for the owner message it answers (`quote` is one of `to`,
+    docs/tasks.md "A quote"): its words as the manager wrote them, for the checks that compare them.
+    The quote itself has its own block in part_core."""
+    if entry['kind'] != 'reply' or entry.get('quote') not in entry['to']:
+        return entry
+    kept = {key: value for key, value in entry.items() if key != 'quote'}
+    return {**kept, 'text': entry['text'].partition('\n\n')[2]}
+
+
 def tried(action):
     try:
         action()
@@ -594,12 +604,18 @@ def manager_up(created):
     (owner_skills / 'other').mkdir()
     (owner_skills / 'other/SKILL.md').write_text('---\nname: other\ndescription: fixture\n---\nx\n')
 
-    def chat(after=None):
-        return js('task', 'chat', *(['--after', after] if after is not None else []))['entries']
+    def chat(after=None, raw=False):
+        found = js('task', 'chat', *(['--after', after] if after is not None else []))['entries']
+        return found if raw else [unquoted(e) for e in found]
 
     def reply_to(message_id):
         return wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and message_id in e['to']), None),
                     'reply to %s' % message_id)
+
+    def raw_reply(message_id):
+        """The stored reply to `message_id` with the quote wsx added (`reply_to` leaves it out)."""
+        reply_to(message_id)
+        return next(e for e in chat(raw=True) if e['kind'] == 'reply' and message_id in e['to'])
 
     def turn_with(text):
         """The first manager turn whose message holds `text`."""
@@ -675,6 +691,9 @@ def manager_up(created):
     after_sign_in = js('task', 'say', 'STATUS')
     replied = reply_to(after_sign_in['id'])
     assert {failing['id'], again['id'], slow['id'], waits['id']} <= set(replied['to']), replied
+    # ^ A reply to a turn with several owner messages quotes the newest one (docs/tasks.md "A quote").
+    several = raw_reply(after_sign_in['id'])
+    assert several['quote'] == after_sign_in['id'] and several['text'].startswith('> STATUS\n\n'), several
     assert js('task', 'chat')['waiting'] == [], 'a message the turn took is a bubble'
     failed = [e for e in entries() if 'OAuth session expired' in str(e)]
     assert [e['kind'] for e in failed] == ['agent', 'stopped'], failed
@@ -783,8 +802,9 @@ def manager_up(created):
     assert [e['mode'] for e in log(running) if e['kind'] == 'message'] == ['prompt', 'add']
     manager_log = Path(created['task_dir']).parent / 'manager' / 'log.jsonl'
 
-    def manager_entries():
-        return [json.loads(line) for line in manager_log.read_text().splitlines()]
+    def manager_entries(raw=False):
+        found = [json.loads(line) for line in manager_log.read_text().splitlines()]
+        return found if raw else [unquoted(e) for e in found]
 
     # Usage (docs/tasks.md "Manager"): rotation looks at the last main model call's context, not
     # the result's sum over the turn's calls, nor a subagent's; a reply's cost is its own, not the
@@ -803,8 +823,16 @@ def manager_up(created):
     # ^ The entry keeps the quoted message's id, for a tap that opens the chat there at any age.
     assert own['quote'] == promise['id'], own
     assert 'Your last reply: %d.' % promise['id'] in turn_with('QUOTE %d still' % promise['id'])['message']
+    # ^ wsx quotes the owner message a reply answers when the reply opens with no quote of its own
+    # (docs/tasks.md "A quote"): the newest owner message of its turn. One a manager wrote wins.
+    mine = raw_reply(js('task', 'say', 'QUOTE %d keeps mine' % promise['id'])['id'])
+    assert mine['quote'] == promise['id'] and mine['text'].startswith('> %s\n\nkeeps mine' % promise['text'].splitlines()[0]), mine
+    one = js('task', 'say', 'STATUS one owner message')
+    own_words = raw_reply(one['id'])
+    assert own_words['to'] == [one['id']] and own_words['quote'] == one['id'], own_words
+    assert own_words['text'].startswith('> STATUS one owner message\n\n'), own_words
     heard = js('task', 'say', 'QUOTE OWNER_SAID noted')
-    assert reply_to(heard['id'])['text'] == '> QUOTE OWNER_SAID noted\n\nnoted'
+    assert raw_reply(heard['id'])['text'] == '> QUOTE OWNER_SAID noted\n\nnoted'
     # ^ A quote of a quote is the words of that reply, not its quote line.
     again = reply_to(js('task', 'say', 'QUOTE %d and again' % own['id'])['id'])
     assert again['text'] == '> still waiting on #8\n\nand again', again
@@ -815,12 +843,6 @@ def manager_up(created):
     # the owner's first one, far above.
     first = reply_to(js('task', 'say', 'QUOTE 1 jump')['id'])
     assert first['text'] == '> STATUS\n\njump' and first['quote'] == 1, first
-    # ^ The owner's Reply (web *Reply*, TUI `r`) sends `> message <id>` too: stored in the same
-    # format with the id, and the agent reads the line.
-    said_back = js('task', 'say', '> message 1\n\nthe owner answers')
-    stored = next(e for e in manager_entries() if e['kind'] == 'message' and e['id'] == said_back['id'])
-    assert stored['text'] == '> STATUS\n\nthe owner answers' and stored['quote'] == 1, stored
-    reply_to(said_back['id'])
     jumped = tui_screens(wsx, env, project, [
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
         (r'(?m)^   \u258e STATUS$', b'['),
@@ -828,6 +850,12 @@ def manager_up(created):
         (r'(?m)^ You +\d\d:\d\d\n   STATUS$', b'\x1b'),
         (r'(?m)^ MANAGER +\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
     assert 'jump' in jumped[2] and 'jump' not in jumped[4], jumped[4]
+    # ^ After the jump: the owner's Reply (web *Reply*, TUI `r`) sends `> message <id>` too: stored in the same
+    # format with the id, and the agent reads the line.
+    said_back = js('task', 'say', '> message 1\n\nthe owner answers')
+    stored = next(e for e in manager_entries() if e['kind'] == 'message' and e['id'] == said_back['id'])
+    assert stored['text'] == '> STATUS\n\nthe owner answers' and stored['quote'] == 1, stored
+    reply_to(said_back['id'])
     assert not any(e['kind'] == 'rotated' for e in manager_entries()), 'four 50k calls do not rotate'
     assert len(replies) > 3 and {e['usage']['cost_micro_usd'] for e in replies} == {1000}, replies
     # Event-only turns run on tasks.manager.eventModel unless a ready task the manager created
@@ -2589,6 +2617,7 @@ def part_core(created=None):
     wait_state(asking, 'ready')
     asked = reply_to(wait(lambda: events_with('#%d ready r1' % asking), 'the event of a task that asks')[0]['id'])
     assert asked['text'] == 'Should I land it now?' and asked.get('asks') is True and 'quiet' not in asked, asked
+    assert 'quote' not in raw_reply(asked['id']), 'a turn of only events quotes no owner message'
     # ^ An open question shows in the next turn's input ("Open questions", docs/tasks.md "Questions"):
     # a message that quotes another message answers none. A dismiss, or an owner message that
     # quotes it, ends it; with none open the section is absent.
@@ -2599,8 +2628,13 @@ def part_core(created=None):
     js('task', 'dismiss', str(asked['id']))
     reply_to(js('task', 'say', 'STATUS nothing open')['id'])
     assert 'Open questions' not in turn_with('STATUS nothing open')['message'], turn_with('STATUS nothing open')
-    again = reply_to(js('task', 'say', 'ASK once more')['id'])
+    once_more = js('task', 'say', 'ASK once more')
+    again = reply_to(once_more['id'])
     assert again.get('asks') is True, again
+    # ^ A question that quotes the owner message it answers stays open: the quote closes none, and
+    # the question's line is its words, not the quote (chat::open_asks).
+    assert raw_reply(once_more['id'])['quote'] == once_more['id'], raw_reply(once_more['id'])
+    assert again['id'] in js('task', 'chat')['asks'], js('task', 'chat')['asks']
     reply_to(js('task', 'say', '> message %d\n\nyes, land it' % again['id'])['id'])
     answered_turn = turn_with('yes, land it')['message']
     assert 'Open questions' not in answered_turn and '- %d:' % again['id'] not in answered_turn, answered_turn
@@ -3461,7 +3495,7 @@ def part_worker(created=None):
     configure(LAND_CONFIG + '  manager: { adapter: pi, model: fake/strict-a1 }\n', 'untrusted area')
     ids_before = sorted(row['id'] for row in js('task', 'list', '--all')['tasks'])
     asked = js('task', 'say', '--role', 'strictarea', 'RUN wsx task new area-task -p demo --json\nRUN wsx task list -p demo --json')
-    said = wait(lambda: next((e for e in js('task', 'chat', '--role', 'strictarea')['entries']
+    said = wait(lambda: next((unquoted(e) for e in js('task', 'chat', '--role', 'strictarea')['entries']
                               if e['kind'] == 'reply' and asked['id'] in e['to']), None), 'the role answers', 60)['text']
     runs = ['ran: ' + part for part in said.split('ran: ')[1:]]
     assert len(runs) == 2 and all('-> 2' in line and 'is beyond what this agent may do' in line and 'it passed: answer, note' in line
@@ -5132,7 +5166,7 @@ def part_host(created=None):
 
     def role_entries(name):
         path = roles_dir / name / 'log.jsonl'
-        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        return [unquoted(json.loads(line)) for line in path.read_text().splitlines()] if path.exists() else []
 
     def role_reply(name, message_id):
         return wait(lambda: next((e for e in role_entries(name) if e['kind'] == 'reply' and message_id in e['to']), None),
@@ -5426,7 +5460,7 @@ def part_host(created=None):
     assert reply_to(asked['id'])['text'].startswith('script -> 0'), reply_to(asked['id'])
 
     def other_entries():
-        return [json.loads(line) for line in other_log.read_text().splitlines()] if other_log.exists() else []
+        return [unquoted(json.loads(line)) for line in other_log.read_text().splitlines()] if other_log.exists() else []
 
     received = wait(lambda: next((e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'manager:demo'), None),
                     'message at the other manager', 60)
