@@ -2892,7 +2892,8 @@ def part_worker(created=None):
                              cwd=project, env=nofile, capture_output=True, text=True, timeout=60)
     assert refused.returncode != 0 and 'is not ssh or https' in refused.stderr and not (home / 'nofile').exists(), refused
     # ^ The sections below run with one project: unregister `grown` and `owned` in the config.
-    registry = work / 'c' / 'wsx' / 'config-v2.toml'
+    registry = (home / 'Library' / 'Application Support' if sys.platform == 'darwin' else work / 'c') / 'wsx' / 'config-v2.toml'
+    # ^ `dirs` takes macOS's config folder from HOME, not from XDG_CONFIG_HOME.
     blocks = registry.read_text().split('[[projects]]')
     assert sum('name = "grown"' in b or 'name = "owned"' in b for b in blocks) == 2, blocks
     registry.write_text('[[projects]]'.join(b for b in blocks if 'name = "grown"' not in b and 'name = "owned"' not in b))
