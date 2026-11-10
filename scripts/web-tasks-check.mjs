@@ -970,12 +970,15 @@ await click(".pill[data-kind=check]");
 await until("!!document.querySelector('.reservoir-list[aria-label=\"To check\"]') && !document.querySelector('.reservoir-list[aria-label=Running]')", "a tap on To check did not switch the list");
 const checkRows = await rows();
 // ^ One row per open item: its task, its check, what passes it, and Fail and Pass as the sheet has them.
-const openChecks = await evaluate(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.open.map((item) => ['#' + item.task, item.check, 'Passes if ' + item.pass_if, 'Reply+Fail: tell the manager+Works: close this check']))`);
+const openChecks = await evaluate(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.open.map((item) => ['#' + item.task, item.check, 'Passes if ' + item.pass_if, 'Reply+Fail: close it, then tell the manager+Works: close this check']))`);
 if ((await pressed()) !== "check" || openChecks.length !== 2 || JSON.stringify(checkRows) !== JSON.stringify(openChecks)) await fail(`the To check list is ${JSON.stringify(checkRows)}, not ${JSON.stringify(openChecks)}, with ${await pressed()} pressed`);
-// ^ Fail puts the item into the manager's composer, as in the sheet; the item stays.
-const failedWords = await evaluate(`(() => { ${rowOf("#7")}.querySelector('.need-action[title="Fail: tell the manager"]').click();
-  const field = document.querySelector('.composer-field'), text = field.value; field.value = ''; field.dispatchEvent(new Event('input', { bubbles: true })); return text; })()`);
-if (!/^#7 To check c\d+ failed: $/.test(failedWords) || (await rows()).length !== 2) await fail(`Fail on a To check row put ${JSON.stringify(failedWords)} into the composer`);
+// ^ Reply quotes the item in the manager's composer (a reply of "x" skips it); the item stays open.
+// Fail and Pass close the item first, then quote it the same way (below, in the sheet).
+await evaluate(`${rowOf("#7")}.querySelector('.need-action[title="Reply"]').click()`);
+await until("!!document.querySelector('.composer .reply-quote')", "Reply on a To check row quoted nothing in the composer");
+await evaluate("document.querySelector('.composer .reply-quote button').click()");
+await until("!document.querySelector('.composer .reply-quote')", "× did not remove the quote of a To check row");
+if ((await rows()).length !== 2) await fail("Reply on a To check row changed the list");
 await shot("pills-check-open", ".composer-send");
 await click(".pill[data-kind=check]");
 await until("!document.querySelector('.reservoir')", "a tap on the open pill did not close its list");
@@ -2269,7 +2272,7 @@ if (told.next !== "Landed: on main; the last deploy does not have it yet.") awai
 await until("[...document.querySelectorAll('.task-sheet .scroll > .task-section > .task-heading')].some((node) => node.textContent === 'To check · 1 open')", "#2's item is not open under To check, outside the folds", 60);
 const offers = await evaluate("[...document.querySelectorAll('.task-sheet .scroll > .task-section .check-item .check-act')].map((node) => node.title).join()");
 if (await count(".task-sheet .progress, .task-sheet .progress-now, .task-sheet .progress-steps")) await fail("a finished task still shows the progress view, its steps or a now line");
-if (offers !== "Try it on a preview,Fail: tell the manager,Not checking: close it without a verdict,Works: close this check") await fail(`#2's item offers ${offers}`);
+if (offers !== "Try it on a preview,Fail: close it, then tell the manager,Not checking: close it without a verdict,Works: close this check") await fail(`#2's item offers ${offers}`);
 await evaluate("document.querySelector('.timeline > .fold-head').click()");
 const history = await text(".timeline-what");
 if ((await text(".timeline > .fold-head")).join() !== "History" || !history.includes("Landed") || history.some((line) => /Verified|without verification/.test(line))) await fail(`the history reads ${history}`);
@@ -2464,21 +2467,27 @@ if (sentText !== longPaste) await fail(`the attached file holds ${JSON.stringify
 if (await count(".composer .chips li")) await fail("the sent pasted text stayed in the composer");
 
 
-// The first item's Fail puts "#<task> To check <id> failed: " in the manager's composer, closes the
-// sheet and leaves the item open: the owner writes the reply, the manager starts the fix.
+// Fail on #7's item closes it as failed at once, closes the sheet and quotes the item in the
+// manager's composer (`> check <id>`): the owner's words there are the item's note, and the manager
+// starts the fix from them.
 const firstItem = "document.querySelector('.check-list .check-item')";
-async function failTellsManager(back) {
-  const failButton = `${firstItem}.querySelector('.check-acts .check-act[data-tone="danger"]')`;
+async function failClosesAndQuotes(back) {
+  const failButton = "[...document.querySelectorAll('.check-list .check-item')].find((node) => node.querySelector('.task-chip').textContent.trim() === '#7').querySelector('.check-acts .check-act[data-tone=\"danger\"]')";
   await evaluate(`${failButton}.click()`);
-  await until("!document.querySelector('dialog.task-sheet[open]') && /^#\\d+ To check c\\d+ failed: $/.test(document.querySelector('.composer-field').value)", "Fail did not put the item in the manager's composer");
+  await until("!document.querySelector('dialog.task-sheet[open]') && !!document.querySelector('.composer .reply-quote')", "Fail did not close the sheet and quote the item in the manager's composer");
   if (await evaluate("document.activeElement !== document.querySelector('.composer-field')")) await fail("Fail did not focus the composer");
-  await typeInto(".composer-field", "");
+  const failedState = await evaluate(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.items.find((item) => item.task === 7)?.state)`);
+  if (failedState !== "failed") await fail(`Fail left #7's item ${failedState}`);
+  // ^ The words are the note: the host stores them on the failed item and the manager gets them.
+  await typeInto(".composer-field", "the text is cut off");
+  await click(".composer-send");
+  await until(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.items.find((item) => item.task === 7)?.note === 'the text is cut off')`, "the reply to the failed item was not kept as its note", 300);
   await go(back);
-  await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 3", "the item did not stay open after Fail");
+  await until("document.querySelectorAll('dialog.task-sheet[open] .check-item').length === 2", "the failed item stayed in the list after Fail");
 }
 
-// --- To check: the reservoir's row opens the list; Fail needs a note and starts a task that
-// fixes it; Pass in a To check row changes its bubble in place; Skip closes the last without a verdict.
+// --- To check: the reservoir's row opens the list; Fail closes the item and quotes it for the
+// owner's note; Pass in a To check row changes its bubble in place; Skip closes the last without a verdict.
 await go(chat);
 await until("!!document.querySelector('.pill')", "the chat did not come back for To check");
 await openReservoir("check");
@@ -2521,7 +2530,6 @@ if (!wideRoom.every(([gap, top, right]) => gap >= 8 && Math.abs(top) <= 12 && Ma
 await shot("to-check", ".composer-send");
 await viewImages("to-check", ".check-list .check-item:first-child .check-capture", 1, true);
 for (const href of await evaluate("[...document.querySelectorAll('.check-list .check-capture[data-video]')].map((link) => link.dataset.download)")) await savedCopy("the To check video", href);
-await failTellsManager(`#/p/${project}/checks`);
 await closeSheet("the wide To check list", chat);
 await resize([390, 844, 2]);
 await oneMotion("To check opened again on a phone", () => go(`#/p/${project}/checks`));
@@ -2587,12 +2595,7 @@ await viewImages("to-check", ".check-list .check-item:first-child .check-capture
 await evaluate(`${firstItem}.querySelector('.check-act[title="Try it on a preview"]').click()`);
 await until(`!!${firstItem}.querySelector('a.check-act[href^="https://host.example.ts.net:"]')`, "Try did not become a preview link", 300);
 await shot("to-check-try", ".composer-send");
-await failTellsManager(`#/p/${project}/checks`);
-// ^ The manager starts the fix: here the same route the CLI takes (`wsx task check fail`), for #7's item.
-await evaluate(`(async () => { const post = (path, json) => fetch(new URL(path, document.baseURI), { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify(json) });
-  const list = await (await fetch(new URL('api/tasks/${project}/checks', document.baseURI), { credentials: 'same-origin' })).json();
-  const failed = await post('api/tasks/${project}/checks/' + list.open.find((item) => item.task === 7).id + '/fail', { note: 'the text is cut off' });
-  if (failed.status !== 200) throw new Error('fail ' + failed.status); })()`);
+await failClosesAndQuotes(`#/p/${project}/checks`);
 await closeSheet("the To check list after a fail", chat);
 // ^ Each To check item is also a bubble in the chat at the time it was added: its words, its
 // capture (the image viewer opens it) and Try, Fail, Skip and Pass; a decided one shows its result
@@ -2605,13 +2608,13 @@ const showEarlier = async () => { for (let n = 0; n < 10 && (await count(".log-e
 await showEarlier();
 await until(`${checkBubbles}.length >= 3`, "the chat has no To check bubbles", 60);
 const bubbleOf = (task) => `${checkBubbles}.find((node) => node.querySelector('.check-task .task-chip')?.textContent.trim() === '#${task}')`;
-await until(`(${bubbleOf(8)}?.querySelector('.check-capture img')?.naturalWidth ?? 0) > 0 && /fixes it$/.test(${bubbleOf(7)}?.querySelector('.check-state')?.textContent ?? '')`, "the To check bubbles did not load their capture and result", 100);
+await until(`(${bubbleOf(8)}?.querySelector('.check-capture img')?.naturalWidth ?? 0) > 0 && /^Failed: the text is cut off$/.test(${bubbleOf(7)}?.querySelector('.check-state')?.textContent ?? '')`, "the To check bubbles did not load their capture and result", 100);
 const inChat = await evaluate(`(() => { const open = ${bubbleOf(8)}, failed = ${bubbleOf(7)};
   return { tag: open?.querySelector('.bubble-tag')?.textContent, author: open?.querySelector('.bubble-author')?.textContent, image: open?.querySelector('.check-capture img')?.naturalWidth ?? 0,
     acts: [...(open?.querySelectorAll('.check-acts .check-act') ?? [])].map((node) => node.title), failed: failed?.querySelector('.check-state')?.textContent ?? '',
     failedActs: failed?.querySelectorAll('.check-acts').length ?? -1, unread: open?.hasAttribute('data-in') }; })()`);
-if (inChat.tag !== "To check" || inChat.author !== "Atlas" || inChat.image !== 480 || !["Fail: tell the manager", "Not checking: close it without a verdict", "Works: close this check"].every((act) => inChat.acts.includes(act))
-  || !/^Failed: .* fixes it$/.test(inChat.failed) || inChat.failedActs !== 0 || !inChat.unread) await fail(`the To check bubbles read ${JSON.stringify(inChat)}`);
+if (inChat.tag !== "To check" || inChat.author !== "Atlas" || inChat.image !== 480 || !["Fail: close it, then tell the manager", "Not checking: close it without a verdict", "Works: close this check"].every((act) => inChat.acts.includes(act))
+  || inChat.failed !== "Failed: the text is cut off" || inChat.failedActs !== 0 || !inChat.unread) await fail(`the To check bubbles read ${JSON.stringify(inChat)}`);
 await evaluate(`${bubbleOf(8)}.scrollIntoView({ block: 'center' })`);
 await pause(300);
 await shot("to-check-bubble", ".composer-send");
@@ -2657,7 +2660,6 @@ await go(`#/p/${project}/checks`);
 await until("(document.querySelector('dialog.task-sheet .empty')?.textContent ?? '') === 'Nothing to check.'", "the skipped item stayed in the list", 60);
 await shot("to-check-done");
 await closeSheet("the To check list", chat);
-await until(`${statusLines}.some((node) => /#7 failed a check; #\\d+ fixes it/.test(node.textContent))`, "the chat does not say which task fixes the failed check", 60);
 await until("!document.querySelector('.pill[data-kind=check]')", "the pills still count items to check", 60);
 // ^ With #4 and the fix task landed (a pending approval denied) only Running is left: the one
 // pill, and its list's first row whole at the reservoir's top.
@@ -4062,7 +4064,7 @@ await closeSheet("the page", `#/p/${plansArg}`);
   fs.rmSync(path.join(plansCheckout, ".env"));
   await go(`#/p/${plansArg}`);
 }
-console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass in a bubble that stays in place, Skip, the fix task's line), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Roles (the ⋯ contact with its unread dot, its chat at #/p/<project>/r/<role> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
+console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail closing the item and its reply kept as the note, Pass in a bubble that stays in place, Skip), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Roles (the ⋯ contact with its unread dot, its chat at #/p/<project>/r/<role> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await linter.finish(fail);
 await cleanup();
 process.exit(0);

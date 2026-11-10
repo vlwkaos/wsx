@@ -83,7 +83,8 @@ pub(super) fn instructions(
          {review}When a worker leaves for a \
          person what a command, a test or a capture could prove, tell that worker to prove \
          it. What only a person can check goes to the To check list (the ledger's \
-         `to_check`); never skip or fail items. Pass one with `wsx task check pass <id> \
+         `to_check`); never skip or fail items. A message that begins `To check c3 failed:` is the \
+         owner's note on an item they failed with the button: start or add the fix. Pass one with `wsx task check pass <id> \
          --owner-said <message>` only when the owner's message of this turn says the thing \
          looks good and the item is clearly about that same thing; when in doubt, leave it \
          open and ask. Name each item (no `--all`) and tell the owner in one line which items \
