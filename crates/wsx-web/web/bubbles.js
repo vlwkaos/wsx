@@ -6,7 +6,7 @@ import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { Quote } from "./reply.js";
 import { TaskChip, withChips } from "./task-words.js";
-import { CheckRow } from "./checks.js";
+import { checkQuote, CheckRow } from "./checks.js";
 import { can, sessionLink, shows } from "./store.js";
 
 // Bubbles of one author closer together than this read as one group.
@@ -177,6 +177,7 @@ export function CheckBubble({ project, row, names, fresh, onMention }) {
   return html`
     <article class="bubble check-bubble" data-side="in" data-speaker="manager" data-first="" data-last=""
       data-fresh=${fresh ? "" : null} data-at=${row.at} data-key=${row.key} data-in=""
+      data-quote=${checkQuote(row.item)} data-id=${row.item.id}
       aria-label=${`${names.manager}, to check, ${clock(row.at)}`}>
       <p class="bubble-author" aria-hidden="true">${names.manager}</p>
       <div class="bubble-box"><p class="bubble-tag">To check</p><${CheckRow} project=${project} item=${row.item} onMention=${onMention} tag="div" /></div>

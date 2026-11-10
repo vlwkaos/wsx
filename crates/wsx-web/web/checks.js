@@ -16,6 +16,15 @@ export async function decideCheck(project, id, decision) {
   return answer;
 }
 
+// The first line of an item's check as a chat quote of it, cut as the server cuts a message's
+// (wsx-core `quote_of`): what the item's bubble carries as `data-quote`, and what a reply to the
+// item shows over the composer. A reply of only "x" skips the item (`item_reply`, wsx-core).
+export function checkQuote(item) {
+  const line = item.check.split("\n").map((each) => each.trim()).find(Boolean) ?? "";
+  const chars = [...line];
+  return chars.length <= 120 ? line : `${chars.slice(0, 119).join("").trimEnd()}…`;
+}
+
 // Try: start the task's preview, or find the running one, then a link to open it. A link
 // the person opens keeps popup blockers out of the way. Only for projects with
 // `tasks.preview` (docs/tasks.md "Preview").
