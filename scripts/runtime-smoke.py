@@ -2292,7 +2292,7 @@ try:
         # ^ The search selects the routine as it is typed; Enter leaves the search, the next Enter opens the detail.
         remove_tui.send(b"/" + routine_name.encode() + b"\r\r")
         # ^ "Message:" is the detail's own line; the preview beside the tree has the other lines.
-        wait_for(lambda: f"{routine_name} ›" in remove_tui.text() and "Message:" in remove_tui.text(),
+        wait_for(lambda: f"› {routine_name}" in remove_tui.text() and "Message:" in remove_tui.text(),
                  lambda: f"Enter on {routine_name} opened no detail:\n{remove_tui.text()}", seconds=60)
     open_routine_detail("quiet")
     assert re.search(r"Last:\s+succeeded\s+\d{4}-\d\d-\d\d", remove_tui.text()), remove_tui.text()
