@@ -2215,10 +2215,16 @@ try:
     assert "(r)eply" in chat_screen and "(d)ismiss" in chat_screen, chat_screen
     # ^ Enter on the question item scrolls the chat to its reply (docs/tasks.md "TUI"): from the
     # top of the chat, where the item's own line is the only place the question shows.
+    # ^ The 200 keys scroll one line each: "Where is #3?" shows one line before the owner header
+    # above it, so the top is reached when that header row is on the screen too.
+    def chat_top_shown():
+        shown = [row.strip().lstrip("│ ") for row in remove_tui.text().splitlines() if row.strip()]
+        at_row = next((n for n, row in enumerate(shown) if row.startswith("Where is #3?")), None)
+        return at_row is not None and at_row > 0 and re.search(r"^You\s+\d\d:\d\d", shown[at_row - 1]) is not None
     def question_in_chat():
         return any(re.search(r"^Should I land #4\?", row.strip().lstrip("│ ")) for row in remove_tui.text().splitlines())
     remove_tui.send(b"k" * 200)
-    wait_for(lambda: "Where is #3?" in remove_tui.text(), "k did not scroll the TUI chat to its top", seconds=60)
+    wait_for(chat_top_shown, lambda: f"k did not scroll the TUI chat to its top:\n{remove_tui.text()}", seconds=60)
     assert not question_in_chat(), remove_tui.text()
     remove_tui.send(b"\r")
     wait_for(question_in_chat, "Enter on the question item did not show its reply in the chat", seconds=60)
@@ -2234,7 +2240,7 @@ try:
     # ^ The chat opens at its end; on a short screen the first rows are above it, and k scrolls
     # up one line at a time to the top.
     remove_tui.send(b"k" * 200)
-    wait_for(lambda: "Where is #3?" in remove_tui.text(), "k did not scroll the TUI chat to its top", seconds=60)
+    wait_for(chat_top_shown, lambda: f"k did not scroll the TUI chat to its top:\n{remove_tui.text()}", seconds=60)
     rows_in_order([r"^You\s+\d\d:\d\d", r"^Where is #3\?", r"^#3 done$", r"^Atlas$", r"^#3 is on main\.$",
                    r"^Atlas\s+Recap\s+\d\d:\d\d", r"^Quiet day: one landing\.", r"^elsewhere\s+\d\d:\d\d",
                    r"^Hello from elsewhere\."])
