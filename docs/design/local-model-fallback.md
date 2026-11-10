@@ -314,7 +314,7 @@ Superseded for commands by the capability rule (Built note below 5.7): the colum
 | Write files | none | its working copy, its task folder, `TMPDIR`, `/dev/null`, `/dev/tty*`. Nothing else, home included | none: the notes grow only through `wsx task note`, which the host runs | same |
 | Read files | none; the host puts the text in the prompt | all except the secret list | same | same |
 | Run commands | none | `bash`, bounded by the profile; `process-exec` of `sudo`, `su`, `osascript`, `launchctl`, `open` denied | `wsx task` through the broker, and read-only shell | same |
-| Network | none | loopback only (the model server) and the broker's Unix socket. The wsxd socket is denied. Builds and tests run in the host's checks (`wsx task check-run`), not in the agent | same | same |
+| Network | none | loopback only (the model server) and the broker's Unix socket, and a remote provider through the egress proxy that names its host and port alone (task 368, `egress.rs`, docs/tasks.md "Permissions"). The wsxd socket is denied. Builds and tests run in the host's checks (`wsx task check-run`), not in the agent | same | same |
 | Git | none | commit in its own copy; push and fetch fail (no network); the default branch ref and the main repo's `hooks` and `config` stay denied (as today) | none; it cannot commit on main (the "after the owner's yes" path stays for Claude only) | none |
 | `wsx task` commands (class per subcommand, 5.4) | none | `read`, `notify`, `result`, `check-run` | `read` | `read`, plus `note` for the matching role. `steer`, `change` and `outward` stay with a `trusted` manager (Claude) |
 | Secrets | none; prompt carries no credentials | read-denied: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, `~/.netrc`, `~/.npmrc`, `~/.claude`, the wsx config folders, Keychains, and Pi's `auth.json` (the agent runs with a per-launch `PI_CODING_AGENT_DIR` that holds `models.json` only); environment cleared to `KEPT_ENV`; `secret-guard` redacts results | same | same |
@@ -439,7 +439,7 @@ Commands wsx writes: `prompt` (`streamingBehavior: steer`), `set_model`, `abort`
 | P3 | Headless: 10 scenarios that would ask a user; corrupt or missing policy file | zero `extension_ui_request`; the run finishes; with a bad policy every call is denied |
 | P4 | RPC contract: replay the four wsx recordings' scenarios with the fixture provider | the same event kinds and fields as the recordings (`scripts/record-agent-streams.py pi` shape check) |
 | P5 | Size: `rg --files` and `wc -l` on the tree | at most 20 files, about 400 lines, no dependency added |
-| P6 | Provider calls only the `models.json` `baseUrl` | no other host contacted |
+| P6 | Provider calls only the `models.json` `baseUrl` | no other host contacted: built in wsx (task 368, section 23s of `test-task.py`): a strict worker and manager reach a stand-in provider through the proxy and are refused another host, a direct connection and a CONNECT to another target; the proxy port is closed when the agent ends |
 | W | In wsx: `test-task.py` pi section with `-e <lean>` and the fake provider | argv carries `-e`, and `--no-tools` for handoff; the policy file is outside the agent's writable paths |
 | F1-F10 | Section 5.6 | as listed |
 | E2E | `scripts/bench-tier.py` role runs through the lean build | pass bars of 3.5 |

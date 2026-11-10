@@ -6,11 +6,13 @@
 //! end another agent, the manager, wsxd or the owner's processes. An untrusted agent (Pi with
 //! any model, Claude on another endpoint) gets the strict profile of `wsx_core::task::policy`
 //! instead: the same denials plus writes only in its own folders, the network only to the
-//! loopback and its own provider, and no privilege tools. ref: docs/tasks.md "Permissions"
+//! loopback (its provider through the egress proxy of `egress.rs`) and no privilege tools.
+//! ref: docs/tasks.md "Permissions"
 // ^ Claude Code (https://code.claude.com/docs/en/sandboxing) and Codex
 // (https://developers.openai.com/codex/security) confine commands the same way on macOS:
 // `sandbox-exec -p <profile>` with a generated Seatbelt profile.
 
+use super::egress::{Egress, Target};
 use anyhow::{Context, Result};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -26,17 +28,17 @@ const STRICT_SECRETS: [&str; 4] = [".config/gh", ".netrc", ".npmrc", ".claude"];
 /// What a strict agent writes outside its folders: the null device, terminals and PTYs.
 const DEV_WRITE: &str = r"^/dev/(null|zero|tty|ttys[0-9]+|ptmx|fd/[0-9]+)$";
 
-/// Pi's built-in providers: the endpoint each calls and the variable that holds its key.
-const PI_PROVIDERS: [(&str, &str, &str); 2] = [
+/// Pi's built-in providers: the endpoint each calls, the variable that holds its key, and
+/// the provider's other endpoints Pi's sign-in calls (a Pi sign-in refreshes its token there).
+const PI_PROVIDERS: [(&str, &str, &str, &[&str]); 2] = [
     (
         "anthropic",
         "https://api.anthropic.com",
         "ANTHROPIC_API_KEY",
+        &["https://platform.claude.com"],
     ),
-    ("openai", "https://api.openai.com", "OPENAI_API_KEY"),
+    ("openai", "https://api.openai.com", "OPENAI_API_KEY", &[]),
 ];
-/// The macOS resolver's socket: a strict agent that reaches a remote provider looks its name up.
-const RESOLVER_SOCKET: &str = "/private/var/run/mDNSResponder";
 
 /// What one role may not touch. The last matching Seatbelt rule wins, so `own` (allowed)
 /// comes after the state folder (denied).
@@ -58,9 +60,10 @@ pub struct Boundary {
     adapter_home: Option<(PathBuf, &'static str)>,
     /// The host's socket, the one Unix socket a strict agent may reach.
     broker: Vec<PathBuf>,
-    /// The port of the agent's own provider when it is not on this machine: the one place
-    /// besides the loopback a strict agent connects to (Seatbelt cannot name a remote host).
-    remote: Vec<u16>,
+    /// The hosts and ports of the agent's own provider when it is not on this machine: the
+    /// one place besides the loopback a strict agent reaches, through the egress proxy
+    /// (Seatbelt cannot name a remote host).
+    remote: Vec<(String, u16)>,
     /// The one `*_API_KEY` variable the agent's provider needs.
     provider_key: Option<&'static str>,
     /// A built-in Pi provider signs in with the adapter's credential file: it stays readable.
@@ -183,7 +186,7 @@ impl Boundary {
         self.provider_key
     }
 
-    /// The endpoint of the agent's provider, which a strict profile lets it reach besides the
+    /// The endpoint of the agent's provider, which a strict agent reaches besides the
     /// loopback: a Pi model `provider/id`'s `baseUrl` in the adapter's `models.json` or the
     /// built-in provider's own, else `ANTHROPIC_BASE_URL` for another adapter. A provider
     /// wsx cannot name reaches nothing. ref: docs/design/local-model-fallback.md 5.3 (P6)
@@ -196,7 +199,7 @@ impl Boundary {
                 .as_ref()
                 .and_then(|(dir, _)| models_json_url(dir, provider));
             (
-                configured.or(builtin.map(|(_, url, _)| url.to_string())),
+                configured.or(builtin.map(|(_, url, ..)| url.to_string())),
                 builtin,
             )
         } else {
@@ -206,10 +209,28 @@ impl Boundary {
                 None,
             )
         };
-        self.remote = url.as_deref().and_then(remote_port).into_iter().collect();
-        self.provider_key = builtin.map(|(_, _, key)| *key);
+        self.remote = url.as_deref().and_then(remote_host).into_iter().collect();
+        if !self.remote.is_empty() {
+            let extra = builtin.into_iter().flat_map(|(.., extra)| extra.iter());
+            self.remote.extend(extra.filter_map(|url| remote_host(url)));
+        }
+        self.provider_key = builtin.map(|(_, _, key, _)| *key);
         self.credential_open = builtin.is_some() && !self.remote.is_empty();
         self
+    }
+
+    /// The proxy a strict agent reaches its remote provider through, started for one agent
+    /// process: none for a trusted agent or a provider on this machine.
+    pub fn egress(&self) -> Result<Option<Egress>> {
+        if !self.policy.strict() || self.remote.is_empty() {
+            return Ok(None);
+        }
+        let targets = self
+            .remote
+            .iter()
+            .map(|(host, port)| Target::new(host, *port));
+        let egress = Egress::start(targets.collect()).context("cannot start the egress proxy")?;
+        Ok(Some(egress))
     }
 
     /// The host's broker socket, reachable from a strict profile.
@@ -293,19 +314,8 @@ impl Boundary {
             );
             rule("allow network-inbound", "(local ip \"localhost:*\")".into());
             rule("allow network-bind", "(local ip \"localhost:*\")".into());
-            // ^ `sandbox-exec` takes only `*` or `localhost` as the host of an address.
-            for port in &self.remote {
-                rule(
-                    "allow network-outbound",
-                    format!("(remote ip \"*:{port}\")"),
-                );
-            }
-            if !self.remote.is_empty() {
-                rule(
-                    "allow network-outbound",
-                    unix_socket(Path::new(RESOLVER_SOCKET)),
-                );
-            }
+            // ^ `sandbox-exec` takes only `*` or `localhost` as the host of an address, so a
+            // remote provider is reached through the egress proxy, which listens on the loopback.
             for broker in &self.broker {
                 rule("allow network-outbound", unix_socket(broker));
             }
@@ -401,8 +411,9 @@ fn models_json_url(dir: &Path, provider: &str) -> Option<String> {
     url.as_str().map(str::to_string)
 }
 
-/// The port a base URL names, when its host is not this machine's loopback.
-fn remote_port(url: &str) -> Option<u16> {
+/// The host (lowercase, no brackets) and port a base URL names, when the host is not this
+/// machine's loopback.
+fn remote_host(url: &str) -> Option<(String, u16)> {
     let (scheme, rest) = url.split_once("://").unwrap_or(("https", url));
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let authority = authority.rsplit('@').next().unwrap_or("");
@@ -419,7 +430,7 @@ fn remote_port(url: &str) -> Option<u16> {
     };
     let loopback =
         host.eq_ignore_ascii_case("localhost") || host == "::1" || host.starts_with("127.");
-    (!host.is_empty() && !loopback).then_some(port)
+    (!host.is_empty() && !loopback).then(|| (host.to_ascii_lowercase(), port))
 }
 
 fn regex(pattern: &str) -> String {

@@ -5,6 +5,7 @@
 
 use super::boundary::Boundary;
 use super::claude::ClaudeAgent;
+use super::egress::Egress;
 use super::pi::PiAgent;
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
@@ -497,6 +498,8 @@ pub(super) struct AgentProcess {
     /// `WSX_AGENT_TREE=<value>` as it stands in each tree process's environment.
     marker: Vec<u8>,
     program: &'static str,
+    /// A strict agent's route to its remote provider; it ends after the agent's tree.
+    _egress: Option<Egress>,
 }
 
 impl AgentProcess {
@@ -512,7 +515,13 @@ impl AgentProcess {
         // ^ The host's boundary confines the agent; the adapter only adds its own argv.
         let mut command = launch.boundary.command(program)?;
         command.args(args).env_clear();
+        let egress = launch.boundary.egress()?;
+        let strict = launch.boundary.policy().strict();
         for name in kept {
+            // ^ A strict agent's proxy is its egress proxy (set below); the host's own is not reachable.
+            if strict && name.to_ascii_lowercase().ends_with("_proxy") {
+                continue;
+            }
             // ^ An untrusted agent holds no model key but its own provider's: `env` would print them.
             if launch.boundary.policy().strict()
                 && name.ends_with("_API_KEY")
@@ -541,6 +550,15 @@ impl AgentProcess {
         for (name, value) in env {
             command.env(name, value);
         }
+        if let Some(egress) = &egress {
+            let url = egress.url();
+            for name in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] {
+                command.env(name, &url);
+            }
+            for name in ["NO_PROXY", "no_proxy"] {
+                command.env(name, "127.0.0.1,localhost,::1");
+            }
+        }
         let tree = format!(
             "{}-{}",
             std::process::id(),
@@ -561,6 +579,7 @@ impl AgentProcess {
             input: None,
             marker: format!("{TREE_ENV}={tree}").into_bytes(),
             program,
+            _egress: egress,
         };
         let mut stdin = process
             .child
