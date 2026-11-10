@@ -3888,8 +3888,10 @@ await closeSheet("the page", `#/p/${plansArg}`);
   // for what a studio writes (jpg thumbnails), the server reads their bytes.
   const drawn = [];
   for (const color of ["#fac83c", "#468cdc", "#e0605b", "#5fb878"]) {
-    const url = await evaluate(`(() => { const canvas = Object.assign(document.createElement('canvas'), { width: 96, height: 64 }); const pen = canvas.getContext('2d');
-      pen.fillStyle = '#282c34'; pen.fillRect(0, 0, 96, 64); pen.fillStyle = '${color}'; pen.fillRect(8, 8, 56, 32); return canvas.toDataURL('image/png'); })()`);
+    // ^ Full-bleed pictures (a gradient and a disc), 4:3: a gap between a picture and its tile shows as the bubble's colour, not as part of the picture.
+    const url = await evaluate(`(() => { const canvas = Object.assign(document.createElement('canvas'), { width: 320, height: 240 }); const pen = canvas.getContext('2d');
+      const fill = pen.createLinearGradient(0, 0, 320, 240); fill.addColorStop(0, '${color}'); fill.addColorStop(1, '#282c34'); pen.fillStyle = fill; pen.fillRect(0, 0, 320, 240);
+      pen.fillStyle = '#ffffff'; pen.beginPath(); pen.arc(160, 120, 50, 0, 7); pen.fill(); return canvas.toDataURL('image/png'); })()`);
     drawn.push(Buffer.from(url.split(",")[1], "base64"));
   }
   const names = ["thumbs/trend.jpg", "thumbs/b.jpg", "thumbs/c.jpg", "clip.jpg"];
@@ -3930,6 +3932,14 @@ await closeSheet("the page", `#/p/${plansArg}`);
       const [single, ...tiles] = box(); return { single: [Math.round(single.width), Math.round(single.height)], squares: tiles.every((tile) => Math.abs(tile.width - tile.height) <= 1),
         columns: new Set(tiles.map((tile) => Math.round(tile.left))).size }; })()`);
     if (looks.single[0] < looks.single[1] || looks.single[0] < 90 || !looks.squares || looks.columns !== 2) await fail(`the tiles at ${size[0]} px read ${JSON.stringify(looks)}`);
+    // ^ A chat app fills the tile: every picture or poster is its tile's box (within 1 px); in a grid the tile is square and the picture covers it; one picture keeps its own aspect ratio, within the bubble.
+    await until(`[...document.querySelectorAll('${bubbleOf(9500000)} .attachments img')].every((image) => image.complete && image.naturalWidth)`, "the single picture did not load");
+    const filled = async (id) => evaluate(`[...document.querySelectorAll('${bubbleOf(id)} .attachments li')].map((tile) => { const media = tile.querySelector('img, .check-frame'), a = tile.getBoundingClientRect(), b = media.getBoundingClientRect();
+      return { gap: Math.max(Math.abs(a.width - b.width), Math.abs(a.height - b.height)), fit: media.tagName === 'IMG' ? getComputedStyle(media).objectFit : 'cover', ratio: b.width / b.height,
+        natural: media.naturalWidth ? media.naturalWidth / media.naturalHeight : 0, inside: b.width <= tile.closest('.bubble').getBoundingClientRect().width }; })`);
+    const [alone, ...grids] = [await filled(9500000), await filled(9500001), await filled(9500002)];
+    if (alone.length !== 1 || alone[0].gap > 1 || !alone[0].inside || Math.abs(alone[0].ratio - alone[0].natural) > 0.02
+      || grids.flat().some((tile) => tile.gap > 1 || tile.fit !== "cover" || Math.abs(tile.ratio - 1) > 0.02)) await fail(`the tiles at ${size[0]} px do not fill: ${JSON.stringify([alone, ...grids])}`);
     await shot(`message-media-1${wide ? "-wide" : ""}`);
     await evaluate(`document.querySelector('${bubbleOf(9500001)}').scrollIntoView({ block: 'center' })`);
     await shot(`message-media-3${wide ? "-wide" : ""}`);
