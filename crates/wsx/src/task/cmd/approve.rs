@@ -72,8 +72,8 @@ pub(crate) fn ask_covering(
 }
 
 /// The ids of the waiting requests that `new` covers: the same task for a discard, the same
-/// path for a project add; for a push, deploy or release, a commit that `new`'s commit contains (no commit: the default
-/// branch tip). A push with a lease covers a push without one, not the other way round.
+/// path for a project add; for a push, deploy or release, a commit that `new`'s commit
+/// contains (no commit: the default branch tip). A push with a lease covers a push without one, not the other way round.
 pub(crate) fn covered_requests(
     main: &Path,
     project_id: &str,
