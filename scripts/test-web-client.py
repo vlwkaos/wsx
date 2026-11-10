@@ -3790,7 +3790,7 @@ def task_journey(args):
         # ^ The browser reaches the owner's site through `Relay`, so its public origin is the relay's.
         public = {name: 'http://127.0.0.1:%d' % ports['relay' if name == 'owner' else name] for name in ('owner', 'viewer', 'plain', 'admin', 'scoped')}
         grants = {
-            'owner': ('"all"', '"task_view", "task_act", "push", "media_upload", "media_download"'),
+            'owner': ('"all"', '"task_view", "task_act", "push", "media_upload", "media_download", "files_read"'),
             'viewer': (json.dumps([str(project)]), '"task_view", "push"'),
             'plain': (json.dumps([str(other)]), '"chat_send", "push"'),
             # ^ Adds and removes projects (docs/web-client.md "Projects"): every project and a terminal that takes input.
@@ -3798,7 +3798,8 @@ def task_journey(args):
             # ^ Reads panels, but only of `other`, which declares none (docs/panels.md "Machine panels").
             'scoped': (json.dumps([str(other)]), '"task_view", "terminal_view", "terminal_input", "push"'),
         }
-        panels = {'admin': '"chat", "terminal"', 'scoped': '"chat", "terminal"'}
+        # ^ The owner reads files too: a `files/<path>` link in a manager message opens that file's page.
+        panels = {'owner': '"chat", "files"', 'admin': '"chat", "terminal"', 'scoped': '"chat", "terminal"'}
         files, sites, servers = {}, {}, {}
         for name, (projects_value, capabilities) in grants.items():
             files[name] = work / (name + '.toml')
