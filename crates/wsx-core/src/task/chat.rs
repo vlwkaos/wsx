@@ -208,7 +208,7 @@ pub fn quoted_message(log: &[ManagerEntry], to: &[u64]) -> Option<u64> {
         .collect();
     if let Some(&newest) = owners.last() {
         let apart = owners.len() > 1 || log[newest + 1..].iter().any(in_chat);
-        return apart.then(|| log[newest].id()).flatten();
+        return log[newest].id().filter(|_| apart);
     }
     let tasks: Vec<u64> = log
         .iter()
@@ -232,7 +232,7 @@ pub fn quoted_message(log: &[ManagerEntry], to: &[u64]) -> Option<u64> {
     let between = log[promise + 1..]
         .iter()
         .any(|entry| in_chat(entry) && !mine(entry));
-    between.then(|| log[promise].id()).flatten()
+    log[promise].id().filter(|_| between)
 }
 
 /// The task a line of an events message reports: the number after its leading `#`.
