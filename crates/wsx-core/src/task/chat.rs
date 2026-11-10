@@ -175,6 +175,26 @@ fn in_chat(entry: &ManagerEntry) -> bool {
     )
 }
 
+/// The owner message a manager's reply to the turn `to` quotes, or None when the reply sits
+/// directly under the one message it answers. `log` holds the entries up to now, the reply not
+/// yet. The one place that chooses which message a reply answers and whether it needs the quote:
+/// a quote helps when the turn held more than one owner message (the newest is the answered
+/// one) or when a chat item was logged after that message (docs/tasks.md "A quote").
+pub fn quoted_owner_message(log: &[ManagerEntry], to: &[u64]) -> Option<u64> {
+    let owners: Vec<usize> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| {
+            matches!(&entry.event,
+                ManagerEvent::Message { id, from: Author::Owner, .. } if to.contains(id))
+        })
+        .map(|(at, _)| at)
+        .collect();
+    let newest = *owners.last()?;
+    let apart = owners.len() > 1 || log[newest + 1..].iter().any(in_chat);
+    apart.then(|| log[newest].id()).flatten()
+}
+
 /// The entries of `window` in `log` (`read_chat`), and how many older ones were left out.
 /// `names`: what the rows show, which a find matches.
 pub fn chat_window<'a>(

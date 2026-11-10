@@ -2855,8 +2855,9 @@ impl Manager {
     }
 
     /// A reply that opens with `> message <id>` quotes that message. One that opens with no
-    /// quote and says something quotes the newest owner message of its turn (`to`); a turn of
-    /// only events has none; an owner's own message (`to` empty) only its explicit one. ref: `resolve_quote`, docs/tasks.md "A quote"
+    /// quote and says something quotes the owner message it answers when it will not sit under
+    /// it (`chat::quoted_owner_message`); an owner's own message (`to` empty) only its explicit
+    /// quote. ref: `resolve_quote`, docs/tasks.md "A quote"
     fn quoted(&self, text: String, to: &[u64]) -> (String, Option<u64>) {
         let explicit = text.trim_start().starts_with(QUOTE_REF);
         if !explicit && (to.is_empty() || says_nothing(&text)) {
@@ -2880,14 +2881,7 @@ impl Manager {
         };
         let text = match explicit {
             true => text,
-            false => match log.iter().rev().find_map(|entry| match &entry.event {
-                ManagerEvent::Message {
-                    id,
-                    from: Author::Owner,
-                    ..
-                } if to.contains(id) => Some(*id),
-                _ => None,
-            }) {
+            false => match chat::quoted_owner_message(&log, to) {
                 Some(id) => format!("{QUOTE_REF}{id}\n\n{text}"),
                 None => return (text, None),
             },
