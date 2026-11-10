@@ -4455,10 +4455,11 @@ merge_seconds = 3
         assert len(js('task', 'list', '-p', 'demo', '--all')['tasks']) == tasks_before, js('task', 'list', '-p', 'demo', '--all')
         assert manager_turns() == turns, (manager_turns(), turns)
         rows = manager_chat()['rows']
-        sent = [r for r in rows if r.get('author') == 'owner' and r['kind'] == 'message' and r.get('quoted') == first['check']]
-        assert [r['text'] for r in sent] == ['x'], rows
+        # ^ The fake worker's items all say "open the file": the two replies and the two lines read the same.
+        sent = [r['text'] for r in rows if r.get('author') == 'owner' and r['kind'] == 'message' and r.get('quoted') == first['check']]
+        assert sent == ['x', 'ㅌ'], rows
         lines = [r['text'] for r in rows if r['kind'] == 'quiet' and r['text'].startswith('Skipped: ')]
-        assert lines.count('Skipped: ' + first['check']) == 1 and lines.count('Skipped: ' + second['check']) == 1, lines
+        assert lines == ['Skipped: ' + first['check'], 'Skipped: ' + second['check']], lines
         # ^ An item that is closed already is said so in the same line, with no error.
         reply_to(first, 'X')
         wait(lambda: any(r['text'] == 'Already skipped: ' + first['check'] for r in manager_chat()['rows']), 'the closed item line')
