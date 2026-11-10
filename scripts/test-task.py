@@ -3356,7 +3356,8 @@ def part_worker(created=None):
              tunnel(lan, other_port), tunnel('127.0.0.1', port), tunnel(lan, provider_port, 'plain')]
     said = reply_to(js('task', 'say', '\n'.join('RUN ' + line for line in lines))['id'])['text']
     runs = ['ran: ' + part for part in said.split('ran: ')[1:]]
-    answers = [run.split(' -> 0 ', 1)[1].strip() for run in runs if ' -> 0 ' in run]
+    # ^ The first line of each answer: the macOS python3 shim may add a stderr line about its cache.
+    answers = [run.split(' -> 0 ', 1)[1].splitlines()[0].strip() for run in runs if ' -> 0 ' in run]
     assert len(runs) == len(lines) and answers[0].startswith('http://127.0.0.1:') and answers[1:] == ['200 pong', '403', 'refused', '403', '403', '403'], said
     assert 'other' not in reached, reached
     assert any(t.get('launch') and t.get('model') == 'remote/pi-model' and not t.get('worker') for t in traces()), 'no manager launch on the remote provider'
