@@ -1,7 +1,7 @@
 // The manager chat as messages: one bubble per owner message and manager reply, each with its
 // author and time, task changes as muted lines, one each, and the manager's replies to them as
 // lines under its name (docs/web-client-tasks.md "Project screen").
-import { clock, firstSentence, html, Icon, useState } from "./lib.js";
+import { clock, firstSentence, html, Icon, useLayoutEffect, useState } from "./lib.js";
 import { Markdown } from "./markdown.js";
 import { Attachments } from "./chat.js";
 import { Quote } from "./reply.js";
@@ -92,9 +92,12 @@ function folded(rows) {
 
 // A folded run: one tap shows its rows under it, rendered by `render`, another folds them.
 // `all`: open while a find runs, so its rows are searched (find.js).
-export function Fold({ row, render, all = false }) {
+export function Fold({ row, render, all = false, want = null }) {
   const [opened, setOpen] = useState(false);
-  const open = opened || all;
+  // ^ A line that was asked for (a routine's message) opens the fold, and it stays open.
+  const holds = want != null && row.rows.some((each) => each.id === want);
+  useLayoutEffect(() => { if (holds) setOpen(true); }, [holds]);
+  const open = opened || all || holds;
   return html`
     <div class="fold" data-key=${row.key} data-at=${row.at}>
       <button class="fold-toggle" type="button" aria-expanded=${open} onClick=${() => setOpen(!open)}>
@@ -193,7 +196,7 @@ export const Typing = ({ name }) => html`
 // "Approved land #3").
 export function StatusLine({ project, row, fresh }) {
   const rest = leading(row);
-  return html`<p class="status-line" data-fresh=${fresh ? "" : null}>${rest != null ? html`<${TaskChip} project=${project} id=${row.task} />${rest}` : row.text}</p>`;
+  return html`<p class="status-line" data-id=${row.id ?? null} data-fresh=${fresh ? "" : null}>${rest != null ? html`<${TaskChip} project=${project} id=${row.task} />${rest}` : row.text}</p>`;
 }
 
 // The manager's reply to events: a muted line under its name, in full when it is one sentence,

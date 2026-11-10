@@ -424,3 +424,15 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         .chain(list("recent").iter().map(|task| row(task, Section::Recent)))
         .collect()
 }
+
+/// The events message that told of `view`'s last run's end, for the routine detail's Enter
+/// (`chat::run_messages`); none for a run that made no message or a project without a manager.
+pub fn run_message(
+    project: &str,
+    main: &std::path::Path,
+    view: &wsx_core::routine::RoutineView,
+) -> Option<u64> {
+    let run = view.latest_run.as_ref()?;
+    let dir = store::ManagerDir::existing(&store::project_id(project, main)).ok()??;
+    wsx_core::task::chat::run_messages(&dir, &[run]).pop()?
+}

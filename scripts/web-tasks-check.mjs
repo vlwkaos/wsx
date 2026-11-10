@@ -293,8 +293,8 @@ async function viewImages(name, links, many = 2, saves = false) {
   else await press([x, y]);
   await closed("a tap beside the image");
 }
-// The list of one pill: "running", "needs" or "check" (the pills in the composer row).
-const LISTS = { running: "Running", needs: "Needs you", check: "To check" };
+// The list of one pill: "running", "needs", "check" or "routines" (the pills in the composer row).
+const LISTS = { running: "Running", needs: "Needs you", check: "To check", routines: "Routines" };
 async function openReservoir(kind = "needs") {
   // ^ A pill shows when its list has something: the task a manager creates comes after a moment.
   await until(`!!document.querySelector('.pill[data-kind=${kind}]')`, `there is no ${LISTS[kind]} pill`, 300);
@@ -860,14 +860,19 @@ await until(atEnd, "the chat did not go back to its end");
 // deploy facts here. Opening a list keeps the chat at its end.
 const pillWords = () => evaluate("[...document.querySelectorAll('.pill')].map((node) => node.getAttribute('aria-label')).join(' | ')");
 const pressed = () => evaluate("[...document.querySelectorAll('.pill[aria-pressed=true]')].map((node) => node.dataset.kind).join()");
-const expectPills = async (who) => { if ((await pillWords()) !== "1 running | 6 need you | 2 to check") await fail(`${who} read ${await pillWords()}`); };
+// ^ Routines is the fourth pill: nightly and idle are on (weekly is off), and its list is read after the chat.
+const PILLS = "1 running | 6 need you | 2 to check | 2 routines";
+const expectPills = async (who) => {
+  for (let attempt = 0; attempt < 100 && (await pillWords()) !== PILLS; attempt++) await pause(100);
+  if ((await pillWords()) !== PILLS) await fail(`${who} read ${await pillWords()}`);
+};
 await expectPills("the pills");
 const pillLook = await evaluate(`(() => { const row = document.querySelector('.composer-row').getBoundingClientRect(), send = document.querySelector('.composer-send').getBoundingClientRect();
   const attach = document.querySelector('.composer-row > .icon-button')?.getBoundingClientRect(), mid = (box) => (box.top + box.bottom) / 2;
   return [...document.querySelectorAll('.pill')].map((node) => { const box = node.getBoundingClientRect();
     return { kind: node.dataset.kind, count: node.querySelector('.pill-count').textContent.trim(), icon: !!node.querySelector('svg.icon'), label: getComputedStyle(node.querySelector('.pill-label')).display,
       pressed: node.getAttribute('aria-pressed'), between: box.left >= (attach?.right ?? row.left) - 1 && box.right <= send.left + 1, level: Math.abs(mid(box) - mid(send)) < 3, tall: box.height >= 24 && box.height <= 32, clear: box.top - document.querySelector('.composer-input').getBoundingClientRect().bottom >= 6 }; }); })()`);
-if (pillLook.map((pill) => `${pill.kind}:${pill.count}`).join() !== "running:1,needs:6,check:2" || pillLook.some((pill) => !pill.icon || pill.label !== "none" || pill.pressed !== "false" || !pill.between || !pill.level || !pill.tall || !pill.clear)) {
+if (pillLook.map((pill) => `${pill.kind}:${pill.count}`).join() !== "running:1,needs:6,check:2,routines:2" || pillLook.some((pill) => !pill.icon || pill.label !== "none" || pill.pressed !== "false" || !pill.between || !pill.level || !pill.tall || !pill.clear)) {
   await fail(`the pills are not an icon and a count between the attach button and Send on one row, small and clear of the field, at 390 px: ${JSON.stringify(pillLook)}`);
 }
 if (await count(".reservoir-list") || await count(".reservoir")) await fail("a list is open before a tap");
@@ -882,7 +887,7 @@ await shot("pills-rest", ".composer-send");
 const withCapabilities = (list) => inStore(`update({ site: { ...state.site, capabilities: ${JSON.stringify(list)} } })`);
 const capabilities = await inStore("return [...state.site.capabilities]");
 await withCapabilities(capabilities.filter((name) => name !== "task_act"));
-await until("!document.querySelector('.composer-field') && document.querySelectorAll('.pill').length === 3", "a device without task_act lost its pills");
+await until("!document.querySelector('.composer-field') && document.querySelectorAll('.pill').length === 4", "a device without task_act lost its pills");
 if (!(await evaluate("!!document.querySelector('.pills.pill-bar') && !document.querySelector('.composer-send') && !document.querySelector('.composer-row .pill')"))) await fail("the pills of a device without task_act are not in a bar of their own");
 await expectPills("the pills of a device without task_act");
 await openReservoir();
@@ -916,11 +921,11 @@ await runningIs("1 running", "the Running pill did not go back to one task");
 // ^ Nothing waits and nothing is left to check: only Running stays; with nothing, no pill at all.
 await inStore(`const ov = state.tasks[${project}]; update({ tasks: { ...state.tasks, [${project}]: { ...ov, needs: [], asks: [], to_check: 0, check_items: [] } } })`);
 await until("(document.querySelector('.pills')?.textContent ?? '').includes('1') && !document.querySelector('.pill[data-kind=needs]') && !document.querySelector('.pill[data-kind=check]')", "a pill with a count of 0 is still shown");
-if ((await pillWords()) !== "1 running") await fail(`with nothing to answer or check the pills read ${await pillWords()}`);
+if ((await pillWords()) !== "1 running | 2 routines") await fail(`with nothing to answer or check the pills read ${await pillWords()}`);
 await inStore(`const ov = state.tasks[${project}]; update({ tasks: { ...state.tasks, [${project}]: { ...ov, tasks: ov.tasks.filter((task) => task.stage !== 'working') } } })`);
-await until("!document.querySelector('.pill') && !document.querySelector('.pills')", "with all three counts at 0 a pill is still shown");
+await until("document.querySelectorAll('.pill').length === 1 && !!document.querySelector('.pill[data-kind=routines]')", "with the three counts at 0 a pill other than Routines is still shown");
 await restored();
-await until("document.querySelectorAll('.pill').length === 3", "the pills did not come back");
+await until("document.querySelectorAll('.pill').length === 4", "the pills did not come back");
 // Reduced motion: the count does not tick.
 await setMotion("reduce");
 await go("#/");
@@ -1009,13 +1014,13 @@ for (const [width, height, scale] of [[390, 844, 2], [1280, 800, 1]]) {
   await shot(`need-open-${width}`, ".composer-send");
   await closeSheet("a need's sheet", chat);
 }
-// ^ In the wide layout (900 px) the pills carry their words after the count; the field keeps a quarter of the row at least (200 of 680 px at 1280 px).
+// ^ In the wide layout (900 px) three pills carry their words after the count; with four the composer shows icon and count only, so the field keeps a quarter of the row at least (170 of 680 px at 1280 px).
 await resize([1280, 800, 1]);
-await until("document.querySelectorAll('.pill').length === 3", "the pills are not in the wide chat");
+await until("document.querySelectorAll('.pill').length === 4", "the pills are not in the wide chat");
 const wide = await evaluate(`(() => ({ labels: [...document.querySelectorAll('.pill')].map((node) => getComputedStyle(node.querySelector('.pill-label')).display === 'none' ? '' : node.querySelector('.pill-label').textContent.trim()).join('|'),
   names: [...document.querySelectorAll('.pill')].map((node) => node.getAttribute('aria-label')).join('|'),
   gap: document.querySelector('.composer-input').getBoundingClientRect().left - [...document.querySelectorAll('.pill')].at(-1).getBoundingClientRect().right, icon: parseFloat(getComputedStyle(document.querySelector('.pill .icon')).width), field: document.querySelector('.composer-input').getBoundingClientRect().width, row: document.querySelector('.composer-row').getBoundingClientRect().width }))()`);
-if (wide.labels !== "Running|Needs you|To check" || wide.names !== "1 running|6 need you|2 to check" || wide.field < wide.row / 4 || wide.gap < 8 || wide.icon > 16) await fail(`the wide pills read ${JSON.stringify(wide)}`);
+if (wide.labels !== "|||" || wide.names !== "1 running|6 need you|2 to check|2 routines" || wide.field < wide.row / 4 || wide.gap < 8 || wide.icon > 16) await fail(`the wide pills read ${JSON.stringify(wide)}`);
 await shot("pills-wide", ".composer-send");
 await resize([390, 844, 2]);
 await openReservoir();
@@ -1285,7 +1290,7 @@ if (!(await evaluate("window.answerLine.isConnected"))) await fail("a status lin
 await shot("reservoir-acted", ".composer-send");
 await closeReservoir();
 
-// --- The ⋯ menu: Sessions, Usage and Files (the site reads files); Overview and Routines are header buttons (Roles are checked below); the worktree list hides task sessions.
+// --- The ⋯ menu: Sessions, Usage and Files (the site reads files); Overview is a header button, Routines a pill (Roles are checked below); the worktree list hides task sessions.
 await click(".more-button");
 if ((await text(".more-menu a:not(.role-contact)")).join() !== "Sessions,Usage,Files") await fail(`the ⋯ menu offers ${await text(".more-menu a:not(.role-contact)")}`);
 await shot("more-menu", ".composer-send");
@@ -1414,76 +1419,152 @@ await shot("usage");
 await resize(usageSize);
 await closeSheet("the usage sheet", chat);
 
-// --- Routines: the header button's read-only list of the project's routines (docs/web-client-tasks.md
-// "Routines"): `nightly` is on and succeeded, `weekly` is off and found something (it exits 1, a findings code).
+// --- Routines: the fourth pill and its list over the composer (docs/web-client-tasks.md "Routines"). The fixture has
+// `nightly` (on, succeeded, printed nothing, so no message), `weekly` (off, found something: it exits 1, a findings code,
+// and its end is a message in the chat) and `idle` (on, never run). The pill counts the enabled ones, tints for a failed
+// (danger) or found-something (attention) last run, and its rows have the shared list row with Turn on or off and Run now.
 {
-  const api = (id) => evaluate(`fetch('api/tasks/${id}/routines').then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }))`);
-  const unknown = await api(999999);
+  const served = (id) => evaluate(`fetch('api/tasks/${id}/routines').then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }))`);
+  const post = (path) => evaluate(`fetch(${JSON.stringify(path)}, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then((r) => r.status)`);
+  const unknown = await served(999999);
   if (unknown.status !== 404) await fail(`the routines of a project outside the grant answered ${unknown.status}`);
-  const served = await api(project);
-  const byName = Object.fromEntries((served.body?.routines ?? []).map((row) => [row.name, row]));
-  if (served.status !== 200 || !byName.nightly || !byName.weekly || byName.nightly.enabled !== true || byName.weekly.enabled !== false
+  const acted = await post("api/tasks/999999/routines/nightly/run");
+  if (acted !== 404) await fail(`an action on the routines of a project outside the grant answered ${acted}`);
+  const refused = await post(`api/tasks/${project}/routines/nightly/explode`);
+  if (refused !== 400) await fail(`an unknown routine action answered ${refused}`);
+  // ^ The end of weekly's run comes as an events message once the manager has flushed it: the row has its id.
+  let answer;
+  for (let attempt = 0; attempt < 600; attempt++) {
+    answer = await served(project);
+    if (answer.body?.routines?.find((row) => row.name === "weekly")?.last?.message != null) break;
+    await pause(100);
+  }
+  const byName = Object.fromEntries((answer.body?.routines ?? []).map((row) => [row.name, row]));
+  if (answer.status !== 200 || !byName.nightly || !byName.weekly || !byName.idle || byName.nightly.enabled !== true || byName.weekly.enabled !== false
     || byName.nightly.trigger !== "0 6 * * *" || byName.weekly.trigger !== "0 6 * * 1" || byName.weekly.last?.exit !== 1
     || byName.nightly.post !== true || byName.weekly.post !== false
     || byName.weekly.last?.status !== "findings" || byName.weekly.findings_exit?.join() !== "1" || byName.nightly.findings_exit
     || byName.nightly.last?.status !== "succeeded" || !(byName.nightly.last.finished_unix_ms > 0) || !(byName.nightly.next_run_unix_ms > Date.now())
-    || byName.nightly.command.join(" ") !== "/bin/sh -c exit 0") await fail(`the routines route answered ${JSON.stringify(served)}`);
-  await click('a.icon-button[href$="/routines"]');
-  await until(`location.hash === '#/p/${project}/routines' && !!document.querySelector('dialog.task-sheet[open] .routine-list')`, "Routines did not open the routines sheet");
-  const rows = await evaluate(`[...document.querySelectorAll('.routine')].map((row) => ({ name: row.querySelector('.routine-name').textContent, state: row.querySelector('.routine-state').textContent,
-    when: row.querySelector('.routine-when').textContent, last: row.querySelector('.routine-last').textContent, next: row.querySelector('.routine-next').textContent,
-    tone: row.querySelector('.routine-last').dataset.found !== undefined ? 'found' : row.querySelector('.routine-last').dataset.failed !== undefined ? 'failed' : null }))`);
-  const by = Object.fromEntries(rows.map((row) => [row.name, row]));
-  if (rows.length !== 3 || by.idle?.last !== "never run" || by.nightly?.state !== "On" || by.weekly?.state !== "Off" || by.nightly.when !== "daily 06:00" || by.weekly.when !== "Mondays 06:00, not told to you"
-    || !/^succeeded( now|\b.* ago)$/.test(by.nightly.last) || !/^found something \(exit 1\)/.test(by.weekly.last) || by.weekly.tone !== "found" || by.nightly.tone || !/^next /.test(by.nightly.next)) await fail(`the routine rows are ${JSON.stringify(rows)}`);
-  await click(".routine");
-  await until("document.querySelector('.routine-argv')?.textContent === '/bin/sh -c exit 0'", "a tap on a routine did not show its command");
-  await shot("routines");
-  await resize([1280, 800, 1]);
-  await shot("routines");
-  await resize([390, 844, 2]);
-  await closeSheet("the routines sheet", chat);
+    || byName.nightly.command.join(" ") !== "/bin/sh -c exit 0" || !Number.isInteger(byName.weekly.last.message)
+    || byName.nightly.last.message !== null || byName.idle.last !== null) await fail(`the routines route answered ${JSON.stringify(answer)}`);
+  const message = byName.weekly.last.message;
+  await go(chat);
+  await until("!!document.querySelector('.pill[data-kind=routines]')", "the project with routines has no Routines pill", 100);
+  const rowsOf = () => evaluate(`[...document.querySelectorAll('.reservoir .need')].map((row) => ({ name: row.querySelector('.row-label').textContent,
+    context: [...row.querySelectorAll('.row-context')].map((node) => node.textContent), main: row.querySelector('.row-main').tagName, mark: row.querySelector('.mark')?.dataset.tone ?? null,
+    actions: [...row.querySelectorAll('.need-action')].map((node) => node.title) }))`);
+  const pill = () => evaluate(`(() => { const node = document.querySelector('.pill[data-kind=routines]'); return node && { label: node.getAttribute('aria-label'), count: node.querySelector('.pill-count').textContent.trim(), tone: node.dataset.tone ?? null, icon: !!node.querySelector('svg.icon') }; })()`);
+  // ^ The list is read as the answer to a fetch of the page: a run's state is set in the answer (the scheduler has no failed run to stage).
+  await evaluate(`(() => { window.realFetch ??= window.fetch; window.tweak = null;
+    window.fetch = async (input, init) => { const response = await window.realFetch(input, init);
+      if (!window.tweak || (init?.method ?? 'GET') !== 'GET' || !/\\/routines$/.test(String(input?.url ?? input))) return response;
+      const body = await response.clone().json(); window.tweak(body); return new Response(JSON.stringify(body), { status: response.status, headers: response.headers }); }; })()`);
+  const again = async () => { await go("#/"); await go(chat); await until("!!document.querySelector('.pill[data-kind=routines]')", "the Routines pill did not come back"); };
+  try {
+    let look = await pill();
+    if (look.label !== "2 routines" || look.count !== "2" || look.tone || !look.icon) await fail(`the Routines pill with nightly and idle on is ${JSON.stringify(look)}`);
+    // The list: the shared row; run now and on/off in the row's actions.
+    await openReservoir("routines");
+    const rows = await rowsOf();
+    const by = Object.fromEntries(rows.map((row) => [row.name, row]));
+    if (rows.length !== 3 || by.nightly?.context[0] !== "daily 06:00 · On" || !/^succeeded( now|\b.* ago) · no message$/.test(by.nightly.context[1])
+      || by.weekly?.context[0] !== "Mondays 06:00, no chat post · Off" || !/^found something \(exit 1\)( now|\b.* ago) · message$/.test(by.weekly.context[1])
+      || by.idle?.context.join("|") !== "daily 07:00 · On|never run · no message"
+      || by.nightly.main !== "SPAN" || by.idle.main !== "SPAN" || by.weekly.main !== "BUTTON"
+      || by.nightly.actions.join() !== "Turn off,Run now" || by.weekly.actions.join() !== "Turn on,Run now" || by.idle.actions.join() !== "Turn off,Run now"
+      || by.weekly.mark !== "attention" || by.nightly.mark !== "accent" || by.idle.mark !== "accent") await fail(`the routine rows are ${JSON.stringify(rows)}`);
+    for (const size of [[375, 812, 2], [1280, 800, 1]]) {
+      await resize(size);
+      await openReservoir("routines");
+      await shot(`routines-list-${size[0]}`, ".composer-send");
+    }
+    await resize([390, 844, 2]);
+    // A tap on the routine with a message takes the chat to it, marked; the routine without one is not a button.
+    await openReservoir("routines");
+    const shown = `(() => { const node = document.querySelector('[data-id="${message}"]'), log = document.querySelector('.log').getBoundingClientRect(); if (!node) return null;
+      const box = node.getBoundingClientRect(); return { found: node.hasAttribute('data-found'), inside: box.top >= log.top - 1 && box.bottom <= log.bottom + 1, text: node.textContent }; })()`;
+    for (const size of [[390, 844, 2], [375, 812, 2], [1280, 800, 1]]) {
+      await resize(size);
+      await openReservoir("routines");
+      await evaluate("document.querySelector('.log').scrollTop = 0");
+      await click(`.reservoir .need[data-key="routine-weekly"] .row-open`);
+      await until(`${shown}?.found === true`, `a tap on a routine with a message did not take the chat to its message at ${size[0]} px`);
+      const there = await evaluate(shown);
+      if (!there.inside || !/^routine weekly found something \(exit 1\)/.test(there.text) || !(await count(".reservoir"))) await fail(`the message of the routine's last run is ${JSON.stringify(there)}`);
+      await shot(`routines-message-${size[0]}`, ".composer-send");
+    }
+    await resize([390, 844, 2]);
+    // A tap on the routine with no message does nothing.
+    await pause(2200);
+    await click(`.reservoir .need[data-key="routine-nightly"] .row-main`);
+    await pause(300);
+    if (await count("[data-found]")) await fail("a tap on a routine with no message marked something");
+    await shot("routines-no-message", ".composer-send");
+
+    // Turn on, then off: weekly (found something) joins the pill, tinted attention, and the answer is the new list.
+    const action = (name, title) => `.reservoir .need[data-key="routine-${name}"] .need-action[title="${title}"]`;
+    await click(action("weekly", "Turn on"));
+    await until("document.querySelector('.pill[data-kind=routines]')?.getAttribute('aria-label') === '3 routines, 1 found something' && document.querySelector('.pill[data-kind=routines]').dataset.tone === 'attention'", "Turn on did not count weekly in the pill with the attention tone");
+    if ((await rowsOf()).find((row) => row.name === "weekly").actions.join() !== "Turn off,Run now") await fail("the row of a routine turned on still offers Turn on");
+    await shot("routines-found-pill", ".composer-send");
+    await click(action("weekly", "Turn off"));
+    await until("document.querySelector('.pill[data-kind=routines]')?.getAttribute('aria-label') === '2 routines'", "Turn off did not take weekly out of the pill");
+    // Run now: nightly runs (it exits 0 and prints nothing); its last run reads "succeeded now" and the row keeps no message.
+    await click(action("nightly", "Run now"));
+    await until("/^succeeded now · no message$/.test([...document.querySelectorAll('.reservoir .need[data-key=\"routine-nightly\"] .row-context')].at(-1)?.textContent ?? '')", "Run now did not show nightly's new run", 300);
+    await closeReservoir();
+
+    // A failed last run tints the pill in the danger color.
+    await evaluate("window.tweak = (body) => { const row = body.routines.find((each) => each.name === 'nightly'); row.last = { ...row.last, status: 'failed', exit: 3 }; }");
+    await again();
+    look = await pill();
+    if (look.label !== "2 routines, 1 failed" || look.tone !== "danger") await fail(`the Routines pill with a failed last run is ${JSON.stringify(look)}`);
+    const colors = await evaluate(`(() => { const node = document.createElement('i'); node.style.color = 'var(--color-danger)'; document.body.append(node); const danger = getComputedStyle(node).color; node.remove();
+      const pill = document.querySelector('.pill[data-kind=routines]'); return { pill: getComputedStyle(pill).color, edge: getComputedStyle(pill).borderTopColor, danger }; })()`);
+    if (colors.pill !== colors.danger || colors.edge !== colors.danger) await fail(`the failed Routines pill is not in the danger color: ${JSON.stringify(colors)}`);
+    await shot("routines-failed-pill", ".composer-send");
+    await openReservoir("routines");
+    const failed = (await rowsOf()).find((row) => row.name === "nightly");
+    if (failed.mark !== "danger" || !/^failed \(exit 3\)/.test(failed.context[1])) await fail(`the row of a failed last run is ${JSON.stringify(failed)}`);
+    await shot("routines-failed-list", ".composer-send");
+    await closeReservoir();
+    await evaluate("window.tweak = null");
+
+    // A device that cannot act sees the rows with no action.
+    await again();
+    const capabilitiesNow = await inStore("return [...state.site.capabilities]");
+    await withCapabilities(capabilitiesNow.filter((name) => name !== "task_act"));
+    await until("!document.querySelector('.composer-field') && !!document.querySelector('.pill-bar .pill[data-kind=routines]')", "a device without task_act lost the Routines pill");
+    await openReservoir("routines");
+    if ((await rowsOf()).some((row) => row.actions.length)) await fail(`a device without task_act has routine actions: ${JSON.stringify(await rowsOf())}`);
+    await click(".pill[aria-pressed=true]");
+    await withCapabilities(capabilitiesNow);
+    await until("!!document.querySelector('.composer-row .pill[data-kind=routines]')", "the Routines pill did not go back into the composer row");
+    // The phone composer keeps its height with four pills, down to 320 px, and the pills stay on one row between attach and Send.
+    for (const width of [375, 320]) {
+      await resize([width, 740, 2]);
+      await until("!!document.querySelector('.composer-row .pill[data-kind=routines]')", `the pills are missing at ${width} px`);
+      const fit = await evaluate(`(() => { const row = document.querySelector('.composer-row').getBoundingClientRect(), send = document.querySelector('.composer-send').getBoundingClientRect(), attach = document.querySelector('.composer-row > .icon-button')?.getBoundingClientRect();
+        const pills = [...document.querySelectorAll('.pill')].map((node) => node.getBoundingClientRect()); const shut = (box) => box.left >= (attach?.right ?? row.left) - 1 && box.right <= send.left + 1;
+        return { count: pills.length, one: pills.every((box) => Math.abs(box.top - pills[0].top) < 2), between: pills.every(shut), composer: document.querySelector('.composer').getBoundingClientRect().height }; })()`);
+      if (fit.count !== 4 || !fit.one || !fit.between || fit.composer > 110) await fail(`the four pills at ${width} px are ${JSON.stringify(fit)}`);
+      await shot(`pills-four-${width}`, ".composer-send");
+    }
+    await resize([390, 844, 2]);
+  } finally {
+    await evaluate("window.tweak = null");
+    for (const [name, on] of [["nightly", true], ["idle", true], ["weekly", false]]) {
+      const row = (await served(project)).body.routines.find((each) => each.name === name);
+      if (row && row.enabled !== on) await post(`api/tasks/${project}/routines/${name}/${on ? "enable" : "disable"}`);
+    }
+  }
 }
 
-// --- The Routines and Overview buttons in the chat header (icon only, the routines' state in the name), and Settings' "Header: top | bottom" (docs/web-client.md
-// "Header position"). The fixture has `nightly` (on, succeeded), `idle` (on, never run) and `weekly`
-// (off, found something): the staged routines are switched with the CLI and put back.
+// --- The Overview button in the chat header (icon only), and Settings' "Header: top | bottom" (docs/web-client.md "Header position").
 {
-  const cli = JSON.parse(fs.readFileSync(wsxCli));
-  const routine = (verb, name) => execFileSync(cli.wsx, ["task", "routine", verb, name, "-p", "ui", "--json"], { env: cli.env, cwd: cli.cwd, stdio: "pipe" });
-  const chip = async () => {
-    await go(chat);
-    await until(`location.hash === '${chat}' && !!document.querySelector('.manager a.icon-button[href$="/routines"]')`, "the chat header has no routine item");
-    await pause(1000); // ^ the tone's color fades in (app.css transitions)
-    return evaluate(`(() => { const node = document.querySelector('a.icon-button[href$="/routines"]'); return { text: node.getAttribute('aria-label'), title: node.title, icon: !!node.querySelector('svg.icon'), words: node.textContent.trim(), tone: node.dataset.tone ?? null, color: getComputedStyle(node).color,
-      danger: getComputedStyle(document.documentElement).getPropertyValue('--color-danger').trim(), href: node.getAttribute('href') }; })()`);
-  };
-  const reload = async (ready) => { await send("Page.reload"); await until(ready, "the page did not come back after a reload"); };
-  // ^ The button says "Routines" alone until the routines have loaded; each reload here has one on.
-  const loaded = `/^Routines: /.test(document.querySelector('a.icon-button[href$="/routines"]')?.getAttribute('aria-label') ?? '')`;
   try {
-    let item = await chip();
-    if (item.text !== "Routines: 2 routines, ok" || item.tone || item.title !== item.text || !item.icon || item.words) await fail(`the Routines button with nightly and idle on is ${JSON.stringify(item)}`);
-    routine("disable", "idle");
-    await chip();
-    await reload(loaded);
-    item = await evaluate(`({ text: document.querySelector('a.icon-button[href$="/routines"]').getAttribute('aria-label'), tone: document.querySelector('a.icon-button[href$="/routines"]').dataset.tone ?? null })`);
-    if (!/^Routines: nightly .*\d{1,2}:\d{2}.* ok$/.test(item.text) || item.tone) await fail(`the Routines button with nightly alone is ${JSON.stringify(item)}`);
-    await shot("routine-item-ok");
-    routine("enable", "weekly");
-    await reload(loaded);
-    item = await evaluate(`({ text: document.querySelector('a.icon-button[href$="/routines"]').getAttribute('aria-label'), tone: document.querySelector('a.icon-button[href$="/routines"]').dataset.tone ?? null })`);
-    if (item.text !== "Routines: 2 routines, 1 found something" || item.tone !== "attention") await fail(`the Routines button with a run that found something among two is ${JSON.stringify(item)}`);
-    routine("disable", "nightly");
-    await reload(loaded);
-    item = await chip();
-    if (!/^Routines: weekly .* found something$/.test(item.text) || item.tone !== "attention" || item.color !== (await evaluate(`(() => { const probe = Object.assign(document.createElement('i'), {}); probe.style.color = 'var(--color-attention)'; document.body.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; })()`))) {
-      await fail(`the Routines button of a run that found something is ${JSON.stringify(item)}`);
-    }
-    await shot("routine-item-found");
-    await click('a.icon-button[href$="/routines"]');
-    await until(`location.hash === '#/p/${project}/routines' && !!document.querySelector('dialog.task-sheet[open] .routine-list')`, "a tap on the Routines button did not open Routines");
-    await closeSheet("the routines sheet", chat);
+    await go(chat);
+    await until(`location.hash === '${chat}' && !!document.querySelector('.manager a.icon-button[href$="/page"]')`, "the chat header has no overview item");
     // Overview: an icon-only button too; one tap opens the project overview.
     const overview = await evaluate(`(() => { const node = document.querySelector('.manager a.icon-button[href$="/page"]'); return node && { label: node.getAttribute('aria-label'), title: node.title, icon: !!node.querySelector('svg.icon'), words: node.textContent.trim() }; })()`);
     if (!overview || overview.label !== "Overview" || overview.title !== "Overview" || !overview.icon || overview.words) await fail(`the Overview button is ${JSON.stringify(overview)}`);
@@ -1491,9 +1572,6 @@ await closeSheet("the usage sheet", chat);
     await until(`location.hash === '#/p/${project}/page' && !!document.querySelector('dialog.task-sheet[open] .project-overview h1')`, "a tap on the Overview button did not open the overview");
     await closeSheet("the overview sheet", chat);
   } finally {
-    routine("enable", "nightly");
-    routine("enable", "idle");
-    routine("disable", "weekly");
   }
 
   // The header at the bottom: the chat's bar sits between the log and the composer, the other
@@ -1540,11 +1618,11 @@ await closeSheet("the usage sheet", chat);
     if (files.bar[1] < files.page[1] - 1) await fail(`the files bar is not at the foot of the page: ${JSON.stringify(files)}`);
     await go(chat);
     await until("!!document.querySelector('.manager .chat > .bar')", "the chat did not return");
-    await go(`#/p/${project}/routines`);
-    await until("!!document.querySelector('dialog.task-sheet[open] .task-page > .bar')", "Routines did not open");
+    await go(`#/p/${project}/usage`);
+    await until("!!document.querySelector('dialog.task-sheet[open] .task-page > .bar')", "Usage did not open");
     const sheet = await evaluate("(() => { const bar = document.querySelector('dialog.task-sheet[open] .task-page > .bar').getBoundingClientRect(), page = document.querySelector('dialog.task-sheet[open] .task-page').getBoundingClientRect(); return bar.bottom >= page.bottom - 1; })()");
     if (!sheet) await fail("a sheet's bar is not at its foot");
-    await closeSheet("the routines sheet", chat);
+    await closeSheet("the usage sheet", chat);
   }
   await resize([390, 844, 2]);
   await go("#/settings/ui");
@@ -2580,7 +2658,7 @@ await until(`${statusLines}.some((node) => /#7 failed a check; #\\d+ fixes it/.t
 await until("!document.querySelector('.pill[data-kind=check]')", "the pills still count items to check", 60);
 // ^ With #4 and the fix task landed (a pending approval denied) only Running is left: the one
 // pill, and its list's first row whole at the reservoir's top.
-const onlyRunning = "document.querySelectorAll('.pill').length > 0 && [...document.querySelectorAll('.pill')].every((node) => node.dataset.kind === 'running')";
+const onlyRunning = "document.querySelectorAll('.pill').length > 0 && [...document.querySelectorAll('.pill')].every((node) => ['running', 'routines'].includes(node.dataset.kind))";
 // ^ A Land that checks again clears the row, then brings it back: two seconds in a row, not a moment.
 let runningSince = 0;
 for (let attempt = 0; attempt < 600 && runningSince < 20; attempt++) {
@@ -2592,7 +2670,7 @@ for (let attempt = 0; attempt < 600 && runningSince < 20; attempt++) {
   }
   await pause(100);
 }
-if (!(await evaluate(onlyRunning))) await fail(`Running is not the only pill: ${await pillWords()}`);
+if (!(await evaluate(onlyRunning))) await fail(`Running is not the only task pill: ${await pillWords()}`);
 await openReservoir("running");
 await firstRowInside("with only running tasks");
 await shot("reservoir-running-first", ".composer-send");
@@ -2697,7 +2775,6 @@ const sheetOpen = (part) => `!!document.querySelector('dialog.task-sheet[open]')
 await sameBack("the overview", opens(`.manager > .bar a[href="${chat}/page"]`, sheetOpen("/page"), "the overview"), sheetBack);
 await sameBack("the task sheet", opens(`.log a.task-chip[href^="${chat}/t/"]`, sheetOpen("/t/"), "the task sheet"), sheetBack);
 await sameBack("the usage sheet", fromMenu(`a[href="${chat}/usage"]`, sheetOpen("/usage"), "the usage sheet"), sheetBack);
-await sameBack("the routines sheet", opens(`.manager > .bar a[href="${chat}/routines"]`, sheetOpen("/routines"), "the routines sheet"), sheetBack);
 await sameBack("the project's sessions", fromMenu(`a[href="${chat}/sessions"]`, "!!document.querySelector('#main .worktree')", "the project's sessions"), topBack);
 await go("#/sessions");
 await until("[...document.querySelectorAll('a[href*=\"#/s/\"]')].some((node) => node.textContent.includes('old chat'))", "the inbox does not list old chat");

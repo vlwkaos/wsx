@@ -387,12 +387,19 @@ const ARGV_CHARS: usize = 200;
 /// next run and the last run; `{error}` when the scheduler does not answer and the project
 /// has routines. ref: docs/tasks.md "Routines"
 pub fn routines(main: &Path) -> Value {
-    routine_rows(main, ROUTINES, false)
+    routine_rows(main, ROUTINES, false, None)
 }
 
 /// `routines` for at most `limit` routines; `full` adds each row's `command` (clipped) and the
-/// last run's `finished_unix_ms`. The web client's Routines screen reads it that way.
-pub fn routine_rows(main: &Path, limit: usize, full: bool) -> Value {
+/// last run's `finished_unix_ms`; `chat` adds its `message`, the id of the events message that
+/// told of its end (`chat::run_messages`, null for none). The web client's routine list reads
+/// it that way; the agent's ledger does not, so the id costs no tokens.
+pub fn routine_rows(
+    main: &Path,
+    limit: usize,
+    full: bool,
+    chat: Option<&super::store::ManagerDir>,
+) -> Value {
     use crate::routine::{request, store, Action, Response};
     let listed = request(&crate::runtime::Client::local(), main, Action::List);
     let views = match listed {
@@ -410,10 +417,27 @@ pub fn routine_rows(main: &Path, limit: usize, full: bool) -> Value {
             };
         }
     };
-    let rows: Vec<Value> = views
+    let shown: Vec<&crate::routine::RoutineView> = views.iter().take(limit).collect();
+    let messages = chat.map(|dir| {
+        let runs: Vec<_> = shown
+            .iter()
+            .filter_map(|view| view.latest_run.as_ref())
+            .collect();
+        let found = super::chat::run_messages(dir, &runs);
+        let mut found = found.into_iter();
+        shown
+            .iter()
+            .map(|view| {
+                view.latest_run
+                    .as_ref()
+                    .and_then(|_| found.next().flatten())
+            })
+            .collect::<Vec<_>>()
+    });
+    let rows: Vec<Value> = shown
         .iter()
-        .take(limit)
-        .map(|view| {
+        .enumerate()
+        .map(|(at, view)| {
             let last = view.latest_run.as_ref().map(|run| {
                 let mut last = json!({
                     "status": run.status,
@@ -423,6 +447,9 @@ pub fn routine_rows(main: &Path, limit: usize, full: bool) -> Value {
                 });
                 if full {
                     last["finished_unix_ms"] = json!(run.finished_epoch.map(|epoch| epoch * 1000));
+                }
+                if let Some(messages) = &messages {
+                    last["message"] = json!(messages[at]);
                 }
                 last
             });

@@ -46,7 +46,7 @@ const OVERVIEW_TTL: Duration = Duration::from_secs(60);
 const TIMELINE_ENTRIES: usize = 300;
 const MAX_REPORT_BYTES: u64 = 1024 * 1024;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
-/// The Routines screen lists at most this many.
+/// The Routines list lists at most this many.
 const MAX_ROUTINES: usize = 100;
 /// The newest To check items the chat shows as bubbles.
 const CHAT_CHECKS: usize = 100;
@@ -854,13 +854,37 @@ pub fn page(scope: &Scope) -> Outcome<Value> {
     })
 }
 
-/// The project's routines as wsxd's scheduler lists them, read only: `{routines}`, at most 100,
-/// or with `error` when the scheduler does not answer. ref: docs/web-client-tasks.md "Routines"
+/// The project's routines as wsxd's scheduler lists them: `{routines}`, at most 100, each last
+/// run with the id of its events message, or with `error` when the scheduler does not answer. ref: docs/web-client-tasks.md "Routines"
 pub fn routines(scope: &Scope) -> Value {
-    match ledger::routine_rows(&scope.path, MAX_ROUTINES, true) {
+    let dir = ManagerDir::existing(&scope.store).ok().flatten();
+    match ledger::routine_rows(&scope.path, MAX_ROUTINES, true, dir.as_ref()) {
         rows @ Value::Array(_) => json!({ "routines": rows }),
         failed => json!({ "routines": [], "error": failed["error"] }),
     }
+}
+
+/// `run`, `enable` or `disable` for the routine `name` through wsxd's scheduler, then the list
+/// as `routines` gives it. The scheduler refuses a routine that does not exist or is already
+/// running (409). ref: docs/web-client-tasks.md "Routines"
+pub fn routine_act(scope: &Scope, name: &str, action: &str) -> Outcome<Value> {
+    use wsx_core::routine::{self, Action};
+    let client = wsx_core::runtime::Client::local();
+    let sent = match action {
+        "run" => routine::request(
+            &client,
+            &scope.path,
+            Action::Run {
+                name: name.to_string(),
+            },
+        ),
+        "enable" | "disable" => {
+            routine::set_enabled(&client, &scope.path, name, None, action == "enable")
+        }
+        _ => return Err(Fault::new(400, "unsupported", "not a routine action")),
+    };
+    sent.map_err(|error| Fault::new(409, "refused", error.to_string()))?;
+    Ok(routines(scope))
 }
 
 /// What happened since `after` (ms): the tasks that started, blocked, conflicted or got a new

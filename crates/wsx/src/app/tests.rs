@@ -1750,6 +1750,7 @@ fn routines_header_is_nonempty_searchable_and_mobile_safe() {
     app.mode = Mode::RoutineDetail {
         project_path: app.workspace.projects[0].path.clone(),
         routine_name: "morning".into(),
+        message: None,
         scroll: 0,
     };
     terminal
@@ -1950,6 +1951,7 @@ fn routine_detail_tracks_name_when_refresh_reorders_views() {
     app.mode = Mode::RoutineDetail {
         project_path: app.workspace.projects[0].path.clone(),
         routine_name: "morning".into(),
+        message: None,
         scroll: 0,
     };
     app.workspace.projects[0].routines.swap(0, 1);
@@ -1987,6 +1989,7 @@ fn routine_detail_tracks_project_path_when_projects_reorder() {
     app.mode = Mode::RoutineDetail {
         project_path: PathBuf::from("/tmp/first"),
         routine_name: "morning".into(),
+        message: None,
         scroll: 0,
     };
 
@@ -2017,6 +2020,7 @@ fn routine_refresh_closes_detail_when_routine_was_deleted() {
     app.mode = Mode::RoutineDetail {
         project_path: project_path.clone(),
         routine_name: "morning".into(),
+        message: None,
         scroll: 0,
     };
     let generation = app.invalidate_routine_refresh(&project_path);

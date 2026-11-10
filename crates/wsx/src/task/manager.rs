@@ -861,7 +861,7 @@ impl Manager {
                 "{} of {:.12} failed ({})",
                 ledger::kind_name(record.kind),
                 record.commit,
-                exit_words(record.exit),
+                wsx_core::routine::exit_words(record.exit),
             );
             let line = format!(
                 "{failed}{}",
@@ -3021,7 +3021,7 @@ fn stdout_empty(run: &RunRecord) -> bool {
 /// A routine run that ended as an event line with the end of its output: what a check-in
 /// or any routine that prints wants the manager to read. ref: docs/tasks.md "Routines"
 fn routine_line(run: &RunRecord) -> String {
-    format!("{}{}", routine_result(run), output_ends(&run.final_output))
+    format!("{}{}", run.result_line(), output_ends(&run.final_output))
 }
 
 /// The most of a run's output the owner event holds: its end.
@@ -3037,7 +3037,7 @@ const FOR_OWNER: &str = "for the owner";
 /// the main checkout the output names, which the web opens in its files page
 /// (docs/web-client.md "Files"). ref: docs/tasks.md "Routines"
 fn routine_event(run: &RunRecord, main: &Path) -> String {
-    let mut line = format!("{}; {FOR_OWNER}", routine_result(run));
+    let mut line = format!("{}; {FOR_OWNER}", run.result_line());
     let output = run.final_output.trim();
     if !output.is_empty() {
         let skip = output.chars().count().saturating_sub(EVENT_OUTPUT_CHARS);
@@ -3121,31 +3121,6 @@ fn link_path(path: &str) -> String {
         .collect()
 }
 
-/// `routine <name> succeeded after 4 s`, `routine <name> failed (exit 3)`, `routine <name> found
-/// something (exit 1)`.
-fn routine_result(run: &RunRecord) -> String {
-    let end = run.finished_epoch.unwrap_or_default();
-    match &run.status {
-        RunStatus::Succeeded => format!(
-            "routine {} succeeded after {} s",
-            run.routine,
-            end - run.started_epoch
-        ),
-        status => format!(
-            "routine {} {} ({})",
-            run.routine,
-            match status {
-                RunStatus::Findings => "found something",
-                RunStatus::SpawnFailed => "could not start",
-                RunStatus::Cancelled => "was cancelled",
-                RunStatus::Interrupted => "was interrupted",
-                _ => "failed",
-            },
-            exit_words(run.exit_code),
-        ),
-    }
-}
-
 /// What a fresh conversation needs of the routines, at most two lines per routine, the
 /// routines in the order of their newest run: its standing (the newest run, or the newest
 /// failure since its last success with how many there were), then its runs after the previous
@@ -3167,15 +3142,15 @@ fn handover_routines(mut runs: Vec<RunRecord>, replied: i64) -> Vec<String> {
         let failed = mine.len() - success.map_or(0, |at| at + 1);
         let plural = if failed == 1 { "" } else { "s" };
         lines.push(match success {
-            _ if failed == 0 => routine_result(newest),
+            _ if failed == 0 => newest.result_line(),
             Some(at) => format!(
                 "{}; {failed} failure{plural} since its last success at {}",
-                routine_result(newest),
+                newest.result_line(),
                 clock(mine[at].finished_epoch.unwrap_or_default())
             ),
             None => format!(
                 "{}; {failed} failure{plural}, never succeeded",
-                routine_result(newest)
+                newest.result_line()
             ),
         });
         let after: Vec<&&RunRecord> = mine
@@ -3239,10 +3214,6 @@ fn clock(secs: i64) -> String {
 fn plain_event(line: String) -> (String, Short) {
     let short = Short::plain(&line);
     (line, short)
-}
-
-fn exit_words(exit: Option<i32>) -> String {
-    exit.map_or("no exit code".into(), |code| format!("exit {code}"))
 }
 
 /// "; its output ends:" and the last lines of `output`, indented, or nothing without output.

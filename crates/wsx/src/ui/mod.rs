@@ -451,7 +451,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Selection::Routine(pi, ri) => {
                 if let Some(project) = app.workspace.projects.get(pi) {
                     if let Some(routine) = project.routines.get(ri) {
-                        preview::render_routine_preview(frame, preview_area, project, routine, 0);
+                        preview::render_routine_preview(
+                            frame,
+                            preview_area,
+                            project,
+                            routine,
+                            None,
+                            0,
+                        );
                     } else {
                         render_empty_preview(frame, preview_area);
                     }
@@ -521,6 +528,7 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
         Mode::RoutineDetail {
             project_path,
             routine_name,
+            message,
             scroll,
         } => {
             if let Some(project) = app
@@ -535,7 +543,14 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
                     .find(|view| view.routine.name == *routine_name)
                 {
                     frame.render_widget(Clear, area);
-                    preview::render_routine_preview(frame, area, project, routine, *scroll);
+                    preview::render_routine_preview(
+                        frame,
+                        area,
+                        project,
+                        routine,
+                        Some(*message),
+                        *scroll,
+                    );
                 } else {
                     render_empty_preview(frame, area);
                 }
@@ -699,11 +714,14 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
         },
         Mode::RoutinePresetPicker { .. } => ("RUNNER", theme::ModeBadge::Routine, Vec::new()),
         Mode::RoutineEditor { .. } => ("ROUTINE", theme::ModeBadge::Routine, Vec::new()),
-        Mode::RoutineDetail { .. } => (
-            "DETAIL",
-            theme::ModeBadge::Info,
-            vec!["(j/k)scroll".into(), "Esc: close".into()],
-        ),
+        Mode::RoutineDetail { message, .. } => {
+            let mut hints = vec!["(j/k)scroll".to_string()];
+            if message.is_some() {
+                hints.push("(⏎)message".into());
+            }
+            hints.push("Esc: close".into());
+            ("DETAIL", theme::ModeBadge::Info, hints)
+        }
         Mode::Panels { view } => {
             let mut hints = vec!["(j/k)scroll".to_string()];
             if view.panels.as_ref().is_some_and(|panels| panels.len() > 1) {

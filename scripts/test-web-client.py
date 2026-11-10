@@ -4394,6 +4394,7 @@ merge_seconds = 3
         assert decide('c1', 'pass', site=viewer)[0] == 403
         assert steady(viewer, 'GET', '/api/tasks/%d/checks' % ids['ui'])[0] == 404
         assert steady(viewer, 'GET', '/api/tasks/%d/routines' % ids['ui'])[0] == 404
+        assert steady(viewer, 'POST', '/api/tasks/%d/routines/nightly/run' % ids['ui'], {})[0] == 404
         assert decide('c1', 'maybe')[0] == 404 and decide('x1', 'pass')[0] == 404 and decide('all', 'fail')[0] == 404
         status, body = decide('c1', 'fail')
         assert status == 400 and body['error']['code'] == 'note_required', body
@@ -4588,7 +4589,7 @@ merge_seconds = 3
             # ^ Settings saves the browser's subscription: the local receiver's endpoint and keys.
             os.environ['WSX_PUSH_FIXTURE'] = json.dumps({'endpoint': push_origin + '/push/browser',
                                                          'keys': {'p256dh': receiver['p256dh'], 'auth': receiver['auth']}})
-            # ^ Routines screen (docs/web-client-tasks.md "Routines"): one enabled that ran and succeeded, one disabled that exited 1, a findings code ("found something", not failed), one that never ran.
+            # ^ Routines pill and list (docs/web-client-tasks.md "Routines"): one enabled that ran and succeeded, one disabled that exited 1, a findings code ("found something", not failed), one that never ran.
             # ^ weekly posts nothing to the chat (`--no-post`): the rows show it.
             for name, cron, code in (('nightly', '0 6 * * *', '0'), ('weekly', '0 6 * * 1', '1')):
                 js('task', 'routine', 'add', name, '-p', 'ui', '--cron', cron, '--arg=/bin/sh', '--arg=-c', '--arg=exit ' + code,

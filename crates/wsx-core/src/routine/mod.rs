@@ -132,6 +132,19 @@ pub enum RunStatus {
 }
 
 impl RunStatus {
+    /// The status in the words the lists show (the web client's routine list has the same).
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Findings => "found something",
+            Self::Failed => "failed",
+            Self::SpawnFailed => "did not start",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
     /// The run went to its end: a success, or one that found something.
     pub fn completed(self) -> bool {
         matches!(self, Self::Succeeded | Self::Findings)
@@ -170,6 +183,39 @@ pub struct RunRecord {
     pub final_output: String,
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
+}
+
+/// `exit 3`, or `no exit code`.
+pub fn exit_words(exit: Option<i32>) -> String {
+    exit.map_or("no exit code".into(), |code| format!("exit {code}"))
+}
+
+impl RunRecord {
+    /// `routine <name> succeeded after 4 s`, `routine <name> failed (exit 3)`, `routine <name>
+    /// found something (exit 1)`: the run's end as the manager's events say it, and what
+    /// `task::chat::run_messages` finds the run's message by.
+    pub fn result_line(&self) -> String {
+        let end = self.finished_epoch.unwrap_or_default();
+        match &self.status {
+            RunStatus::Succeeded => format!(
+                "routine {} succeeded after {} s",
+                self.routine,
+                end - self.started_epoch
+            ),
+            status => format!(
+                "routine {} {} ({})",
+                self.routine,
+                match status {
+                    RunStatus::Findings => "found something",
+                    RunStatus::SpawnFailed => "could not start",
+                    RunStatus::Cancelled => "was cancelled",
+                    RunStatus::Interrupted => "was interrupted",
+                    _ => "failed",
+                },
+                exit_words(self.exit_code),
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,4 +370,37 @@ pub fn request(
             format!("wsxd at {}: {error}", client.socket().display()),
         )),
     }
+}
+
+/// Turn the routine `name` on or off through the scheduler: the routine as it is stored, with
+/// `enabled` set. `revision`: the list's revision the caller saw, else the current one.
+pub fn set_enabled(
+    client: &crate::runtime::Client,
+    project: &Path,
+    name: &str,
+    revision: Option<u64>,
+    enabled: bool,
+) -> Result<Response, RoutineError> {
+    let Response::Routines {
+        revision: current,
+        routines,
+    } = request(client, project, Action::List)?
+    else {
+        return Err(RoutineError::new(
+            RoutineErrorKind::Corrupt,
+            "the scheduler answered a list with something else",
+        ));
+    };
+    let mut routine = routines
+        .into_iter()
+        .find(|view| view.routine.name == name)
+        .map(|view| view.routine)
+        .ok_or_else(|| RoutineError::validation(format!("routine '{name}' not found")))?;
+    routine.enabled = enabled;
+    let action = Action::Edit {
+        revision: revision.unwrap_or(current),
+        old_name: name.to_string(),
+        routine,
+    };
+    request(client, project, action)
 }
