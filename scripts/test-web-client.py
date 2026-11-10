@@ -4434,10 +4434,13 @@ merge_seconds = 3
             status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': '> check %s\n\n%s' % (item['id'], words)})
             assert status == 200 and body['ok'], body
             return body
-        # ^ The landings' events are read in a turn of their own: take it before counting turns.
-        synced = manager_turns()
-        steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': 'STATUS'})
-        wait(lambda: manager_turns() > synced and not manager_chat()['busy'], 'the manager idle before the x replies', timeout=90)
+        # ^ The landings' events are read in turns of their own, some seconds after the landings:
+        # count turns from a manager that stayed idle for 8 s.
+        def settled():
+            seen = manager_turns()
+            time.sleep(8)
+            return manager_turns() == seen and not manager_chat()['busy']
+        wait(settled, 'the manager idle before the x replies', timeout=120)
         turns, tasks_before = manager_turns(), len(js('task', 'list', '-p', 'demo', '--all')['tasks'])
         reply_to(first, '  x ')
         reply_to(second, 'ㅌ')
