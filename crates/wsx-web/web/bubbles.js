@@ -152,7 +152,7 @@ export function Bubble({ project, row, words: home, fresh, onNeed }) {
   const quoted = row.quoted != null && html`<${Quote} quote=${row.quoted} id=${row.quoted_id} />`;
   const body = out
     ? html`<div class="bubble-body" id=${id}>${quoted}${row.text && html`<p class="prose">${words ? words(row.text) : row.text}</p>`}</div><${Attachments} files=${row.attachments} />`
-    : html`<div class="bubble-body" id=${id}>${quoted}<${Markdown} text=${row.text} words=${words} relative=${relativeOf(project)} prose /></div>
+    : html`<div class="bubble-body" id=${id}>${quoted}<${Markdown} text=${row.text} files=${row.attachments} words=${words} relative=${relativeOf(project)} prose /></div>
       ${onNeed && row.approvals?.length > 0 && html`<${NeedTags} items=${row.approvals} onShow=${onNeed} />`}`;
   return html`
     <article class="bubble" data-side=${out ? "out" : "in"} data-speaker=${peer == null ? row.author : "peer"}

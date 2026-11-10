@@ -18,6 +18,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { designLint, jumps, launch, mobileAudit, pair, pause, shooter, soundCheck, watchFetch } from "./web-cdp.mjs";
 
 const [siteUrl, code, projectArg, captures, homeOrder, auditPath, plansArg, restartFile, plansCheckout, longName, relayFile, wsxCli, newsFile] = process.argv.slice(2);
@@ -3870,6 +3871,74 @@ await closeSheet("the page", `#/p/${plansArg}`);
   }
   await resize(usageSize);
   await openTab("Cost", "[data-chart=cost]");
+}
+// --- Pictures and videos a message shows (docs/web-client-chat.md "Markdown", docs/web-client.md "Media"):
+// `![alt](files/<path>)` and a link to a media file of the main checkout, even in a dot-folder, show as the
+// To check pictures and videos do (same viewer, same player, Range, poster); a secret, a path off the
+// checkout and a remote address stay alt text; a link to an HTML file opens its sandboxed view.
+{
+  const state = JSON.parse(fs.readFileSync(wsxCli)).env.XDG_STATE_HOME;
+  const logFile = fs.readdirSync(state, { recursive: true }).find((file) => /(^|\/)plans-[0-9a-f]{8}\/manager\/log\.jsonl$/.test(file));
+  if (!logFile) await fail(`no manager log of plans under ${state}`);
+  const folder = path.join(plansCheckout, ".studio-data", "runs", "one");
+  fs.mkdirSync(path.join(folder, "thumbs"), { recursive: true });
+  const drawn = await evaluate(`(() => { const canvas = Object.assign(document.createElement('canvas'), { width: 96, height: 64 }); const pen = canvas.getContext('2d');
+    pen.fillStyle = '#282c34'; pen.fillRect(0, 0, 96, 64); pen.fillStyle = '#fac83c'; pen.fillRect(8, 8, 40, 24); return canvas.toDataURL('image/png'); })()`);
+  const picture = Buffer.from(drawn.split(",")[1], "base64");
+  // ^ The files are named for what a studio writes (a jpg thumbnail); the server reads their bytes.
+  fs.writeFileSync(path.join(folder, "thumbs", "trend.jpg"), picture);
+  fs.writeFileSync(path.join(folder, "clip.jpg"), picture);
+  fs.copyFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "check-clip.mp4"), path.join(folder, "clip.mp4"));
+  fs.writeFileSync(path.join(folder, "report.html"), "<!doctype html><title>studio report</title><p>report</p>\n");
+  fs.writeFileSync(path.join(plansCheckout, ".env"), picture);
+  const base = ".studio-data/runs/one";
+  const text9 = [`![Trend](files/${base}/thumbs/trend.jpg)`, `![Clip](files/${base}/clip.mp4)`, `[the trend link](files/${base}/thumbs/trend.jpg)`,
+    "![Secret](files/.env)", "![Parent](files/../trend.jpg)", "![Remote](https://example.com/trend.jpg)", `[the report](files/${base}/report.html)`].join("\n\n");
+  fs.appendFileSync(path.join(state, logFile), `${JSON.stringify({ unix_ms: Date.now(), kind: "reply", id: 9_500_000, to: [], text: text9, quiet: false })}\n`);
+  const mediaBubble = ".log .bubble:has(a[href$=\"report.html\"])";
+  for (const wide of [false, true]) {
+    await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
+    await go(`#/p/${plansArg}`);
+    await until(`!!document.querySelector('${mediaBubble} .check-capture')`, "the message with pictures and a video shows no video", 60);
+    await until(`[...document.querySelectorAll('${mediaBubble} img')].every((image) => image.naturalWidth > 0)`, "a picture of the message did not load");
+    const shown = await evaluate(`(() => { const bubble = document.querySelector('${mediaBubble}');
+      return { images: [...bubble.querySelectorAll('.markdown > p > a[data-view] > img')].map((image) => image.alt),
+        video: !!bubble.querySelector('a.check-capture[data-video] .check-play'), poster: bubble.querySelector('a.check-capture[data-video]').dataset.poster ?? '',
+        link: !!bubble.querySelector('a[data-view]:not(.check-capture):not(:has(img))'),
+        alts: [...bubble.querySelectorAll('.image-alt')].map((node) => node.textContent), stray: [...bubble.querySelectorAll('img')].map((image) => image.alt).filter((alt) => /Secret|Parent|Remote/.test(alt)) }; })()`);
+    if (shown.images.join() !== "Trend" || !shown.video || !/\/media\/[0-9a-f]{64}\.png$/.test(shown.poster) || !shown.link
+      || shown.alts.join() !== "Secret,Parent,Remote" || shown.stray.length) await fail(`the media message at ${size[0]} px reads ${JSON.stringify(shown)}`);
+    // ^ Only the two granted files are in the row; the denied paths never reached the server's answer.
+    const granted = await evaluate(`fetch('api/tasks/${plansArg}/chat').then((r) => r.json()).then((data) => data.rows.find((row) => row.id === 9500000).attachments.map((file) => [file.src, file.mime, !!file.poster]))`);
+    if (JSON.stringify(granted) !== JSON.stringify([[`${base}/thumbs/trend.jpg`, "image/png", false], [`${base}/clip.mp4`, "video/mp4", true]])) await fail(`the row grants ${JSON.stringify(granted)}`);
+    await shot(`message-media${wide ? "-wide" : ""}`);
+    // ^ A tap on the picture opens the viewer with the picture; Escape closes it.
+    await click(`${mediaBubble} a[data-view]:has(img)`);
+    await until("!!document.querySelector('dialog.viewer[open] .viewer-stage img:not([data-loading])')", "the picture of the message did not open in the viewer");
+    await shot(`message-media-viewer${wide ? "-wide" : ""}`);
+    await key("Escape", 27);
+    await until("!document.querySelector('dialog.viewer')", "Escape did not close the viewer");
+    // ^ The video: Range answers 206, the viewer's player has the poster and plays.
+    const range = await evaluate(`(async () => { const link = document.querySelector('${mediaBubble} a.check-capture[data-video]'); const got = await fetch(link.href, { headers: { Range: 'bytes=0-99' } });
+      return { status: got.status, type: got.headers.get('content-type'), range: got.headers.get('content-range'), length: (await got.arrayBuffer()).byteLength }; })()`);
+    if (range.status !== 206 || range.type !== "video/mp4" || !/^bytes 0-99\/\d+$/.test(range.range || "") || range.length !== 100) await fail(`the message's video answers ${JSON.stringify(range)}`);
+    await click(`${mediaBubble} a.check-capture[data-video]`);
+    const player = "document.querySelector('dialog.viewer[open] .viewer-stage video')";
+    await until(`${player}?.readyState >= 1`, "the message's video did not load in the viewer");
+    const played = await evaluate(`(async () => { const video = ${player}; video.muted = true; await video.play(); return { poster: /\\/media\\/[0-9a-f]{64}\\.png$/.test(video.poster), playsinline: video.hasAttribute('playsinline'), size: [video.videoWidth, video.videoHeight] }; })()`);
+    if (!played.poster || !played.playsinline || played.size.join() !== "160,90") await fail(`the message's video in the viewer reads ${JSON.stringify(played)}`);
+    await until(`${player}.currentTime > 0`, "the message's video did not play");
+    await shot(`message-media-video${wide ? "-wide" : ""}`);
+    await key("Escape", 27);
+    await until("!document.querySelector('dialog.viewer')", "Escape did not close the video viewer");
+    // ^ A link to an HTML file opens its sandboxed view (docs/web-client.md "Files").
+    await click(`${mediaBubble} a[href$="report.html"]`);
+    await until(`location.hash === '#/p/${plansArg}/files/${base}/report.html' && /^view\\/[0-9a-f]{64}\\/report\\.html$/.test(document.querySelector('iframe.file-page')?.getAttribute('src') ?? '')`, "the report link did not open the page view");
+    if ((await evaluate("document.querySelector('iframe.file-page').getAttribute('sandbox')")) !== "allow-popups allow-popups-to-escape-sandbox") await fail("the report page is not sandboxed");
+  }
+  fs.rmSync(path.join(plansCheckout, ".studio-data"), { recursive: true });
+  fs.rmSync(path.join(plansCheckout, ".env"));
+  await go(`#/p/${plansArg}`);
 }
 console.log(`tasks page: home with the Sessions tab in the first screen and no Projects tab, the plain worktree on its project's worktree list and no Adopted list, since-you-left, bubbles (sides, authors, grouping, worker results as muted lines), no cards/tray/strip/Explain, one working color on home, the session rows (only working marks pulse, none under reduced motion), the reservoir and a typing manager, the reservoir (the closed line naming running #6 without \"Owner asked:\", rows with one action, Running, To check, no facts, Answer, Approve and Land cleared in place with the focus on the next row and the chat still), the ⋯ menu, the project overview (facts, markdown, mermaid, its edit by the manager, the reply's link), typing while a turn runs, short chips, a table inside its bubble, the task sheet (a row and a chip open it without a chat scroll, 85%, Escape, Back, swipe, draft kept, three stages, one sentence with More, folds with their notes, no steps, verdict, Review or revision, Land, the item live after landing, History, approval in the sentence, Deny, an answer, Shared files only in a conflict), done lines out of the reservoir, To check (its row, Fail with and without a note, Pass in a bubble that stays in place, Skip, the fix task's line), the manager chat's attach, plans' run of events folded into one row (its chips, count, last event under it, a tap to open and to fold, an owner message ending the run), the other manager's bubbles and each speaker's color in both schemes, Try on a To check item, the # picker, the deep link (one read of the tasks), a waiting task (reservoir row with Answer, its story and field, the answer as a bubble, Land and Land cleared until the reservoir goes and the focus is on the composer), the wide panel and page, Settings > Notifications (empty, refused permission, saved, failed save kept, a session muted from its menu and unmuted, all off), Roles (the ⋯ contact with its unread dot, its chat at #/p/<project>/r/<role> without the reservoir, a message answered, Back), the new-version pill and its reload with the route and the draft; ${audits.length} captures`);
 await linter.finish(fail);

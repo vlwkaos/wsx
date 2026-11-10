@@ -8,6 +8,7 @@ import { resolve } from "./api.js";
 import { h } from "./preact.js";
 import { html, useMemo, useState } from "./lib.js";
 import { Diagram } from "./diagram.js";
+import { Capture } from "./viewer.js";
 
 const makeParser = () => {
   const made = globalThis.markdownit({ html: false, linkify: true });
@@ -21,6 +22,21 @@ const parser = makeParser();
 const proseParser = makeParser().disable("code");
 
 const LINK = /^(https?:|mailto:)/i;
+
+// The file the server granted for a `files/<path>` address (docs/web-client.md "Media"): it
+// names the path it was granted for, so a remote address or another folder's file of the same
+// name is never it.
+const grantedFile = (files, href) => {
+  if (!href?.startsWith("files/")) return undefined;
+  let path;
+  try {
+    path = decodeURIComponent(href.slice(6).split(/[?#]/)[0]);
+  } catch {
+    return undefined;
+  }
+  return files?.find((file) => file.src === path);
+};
+const isVideo = (file) => file.mime?.startsWith("video/");
 // Fence names people write, as the highlight.js grammar that reads them.
 const LANGUAGES = {
   rust: "rust", rs: "rust", typescript: "typescript", ts: "typescript", tsx: "typescript",
@@ -83,8 +99,12 @@ function inline(tokens, files, words, relative) {
         const href = token.meta;
         // A relative address opens the page the view's `relative` gives it (`files/<path>`,
         // `session/<id>`); any other scheme, and another relative address, stays text.
-        const page = relative && !href.includes("..") ? relative(href) : null;
-        push(page ? html`<a href=${page}>${children}</a>`
+        const file = grantedFile(files, href);
+        const page = !file && relative && !href.includes("..") ? relative(href) : null;
+        // A link to a picture or video the server granted opens it in the viewer.
+        push(file ? html`<a href=${resolve(file.url)} data-view data-video=${isVideo(file) || undefined} data-poster=${file.poster && resolve(file.poster)}
+            aria-label=${plain(children) || file.name}>${children}</a>`
+          : page ? html`<a href=${page}>${children}</a>`
           : LINK.test(href) ? html`<a href=${href} target="_blank" rel="noopener noreferrer">${children}</a>` : children);
       } else {
         push(h(token.tag, null, children));
@@ -98,13 +118,20 @@ function inline(tokens, files, words, relative) {
     } else if (token.type === "hardbreak") {
       push(html`<br />`);
     } else if (token.type === "image") {
-      // Only a file the server already granted for this message is shown as a picture. A tap
-      // opens it full screen (viewer.js), unless it is inside a link of its own.
-      const name = (token.attrGet("src") ?? "").split(/[?#]/)[0].split("/").at(-1);
-      const file = files?.find((candidate) => candidate.image && candidate.name === name);
-      const picture = file && html`<img src=${resolve(file.url)} alt=${token.content} loading="lazy" />`;
-      push(file ? (linked ? picture : html`<a href=${resolve(file.url)} data-view>${picture}</a>`)
-        : html`<span class="image-alt">${token.content || "image"}</span>`);
+      // Only a file the server already granted for this message is shown: a picture, or a
+      // video with its poster. A tap opens it full screen (viewer.js), unless it is inside a
+      // link of its own.
+      const src = token.attrGet("src") ?? "";
+      const name = src.split(/[?#]/)[0].split("/").at(-1);
+      const file = grantedFile(files, src) ?? files?.find((candidate) => !candidate.src && candidate.image && candidate.name === name);
+      if (!file || (linked && isVideo(file))) {
+        push(html`<span class="image-alt">${token.content || "image"}</span>`);
+      } else if (isVideo(file)) {
+        push(html`<${Capture} href=${resolve(file.url)} video poster=${file.poster && resolve(file.poster)} label=${token.content || file.name} />`);
+      } else {
+        const picture = html`<img src=${resolve(file.url)} alt=${token.content} loading="lazy" />`;
+        push(linked ? picture : html`<a href=${resolve(file.url)} data-view>${picture}</a>`);
+      }
     } else {
       push(token.content);
     }
@@ -181,7 +208,7 @@ function blocks(tokens, files, words, relative) {
 // `relative(href)`, when given, is the address of a relative link or none; keep it the same function.
 // `prose` reads indented lines as text, not code (docs/web-client-chat.md "Markdown").
 export function Markdown({ text, files, words, relative, prose = false }) {
-  const granted = files?.filter((file) => file.image).map((file) => file.hash).join() ?? "";
+  const granted = files?.map((file) => file.hash + (file.src ?? "")).join() ?? "";
   return useMemo(() => {
     const env = {};
     const tokens = (prose ? proseParser : parser).parse(text, env);

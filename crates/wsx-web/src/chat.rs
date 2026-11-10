@@ -252,6 +252,12 @@ pub struct Attachment {
     /// A video's compact copy is still being made (`Media::prepare`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub preparing: bool,
+    /// A file a message names: the path it names (`files/<src>`), which the page matches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub src: Option<String>,
+    /// A video's poster, the image beside it with the same name: `media/<sha256>.jpg`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poster: Option<String>,
 }
 
 impl From<crate::media::Entry> for Attachment {
@@ -264,14 +270,17 @@ impl From<crate::media::Entry> for Attachment {
             size: entry.size,
             hash: entry.hash,
             preparing: entry.preparing,
+            src: None,
+            poster: None,
         }
     }
 }
 
 pub struct Chat {
-    /// (path, mtime, size) of a project file already copied into the media store.
+    /// (path, mtime, size, only pictures and videos) of a project file already copied into the
+    /// media store.
     /// `None` records a file the store refused, so it is not copied again on every read.
-    produced: Mutex<HashMap<(PathBuf, i64, u64), Option<String>>>,
+    produced: Mutex<HashMap<(PathBuf, i64, u64, bool), Option<String>>>,
     /// One delivery at a time: the page's send and the event observer must not both send
     /// the same waiting message.
     delivering: Mutex<()>,
@@ -480,43 +489,9 @@ impl Chat {
             let Some(relative) = root.relative(Path::new(token)) else {
                 continue;
             };
-            if private_name(&relative) {
-                continue;
-            }
-            let Ok(file) = root.open_file(&relative) else {
-                continue;
-            };
-            let Ok(metadata) = file.metadata() else {
-                continue;
-            };
             // An old file would restart its TTL on every read; only fresh output is offered.
-            let age = crate::devices::now_unix().saturating_sub(metadata.mtime().max(0) as u64);
-            if age >= media.ttl_seconds() || metadata.len() > media.max_file_bytes() {
+            let Some(entry) = self.grant(&relative, root, media, true, false) else {
                 continue;
-            }
-            let key = (
-                root.path().join(&relative),
-                metadata.mtime(),
-                metadata.len(),
-            );
-            let known = crate::locked(&self.produced).get(&key).cloned();
-            let entry = match known {
-                Some(None) => continue,
-                Some(Some(hash)) => media.by_hash(&hash),
-                None => None,
-            };
-            let entry = match entry {
-                Some(entry) => entry,
-                None => {
-                    let name = relative.file_name().unwrap_or_default().to_string_lossy();
-                    let entry = media.ingest(file, &name).ok();
-                    crate::locked(&self.produced)
-                        .insert(key, entry.as_ref().map(|entry| entry.hash.clone()));
-                    let Some(entry) = entry else {
-                        continue;
-                    };
-                    entry
-                }
             };
             if !found.iter().any(|existing| existing.hash == entry.hash) {
                 found.push(entry.into());
@@ -526,6 +501,92 @@ impl Chat {
             }
         }
         found
+    }
+
+    /// The pictures and videos of `root` that a message links or shows (`![](files/<path>)`,
+    /// `[name](files/<path>)`), as attachments that name their path; a video also names the
+    /// jpg beside it as its poster. The rule is `grant`'s, and a file outside the root, a
+    /// secret or another type is left out, so the page shows its alt text. A file of any age.
+    /// ref: docs/web-client.md "Media"
+    pub fn granted_files(&self, text: &str, root: &Root, media: &Media) -> Vec<Attachment> {
+        let mut found: Vec<Attachment> = Vec::new();
+        for path in wsx_core::task::chat::linked_files(text) {
+            let relative = PathBuf::from(&path);
+            let shown = relative.extension().is_some_and(|extension| {
+                ["jpg", "jpeg", "png", "webp", "gif", "mp4", "webm"]
+                    .iter()
+                    .any(|kind| extension.eq_ignore_ascii_case(kind))
+            });
+            if !shown {
+                continue;
+            }
+            let Some(entry) = self.grant(&relative, root, media, false, true) else {
+                continue;
+            };
+            let poster = entry.mime.starts_with("video/").then(|| {
+                self.grant(&relative.with_extension("jpg"), root, media, false, true)
+                    .filter(|poster| poster.is_image())
+            });
+            let mut file = Attachment::from(entry);
+            file.src = Some(path);
+            file.poster = poster
+                .flatten()
+                .map(|poster| format!("media/{}", poster.file_name()));
+            if !found.iter().any(|existing| existing.hash == file.hash) {
+                found.push(file);
+            }
+            if found.len() == MAX_ATTACHMENTS {
+                break;
+            }
+        }
+        found
+    }
+
+    /// One project file, copied into the media store (once per version): the one rule of what
+    /// the web client hands out of a project. Inside `root` without a symlink (`open_file`), not
+    /// a secret (`private_name`), within the size limit and, with `fresh`, newer than the TTL;
+    /// `only_shown` takes only a picture or video, by content signature.
+    fn grant(
+        &self,
+        relative: &Path,
+        root: &Root,
+        media: &Media,
+        fresh: bool,
+        only_shown: bool,
+    ) -> Option<crate::media::Entry> {
+        if private_name(relative) {
+            return None;
+        }
+        let file = root.open_file(relative).ok()?;
+        let metadata = file.metadata().ok()?;
+        let age = crate::devices::now_unix().saturating_sub(metadata.mtime().max(0) as u64);
+        if metadata.len() > media.max_file_bytes() || (fresh && age >= media.ttl_seconds()) {
+            return None;
+        }
+        let key = (
+            root.path().join(relative),
+            metadata.mtime(),
+            metadata.len(),
+            only_shown,
+        );
+        let known = crate::locked(&self.produced).get(&key).cloned();
+        match known {
+            Some(None) => return None,
+            Some(Some(hash)) => {
+                if let Some(entry) = media.by_hash(&hash) {
+                    return Some(entry);
+                }
+            }
+            None => {}
+        }
+        let name = relative.file_name().unwrap_or_default().to_string_lossy();
+        let entry = media
+            .ingest(file, &name, |mime| {
+                !only_shown || mime.starts_with("image/") || mime.starts_with("video/")
+            })
+            .ok();
+        crate::locked(&self.produced).insert(key, entry.as_ref().map(|entry| entry.hash.clone()));
+        entry
     }
 
     /// Take one message from the page into the session's queue, and deliver the oldest
@@ -1450,12 +1511,18 @@ fn queued_view(queued: &crate::queue::Queued, media: &Media) -> Value {
     })
 }
 
-/// Files an agent may name but the web client must not hand out: hidden paths
-/// (`.env`, `.git/`, `.ssh/`) and names that usually hold credentials.
+/// Files a message may name but the web client must not hand out: the folders and files that
+/// hold credentials (`.git`, `.env*`, `.ssh`, ...) and names that usually hold them. Other
+/// dot-folders (`.studio-data`) are project files like any other.
 fn private_name(relative: &Path) -> bool {
-    let hidden = relative
-        .components()
-        .any(|part| part.as_os_str().to_string_lossy().starts_with('.'));
+    let hidden = relative.components().any(|part| {
+        let part = part.as_os_str().to_string_lossy().to_ascii_lowercase();
+        part.starts_with(".env")
+            || [
+                ".git", ".ssh", ".gnupg", ".aws", ".kube", ".docker", ".netrc", ".npmrc", ".pypirc",
+            ]
+            .contains(&part.as_str())
+    });
     let name = relative
         .file_name()
         .unwrap_or_default()

@@ -5,6 +5,7 @@ import { html, Icon, useEffect, useRef, useState } from "./lib.js";
 import { can, useStore } from "./store.js";
 import { loadTasks } from "./task-api.js";
 import { TaskChip } from "./task-words.js";
+import { Capture } from "./viewer.js";
 import { markFound } from "./reply.js";
 import { SheetPage, useSheetRead } from "./ui.js";
 
@@ -99,11 +100,8 @@ export function CheckRow({ project, item: listed, revision, onChanged, onMention
           </dl>
           ${item.capture_removed && html`<p class="check-state">Capture removed</p>`}
           ${item.capture && !item.capture_removed && html`
-            <a class="check-capture" href=${capture} data-view data-download=${`${capture}?download=1`} data-video=${video || undefined} data-poster=${poster}
-              aria-label=${`${video ? "Video" : "Capture"} of: ${item.check}`}>
-              ${video && !poster ? html`<span class="check-frame"></span>` : html`<img src=${poster ?? capture} alt="" style=${item.capture_size && { "--w": item.capture_size[0], "--h": item.capture_size[1], "--width": `${item.capture_size[0]}px` }} />`}
-              ${video && html`<span class="check-play"><${Icon} name="play" /></span>`}
-            </a>`}
+            <${Capture} href=${capture} download=${`${capture}?download=1`} video=${video} poster=${poster} size=${item.capture_size}
+              label=${`${video ? "Video" : "Capture"} of: ${item.check}`} />`}
           ${item.state === "failed" && html`<p class="check-state">Failed: ${item.note}${item.fix_task != null ? html` · <${TaskChip} project=${project} id=${item.fix_task} /> fixes it` : null}</p>`}
           ${item.state === "passed" && html`<p class="check-state">Passed</p>`}
           ${item.state === "skipped" && html`<p class="check-state">Skipped</p>`}
