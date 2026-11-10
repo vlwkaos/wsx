@@ -312,9 +312,13 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
     // ^ New work starts on an available agent: a task never begins on one whose usage limit
     // is on record. `--model` names the configured agent's model. ref: docs/tasks.md "Agents"
     let own = agent::account(&settings.adapter, &settings.model);
-    let (adapter, model) = match agent::blocked_until(&own, now)
-        .and_then(|_| agent::fallback(&settings.fallback, now, Operation::Worker))
-    {
+    let moved = agent::blocked_until(&own, now)
+        .and_then(|_| agent::fallback(&settings.fallback, now, Operation::Worker));
+    // ^ A task born on a fallback is on one like a switched task: it goes home when its own
+    // agent is free (after a failed sign-in, at its first turn once the record ends).
+    let on_fallback = moved.is_some();
+    let sign_in = on_fallback && store::sign_in_failed_until(&own, now).is_some();
+    let (adapter, model) = match moved {
         Some(next) => (next.adapter, next.model),
         None => (settings.adapter, model.unwrap_or(settings.model)),
     };
@@ -331,8 +335,8 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         adapter,
         model,
         effort,
-        fallback: false,
-        sign_in: false,
+        fallback: on_fallback,
+        sign_in,
         checks: settings.checks,
         steps,
         step: 0,
