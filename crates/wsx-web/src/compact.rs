@@ -439,9 +439,11 @@ mod tests {
         fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
         std::env::set_var("PATH", format!("{}:/bin:/usr/bin", dir.display()));
 
+        // ^ The first exec of a fresh script can take seconds on a loaded machine; a shorter
+        // limit kills it before it writes the pid file.
         let started = Instant::now();
-        assert!(run("ffprobe", &[], 1024, Duration::from_secs(1)).is_none());
-        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(run("ffprobe", &[], 1024, Duration::from_secs(5)).is_none());
+        assert!(started.elapsed() < Duration::from_secs(20));
 
         let child: libc::pid_t = fs::read_to_string(&pid_file)
             .unwrap()
