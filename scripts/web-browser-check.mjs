@@ -95,11 +95,13 @@ async function resize(next) {
 // word with no box of its own counts by its content, as the design lint measures it. `scope` is a
 // selector; the controls of each match are compared in pairs along the row, and none may be closer than
 // the design token space-3 (the gap of .actions and .row-actions). Run at 375, 390 and 1280 px; 390 and
-// 1280 also get the design lint (LINTED). The page's size is back to what it was.
-async function controlGapsAt(name, scope) {
+// 1280 also get the design lint (LINTED). The page's size is back to what it was. `prepare` runs after each
+// resize: a wide page mounts the chat again, and a sent message the blocked timeline never shows is gone.
+async function controlGapsAt(name, scope, prepare = async () => {}) {
   const before = size;
   for (const next of [[375, 812, 2], SIZES[1], SIZES[2]]) {
     await resize(next);
+    await prepare();
     const found = await evaluate(`(() => {
       const probe = document.createElement('div'); probe.style.width = 'var(--space-3)'; document.body.append(probe);
       const min = probe.getBoundingClientRect().width; probe.remove();
@@ -1406,10 +1408,13 @@ await until("!document.querySelector('.chat-error')", "a failed read was not tri
 // Send again under it sit apart.
 await openSession("idle");
 await send("Network.setBlockedURLs", { urls: ["*/timeline*"] });
-await typeInto("sent and not shown yet");
-await evaluate("document.querySelector('.composer .button-primary').click()");
-await until("!!document.querySelector('.message-user[data-pending] .message-actions button + button')", "the idle session did not show a sent message with Copy and Send again");
-await controlGapsAt("chat-sent-gaps", ".message-user[data-pending] .message-actions");
+const sentActions = ".message-user[data-pending] .message-actions";
+await controlGapsAt("chat-sent-gaps", sentActions, async () => {
+  if (await count(`${sentActions} button + button`)) return;
+  await typeInto("sent and not shown yet");
+  await evaluate("document.querySelector('.composer .button-primary').click()");
+  await until(`!!document.querySelector('${sentActions} button + button')`, "the idle session did not show a sent message with Copy and Send again");
+});
 await send("Network.setBlockedURLs", { urls: [] });
 
 // Sub-path surfaces as the browser resolved them.
