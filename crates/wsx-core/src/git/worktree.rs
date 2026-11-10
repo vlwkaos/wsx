@@ -274,16 +274,22 @@ pub(crate) fn require_clean(worktree_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `git worktree remove {path}` (never `--force`: git refuses uncommitted work too), then
-/// `git branch -d {branch}`, which keeps a branch with unmerged commits. Returns whether
-/// the branch was deleted.
+/// `git worktree remove {path}` (`--force` only when the owner confirmed the loss: git
+/// refuses uncommitted work otherwise), then `git branch -d {branch}`, which keeps a branch
+/// with unmerged commits; `-D` when forced. Returns whether the branch was deleted.
 pub(crate) fn remove_worktree(
     repo_path: &Path,
     worktree_path: &Path,
     branch: &str,
+    force: bool,
 ) -> Result<bool> {
-    let output = git_cmd(repo_path)
-        .args(["worktree", "remove", &worktree_path.to_string_lossy()])
+    let mut remove = git_cmd(repo_path);
+    remove.args(["worktree", "remove"]);
+    if force {
+        remove.arg("--force");
+    }
+    let output = remove
+        .arg(&*worktree_path.to_string_lossy())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
@@ -292,7 +298,7 @@ pub(crate) fn remove_worktree(
         return Err(git_failure("git worktree remove", &output));
     }
     let deleted = git_cmd(repo_path)
-        .args(["branch", "-d", branch])
+        .args(["branch", if force { "-D" } else { "-d" }, branch])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()

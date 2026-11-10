@@ -112,6 +112,8 @@ struct TasksFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     roles: Option<TaskRolesFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    prune: Option<TaskPruneFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     preview: Option<TaskPreviewFile>,
     /// `owner` or `none`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -185,6 +187,19 @@ struct TaskRolesFile {
     #[serde(rename = "closeDays", skip_serializing_if = "Option::is_none")]
     close_days: Option<f64>,
 }
+
+/// `[tasks.prune]`: days a session or a worktree stands idle before the manager host acts;
+/// 0 is off. ref: docs/tasks.md "Stale worktrees"
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+struct TaskPruneFile {
+    #[serde(rename = "idleDays", skip_serializing_if = "Option::is_none")]
+    idle_days: Option<f64>,
+    #[serde(rename = "removeDays", skip_serializing_if = "Option::is_none")]
+    remove_days: Option<f64>,
+}
+
+const MAX_PRUNE_DAYS: f64 = 3650.0;
 
 /// Open roles besides the manager; each is a conversation the owner reads.
 const MAX_ROLES: usize = 8;
@@ -651,6 +666,28 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
             }
             // ^ A fraction is allowed, at least one second (a test closes a role in seconds).
             config.roles_close_secs = ((days * 86_400.0).round() as u64).max(1);
+        }
+    }
+    if let Some(prune) = file.prune {
+        for (days, field, secs) in [
+            (prune.idle_days, "idleDays", &mut config.prune_idle_secs),
+            (
+                prune.remove_days,
+                "removeDays",
+                &mut config.prune_remove_secs,
+            ),
+        ] {
+            let Some(days) = days else { continue };
+            if !(0.0..=MAX_PRUNE_DAYS).contains(&days) {
+                return Err(format!(
+                    "tasks.prune.{field} must be 0 (off) to {MAX_PRUNE_DAYS}"
+                ));
+            }
+            // ^ A fraction is allowed, at least one second (a scenario prunes in seconds).
+            *secs = match days {
+                0.0 => 0,
+                days => ((days * 86_400.0).round() as u64).max(1),
+            };
         }
     }
     if let Some(land) = file.land {

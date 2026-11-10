@@ -151,6 +151,7 @@ impl App {
                 PendingAction::DeleteWorktree {
                     project_idx: pi,
                     worktree_idx: wi,
+                    force,
                 } => {
                     // ^ A snapshot may have removed the target while the prompt was open.
                     let Some((repo, wt_path, branch)) =
@@ -170,7 +171,7 @@ impl App {
                     self.clamp_selected();
                     let client = self.runtime_client.clone();
                     self.spawn_bg(format!("delete {}", branch), move || {
-                        ops::delete_worktree(&client, &repo, &wt_path, &branch)?;
+                        ops::delete_worktree(&client, &repo, &wt_path, &branch, force)?;
                         Ok(BgOutcome::WorktreeRemoved { label })
                     });
                 }

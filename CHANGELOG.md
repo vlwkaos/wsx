@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Tasks: old worktrees and sessions no longer pile up. The manager host sweeps its project at start and hourly (`tasks.prune.idleDays` 14, `tasks.prune.removeDays` 30, 0 is off): an idle session of a worktree other than the main checkout is closed, and an idle worktree that is clean and whose branch is merged or on a remote is removed; a dirty or unmerged one is only named in the chat, once. The main checkout's sessions (the project's shell), a task's copy, a live agent turn and a program that still prints are never touched. The news are chat events that start no manager turn. One rule in `wsx_core::stale` decides; wsxd's `pane_activity` now lists every pane with `last_io_unix_ms`, the last output or input (daemon revision 49) ([docs/tasks.md](docs/tasks.md) "Stale worktrees").
+- Web: *Delete* on each worktree of a project's Sessions list. The sheet names what the delete closes and loses; uncommitted files or commits neither merged nor pushed need the confirm that names them, and the confirmed delete forces the removal and deletes the branch. The TUI's `d` on a worktree names the same loss and forces only after it. The main checkout and a task's worktree are refused. New routes `GET api/worktrees/<id>` and `DELETE api/worktrees/<id>[?confirm=true]` (`session_start` and `files_write`).
+
 ## [0.43.0] - 2026-11-09
 
 ### Added

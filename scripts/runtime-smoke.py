@@ -622,6 +622,20 @@ while time.monotonic() - interrupted < 1:
     time.sleep(0.03)
 assert not any(item["pane_id"] == activity_pane_id and item["foreground_job"]
                for item in activity_snapshot.get("pane_activity", [])), activity_snapshot
+# ^ The idle clock of the stale rule (docs/tasks.md "Stale worktrees"): every pane with a runtime
+# has one, it stays put while the shell is silent and moves on input and on output.
+def last_io(pane_id):
+    rows = [item for item in call("snapshot")["data"]["pane_activity"] if item["pane_id"] == pane_id]
+    assert len(rows) == 1 and rows[0]["last_io_unix_ms"] > 0, rows
+    return rows[0]["last_io_unix_ms"]
+
+
+time.sleep(1.0)
+quiet_clock = last_io(activity_pane_id)
+time.sleep(1.2)
+assert last_io(activity_pane_id) == quiet_clock, "a silent shell moved its idle clock"
+send_shell_command(activity_pane_id, "echo clock-moves", 83)
+wait_for(lambda: last_io(activity_pane_id) > quiet_clock, "input and output move the idle clock")
 # This child is a separate top-level shell, not a Claude subprocess.
 send_shell_command(activity_pane_id, "printf 'marker:%s\\n' \"${CLAUDE_CODE_CHILD_SESSION-unset}\"", 82)
 marker_deadline = time.monotonic() + 2

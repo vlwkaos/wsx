@@ -148,6 +148,12 @@ pub struct TaskConfig {
     pub roles_max: usize,
     /// `tasks.roles.closeDays` in seconds: a role with no turn for this long is closed.
     pub roles_close_secs: u64,
+    /// `tasks.prune.idleDays` in seconds: a session idle this long is closed; 0 is off.
+    /// ref: docs/tasks.md "Stale worktrees"
+    pub prune_idle_secs: u64,
+    /// `tasks.prune.removeDays` in seconds: an idle, clean, merged or pushed worktree is
+    /// removed; 0 is off.
+    pub prune_remove_secs: u64,
 }
 
 /// `tasks.workflow`: the project's own words for each fixed stage; wsx's defaults name no
@@ -278,6 +284,8 @@ impl Default for TaskConfig {
             // ^ A role is for work over weeks, and its parent task may wait on the owner for
             // more than a week: two weeks of no turn means the work is over.
             roles_close_secs: 14 * 24 * 60 * 60,
+            prune_idle_secs: 14 * 24 * 60 * 60,
+            prune_remove_secs: 30 * 24 * 60 * 60,
         }
     }
 }

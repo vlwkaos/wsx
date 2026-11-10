@@ -1,6 +1,7 @@
 // Projects: every project this site may reach. A project opens its worktrees and
 // their sessions (with task_view too, not its chat); Files and New session stay on each row.
-import { html, Loading, plural, useNow } from "./lib.js";
+import { html, Loading, plural, useEffect, useNow, useRef, useState } from "./lib.js";
+import { api } from "./api.js";
 import { can, listedSessions, shows, stateOf, useStore } from "./store.js";
 import { NewSession, SessionRow } from "./inbox.js";
 import { Back } from "./ui.js";
@@ -51,12 +52,53 @@ export function Projects({ rail }) {
 // A project's sessions, from the manager's top row (#/p/<id>/sessions).
 export const ProjectSessions = ({ id }) => html`<${Project} id=${id} back=${`#/p/${id}`} />`;
 
+// ^ The confirmation of a worktree's delete (docs/tasks.md "Stale worktrees"): it asks the server
+// what the delete closes and loses, and names it. A worktree with nothing to lose is deleted
+// by the plain button; one with uncommitted work or commits neither merged nor pushed needs
+// the button that names the loss. A failure stays in the sheet.
+function DeleteWorktree({ worktree, onClose }) {
+  const dialog = useRef();
+  const [facts, setFacts] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    dialog.current.showModal();
+    api(`api/worktrees/${worktree.id}`).then(setFacts, (failure) => setError(failure.message));
+  }, []);
+  const lost = facts?.lost;
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api(`api/worktrees/${worktree.id}${lost ? "?confirm=true" : ""}`, { method: "DELETE" });
+      dialog.current.close();
+    } catch (failure) {
+      setError(failure.message);
+      setBusy(false);
+    }
+  };
+  return html`
+    <dialog class="sheet" ref=${dialog} aria-labelledby="delete-worktree-title" onClose=${onClose}>
+      <form onSubmit=${submit}>
+        <h2 class="sheet-title" id="delete-worktree-title">Delete ${worktree.branch || "detached"}?</h2>
+        ${facts && html`<p class="muted">${counted(facts.sessions)} close. ${lost ? html`<strong>It loses ${lost}.</strong>` : "Nothing is lost: it is clean, and merged or pushed."}</p>`}
+        <p class="error" role="alert">${error}</p>
+        <div class="actions sheet-actions">
+          <button class="button" type="button" onClick=${() => dialog.current.close()}>Cancel</button>
+          <button class="button button-danger" type="submit" disabled=${busy || !facts}>${lost ? "Delete and lose it" : "Delete"}</button>
+        </div>
+      </form>
+    </dialog>`;
+}
+
 // One project: its worktrees, main checkout first, each with its sessions.
 export function Project({ id, back = "#/projects" }) {
   const store = useStore();
   const project = store.projects.find((candidate) => candidate.id === id);
   const sessions = project ? listedSessions(store.sessions).filter((session) => session.project.id === id) : [];
   const now = useNow(sessions.some((session) => stateOf(session).key === "working"));
+  const [deleting, setDeleting] = useState(null);
   if (!project) {
     return html`
       <div class="page">
@@ -65,6 +107,7 @@ export function Project({ id, back = "#/projects" }) {
       </div>`;
   }
   const worktrees = [...project.worktrees].sort((left, right) => Number(right.main) - Number(left.main));
+  const deletable = can("session_start") && can("files_write");
   return html`
     <div class="page">
       <header class="bar">
@@ -82,7 +125,11 @@ export function Project({ id, back = "#/projects" }) {
             <section class="group worktree" key=${worktree.id} aria-label=${worktree.branch || "detached"}>
               <div class="group-head">
                 <h2 class="group-name"><span class="group-branch">${worktree.branch || "detached"}</span>${worktree.main ? " · main checkout" : null}</h2>
-                <${NewSession} project=${project} worktree=${worktree} />
+                <span class="row-actions">
+                  ${deletable && !worktree.main && html`<button class="link-action" type="button" aria-label=${`Delete worktree ${worktree.branch || "detached"}`}
+                    onClick=${() => setDeleting(worktree)}>Delete</button>`}
+                  <${NewSession} project=${project} worktree=${worktree} />
+                </span>
               </div>
               ${own.length
                 ? html`<ul class="rows">${own.map((session) => html`
@@ -91,5 +138,6 @@ export function Project({ id, back = "#/projects" }) {
             </section>`;
         })}
       </div>
+      ${deleting && html`<${DeleteWorktree} worktree=${deleting} onClose=${() => setDeleting(null)} />`}
     </div>`;
 }

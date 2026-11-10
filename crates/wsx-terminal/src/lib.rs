@@ -213,6 +213,8 @@ struct Shared {
     writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     error: Arc<Mutex<Option<String>>>,
     revision: AtomicU64,
+    /// When the program last printed or got input (unix ms): the idle clock of the pane.
+    last_io: AtomicU64,
     exited: AtomicBool,
     terminating: AtomicBool,
     notify: Arc<dyn Fn() + Send + Sync>,
@@ -295,6 +297,7 @@ impl TerminalRuntime {
             writer,
             error,
             revision: AtomicU64::new(1),
+            last_io: AtomicU64::new(wsx_core::task::now_unix_ms()),
             exited: AtomicBool::new(false),
             terminating: AtomicBool::new(false),
             notify,
@@ -364,6 +367,11 @@ impl TerminalRuntime {
     /// `write` that gives up at `deadline` when the program stops reading its input.
     /// Bytes written before the deadline stay in the program's input.
     pub fn write_within(&self, bytes: &[u8], deadline: Instant) -> Result<(), TerminalError> {
+        if !bytes.is_empty() {
+            self.shared
+                .last_io
+                .store(wsx_core::task::now_unix_ms(), Ordering::Release);
+        }
         if let Some(process) = self.process.as_ref().filter(|_| !bytes.is_empty()) {
             if self.exited() {
                 return Err(TerminalError::Runtime("terminal process exited".into()));
@@ -441,6 +449,12 @@ impl TerminalRuntime {
         self.shared.revision.load(Ordering::Acquire)
     }
 
+    /// When the program last printed or got input, in unix ms (the pane's idle clock;
+    /// a restored or restarted runtime starts it at its creation).
+    pub fn last_io_unix_ms(&self) -> u64 {
+        self.shared.last_io.load(Ordering::Acquire)
+    }
+
     #[cfg(test)]
     fn synchronized_output_active(&self) -> bool {
         let emulator = lock(&self.shared.emulator);
@@ -500,6 +514,7 @@ impl TerminalRuntime {
                 writer,
                 error,
                 revision: AtomicU64::new(1),
+                last_io: AtomicU64::new(wsx_core::task::now_unix_ms()),
                 exited: AtomicBool::new(false),
                 terminating: AtomicBool::new(false),
                 notify: Arc::new(|| {}),
@@ -653,6 +668,9 @@ fn spawn_reader_fd(
                     let mut emulator = lock(&shared.emulator);
                     emulator.ingest(&buffer[..count as usize]);
                     shared.revision.fetch_add(1, Ordering::AcqRel);
+                    shared
+                        .last_io
+                        .store(wsx_core::task::now_unix_ms(), Ordering::Release);
                     drop(emulator);
                     (shared.notify)();
                     continue;

@@ -87,7 +87,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // Revision 48 answers `Frames` with the screens and the epoch only, in place of the snapshot of
 // `View`, and sends `TerminalServerMessage::Heartbeat` to a frame subscriber that asked, so the
 // client can time out a stream that goes silent (capability `stream_heartbeat`).
-pub const DAEMON_REVISION: u32 = 48;
+// Revision 49 lists every live pane in `pane_activity` with `last_io_unix_ms`, the idle clock
+// of the stale rule (docs/tasks.md "Stale worktrees").
+pub const DAEMON_REVISION: u32 = 49;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
