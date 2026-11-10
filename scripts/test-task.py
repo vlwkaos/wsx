@@ -3106,10 +3106,12 @@ def part_worker(created=None):
     # go to the manager quoted with the item's check, as does an "x" that quotes a message.
     mark('22c')
     status_reply = reply_to(js('task', 'say', 'STATUS')['id'])
-    replied = [js('task', 'new', 'WORK x%d.txt HV' % n)['id'] for n in range(3)]
-    for n in replied:
-        assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
-        assert js('task', 'land', n)['state'] == 'landed'
+    replied = []
+    for n in range(3):
+        replied.append(js('task', 'new', 'WORK x%d.txt HV' % n)['id'])
+        assert wait_state(replied[-1], 'ready', 'failed')['state'] == 'ready'
+        landed = js('task', 'land', replied[-1])
+        assert landed['state'] == 'landed', landed
     by_task = {i['task']: i for i in js('task', 'check')['open']}
     first, second, third = (by_task[n] for n in replied)
     reply_to(js('task', 'say', 'STATUS')['id'])  # ^ The landings' events are read by now.
