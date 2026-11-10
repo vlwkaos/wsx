@@ -3071,7 +3071,8 @@ capabilities = ["terminal_view"]
                 if 'processor slowed' in line or line.startswith(('photo of', 'empty phone composer', '/ list', 'mobile audit')):
                     print(line, file=sys.stderr)
             ok('real browser, ' + result.stdout.strip().splitlines()[-1])
-            wait(lambda: steady(m2, 'GET', '/api/chat/%d/timeline' % shown['idle'])[1]['items'][-1].get('text') == 'echo: line one', 'browser turn')
+            # ^ Not the last item: the gap check sends messages to this session after "line one".
+            wait(lambda: any(item.get('text') == 'echo: line one' for item in steady(m2, 'GET', '/api/chat/%d/timeline' % shown['idle'])[1]['items']), 'browser turn')
             # The command picked in the browser reached the agent as typed.
             assert traces('long')[-1] == '/compact', traces('long')
 
