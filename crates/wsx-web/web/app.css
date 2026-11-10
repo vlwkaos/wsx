@@ -419,6 +419,8 @@ a[data-view] { cursor: zoom-in; }
   background: var(--color-surface); border-radius: var(--radius-control);
 }
 .message[data-pending] { color: var(--color-muted); }
+/* The controls under a message: Copy, Send again. A control never touches its neighbour (space-3, as .actions and .row-actions). */
+.message-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
 .attachments { list-style: none; margin: var(--space-2) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); font-size: var(--font-size-sm); }
 .attachments img { display: block; max-width: 100%; max-height: calc(var(--size-rail) * 0.8); border-radius: var(--radius-key); }
 /* Hook: .summary — a compaction summary. The label says what it is; a hairline at the start
