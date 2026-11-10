@@ -252,16 +252,12 @@ pub fn facts(snapshot: &Snapshot, path: &Path, branch: &str, now_ms: u64) -> Fac
                         matches!(agent.state, AgentState::Working | AgentState::Blocked)
                     }) || activity(pane).is_some_and(|a| a.foreground_job))
             });
-            let provider = panes
-                .iter()
-                .find_map(|pane| pane.agent.as_ref())
-                .map(|agent| agent.provider.as_str());
             SessionFact {
                 id: session.id,
                 revision: session.revision,
                 idle_ms,
                 busy,
-                task: session_news::is_task_session(&session.label, provider),
+                task: is_task_session(snapshot, session),
             }
         })
         .collect();
@@ -271,6 +267,37 @@ pub fn facts(snapshot: &Snapshot, path: &Path, branch: &str, now_ms: u64) -> Fac
         sessions,
         git_idle_ms: git_idle(path, now_ms),
     }
+}
+
+/// A task's agent session, by its label or its provider (`session_news::is_task_session`).
+fn is_task_session(snapshot: &Snapshot, session: &crate::runtime::Session) -> bool {
+    let provider = snapshot
+        .panes
+        .iter()
+        .filter(|pane| pane.session_id == session.id)
+        .find_map(|pane| pane.agent.as_ref())
+        .map(|agent| agent.provider.as_str());
+    session_news::is_task_session(&session.label, provider)
+}
+
+/// Whether the worktree holds a task's session: the task, not the owner, owns it.
+pub fn holds_task_session(snapshot: &Snapshot, worktree: crate::runtime::WorktreeId) -> bool {
+    snapshot
+        .sessions
+        .iter()
+        .filter(|session| session.worktree_id == worktree)
+        .any(|session| is_task_session(snapshot, session))
+}
+
+/// The working copies of the project's open tasks (`project_id` is the task store's id).
+pub fn open_copies(project_id: &str) -> Vec<PathBuf> {
+    crate::task::view::project_tasks(project_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(_, record)| record.ok())
+        .filter(|record| record.state.is_open())
+        .map(|record| record.working_copy)
+        .collect()
 }
 
 fn same(a: &Path, b: &Path) -> bool {
