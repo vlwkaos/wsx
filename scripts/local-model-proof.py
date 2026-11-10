@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
-"""Real-server proof for the local fallback model (docs/local-model.md). Run: python3 -I scripts/local-model-proof.py [proof|memory] [out_dir]
+"""Proof for the local fallback model endpoint (docs/local-model.md). Run: python3 -I scripts/local-model-proof.py [out_dir]
 
-proof   (default) against the running server (`scripts/local-model.sh start`): /v1/models with and
-        without the key, one tool call, decode and 4K-prompt speed, the cached second call, and one
-        round trip through `pi --mode rpc`. Writes <out_dir>/proof.json and pi-rpc.jsonl.
-memory  starts the server at each context size, fills the window with one prompt, and reads the
-        process footprint. It stops the server afterwards. Writes <out_dir>/memory.json.
-Output goes to .work/local-model by default. Stdlib only; no mocks.
+Against any OpenAI-compatible endpoint (settings: LOCAL_MODEL_URL, LOCAL_MODEL_KEY_FILE, LOCAL_MODEL_ID):
+/v1/models with and without the key, one tool call, decode and 4K-prompt speed, the cached second
+call, and one round trip through `pi --mode rpc`. Writes <out_dir>/proof.json and pi-rpc.jsonl
+(default .work/local-model). It starts and stops no server. Stdlib only; no mocks.
 """
 import json, os, select, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPT = os.path.join(ROOT, 'scripts', 'local-model.sh')
-STATE = os.environ.get('LOCAL_MODEL_DIR', os.path.expanduser('~/.local/state/local-model'))
-PORT = os.environ.get('LOCAL_MODEL_PORT', '8090')
-BASE = f'http://127.0.0.1:{PORT}'
-KEY = open(os.path.join(STATE, 'api-key')).read().strip() if os.path.exists(os.path.join(STATE, 'api-key')) else ''
-MODEL = 'lfm3-1.7b'
+BASE = os.environ.get('LOCAL_MODEL_URL', 'http://127.0.0.1:8090').rstrip('/')
+KEY_FILE = os.path.expanduser(os.environ.get('LOCAL_MODEL_KEY_FILE', '~/.local/state/local-model/api-key'))
+KEY = open(KEY_FILE).read().strip() if os.path.exists(KEY_FILE) else ''
+MODEL = os.environ.get('LOCAL_MODEL_ID', '')  # empty: the first model /v1/models lists
 
 
 def call(path, body=None, key=KEY, timeout=600):
@@ -65,8 +61,8 @@ def pi_round_trip(out_dir):
     home = tempfile.mkdtemp(prefix='wsx-pi-proof-')  # like #351: a folder with models.json only
     work = tempfile.mkdtemp(prefix='wsx-pi-work-')
     models = {'providers': {'llama-wsx': {
-        'baseUrl': BASE + '/v1', 'api': 'openai-completions', 'apiKey': '!cat ' + os.path.join(STATE, 'api-key'),
-        'models': [{'id': MODEL, 'name': 'LFM3 1.7B Q8_0 (wsx local)', 'reasoning': False, 'input': ['text'],
+        'baseUrl': BASE + '/v1', 'api': 'openai-completions', 'apiKey': '!cat ' + KEY_FILE,
+        'models': [{'id': MODEL, 'name': MODEL + ' (wsx local)', 'reasoning': False, 'input': ['text'],
                     'contextWindow': 32768, 'maxTokens': 2048,
                     'compat': {'supportsStore': False, 'maxTokensField': 'max_tokens'}}]}}}
     with open(os.path.join(home, 'models.json'), 'w') as f:
@@ -107,10 +103,12 @@ def pi_round_trip(out_dir):
 
 
 def proof(out_dir):
+    global MODEL
     res = {}
     res['models_with_key'] = call('/v1/models')
     res['models_without_key'] = call('/v1/models', key='')[0]
     assert res['models_with_key'][0] == 200 and res['models_without_key'] == 401, res
+    MODEL = MODEL or res['models_with_key'][1]['data'][0]['id']
     # Tool call, reasoning off per request as well as by the server flag.
     out = chat([{'role': 'user', 'content': 'List the open tasks by running the wsx task list command'}],
                tools=[TOOL], reasoning_effort='none')
@@ -133,36 +131,7 @@ def proof(out_dir):
     print(json.dumps(res, indent=2))
 
 
-def footprint(pid):
-    out = subprocess.run(['footprint', str(pid)], capture_output=True, text=True).stdout
-    vals = {}
-    for line in out.splitlines():
-        for name in ('phys_footprint_peak', 'phys_footprint'):
-            if line.strip().startswith(name + ':'):
-                vals[name] = line.split(':')[1].strip()
-                break
-    return vals
-
-
-def memory(out_dir):
-    rows = []
-    sh = lambda *a, **env: subprocess.run([SCRIPT, *a], env={**os.environ, **env}, check=True, capture_output=True, text=True)
-    sh('stop')
-    for ctx in (16384, 32768, 65536, 131072):
-        sh('start', LOCAL_MODEL_CTX=str(ctx))
-        pid = int(open(os.path.join(STATE, 'server.pid')).read())
-        idle = footprint(pid)
-        out = chat([{'role': 'user', 'content': filler(ctx - 800) + '\nReply with one word.'}], max_tokens=8)
-        rows.append({'context': ctx, 'prompt_tokens': out['usage']['prompt_tokens'], 'prompt_tok_s': speed(out)['prompt_tok_s'],
-                     'footprint_after_load': idle, 'footprint_after_full_window': footprint(pid)})
-        print(rows[-1], flush=True)
-        sh('stop')
-    with open(os.path.join(out_dir, 'memory.json'), 'w') as f:
-        json.dump(rows, f, indent=2)
-
-
 if __name__ == '__main__':
-    mode = sys.argv[1] if len(sys.argv) > 1 else 'proof'
-    out_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, '.work', 'local-model')
+    out_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, '.work', 'local-model')
     os.makedirs(out_dir, exist_ok=True)
-    {'proof': proof, 'memory': memory}[mode](out_dir)
+    proof(out_dir)

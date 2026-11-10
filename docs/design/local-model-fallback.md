@@ -10,11 +10,11 @@ Claude stays the supervisor. When Claude is down, a local model of 9B or less ta
 | Part | Recommendation |
 |---|---|
 | Endpoint | One OpenAI-compatible base URL in Pi's `models.json`, whatever serves it. Start with a wsx-documented `llama-server` recipe. `kaos serve` or Locals swap in later by editing one URL |
-| Models | **LFM3-1.7B is the first model** and the primary goal: serve it (W5, task #355; it already runs here, 2.2), score it on every role, tune the harness for it. Qwen3.5-9B, Gemma 4 E4B and LFM2.5-2.6B are later comparisons through the same test (3.5). The test, not the vendor figures, decides which model holds which role |
+| Models | **LFM3-1.7B is the first model** and the primary goal: use it through an endpoint kaos serves (2.3; measured in W5, task #355), score it on every role, tune the harness for it. Qwen3.5-9B, Gemma 4 E4B and LFM2.5-2.6B are later comparisons through the same test (3.5). The test, not the vendor figures, decides which model holds which role |
 | Large local | Reserved. strata is for a model that would not fit in memory; none is planned now. It does not run Qwen3.6-35B-A3B on a Mac at all (2.5) |
 | Roles | `roles = [...]` on `[[agents]]`, written by the owner after a passed run. A role = instruction text the agent gets plus the `wsx task` commands its broker allows (3.3). No passed role means no role: the agent stays a stand-in as today |
 | Handoff | When Claude returns, the handoff role gives it a short gist of the fallback, with message ids, in its next turn (3.4) |
-| Evaluate, tune, assign | Serve LFM3 first (W5, #355). `scripts/bench-tier.py` scores each model, LFM3 first, on each role's cases (W4). A tuning loop in the lean pygmalion re-runs the same cases (W10). Only then roles are assigned (3.5, 3.6) |
+| Evaluate, tune, assign | LFM3 first, on an endpoint kaos serves (2.3; W5, #355). `scripts/bench-tier.py` scores each model, LFM3 first, on each role's cases (W4). A tuning loop in the lean pygmalion re-runs the same cases (W10). Only then roles are assigned (3.5, 3.6) |
 | Landing | Work built by a local model needs Claude's review before it lands (owner's answer to former question 3; 3.7) |
 | Permissions | A Pi agent can run any model, so no rule relies on the model. One policy in wsx-core, rendered to the Seatbelt profile and the broker's command table; Pi's tool layer only reads it. A role never widens it. Section 5 |
 | Runner | Pi plus a lean, headless pygmalion extension (section 6) |
@@ -76,16 +76,13 @@ Measured chat call, one tool, on the running LFM3-1.7B Q8_0 (a throwaway script 
 
 So one valid tool call came back on the first try. That is one sample on a trivial prompt, not an evaluation result. The vault note says LFM3 thinks by default and needs `reasoning_effort: none`; this build's template reports `supports_reasoning_effort: false`, and the short prompt produced no reasoning text in any run. Whether Pi's `--thinking off` changes anything for LFM3 on a long prompt is open (6.5, test E2E). The server's 16384 slot holds the manager's first turn (about 6 to 7k tokens, 6.3) with little to spare; the recipe uses 32768.
 
-### 2.3 Options for a stable endpoint
+### 2.3 Who serves the endpoint
 
-| | A. Build `kaos serve` in kaos | B. Direct `llama-server`, wsx-owned recipe | C. Locals (MLX) | D. omlx or ollama |
-|---|---|---|---|---|
-| Cost | Highest: unbuilt, kaos not cloned here | Lowest: one doc, one launchd plist, one `models.json` entry. The server already runs here | Medium: install, unmeasured | Repair needed: omlx has a broken interpreter; ollama is not installed |
-| Tool calls | `--jinja` template decides; measured working on LFM3 | same | Grammar-forced: output always parses | Unverified |
-| Qwen3.5-9B now | Needs a GGUF download | Needs a GGUF download | Present (MLX 8-bit) | omlx: configured, cannot start |
-| Risk | Couples wsx timing to kaos | Owner runs a process; idle unload keeps memory low (`is_sleeping`) | Apple silicon only | Two dead services to repair |
+Owner decision (msg 3713): serving and model management are kaos's job. wsx owns no server process and no login job. `kaos serve` gives the stable endpoint; until it exists, the endpoint is whatever serves on that URL (today kaos's `llama-server` on `127.0.0.1:8090`, key in `~/.local/state/local-model/api-key`).
 
-Recommendation: B. It already works on this Mac with LFM3-1.7B. A or C replace it by editing one `baseUrl`; strata is reserved (2.5), not a replacement. wsx never reads kaos internals (random port, key file). D is not worth repair effort unless the owner wants omlx's Qwen3.5-9B: the tier test takes the endpoint as a parameter, so it can compare B and C or omlx.
+wsx's side is small: the endpoint as configuration (base URL, key file path), a health check (`scripts/local-model.sh health`), the Pi `models.json` provider, the `[[agents]]` entry and `scripts/local-model-proof.py`, which proves an endpoint (tool call, speed, cache, Pi round trip). Swapping the model, the server (`llama-server`, MLX, omlx) or the port changes the `baseUrl` and nothing else; the tier test takes the endpoint as a parameter. wsx never reads kaos internals (a random port, a key file location other than the one configured). Strata stays reserved (2.5).
+
+Server requirements the proof checks: tool calls on (`--jinja` for `llama-server`), thinking off, a window of at least 32768, an API key.
 
 ### 2.4 Prefix caching, measured on llama-server
 
@@ -116,11 +113,11 @@ So on this Mac: `llama-server` is the only one of the two that can load Qwen3.6-
 
 Memory and who starts the server: this Mac has 24 GiB (`sysctl hw.memsize`, Apple M4) and 39 GB free disk. There is no other machine: everything is sized for 24 GiB. The dgv3 note's Gemma 4 E4B speed (45 tok/s) was measured on another machine and is not used here. The 9B Q8 or MLX 8-bit models take about 9 to 10 GB. wsx never starts or stops a model server. Each server owns its memory (`llama-server` unloads on idle, measured `is_sleeping`); the owner or, later, Kaos Hub (lease/release, designed not built) starts it. An endpoint that is down counts as limited for 5 minutes (exists), so wsx falls back to the next entry.
 
-### 2.6 Serving recipe (W5, built and measured)
+### 2.6 Measured recipe for LFM3 (W5, serving now kaos's)
 
-Task #355 built the recipe for LFM3 first. How to run it: [local-model.md](../local-model.md). Every figure below was measured on this Mac (24 GiB, Apple M4, `llama-server` b11960) by `scripts/local-model-proof.py`; the captures are in `.work/local-model/` (not committed).
+Task #355 measured LFM3 first, with a server it started itself; task #359 handed serving to kaos (2.3). The settings below are what the endpoint needs, not what wsx runs. The endpoint settings and the Pi entries: [local-model.md](../local-model.md). Every figure below was measured on this Mac (24 GiB, Apple M4, `llama-server` b11960) by `scripts/local-model-proof.py` (the memory rows by an earlier version that started the server at each size); the captures are in `.work/local-model/` (not committed).
 
-| Part | Choice | Why or measure |
+| Part | Setting on the endpoint | Why or measure |
 |---|---|---|
 | Model | `LiquidAI/LFM3-1.7B-GGUF`, `LFM3-1.7B-Q8_0.gguf`, 1,846,238,496 bytes, sha256 `8f6b24182258205e9e01e21f1f24a1f208c1e8115578825d202ce39976af20b6` | Newest LFM3 text model. The HF API lists no larger LFM3 chat model: the other repos are VL-2B, Omni-2B, Audio-2B (multimodal) and Base. LFM2.5-24B-A2B is the older generation, a 24B-parameter model: too large to sit beside normal work on 24 GiB. The file was already in the HF cache and its hash equals the published `lfs.sha256`, so nothing was downloaded. Publisher: HF API shows author `LiquidAI`, not gated, license `other` (LFM Open License). The `owner:scout` skill was not available; the API is the check |
 | Endpoint | `127.0.0.1:8090`, key in `~/.local/state/local-model/api-key` (mode 600) | 8080 is the owner's own server, 8000 omlx, 8081 the strata test, 8321 Locals |
@@ -129,11 +126,10 @@ Task #355 built the recipe for LFM3 first. How to run it: [local-model.md](../lo
 | Cache | prompt cache on (default), `--cache-ram 1024` | 4017-token prompt: cold 4.4 s (905 tok/s); same prefix, new tail: 3500 tokens read from cache, 0.63 s |
 | Speed | decode 42 to 46 tok/s | tool-call call 41.8, 4K cold 43.5, cached 45.5 |
 | Tool call | `--jinja` | One chat call with a `run_wsx(argv[])` tool returned `finish_reason: tool_calls`, `["wsx","task","list"]` |
-| Start | login, plus idle sleep | See below |
 
-Start at login or on demand: login. `llama-server` has no launchd socket activation, so "on demand" would need a wrapper that proxies the first request. `--sleep-idle-seconds 600` already frees the model after 10 idle minutes (measured with a 5 s setting: footprint 523 MB awake, 81 MB asleep; the first request after it took 0.71 s). The launchd job `com.wsx.local-model` (`RunAtLoad`; restarts only after a non-zero exit) runs `scripts/local-model.sh run`; `install` writes it. In this task's boundary `launchctl bootstrap` fails (`Bootstrap failed: 5: Input/output error`, also for a plist that only runs `/usr/bin/true`), so the plist passed `plutil -lint` but was not loaded here.
+Idle: `llama-server --sleep-idle-seconds 600` frees the model after 10 idle minutes (measured with a 5 s setting: footprint 523 MB awake, 81 MB asleep; the first request after it took 0.71 s). Starting, stopping and the login job are kaos's.
 
-Pi: a `models.json` provider `llama-wsx` (`openai-completions`, `baseUrl`, `apiKey` as `!cat <key file>` so the key stays in its mode-600 file) and a registry entry are in [local-model.md](../local-model.md). One `pi --mode rpc` run with a `PI_CODING_AGENT_DIR` holding only that `models.json` (what #351 builds per launch) ran the bash tool and settled with the right answer.
+Pi: a `models.json` provider `llama-wsx` (`openai-completions`, `baseUrl`, `apiKey` as `!cat <key file>` so the key stays in its mode-600 file) and a registry entry are in [local-model.md](../local-model.md). One `pi --mode rpc` run with a `PI_CODING_AGENT_DIR` holding only that `models.json` (what #351 builds per launch) ran the bash tool and settled with the right answer. #359 reran `scripts/local-model-proof.py` against a running endpoint to confirm the trimmed script and proof.
 
 ## 3. Models, roles and the evaluation
 
@@ -452,7 +448,7 @@ The order is evaluate, tune, assign. W4 is therefore first of the wsx tasks that
 
 | Step | # | Project | Task | Depends | Proof |
 |---|---|---|---|---|---|
-| Serve LFM3 | **W5, #355** | wsx | The LFM3-1.7B serving recipe, first and the primary goal: `llama-server` on LFM3-1.7B-Q8_0 with `-c 32768 -np 1 --jinja`, doc, launchd plist, `models.json` entry, endpoint health check; rule "small server always on" | none | Done in #355: 2.6, `scripts/local-model.sh`, `scripts/local-model-proof.py`, [local-model.md](../local-model.md); the launchd job is written but loaded by the owner (`local-model.sh install`) |
+| Serve LFM3 | **W5, #355; #359** | wsx, kaos | #355 measured the LFM3-1.7B recipe (`llama-server`, `-c 32768 -np 1 --jinja`) and built a server script with a login job. #359 took serving out: kaos serves (2.3); wsx keeps the endpoint settings, the health check, the proof script and the `models.json` and `[[agents]]` entries | none | 2.6, `scripts/local-model.sh health`, `scripts/local-model-proof.py`, [local-model.md](../local-model.md) |
 | Evaluate | W2 | wsx | Agent entry `extension = "<path>"` becomes `-e <path>`; per-launch `PI_CODING_AGENT_DIR` with `models.json` only; `--no-tools` for a role without tools | none | `fake-pi-rpc.py` records argv; `agent_stream_fakes.rs` unchanged |
 | Evaluate | W7 | wsx | `task::policy` (`Policy::for`), strict Seatbelt renderer, broker class table, `WSX_TASK_TRUST`, wsxd socket deny. Roles feed the command table | none | F1 to F10 in `test-task.py`; `trusted` profile text unchanged (golden compare); `cargo nextest` |
 | Evaluate | P1 | pygmalion | Owner drops the 102 files; branch | owner | `git status` clean |
@@ -465,15 +461,15 @@ The order is evaluate, tune, assign. W4 is therefore first of the wsx tasks that
 | Assign | W11 | wsx | `wsx task note backlog\|decision\|context --msg <id>` (append-only, class `note`), the role blocks wired into a fallback turn | W1, W7 | `test-task.py`: backlog and note lines appear with ids; an untrusted manager's `new`, `add`, `land` are refused; the notes budget (10 KiB first message) is unchanged |
 | Assign | W12 | wsx | Handoff: cut the span, the gist call, host id check, `handoff` log entry, `state.handoff`, the "While you were away" block (3.4) | W1 | `test-task.py`: a fake fallback agent and a fake Claude that records its prompt: the prompt holds the gist; a gist line with an unknown id is dropped; with no handoff agent the plain list of ids arrives |
 | Assign | W6 | wsx | Landing rule for untrusted-built work ("not reviewed by Claude", lands after a Claude review step) | W1 | `test-task.py` section: a fallback-built task stops at `ready` with the mark and lands only after a review step |
-| Optional | K | kaos | `kaos serve` (only if the owner picks option A of 2.3) | owner | `curl` from the wsx host; no wsx change |
+| Serve | K | kaos | `kaos serve`: the stable endpoint (2.3). Until it exists, kaos's `llama-server` on `127.0.0.1:8090` | kaos | `scripts/local-model.sh health` and `scripts/local-model-proof.py` from the wsx host; no wsx change |
 
-Order: W5 (LFM3 serving, #355), W2, W7, P1 start at once; P2, P3 and W3 next; **W4** (LFM3 first on every role, then the later comparisons); **W10** (tune and re-run); then the owner writes roles from the result files, and W1, W11, W12 and W6 make them work. W1 starts after #348 and may merge before any role exists. No model holds a role until its result file passes the bars.
+Order: W5 (LFM3 measured, #355; serving is kaos's), W2, W7, P1 start at once; P2, P3 and W3 next; **W4** (LFM3 first on every role, then the later comparisons); **W10** (tune and re-run); then the owner writes roles from the result files, and W1, W11, W12 and W6 make them work. W1 starts after #348 and may merge before any role exists. No model holds a role until its result file passes the bars.
 
 ## 9. Open questions for the owner
 
 Answered by msg 3677 and removed: strata only for models that do not fit in memory (2.5); Claude reviews local-built work before it lands (3.7); roles, not tiers; LFM3-1.7B first (msg 3681); one machine, this Mac with 24 GiB (msg 3682).
 
-1. Serving: B first for LFM3-1.7B (recommended; it already runs on this Mac; W5, #355), or wait for `kaos serve`? For the later comparison with Qwen3.5-9B: repair omlx (its Python is missing) and use the MLX copy, or download a GGUF for llama-server? Nothing was downloaded here.
+1. Serving is kaos's (msg 3713). For the later comparison with Qwen3.5-9B, kaos serves it (omlx has a broken interpreter; the MLX copy or a GGUF download are kaos's to choose); wsx only changes the `baseUrl`. Nothing was downloaded here.
 2. Is installing Locals acceptable if the evaluation shows grammar-forced tool calls matter?
 3. Is the LFM Open License (free below $10M revenue) acceptable? Qwen3.5 and Gemma 4 licenses were not checked.
 4. Is 32k context per slot affordable in memory next to your other work? Measured in 2.6: about 0.6 GB of process footprint for LFM3-1.7B at `-c 32768`, about 2.4 GB with the weights, and the model sleeps when idle.
