@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Routines recur only. The `at` trigger is gone from the routine model, `wsx routine add|edit --at`, `wsx task routine`, the TUI form, the docs and the manager's instructions; a command that must run once goes through its approved action (for example `wsx task project add`), not a routine. A stored routine with an `at` trigger is removed with its runs when wsxd takes the store (daemon revision 50), logged once per project, so fired one-shots no longer stay listed.
+- Tasks: `wsx task checkin --in/--at --why` keeps its command and its event, but it is a timer in the manager host's state (`checkin` in `manager/state.json`), not a routine named `checkin`. The event reads `check-in: <why>` (was `routine checkin succeeded after 0 s; its output ends: <why>`), a new check-in replaces the last, nothing shows in Routines, and a host restart keeps it and fires it late when it is past due.
+
 ### Added
 
 - Tasks: a Pi agent with the lean runner (`extension` on its `[[agents]]` entry) now gets a policy file per launch. Before, the runner was loaded but had no policy and denied every tool call. Now wsx writes `policy.json` (mode 600) in the launch's Pi folder from the same paths as the Seatbelt profile (reads open but for the secrets; writes in the agent's own folders and `TMPDIR`) and sets `PYGMALION_POLICY` and `PYGMALION_POLICY_SHA256`. The runner's refusals show in the task's or manager's log as progress (`runner denied write <path>: <reason>`), not as the agent's words ([docs/tasks.md](docs/tasks.md) "Pi adapter", [docs/local-model.md](docs/local-model.md)).

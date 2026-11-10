@@ -46,7 +46,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
             let revision = revision.unwrap_or(fetch_revision(&path)?);
             let routine = Routine {
                 name,
-                trigger: trigger.trigger()?,
+                trigger: trigger.trigger(),
                 command,
                 prompt,
                 enabled: true,
@@ -80,7 +80,7 @@ pub(crate) fn cmd_routine(command: RoutineCmd) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("routine '{name}' not found"))?;
             let routine = Routine {
                 name: new_name.unwrap_or_else(|| name.clone()),
-                trigger: trigger.trigger()?,
+                trigger: trigger.trigger(),
                 command,
                 prompt,
                 enabled,
@@ -317,22 +317,13 @@ pub(super) fn format_argv(argv: &[String]) -> String {
 }
 
 impl TriggerArgs {
-    /// The trigger the flags name; a time must be in the future.
-    pub(crate) fn trigger(self) -> Result<wsx_core::routine::Trigger> {
+    /// The trigger the flags name.
+    pub(crate) fn trigger(self) -> wsx_core::routine::Trigger {
         use wsx_core::routine::Trigger;
-        let now = wsx_core::task::now_unix_ms() as i64 / 1000;
-        Ok(match (self.cron, self.event, self.at) {
-            (Some(cron), _, _) => Trigger::Cron(cron),
-            (_, Some(kind), _) => Trigger::Event { kind },
-            (_, _, Some(at)) => {
-                let epoch_minute =
-                    wsx_core::routine::local::local_minute(&at, now).map_err(anyhow::Error::msg)?;
-                if epoch_minute * 60 <= now {
-                    bail!("--at {at} has passed");
-                }
-                Trigger::At { epoch_minute }
-            }
-            (None, None, None) => bail!("one of --cron, --event or --at is required"),
-        })
+        match (self.cron, self.event) {
+            (Some(cron), _) => Trigger::Cron(cron),
+            (_, Some(kind)) => Trigger::Event { kind },
+            (None, None) => unreachable!("clap requires one trigger flag"),
+        }
     }
 }

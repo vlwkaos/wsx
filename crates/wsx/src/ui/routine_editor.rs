@@ -214,8 +214,7 @@ impl RoutineForm {
     pub fn routine(&self) -> Result<Routine, String> {
         let command: Vec<String> = serde_json::from_str(&self.command_json)
             .map_err(|e| format!("command must be a JSON argv array: {e}"))?;
-        let now = (wsx_core::task::now_unix_ms() / 1000) as i64;
-        let trigger = wsx_core::routine::local::parse_trigger(&self.cron, now)?;
+        let trigger = wsx_core::routine::local::parse_trigger(&self.cron);
         Routine {
             name: self.name.clone(),
             trigger,

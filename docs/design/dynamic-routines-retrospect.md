@@ -8,13 +8,13 @@ Msg 2091: wsx builds nothing retrospect-specific. The product work is the genera
 
 | Need | Feature | Why this shape |
 |---|---|---|
-| Not only fixed times | `--at` one-shot trigger (`Trigger::At`) | a third trigger kind in the one scheduler (owner decision 2026-10-31), no second structure |
+| Not only fixed times | `--at` one-shot trigger (`Trigger::At`), removed later: routines recur only (cron, event); a one-time command goes through its approved action | owner decision 2026-11-10 |
 | React to the project | wsx fires `task.<state>`, `deploy.*`, `release.*`, `project.idle` through the scheduler's `fire` | "after N" and filters stay in the routine's command; asched keeps no filter language |
-| The manager plans its next look | `wsx task checkin --in 40m --why ...` | wsx fixes the argv (`printf` of the why), so no `--owner-said`; one per project |
+| The manager plans its next look | `wsx task checkin --in 40m --why ...` | a timer in the manager host's state, no routine and no command; one per manager |
 | Tell the manager something | a run with stdout is an event with its output ends, also on success | before, a success said only "succeeded" |
 | Tell the owner, no turn | `wsx task post` (stdin to the chat, as the digest posts) | a routine pipes or calls it and prints nothing |
 | Run an agent with a prompt | already there: `--prompt` and `{prompt}` in the argv, as the TUI's agent templates use | nothing new |
-| Jitter | not built | `--at` lets the manager pick any minute; random times make runs and tests nondeterministic |
+| Jitter | not built | a check-in lets the manager pick any minute; random times make runs and tests nondeterministic |
 
 ```mermaid
 flowchart LR

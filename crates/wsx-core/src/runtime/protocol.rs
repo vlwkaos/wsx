@@ -70,8 +70,8 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // (docs/terminal-raw-stream.md "Input").
 // Revision 39 moves the sessions of a worktree whose folder is gone to their project's main
 // checkout at the next synchronization, so their chat and new panes resolve again.
-// Revision 40 runs a routine with an `at` trigger once at its minute, also a missed one, and
-// stores a routine's `post` (docs/tasks.md "Routines").
+// Revision 40 runs a routine with an `at` trigger once at its minute, also a missed one (revision 50
+// removed it), and stores a routine's `post` (docs/tasks.md "Routines").
 // Revision 41 runs the routine scheduler inside wsxd (the `routine` request) in place of the
 // separate asched process, and imports asched's store once (docs/tasks.md "Routines").
 // Revision 42 stores a routine's `findings_exit` codes and gives a run that exits with one the
@@ -89,7 +89,9 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // client can time out a stream that goes silent (capability `stream_heartbeat`).
 // Revision 49 lists every live pane in `pane_activity` with `last_io_unix_ms`, the idle clock
 // of the stale rule (docs/tasks.md "Stale worktrees").
-pub const DAEMON_REVISION: u32 = 49;
+// Revision 50 has no `at` trigger: the scheduler drops the one-shot routines of every project
+// when it takes the store (docs/tasks.md "Routines").
+pub const DAEMON_REVISION: u32 = 50;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 
