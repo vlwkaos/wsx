@@ -2162,14 +2162,14 @@ impl Host {
         true
     }
 
-    /// The agent's sign-in failed: move at once to the first fallback that is not minimal, limited or signed out, continuing `unfinished` (else the
+    /// The agent's sign-in failed: move at once to the first fallback that fills the worker role and is not limited or signed out, continuing `unfinished` (else the
     /// current turn). False with none: the caller goes on as before. ref: docs/tasks.md "Agents"
     fn move_after_sign_in(&mut self, unfinished: Option<&str>, now: u64) -> bool {
         let settings = load_task_config(&self.record.project_path).unwrap_or_default();
         let Some(next) = super::agent::fallback(
             &settings.fallback,
             now,
-            wsx_core::config::global::Operation::Worker,
+            wsx_core::task::policy::Role::Worker,
         ) else {
             return false;
         };

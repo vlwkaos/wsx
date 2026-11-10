@@ -6,8 +6,8 @@ use crate::task::args::NewArgs;
 use crate::task::{actor, ask_host, ask_host_ok, print_json, wait_for_host};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
-use wsx_core::config::global::Operation;
 use wsx_core::config::project::load_task_config;
+use wsx_core::task::policy::Role;
 use wsx_core::task::view::checked_files;
 use wsx_core::task::{
     copy, now_unix_ms,
@@ -313,7 +313,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
     // is on record. `--model` names the configured agent's model. ref: docs/tasks.md "Agents"
     let own = agent::account(&settings.adapter, &settings.model);
     let moved = agent::blocked_until(&own, now)
-        .and_then(|_| agent::fallback(&settings.fallback, now, Operation::Worker));
+        .and_then(|_| agent::fallback(&settings.fallback, now, Role::Worker));
     // ^ A task born on a fallback is on one like a switched task: it goes home when its own
     // agent is free (after a failed sign-in, at its first turn once the record ends).
     let on_fallback = moved.is_some();

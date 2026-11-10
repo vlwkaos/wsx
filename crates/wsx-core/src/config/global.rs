@@ -3,6 +3,7 @@
 // ^ [[wsx Architecture]] Groups are the sole project organization and workspace selection contract.
 
 use crate::fs_util::{write_atomic, AtomicWrite};
+use crate::task::policy::Role;
 use anyhow::{Context, Result};
 use serde::{de::Error as _, ser::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
@@ -311,30 +312,6 @@ pub struct ProfileEntry {
 /// The headless adapters a task host can drive (`crates/wsx/src/task/agent.rs`).
 pub const TASK_ADAPTERS: &[&str] = &["claude", "pi"];
 
-/// A fallback role: a job description a local model may hold, not a permission.
-/// ref: docs/design/local-model-fallback.md 3.2
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Role {
-    Organizer,
-    Backlog,
-    NoteTaker,
-    Handoff,
-}
-
-/// What a headless call asks of a registry agent; `AgentEntry::allows` is the one rule.
-/// ref: docs/tasks.md "Agents"
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Operation {
-    /// The manager's turns, after its own agent's limit moved it.
-    Manager,
-    /// A task's steps (plan, build, review), by a new task or after a limit moved it.
-    Worker,
-    /// A job a role describes. The stand-in (an owner message answered during a hold, no tools)
-    /// is the organizer's.
-    Role(Role),
-}
-
 /// An agent's name, and so its account file's: 1 to 64 of letters, digits, `-`, `_` and `.`.
 pub fn is_agent_name(text: &str) -> bool {
     !text.is_empty()
@@ -362,36 +339,30 @@ pub struct AgentEntry {
     /// the agent counts as limited until midnight. ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_usd_per_day: Option<u32>,
-    /// A stand-in with no tools: it answers the owner while no agent can, and those replies
-    /// count as provisional. Needs the `pi` adapter. ref: docs/tasks.md "Agents"
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub minimal: bool,
+    /// Replaced by `roles = ["organizer"]` and `may = ["answer"]`; read only to refuse it
+    /// with that advice. ref: docs/tasks.md "Agents"
+    #[serde(default, skip_serializing)]
+    pub minimal: Option<bool>,
     /// An absolute path the Pi adapter loads as `-e <path>`, the lean runner's extension.
     /// Needs the `pi` adapter. ref: docs/tasks.md "Pi adapter"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extension: Option<PathBuf>,
-    /// The fallback roles this agent holds (docs/design/local-model-fallback.md 3.2). With none
-    /// it is a full fallback for the manager and for workers (and a stand-in when `minimal`);
-    /// with some it does those roles only. Needs the `pi` adapter. ref: docs/tasks.md "Agents"
+    /// The roles this agent fills in a fallback choice (`task::policy::Role::filled_by`).
+    /// With none it is a full fallback for the manager and for workers; with some it does
+    /// those roles only. Needs the `pi` adapter. ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roles: Vec<Role>,
     /// The capabilities this agent passed the test for (`task::policy`); its role's group is
-    /// cut down to them. None: all of the role's, and a `minimal` stand-in only `answer`.
+    /// cut down to them. None: all of the role's.
     /// ref: docs/tasks.md "Permissions"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub may: Option<Vec<crate::task::policy::Capability>>,
 }
 
 impl AgentEntry {
-    /// Whether a fallback choice may give this agent `operation`.
-    pub fn allows(&self, operation: Operation) -> bool {
-        match (self.roles.is_empty(), operation) {
-            (true, Operation::Role(Role::Organizer)) => self.minimal,
-            (true, Operation::Role(_)) => false,
-            (true, _) => !self.minimal,
-            (false, Operation::Role(role)) => self.roles.contains(&role),
-            (false, _) => false,
-        }
+    /// Whether a fallback choice may give this agent `role` (`Role::filled_by`).
+    pub fn allows(&self, role: Role) -> bool {
+        role.filled_by(&self.roles)
     }
 }
 
@@ -437,8 +408,11 @@ fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
                 agent.name
             ));
         }
-        if agent.minimal && agent.adapter.as_deref() != Some("pi") {
-            return Err(format!("agent {}: minimal needs adapter pi", agent.name));
+        if agent.minimal == Some(true) {
+            return Err(format!(
+                "agent {}: minimal is replaced by roles = [\"organizer\"] and may = [\"answer\"]",
+                agent.name
+            ));
         }
         if let Some(path) = &agent.extension {
             let text = path.to_string_lossy();
@@ -453,14 +427,14 @@ fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
                 ));
             }
         }
-        if agent.minimal && !agent.roles.is_empty() {
-            return Err(format!(
-                "agent {}: use minimal or roles, not both",
-                agent.name
-            ));
-        }
         if !agent.roles.is_empty() && agent.adapter.as_deref() != Some("pi") {
             return Err(format!("agent {}: roles need adapter pi", agent.name));
+        }
+        if agent.roles.contains(&Role::Area) {
+            return Err(format!(
+                "agent {}: area is a named role of the manager, not a role of an entry",
+                agent.name
+            ));
         }
         if (1..agent.roles.len()).any(|i| agent.roles[..i].contains(&agent.roles[i])) {
             return Err(format!("agent {}: a role is named twice", agent.name));

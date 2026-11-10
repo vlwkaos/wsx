@@ -20,7 +20,6 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
-use wsx_core::config::global::{Operation, Role};
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::manager_rotate_limit;
 use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
@@ -1974,7 +1973,7 @@ impl Manager {
             &settings.manager_fallback,
             settings.max_wait_secs,
             &self.current_account(),
-            Operation::Manager,
+            policy::Role::Manager,
             until_ms,
             now,
         ) else {
@@ -1991,13 +1990,13 @@ impl Manager {
     }
 
     /// The manager's sign-in failed on its current account: it moves at once to the first
-    /// `tasks.manager.fallback` that is not `minimal` and not on a limited or signed-out account,
+    /// `tasks.manager.fallback` that fills the manager role and is not on a limited or signed-out account,
     /// the same way a long limit does, and the held turn `ids` goes to it. False with none: the
     /// sign-in hold retries. ref: docs/tasks.md "Agents"
     fn switch_after_sign_in(&mut self, ids: &[u64], events: bool) -> bool {
         let now = now_unix_ms();
         let settings = load_task_config(&self.main).unwrap_or_default();
-        let Some(next) = agent::fallback(&settings.manager_fallback, now, Operation::Manager)
+        let Some(next) = agent::fallback(&settings.manager_fallback, now, policy::Role::Manager)
         else {
             return false;
         };
@@ -2038,7 +2037,7 @@ impl Manager {
         });
     }
 
-    /// During a hold, an owner message with no answer yet gets one from a `minimal` agent, one
+    /// During a hold, an owner message with no answer yet gets one from an agent that fills the organizer role, one
     /// call with no tools. The message stays due: the own agent answers it after the hold and
     /// is told of this reply. ref: docs/tasks.md "Agents"
     fn stand_in(&mut self) {
@@ -2070,11 +2069,8 @@ impl Manager {
         self.stand_in_look = Some(Instant::now());
         let now = now_unix_ms();
         let settings = load_task_config(&self.main).unwrap_or_default();
-        let Some(agent) = agent::fallback(
-            &settings.manager_fallback,
-            now,
-            Operation::Role(Role::Organizer),
-        ) else {
+        let Some(agent) = agent::fallback(&settings.manager_fallback, now, policy::Role::Organizer)
+        else {
             return;
         };
         let account = agent::account(&agent.adapter, &agent.model);

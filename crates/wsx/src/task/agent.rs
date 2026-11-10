@@ -15,7 +15,6 @@ use std::process::{Child, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Sender, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
-use wsx_core::config::global::Operation;
 use wsx_core::model::workspace::TaskConfig;
 use wsx_core::task::{policy, store, usage, TurnUsage};
 
@@ -230,8 +229,7 @@ impl Agent {
 
 /// What the agent about to start may do (`wsx_core::task::policy`): trust from its adapter and
 /// the `ANTHROPIC_BASE_URL` in its environment `env`; its role's group cut down to the `may`
-/// of each registry entry with its adapter and model (a `minimal` stand-in with none may only
-/// answer; no entry or no list: all of the role's, as before the lists).
+/// of each registry entry with its adapter and model (no entry or no list: all of the role's).
 pub fn policy(
     role: policy::Role,
     adapter: &str,
@@ -249,10 +247,8 @@ pub fn policy(
     for entry in entries.iter().filter(|entry| {
         entry.adapter.as_deref() == Some(adapter) && entry.model.as_deref() == Some(model)
     }) {
-        let list = match (&entry.may, entry.minimal) {
-            (Some(list), _) => list.clone(),
-            (None, true) => vec![policy::Capability::Answer],
-            (None, false) => continue,
+        let Some(list) = entry.may.clone() else {
+            continue;
         };
         // ^ Several entries for one model: it holds only what all of them pass.
         may = Some(match may {
@@ -296,16 +292,16 @@ pub fn record_sign_in_failed(adapter: &str, model: &str, now_ms: u64) -> (u64, O
 }
 
 /// The first of `names` (the global `[[agents]]`) with a headless adapter and a model, and no
-/// limit or failed sign-in on record on its account that may do `operation` (`AgentEntry::allows`). A name the
+/// limit or failed sign-in on record on its account that may fill `role` (`AgentEntry::allows`). A name the
 /// registry does not hold is skipped. ref: docs/tasks.md "Agents"
-pub fn fallback(names: &[String], now_ms: u64, operation: Operation) -> Option<Choice> {
+pub fn fallback(names: &[String], now_ms: u64, role: policy::Role) -> Option<Choice> {
     if names.is_empty() {
         return None;
     }
     let (config, _) = wsx_core::config::global::GlobalConfig::load().ok()?;
     names.iter().find_map(|name| {
         let entry = config.agents.iter().find(|agent| &agent.name == name)?;
-        if !entry.allows(operation) {
+        if !entry.allows(role) {
             return None;
         }
         let adapter = entry.adapter.clone()?;
@@ -327,7 +323,7 @@ pub fn fallback_past_wait(
     names: &[String],
     max_wait_secs: u64,
     account: &str,
-    operation: Operation,
+    role: policy::Role,
     until_ms: u64,
     now_ms: u64,
 ) -> Option<Choice> {
@@ -335,7 +331,7 @@ pub fn fallback_past_wait(
     let since_ms =
         store::account_limit(account, now_ms).map_or(now_ms, |limit| limit.since_ms.min(now_ms));
     (until_ms.saturating_sub(since_ms) > max_wait_secs * 1000)
-        .then(|| fallback(names, now_ms, operation))
+        .then(|| fallback(names, now_ms, role))
         .flatten()
 }
 
@@ -362,7 +358,7 @@ pub fn worker_next(
         &settings.fallback,
         settings.max_wait_secs,
         &current,
-        Operation::Worker,
+        policy::Role::Worker,
         until_ms,
         now_ms,
     )

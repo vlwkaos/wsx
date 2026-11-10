@@ -168,7 +168,7 @@ One rule decides what a launch site may do (task 350, `wsx_core::task::policy`, 
 | Backlog upkeep | organizer | `read`, `answer`, `backlog`, `note` |
 | Stand-in | organizer, `minimal` | `answer` |
 
-An `[[agents]]` entry lists `may = [...]`; the operation runs on it only when the entry passed every capability the operation needs. `roles` says which jobs an agent does; `may` cuts what commands it may run in them. A tier test result becomes a `may` list the owner writes by hand.
+An `[[agents]]` entry lists `may = [...]`; the operation runs on it only when the entry passed every capability the operation needs. `roles` names the roles of this table an entry fills (`manager`, `worker`, `organizer`, `scribe`; built by task 350, which merged the earlier `organizer`, `backlog`, `note-taker`, `handoff` and `minimal` into it); `may` cuts what commands it may run in them. A tier test result becomes a `may` list the owner writes by hand.
 
 What stays with Claude, unless the evaluation (3.5) shows otherwise:
 
