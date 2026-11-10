@@ -4597,7 +4597,7 @@ def part_host(created=None):
     assert 'the same failure is in #%d; it is likely on main, not your change.' % first in said, said
     wait(lambda: shared_events(), 'the shared failure event', 30)
     event = shared_events()[0]['text']
-    assert 'in #%d, #%d, likely on main' % (first, second) in event and 'after Back the page is 0 items' in event, event
+    assert 'in #%d, #%d, likely on main' % (first, second) in event and re.search(r'ends with `FAIL: after Back the page is [1-9]\d+ items`', event), event
     third, said = shared_run('shared', 'sf3')
     assert 'is in #%d, #%d;' % (first, second) in said, said
     time.sleep(2)
@@ -4629,7 +4629,7 @@ def part_host(created=None):
     cic, said = shared_run('cilog', 'ci3')
     wait(lambda: events_with('ends with `NameError'), 'the shared event of one assert in two ci logs', 30)
     event = events_with('ends with `NameError')[0]['text']
-    assert 'in #%d, #%d, likely on main' % (cia, cic) in event and 'ends with `NameError: name qrows is not defined at line 0`' in event, event
+    assert 'in #%d, #%d, likely on main' % (cia, cic) in event and 'ends with `NameError: name qrows is not defined at line 4011`' in event, event
     assert 'diagram' not in event and 'Process completed' not in event, event
     assert 'is in #%d;' % cia in said, said
     for n in (cia, cib, cic):
