@@ -226,8 +226,8 @@ button.row-open { padding: 0; border: 0; background: none; text-align: left; }
 .new-session:focus-visible { color: var(--color-text); }
 @media (hover: hover) { .new-session:hover { color: var(--color-text); background: var(--color-raised); } }
 .new-session:active:not(:disabled) { color: var(--color-accent); }
-/* ^ Delete worktree beside the +: its hit area takes no more height than the heading either. */
-.group-head .link-action { margin-block: calc(-1 * var(--space-3)); }
+/* ^ Delete worktree sits left of the +, a direct child of the head like it: its hit area takes no more height than the heading either. */
+.group-head .delete-worktree { margin: calc(-1 * var(--space-3)) 0 calc(-1 * var(--space-3)) auto; }
 @media (pointer: coarse) {
   /* A short word such as Stop still gets a 44 px wide hit area; its text stays in place. */
   .link-action {
