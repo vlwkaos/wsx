@@ -4380,14 +4380,14 @@ merge_seconds = 3
         assert json.loads(logged[1])['text'].startswith('Owner report (UX failures: how a task asks):'), logged[1]
         ok('project overview: written by the manager host, none without a manager, 404 outside the grant; titles: --title, its refusals, "Owner <words>:" left out when shown and kept on disk, on the web the first sentence of the summary')
 
-        # --- To check (docs/tasks.md "To check"): pass one, fail one with a note (a linked fix
-        # task starts), pass the rest; the owner's alone.
+        # --- To check (docs/tasks.md "To check"): pass one, fail one with no note (it only closes), fail one
+        # with a note (a linked fix task starts), pass the rest; the owner's alone.
         made = []
-        for prompt in ('WORK h.txt HV', 'WORK i.txt HV'):
+        for prompt in ('WORK h.txt HV', 'WORK i.txt HV', 'WORK j.txt HV'):
             made.append(js('task', 'new', prompt, '-p', 'demo')['id'])
             wait(lambda: task_state(made[-1]) == 'ready', 'demo #%d' % made[-1])
             assert js('task', 'land', made[-1], '-p', 'demo')['state'] == 'landed'
-        assert [i['id'] for i in steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']] == ['c1', 'c2', 'c3']
+        assert [i['id'] for i in steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']] == ['c1', 'c2', 'c3', 'c4']
 
         def decide(item, decision, body=None, site=owner):
             return steady(site, 'POST', '/api/tasks/%d/checks/%s/%s' % (demo, item, decision), body or {})
@@ -4396,26 +4396,28 @@ merge_seconds = 3
         assert steady(viewer, 'GET', '/api/tasks/%d/routines' % ids['ui'])[0] == 404
         assert steady(viewer, 'POST', '/api/tasks/%d/routines/nightly/run' % ids['ui'], {})[0] == 403  # no task_act, as for a check
         assert decide('c1', 'maybe')[0] == 404 and decide('x1', 'pass')[0] == 404 and decide('all', 'fail')[0] == 404
-        status, body = decide('c1', 'fail')
-        assert status == 400 and body['error']['code'] == 'note_required', body
         status, body = decide('c9', 'pass')
         assert status == 409 and 'no item c9' in body['error']['message'], body
         status, body = decide('c1', 'pass')
-        assert status == 200 and body['open'] == 2 and body['changed'][0]['state'] == 'passed', body
+        assert status == 200 and body['open'] == 3 and body['changed'][0]['state'] == 'passed', body
         assert decide('c1', 'pass')[0] == 409
+        # ^ The web's Fail sends no note: the item closes as failed with no task, and the owner's reply is its note.
+        status, body = decide('c3', 'fail')
+        assert status == 200 and body['open'] == 2 and body['changed'][0]['state'] == 'failed' and 'fix_task' not in body['changed'][0], body
+        assert decide('c3', 'fail')[0] == 409
         status, body = decide('c2', 'fail', {'note': 'the text is cut off'})
         assert status == 200, body
         fix = body['changed'][0]['fix_task']
         fixing = steady(owner, 'GET', '/api/tasks/%d/t/%d' % (demo, fix))[1]
         assert fixing['title'] == 'Fix: open the file' and fixing['fixes']['id'] == 'c2' and fixing['fixes']['note'] == 'the text is cut off', fixing
         status, body = decide('all', 'pass')
-        assert status == 200 and body['open'] == 0 and [c['id'] for c in body['changed']] == ['c3'], body
+        assert status == 200 and body['open'] == 0 and [c['id'] for c in body['changed']] == ['c4'], body
         overview = steady(owner, 'GET', '/api/tasks/%d' % demo)[1]
         assert overview['to_check'] == 0 and '#%d failed a check; #%d fixes it' % (made[0], fix) in [
             row['text'] for row in overview['resolutions']], overview['resolutions']
         wait(lambda: task_state(fix) in ('ready', 'failed'), 'the fix task')
         js('task', 'close', fix, '--discard', '-p', 'demo')
-        ok('to check: listed with titles, pass, fail needs a note and starts a linked fix task, all passed, refusals (viewer, grant, unknown id or decision)')
+        ok('to check: listed with titles, pass, fail with no note only closes, fail with a note starts a linked fix task, all passed, refusals (viewer, grant, unknown id or decision)')
 
         # --- A reply of only "x" (or "ㅌ", the same key on a Korean keyboard) to a To check item skips it
         # with no manager turn (docs/tasks.md "To check"); other words, a closed item and an "x" to a

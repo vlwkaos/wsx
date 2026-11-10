@@ -20,7 +20,7 @@ wsx task check-run [<n>...]                      # from a worker: run the checks
 wsx task check -p <project> [--json]             # the open "To check" items
 wsx task check pass <id>... | --all --json       # owner; the manager: <id>... --owner-said <message>
 wsx task check skip <id>... | --all --json       # owner only; closes without a verdict
-wsx task check fail <id> --note <text> --json    # owner only; starts a task that fixes it
+wsx task check fail <id> [--note <text>] --json    # owner only; closes it as failed, with --note also starts a task that fixes it
 wsx task close <n> [--discard] [--owner-said <id>] --json
 ```
 
@@ -284,9 +284,19 @@ There is no verdict per task: a task the checks prove lands, and what needs a pe
 - `wsx task check` lists the open items; `show --json` has the task's items as `to_check`; the ledger counts them.
 - `check pass <id>...` or `--all` marks open items `passed`; an unknown or settled id refuses the whole call.
 - `check skip <id>...` or `--all` closes open items as `skipped` the same way: not passed and not failed, for an item long overdue or no longer worth a look. It starts no task, leaves the open list (so it does not hold a release) and stays `skipped` in `checks.jsonl`, `show --json` and the web.
-- `check fail <id> --note <text>` starts a task titled "Fix: <check>" whose prompt holds the check, `pass_if`, the note and the original `report.md` path; the new record has `fixes: c<n>`, and the item gets `state: failed`, the note and `fix_task`.
+- `check fail <id>` closes an open item as `failed`: no task starts, the manager starts the fix from the owner's note (below). `check fail <id> --note <text>` also starts a task titled "Fix: <check>" whose prompt holds the check, `pass_if`, the note and the original `report.md` path; the new record has `fixes: c<n>`, and the item gets the note and `fix_task`.
 - `check skip` and `check fail` refuse with `WSX_TASK_ACTOR=manager`: they are the owner's. `check pass` refuses it too, except `check pass <id>... --owner-said <message>`: the manager passes the named items when the owner's message of its running turn says the thing looks good and the item is clearly about it (the same proof as in "Approvals"; an id outside the turn refuses, and `--all` stays refused). The passed row keeps `owner_said: <message id>` in `checks.jsonl` and `show --json`, so the owner's word can be traced; the owner's own pass has none.
-- A reply of only `x` (also `X`, or `ㅌ`, the same key on a Korean keyboard, with spaces around it) to a To check item skips it: `wsx task say` takes the owner's text `> check <id>` and an empty line before the words (the web's Reply on an item, in the chat bubble or the To check list, writes it). The manager host reads it in `checks::item_reply`, closes the item with `checks::close` as `check skip` does, logs the owner's message as delivered and answers with a quiet post, "Skipped: <check>", or "Already <state>: <check>" for a closed item. No manager turn starts. Any other words go to the manager with the item's check as their quote line (`> <check>`); an id no item has loses the quote line. An `x` that quotes a message (`> message <id>`) is the manager's, as before.
+- The web's *Pass* and *Fail* close the item at once (`check pass <id>`, `check fail <id>`), then open the manager's composer as a reply to it. A reply to an item is `wsx task say` with the owner's text `> check <id>` and an empty line before the words (the web's Reply on an item, in the chat bubble or the To check list, writes it). The manager host reads it in `checks::item_reply`:
+
+  | Item | Words | What happens |
+  |---|---|---|
+  | open | only `x` (also `X`, or `ㅌ`, the same key on a Korean keyboard, with spaces around it) | skipped as `check skip` does; the owner's message is logged as delivered and answered with a quiet post, "Skipped: <check>"; no manager turn |
+  | open | other words | go to the manager with the item's check as their quote line (`> <check>`); the item stays open |
+  | passed or failed, no note yet | other words (at most `MAX_NOTE_BYTES`) | kept as the item's `note` (the web shows "Passed: <note>", "Failed: <note>"), and go to the manager quoted with the check; for a failed item they start with `To check <id> failed: `, so the manager starts or adds the fix |
+  | passed or failed, with a note | other words | go to the manager as above; the note stays |
+  | closed | only `x` | the quiet post "Already <state>: <check>"; no turn |
+
+  An id no item has loses the quote line. An `x` that quotes a message (`> message <id>`) is the manager's, as before. Sending nothing after *Pass* or *Fail* leaves the verdict without a note.
 - A log line that does not parse (a last line cut by a crash) is skipped when a log is read.
 
 ## By hand

@@ -60,7 +60,11 @@ pub(crate) fn check(action: Option<CheckAction>, project: Option<&str>, json: bo
         }
         Some(CheckAction::Fail { id, note }) => {
             owner_only("check fail")?;
-            (vec![fail_check(&name, &project_id, &id, &note)?], "failed")
+            let failed = match note {
+                Some(note) => vec![fail_check(&name, &project_id, &id, &note)?],
+                None => checks::close(&project_id, &[id], CheckState::Failed, None)?,
+            };
+            (failed, "failed")
         }
     };
     let open = checks::open_items(&project_id)?.len();

@@ -173,14 +173,14 @@ export function Bubble({ project, row, words: home, fresh, onNeed }) {
 
 // A To check item in the chat: from the manager, with what to check, its capture and Try, Fail,
 // Skip and Pass, or its result once decided (checks.js `CheckRow`). It counts as a new message.
-export function CheckBubble({ project, row, names, fresh, onMention }) {
+export function CheckBubble({ project, row, names, fresh, onReply }) {
   return html`
     <article class="bubble check-bubble" data-side="in" data-speaker="manager" data-first="" data-last=""
       data-fresh=${fresh ? "" : null} data-at=${row.at} data-key=${row.key} data-in=""
       data-quote=${checkQuote(row.item)} data-id=${row.item.id}
       aria-label=${`${names.manager}, to check, ${clock(row.at)}`}>
       <p class="bubble-author" aria-hidden="true">${names.manager}</p>
-      <div class="bubble-box"><p class="bubble-tag">To check</p><${CheckRow} project=${project} item=${row.item} onMention=${onMention} tag="div" /></div>
+      <div class="bubble-box"><p class="bubble-tag">To check</p><${CheckRow} project=${project} item=${row.item} onReply=${onReply} tag="div" /></div>
       <p class="bubble-time" aria-hidden="true">${clock(row.at)}</p>
     </article>`;
 }
