@@ -37,10 +37,11 @@ pub enum Target {
     File(String),
     /// A quote at the head of a message (`split_quote`): it goes to the quoted message, by its
     /// id when the log stored it (`ChatRow::quoted_id`), else the newest one above with that
-    /// first line.
+    /// first line. `check` is the To check item the quote is the check of: it selects that item.
     Quote {
         line: String,
         id: Option<u64>,
+        check: Option<String>,
     },
 }
 
@@ -113,6 +114,7 @@ pub fn links(rows: &[ChatRow]) -> Vec<(u64, usize, Target)> {
         let quoted = row.quoted.clone().map(|line| Target::Quote {
             line,
             id: row.quoted_id,
+            check: row.quoted_check.clone(),
         });
         let targets = parts(&row.text).into_iter().filter_map(|part| match part {
             Part::Link { target, .. } => Some(target),
@@ -181,7 +183,7 @@ fn read_file(main: &Path, relative: &str) -> Result<Vec<String>, String> {
 /// What the owner decides: an open To check item, a waiting approval or an open question.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
-    Check(CheckItem),
+    Check(Box<CheckItem>),
     Approval {
         id: String,
         label: String,
@@ -715,7 +717,7 @@ fn read(
     }
     let mut items: Vec<Item> = checks::open_items(store)?
         .into_iter()
-        .map(Item::Check)
+        .map(|item| Item::Check(Box::new(item)))
         .collect();
     items.extend(
         pending_approvals(&approvals)
@@ -893,7 +895,10 @@ impl ManagerChat {
                 }
                 Err(error) => self.notice = Some((format!("files/{path}: {error}"), true)),
             },
-            Some(Target::Quote { line, id }) => self.show_quoted(&line, id),
+            Some(Target::Quote {
+                check: Some(check), ..
+            }) => self.show_check(&check),
+            Some(Target::Quote { line, id, .. }) => self.show_quoted(&line, id),
             None => self.link = None,
         }
     }
@@ -902,6 +907,14 @@ impl ManagerChat {
     /// run: docs/tasks.md "Routines").
     pub fn go_to(&mut self, id: u64) {
         self.show_quoted("", Some(id));
+    }
+
+    /// Select the open To check item `check` in the list of items, or say it is closed.
+    fn show_check(&mut self, check: &str) {
+        match self.items.iter().position(|item| item.id() == check) {
+            Some(at) => self.selected = at,
+            None => self.notice = Some((format!("{check} is not open to check any more."), true)),
+        }
     }
 
     /// Show the quoted message: by `id` when the quote has one (centered and marked, reading the
