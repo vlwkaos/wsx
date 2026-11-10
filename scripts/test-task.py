@@ -3472,7 +3472,7 @@ def part_worker(created=None):
     ran = next(t for t in traces() if 'check_run' in t)
     code, said = ran['check_run']
     assert code == 0 and 'check 1 `test ! -e broken.txt`: exit 0' in said and 'check 2 `test "$TASK_PROBE" = "a b"`: exit 0' in said, ran
-    assert ran['check_run_other'][0] == 2 and 'check-run' in ran['check_run_other'][1], ran
+    assert ran['check_run_other'][0] == 2 and 'push is not for the worker role' in ran['check_run_other'][1], ran
     assert [len(e['results']) for e in log(cr) if e['kind'] == 'check_run'] == [2]
     worker_launch = launches_in(cr)[0]
     assert '1. `test ! -e broken.txt` 2. `test "$TASK_PROBE" = "a b"`' in worker_launch['instructions']
