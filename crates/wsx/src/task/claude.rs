@@ -359,6 +359,7 @@ impl ClaudeAgent {
             claude_args(launch, session, resume),
             KEPT_ENV,
             &[],
+            std::process::Stdio::inherit(),
         )?;
         std::thread::spawn(move || {
             // ^ The account's newest limit state, for the usage views; a failed write only

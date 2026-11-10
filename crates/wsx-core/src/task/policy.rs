@@ -12,6 +12,10 @@ use std::ffi::OsStr;
 
 /// Set by the broker on each command it runs for a manager: `trusted` or `untrusted`.
 pub const TRUST_ENV: &str = "WSX_TASK_TRUST";
+/// The two variables that name the lean runner's policy file and its hash (pygmalion
+/// `runner/README.md`); without both the runner denies every tool call.
+pub const RUNNER_POLICY_ENV: &str = "PYGMALION_POLICY";
+pub const RUNNER_POLICY_SHA_ENV: &str = "PYGMALION_POLICY_SHA256";
 /// Programs the strict profile refuses to start: privilege, UI scripting and the service manager.
 pub const DENIED_EXEC: [&str; 5] = [
     "/usr/bin/sudo",
@@ -316,5 +320,32 @@ pub fn role_refusal(role: Role, what: &str) -> String {
             format!("{what} is not for a role; ask the manager (`wsx task say --from-role`)")
         }
         other => format!("{what} is not for the {} role", other.info().name),
+    }
+}
+
+/// The lean runner's policy file for one Pi launch: what its tools may read and write and
+/// which paths are secret. The host builds it from the same paths as the Seatbelt profile
+/// (`Boundary::runner_file`), so the runner is a second layer over one rule, not a rule of
+/// its own. ref: docs/tasks.md "Pi adapter"
+#[derive(Debug, Serialize)]
+pub struct RunnerFile {
+    pub tools: Vec<&'static str>,
+    /// Absolute folder prefixes; each contains itself and all below it.
+    pub read: Vec<String>,
+    pub write: Vec<String>,
+    /// `path.matchesGlob` patterns.
+    pub secrets: Vec<String>,
+}
+
+impl RunnerFile {
+    /// The file's bytes and their lowercase hex SHA-256.
+    pub fn render(&self) -> (Vec<u8>, String) {
+        use sha2::{Digest, Sha256};
+        let bytes = serde_json::to_vec(self).unwrap_or_default();
+        let hash = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        (bytes, hash)
     }
 }

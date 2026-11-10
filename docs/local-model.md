@@ -40,9 +40,13 @@ name = "lfm3-local"
 command = ["pi"]
 adapter = "pi"
 model = "llama-wsx/lfm3-1.7b"
-# extension = "<absolute path>" loads a lean runner as Pi's -e (docs/tasks.md "Pi adapter").
-# Roles come with the evaluation (design section 3); until then this is a plain Pi entry.
+# The lean runner (pygmalion): loaded as Pi's -e, it gates Pi's file tools by the policy file wsx
+# writes for each launch (docs/tasks.md "Pi adapter"). Without this line the entry is a plain Pi.
+extension = "/Users/<you>/ws/tui_cli/pygmalion/runner/index.ts"
+# Roles come with the evaluation (design section 3).
 ```
+
+The runner needs Pi on `PATH` and no setup beyond that path: wsx hands it `PYGMALION_POLICY` and `PYGMALION_POLICY_SHA256` itself. When it refuses a tool call, the task's log shows `runner denied write <path>: <reason>` as progress.
 
 ## Check it
 

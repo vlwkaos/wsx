@@ -2,16 +2,19 @@
 //! ref: docs/tasks.md "Pi adapter"; Pi docs rpc.md, rpc-commands.md, json.md
 
 use super::agent::{
-    end_stream, read_json_lines, thinking_chars, turn_text, AgentLine, AgentProcess, Launch,
-    TurnResult, UsageLimit,
+    end_stream, read_json_lines, read_lines, thinking_chars, turn_text, AgentLine, AgentProcess,
+    Launch, TurnResult, UsageLimit,
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::io::Read;
+use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use wsx_core::task::policy::{RunnerFile, RUNNER_POLICY_ENV, RUNNER_POLICY_SHA_ENV};
 use wsx_core::task::view::clip;
 use wsx_core::task::TurnUsage;
 
@@ -76,6 +79,26 @@ impl LaunchHome {
     }
 }
 
+impl LaunchHome {
+    /// The lean runner's policy file in the launch folder (mode 600, gone with it): its path
+    /// and the hash that goes in the other variable. The agent can write the folder, but a
+    /// changed file no longer matches the hash and the runner then denies every call.
+    fn write_policy(&self, file: &RunnerFile) -> Result<(String, String)> {
+        let path = self.0.join("policy.json");
+        let (bytes, hash) = file.render();
+        let mut out = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("cannot create {}", path.display()))?;
+        out.write_all(&bytes)
+            .with_context(|| format!("cannot write {}", path.display()))?;
+        let path = path.to_str().context("the Pi folder is not UTF-8")?;
+        Ok((path.to_string(), hash))
+    }
+}
+
 impl Drop for LaunchHome {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -118,7 +141,7 @@ impl PiAgent {
         session: &str,
         cost_base: u64,
         events: Sender<E>,
-        wrap: impl Fn(Option<AgentLine>) -> E + Send + 'static,
+        wrap: impl Fn(Option<AgentLine>) -> E + Send + Sync + 'static,
     ) -> Result<Self> {
         // ^ A worker's check or a manager's quiet hour outlasts Pi's default 5-minute cache, and
         // then the whole context is written again. ref: docs/design/manager-efficiency.md
@@ -127,19 +150,37 @@ impl PiAgent {
         // ^ Best effort: Pi reports a folder it cannot write.
         let _ = std::fs::create_dir_all(source.join("sessions/wsx"));
         let dir = home.0.to_str().context("the Pi folder is not UTF-8")?;
-        let (process, stdout) = AgentProcess::spawn(
+        let extension = extension_of(&launch.model)?;
+        // ^ The runner and the profile read one set of paths. Without a runner there is no file.
+        let policy = match extension {
+            Some(_) => Some(home.write_policy(&launch.boundary.runner_file(launch.minimal))?),
+            None => None,
+        };
+        let mut env = vec![("PI_CACHE_RETENTION", "long"), ("PI_CODING_AGENT_DIR", dir)];
+        if let Some((file, hash)) = &policy {
+            env.extend([
+                (RUNNER_POLICY_ENV, &**file),
+                (RUNNER_POLICY_SHA_ENV, &**hash),
+            ]);
+        }
+        let (mut process, stdout) = AgentProcess::spawn(
             launch,
             "pi",
-            pi_args(
-                launch,
-                session,
-                extension_of(&launch.model)?.as_deref(),
-                &source,
-            ),
+            pi_args(launch, session, extension.as_deref(), &source),
             KEPT_ENV,
-            &[("PI_CACHE_RETENTION", "long"), ("PI_CODING_AGENT_DIR", dir)],
+            &env,
+            std::process::Stdio::piped(),
         )?;
+        let stderr = process.take_stderr();
         let init = session.to_string();
+        let wrap = Arc::new(wrap);
+        if let Some(stderr) = stderr {
+            let (events, wrap) = (events.clone(), wrap.clone());
+            std::thread::spawn(move || {
+                // ^ The stdout reader ends the stream; a line after it finds the channel closed.
+                let _ = read_stderr(stderr, |line| events.send(wrap(Some(line))).is_ok());
+            });
+        }
         std::thread::spawn(move || {
             if events.send(wrap(Some(AgentLine::Init(init)))).is_err() {
                 return;
@@ -147,7 +188,7 @@ impl PiAgent {
             let read = read_stream(stdout, cost_base, |line| {
                 events.send(wrap(Some(line))).is_ok()
             });
-            end_stream(&events, &wrap, read);
+            end_stream(&events, &*wrap, read);
         });
         Ok(Self {
             process,
@@ -181,6 +222,37 @@ impl PiAgent {
     pub fn stop(mut self) {
         let _ = self.request(json!({ "type": "abort" }));
     }
+}
+
+/// Read Pi's stderr to its end. The lean runner writes one JSON line per refused tool call
+/// (`{"pygmalion":"deny","tool","path","reason"}`) and one when its policy fails to load
+/// (`{"pygmalion":"policy","reason"}`); each becomes a progress line of the task or manager,
+/// never the agent's words. Any other line goes to the host's stderr, as before.
+/// ref: pygmalion `runner/README.md`
+fn read_stderr(stderr: impl Read, mut send: impl FnMut(AgentLine) -> bool) -> std::io::Result<()> {
+    read_lines(stderr, |line| match runner_progress(line) {
+        Some(text) => send(AgentLine::Progress { text, said: false }),
+        None => {
+            let _ = std::io::stderr().write_all(line);
+            true
+        }
+    })
+}
+
+fn runner_progress(line: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(line).ok()?;
+    let field = |name: &str| value.get(name).and_then(Value::as_str).unwrap_or("");
+    let text = match value.get("pygmalion")?.as_str()? {
+        "deny" => format!(
+            "runner denied {} {}: {}",
+            field("tool"),
+            clip(field("path"), PROGRESS_CHARS),
+            field("reason")
+        ),
+        "policy" => format!("runner policy: {}", field("reason")),
+        _ => return None,
+    };
+    Some(clip(&text, PROGRESS_CHARS * 2))
 }
 
 /// Headless and reproducible: no extensions, MCP, themes or templates of the owner's

@@ -8,10 +8,16 @@ Pi adapter's instructions ask; a manager answers "pi answers: <first line>". The
 streams Pi's own events: agent_start, an assistant message_end with usage, agent_settled.
 Launch arguments, the Pi folder (`PI_CODING_AGENT_DIR`: its files and `models.json`) and messages
 go to $FAKE_CLAUDE_TRACE with `adapter: pi`.
+With `-e <extension>` it stands in for the lean runner (pygmalion runner/README.md): it checks PYGMALION_POLICY
+and PYGMALION_POLICY_SHA256 and the file's shape (`runner` in the launch trace). A worker's `RUNNERWRITE <path>`
+writes <path> as the model's write tool would: the runner stand-in refuses a path outside the policy's `write`
+prefixes with one stderr deny line, the write is then tried anyway (the OS profile refuses it), and a control
+write in the working copy follows (`runner_write` in the trace).
 `FORBID <script> <spec> <out>` (a worker) runs scripts/fake-weak-model.py as its own command, as a weak model
 would try forbidden actions; a line `RUN <command>` of a message runs that shell command and quotes its
 answer. ref: crates/wsx/src/task/pi.rs; Pi docs rpc.md, json.md
 """
+import hashlib
 import json
 import os
 import subprocess
@@ -76,18 +82,51 @@ def models_json(agent_dir):
     return open(path).read() if os.path.isfile(path) else None
 
 
+def runner_policy():
+    """What the lean runner reads at start: the two variables, the file, its hash and its shape."""
+    path, want = os.environ.get('PYGMALION_POLICY'), os.environ.get('PYGMALION_POLICY_SHA256')
+    if not path or not want:
+        return {'ok': False, 'reason': 'env missing', 'env': [bool(path), bool(want)]}
+    raw = open(path, 'rb').read()
+    found = {'path': path, 'mode': oct(os.stat(path).st_mode & 0o777), 'sha_matches': hashlib.sha256(raw).hexdigest() == want,
+             'sha_lower_hex': want == want.lower() and len(want) == 64, 'folder': os.path.dirname(path)}
+    policy = json.loads(raw)
+    lists = all(isinstance(policy.get(k), list) and all(isinstance(v, str) and v for v in policy[k])
+                for k in ('tools', 'read', 'write', 'secrets'))
+    absolute = lists and all(v.startswith('/') for k in ('read', 'write') for v in policy[k])
+    return {**found, 'ok': found['sha_matches'] and lists and absolute, 'policy': policy}
+
+
+def runner_write(policy, path):
+    """The model's write tool through the runner: refused outside `write`, else done. The profile has the last word."""
+    real = os.path.realpath(path)
+    inside = any(real == p or real.startswith(p.rstrip('/') + '/') for p in policy['write'])
+    if not inside:
+        sys.stderr.write(json.dumps({'pygmalion': 'deny', 'id': 't1', 'tool': 'write', 'path': path,
+                                     'reason': 'write refused: %s is outside the paths this task may change.' % path}) + '\n')
+        sys.stderr.write('a plain stderr line of the fake pi\n')
+        sys.stderr.flush()
+    try:
+        with open(path, 'w') as out:
+            out.write('written past the runner\n')
+        return {'runner_denied': not inside, 'written': True}
+    except OSError as error:
+        return {'runner_denied': not inside, 'written': False, 'error': type(error).__name__}
+
+
 def main():
     argv = sys.argv[1:]
     session = option(argv, '--session-id')
     instructions = ' '.join(value for flag, value in zip(argv, argv[1:]) if flag == '--append-system-prompt')
     agent_dir = os.environ.get('PI_CODING_AGENT_DIR')
     worker = 'You are a task worker' in instructions
+    runner = runner_policy() if option(argv, '-e') else None
     trace({'launch': True, 'session': session, 'model': option(argv, '--model'), 'cwd': os.getcwd(),
            'worker': worker, 'talk_rule': "Judge from the owner's words" in instructions, 'rpc': '--mode' in argv and option(argv, '--mode') == 'rpc',
            'no_tools': '--no-tools' in argv, 'no_session': '--no-session' in argv,
            'thinking': option(argv, '--thinking'), 'argv': argv_shown(argv),
            'agent_dir': agent_dir, 'agent_dir_files': sorted(os.listdir(agent_dir)) if agent_dir else None,
-           'models_json': models_json(agent_dir)})
+           'models_json': models_json(agent_dir), 'extension': option(argv, '-e'), 'runner': runner})
     for line in sys.stdin:
         command = json.loads(line)
         if command.get('type') != 'prompt':
@@ -130,6 +169,11 @@ def main():
                         # ^ The reason goes to the trace: the scenario shows it when the task fails.
                         trace({'session': session, 'git_failed': git[-3:], 'error': done.stderr[-800:]})
                         sys.exit(1)
+            if 'RUNNERWRITE' in words:
+                target = words[words.index('RUNNERWRITE') + 1]
+                control = os.path.join(os.getcwd(), 'runner-control.txt')
+                trace({'session': session, 'runner_write': {'target': runner_write(runner['policy'], target),
+                                                            'control': runner_write(runner['policy'], control)}})
             if 'FORBID' in words:
                 script, spec, out = words[words.index('FORBID') + 1:words.index('FORBID') + 4]
                 # ^ A crash of the script is an answer too: the test reads it from the trace.

@@ -3296,6 +3296,38 @@ def part_worker(created=None):
         wait(closed, 'the egress proxy of %s closed' % url)
 
     assert tried['proxy:url'] is None, tried  # ^ A provider on this machine needs no proxy.
+    # 23r. The lean runner (docs/tasks.md "Pi adapter"): an entry with `extension` gets a policy file from the same
+    # paths as the profile, and the runner's deny line reaches the task's log. The fake pi checks the variables, the
+    # file's hash and shape, and stands in for the runner and the write tool (scripts/fake-pi-rpc.py RUNNERWRITE).
+    runner_ext = work / 'runner-ext.js'
+    runner_ext.write_text('// the lean runner stands here\n')
+    with open(registry, 'a') as out:
+        out.write('[[agents]]\nname = "strict-runner"\ncommand = ["pi"]\nadapter = "pi"\nmodel = "fake/runner-model"\n'
+                  'extension = %s\n' % json.dumps(str(runner_ext)))
+    configure(LAND_CONFIG + '  agent: { adapter: pi, model: fake/runner-model }\n', 'untrusted worker with a runner')
+    outside = project / 'runner-outside.txt'
+    gated = js('task', 'new', 'RUNNERWRITE %s WORK runner.txt' % outside)['id']
+    assert wait_state(gated, 'ready', 'failed')['state'] == 'ready', (show(gated), [t for t in traces() if t.get('adapter') == 'pi'][-8:])
+    launch = next(t for t in traces() if t.get('launch') and t.get('model') == 'fake/runner-model' and t.get('worker'))
+    runner = launch['runner']
+    assert launch['extension'] == str(runner_ext) and runner['ok'] and runner['sha_matches'] and runner['sha_lower_hex'], runner
+    assert runner['mode'] == '0o600' and runner['folder'] == launch['agent_dir'] and launch['agent_dir_files'] == ['models.json', 'policy.json'], launch
+    rules = runner['policy']
+    copy_dir = os.path.realpath(show(gated)['record']['working_copy'])
+    inside = lambda path: any(os.path.realpath(path) == w or os.path.realpath(path).startswith(w + '/') for w in rules['write'])
+    assert rules['tools'] == ['read', 'bash', 'edit', 'write'] and rules['read'] == ['/'], rules
+    assert copy_dir in rules['write'] and inside(copy_dir + '/a.txt') and not inside(outside) and not inside(home / '.zshrc'), rules['write']
+    assert os.path.realpath(home / '.ssh') + '/**' in rules['secrets'] and os.path.realpath(home / '.config/gh') + '/**' in rules['secrets'], rules['secrets']
+    # ^ The runner and the profile refuse the same write; the control in the working copy passes both.
+    tried = next(t['runner_write'] for t in traces() if 'runner_write' in t)
+    assert tried['target'] == {'runner_denied': True, 'written': False, 'error': 'PermissionError'}, tried
+    assert tried['control'] == {'runner_denied': False, 'written': True}, tried
+    assert not outside.exists()
+    denied = wait(lambda: [e for e in log(gated) if e['kind'] == 'agent' and e['text'].startswith('runner denied write ')], 'the runner deny line is logged')
+    assert len(denied) == 1 and not denied[0]['said'] and str(outside) in denied[0]['text'] and 'outside the paths this task may change' in denied[0]['text'], denied
+    assert not any('plain stderr line' in e.get('text', '') for e in log(gated)), 'a line that is no runner line is not progress'
+    js('task', 'close', gated, '--discard')
+    wait(lambda: not Path(runner['path']).exists(), 'the policy file goes with the launch folder')
     models = home / '.pi/agent/models.json'
     models.write_text(json.dumps({'providers': {'remote': {'baseUrl': 'http://%s:%d/v1' % (lan, provider_port), 'api': 'openai-completions',
                                                            'apiKey': 'none', 'models': [{'id': 'pi-model'}]}}}))
@@ -5662,7 +5694,7 @@ def part_host(created=None):
     argv = pi_launch['argv']
     assert argv[argv.index('-e') + 1] == str(lean) and '--no-extensions' in argv, argv
     assert argv[argv.index('--session-dir') + 1] == str(owner_pi / 'sessions/wsx'), argv
-    assert pi_launch['agent_dir'] != str(owner_pi) and pi_launch['agent_dir_files'] == ['models.json'], pi_launch
+    assert pi_launch['agent_dir'] != str(owner_pi) and pi_launch['agent_dir_files'] == ['models.json', 'policy.json'], pi_launch
     assert pi_launch['models_json'] == (owner_pi / 'models.json').read_text(), pi_launch
     limit_file = state / 'wsx/tasks/agents/claude.json'
     assert json.loads(limit_file.read_text())['until_ms'] > time.time() * 1000 + 500_000, limit_file.read_text()

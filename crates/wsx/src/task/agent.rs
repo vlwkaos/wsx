@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Sender, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
@@ -192,7 +192,7 @@ impl Agent {
         resume: bool,
         cost_base: u64,
         events: Sender<E>,
-        wrap: impl Fn(Option<AgentLine>) -> E + Send + 'static,
+        wrap: impl Fn(Option<AgentLine>) -> E + Send + Sync + 'static,
     ) -> Result<Self> {
         Ok(match adapter {
             "claude" => Self::Claude(ClaudeAgent::spawn(
@@ -430,15 +430,14 @@ pub fn record_limit(
 /// Longest stdout line the host reads; a longer one (a huge tool result) is skipped.
 const MAX_LINE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Hand each JSON line of an agent's stdout to `each` (false stops), to the end of the stream.
-/// A line over `MAX_LINE_BYTES` is dropped in buffer-sized steps, never held; a line that is
-/// no JSON is skipped.
+/// Hand each line of an agent's output to `each` (false stops), to the end of the stream.
+/// A line over `MAX_LINE_BYTES` is dropped in buffer-sized steps, never held.
 /// A read error ends the stream too and comes back, so the reader can say why.
-pub(super) fn read_json_lines(
-    stdout: impl Read,
-    mut each: impl FnMut(Value) -> bool,
+pub(super) fn read_lines(
+    source: impl Read,
+    mut each: impl FnMut(&[u8]) -> bool,
 ) -> std::io::Result<()> {
-    let mut reader = BufReader::new(stdout);
+    let mut reader = BufReader::new(source);
     loop {
         let mut line = Vec::new();
         match (&mut reader)
@@ -452,14 +451,23 @@ pub(super) fn read_json_lines(
                 }
             }
             _ => {
-                if let Ok(value) = serde_json::from_slice::<Value>(&line) {
-                    if !each(value) {
-                        return Ok(());
-                    }
+                if !each(&line) {
+                    return Ok(());
                 }
             }
         }
     }
+}
+
+/// `read_lines` over an agent's stdout: each JSON line goes to `each`; a line that is no JSON
+/// is skipped.
+pub(super) fn read_json_lines(
+    stdout: impl Read,
+    mut each: impl FnMut(Value) -> bool,
+) -> std::io::Result<()> {
+    read_lines(stdout, |line| {
+        serde_json::from_slice::<Value>(line).map_or(true, &mut each)
+    })
 }
 
 /// The reader thread's end: a read error is said first, so the log tells why the stream
@@ -504,13 +512,15 @@ pub(super) struct AgentProcess {
 
 impl AgentProcess {
     /// Start `program` with `args` in the launch's boundary, folder and environment: `kept`
-    /// names the host variables it keeps, `env` adds the adapter's own.
+    /// names the host variables it keeps, `env` adds the adapter's own. `stderr`: inherited,
+    /// or piped for the adapter to read (`take_stderr`).
     pub(super) fn spawn(
         launch: &Launch,
         program: &'static str,
         args: Vec<OsString>,
         kept: &[&str],
         env: &[(&str, &str)],
+        stderr: Stdio,
     ) -> Result<(Self, ChildStdout)> {
         // ^ The host's boundary confines the agent; the adapter only adds its own argv.
         let mut command = launch.boundary.command(program)?;
@@ -571,7 +581,7 @@ impl AgentProcess {
             .current_dir(&launch.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(stderr)
             .spawn()
             .with_context(|| format!("cannot start {program}; is it on PATH?"))?;
         let mut process = Self {
@@ -602,6 +612,11 @@ impl AgentProcess {
         });
         process.input = Some(input);
         Ok((process, stdout))
+    }
+
+    /// The piped stderr, once; none when it is inherited.
+    pub(super) fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.child.stderr.take()
     }
 
     /// Queue one JSON line for the agent's stdin; never waits for the agent to read it.

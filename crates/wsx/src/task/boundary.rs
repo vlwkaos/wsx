@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use wsx_core::task::policy::{Policy, Role, DENIED_EXEC};
+use wsx_core::task::policy::{Policy, Role, RunnerFile, DENIED_EXEC};
 use wsx_core::task::{copy, store, TaskRecord};
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
@@ -241,6 +241,57 @@ impl Boundary {
         self
     }
 
+    /// What the agent reads not: the folders, and the adapter's credential file when a strict
+    /// agent does not sign in with it. The adapter's own folder stays readable but for that file.
+    fn read_denials(&self) -> (Vec<&PathBuf>, Option<PathBuf>) {
+        let folders = self
+            .deny_read
+            .iter()
+            .filter(|path| {
+                self.adapter_home
+                    .as_ref()
+                    .is_none_or(|(dir, _)| dir != *path)
+            })
+            .collect();
+        let credential = self
+            .adapter_home
+            .as_ref()
+            .filter(|_| self.policy.strict() && !self.credential_open)
+            .map(|(dir, credential)| dir.join(credential));
+        (folders, credential)
+    }
+
+    /// The lean runner's policy for this launch: it reads where the profile lets it, writes
+    /// only in the role's own folders and `TMPDIR` (the git folder is left out: git runs through
+    /// bash, which the profile gates), and holds the profile's read denials as secrets.
+    /// `minimal`: a call without tools. ref: docs/tasks.md "Pi adapter"
+    pub fn runner_file(&self, minimal: bool) -> RunnerFile {
+        let text = |path: &Path| path.to_string_lossy().into_owned();
+        let tmp = std::env::var_os("TMPDIR").filter(|tmp| !tmp.is_empty());
+        let (folders, credential) = self.read_denials();
+        RunnerFile {
+            tools: if minimal {
+                Vec::new()
+            } else {
+                vec!["read", "bash", "edit", "write"]
+            },
+            read: vec!["/".into()],
+            write: self
+                .own
+                .iter()
+                .chain(&self.own_prefix)
+                .cloned()
+                .chain(tmp.map(|tmp| real(Path::new(&tmp))))
+                .map(|path| text(&path))
+                .collect(),
+            secrets: folders
+                .into_iter()
+                .flat_map(|path| [text(path), format!("{}/**", text(path))])
+                .chain(credential.map(|path| text(&path)))
+                .collect(),
+        }
+    }
+
     /// The Seatbelt profile: allow everything, then the denials, then the role's own paths.
     // ^ Each `sandbox-exec` is its own sandbox, so `same-sandbox` keeps an agent's signals to
     // its own tree (daemonised children included) though every worker shares this text.
@@ -266,25 +317,14 @@ impl Boundary {
                 rule("allow file-write*", subpath(dir));
             }
         }
-        for path in &self.deny_read {
-            // ^ The adapter's own folder stays readable but for its credential file.
-            if self
-                .adapter_home
-                .as_ref()
-                .is_some_and(|(dir, _)| dir == path)
-            {
-                continue;
-            }
+        let (folders, credential) = self.read_denials();
+        for path in folders {
             rule("deny file-read*", subpath(path));
         }
-        if let Some((dir, credential)) = self
-            .adapter_home
-            .as_ref()
-            .filter(|_| strict && !self.credential_open)
-        {
+        if let Some(path) = credential {
             rule(
                 "deny file-read*",
-                format!("(literal \"{}\")", dir.join(credential).display()),
+                format!("(literal \"{}\")", path.display()),
             );
         }
         for path in &self.deny_write {
