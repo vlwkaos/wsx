@@ -14,6 +14,7 @@ use std::sync::mpsc::Sender;
 use wsx_core::config::global::GlobalConfig;
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::TaskWorkflow;
+use wsx_core::task::policy::Role;
 use wsx_core::task::view::clip;
 use wsx_core::task::{now_unix_ms, store, worker_result_schema, TaskRecord, TurnUsage};
 
@@ -157,7 +158,21 @@ impl Launch {
             true => skills_plugin(folder, root.as_deref(), &settings.skills_only)?,
             false => None,
         };
-        let boundary = Boundary::worker(record, folder)?;
+        let env: Vec<(String, std::ffi::OsString)> = record
+            .env
+            .iter()
+            .map(|(name, value)| (name.clone(), value.into()))
+            .chain([(
+                super::broker::BROKER_ENV.into(),
+                broker.as_os_str().to_owned(),
+            )])
+            .chain(account_env(root.clone()))
+            .collect();
+        let policy = super::agent::policy(Role::Worker, &record.adapter, &record.model, &env);
+        let boundary = Boundary::worker(record, folder, policy)?
+            .adapter(&record.adapter, root.as_deref())
+            .reach(&record.adapter, &record.model, &env)
+            .broker(broker);
         let structured = record.adapter == "claude";
         let mut instructions = worker_instructions(record, &settings.workflow, skills.is_some());
         // ^ An adapter without structured output reports through the broker (host.rs
@@ -179,16 +194,7 @@ impl Launch {
         launch.effort = record.effort.clone();
         launch.plugin_dirs = skills.into_iter().collect();
         launch.schema = structured.then(worker_result_schema);
-        launch.env = record
-            .env
-            .iter()
-            .map(|(name, value)| (name.clone(), value.into()))
-            .chain([(
-                super::broker::BROKER_ENV.into(),
-                broker.as_os_str().to_owned(),
-            )])
-            .chain(account_env(root))
-            .collect();
+        launch.env = env;
         launch.path_prefix = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf));

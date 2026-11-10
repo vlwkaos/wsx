@@ -217,6 +217,8 @@ fn with_part(command: &str, part: &str) -> String {
 struct Host {
     dir: TaskDir,
     record: TaskRecord,
+    /// The policy of the agent that runs now, which the broker checks commands against.
+    policy: broker::SharedPolicy,
     events: Sender<Event>,
     agent: Option<Agent>,
     generation: u64,
@@ -309,6 +311,7 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
     let mut host = Host {
         dir,
         record,
+        policy: broker::SharedPolicy::default(),
         events: events.clone(),
         agent: None,
         generation: 0,
@@ -351,8 +354,13 @@ pub fn run(project_id: &str, id: u32) -> Result<()> {
     };
     (host.context_tokens, host.answered_ms) = host.last_context();
     let to_host = events.clone();
+    let policy = host.policy.clone();
     std::thread::spawn(move || {
         broker::serve(brokered, move |request| {
+            // ^ The worker's role grants `result` and `check-run`, nothing else.
+            if let Err(error) = broker::allowed(&request.argv, policy.get()) {
+                return broker::refused(format!("{error:#}"));
+            }
             let (reply, answer) = channel();
             // ^ An adapter without structured output returns its result here (docs/tasks.md
             // "Agents"): `wsx task result -` with the JSON on stdin.
@@ -1410,9 +1418,11 @@ impl Host {
             self.generation += 1;
             let generation = self.generation;
             self.stop_requested = false;
+            let launch = Launch::worker(&self.record, &self.dir.broker_path(), &self.dir.path)?;
+            self.policy.set(launch.boundary.policy());
             self.agent = Some(Agent::spawn(
                 &self.record.adapter,
-                &Launch::worker(&self.record, &self.dir.broker_path(), &self.dir.path)?,
+                &launch,
                 &session,
                 resume,
                 if resume { self.session_cost() } else { 0 },

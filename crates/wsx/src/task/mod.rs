@@ -42,6 +42,7 @@ use cmd::work::{
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use wsx_core::task::owner::{HOST_TIMEOUT, LAND_TIMEOUT};
+use wsx_core::task::policy::{role_refusal, Capability, Role, Trust};
 use wsx_core::task::{
     call_host,
     store::{self, TaskDir},
@@ -238,7 +239,9 @@ pub fn run(command: TaskCmd) -> Result<()> {
             preview::host(&project_id, store::parse_task_number(&task)?)
         }
         TaskCmd::ManagerHost { project_id, role } => manager::run(&project_id, role.as_deref()),
-        TaskCmd::BoundaryProfile { project } => boundary_profile(project.as_deref()),
+        TaskCmd::BoundaryProfile { project, untrusted } => {
+            boundary_profile(project.as_deref(), untrusted)
+        }
         TaskCmd::Host { project_id, task } => {
             host::run(&project_id, store::parse_task_number(&task)?)
         }
@@ -315,13 +318,19 @@ fn open_owned(project: Option<&str>, task: &str) -> Result<TaskDir> {
     Ok(dir)
 }
 
-/// Refuse what only the owner or the manager does: a role has no approvals, deploys,
-/// trials, routines or roles of its own. ref: docs/tasks.md "Roles"
-fn not_for_roles(what: &str) -> Result<()> {
-    if let Some(role) = actor().role() {
-        bail!("{what} is not for a role; ask the manager (`wsx task say --from-role`); role {role} ran nothing");
+/// Whether the acting role's group holds `capability` (`wsx_core::task::policy`); the owner,
+/// with no actor, holds every one. The broker refused what the role cannot do before the CLI
+/// ran; this is the same table for a command that reaches the CLI by another way.
+fn may(capability: Capability) -> bool {
+    Role::of_actor(&actor()).is_none_or(|role| role.caps().has(capability))
+}
+
+/// Refuse what the acting role's group lacks, in the role's words. ref: docs/tasks.md "Roles"
+fn need(capability: Capability, what: &str) -> Result<()> {
+    match Role::of_actor(&actor()) {
+        Some(role) if !role.caps().has(capability) => bail!("{}", role_refusal(role, what)),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 fn print_json(value: &serde_json::Value) -> Result<()> {
@@ -423,4 +432,17 @@ fn acting_as_manager() -> bool {
 
 fn actor() -> Actor {
     Actor::from_env()
+}
+
+/// Whether the manager's agent must ask the owner for an outward command: its configured
+/// `tasks.*.approve`, or always when the agent is untrusted (`WSX_TASK_TRUST`, set by its
+/// broker). ref: docs/tasks.md "Permissions"
+fn asks_owner(configured: bool) -> bool {
+    acting_as_manager() && (configured || Trust::from_env() == Trust::Untrusted)
+}
+
+/// The owner's message that approves an action; an untrusted agent has none: a model's word
+/// that the owner asked is no approval.
+fn owner_said(said: Option<u64>) -> Option<u64> {
+    said.filter(|_| Trust::from_env() == Trust::Trusted)
 }

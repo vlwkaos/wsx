@@ -157,6 +157,19 @@ A role is a job description for a fallback model: words it gets and `wsx task` c
 | note-taker | Keeps the owner's decisions and context in the manager notes, one line each, with the message id | The turn, the notes | `wsx task note decision\|context "<line>" --msg <id>` (new, append-only; the host caps a line at 240 characters, as for memo lines, and owns compaction) | It rewrites or deletes nothing |
 | handoff | When Claude returns, a gist of what happened during the fallback | The fallback span of the log, cut by the host | None: no tools | Every line names message ids; what it does not know it says |
 
+One rule decides what a launch site may do (task 350, `wsx_core::task::policy`, docs/tasks.md "Permissions"): each operation above is a role's group of capabilities, and an agent holds the ones it passed.
+
+| Operation | Role | Capabilities |
+|---|---|---|
+| Manager turn, event-only turn | manager | all |
+| Plan, build, review | worker | `result` |
+| Notes compaction, memo folding | scribe | `note` |
+| Handoff notes of a rotation | scribe | `handoff` |
+| Backlog upkeep | organizer | `read`, `answer`, `backlog`, `note` |
+| Stand-in | organizer, `minimal` | `answer` |
+
+An `[[agents]]` entry lists `may = [...]`; the operation runs on it only when the entry passed every capability the operation needs. `roles` says which jobs an agent does; `may` cuts what commands it may run in them. A tier test result becomes a `may` list the owner writes by hand.
+
 What stays with Claude, unless the evaluation (3.5) shows otherwise:
 
 | Operation | Launch site | During a fallback |
@@ -240,6 +253,7 @@ Today: `[[agents]]` has `name, command, adapter, model, budget_usd_per_day, mini
 | Own agent (`tasks.*.model`, Claude) holds every role; no registry row needed | `agent::Choice` (231) |
 | `fallback(names, now, role)` replaces the `minimal` bool. An entry qualifies when it lists the role. `minimal` keeps its meaning (a no-tool stand-in) and counts as the organizer without tools | `agent.rs:250` and its 5 callers |
 | An operation names its role from the table in 3.2. No new config key | `manager.rs` (`turn_model`, `ping`, `check_*`), `host.rs` (`start_turn`, `move_after_limit`), `cmd/new.rs` |
+| New optional `may = [...]` (capabilities, `task::policy`) on `[[agents]]`; serde rejects an unknown name. An operation runs on an agent only when its `may` holds every capability the role needs; `minimal` implies `may = ["answer"]` | `AgentEntry`, `task::policy` |
 | No agent qualifies: behave as today (wait, or stand-in text for owner messages) | existing paths |
 | The owner writes the roles by hand after a test run; the proof stays in the `bench-tier` result file | none |
 
@@ -291,6 +305,8 @@ One owner: a new `wsx_core::task::policy` module computes `Policy` from three in
 | Policy file (JSON: tool allow-list, readable and writable path prefixes, secret globs) | the Pi lean tool layer. Written per launch outside the agent's writable paths, so the agent cannot edit it; a tampered copy gains nothing over the profile |
 
 ### 5.3 What each may do (untrusted agents)
+
+Superseded for commands by the capability rule (Built note below 5.7): the columns here read as `may` lists, and 5.4's classes are `TaskCmd::needs`.
 
 | Capability | Handoff (text) | Worker (no role now) | Organizer | Backlog and note-taker |
 |---|---|---|---|---|
@@ -364,6 +380,8 @@ The adversary is scripted, not a hope: a fixture provider (the pattern of pygmal
 | Per-launch `PI_CODING_AGENT_DIR` with `models.json` only; policy file; `-e`; `--no-tools` for handoff | yes (`pi.rs`) | no |
 | Tool layer reads the policy file; deny-all on load failure; redaction; refuses unknown tools; no `ask` | no | yes |
 | Scripted adversary provider; F1 to F7 harness | F1 to F10 in `test-task.py` | the provider and tool-layer cases (F3 excluded) |
+
+Built (W7, task 350, then reshaped to one rule by the owner's messages 3696 and 3698: roles, capabilities, agent `may` lists): `wsx_core::task::policy` (`Policy::of(trust, role, tier)`, named `of` because `for` is a keyword), the strict renderer in `boundary.rs`, `TaskCmd::class` and the broker check, `WSX_TASK_TRUST` with forced approvals (an untrusted agent's `--owner-said` is ignored), the wsxd socket deny, and the `may` key on `[[agents]]` (a list of capabilities; it replaces the tiers, so open question 9 is moot). Trust is the Claude adapter without `ANTHROPIC_BASE_URL`; the model name is not read. The strict profile also lets a worker write the main repository's git folder (its commits need it; the default branch's ref, `hooks` and `config` stay denied) and the adapter's own state folder. F1 to F9 and F11 (as rendered profile) are in `scripts/test-task.py` section 23s; F7's `--no-tools` and the policy file are W2/P2, F10 needs `bench-tier` (W4).
 
 ## 6. The runner: Pi plus a lean pygmalion
 

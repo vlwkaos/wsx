@@ -2,10 +2,10 @@
 
 use super::approve::{ask_covering, request_of};
 use crate::task::args::{DeployArgs, PushArgs};
-use crate::task::open;
 use crate::task::{
-    acting_as_manager, actor, ask_host, not_for_roles, print_json, project_entry, report_response,
+    acting_as_manager, actor, ask_host, need, print_json, project_entry, report_response,
 };
+use crate::task::{asks_owner, open};
 use crate::task::{host, hosting, trial};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
@@ -18,6 +18,7 @@ use wsx_core::task::checks::{self};
 use wsx_core::task::ledger::{default_ref, deploy_status, kind_name};
 use wsx_core::task::manager::{ApprovalAction, ApprovalLine};
 use wsx_core::task::owner::{self};
+use wsx_core::task::policy::Capability;
 use wsx_core::task::view::short_commit;
 use wsx_core::task::{
     copy, now_unix_ms,
@@ -50,9 +51,9 @@ pub(crate) fn push(args: PushArgs) -> Result<()> {
         project.as_deref(),
         commit.as_deref(),
         lease.as_deref(),
-        said.owner_said,
+        crate::task::owner_said(said.owner_said),
     );
-    not_for_roles("push")?;
+    need(Capability::Deploy, "push")?;
     let (project_name, main) = project_entry(project)?;
     let project_id = store::project_id(&project_name, &main);
     let default = default_ref(&main);
@@ -208,10 +209,10 @@ pub(crate) fn deploy(kind: DeployKind, args: DeployArgs) -> Result<()> {
         json,
     } = args;
     let (project, commit) = (project.as_deref(), commit.as_deref());
-    let (run_locked, owner_said) = (run.run_locked, said.owner_said);
+    let (run_locked, owner_said) = (run.run_locked, crate::task::owner_said(said.owner_said));
     let by_hand = !if_new && trial.is_none() && run_locked.is_none();
     let name = kind_name(kind);
-    not_for_roles(name)?;
+    need(Capability::Deploy, name)?;
     let (project_name, main) = project_entry(project)?;
     let settings =
         load_task_config(&main).map_err(|error| anyhow::anyhow!("{error}; nothing was run"))?;
@@ -246,9 +247,8 @@ pub(crate) fn deploy(kind: DeployKind, args: DeployArgs) -> Result<()> {
             ),
         }
     }
-    if approve
-        && run_locked.is_none()
-        && acting_as_manager()
+    if run_locked.is_none()
+        && asks_owner(approve)
         && ask_covering(
             &main,
             &project_id,
@@ -452,7 +452,7 @@ pub(crate) fn trial_command(
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    not_for_roles("trial")?;
+    need(Capability::Deploy, "trial")?;
     let dir = open(project, task)?;
     let record = dir.read_record()?;
     if end {
@@ -483,7 +483,7 @@ pub(crate) fn trial_command(
     }
     // ^ A trial changes the live site: a manager that may not deploy alone asks the owner
     // to start it.
-    if acting_as_manager() && settings.deploy_approve {
+    if asks_owner(settings.deploy_approve) {
         bail!("tasks.deploy.approve is on: ask the owner to start the trial (Try live)");
     }
     if !trial::claim(&record, actor())? {

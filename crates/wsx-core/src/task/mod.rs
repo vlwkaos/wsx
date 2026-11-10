@@ -14,6 +14,7 @@ pub mod history;
 pub mod ledger;
 pub mod manager;
 pub mod owner;
+pub mod policy;
 pub mod report;
 pub mod roles;
 pub mod search;

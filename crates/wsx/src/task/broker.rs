@@ -4,6 +4,7 @@
 //! sends a `task` command's argv, stdin and folder to the host's socket and prints the host's
 //! answer. ref: docs/tasks.md "Permissions"
 
+use super::args::TaskCmd;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{ErrorKind, Read, Write};
@@ -13,6 +14,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 use wsx_core::git::output_with_timeout_limit;
 use wsx_core::task::owner::ACTOR_ENV;
+use wsx_core::task::policy::{Capability, Policy, Role, Trust, TRUST_ENV};
 
 pub const BROKER_ENV: &str = "WSX_TASK_BROKER";
 /// The manager's own project, for `say --from-manager`; set only by the manager host.
@@ -41,12 +43,62 @@ pub struct Response {
     pub code: i32,
 }
 
-/// Whether the manager host runs this argv: `task <subcommand> ...`, not a hidden host command.
-fn allowed(argv: &[String]) -> Result<()> {
+/// The policy of the agent a host runs now, which `launch` sets at each agent start. Before
+/// the first start it grants nothing: no command runs on a guess.
+#[derive(Clone)]
+pub struct SharedPolicy(std::sync::Arc<std::sync::Mutex<Policy>>);
+
+impl Default for SharedPolicy {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(Policy::of(
+            Trust::Untrusted,
+            Role::Manager,
+            Some(&[]),
+        ))))
+    }
+}
+
+impl SharedPolicy {
+    pub fn get(&self) -> Policy {
+        *self.0.lock().expect("policy lock")
+    }
+
+    pub fn set(&self, policy: Policy) {
+        *self.0.lock().expect("policy lock") = policy;
+    }
+}
+
+/// Whether a host runs this argv for an agent of `policy`: `task <subcommand> ...`, not a
+/// hidden host command, and a command whose capability the policy grants. An argv that
+/// parses to no command runs nothing in the CLI either (its own parser refuses it, or prints
+/// help), so it is passed on.
+pub(super) fn allowed(argv: &[String], policy: Policy) -> Result<()> {
     match argv {
-        [task, sub, ..] if task == "task" && !HIDDEN.contains(&sub.as_str()) => Ok(()),
+        [task, sub, ..] if task == "task" && !HIDDEN.contains(&sub.as_str()) => {}
         [task, sub, ..] if task == "task" => bail!("`wsx task {sub}` is not for the manager"),
         _ => bail!("the manager may run only `wsx task` commands"),
+    }
+    // ^ `result` is the worker host's own, not a CLI command.
+    let (needs, what): (&[Capability], String) = match (argv[1].as_str(), TaskCmd::parse_argv(argv))
+    {
+        ("result", _) => (&[Capability::Result], "result".into()),
+        (_, Some(command)) => (command.needs(), command_name(argv)),
+        (_, None) => return Ok(()),
+    };
+    if policy.allows_any(needs) {
+        return Ok(());
+    }
+    bail!("{}", policy.refusal(&what, needs))
+}
+
+/// The command as the refusal names it: `role new`, `routine changes`, `close --discard`.
+fn command_name(argv: &[String]) -> String {
+    match (argv[1].as_str(), argv.get(2)) {
+        ("role", Some(action)) => format!("role {action}"),
+        ("routine", _) => "routine changes".into(),
+        ("checkin", _) => "a check-in".into(),
+        ("close", _) if argv.iter().any(|arg| arg == "--discard") => "close --discard".into(),
+        (sub, _) => sub.to_string(),
     }
 }
 
@@ -119,10 +171,13 @@ pub fn serve_manager(
     own: String,
     actor: String,
     owed: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u32>>>,
+    policy: SharedPolicy,
     sent: impl Fn(String, String, bool) + Send + Sync + 'static,
 ) {
     serve(listener, move |request: Request| {
-        let target = match allowed(&request.argv).and_then(|()| reach(&request.argv, &own)) {
+        let policy = policy.get();
+        let target = match allowed(&request.argv, policy).and_then(|()| reach(&request.argv, &own))
+        {
             Ok(target) => target,
             Err(error) => return refused(format!("{error:#}")),
         };
@@ -144,7 +199,7 @@ pub fn serve_manager(
                 ));
             }
         }
-        let response = run(&exe, request, &fallback_cwd, &own, &actor)
+        let response = run(&exe, request, &fallback_cwd, &own, &actor, policy.trust)
             .unwrap_or_else(|error| refused(format!("{error:#}")));
         if let (Some(to), 0) = (target, response.code) {
             // ^ Spent only by a reply that went out.
@@ -259,7 +314,14 @@ pub fn refused(message: String) -> Response {
 }
 
 /// Run the command as `actor` of `own`, in the agent's folder when it is one.
-fn run(exe: &Path, request: Request, fallback: &Path, own: &str, actor: &str) -> Result<Response> {
+fn run(
+    exe: &Path,
+    request: Request,
+    fallback: &Path,
+    own: &str,
+    actor: &str,
+    trust: Trust,
+) -> Result<Response> {
     let cwd = if request.cwd.is_dir() {
         request.cwd
     } else {
@@ -271,6 +333,7 @@ fn run(exe: &Path, request: Request, fallback: &Path, own: &str, actor: &str) ->
         .current_dir(cwd)
         .env(ACTOR_ENV, actor)
         .env(FROM_ENV, own)
+        .env(TRUST_ENV, trust.as_str())
         .env_remove(BROKER_ENV)
         .stdin(Stdio::null());
     if let Some(text) = request.stdin {

@@ -4,7 +4,7 @@ use super::approve::{ask_covering, owner_only, request_of};
 use crate::cli::PromptSource;
 use crate::cli::{existing_daemon_snapshot, load_config};
 use crate::task::args::OwnerSaid;
-use crate::task::{acting_as_manager, not_for_roles, open, open_owned, send};
+use crate::task::{acting_as_manager, need, open, open_owned, owner_said, send};
 use crate::task::{ask_host_ok, print_json, project_entry};
 use crate::task::{preview, trial};
 use anyhow::{bail, Context, Result};
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use wsx_core::task::checks::{self};
 use wsx_core::task::manager::ApprovalAction;
 use wsx_core::task::owner::HOST_TIMEOUT;
+use wsx_core::task::policy::Capability;
 use wsx_core::task::view::checked_files;
 use wsx_core::task::view::{
     overlaps, project_tasks, refuse_open_children, task_summary, MAX_RESULT_READ_BYTES,
@@ -479,7 +480,7 @@ pub(crate) fn close_command(
 ) -> Result<()> {
     let dir = open_owned(project, task)?;
     if discard {
-        not_for_roles("close --discard")?;
+        need(Capability::Discard, "close --discard")?;
     }
     // ^ Discarding work cannot be undone: the manager always asks first, or names
     // the owner's message that asked for it.
@@ -490,7 +491,7 @@ pub(crate) fn close_command(
             &record.project_path,
             &dir.project_id,
             request_of(ApprovalAction::Discard, Some(&record), None, None, None),
-            said.owner_said,
+            owner_said(said.owner_said),
             json,
         )?
     {
