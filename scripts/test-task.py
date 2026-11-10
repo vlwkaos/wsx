@@ -2513,6 +2513,21 @@ def part_core(created=None):
     wait_state(asking, 'ready')
     asked = reply_to(wait(lambda: events_with('#%d ready r1' % asking), 'the event of a task that asks')[0]['id'])
     assert asked['text'] == 'Should I land it now?' and asked.get('asks') is True and 'quiet' not in asked, asked
+    # ^ An open question shows in the next turn's input ("Open questions", docs/tasks.md "Questions"):
+    # a message that quotes another message answers none. A dismiss, or an owner message that
+    # quotes it, ends it; with none open the section is absent.
+    line = '- %d: Should I land it now?' % asked['id']
+    kept = js('task', 'say', '> message 1\n\nkeeping that open')
+    reply_to(kept['id'])
+    assert line in turn_with('keeping that open')['message'].split('Open questions', 1)[1], turn_with('keeping that open')
+    js('task', 'dismiss', str(asked['id']))
+    reply_to(js('task', 'say', 'STATUS nothing open')['id'])
+    assert 'Open questions' not in turn_with('STATUS nothing open')['message'], turn_with('STATUS nothing open')
+    again = reply_to(js('task', 'say', 'ASK once more')['id'])
+    assert again.get('asks') is True, again
+    reply_to(js('task', 'say', '> message %d\n\nyes, land it' % again['id'])['id'])
+    answered_turn = turn_with('yes, land it')['message']
+    assert 'Open questions' not in answered_turn and '- %d:' % again['id'] not in answered_turn, answered_turn
     js('task', 'close', asking)
     question_table = reply_to(js('task', 'say', 'ASK TABLE')['id'])
     assert question_table['text'].startswith('Should I land it now?\nWhere things stand') and 'asks' not in question_table, question_table
