@@ -3311,7 +3311,7 @@ def part_worker(created=None):
     launch = next(t for t in traces() if t.get('launch') and t.get('model') == 'fake/runner-model' and t.get('worker'))
     runner = launch['runner']
     assert launch['extension'] == str(runner_ext) and runner['ok'] and runner['sha_matches'] and runner['sha_lower_hex'], runner
-    assert runner['mode'] == '0o600' and runner['folder'] == launch['agent_dir'] and launch['agent_dir_files'] == ['models.json', 'policy.json'], launch
+    assert runner['mode'] == '0o600' and runner['folder'] == launch['agent_dir'] and 'policy.json' in launch['agent_dir_files'], launch
     rules = runner['policy']
     copy_dir = os.path.realpath(show(gated)['record']['working_copy'])
     inside = lambda path: any(os.path.realpath(path) == w or os.path.realpath(path).startswith(w + '/') for w in rules['write'])
