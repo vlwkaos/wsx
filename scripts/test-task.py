@@ -189,7 +189,7 @@ def gate_cmd(path):
 # STALL_GRACE through wsxd's environment, so a stall is reported on the second sweep.
 STALL_GRACE = 4
 # ^ How long a failed sign-in on record keeps the account skipped (store.rs `sign_in_retry_ms`).
-SIGN_IN_RETRY = 6
+SIGN_IN_RETRY = 12
 SWEEP = 10
 
 
@@ -5575,6 +5575,9 @@ def part_host(created=None):
     assert len(si_moves()) == 2 and manager_state()['agent']['name'] == 'fake-pi', si_moves()
     # ^ The worker: the first fallback on the failed account is skipped, the task continues on fake-pi
     # in a new conversation, and the next task starts there with no call to Claude.
+    # ^ A task born while the record holds starts on the fallback with no switch (si_skipped below);
+    # this one must try Claude first, so the manager's record ends before it is created.
+    wait(si_record_ended, 'the sign-in record ends before the worker')
     si_worker_in = work / 'worker-signed-in'
     si_worker_in.unlink(missing_ok=True)
     si_traced_before = len(traces())
@@ -5603,7 +5606,7 @@ def part_host(created=None):
     js('task', 'add', si_sw, 'WORK sc.txt')
     wait(lambda: show(si_sw)['record']['adapter'] == 'claude', 'the worker goes home')
     assert wait_state(si_sw, 'ready', 'failed')['state'] == 'ready', show(si_sw)
-    assert show(si_sw)['record']['fallback'] is False and not show(si_sw)['record'].get('sign_in'), show(si_sw)['record']
+    assert not show(si_sw)['record'].get('fallback') and not show(si_sw)['record'].get('sign_in'), show(si_sw)['record']
     si_back = [e for e in log(si_sw) if e['kind'] == 'agent_switch'][-1]
     assert si_back['to'].startswith('claude ') and si_back['reason'] == 'sign-in may work again', si_back
     for n in (si_sw, si_skipped):
