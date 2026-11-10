@@ -94,11 +94,6 @@ DEPLOY_CONFIG = LAND_CONFIG + '''  deploy:
 '''
 
 
-# ^ What a worker tries inside wsx's boundary (docs/tasks.md "Permissions"), run as the worker's
-# own command by the fake worker (part 23) and by the real Claude (part 32h). A write to a file
-# that exists only opens it for appending, so nothing changes when it is allowed.
-PROBE_SCRIPT = '''import json, os, socket, subprocess, sys
-spec = json.load(open(sys.argv[1]))
 def unquoted(entry):
     """A reply without the quote wsx adds for the owner message it answers (`quote` is one of `to`,
     docs/tasks.md "A quote"): its words as the manager wrote them, for the checks that compare them.
@@ -109,6 +104,11 @@ def unquoted(entry):
     return {**kept, 'text': entry['text'].partition('\n\n')[2]}
 
 
+# ^ What a worker tries inside wsx's boundary (docs/tasks.md "Permissions"), run as the worker's
+# own command by the fake worker (part 23) and by the real Claude (part 32h). A write to a file
+# that exists only opens it for appending, so nothing changes when it is allowed.
+PROBE_SCRIPT = '''import json, os, socket, subprocess, sys
+spec = json.load(open(sys.argv[1]))
 def tried(action):
     try:
         action()
