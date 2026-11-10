@@ -485,6 +485,8 @@ struct Turns {
     said: Vec<String>,
     /// The characters of the turn's main-conversation thinking so far.
     thought: usize,
+    /// A `Skill` call of the simplify skill came in the turn.
+    simplified: bool,
 }
 
 impl Turns {
@@ -567,6 +569,7 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
                 return None;
             }
             let content = value.pointer("/message/content")?.as_array()?;
+            turns.simplified |= content.iter().any(runs_simplify);
             // ^ An API error's words are the result's reason, not a reply; a subagent's are no
             // reply of this conversation.
             if !is_subagent(value) && !value["isApiErrorMessage"].as_bool().unwrap_or(false) {
@@ -614,6 +617,7 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
                 limit: usage_limit(value, turns.resets_at.take()),
                 background: turns.background,
                 thought: std::mem::take(&mut turns.thought),
+                simplified: std::mem::take(&mut turns.simplified),
                 is_error,
                 subtype: str_field(value, "subtype"),
                 text,
@@ -630,6 +634,27 @@ fn parse_line(value: &Value, turns: &mut Turns) -> Option<AgentLine> {
         }
         _ => None,
     }
+}
+
+/// A `tool_use` of the `Skill` tool that loads the simplify skill, as `simplify` or as the
+/// owner's plugin skill. ref: docs/tasks.md "Workflow"
+fn runs_simplify(item: &Value) -> bool {
+    item["type"] == "tool_use"
+        && item["name"] == "Skill"
+        && item
+            .pointer("/input/skill")
+            .and_then(Value::as_str)
+            .is_some_and(|skill| {
+                skill == "simplify" || skill == format!("{SKILLS_PLUGIN_NAME}:simplify")
+            })
+}
+
+/// The task folder holds the skills plugin with the simplify skill: the worker was lent it.
+pub(super) fn lends_simplify(folder: &Path) -> bool {
+    folder
+        .join(SKILLS_PLUGIN_DIR)
+        .join("skills/simplify")
+        .is_dir()
 }
 
 /// The result's `usage` sums every model call of the turn and `total_cost_usd` counts the

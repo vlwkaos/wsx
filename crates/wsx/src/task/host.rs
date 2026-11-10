@@ -1577,6 +1577,10 @@ impl Host {
         if self.pinging() {
             return self.on_ping(turn);
         }
+        if turn.simplified && !self.record.simplified {
+            self.record.simplified = true;
+            self.save();
+        }
         // ^ A result is the agent answering again, also one that waits for background jobs.
         self.limit_slot = None;
         let Some(turn) = self.wait_for_background(turn) else {
@@ -1756,6 +1760,29 @@ impl Host {
             let mut text: Vec<String> = self.pending.drain(..).collect();
             text.extend(self.step_text());
             self.start_turn(&text.join("\n\n"), TurnTrigger::Step);
+            return;
+        }
+        // ^ A full task whose worker was lent the simplify skill and never loaded it goes back
+        // once; a second miss shows in the ready event. Claude's stream is the only record of a
+        // loaded skill. ref: docs/tasks.md "Workflow"
+        if result.status == "done"
+            && !self.record.small
+            && !self.record.steps.is_empty()
+            && self.record.adapter == "claude"
+            && !self.record.simplified
+            && !self.record.simplify_asked
+            && self.pending.is_empty()
+            && super::claude::lends_simplify(&self.dir.path)
+        {
+            self.record.simplify_asked = true;
+            self.save();
+            self.say("simplify did not run: sent back to the worker");
+            let text = format!(
+                "The simplify skill did not run in this task. Run {}:simplify \
+                 on your changes now, commit what it changes, then finish as before.",
+                super::claude::SKILLS_PLUGIN_NAME
+            );
+            self.start_turn(&text, TurnTrigger::Simplify);
             return;
         }
         // ^ What a test, an assert or a capture shows is the worker's to prove: such an item

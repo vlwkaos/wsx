@@ -57,6 +57,9 @@ pub struct TurnResult {
     /// The characters of thinking text in the turn's main conversation: some of an answer can
     /// sit there, which no reader shows. ref: docs/tasks.md "Reply text"
     pub thought: usize,
+    /// The agent loaded the simplify skill in the turn. Only Claude's stream says so; Pi
+    /// keeps no record of a loaded skill. ref: docs/tasks.md "Workflow"
+    pub simplified: bool,
 }
 
 /// The agent's provider refused the turn for its usage limit.

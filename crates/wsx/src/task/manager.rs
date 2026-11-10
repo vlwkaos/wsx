@@ -1155,6 +1155,11 @@ impl Manager {
                 if let Some(after) = record.after.as_ref().filter(|_| record.state.is_open()) {
                     summary.push_str(&format!("; waits for #{} to land", after.task));
                 }
+                // ^ The worker was sent back once and still did not run the simplify skill.
+                // ref: docs/tasks.md "Workflow"
+                if record.state == TaskState::Ready && record.simplify_missing() {
+                    summary.push_str("; simplify did not run");
+                }
                 // ^ The worker's memo reaches the manager when its task leaves, never later:
                 // the ledger lists only the last few. ref: docs/tasks.md "Memo"
                 if !record.state.is_open() {

@@ -458,6 +458,7 @@ impl Run {
             usage,
             background: 0,
             thought: run.thought,
+            simplified: false,
         }
     }
 }

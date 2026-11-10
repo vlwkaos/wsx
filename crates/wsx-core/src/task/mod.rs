@@ -295,6 +295,15 @@ pub struct TaskRecord {
     /// `task new --plan`: the first result is a plan, with no checks; set until it arrives.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plan: bool,
+    /// `task new --size small`: exempt from the simplify check (docs/tasks.md "Workflow").
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub small: bool,
+    /// The agent ran the simplify skill in this task, read from its own stream.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub simplified: bool,
+    /// The host sent the worker back once to run the simplify skill.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub simplify_asked: bool,
     /// Set while the state is `waiting`, on `check_slot` while checks wait for the slot, and
     /// on `check_run` while a result waits for its check-run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -513,6 +522,8 @@ pub enum TurnTrigger {
     CheckRetry,
     /// Human Verify items the worker proves itself.
     Verify,
+    /// The one turn that asks the worker to run the simplify skill.
+    Simplify,
     /// The answer of a `check-run` that ended after the worker's result.
     CheckRun,
     /// A landing's rebase conflict.
@@ -579,6 +590,12 @@ pub struct LogEntry {
 }
 
 impl TaskRecord {
+    /// The worker was sent back to run the simplify skill and still did not.
+    /// ref: docs/tasks.md "Workflow"
+    pub fn simplify_missing(&self) -> bool {
+        self.simplify_asked && !self.simplified
+    }
+
     /// Whether the task waits for `on`.
     pub fn waits_on(&self, on: WaitOn) -> bool {
         self.waiting

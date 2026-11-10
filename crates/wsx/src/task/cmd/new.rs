@@ -233,6 +233,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         ),
         _ => (model, settings.effort.clone()),
     };
+    let small = matches!(steps, Steps::Small);
     let steps = match steps {
         Steps::None => Vec::new(),
         Steps::Skip(skip) => folded_steps(without_steps(&settings.workflow.steps, &skip)?),
@@ -355,6 +356,9 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         after: wait.clone(),
         parent: into,
         plan,
+        small,
+        simplified: false,
+        simplify_asked: false,
         waiting: None,
         created_unix_ms: now,
         updated_unix_ms: now,
