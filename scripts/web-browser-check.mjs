@@ -1413,7 +1413,8 @@ await controlGapsAt("chat-sent-gaps", sentActions, async () => {
   if (await count(`${sentActions} button + button`)) return;
   await typeInto("sent and not shown yet");
   await evaluate("document.querySelector('.composer .button-primary').click()");
-  await until(`!!document.querySelector('${sentActions} button + button')`, "the idle session did not show a sent message with Copy and Send again");
+  // The agent still works on the earlier send: this one waits in the queue, then is delivered.
+  await until(`!!document.querySelector('${sentActions} button + button')`, "the idle session did not show a sent message with Copy and Send again", 60);
 });
 await send("Network.setBlockedURLs", { urls: [] });
 
