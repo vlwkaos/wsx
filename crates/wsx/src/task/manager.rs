@@ -25,6 +25,7 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::manager_rotate_limit;
 use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::runtime;
+use wsx_core::task::chat;
 use wsx_core::task::manager::{
     asks_owner, decided_request, instructions_digest, pending_approvals, quiet_reply, quoted_id,
     resolve_quote, says_nothing, state_wakes, ApprovalLine, QUOTE_REF,
@@ -1764,6 +1765,7 @@ impl Manager {
         if let Some(id) = self.state.last_reply.filter(|_| !events_only) {
             text.push_str(&format!("Your last reply: {id}.\n\n"));
         }
+        text.push_str(&self.open_questions());
         if std::mem::take(&mut self.state.provisional) {
             text = self.provisional_note() + &text;
         }
@@ -2129,6 +2131,21 @@ impl Manager {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The replies of this chat that still ask the owner (`chat::asking`, the one rule), one
+    /// line each, so the agent asks none of them again; empty when none is open.
+    /// ref: docs/tasks.md "Questions"
+    fn open_questions(&self) -> String {
+        let asks = chat::asking(&self.dir, now_unix_ms()).unwrap_or_default();
+        if asks.is_empty() {
+            return String::new();
+        }
+        let lines: String = asks
+            .iter()
+            .map(|ask| format!("- {}: {}\n", ask.id, ask.quote))
+            .collect();
+        format!("Open questions (the owner has them; do not ask again):\n{lines}\n")
     }
 
     /// A few lines of the ledger for the end of a turn's message: the open tasks by state,

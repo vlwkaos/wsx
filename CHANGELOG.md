@@ -63,6 +63,7 @@
 
 ### Changed
 
+- Tasks: a manager or role asks each question once. Its turn input lists the replies that still ask the owner ("Open questions": reply id and first line, none when none is open), and the instructions say to end a reply with a question only for a new decision and never to restate an open one; the Needs you list holds it ([docs/tasks.md](docs/tasks.md) "Questions").
 - Web: Settings > Usage opens on the limit state, one meter per window (5 hours, 7 days) with its used share, a warning or rejected word and its reset time, then the filters, then the tabs Cost, Tokens and Projects, so the limit no longer sits below a long chart. Tokens holds the token and cost totals table, Projects the cost per project; a project's Usage sheet has the Cost and Tokens tabs and no strip. The TUI task list shows the limit line first, above the spend lines. No new data or route.
 - Web: Approve and Deny are gone from the manager's chat bubbles; the Needs you list is the one place to approve. A reply that carries a pending approval shows a small tag under it, *Needs you: <label>*, which opens that list at the approval's row (scrolled to, with the found tint). The tag goes when the approval is decided.
 - Web: the manager composer's lists (Running, Needs you, To check) have a one-line header with the list's name and a *Close <name>* button, and Escape closes them. Closing a list no longer focuses the composer field, which opened the keyboard on a phone after a tap on the pill; a focus inside the list goes to its pill.
