@@ -2328,12 +2328,12 @@ def part_core(created=None):
     pending = lambda: json.loads(state_file.read_text()).get('checkin')
     text = reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in 2h --why "first look"')['id'])['text']
     assert '-> 0 check-in at ' in text, text
-    first = wait(pending, 'the first check-in is saved')
-    assert first['why'] == 'first look' and first['at_ms'] > time.time() * 1000 + 3600 * 1000, first
+    saved = wait(pending, 'the first check-in is saved')
+    assert saved['why'] == 'first look' and saved['at_ms'] > time.time() * 1000 + 3600 * 1000, saved
     text = reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in 1m --why "look at the nightly failures"')['id'])['text']
     assert '-> 0 check-in at ' in text, text
-    second = pending()
-    assert second['why'] == 'look at the nightly failures' and second['at_ms'] < time.time() * 1000 + 70 * 1000, second
+    replaced = pending()
+    assert replaced['why'] == 'look at the nightly failures' and replaced['at_ms'] < time.time() * 1000 + 70 * 1000, replaced
     # ^ Only `nightly` is listed: a check-in is no routine.
     listed = lambda: [r['name'] for r in js('task', 'ledger')['routines']] + [r['routine']['name'] for r in js('task', 'routine', 'list')['routines']]
     assert listed() == ['nightly', 'nightly'], listed()
