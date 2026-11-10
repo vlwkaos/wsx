@@ -410,6 +410,12 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         match = re.search(r'CURRENT_SESSION:([a-z0-9_-]+)', '\n'.join(screen(target)))
         return match.group(1) if match else ""
 
+    def capture_when(name, test, label, target="view"):
+        # ^ The bar is drawn after the PTY marker and the pane size change. Wait on the rows the
+        # assert reads, then capture, so a frame of the previous target is not asserted on.
+        wait(lambda: test(screen(target)), label)
+        return capture(name, target)
+
     def pane_dimensions(pane_id):
         reply = call("view", {"pane_ids": [pane_id]})
         assert reply["type"] == "view", reply
@@ -452,8 +458,9 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         tm("set-option", "-g", "status", "off")
         wait(lambda: "build" in "\n".join(screen()) and "WORKSPACE" in "\n".join(screen()), "Workspace")
         keys("j")
-        wait(lambda: "Sessions:" in "\n".join(screen()), "worktree preview")
-        rows = capture("preview")
+        rows = capture_when("preview", lambda rows: "Sessions:" in "\n".join(rows) and all(
+            any(name in row and ":" + (work / (name + ".port")).read_text() in row for row in rows)
+            for name in ("build", "api")), "worktree preview")
         for name in ("build", "api"):
             port = (work / (name + ".port")).read_text()
             assert any(name in row and ":" + port in row for row in rows), rows
@@ -463,7 +470,9 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         snapshot = call("snapshot")["data"]
         build_pane = next(s["focused_pane"] for s in snapshot["sessions"] if s["id"] == sessions["build"])
         wait(lambda: pane_dimensions(build_pane) == (118, 21), "compact terminal dimensions")
-        rows = capture("bottom-compact")
+        rows = capture_when("bottom-compact", lambda rows: all(
+            word in rows[-2] for word in ("main ›", "build (codex)", "api", "finished", "approval")
+        ) and "h/l" in rows[-1], "compact bottom bar")
         # ^ The compact rail owns the first two cells even on the title row.
         title = rows[-2][2:]
         assert title.startswith(' demo ') and 'main ›' in title and 'build (codex)' in title, title
@@ -599,7 +608,9 @@ def run_scenario(args, tmux, wsx, wsxd, work):
             keys('C-a','j')
             wait(lambda: primary_name() == name, 'project traversal '+name)
             if name == 'fix-3':
-                overflow = capture('cross-worktree-overflow')[-2]
+                overflow = capture_when('cross-worktree-overflow', lambda rows: 'fix ›' in rows[-2]
+                    and 'fix-3 (codex)' in rows[-2] and re.search(r'\+\d', rows[-2]),
+                    'cross-worktree overflow bar')[-2]
                 assert 'fix ›' in overflow and 'fix-3 (codex)' in overflow and re.search(r'\+\d', overflow), overflow
                 assert overflow.index('fix ›') < overflow.index('fix-3 (codex)'), overflow
                 long_name = '审计👩‍💻-' * 4 + 'e\u0301'
@@ -619,7 +630,8 @@ def run_scenario(args, tmux, wsx, wsxd, work):
         wait(lambda: pane_dimensions(build_pane) == (118, 21), "restored compact dimensions")
         tm("resize-window", "-t", "view", "-x", "56", "-y", "18")
         wait(lambda: pane_dimensions(build_pane) == (56, 15), "mobile dimensions")
-        rows = capture("mobile")
+        rows = capture_when("mobile", lambda rows: "build" in rows[-2] and "+" in rows[-2]
+            and "main ›" in rows[-2] and "build (codex)" in rows[-2], "mobile bottom bar")
         assert "build" in rows[-2] and "+" in rows[-2], rows[-2]
         assert 'main ›' in rows[-2] and 'build (codex)' in rows[-2], rows[-2]
         # A live generation-authorized report changes state without reshuffling the cycle.
