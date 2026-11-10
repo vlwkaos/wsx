@@ -853,8 +853,9 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
    (Routines too) the composer's row, capped at 72ch, would leave the field under a quarter of it. */
 .pill-label { display: none; }
 .app[data-wide] .pill-bar .pill-label, .app[data-wide] .pills:not(.pill-bar):not(:has(.pill:nth-child(4))) .pill-label { display: inline; }
-/* ^ Four pills on a 320 px phone: closer padding keeps them between attach and Send on the one row. */
-@media (max-width: 359px) { .pill { padding: 0 calc(var(--space-1) * 1.5); gap: calc(var(--space-1) / 2); } .pills { margin-right: 0; } }
+/* ^ Four pills: closer padding keeps them between attach and Send on the one row of a 320 px phone. */
+.pills:has(.pill:nth-child(4)) { margin-right: 0; }
+.pills:has(.pill:nth-child(4)) .pill { padding: 0 calc(var(--space-1) * 1.5); gap: calc(var(--space-1) / 2); }
 @media (hover: hover) { .pill:hover { border-color: var(--color-faint); } .pill[aria-pressed="true"]:hover { border-color: var(--color-accent); } }
 /* With the keyboard up the reservoir steps aside while the `#` or `/` list is open. */
 body[data-keyboard] .chat:has(.slash) .reservoir { display: none; }
