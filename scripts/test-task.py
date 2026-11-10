@@ -2416,6 +2416,13 @@ def part_core(created=None):
     colored = leveled[2].decode('utf-8', 'replace')
     for rgb, word in (('224;151;91', 'warn'), ('234;105;126', 'bad')):
         assert re.search(r'38;2;%s[;0-9]*m(?:\x1b\[[;0-9]*m)*  %s' % (rgb, word), colored), 'the %s word has no colour' % word
+    # ^ An image `![alt](files/<path>)` is a link line with its path: the TUI draws no picture (docs/tasks.md "TUI").
+    subprocess.run([str(wsx), 'task', 'post', '-p', 'demo', '--title', 'studio image'], env=env, cwd=project,
+                   input='Thumbnail: ![trend](files/.studio-data/trend.jpg)\n', text=True, check=True)
+    pictured = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
+        (r'Thumbnail: files/\.studio-data/trend\.jpg', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+    assert '![' not in pictured[2] and '(files/' not in pictured[2], pictured[2]
     # ^ The terminal output sets a colour only when it changes, so a bar after the heading in the same colour has
     # no escape of its own: the colour of a bar is the last one set before it.
     bars, last = set(), None
