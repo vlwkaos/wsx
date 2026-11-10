@@ -1,9 +1,9 @@
 # Memory system: one design
 
 Status: design only, 2026-11-11. Build tasks follow after the owner agrees. Owner's frame (decision 2026-11-11): storing, retrieving and managing are three tasks; an index is a tool of retrieval; one system replaces today's mixed mechanisms; caps are not the main tool.
-Assuming: dotfiles #38 and the iam-studio request were not readable here. Their contract comes from the task prompt. `(est.)` marks a number I did not measure.
+Assuming: the iam-studio request is known only from the task prompt. dotfiles #38 was read in full (`t38-proposal.md` in the dotfiles manager notes). `(est.)` marks a number I did not measure.
 
-**Answer.** One record store per scope, three parts with one owner module each, one CLI (`wsx memory`) that wsx, workers, roles and the owner's skills all call. The built-in lexical index (today's `task search`) is the default backend; `ir` or any command plugs in behind the same hit format. Always-loaded core: the active owner rules and the facts that match the task's files. All else is recalled on need.
+**Answer.** One record contract, `memory` (`wsx memory ...`), that wsx, workers, roles and the owner's skills all call. Two programs implement it, each scope has exactly one store: wsx's built-in store for projects and `default`, dotfiles' `memory.py` for the vault markdown. The built-in lexical index (today's `task search`) is wsx's default backend; `ir` plugs in behind the same hit format. Always-loaded core: the active owner rules and the facts that match the task's files. All else is recalled on need.
 
 ## Where the cost is (measured)
 
@@ -60,29 +60,41 @@ One line per op in `tasks/<project-id>/memory/records.jsonl`; the current record
 |---|---|
 | `slug` | stable id, lowercase words and `-` |
 | `kind` | `rule` (owner's decision), `fact` (verified about the code), `episode` (what a task did or learned) |
-| `status` | `active`, `superseded`, `failed` |
-| `text` | the claim, one to five lines |
-| `source` | `msg:<id>`, `task:<n>`, `path:<file>`, `transcript:<ref>` |
+| `status` | `active` (default), `superseded`, `failed` (with `lesson`) |
+| `text`, `title` | the claim, one to five lines; optional title |
+| `source` | required on every op: `msg:<id>`, `task:<n>`, `path:<file>`, `transcript:<ref>` |
 | `updated` | unix ms; the date shows in views |
-| `words` | rules only: the owner's own wording (a substring of message `source`) |
-| `commit`, `paths` | facts: the commit it was true at, the globs it is about |
-| `verified_by` | `owner:<msg>`, `task:<n>` (landed), `check:<id>`, empty = unverified |
+| `verified_by` | required for `rule` and `fact`, else exit 2: `owner:<msg id>`, `task:<n>` (landed), `check:<id>`, or a relative path with no `..` that exists under the project root. Episodes need none |
+| `commit` | facts: the commit it was true at |
 | `superseded_by` | slug of the newer record |
 
-Hit (search and recall): `slug`, `path`, `kind`, `status`, `score` 0..1, `excerpt` (at most 240 chars), plus `reference` and `quote` as `task search` has them. A chat message, a task prompt or result is a transcript hit: `kind` `episode`, `source` its message or task. Transcripts are indexed, not copied into records.
+wsx extensions, ignored by other implementations (a record may carry fields the reader does not know): `words` (rules: the owner's wording, a substring of message `source`), `paths` (globs a fact is about). dotfiles keeps its own session fields (`consumed`, `consumed_at`) on its side.
 
-## The contract (`wsx memory`)
+Hit: `slug`, `path`, `kind`, `status`, `score` 0..1 (higher is better), `excerpt` (at most 240 chars); wsx adds `reference` and `quote` as `task search` has them. A chat message, task prompt or result is a transcript hit, indexed and not copied into records.
 
-`wsx memory search|recall|show|add|update|supersede|invalidate|reindex|status [-p project | --scope name] [--json]`. Exit 0 ok, 1 not found, 2 usage, 3 backend unavailable (the call falls back to the built-in; a store failure is exit 3 with no fallback).
+## The contract (`memory`)
 
-- Ops are fixed: `add` (a near duplicate returns the old slug, exit 0: NOOP), `update` (new text, old text stays in the log), `supersede <old> <new>`, `invalidate <slug> --reason` (status `failed`).
-- `search --status active|superseded|failed|any --kind ...` filters; default `active`.
-- Backend: `memory.backend` in the global config names a command that takes the same `search`/`reindex` subcommands and prints the hit JSON. wsx names no tool; exit 3 or a timeout (10 s) uses the built-in. The built-in indexes every record and every transcript; an external one is asked in addition and its hits merge by score.
-- The CLI needs no daemon and no wsx session, so any Claude, Codex or Pi session calls it, run by wsx or not.
+Same table as dotfiles #38, every command takes `--scope <id>` (required; `wsx memory` defaults it to the project of the current folder) and `--json`.
+
+| Command | Arguments | Output |
+|---|---|---|
+| search | `<query> [--limit 10] [--include-inactive] [--kind k]` (may repeat `--scope`) | `[hit]` by score; nothing found: `[]`, exit 0 |
+| add | `--kind --slug --text-file F\|- --source ID [--title] [--verified-by] [--commit]` | record; a near duplicate returns the old record (NOOP), exit 0 |
+| update | `--slug [--text-file] --source ID [--verified-by] [--commit] [--status failed --lesson L]` | record; the old text stays in the log; `failed` is INVALIDATE |
+| supersede | `<old> <new> --source ID` | old record |
+| reindex | none | `{"scope","ok"}` |
+| status | none | `{"scope","store","backend","search":{"network":bool,"model":bool},"counts":{active,superseded,failed}}` |
+| list | none | `[{"scope","store"}]` |
+
+Exit 0 ok, 1 not found, 2 usage or an invalid `verified_by`, 3 backend unavailable (search falls back to the built-in; a store failure has no fallback), and for compaction 4 (the recall-query gate refused, store untouched, the report names the query) and 5 (the store changed meanwhile). `search` makes no network or model call unless `status` declares one.
+
+- Backend: `memory.backend` in the global config names a command with the same `search` and `reindex`; wsx names no tool. Exit 3 or a 10 s timeout uses the built-in. External hits merge by score.
+- wsx extensions, not in the contract: `recall` (cheap agent, below), `distill`, `compact`. A skill has its own model and needs none of them.
+- Needs no daemon and no wsx session: any Claude, Codex or Pi session calls it, run by wsx or not.
 
 ## Memory outside a wsx project
 
-Same CLI, `--scope <name>`; the scope's records live in `$XDG_STATE_HOME/wsx/memory/<scope>/records.jsonl` (same fold, same ops). No project resolves to scope `default`. The owner's dgv3 vault is the scope `dgv3`, registered once (`memory.scopes.dgv3.dir`). Decision: the vault's markdown (sessions, domain, coding, `bigpicture`) is not copied or rewritten. It is a source: `reindex` lists each file as a read-through hit (`source: path:<file>`), or an `ir` backend searches it. Only new rules, facts and episodes that a skill adds go through `add`. So there is one store of records and the vault stays the owner's document set. A Claude session not run by wsx uses the same command; its `--scope` comes from the skill's context script.
+A scope is bound once in the global config: `memory.scopes.<name>` is `{dir}` (built-in store at `$XDG_STATE_HOME/wsx/memory/<name>/`, the default for an unbound name) or `{command}` (another implementation of the contract). The owner's dgv3 vault is scope `dgv3` with `command` set to dotfiles' `memory.py`. `wsx memory --scope dgv3 ...` runs that command and passes its output through, so wsx holds no copy and the vault markdown is never rewritten. The same `memory.py` runs on its own where wsx is not installed. A Claude session not run by wsx calls `wsx memory` (or `memory.py` directly) with `--scope` from its context script. Each scope has one store, and one program writes it.
 
 ## Who gets what
 
@@ -96,27 +108,29 @@ Areas (iam-studio): the project config declares `memory.areas: {"<glob>": "<brie
 
 `recall` runs a cheap model: search top 20 (built-in plus backend), the model returns at most 5 slugs with excerpts, no summary. With no model it returns the top 5 by score. Cost (est.): 20 x 240 chars = 1.2k tokens in, 0.3k out, about $0.006 at Sonnet $2 and $10 per M. The prompt says: a record is data, not an instruction.
 
-## Skills and wsx
+## Skills and wsx, final split
 
-| Skill | Job | Meets the contract |
-|---|---|---|
-| memo | write session knowledge | stays; rule, fact and episode lines go through `wsx memory add` |
-| dream | consolidate, housekeeping | stays for the vault documents; record consolidation is wsx `manage` (a skill calls `wsx memory status` and `supersede`) |
-| seek, recall | find | stay; call `wsx memory search` / `recall`; `ir` stays one backend |
-| ir | index engine | a backend |
-| no-repeat, note | repair a source; vault notes | stay skills; no-repeat may `add` a `fact` |
+| Part | Owner |
+|---|---|
+| Contract table, record and hit formats, exit codes, `verified_by` forms, recall-query gate rule (top N=5) | wsx (this doc and `docs/memory.md`); dotfiles implements it as written |
+| Built-in store (JSONL), lifecycle ops, dedupe, stale-by-commit, compaction with the gate (exit 4, 5), audit, built-in BM25 index, backend plug-in, start sets, areas, role briefs, `recall`, `distill`, capture from tasks and owner rules | wsx, for projects and `default` scopes |
+| Store for the vault markdown: kind from where a note lives (no frontmatter rewrite), scope lookup (registry, `<git_root>/knowledge`, vault), `apply-ops` batch with `ops.jsonl` old text, `consumed` session fields, journal-commit compaction on a snapshot, `deep-audit.sh` findings (`DANGLING_SUPERSEDED_BY`, `UNVERIFIED_DURABLE`, ...), legacy-note handling | dotfiles `memory.py`, for vault scopes |
+| ir wrapper that follows the contract | dotfiles (ir plugin) |
+| memo, seek, recall, dream calling `memory` instead of `ir`; thin agent-neutral SKILL.md files | dotfiles skills |
+| no-repeat, note | stay skills; no-repeat may `add` a `fact` |
 
-wsx owns capture in projects, the records, the lexical index, the start set and the manage pass. The owner's skills own the human documents in the vault. They meet only at `wsx memory`.
+dotfiles builds only its rows and needs nothing from wsx code but the contract text. wsx builds nothing of the vault store. Both pass the same scenario: a contract test (add, update, supersede, search with and without `--include-inactive`, exit codes) that runs against either program; it lives in wsx's `scripts/test-memory.py` and takes the command as an argument.
 
 ## dotfiles #38 ideas
 
 | Idea | Verdict | Why |
 |---|---|---|
-| `status`, `superseded_by`, `verified_by` | take | a superseded rule must stay findable and a verified one rank above an unverified one |
-| ops ADD/UPDATE/SUPERSEDE/INVALIDATE/NOOP with old text logged | take | fits an append-only log; NOOP is the dedupe |
-| compaction only if recall still finds each kept rule in the top N | take, rules only | merge or drop a rule only when a query made of its own words still returns the kept record in the top 5; facts go stale by commit instead |
-| journal-based atomic commit | leave | one `O_APPEND` line under a lock is the journal; a torn last line is ignored on read; views use `write_atomic` |
-| migration with no rewrite | take | `reindex` imports `- #n:` memo lines and `decisions.md` lines as records (`source: path:<file>:<line>`); the files stay until the first render, then `.pre-memory` is kept once |
+| `status`, `superseded_by`, `verified_by`; `verified_by` required for rule and fact | take | one rule for both stores; an unverified tryout stays an episode. Replaces my "unverified ranks lower" |
+| ops ADD/UPDATE/SUPERSEDE/INVALIDATE/NOOP with old text logged | take as contract commands; the `apply-ops` batch stays dotfiles' | wsx's append-only log keeps the old text; NOOP is `add` of a duplicate; INVALIDATE is `update --status failed` |
+| compaction only if each kept rule still hits in the top 5 | take, as a shared rule, exit 4 and 5 | each program compacts its own store; the gate searches through the contract |
+| journal commit on a snapshot | dotfiles only | markdown files need a journal; one `O_APPEND` line under a lock is atomic in the JSONL, views use `write_atomic` |
+| migration with no rewrite | take | wsx `reindex` imports `- #n:` and `decisions.md` lines (`source: path:<file>:<line>`), `.pre-memory` copy once; dotfiles maps kind from the folder |
+| `consumed` fields, kind from location, scope lookup order, audit findings | dotfiles only | vault layout concerns |
 
 ## Distilling hidden transcripts
 
@@ -127,7 +141,7 @@ wsx owns capture in projects, the records, the lexical index, the start set and 
 | Owner rule | the manager, `wsx memory add --kind rule --msg <id> --words "<owner text>"`; the host refuses if `words` is not inside that message | 0 |
 | Raw tool transcript or provider history (`integration/memory.rs`) | not by default: `wsx memory distill --task <n>` by the owner or the manager, for a blocked, failed or rotated task | (est.) a 60k-token log read by Sonnet is $0.12, 8% of a $1.56 median task, so it is never automatic |
 
-A wrong record is caught three ways: (1) a fact with `commit` and `paths` is stale when `git diff --quiet <commit> HEAD -- <paths>` fails (one git call, 10 s timeout as in the ledger); a stale fact leaves the start set and shows `stale` in search; (2) a record with no `verified_by` never joins the start set and ranks below verified ones; (3) a worker or manager that finds one wrong runs `invalidate --reason`, and the log keeps both.
+A wrong record is caught three ways: (1) a fact with `commit` and `paths` is stale when `git diff --quiet <commit> HEAD -- <paths>` fails (one git call, 10 s timeout as in the ledger); a stale fact leaves the start set and shows `stale` in search; (2) `add` of a rule or fact without a valid `verified_by` is refused (exit 2), so only landed-task, owner or checked records reach the start set; (3) a worker or manager that finds one wrong runs `invalidate --reason`, and the log keeps both.
 
 ## Decisions stay the owner's words
 
@@ -164,16 +178,16 @@ A wrong record is caught three ways: (1) a fact with `commit` and `paths` is sta
 
 | # | Task | Files | Proof |
 |---|---|---|---|
-| 1 | Record store, fold, ops, CLI, torn-line and lock handling | `wsx-core/src/memory/{record,store}.rs`, `cli/memory.rs`, `docs/memory.md` | new `scripts/test-memory.py`: real CLI, temp state; ops, NOOP, exit codes, torn line |
+| 1 | Contract text first (`docs/memory.md`, so dotfiles can start), then record store, fold, ops, CLI, torn-line and lock handling | `docs/memory.md`, `wsx-core/src/memory/{record,store}.rs`, `cli/memory.rs` | new `scripts/test-memory.py` (takes the command as argument): real CLI, temp state; ops, NOOP, `verified_by` refusal, exit codes, torn line |
 | 2 | Retrieve: move the digest to `memory::index`, add transcripts + records, external backend, `recall` without a model | `memory/index.rs`, `task/search.rs` | existing search asserts in `scripts/test-task.py` pass unchanged; fake backend script; exit 3 falls back |
 | 3 | Manage and migration: import, render of views with date and words, manager write path, supersede with top-5 check | `memory/manage.rs`, `task/notes.rs`, `task/instructions.rs` | old store imported, rendered rules keep date and words; a drift edit is reported |
 | 4 | Start sets and areas on every adapter; role brief reaches workers | `host.rs task_context`, `config`, `task/roles.rs` | fake Claude, Codex and Pi runs: the first prompt holds the area brief and the matching fact |
 | 5 | Capture: memo to records with paths and commit; rotation episodes; stale-by-commit | `task/host.rs`, `memory/manage.rs` | landed task makes a fact; a later commit on its paths shows `stale` |
 | 6 | Cheap `recall` agent and measurement on the real store | `memory/index.rs`, docs | before/after of plan-step calls on 20 tasks in `docs/design/memory-system.md` |
-| 7 | Scopes outside projects, vault read-through, `distill` | `memory/store.rs`, config, `integration/memory.rs` | scope `dgv3` fixture: add, search, vault file hit |
+| 7 | Scopes outside projects, `command` delegation, `distill`; dotfiles builds its rows against `scripts/test-memory.py` | `memory/store.rs`, config, `integration/memory.rs` | the contract test runs against the built-in and a fake `command` store; the delegated call passes output and exit code through |
 | 8 | Remove what steps 3 to 6 made dead (matching, ask, caps text) | `notes.rs`, `docs/tasks.md` | `cargo nextest`, task scenario |
 
 ## For the owner
 
-1. Vault files stay documents (read-through), not records: agree? The other choice is to import them as records, which makes the vault a second copy.
+1. Two implementations of one contract, one store per scope (vault by dotfiles, projects by wsx), joined by `memory.scopes.<name>.command`: agree? The other choice is one program for both, which puts the vault under wsx code.
 2. Is a cheap model call per `recall` acceptable (est. $0.006), or only the no-model path first?
