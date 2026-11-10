@@ -273,7 +273,7 @@ def run(wsx, wsxd, work, owned, part):
     daemon_socket = work / 'd.sock'
     env = {'HOME': str(home), 'XDG_STATE_HOME': str(state), 'XDG_CONFIG_HOME': str(work / 'c'),
            'XDG_CACHE_HOME': str(work / 'k'), 'WSX_DAEMON_BIN': str(wsxd), 'WSX_EXIT_WITH_PID': str(os.getpid()), 'WSX_SOCKET': str(daemon_socket),
-           'WSX_TEST_STALL_GRACE_SECS': str(STALL_GRACE),
+           'WSX_TEST_STALL_GRACE_SECS': str(STALL_GRACE), 'WSX_TEST_ALLOW_FILE_CLONE': '1',
            'PATH': str(bin_dir) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'SHELL': '/bin/sh',
            'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8', 'TMPDIR': str(tmp),
            # ^ A fixture git command must never reach the repository this script runs in.
@@ -2835,6 +2835,62 @@ def part_worker(created=None):
             sshd.wait()
             sshd_log.close()
         git('remote', 'remove', 'origin')
+
+    # 22a2. Project add (docs/tasks.md "Approvals"): the manager's request names the path and the URL;
+    # the owner's yes clones a bare repository (file:// is allowed by the scenario's env only) and
+    # registers it as the web's Add project does. Each refusal comes before anyone is asked.
+    mark('22a2')
+    seed, bare, grown = work / 'grown-seed', work / 'grown-origin.git', home / 'grown'
+    git('init', '-q', '--bare', '--template=', str(bare))
+    seed.mkdir()
+    git('init', '-q', '-b', 'main', cwd=seed)
+    (seed / 'grown.txt').write_text('grown\n')
+    git('add', 'grown.txt', cwd=seed)
+    git('commit', '-q', '-m', 'grown', cwd=seed)
+    git('push', '-q', str(bare), 'main', cwd=seed)
+    clone_url = 'file://' + str(bare)
+
+    def ask_add(*argv):
+        return reply_to(js('task', 'say', 'RUN wsx task project add %s -p demo --json' % ' '.join(map(str, argv)))['id'])['text']
+
+    (home / 'plain').mkdir()
+    for argv, why in (((work / 'outside', '--clone', clone_url), 'is outside'),
+                      (('../up', '--clone', clone_url), 'is not an absolute path'),
+                      ((home / 'plain',), 'exists and is not a git repository'),
+                      ((home / 'nothing',), 'does not exist; give --clone'),
+                      ((home / 'ftp', '--clone', 'ftp://example.invalid/r.git'), 'is not ssh or https'),
+                      ((home / 'http', '--clone', 'http://example.invalid/r.git'), 'is not ssh or https'),
+                      ((home / 'dash', '--clone=--upload-pack=x'), 'starts with')):
+        text = ask_add(*argv)
+        assert why in text and 'owner was asked' not in text, (argv, text)
+    assert js('task', 'ledger')['approvals'] == [] and not grown.exists()
+    # ^ A second request for the path replaces the first; the owner sees one card.
+    stale = re.search(r'\((a\d+)\)', ask_add(grown, '--clone', clone_url)).group(1)
+    approved = re.search(r'\((a\d+)\)', ask_add(grown, '--clone', clone_url)).group(1)
+    waiting = js('task', 'ledger')['approvals']
+    assert [(p['id'], p['action'], p['path'], p['url'], p['label']) for p in waiting] == \
+        [(approved, 'project', str(grown), clone_url, 'Approve project add %s' % grown)], waiting
+    wait(lambda: events_with('approval %s (project %s) dropped; replaced by %s' % (stale, grown, approved)), 'the project replace event')
+    assert 'replaced by %s; nothing ran' % approved in cli('task', 'approve', stale, ok=False).stderr
+    assert not grown.exists(), 'nothing is cloned before the owner says yes'
+    done = js('task', 'approve', approved)
+    assert done['ok'] and done['result']['project'] == 'grown' and done['result']['path'] == str(grown), done
+    assert (grown / 'grown.txt').read_text() == 'grown\n' and (grown / '.git').exists()
+    wait(lambda: events_with('approval %s (project %s) approved; done: project grown added at %s' % (approved, grown, grown)),
+         'the project added event')
+    # ^ The new project works: its ledger answers and the manager of `grown` takes a message.
+    assert js('task', 'ledger', '-p', 'grown')['project'] == 'grown'
+    assert js('task', 'say', '-p', 'grown', 'STATUS')['id']
+    # ^ Registered paths and names refuse, naming the project; the owner's own run needs no card.
+    text = ask_add(grown)
+    assert 'project grown is already registered' in text and 'owner was asked' not in text, text
+    owned = js('task', 'project', 'add', home / 'owned', '--clone', clone_url)
+    assert owned['project'] == 'owned' and (home / 'owned' / 'grown.txt').exists() and js('task', 'ledger')['approvals'] == [], owned
+    # ^ Without the scenario's env the file URL is refused: only ssh and https clone.
+    nofile = {key: value for key, value in env.items() if key != 'WSX_TEST_ALLOW_FILE_CLONE'}
+    refused = subprocess.run([str(wsx), 'task', 'project', 'add', str(home / 'nofile'), '--clone', clone_url],
+                             cwd=project, env=nofile, capture_output=True, text=True, timeout=60)
+    assert refused.returncode != 0 and 'is not ssh or https' in refused.stderr and not (home / 'nofile').exists(), refused
 
     # 22b. The TUI's manager chat (`t`, then `m`; docs/tasks.md "TUI"): the conversation, the
     # open To check item and the waiting approval; a message goes to the manager's log, `p`

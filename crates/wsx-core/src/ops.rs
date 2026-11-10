@@ -2,9 +2,9 @@
 // ^ [[wsx Architecture]] Git owns worktree discovery; the daemon owns sessions and panes.
 
 use crate::{
-    config::global::GlobalConfig,
+    config::global::{GlobalConfig, ProjectEntry},
     fs_util::same_folder,
-    git::{info as git_info, worktree as git_worktree},
+    git::{self, info as git_info, worktree as git_worktree},
     hooks,
     model::workspace::{
         FetchFailReason, GitInfo, PaneInfo, Project, ProjectConfig, SessionInfo, WorkspaceState,
@@ -441,8 +441,12 @@ pub fn register_project(path: PathBuf, config: &mut GlobalConfig) -> Result<Proj
     if !is_git_repo(&path) {
         bail!("not a git repository: {}", path.display());
     }
-    if config.projects.iter().any(|entry| entry.path == path) {
-        bail!("project already registered: {}", path.display());
+    if let Some(entry) = registered(config, &path) {
+        bail!(
+            "project {} is already registered at {}",
+            entry.name,
+            entry.path.display()
+        );
     }
     let name = path
         .file_name()
@@ -468,6 +472,99 @@ pub fn register_project(path: PathBuf, config: &mut GlobalConfig) -> Result<Proj
     config.add_project(name, path);
     Ok(project)
 }
+fn registered<'a>(config: &'a GlobalConfig, path: &Path) -> Option<&'a ProjectEntry> {
+    config
+        .projects
+        .iter()
+        .find(|entry| same_folder(&entry.path, path))
+}
+
+/// The folder `project add` would register, or why it refuses: `path` (`~/` allowed) is
+/// absolute, has no `..` and lies inside the owner's home; an existing folder is a git
+/// repository, a missing one has a `clone` URL that is ssh or https; no project of the
+/// config has that path or that name. Refusals name the project in the way.
+/// ref: docs/tasks.md "Approvals"
+pub fn check_add_project(
+    config: &GlobalConfig,
+    path: &str,
+    clone: Option<&str>,
+) -> Result<PathBuf> {
+    let path = crate::config::global::normalize_project_path(&expand_path(path.trim()));
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+    {
+        bail!("{} is not an absolute path without '..'", path.display());
+    }
+    let home = dirs::home_dir()
+        .and_then(|home| home.canonicalize().ok())
+        .ok_or_else(|| anyhow!("cannot find the owner's home folder"))?;
+    // ^ The nearest folder that exists, resolved, so a link out of home does not pass.
+    let near = path
+        .ancestors()
+        .find_map(|folder| folder.canonicalize().ok())
+        .ok_or_else(|| anyhow!("{} has no existing parent", path.display()))?;
+    if !near.starts_with(&home) {
+        bail!("{} is outside {}", path.display(), home.display());
+    }
+    if path.canonicalize().is_ok_and(|real| real == home) {
+        bail!("{} is the home folder itself", path.display());
+    }
+    if let Some(entry) = registered(config, &path) {
+        bail!(
+            "project {} is already registered at {}",
+            entry.name,
+            entry.path.display()
+        );
+    }
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    if let Some(entry) = config.projects.iter().find(|entry| {
+        name.is_some()
+            && entry
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                == name
+    }) {
+        bail!(
+            "project {} is already registered at {}; `-p` could not tell the two apart",
+            entry.name,
+            entry.path.display()
+        );
+    }
+    if path.exists() {
+        if !is_git_repo(&path) {
+            bail!("{} exists and is not a git repository", path.display());
+        }
+    } else {
+        let url = clone
+            .ok_or_else(|| anyhow!("{} does not exist; give --clone <git url>", path.display()))?;
+        git::check_clone_url(url)?;
+    }
+    Ok(path)
+}
+
+/// `project add`: check, clone when the folder is missing, register and save. A clone
+/// that registration then refuses is removed. The caller tells wsxd (`synchronize_discovery`).
+/// The web's Add project and the TUI's `p` call `register_project` alone: they take any path.
+pub fn add_project(config: &mut GlobalConfig, path: &str, clone: Option<&str>) -> Result<Project> {
+    let path = check_add_project(config, path, clone)?;
+    let cloned = !path.exists();
+    if let (true, Some(url)) = (cloned, clone) {
+        git::clone(url, &path)?;
+    }
+    let project = register_project(path.clone(), config).inspect_err(|_| {
+        if cloned {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    })?;
+    config.save()?;
+    Ok(project)
+}
+
 pub fn unregister_project(path: &PathBuf, config: &mut GlobalConfig) {
     config.remove_project(path);
 }

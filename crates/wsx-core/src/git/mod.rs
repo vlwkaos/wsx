@@ -74,6 +74,75 @@ pub fn ssh_agent() -> (Option<std::path::PathBuf>, String) {
     )
 }
 
+/// The environment variable that lets `clone` take a `file://` URL: for the scenarios, which
+/// clone a local bare repository. ref: docs/tasks.md "Approvals"
+pub const ALLOW_FILE_CLONE_ENV: &str = "WSX_TEST_ALLOW_FILE_CLONE";
+
+/// A clone URL wsx accepts: `https://`, `ssh://` or scp-style `user@host:path`, and
+/// `file://` only under `ALLOW_FILE_CLONE_ENV`. Nothing that git would read as an option
+/// or as a transport helper (`ext::`).
+pub fn check_clone_url(url: &str) -> anyhow::Result<()> {
+    let bad = |why: &str| anyhow::anyhow!("clone URL '{url}' {why}");
+    if url.is_empty() || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(bad("is empty or has a space"));
+    }
+    if url.starts_with('-') {
+        return Err(bad("starts with '-'"));
+    }
+    let file = std::env::var_os(ALLOW_FILE_CLONE_ENV).is_some() && url.starts_with("file://");
+    let scp = !url.contains("://")
+        && url.split_once(':').is_some_and(|(left, right)| {
+            !right.is_empty()
+                && left.split_once('@').is_some_and(|(user, host)| {
+                    !user.is_empty() && !host.is_empty() && !host.contains('/')
+                })
+        });
+    if url.starts_with("https://") || url.starts_with("ssh://") || scp || file {
+        return Ok(());
+    }
+    Err(bad("is not ssh or https"))
+}
+
+/// `git clone <url> <dest>` with the login session's ssh agent (as push has it). `dest` is
+/// not there before; a failed or timed out clone leaves nothing of it.
+/// ref: docs/tasks.md "Approvals"
+pub fn clone(url: &str, dest: &Path) -> anyhow::Result<()> {
+    check_clone_url(url)?;
+    let parent = dest
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent folder", dest.display()))?;
+    std::fs::create_dir_all(parent)?;
+    let (mut cmd, no_key) = remote_cmd(parent);
+    let allowed = if std::env::var_os(ALLOW_FILE_CLONE_ENV).is_some() {
+        "https:ssh:file"
+    } else {
+        "https:ssh"
+    };
+    cmd.env("GIT_ALLOW_PROTOCOL", allowed)
+        .args(["clone", "--", url])
+        .arg(dest);
+    let ran = output_with_timeout_tail(&mut cmd, CLONE_TIMEOUT, 4096);
+    let failed = match &ran {
+        Ok(output) if output.status.success() => return Ok(()),
+        Ok(output) => {
+            let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if said.contains("Permission denied (publickey") {
+                format!("{said}\n{no_key}")
+            } else {
+                said
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+            format!("timed out after {} s", CLONE_TIMEOUT.as_secs())
+        }
+        Err(error) => error.to_string(),
+    };
+    let _ = std::fs::remove_dir_all(dest);
+    anyhow::bail!("git clone of {url} failed: {failed}")
+}
+
+const CLONE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 fn refused_by(agent: &str) -> String {
     format!("ssh offered the keys of {agent} and the server took none: add the key to that agent in your shell (`ssh-add`, with `--apple-use-keychain` for a key in the keychain)")
 }

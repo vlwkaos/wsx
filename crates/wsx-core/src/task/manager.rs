@@ -577,6 +577,8 @@ pub enum ApprovalAction {
     Role,
     /// `push`: the default branch to origin, run by the host (docs/tasks.md "Push").
     Push,
+    /// `project add`: clone and register a project (docs/tasks.md "Approvals").
+    Project,
 }
 
 /// One line of `approvals.jsonl`.
@@ -607,6 +609,11 @@ pub enum ApprovalLine {
         tasks: Vec<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commits: Option<u32>,
+        /// A project add: the folder to register, and the git URL to clone into it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
         unix_ms: u64,
     },
     Decision {

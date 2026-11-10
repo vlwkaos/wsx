@@ -32,6 +32,8 @@ pub(crate) fn request_of(
         lease: lease.map(str::to_string),
         tasks: Vec::new(),
         commits: None,
+        path: None,
+        url: None,
         unix_ms: now_unix_ms(),
     }
 }
@@ -69,8 +71,8 @@ pub(crate) fn ask_covering(
     Ok(asked)
 }
 
-/// The ids of the waiting requests that `new` covers: the same task for a discard; for a
-/// push, deploy or release, a commit that `new`'s commit contains (no commit: the default
+/// The ids of the waiting requests that `new` covers: the same task for a discard, the same
+/// path for a project add; for a push, deploy or release, a commit that `new`'s commit contains (no commit: the default
 /// branch tip). A push with a lease covers a push without one, not the other way round.
 pub(crate) fn covered_requests(
     main: &Path,
@@ -82,6 +84,7 @@ pub(crate) fn covered_requests(
         task,
         commit,
         lease,
+        path,
         ..
     } = new
     else {
@@ -102,6 +105,7 @@ pub(crate) fn covered_requests(
                 task: old_task,
                 commit: old_commit,
                 lease: old_lease,
+                path: old_path,
                 ..
             } = old
             else {
@@ -115,6 +119,7 @@ pub(crate) fn covered_requests(
                             && matches!((resolve(old_commit), &newest), (Some(old), Some(new))
                                 if copy::is_ancestor(main, &old, new).unwrap_or(false))
                     }
+                    ApprovalAction::Project => path.is_some() && old_path == path,
                     ApprovalAction::Land | ApprovalAction::Role => false,
                 };
             covers.then(|| id.clone())
@@ -142,6 +147,7 @@ pub(crate) fn submit(
         task,
         revision,
         role,
+        path,
         ..
     } = &request
     else {
@@ -149,9 +155,10 @@ pub(crate) fn submit(
     };
     let (action, target) = (
         *action,
-        match (task, revision, role) {
-            (Some(task), Some(revision), _) => format!(" #{task} r{revision}"),
-            (_, _, Some(role)) => format!(" {role}"),
+        match (task, revision, role, path) {
+            (Some(task), Some(revision), ..) => format!(" #{task} r{revision}"),
+            (_, _, Some(role), _) => format!(" {role}"),
+            (.., Some(path)) => format!(" {path}"),
             _ => String::new(),
         },
     );

@@ -112,6 +112,7 @@ pub fn action_name(action: ApprovalAction) -> &'static str {
         ApprovalAction::Discard => "close --discard",
         ApprovalAction::Role => "role new",
         ApprovalAction::Push => "push",
+        ApprovalAction::Project => "project add",
     }
 }
 
@@ -127,6 +128,7 @@ pub fn approval_label(request: &ApprovalLine) -> String {
         lease,
         tasks,
         commits,
+        path,
         ..
     } = request
     else {
@@ -140,6 +142,8 @@ pub fn approval_label(request: &ApprovalLine) -> String {
     };
     let mut label = match (task, role, action, commit) {
         (Some(task), ..) => format!("Approve {verb} #{task}"),
+        // ^ A project add names the folder; the URL is the card's second line.
+        _ if path.is_some() => format!("Approve {verb} {}", path.as_deref().unwrap_or_default()),
         (None, Some(role), ..) => format!("Approve {verb} {role}"),
         // ^ A push with no landed task names the commit: "Approve force push 1a2b3c4d5e6f".
         (None, None, ApprovalAction::Push, Some(commit)) if tasks.is_empty() => {
@@ -273,6 +277,8 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
         role,
         brief,
         lease,
+        path,
+        url,
         ..
     } = find_request(&lines, id)?.clone()
     else {
@@ -313,6 +319,12 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
             "--discard".into(),
         ]),
         ApprovalAction::Role => unreachable!("a role is created above"),
+        ApprovalAction::Project => {
+            argv.extend(["project".into(), "add".into(), path.unwrap_or_default()]);
+            if let Some(url) = url {
+                argv.extend(["--clone".into(), url]);
+            }
+        }
         ApprovalAction::Push => {
             argv.extend(["push".into(), "--commit".into(), commit.unwrap_or_default()]);
             // ^ The owner approved a rewrite over the origin tip the request saw, no other.
