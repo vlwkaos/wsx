@@ -3299,8 +3299,10 @@ def part_worker(created=None):
     models = home / '.pi/agent/models.json'
     models.write_text(json.dumps({'providers': {'remote': {'baseUrl': 'http://%s:%d/v1' % (lan, provider_port), 'api': 'openai-completions',
                                                            'apiKey': 'none', 'models': [{'id': 'pi-model'}]}}}))
-    # ^ (a) another host on the provider's port, (b) the provider itself without the proxy, (c) other targets through it.
-    spec['connect'] = {'provider_direct': [lan, provider_port], 'other_host_direct': [other_ip, provider_port], 'other_port_direct': [lan, other_port]}
+    # ^ (a) another host on the provider's port, (b) a direct connection past the proxy, (c) other targets through it.
+    # Seatbelt counts this machine's own addresses as `localhost`: a direct connection to the stand-in succeeds, so (b)
+    # and (a) are judged on non-local test addresses with the provider's port, the hole the old port rule left open.
+    spec['connect'] = {'other_host_direct': [other_ip, provider_port], 'remote_direct': [remote_ip, provider_port]}
     spec['allow'] = allow
     spec['proxy'] = {'provider': [lan, provider_port, 'connect'], 'other_host': [other_ip, provider_port, 'connect'],
                      'other_port': [lan, other_port, 'connect'], 'loopback': ['127.0.0.1', port, 'connect'], 'plain_http': [lan, provider_port, 'plain']}
@@ -3350,7 +3352,7 @@ def part_worker(created=None):
     tunnel = lambda host, number, kind='connect': 'python3 %s --tunnel %s %d %s' % (ROOT / 'scripts/fake-weak-model.py', host, number, kind)
     stop_manager_now()
     configure(LAND_CONFIG + '  manager: { adapter: pi, model: remote/pi-model }\n', 'untrusted manager on a remote provider')
-    lines = ['echo $HTTPS_PROXY', tunnel(lan, provider_port), tunnel(other_ip, provider_port), 'python3 %s %s %d' % (probe, lan, provider_port),
+    lines = ['echo $HTTPS_PROXY', tunnel(lan, provider_port), tunnel(other_ip, provider_port), 'python3 %s %s %d' % (probe, other_ip, provider_port),
              tunnel(lan, other_port), tunnel('127.0.0.1', port), tunnel(lan, provider_port, 'plain')]
     said = reply_to(js('task', 'say', '\n'.join('RUN ' + line for line in lines))['id'])['text']
     runs = ['ran: ' + part for part in said.split('ran: ')[1:]]
