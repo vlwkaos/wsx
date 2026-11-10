@@ -13,6 +13,11 @@
 - Tasks: old worktrees and sessions no longer pile up. The manager host sweeps its project at start and hourly (`tasks.prune.idleDays` 14, `tasks.prune.removeDays` 30, 0 is off): an idle session of a worktree other than the main checkout is closed, and an idle worktree that is clean and whose branch is merged or on a remote is removed; a dirty or unmerged one is only named in the chat, once. The main checkout's sessions (the project's shell), a task's copy, a live agent turn and a program that still prints are never touched. The news are chat events that start no manager turn. One rule in `wsx_core::stale` decides; wsxd's `pane_activity` now lists every pane with `last_io_unix_ms`, the last output or input (daemon revision 49) ([docs/tasks.md](docs/tasks.md) "Stale worktrees"). The ledger's `stray_worktrees` rows use the same rule: `dirty` and `unmerged` are counts (before: `dirty` true or false and `merged_into_main`), null when git did not answer.
 - Web: *Delete* on each worktree of a project's Sessions list. The sheet names what the delete closes and loses; uncommitted files or commits neither merged nor pushed need the confirm that names them, and the confirmed delete forces the removal and deletes the branch. The TUI's `d` on a worktree names the same loss and forces only after it. The main checkout and a task's worktree are refused. New routes `GET api/worktrees/<id>` and `DELETE api/worktrees/<id>[?confirm=true]` (`session_start` and `files_write`).
 
+### Fixed
+
+- CI: Clippy failed on main (`type_complexity` on the web chat's cache of copied project files, `too_many_arguments` on the manager broker). Both now use a named type. The project's task checks (`wsx.config.yml`) run `cargo +1.96.1 clippy --workspace --all-targets --locked -- -D warnings`, the command and toolchain of `ci.yml`, so a task meets the error before a push.
+
+
 ## [0.43.0] - 2026-11-09
 
 ### Added

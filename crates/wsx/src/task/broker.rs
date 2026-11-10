@@ -159,6 +159,18 @@ fn forward(socket: &Path, argv: Vec<String>) -> Result<i32> {
     Ok(response.code)
 }
 
+/// What the manager host's broker needs besides its socket.
+pub struct ManagerBroker {
+    pub exe: PathBuf,
+    pub fallback_cwd: PathBuf,
+    /// The manager's own project.
+    pub own: String,
+    pub actor: String,
+    /// Answers the host owes, by sender (`role:<name>` or a project).
+    pub owed: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u32>>>,
+    pub policy: SharedPolicy,
+}
+
 /// The manager host's side: every `task` command runs as its `actor` (`manager` or
 /// `role:<name>`). Another project is reached only by `ledger` and `say --from-manager`, a
 /// role or the manager of this one by `say --from-role`; a `--reply` spends an answer the
@@ -166,14 +178,17 @@ fn forward(socket: &Path, argv: Vec<String>) -> Result<i32> {
 /// ref: docs/tasks.md "Managers talk", "Roles"
 pub fn serve_manager(
     listener: UnixListener,
-    exe: PathBuf,
-    fallback_cwd: PathBuf,
-    own: String,
-    actor: String,
-    owed: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, u32>>>,
-    policy: SharedPolicy,
+    broker: ManagerBroker,
     sent: impl Fn(String, String, bool) + Send + Sync + 'static,
 ) {
+    let ManagerBroker {
+        exe,
+        fallback_cwd,
+        own,
+        actor,
+        owed,
+        policy,
+    } = broker;
     serve(listener, move |request: Request| {
         let policy = policy.get();
         let target = match allowed(&request.argv, policy).and_then(|()| reach(&request.argv, &own))

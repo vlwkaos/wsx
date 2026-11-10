@@ -386,12 +386,14 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
     std::thread::spawn(move || {
         broker::serve_manager(
             brokered,
-            exe,
-            folder,
-            own,
-            actor,
-            owed,
-            policy,
+            broker::ManagerBroker {
+                exe,
+                fallback_cwd: folder,
+                own,
+                actor,
+                owed,
+                policy,
+            },
             move |to, text, reply| {
                 let _ = sent.send(Event::Sent { to, text, reply });
             },
