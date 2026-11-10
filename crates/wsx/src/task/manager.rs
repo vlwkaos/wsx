@@ -1512,7 +1512,7 @@ impl Manager {
     fn accept(&mut self, from: Author, text: String, short: Vec<Short>) -> Result<u64> {
         // ^ The owner's Reply sends `> message <id>`, as a manager's reply does.
         let (text, quote) = match from {
-            Author::Owner => self.quoted(text),
+            Author::Owner => self.quoted(text, &[]),
             _ => (text, None),
         };
         if text.trim().is_empty() {
@@ -2198,17 +2198,18 @@ impl Manager {
                 let id = self.next_id();
                 self.say(&format!("{name} stood in: reply {id}"));
                 let answered = to.iter().copied().max().unwrap_or(0);
+                let (text, quote) = self.quoted(result.text, &to);
                 self.log(ManagerEvent::Reply {
                     id,
                     to,
-                    text: result.text,
+                    text,
                     usage: Some(result.usage),
                     quiet: false,
                     asks: false,
                     provisional: Some(name),
                     level: None,
                     post: false,
-                    quote: None,
+                    quote,
                 });
                 self.state.provisional_to = answered;
                 self.state.provisional = true;
@@ -2813,7 +2814,7 @@ impl Manager {
             result.text.lines().next().unwrap_or_default()
         ));
         let in_thinking = result.answered_in_thinking();
-        let (text, quote) = self.quoted(result.text);
+        let (text, quote) = self.quoted(result.text, &to);
         let asks = asks_owner(&text);
         let quiet = self.turn_events && !asks && quiet_reply(&text);
         if !quiet && !says_nothing(&text) {
@@ -2853,13 +2854,21 @@ impl Manager {
         }
     }
 
-    /// A reply that opens with `> message <id>` quotes that message. ref: `resolve_quote`
-    fn quoted(&self, text: String) -> (String, Option<u64>) {
-        if !text.trim_start().starts_with(QUOTE_REF) {
+    /// A reply that opens with `> message <id>` quotes that message. One that opens with no
+    /// quote and says something quotes the newest owner message of its turn (`to`); a turn of
+    /// only events has none; an owner's own message (`to` empty) only its explicit one. ref: `resolve_quote`, docs/tasks.md "A quote"
+    fn quoted(&self, text: String, to: &[u64]) -> (String, Option<u64>) {
+        let explicit = text.trim_start().starts_with(QUOTE_REF);
+        if !explicit && (to.is_empty() || says_nothing(&text)) {
             return (text, None);
         }
-        // ^ The log back to the quoted id, not all of it: ids grow (docs/tasks.md "Log window").
-        let log = match quoted_id(&text) {
+        // ^ The log back to the oldest id wanted, not all of it: ids grow (docs/tasks.md
+        // "Log window").
+        let oldest = match explicit {
+            true => quoted_id(&text),
+            false => to.iter().min().copied(),
+        };
+        let log = match oldest {
             Some(id) => self
                 .dir
                 .read_around(QUOTE_READ_BYTES, |log| {
@@ -2869,8 +2878,22 @@ impl Manager {
                 .unwrap_or_default(),
             None => Vec::new(),
         };
+        let text = match explicit {
+            true => text,
+            false => match log.iter().rev().find_map(|entry| match &entry.event {
+                ManagerEvent::Message {
+                    id,
+                    from: Author::Owner,
+                    ..
+                } if to.contains(id) => Some(*id),
+                _ => None,
+            }) {
+                Some(id) => format!("{QUOTE_REF}{id}\n\n{text}"),
+                None => return (text, None),
+            },
+        };
         let (text, quote, note) = resolve_quote(&text, &log);
-        if let Some(note) = note {
+        if let Some(note) = note.filter(|_| explicit) {
             self.say(&note);
         }
         (text, quote)
