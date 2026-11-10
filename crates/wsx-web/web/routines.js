@@ -34,7 +34,8 @@ export function useRoutines(project, active, key) {
   const [list, setList] = useState(null);
   const read = useCoalescedLoad(async (current) => {
     const next = await api(`api/tasks/${project}/routines`);
-    if (current()) setList(next);
+    // ^ An unchanged answer keeps the list as it was: the whole manager screen would draw again for nothing.
+    if (current()) setList((old) => JSON.stringify(old) === JSON.stringify(next) ? old : next);
   }, () => {}, [project]);
   // ^ A routine that runs is read again every 2 s, so its end shows without a tap.
   const running = Boolean(list?.routines?.some((row) => row.running || row.last?.status === "running"));
