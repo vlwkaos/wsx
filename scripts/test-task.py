@@ -5545,8 +5545,19 @@ def part_host(created=None):
     assert 'agent' not in manager_state(), manager_state()
     si_signed_in = work / 'signed-in-fallback'
     si_signed_in.unlink(missing_ok=True)
+    def si_reply(message):
+        # ^ A reply that does not come says what the manager and the account records hold.
+        try:
+            return reply_to(message['id'])
+        except RuntimeError as error:
+            tail = [{k: (str(v)[:160]) for k, v in e.items() if k in ('kind', 'reason', 'text', 'to', 'tokens')}
+                    for e in manager_entries()[-14:]]
+            records = {f.name: f.read_text()[:200] for f in agents.iterdir() if f.suffix == '.json'}
+            raise RuntimeError('%s; log %s; state %s; records %s; env %s' % (
+                error, tail, {k: manager_state().get(k) for k in ('agent', 'limit')}, records,
+                os.environ.get('WSX_TEST_SIGN_IN_RETRY_SECS'))) from None
     si_away = js('task', 'say', 'AUTHFAIL %s STATUS away' % si_signed_in)
-    assert reply_to(si_away['id'])['text'].startswith('pi answers: '), chat()[-3:]
+    assert si_reply(si_away)['text'].startswith('pi answers: '), chat()[-3:]
     assert manager_state()['agent']['name'] == 'fake-pi', manager_state()
     si_moves = lambda: [e['reason'] for e in manager_entries() if e['kind'] == 'rotated' and 'sign-in expired' in e.get('reason', '')]
     assert si_moves() == ['claude moved to fake-pi: sign-in expired'], manager_entries()[-8:]
@@ -5555,7 +5566,7 @@ def part_host(created=None):
     # ^ A sign-in still missing when the record ends: the try on the own agent fails and moves it back.
     wait(si_record_ended, 'the sign-in record ends')
     si_again = js('task', 'say', 'AUTHFAIL %s STATUS again' % si_signed_in)
-    assert reply_to(si_again['id'])['text'].startswith('pi answers: '), chat()[-3:]
+    assert si_reply(si_again)['text'].startswith('pi answers: '), chat()[-3:]
     assert len(si_moves()) == 2 and manager_state()['agent']['name'] == 'fake-pi', si_moves()
     # ^ The worker: the first fallback on the failed account is skipped, the task continues on fake-pi
     # in a new conversation, and the next task starts there with no call to Claude.
@@ -5580,7 +5591,7 @@ def part_host(created=None):
     si_worker_in.touch()
     wait(si_record_ended, 'the sign-in record ends again')
     si_home = js('task', 'say', 'AUTHFAIL %s STATUS home' % si_signed_in)
-    assert reply_to(si_home['id'])['text'].startswith('open: '), chat()[-3:]
+    assert si_reply(si_home)['text'].startswith('open: '), chat()[-3:]
     assert 'agent' not in manager_state(), manager_state()
     assert any(e['kind'] == 'rotated' and e.get('reason') == 'back on claude' for e in manager_entries()), manager_entries()[-6:]
     assert not si_auth_record.exists(), 'the first success clears the record'
