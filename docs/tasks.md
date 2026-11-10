@@ -546,6 +546,8 @@ After `tasks.manager.recapMinutes` (default `0`, off, at most 1440, a fraction a
 
 ## Memo
 
+Proposed redesign of the memo, the notes and the search as one memory system: [design/memory-system.md](design/memory-system.md).
+
 Durable project knowledge moves from workers to the manager, kept small:
 
 1. The worker's instructions: before a build finishes, put in the result's `memo` a short, lean memo of durable project knowledge a later task needs (a convention, a gotcha, a decision and its reason), a few lines at most; empty when there is none. It is kept in `result.json`.

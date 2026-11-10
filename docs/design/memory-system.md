@@ -64,7 +64,7 @@ One line per op in `tasks/<project-id>/memory/records.jsonl`; the current record
 | `text`, `title` | the claim, one to five lines; optional title |
 | `source` | required on every op: `msg:<id>`, `task:<n>`, `path:<file>`, `transcript:<ref>` |
 | `updated` | unix ms; the date shows in views |
-| `verified_by` | required for `rule` and `fact`, else exit 2: `owner:<msg id>`, `task:<n>` (landed), `check:<id>`, or a relative path with no `..` that exists under the project root. Episodes need none |
+| `verified_by` | required for `rule` and `fact`, else exit 2: `owner:<msg id>` or a relative path with no `..` that exists under the project root (the contract's two forms); wsx also takes `task:<n>` (landed) and `check:<id>`. Episodes need none |
 | `commit` | facts: the commit it was true at |
 | `superseded_by` | slug of the newer record |
 
@@ -74,7 +74,7 @@ Hit: `slug`, `path`, `kind`, `status`, `score` 0..1 (higher is better), `excerpt
 
 ## The contract (`memory`)
 
-Same table as dotfiles #38, every command takes `--scope <id>` (required; `wsx memory` defaults it to the project of the current folder) and `--json`.
+Same table as dotfiles #38, every command but `list` takes `--scope <id>` (required; `wsx memory` defaults it to the project of the current folder) and `--json`.
 
 | Command | Arguments | Output |
 |---|---|---|
@@ -86,7 +86,7 @@ Same table as dotfiles #38, every command takes `--scope <id>` (required; `wsx m
 | status | none | `{"scope","store","backend","search":{"network":bool,"model":bool},"counts":{active,superseded,failed}}` |
 | list | none | `[{"scope","store"}]` |
 
-Exit 0 ok, 1 not found, 2 usage or an invalid `verified_by`, 3 backend unavailable (search falls back to the built-in; a store failure has no fallback), and for compaction 4 (the recall-query gate refused, store untouched, the report names the query) and 5 (the store changed meanwhile). `search` makes no network or model call unless `status` declares one.
+Exit 0 ok, 1 not found, 2 usage or an invalid `verified_by`, 3 backend unavailable (a plug-in search backend falls back to the built-in; a `command` scope or a store failure has no fallback and returns 3), and for compaction 4 (the recall-query gate refused, store untouched, the report names the query) and 5 (the store changed meanwhile). `search` makes no network or model call unless `status` declares one.
 
 - Backend: `memory.backend` in the global config names a command with the same `search` and `reindex`; wsx names no tool. Exit 3 or a 10 s timeout uses the built-in. External hits merge by score.
 - wsx extensions, not in the contract: `recall` (cheap agent, below), `distill`, `compact`. A skill has its own model and needs none of them.
@@ -137,15 +137,15 @@ dotfiles builds only its rows and needs nothing from wsx code but the contract t
 | Source | Who, when | Cost |
 |---|---|---|
 | Result memo | the worker, in its result (exists); host adds `paths` from the diff and `commit` at land | 0 extra turns; about 100 output tokens, (est.) $0.002 on Opus |
-| Rotation notes (`rotate-notes.md`, `host.rs` 1927) | the worker or manager about to be dropped writes episodes in that turn | 0 extra turns |
-| Owner rule | the manager, `wsx memory add --kind rule --msg <id> --words "<owner text>"`; the host refuses if `words` is not inside that message | 0 |
+| Rotation notes (`rotate-notes.md`, `host.rs` 1927; the manager's handover likewise) | the conversation about to be dropped writes episodes in that turn | 0 extra turns |
+| Owner rule | the manager, `wsx memory add --kind rule --source msg:<id> --verified-by owner:<id> --words "<owner text>"`; the host refuses if `words` is not inside that message | 0 |
 | Raw tool transcript or provider history (`integration/memory.rs`) | not by default: `wsx memory distill --task <n>` by the owner or the manager, for a blocked, failed or rotated task | (est.) a 60k-token log read by Sonnet is $0.12, 8% of a $1.56 median task, so it is never automatic |
 
-A wrong record is caught three ways: (1) a fact with `commit` and `paths` is stale when `git diff --quiet <commit> HEAD -- <paths>` fails (one git call, 10 s timeout as in the ledger); a stale fact leaves the start set and shows `stale` in search; (2) `add` of a rule or fact without a valid `verified_by` is refused (exit 2), so only landed-task, owner or checked records reach the start set; (3) a worker or manager that finds one wrong runs `invalidate --reason`, and the log keeps both.
+A wrong record is caught three ways: (1) a fact with `commit` and `paths` is stale when `git diff --quiet <commit> HEAD -- <paths>` fails (one git call, 10 s timeout as in the ledger); a stale fact leaves the start set and shows `stale` in search; (2) `add` of a rule or fact without a valid `verified_by` is refused (exit 2), so only landed-task, owner or checked records reach the start set; (3) a worker or manager that finds one wrong runs `update --status failed --lesson`, and the log keeps both.
 
 ## Decisions stay the owner's words
 
-`decisions.md` is rendered from active `rule` records, newest first: `- MM-DD <words>` with the record's date and `words`. The manager's own paraphrase is allowed only as `text`; the view shows `words`. The manager's write path (today an append to the file, `instructions.rs` 150-170) becomes `wsx memory add|update|supersede`; the file stays readable and is rewritten from the log, so an edit by hand is ignored with a notice (`wsx memory status` lists drift). `decisions-archive.md` becomes the superseded rules, and no rule is dropped without `superseded_by` or an owner message.
+`decisions.md` is rendered from active `rule` records, newest first: `- <date> <words>` with the record's date and `words`. The manager's own paraphrase is allowed only as `text`; the view shows `words`. The manager's write path (today an append of `- <date> <decision>` to the file, `instructions.rs` 143) becomes `wsx memory add|update|supersede`; the file stays readable and is rewritten from the log, so an edit by hand is ignored with a notice (`wsx memory status` lists drift). `decisions-archive.md` becomes the superseded rules, and no rule is dropped without `superseded_by` or an owner message.
 
 ## Mapping of every mechanism
 
@@ -163,8 +163,8 @@ A wrong record is caught three ways: (1) a fact with `commit` and `paths` is sta
 | ledger `recent` memo | kept; reads records |
 | `tasks.workflow.build` memo words and `idle` task | build words kept; the idle task's job (consolidate) becomes the host's manage pass; `idle` stays for project skills |
 | `integration/memory.rs` | kept: source for `distill` |
-| loose `manager/notes/*.md` (30 files, 46 KB in wsx's store) | not memory; scratch; durable results go to records |
-| owner skills | see Skills and wsx |
+| loose `manager/notes/*.md` (29 files, 37 KB in wsx's store) | not memory; scratch; durable results go to records |
+| owner skills | see Skills and wsx, final split |
 
 ## Costs and risks
 
