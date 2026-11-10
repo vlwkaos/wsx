@@ -28,7 +28,7 @@ use wsx_core::stale;
 use wsx_core::task::chat;
 use wsx_core::task::manager::{
     asks_owner, decided_request, instructions_digest, pending_approvals, quiet_reply, quoted_id,
-    resolve_quote, says_nothing, state_wakes, ApprovalLine, QUOTE_REF,
+    resolve_quote, says_nothing, split_quote, state_wakes, ApprovalLine, QUOTE_REF,
 };
 use wsx_core::task::manager::{
     Author, Checkin, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
@@ -2244,7 +2244,7 @@ impl Manager {
                     "{} to message {}: {}",
                     provisional.as_ref()?,
                     to.join(", "),
-                    one_line(text)
+                    one_line(split_quote(text).1)
                 ))
             })
             .collect();
@@ -2855,12 +2855,13 @@ impl Manager {
     }
 
     /// A reply that opens with `> message <id>` quotes that message. One that opens with no
-    /// quote and says something quotes the owner message it answers when it will not sit under
-    /// it (`chat::quoted_owner_message`); an owner's own message (`to` empty) only its explicit
+    /// quote and says something quotes the message it relates to when it will not sit under it (`chat::quoted_message`); an owner's own message (`to` empty) only its explicit
     /// quote. ref: `resolve_quote`, docs/tasks.md "A quote"
     fn quoted(&self, text: String, to: &[u64]) -> (String, Option<u64>) {
         let explicit = text.trim_start().starts_with(QUOTE_REF);
-        if !explicit && (to.is_empty() || says_nothing(&text)) {
+        // ^ A quiet line of an events turn is the manager's own work: a quote would make it a message.
+        let quiet = self.turn_events && !asks_owner(&text) && quiet_reply(&text);
+        if !explicit && (to.is_empty() || says_nothing(&text) || quiet) {
             return (text, None);
         }
         // ^ The log back to the oldest id wanted, not all of it: ids grow (docs/tasks.md
@@ -2875,13 +2876,14 @@ impl Manager {
                 .read_around(QUOTE_READ_BYTES, |log| {
                     log.iter()
                         .any(|entry| entry.id().is_some_and(|at| at <= id))
+                        && (explicit || chat::reaches_follow_up(log))
                 })
                 .unwrap_or_default(),
             None => Vec::new(),
         };
         let text = match explicit {
             true => text,
-            false => match chat::quoted_owner_message(&log, to) {
+            false => match chat::quoted_message(&log, to) {
                 Some(id) => format!("{QUOTE_REF}{id}\n\n{text}"),
                 None => return (text, None),
             },
