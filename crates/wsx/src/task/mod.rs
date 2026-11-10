@@ -8,6 +8,7 @@ mod boundary;
 pub mod broker;
 mod claude;
 mod cmd;
+mod egress;
 pub mod host;
 mod hosting;
 mod instructions;

@@ -21,6 +21,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 import wsxd_client
@@ -3248,21 +3249,75 @@ def part_worker(created=None):
     assert js('task', 'ledger')['approvals'] == []
     assert show(weak)['record']['adapter'] == 'pi' and any(t.get('launch') and t.get('worker') and t.get('model') == 'fake/pi-model' for t in traces())
     js('task', 'close', weak, '--discard')
-    # P6: a Pi agent on a remote provider reaches its provider's port and no other port. Seatbelt names no
-    # remote host (only `*` or `localhost`), so another host on that port stays open (docs/tasks.md).
+    # P6: a Pi agent on a remote provider reaches it through the egress proxy (crates/wsx/src/task/egress.rs) and
+    # nothing else. Seatbelt names no remote host, so the profile refuses every address but the loopback, and the
+    # proxy tunnels to the provider's host and port alone. The stand-in provider listens on this machine's own
+    # address, which is not loopback (a test address would answer nobody).
+    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp.connect((remote_ip, 9))  # ^ Sends nothing: it only picks the interface.
+    lan = udp.getsockname()[0]
+    udp.close()
+    assert not lan.startswith('127.'), 'this machine has no address but the loopback to stand in for a remote provider'
+    reached = []
+
+    def stand_in(listener, name):
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            reached.append(name)
+            with conn:
+                conn.settimeout(2)
+                try:
+                    if conn.recv(4) == b'ping':
+                        conn.sendall(b'pong')
+                except OSError:
+                    pass
+
+    listeners = {}
+    for name in ('provider', 'other'):
+        listeners[name] = socket.socket()
+        listeners[name].bind((lan, 0))
+        listeners[name].listen(8)
+        atexit.register(listeners[name].close)
+        threading.Thread(target=stand_in, args=(listeners[name], name), daemon=True).start()
+    provider_port, other_port = (listeners[name].getsockname()[1] for name in ('provider', 'other'))
+
+    def proxy_closed(url):
+        proxy_port = int(url.rsplit(':', 1)[1])
+
+        def closed():
+            try:
+                socket.create_connection(('127.0.0.1', proxy_port), timeout=1).close()
+            except OSError:
+                return True
+            return False
+        wait(closed, 'the egress proxy of %s closed' % url)
+
+    assert tried['proxy:url'] is None, tried  # ^ A provider on this machine needs no proxy.
     models = home / '.pi/agent/models.json'
-    models.write_text(json.dumps({'providers': {'remote': {'baseUrl': 'http://%s:%d/v1' % (remote_ip, remote_port), 'api': 'openai-completions',
+    models.write_text(json.dumps({'providers': {'remote': {'baseUrl': 'http://%s:%d/v1' % (lan, provider_port), 'api': 'openai-completions',
                                                            'apiKey': 'none', 'models': [{'id': 'pi-model'}]}}}))
-    spec['connect'], spec['allow'] = {'other_port': [remote_ip, remote_port + 1], 'other_host_port': [other_ip, remote_port + 1]}, {**allow, 'provider': [remote_ip, remote_port]}
+    # ^ (a) another host on the provider's port, (b) the provider itself without the proxy, (c) other targets through it.
+    spec['connect'] = {'provider_direct': [lan, provider_port], 'other_host_direct': [other_ip, provider_port], 'other_port_direct': [lan, other_port]}
+    spec['allow'] = allow
+    spec['proxy'] = {'provider': [lan, provider_port, 'connect'], 'other_host': [other_ip, provider_port, 'connect'],
+                     'other_port': [lan, other_port, 'connect'], 'loopback': ['127.0.0.1', port, 'connect'], 'plain_http': [lan, provider_port, 'plain']}
     (work / 'weak-spec.json').write_text(json.dumps(spec))
     configure(LAND_CONFIG + '  agent: { adapter: pi, model: remote/pi-model }\n', 'untrusted worker on a remote provider')
     remote = js('task', 'new', 'FORBID %s %s %s' % (ROOT / 'scripts/fake-weak-model.py', work / 'weak-spec.json', work / 't' / 'weak-out2.json'))['id']
     assert wait_state(remote, 'ready', 'failed')['state'] == 'ready', (show(remote), [t for t in traces() if t.get('adapter') == 'pi'][-8:])
     seen = [t['forbid'] for t in traces() if 'forbid' in t][-1]
-    assert seen['control:connect_provider'] and seen['control:connect_loopback'], seen
-    assert not any(seen[f'{mode}:connect_{name}'] for mode in ('tool', 'bash', 'python') for name in ('other_port', 'other_host_port')), seen
-    assert not sorted(name for name, value in seen.items() if value and not name.startswith('control')), seen
+    assert seen['control:connect_loopback'], seen
+    assert not any(seen[f'{mode}:connect_{name}'] for mode in ('tool', 'bash', 'python') for name in spec['connect']), seen
+    assert not sorted(name for name, value in seen.items() if value and not name.startswith(('control', 'proxy'))), seen
+    refused = ('403', '403')
+    assert {name: (seen['proxy:tool:' + name], seen['proxy:python:' + name]) for name in spec['proxy']} == {
+        'provider': ('200 pong', '200 pong'), 'other_host': refused, 'other_port': refused, 'loopback': refused, 'plain_http': refused}, seen
+    assert seen['proxy:url'].startswith('http://127.0.0.1:') and 'other' not in reached, (seen, reached)
     js('task', 'close', remote, '--discard')
+    proxy_closed(seen['proxy:url'])  # ^ The proxy ends with its agent.
     for path in list(fixtures) + guarded:
         path.unlink(missing_ok=True)
     (base / 'project-t998').rmdir()
@@ -3288,16 +3343,23 @@ def part_worker(created=None):
                   'untrusted manager ' + name)
         return reply_to(js('task', 'say', '\n'.join('RUN ' + line for line in lines))['id'])['text']
 
-    # P6 (manager): an untrusted manager on the remote provider is up and reaches its provider's port and no other.
+    # P6 (manager): an untrusted manager on the remote provider is up, reaches it through the proxy and nothing else.
     probe = work / 'connect-probe.py'
     probe.write_text('import socket, sys\ntry:\n    socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=2).close()\n'
                      'except PermissionError:\n    print("refused")\n    sys.exit(0)\nexcept OSError:\n    pass\nprint("passed")\n')
+    tunnel = lambda host, number, kind='connect': 'python3 %s --tunnel %s %d %s' % (ROOT / 'scripts/fake-weak-model.py', host, number, kind)
     stop_manager_now()
     configure(LAND_CONFIG + '  manager: { adapter: pi, model: remote/pi-model }\n', 'untrusted manager on a remote provider')
-    said = reply_to(js('task', 'say', '\n'.join('RUN python3 %s %s %d' % (probe, remote_ip, p) for p in (remote_port, remote_port + 1)))['id'])['text']
+    lines = ['echo $HTTPS_PROXY', tunnel(lan, provider_port), tunnel(other_ip, provider_port), 'python3 %s %s %d' % (probe, lan, provider_port),
+             tunnel(lan, other_port), tunnel('127.0.0.1', port), tunnel(lan, provider_port, 'plain')]
+    said = reply_to(js('task', 'say', '\n'.join('RUN ' + line for line in lines))['id'])['text']
     runs = ['ran: ' + part for part in said.split('ran: ')[1:]]
-    assert len(runs) == 2 and '-> 0 passed' in runs[0] and '-> 0 refused' in runs[1], said
+    answers = [run.split(' -> 0 ', 1)[1].strip() for run in runs if ' -> 0 ' in run]
+    assert len(runs) == len(lines) and answers[0].startswith('http://127.0.0.1:') and answers[1:] == ['200 pong', '403', 'refused', '403', '403', '403'], said
+    assert 'other' not in reached, reached
     assert any(t.get('launch') and t.get('model') == 'remote/pi-model' and not t.get('worker') for t in traces()), 'no manager launch on the remote provider'
+    stop_manager_now()
+    proxy_closed(answers[0])
     models.unlink()
     ready = js('task', 'new', 'WORK landme.txt')['id']
     assert wait_state(ready, 'ready', 'failed')['state'] == 'ready'

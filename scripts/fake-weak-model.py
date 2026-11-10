@@ -4,7 +4,8 @@
 and records which ones worked. Run by fake-pi-rpc.py (`FORBID <script> <spec> <out>`) inside the
 agent's boundary; test-task.py section 23s judges the answers and the files left behind.
 Usage: fake-weak-model.py <spec.json> <out.json>
-ref: docs/design/local-model-fallback.md 5.6 (F1 to F5)
+       fake-weak-model.py --tunnel <host> <port> connect|plain   (one request to the egress proxy)
+ref: docs/design/local-model-fallback.md 5.6 (F1 to F5), 5.3 (P6)
 """
 import json
 import os
@@ -12,9 +13,40 @@ import signal
 import socket
 import subprocess
 import sys
+from urllib.parse import urlparse
 
 TIMEOUT = 5
 PY = sys.executable
+
+
+def tunnel(host, port, kind):
+    """Ask the egress proxy ($HTTPS_PROXY) for host:port, as a CONNECT or as a plain HTTP request. The answer is the
+    status code, and after a 200 what the provider says to `ping`."""
+    proxy = urlparse(os.environ['HTTPS_PROXY'])
+    with socket.create_connection((proxy.hostname, proxy.port), timeout=3) as conn:
+        if kind == 'connect':
+            conn.sendall(('CONNECT %s:%s HTTP/1.1\r\nHost: %s:%s\r\n\r\n' % (host, port, host, port)).encode())
+        else:
+            conn.sendall(('GET http://%s:%s/ HTTP/1.1\r\nHost: %s:%s\r\n\r\n' % (host, port, host, port)).encode())
+        head = b''
+        while b'\r\n\r\n' not in head:
+            more = conn.recv(4096)
+            if not more:
+                break
+            head += more
+        status = head.split(b'\r\n')[0].split(b' ')[1].decode()
+        if status != '200':
+            return status
+        conn.sendall(b'ping')
+        return status + ' ' + conn.recv(4).decode()
+
+
+if sys.argv[1] == '--tunnel':
+    try:
+        print(tunnel(sys.argv[2], sys.argv[3], sys.argv[4]))
+    except PermissionError:
+        print('refused')
+    sys.exit(0)
 spec = json.load(open(sys.argv[1]))
 seen = {}
 
@@ -90,6 +122,14 @@ for name, address in spec['connect'].items():
     record('connect_' + name, lambda a=address: connect(a),
            lambda a=address: b'not permitted' not in (lambda r: r.stdout + r.stderr)(sh('nc', '-zv', '-w', '2', a[0], str(a[1]))).lower(),
            lambda a=address: py(CONNECT_PY, a[0], str(a[1])).returncode == 0)
+# ^ P6: through the egress proxy, in this process and in a child.
+seen['proxy:url'] = os.environ.get('HTTPS_PROXY')
+for name, (host, port, kind) in spec.get('proxy', {}).items():
+    try:
+        seen['proxy:tool:' + name] = tunnel(host, port, kind)
+    except OSError as error:
+        seen['proxy:tool:' + name] = repr(error)
+    seen['proxy:python:' + name] = sh(PY, __file__, '--tunnel', host, str(port), kind).stdout.decode().strip()
 record('unix_wsxd', lambda: unix(spec['wsxd_socket']), lambda: sh('nc', '-U', '-w', '2', spec['wsxd_socket']).returncode == 0,
        lambda: py('import socket, sys; s = socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(sys.argv[1])', spec['wsxd_socket']).returncode == 0)
 for name, argv in spec['exec'].items():
