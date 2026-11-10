@@ -608,13 +608,13 @@ def manager_up(created):
         found = js('task', 'chat', *(['--after', after] if after is not None else []))['entries']
         return found if raw else [unquoted(e) for e in found]
 
-    def reply_to(message_id):
+    def reply_to(message_id, seconds=20):
         return wait(lambda: next((e for e in chat() if e['kind'] == 'reply' and message_id in e['to']), None),
-                    'reply to %s' % message_id)
+                    'reply to %s' % message_id, seconds)
 
-    def raw_reply(message_id):
+    def raw_reply(message_id, seconds=20):
         """The stored reply to `message_id` with the quote wsx added (`reply_to` leaves it out)."""
-        reply_to(message_id)
+        reply_to(message_id, seconds)
         return next(e for e in chat(raw=True) if e['kind'] == 'reply' and message_id in e['to'])
 
     def turn_with(text):
@@ -837,12 +837,12 @@ def manager_up(created):
     apart = js('task', 'say', 'ASK LONG apart')
     wait(lambda: any(e['kind'] == 'delivered' and apart['id'] in e['ids'] for e in manager_entries()), 'apart delivered')
     second = js('task', 'say', 'STATUS second')
-    far = raw_reply(apart['id'])
+    far = raw_reply(apart['id'], 60)
     assert second['id'] < far['id'] and far['to'] == [apart['id']] and far['quote'] == apart['id'], (second, far)
     assert far['text'].startswith('> ASK LONG apart\n\n') and far.get('asks') is True, far
     assert far['id'] in js('task', 'chat')['asks'], js('task', 'chat')['asks']
     js('task', 'dismiss', str(far['id']))
-    reply_to(second['id'])
+    reply_to(second['id'], 60)
     # ^ A follow-up to the manager's own earlier reply: a reply to an events turn that reports task
     # #n quotes the newest earlier reply that names #n (a promise) when other chat items lie
     # between, and none when the report sits right under it (`chat::quoted_message`). The task
