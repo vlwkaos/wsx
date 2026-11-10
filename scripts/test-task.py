@@ -5593,6 +5593,7 @@ def part_host(created=None):
     assert len(si_pi_turns) == 1 and 'could write no handoff notes' in si_pi_turns[0]['message'], si_pi_turns
     si_skipped = js('task', 'new', 'WORK sb.txt')['id']
     assert wait_state(si_skipped, 'ready', 'failed')['record']['adapter'] == 'pi', show(si_skipped)
+    assert show(si_skipped)['record']['fallback'] is True and show(si_skipped)['record']['sign_in'] is True, show(si_skipped)['record']
     assert not any(e['kind'] == 'agent_switch' for e in log(si_skipped)), log(si_skipped)
     # ^ Signed in again: both go home once the record ends, on the first turn they have.
     si_signed_in.touch()
@@ -5609,6 +5610,12 @@ def part_host(created=None):
     assert not show(si_sw)['record'].get('fallback') and not show(si_sw)['record'].get('sign_in'), show(si_sw)['record']
     si_back = [e for e in log(si_sw) if e['kind'] == 'agent_switch'][-1]
     assert si_back['to'].startswith('claude ') and si_back['reason'] == 'sign-in may work again', si_back
+    # ^ A task born during the record is on the fallback like a switched one and goes home the same way.
+    js('task', 'add', si_skipped, 'WORK se.txt')
+    wait(lambda: show(si_skipped)['record']['adapter'] == 'claude', 'the task born on the fallback goes home')
+    assert wait_state(si_skipped, 'ready', 'failed')['state'] == 'ready', show(si_skipped)
+    assert not show(si_skipped)['record'].get('fallback') and not show(si_skipped)['record'].get('sign_in'), show(si_skipped)['record']
+    assert [e['reason'] for e in log(si_skipped) if e['kind'] == 'agent_switch'] == ['sign-in may work again'], log(si_skipped)
     for n in (si_sw, si_skipped):
         js('task', 'close', n, '--discard')
     # ^ With no usable fallback a worker does not end failed: it waits like a limit, on the sign-in
