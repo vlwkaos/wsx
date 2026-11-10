@@ -2680,7 +2680,7 @@ def part_core(created=None):
     js('task', 'close', asking)
     question_table = reply_to(js('task', 'say', 'ASK TABLE')['id'])
     assert question_table['text'].startswith('Should I land it now?\nWhere things stand') and 'asks' not in question_table, question_table
-    assert 'asks' not in stored_reply and 'asks' not in event_reply, (raw_reply, event_reply)
+    assert 'asks' not in stored_reply and 'asks' not in event_reply, (stored_reply, event_reply)
     # ^ A question in a last table row with no closing pipe does not ask either.
     question_row = reply_to(js('task', 'say', 'ASKROW')['id'])
     assert question_row['text'].endswith('| #2 | land it?') and 'asks' not in question_row, question_row
