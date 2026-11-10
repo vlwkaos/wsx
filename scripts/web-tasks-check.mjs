@@ -970,7 +970,7 @@ await click(".pill[data-kind=check]");
 await until("!!document.querySelector('.reservoir-list[aria-label=\"To check\"]') && !document.querySelector('.reservoir-list[aria-label=Running]')", "a tap on To check did not switch the list");
 const checkRows = await rows();
 // ^ One row per open item: its task, its check, what passes it, and Fail and Pass as the sheet has them.
-const openChecks = await evaluate(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.open.map((item) => ['#' + item.task, item.check, 'Passes if ' + item.pass_if, 'Fail: tell the manager+Works: close this check']))`);
+const openChecks = await evaluate(`fetch('api/tasks/${project}/checks').then((r) => r.json()).then((list) => list.open.map((item) => ['#' + item.task, item.check, 'Passes if ' + item.pass_if, 'Reply+Fail: tell the manager+Works: close this check']))`);
 if ((await pressed()) !== "check" || openChecks.length !== 2 || JSON.stringify(checkRows) !== JSON.stringify(openChecks)) await fail(`the To check list is ${JSON.stringify(checkRows)}, not ${JSON.stringify(openChecks)}, with ${await pressed()} pressed`);
 // ^ Fail puts the item into the manager's composer, as in the sheet; the item stays.
 const failedWords = await evaluate(`(() => { ${rowOf("#7")}.querySelector('.need-action[title="Fail: tell the manager"]').click();

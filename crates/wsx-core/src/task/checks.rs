@@ -229,6 +229,78 @@ pub fn find_open<'a>(items: &'a [CheckItem], id: &str) -> Result<&'a CheckItem> 
     Ok(item)
 }
 
+/// The first line of an owner reply to a To check item: `> check c12`, then an empty line and the
+/// owner's words. The web's Reply on an item writes it. ref: docs/tasks.md "To check"
+pub const QUOTE_REF: &str = "> check ";
+
+/// What the host does with an owner message that quotes a To check item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ItemReply {
+    /// Words for the manager: the quote line is the item's check; none is left when no item
+    /// has that id.
+    Words(String),
+    /// The reply is just "x": the item is skipped now (`was` none), or was closed before
+    /// (`was` its state). `text` is the message as the chat shows it. No turn follows.
+    Skip {
+        text: String,
+        check: String,
+        was: Option<CheckState>,
+    },
+}
+
+/// Whether the words are the skip key: "x" or "X", or "ㅌ", the same key on a Korean keyboard.
+fn is_skip_key(words: &str) -> bool {
+    matches!(words.trim(), "x" | "X" | "ㅌ")
+}
+
+/// Read an owner message that opens with `> check <id>`. None for any other message. A reply
+/// of only the skip key skips an open item with `close`, as `wsx task check skip` does.
+pub fn item_reply(project_id: &str, text: &str) -> Option<ItemReply> {
+    let rest = text.trim_start().strip_prefix(QUOTE_REF)?;
+    let (id, words) = rest.split_once('\n').unwrap_or((rest, ""));
+    let (id, words) = (id.trim(), words.trim());
+    let find = || {
+        read(project_id)
+            .ok()
+            .and_then(|items| items.into_iter().find(|item| item.id == id))
+    };
+    let Some(item) = find() else {
+        return Some(ItemReply::Words(words.to_string()));
+    };
+    let text = format!("> {}\n\n{words}", super::manager::quote_of(&item.check));
+    if !is_skip_key(words) {
+        return Some(ItemReply::Words(text));
+    }
+    if item.state == CheckState::Open {
+        if let Some(skipped) = close(
+            project_id,
+            std::slice::from_ref(&item.id),
+            CheckState::Skipped,
+            None,
+        )
+        .ok()
+        .and_then(|rows| rows.into_iter().next())
+        {
+            return Some(ItemReply::Skip {
+                text,
+                check: skipped.check,
+                was: None,
+            });
+        }
+    }
+    // ^ Closed already, or in the meantime: the state it has now. Still open means the skip
+    // could not be written, and the manager gets the words.
+    let now = find().unwrap_or(item);
+    Some(match now.state {
+        CheckState::Open => ItemReply::Words(text),
+        was => ItemReply::Skip {
+            text,
+            check: now.check,
+            was: Some(was),
+        },
+    })
+}
+
 /// Mark the open item `id` failed with the owner's note and the task that fixes it.
 pub fn fail(project_id: &str, id: &str, note: &str, fix_task: u32) -> Result<CheckItem> {
     let rows = change(project_id, |items| {

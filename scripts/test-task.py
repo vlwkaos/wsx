@@ -3101,6 +3101,49 @@ def part_worker(created=None):
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'(?m)^ You +\d\d:\d\d$', b'\x1b'),
         (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], cols=80)[2]
     assert re.search(r'(?m)^ You +\d\d:\d\d$', narrow) and 'hello from the tui' in narrow, narrow
+    # 22c. A reply of only "x" or "ㅌ" to a To check item (docs/tasks.md "To check"): the host skips
+    # the item and writes a quiet line, with no manager turn; a closed item is said so; other words
+    # go to the manager quoted with the item's check, as does an "x" that quotes a message.
+    mark('22c')
+    status_reply = reply_to(js('task', 'say', 'STATUS')['id'])
+    replied = [js('task', 'new', 'WORK x%d.txt HV' % n)['id'] for n in range(3)]
+    for n in replied:
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
+        assert js('task', 'land', n)['state'] == 'landed'
+    by_task = {i['task']: i for i in js('task', 'check')['open']}
+    first, second, third = (by_task[n] for n in replied)
+    reply_to(js('task', 'say', 'STATUS')['id'])  # ^ The landings' events are read by now.
+    manager_turns = lambda: len([t for t in traces() if t.get('manager')])
+    turns = manager_turns()
+    for item, words in ((first, ' X '), (second, 'ㅌ')):
+        said = js('task', 'say', '> check %s\n\n%s' % (item['id'], words))
+        answered = reply_to(said['id'])
+        assert answered['post'] and answered['quiet'] and answered['text'] == 'Skipped: ' + item['check'], answered
+        assert 'usage' not in answered, answered
+        logged = next(e for e in chat() if e['kind'] == 'message' and e['id'] == said['id'])
+        assert logged['text'] == '> %s\n\n%s' % (item['check'], words.strip()), logged
+    rows = [json.loads(line) for line in checks_file.read_text().splitlines() if line.strip()]
+    states = {r['id']: (r['state'], r.get('fix_task')) for r in rows}
+    assert states[first['id']] == ('skipped', None) and states[second['id']] == ('skipped', None), rows
+    assert [i['id'] for i in js('task', 'check')['open'] if i['task'] in replied] == [third['id']]
+    assert manager_turns() == turns, 'an x reply started a manager turn'
+    again = js('task', 'say', '> check %s\n\nx' % first['id'])
+    assert reply_to(again['id'])['text'] == 'Already skipped: ' + first['check'] and manager_turns() == turns
+    # ^ Other words, and an x that quotes a message, are the manager's to read.
+    wordy = js('task', 'say', '> check %s\n\nx marks the spot' % third['id'])
+    reply_to(wordy['id'])
+    assert manager_turns() == turns + 1
+    assert third['check'] in str(turn_with('x marks the spot')), traces()[-1]
+    quoting = js('task', 'say', '> message %d\n\nx' % status_reply['id'])
+    reply_to(quoting['id'])
+    assert manager_turns() == turns + 2
+    assert [i['id'] for i in js('task', 'check')['open'] if i['task'] in replied] == [third['id']]
+    # ^ An item no one knows: the quote line goes and the words stay.
+    stray = js('task', 'say', '> check c9999\n\nx')
+    reply_to(stray['id'])
+    assert manager_turns() == turns + 3
+    js('task', 'check', 'skip', third['id'])
+
     # `/` finds in the chat (docs/tasks.md "TUI"): "quasar" is only in the 1st and 4th of 210 older
     # turns, past the newest 200 entries, so the find reads the whole log. It starts at the newer
     # match; `n` goes to the older one, `N` back, `Esc` clears. The older log goes after.

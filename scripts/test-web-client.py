@@ -4417,6 +4417,60 @@ merge_seconds = 3
         js('task', 'close', fix, '--discard', '-p', 'demo')
         ok('to check: listed with titles, pass, fail needs a note and starts a linked fix task, all passed, refusals (viewer, grant, unknown id or decision)')
 
+        # --- A reply of only "x" (or "ㅌ", the same key on a Korean keyboard) to a To check item skips it
+        # with no manager turn (docs/tasks.md "To check"); other words, a closed item and an "x" to a
+        # message go on as before.
+        for prompt in ('WORK k.txt HV', 'WORK l.txt HV', 'WORK m.txt HV'):
+            made.append(js('task', 'new', prompt, '-p', 'demo')['id'])
+            wait(lambda: task_state(made[-1]) == 'ready', 'demo #%d' % made[-1])
+            assert js('task', 'land', made[-1], '-p', 'demo')['state'] == 'landed'
+        replied = steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']
+        assert len(replied) == 3, replied
+        first, second, third = replied
+        manager_chat = lambda: steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]
+        manager_turns = lambda: steady(owner, 'GET', '/api/tasks/%d/usage' % demo)[1]['today']['manager']['turns']
+
+        def reply_to(item, words):
+            status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': '> check %s\n\n%s' % (item['id'], words)})
+            assert status == 200 and body['ok'], body
+            return body
+        wait(lambda: not manager_chat()['busy'], 'the manager idle before the x replies', timeout=90)
+        turns, tasks_before = manager_turns(), len(js('task', 'list', '-p', 'demo', '--all')['tasks'])
+        reply_to(first, '  x ')
+        reply_to(second, 'ㅌ')
+        wait(lambda: [item['id'] for item in steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']] == [third['id']],
+             'the skipped items leave the To check list')
+        assert steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['to_check'] == 1
+        # ^ Skipped, not failed: closed with no verdict and no fix task, and the manager took no turn.
+        for item in (first, second):
+            refused = cli('task', 'check', 'pass', item['id'], '-p', 'demo', expect=1)
+            assert 'already skipped' in refused.stderr, refused.stderr
+        assert len(js('task', 'list', '-p', 'demo', '--all')['tasks']) == tasks_before and manager_turns() == turns
+        rows = manager_chat()['rows']
+        sent = [r for r in rows if r.get('author') == 'owner' and r['kind'] == 'message' and r.get('quoted') == first['check']]
+        assert [r['text'] for r in sent] == ['x'], rows
+        lines = [r['text'] for r in rows if r['kind'] == 'quiet' and r['text'].startswith('Skipped: ')]
+        assert lines.count('Skipped: ' + first['check']) == 1 and lines.count('Skipped: ' + second['check']) == 1, lines
+        # ^ An item that is closed already is said so in the same line, with no error.
+        reply_to(first, 'X')
+        wait(lambda: any(r['text'] == 'Already skipped: ' + first['check'] for r in manager_chat()['rows']), 'the closed item line')
+        assert manager_turns() == turns
+        # ^ Other words to an item are a message to the manager, quoted with the item's check; the item stays open.
+        reply_to(third, 'x marks the spot')
+        wait(lambda: manager_turns() > turns, 'a turn for words to an item', timeout=60)
+        assert [item['id'] for item in steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']] == [third['id']]
+        # ^ An "x" that quotes a message is words for the manager, as before.
+        wait(lambda: not manager_chat()['busy'], 'the manager idle after the words', timeout=90)
+        turns = manager_turns()
+        quoted = next(r for r in reversed(manager_chat()['rows']) if r['kind'] == 'message' and r.get('author') == 'manager' and r.get('id'))
+        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': '> message %d\n\nx' % quoted['id']})
+        assert status == 200 and body['ok'], body
+        wait(lambda: manager_turns() > turns, 'a turn for an x to a message', timeout=60)
+        assert [item['id'] for item in steady(owner, 'GET', '/api/tasks/%d/checks' % demo)[1]['open']] == [third['id']]
+        js('task', 'check', 'skip', '--all', '-p', 'demo')
+        wait(lambda: not manager_chat()['busy'], 'the manager idle after the x to a message', timeout=90)
+        ok('to check: a reply of x or ㅌ skips the item with no manager turn and a line in the chat, a closed item is said so, other words and an x to a message reach the manager')
+
         # --- Refusals: the capability and the grant come from the site file only.
         for method, route, body in (('POST', '/api/tasks/%d/say' % demo, {'text': 'hi'}),
                                     ('POST', '/api/tasks/%d/t/1/land' % demo, {}),

@@ -26,6 +26,7 @@ use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::runtime;
 use wsx_core::stale;
 use wsx_core::task::chat;
+use wsx_core::task::checks::{CheckState, ItemReply};
 use wsx_core::task::manager::{
     asks_owner, decided_request, instructions_digest, pending_approvals, quiet_reply, quoted_id,
     resolve_quote, says_nothing, split_quote, state_wakes, ApprovalLine, QUOTE_REF,
@@ -1509,7 +1510,18 @@ impl Manager {
     }
 
     /// Log a message and queue it; owner messages go before events.
-    fn accept(&mut self, from: Author, text: String, short: Vec<Short>) -> Result<u64> {
+    fn accept(&mut self, from: Author, mut text: String, short: Vec<Short>) -> Result<u64> {
+        // ^ A reply to a To check item: "x" skips it here and starts no turn; other words go on
+        // with the item's check as their quote. ref: `checks::item_reply`
+        if from == Author::Owner && self.dir.role.is_none() {
+            match checks::item_reply(&self.dir.project_id, &text) {
+                Some(ItemReply::Skip { text, check, was }) => {
+                    return Ok(self.skipped(text, &check, was));
+                }
+                Some(ItemReply::Words(words)) => text = words,
+                None => {}
+            }
+        }
         // ^ The owner's Reply sends `> message <id>`, as a manager's reply does.
         let (text, quote) = match from {
             Author::Owner => self.quoted(text, &[]),
@@ -1543,6 +1555,41 @@ impl Manager {
         }
         self.enqueue(id, from, text, wakes);
         Ok(id)
+    }
+
+    /// The owner's "x" on a To check item, logged as delivered, and the muted line that says what
+    /// became of the item: no turn reads either. Returns the owner message's id.
+    fn skipped(&mut self, text: String, check: &str, was: Option<CheckState>) -> u64 {
+        let id = self.next_id();
+        self.log(ManagerEvent::Message {
+            id,
+            from: Author::Owner,
+            text,
+            short: Vec::new(),
+            quote: None,
+        });
+        self.log(ManagerEvent::Delivered { ids: vec![id] });
+        let check = clip(check, 60);
+        let said = match was {
+            None => format!("Skipped: {check}"),
+            Some(state) => format!("Already {}: {check}", checks::state_name(state)),
+        };
+        // ^ A quiet post answers it, so a restart does not hand the message to the agent.
+        let reply = self.next_id();
+        self.log(ManagerEvent::Reply {
+            id: reply,
+            to: vec![id],
+            text: said,
+            usage: None,
+            quiet: true,
+            asks: false,
+            provisional: None,
+            level: None,
+            post: true,
+            quote: None,
+        });
+        self.last_activity = Instant::now();
+        id
     }
 
     /// After `recapMinutes` with no message and no turn: start the idle task when it is due,

@@ -12,7 +12,7 @@ import { FindBar, FindButton } from "./find.js";
 import { markFound, QuoteChip, quoteSplit, useReply, withQuote } from "./reply.js";
 import { readTaskAhead, TaskPage } from "./task.js";
 import { ProjectOverview } from "./overview.js";
-import { ChecksPage, decideCheck } from "./checks.js";
+import { checkQuote, ChecksPage, decideCheck } from "./checks.js";
 import { UsagePage } from "./usage.js";
 import { RoutineActions, routineAct, routineCounts, routineRow, routineWords, useRoutines } from "./routines.js";
 import { PanelsButton, PanelsPage } from "./panels.js";
@@ -158,12 +158,14 @@ const RunningRow = ({ project, task, leaving }) => html`
     context=${[task.status.label, task.status.wait, agentWords(task.agent)].filter(Boolean).join(" · ")}
     href=${taskLink(project, task.id)} />`;
 
-// An open To check item: its check, what passes it, Fail (tells the manager) and Pass as the
-// sheet has them (checks.js `CheckRow`). The text opens the sheet at the item.
-function CheckingRow({ project, item, index, onActing, onFailed, onMention, leaving }) {
+// An open To check item: its check, what passes it, Reply (`onReply` quotes it in the composer,
+// where "x" skips it), Fail (tells the manager) and Pass as the sheet has them (checks.js
+// `CheckRow`). The text opens the sheet at the item.
+function CheckingRow({ project, item, index, onActing, onFailed, onMention, onReply, leaving }) {
   const [status, run] = useRowAction(`${project}/check-${item.id}`, item.id, index, onActing, onFailed);
   const button = (...args) => rowButton(status.busy, ...args);
   const actions = can("task_act") && html`
+    ${button("Reply", "reply", null, () => onReply(checkQuote(item), item.id), { "aria-label": `Reply: ${item.check}` })}
     ${button("Fail: tell the manager", "fail", "danger", () => onMention(item.task, `To check ${item.id} failed: `), { "aria-label": `Fail: tell the manager what is wrong with: ${item.check}` })}
     ${button("Works: close this check", "pass", "accent", () => run(() => decideCheck(project, item.id, "pass")), { "aria-label": `Pass, works: close this check: ${item.check}` })}`;
   return html`
@@ -300,7 +302,7 @@ function Reservoir({ project, open, items, tasks, checks, routines, onRoutines, 
               </ul>` : null}
             ${open === "check" ? html`
               <ul class="reservoir-list" aria-label="To check">
-                ${checkRows.map(({ item, key, leaving }) => html`<${CheckingRow} key=${key} project=${project} item=${item} index=${checks.indexOf(item)} onActing=${onActing} onFailed=${onFailed} onMention=${onMention} leaving=${leaving} />`)}
+                ${checkRows.map(({ item, key, leaving }) => html`<${CheckingRow} key=${key} project=${project} item=${item} index=${checks.indexOf(item)} onActing=${onActing} onFailed=${onFailed} onMention=${onMention} onReply=${onReply} leaving=${leaving} />`)}
               </ul>` : null}
             ${open === "routines" ? html`
               ${routines.error ? html`<p class="error empty" role="alert">${routines.error}</p>` : null}
@@ -436,7 +438,7 @@ function ManagerComposer({ project, role, busy: thinking, reply, onReply, onSent
       const attachments = files.attachments.map((item) => item.hash);
       const text = withQuote(reply?.line, body);
       // ^ A say may start the manager first: up to about 40 s (docs/tasks.md "Manager").
-      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text: reply?.id != null ? `> message ${reply.id}\n\n${body}` : text, attachments, ...(role && { role }) }, timeout: 60_000 });
+      const answer = await api(`api/tasks/${project}/say`, { method: "POST", json: { text: reply?.id != null ? `> message ${reply.id}\n\n${body}` : reply?.check ? `> check ${reply.check}\n\n${body}` : text, attachments, ...(role && { role }) }, timeout: 60_000 });
       field.current.value = "";
       files.attachments = [];
       changed();
@@ -794,7 +796,9 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   const { log, node: logNode, away, unread, since, scrolled, toEnd, reveal } = useFollowEnd(place, ready);
   const field = useRef();
   const [reply, setReply] = useState(null);
-  const [gestures, menu] = useReply((line, id) => { setReply({ line, id: id ? Number(id) : null }); field.current?.focus(); });
+  // ^ A message is quoted by its id, a To check item by its `c<n>` (`item_reply`, wsx-core).
+  const replyTo = (line, id) => { setReply(/^c\d+$/.test(id) ? { line, check: id } : { line, id: id ? Number(id) : null }); field.current?.focus(); };
+  const [gestures, menu] = useReply(replyTo);
   // ^ A task's Answer: the composer takes the mention as typed text, so its own input handler
   // keeps the draft (docs/web-client-tasks.md "Project screen").
   const mention = (n, words = "") => {
@@ -941,7 +945,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
           <ul class="queue" aria-label=${`Messages waiting for ${role ?? "the manager"}`}>
             ${waiting.map((row) => html`<li key=${row.key} class="queued" data-key=${row.key}><span class="queued-text">${row.text || `${row.attachments?.length ?? 0} files`}</span></li>`)}
           </ul>`}
-        ${!role && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} checks=${overview?.check_items ?? []} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${(line, id) => { setReply({ line, id }); field.current?.focus(); }} onShow=${goToReply} />`}
+        ${!role && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} checks=${overview?.check_items ?? []} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} />`}
         ${low && header}
         ${!role && !can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
         ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}
