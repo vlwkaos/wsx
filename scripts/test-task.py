@@ -5542,13 +5542,6 @@ def part_host(created=None):
     configure(si_both, 'sign-in fallback')
     si_auth_record = agents / 'claude.auth.json'
     si_record_ended = lambda: json.loads(si_auth_record.read_text())['until_ms'] < time.time() * 1000
-    # ^ Section 37's events name tasks whose title holds PIERROR. The fake Pi would read it as its own
-    # refusal and count the fallback as out of credit: the manager takes them on the own agent first.
-    wait(lambda: events_with('#%s ' % away, ' ready'), 'the ready event of the first worker reached the manager')
-    # ^ The event lines go out after a quiet time, later than the first one: the manager takes all of
-    # them, and answers, on the own agent before the sign-in fails.
-    time.sleep(8)
-    wait(lambda: manager_entries()[-1]['kind'] == 'reply', 'the manager answered the held events', 60)
     assert reply_to(js('task', 'say', 'STATUS before the sign-in')['id'])['text'].startswith('open: '), chat()[-3:]
     assert 'agent' not in manager_state(), manager_state()
     si_signed_in = work / 'signed-in-fallback'

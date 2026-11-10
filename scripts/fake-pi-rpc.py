@@ -99,7 +99,9 @@ def main():
         words = text.split()
         # ^ A handover quotes earlier messages: only this message's own words steer the fake.
         # ^ So are the notes the host attaches, which carry earlier messages with their ids.
-        own = text.split('\n\nNotes that match this message', 1)[0].rsplit('Owner (message', 1)[-1].split()
+        own = text.split('\n\nNotes that match this message', 1)[0].rsplit('Owner (message', 1)[-1]
+        own = own.split('Events (message', 1)[0].split()
+        # ^ Event lines name tasks by title, and a title may hold a word of this fake: it is no owner's word.
         if 'PIERROR' in own:
             with open(own[own.index('PIERROR') + 1]) as refusal:
                 error = refusal.read().strip()
