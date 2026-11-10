@@ -3266,7 +3266,7 @@ def part_worker(created=None):
     # ^ Words to an open item, and an x that quotes a message, are the manager's to read; the item stays.
     wordy = js('task', 'say', '> check %s\n\nx marks the spot' % fifth['id'])
     reply_to(wordy['id'])
-    assert manager_turns() == turns + 4
+    assert manager_turns() == turns + 4, [(t.get('message') or '')[:90] for t in traces() if t.get('manager')][-8:]
     assert fifth['check'] in str(turn_with('x marks the spot')), traces()[-1]
     assert row_of(fifth)['state'] == 'open' and row_of(fifth).get('note') is None
     assert logged_message(wordy['id'])['check'] == fifth['id'] and 'owner_said' not in row_of(fifth)

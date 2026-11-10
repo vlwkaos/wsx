@@ -786,12 +786,14 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   // count changes (a new item, a pass or a fail).
   const [checkItems, setCheckItems] = useState(role ? [] : null);
   const toCheck = overview?.to_check;
+  // ^ A reply to a decided item is its note: read again when one more reply names an item.
+  const noted = chat?.rows?.filter((row) => row.quoted_check).map((row) => row.id).join();
   useEffect(() => {
     if (role) return undefined;
     let live = true;
     api(`api/tasks/${id}/checks`).then((value) => { if (live) setCheckItems(value.items); }, () => { if (live) setCheckItems((now) => now ?? []); });
     return () => { live = false; };
-  }, [id, toCheck]);
+  }, [id, toCheck, noted]);
   const ready = Boolean(chat) && checkItems !== null;
   const [sent, setSent] = useState(null);
   const place = role ? `project-${id}-r-${role}` : `project-${id}`;
