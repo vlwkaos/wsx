@@ -873,18 +873,19 @@ def manager_up(created):
     js('session', 'create', '--name', 'stale-busy', '--worktree', 'stale-busy', '-p', 'demo',
        '--command', '(while true; do echo tick; sleep 1; done) &')
     sessions_in = lambda name: [s for s in daemon_call('snapshot')['data']['sessions'] if s['label'] == name]
+    # ^ The host logs event lines together, 3 s after the last: a message holds one or more lines.
     pruned_events = lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
-                             and e['text'].startswith('pruned: ')]
+                             and any(line.startswith('pruned: ') for line in e['text'].split('\n'))]
     wait(lambda: not (base / 'stale-clean').exists(), 'the idle clean merged worktree is removed', 60)
-    removed = [e for e in pruned_events() if 'removed worktree stale-clean' in e['text']]
-    assert len(removed) == 1 and removed[0]['short'][0]['wakes'] is False, pruned_events()
+    removed = wait(lambda: [e for e in pruned_events() if 'removed worktree stale-clean' in e['text']], 'the removal is posted', 30)
+    assert len(removed) == 1 and not any(short['wakes'] for short in removed[0]['short']), pruned_events()
     assert not sessions_in('stale-clean'), 'the removed worktree keeps no session'
     wait(lambda: not sessions_in('stale-dirty'), 'the idle session of the dirty worktree is closed', 30)
     assert (base / 'stale-dirty/edited.txt').read_text() == 'mine\n', 'a dirty worktree is not touched'
     time.sleep(9)
     flagged = [e for e in pruned_events() if 'worktree stale-dirty is idle and kept' in e['text']]
     assert len(flagged) == 1 and '1 uncommitted file (edited.txt)' in flagged[0]['text'], pruned_events()
-    assert flagged[0]['short'][0]['wakes'] is False
+    assert not any(short['wakes'] for short in flagged[0]['short'])
     assert (base / 'stale-busy').is_dir() and sessions_in('stale-busy'), 'a session that prints is not idle'
     assert [s for s in daemon_call('snapshot')['data']['sessions'] if s['id'] == keep], 'the main checkout keeps its session'
     ids = {e['id'] for e in pruned_events()}
