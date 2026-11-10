@@ -273,6 +273,11 @@ pub enum TaskCmd {
         #[command(subcommand)]
         action: RoleCmd,
     },
+    /// Add a project to wsx: clone it when the folder is missing (the manager asks the owner first)
+    Project {
+        #[command(subcommand)]
+        action: ProjectCmd,
+    },
     /// Send a message to the project's manager, or a role; returns at once with its id
     Say {
         #[command(flatten)]
@@ -517,6 +522,24 @@ pub struct PushArgs {
 }
 
 #[derive(Subcommand)]
+pub enum ProjectCmd {
+    /// Register a folder inside the home folder as a project; with --clone, git clones it first
+    Add {
+        path: String,
+        /// The ssh or https git URL to clone into a folder that does not exist yet
+        #[arg(long, value_name = "URL")]
+        clone: Option<String>,
+        #[command(flatten)]
+        said: OwnerSaid,
+        /// The manager's project that asks (the owner needs none)
+        #[arg(short, long)]
+        project: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum RoleCmd {
     /// Open a role (the manager asks the owner first; at most tasks.roles.max)
     New {
@@ -574,6 +597,9 @@ impl TaskCmd {
                 RoleCmd::New { json, .. }
                 | RoleCmd::List { json, .. }
                 | RoleCmd::Close { json, .. } => *json,
+            },
+            Self::Project { action } => match action {
+                ProjectCmd::Add { json, .. } => *json,
             },
             Self::Manager { json, .. }
             | Self::Say { json, .. }

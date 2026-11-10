@@ -734,14 +734,19 @@ impl Manager {
             };
             let asked = match decided_request(&lines, *at) {
                 Some(ApprovalLine::Request {
-                    action, task, role, ..
+                    action,
+                    task,
+                    role,
+                    path,
+                    ..
                 }) => format!(
                     "{}{}",
                     format!("{action:?}").to_ascii_lowercase(),
-                    match (task, role) {
-                        (Some(task), _) => format!(" #{task}"),
-                        (None, Some(role)) => format!(" {role}"),
-                        (None, None) => String::new(),
+                    match (task, role, path) {
+                        (Some(task), ..) => format!(" #{task}"),
+                        (None, Some(role), _) => format!(" {role}"),
+                        (None, None, Some(path)) => format!(" {path}"),
+                        (None, None, None) => String::new(),
                     }
                 ),
                 _ => String::new(),

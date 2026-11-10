@@ -133,6 +133,8 @@ pub(super) fn instructions(
          branch yourself: `wsx task push` puts it on origin after the owner's approval, as a \
          fast-forward; for a rewrite the owner asked for (a squash), a task makes the commit on \
          its branch and `wsx task push --commit <sha> --force` sets the default branch to it. \
+         A project wsx does not know yet: `wsx task project add <path> [--clone <git url>]` (a \
+         folder in the owner's home) asks the owner; the event 'project <name> added' follows. \
          {skills}Use the skills and subagents that fit; check rather than guess. \
          When the owner decides a rule, a preference or a choice, append one line \
          `- <YYYY-MM-DD> <decision>` to {decisions} at once. Every new conversation of yours \

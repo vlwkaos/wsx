@@ -4262,6 +4262,17 @@ merge_seconds = 3
         empty = steady(owner, 'GET', '/api/tasks/%d' % ids['calm'])[1]
         assert empty['needs'] == [] and empty['resolutions'] == [] and empty['last_reply'] is None and empty['last_unix_ms'] is None, empty
         ok('manager: say starts it, reply in the chat, approve runs once and records the outcome, deny with a note, since, resolutions, last reply')
+        # A project add by the manager is a card that names the folder and the URL (docs/tasks.md "Approvals").
+        added_at, added_url = home / 'web-added', 'https://example.invalid/team/web-added.git'
+        status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo,
+                              {'text': 'RUN wsx task project add %s --clone %s -p demo --json' % (added_at, added_url)})
+        assert status == 200, body
+        card = wait(lambda: next((item for item in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['needs']
+                                  if item['kind'] == 'approval' and item.get('path')), None), 'project add request', timeout=30)
+        assert (card['action'], card['path'], card['url'], card['label']) == \
+            ('project add', str(added_at), added_url, 'Approve project add %s' % added_at), card
+        assert steady(owner, 'POST', '/api/tasks/%d/approvals/%s/deny' % (demo, card['approval']), {'note': 'not now'})[0] == 200
+        assert not added_at.exists()
         # The project overview: the manager host writes its sections once; a project without a
         # manager has none. A title: `--title` as given, else the first sentence of the
         # worker's summary, else the prompt's first line without a leading "Owner <word>:"

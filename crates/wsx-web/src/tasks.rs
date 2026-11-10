@@ -227,6 +227,8 @@ fn build_overview(
             task,
             revision,
             commit,
+            path,
+            url,
             unix_ms,
             ..
         } = line
@@ -240,6 +242,7 @@ fn build_overview(
                 "kind": "approval", "approval": id, "action": owner::action_name(*action),
                 "label": owner::approval_label(line),
                 "task": task, "revision": revision, "commit": commit,
+                "path": path, "url": url,
                 "title": task.and_then(|task| titles.get(&task)), "unix_ms": unix_ms,
             }),
         ));

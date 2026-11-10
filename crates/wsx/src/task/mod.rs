@@ -33,6 +33,7 @@ pub(crate) use cmd::check::fail_check;
 use cmd::deploy::{deploy, deployed, push, trial_command};
 use cmd::land::{after_command, hold_command, land_command, run_batch};
 use cmd::new::new;
+use cmd::project::project;
 use cmd::routine::{checkin, digest, post, routine_command};
 use cmd::work::{
     add_command, close_command, hand, handback, list, preview_command, show, steer_command,
@@ -173,6 +174,7 @@ pub fn run(command: TaskCmd) -> Result<()> {
             why,
         } => checkin(project.as_deref(), after.as_deref(), at.as_deref(), &why),
         TaskCmd::Role { action } => role(action),
+        TaskCmd::Project { action } => project(action),
         TaskCmd::Ledger { project, .. } => ledger::ledger(project.as_deref()),
         TaskCmd::Routine { action, owner_said } => routine_command(action, owner_said),
         TaskCmd::Manager { project, json } => manager_command(project.as_deref(), json),

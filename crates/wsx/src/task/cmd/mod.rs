@@ -4,5 +4,6 @@ pub(super) mod check;
 pub(super) mod deploy;
 pub(super) mod land;
 pub(super) mod new;
+pub(super) mod project;
 pub(super) mod routine;
 pub(super) mod work;
