@@ -1911,7 +1911,8 @@ impl Manager {
     fn switch_after_sign_in(&mut self, ids: &[u64], events: bool) -> bool {
         let now = now_unix_ms();
         let settings = load_task_config(&self.main).unwrap_or_default();
-        let Some(next) = agent::fallback(&settings.manager_fallback, now, false) else {
+        let Some(next) = agent::fallback(&settings.manager_fallback, now, Operation::Manager)
+        else {
             return false;
         };
         let reason = format!(
