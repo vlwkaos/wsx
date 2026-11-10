@@ -824,13 +824,27 @@ def manager_up(created):
     assert own['quote'] == promise['id'], own
     assert 'Your last reply: %d.' % promise['id'] in turn_with('QUOTE %d still' % promise['id'])['message']
     # ^ wsx quotes the owner message a reply answers when the reply opens with no quote of its own
-    # (docs/tasks.md "A quote"): the newest owner message of its turn. One a manager wrote wins.
+    # and will not sit under it (docs/tasks.md "A quote", `chat::quoted_owner_message`): the turn
+    # held several owner messages (the sign-in turn above: the newest), or a chat item was logged
+    # after the message. One a manager wrote wins.
     mine = raw_reply(js('task', 'say', 'QUOTE %d keeps mine' % promise['id'])['id'])
     assert mine['quote'] == promise['id'] and mine['text'].startswith('> %s\n\nkeeps mine' % promise['text'].splitlines()[0]), mine
     one = js('task', 'say', 'STATUS one owner message')
     own_words = raw_reply(one['id'])
-    assert own_words['to'] == [one['id']] and own_words['quote'] == one['id'], own_words
-    assert own_words['text'].startswith('> STATUS one owner message\n\n'), own_words
+    assert own_words['to'] == [one['id']] and 'quote' not in own_words, own_words
+    # ^ A reply under its one message is no quote; one with a chat item between is. A long turn
+    # lets a task's event come in after the owner message, and its question stays open.
+    apart = js('task', 'say', 'ASK LONG apart')
+    wait(lambda: any(e['kind'] == 'delivered' and apart['id'] in e['ids'] for e in manager_entries()), 'apart delivered')
+    between = js('task', 'new', 'NOOP between')['id']
+    event = wait(lambda: events_with('#%d ready r1' % between), 'the event during the long turn', 20)[0]
+    far = raw_reply(apart['id'])
+    assert event['id'] < far['id'] and far['quote'] == apart['id'], (event, far)
+    assert far['text'].startswith('> ASK LONG apart\n\n') and far.get('asks') is True, far
+    assert far['id'] in js('task', 'chat')['asks'], js('task', 'chat')['asks']
+    js('task', 'dismiss', str(far['id']))
+    reply_to(event['id'])
+    js('task', 'close', between, '--discard')
     heard = js('task', 'say', 'QUOTE OWNER_SAID noted')
     assert raw_reply(heard['id'])['text'] == '> QUOTE OWNER_SAID noted\n\nnoted'
     # ^ A quote of a quote is the words of that reply, not its quote line.
@@ -2631,9 +2645,6 @@ def part_core(created=None):
     once_more = js('task', 'say', 'ASK once more')
     again = reply_to(once_more['id'])
     assert again.get('asks') is True, again
-    # ^ A question that quotes the owner message it answers stays open: the quote closes none, and
-    # the question's line is its words, not the quote (chat::open_asks).
-    assert raw_reply(once_more['id'])['quote'] == once_more['id'], raw_reply(once_more['id'])
     assert again['id'] in js('task', 'chat')['asks'], js('task', 'chat')['asks']
     reply_to(js('task', 'say', '> message %d\n\nyes, land it' % again['id'])['id'])
     answered_turn = turn_with('yes, land it')['message']
