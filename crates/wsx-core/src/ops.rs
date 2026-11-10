@@ -2,7 +2,7 @@
 // ^ [[wsx Architecture]] Git owns worktree discovery; the daemon owns sessions and panes.
 
 use crate::{
-    config::global::{GlobalConfig, ProjectEntry},
+    config::global::GlobalConfig,
     fs_util::same_folder,
     git::{self, info as git_info, worktree as git_worktree},
     hooks,
@@ -441,13 +441,7 @@ pub fn register_project(path: PathBuf, config: &mut GlobalConfig) -> Result<Proj
     if !is_git_repo(&path) {
         bail!("not a git repository: {}", path.display());
     }
-    if let Some(entry) = registered(config, &path) {
-        bail!(
-            "project {} is already registered at {}",
-            entry.name,
-            entry.path.display()
-        );
-    }
+    ensure_unregistered(config, &path)?;
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -472,11 +466,21 @@ pub fn register_project(path: PathBuf, config: &mut GlobalConfig) -> Result<Proj
     config.add_project(name, path);
     Ok(project)
 }
-fn registered<'a>(config: &'a GlobalConfig, path: &Path) -> Option<&'a ProjectEntry> {
-    config
+
+/// Refuse a folder that a project already has, naming the project.
+fn ensure_unregistered(config: &GlobalConfig, path: &Path) -> Result<()> {
+    match config
         .projects
         .iter()
         .find(|entry| same_folder(&entry.path, path))
+    {
+        Some(entry) => bail!(
+            "project {} is already registered at {}",
+            entry.name,
+            entry.path.display()
+        ),
+        None => Ok(()),
+    }
 }
 
 /// The folder `project add` would register, or why it refuses: `path` (`~/` allowed) is
@@ -511,24 +515,12 @@ pub fn check_add_project(
     if path.canonicalize().is_ok_and(|real| real == home) {
         bail!("{} is the home folder itself", path.display());
     }
-    if let Some(entry) = registered(config, &path) {
-        bail!(
-            "project {} is already registered at {}",
-            entry.name,
-            entry.path.display()
-        );
-    }
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned());
-    if let Some(entry) = config.projects.iter().find(|entry| {
-        name.is_some()
-            && entry
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                == name
-    }) {
+    ensure_unregistered(config, &path)?;
+    if let Some(entry) = config
+        .projects
+        .iter()
+        .find(|entry| path.file_name().is_some() && entry.path.file_name() == path.file_name())
+    {
         bail!(
             "project {} is already registered at {}; `-p` could not tell the two apart",
             entry.name,

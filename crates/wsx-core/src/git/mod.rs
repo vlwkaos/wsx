@@ -78,6 +78,10 @@ pub fn ssh_agent() -> (Option<std::path::PathBuf>, String) {
 /// clone a local bare repository. ref: docs/tasks.md "Approvals"
 pub const ALLOW_FILE_CLONE_ENV: &str = "WSX_TEST_ALLOW_FILE_CLONE";
 
+fn file_clone_allowed() -> bool {
+    std::env::var_os(ALLOW_FILE_CLONE_ENV).is_some()
+}
+
 /// A clone URL wsx accepts: `https://`, `ssh://` or scp-style `user@host:path`, and
 /// `file://` only under `ALLOW_FILE_CLONE_ENV`. Nothing that git would read as an option
 /// or as a transport helper (`ext::`).
@@ -89,7 +93,7 @@ pub fn check_clone_url(url: &str) -> anyhow::Result<()> {
     if url.starts_with('-') {
         return Err(bad("starts with '-'"));
     }
-    let file = std::env::var_os(ALLOW_FILE_CLONE_ENV).is_some() && url.starts_with("file://");
+    let file = file_clone_allowed() && url.starts_with("file://");
     let scp = !url.contains("://")
         && url.split_once(':').is_some_and(|(left, right)| {
             !right.is_empty()
@@ -113,7 +117,7 @@ pub fn clone(url: &str, dest: &Path) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("{} has no parent folder", dest.display()))?;
     std::fs::create_dir_all(parent)?;
     let (mut cmd, no_key) = remote_cmd(parent);
-    let allowed = if std::env::var_os(ALLOW_FILE_CLONE_ENV).is_some() {
+    let allowed = if file_clone_allowed() {
         "https:ssh:file"
     } else {
         "https:ssh"
