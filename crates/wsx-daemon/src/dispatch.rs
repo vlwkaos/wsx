@@ -692,12 +692,15 @@ pub(crate) fn snapshot(daemon: &Daemon, state: &State) -> Snapshot {
         })
         .collect::<Vec<_>>();
     listening_ports.sort_by_key(|ports| ports.pane_id);
+    // ^ One row per pane with a runtime, an exited one too (its clock stops at its end): the
+    // foreground flag and the idle clock, read when the snapshot is made.
     let mut pane_activity = state
-        .foreground_jobs
+        .runtimes
         .iter()
-        .map(|pane_id| PaneActivity {
+        .map(|(pane_id, runtime)| PaneActivity {
             pane_id: *pane_id,
-            foreground_job: true,
+            foreground_job: state.foreground_jobs.contains(pane_id),
+            last_io_unix_ms: runtime.last_io_unix_ms(),
         })
         .collect::<Vec<_>>();
     pane_activity.sort_by_key(|activity| activity.pane_id);

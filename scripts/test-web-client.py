@@ -2982,6 +2982,71 @@ capabilities = ["terminal_view"]
             assert shell['label'] == 'shell' and not pane['exited'] and not pane['agent'], (shell, pane)
             assert call('session_close', {'session_id': shell['id'], 'expected_revision': shell['revision']})['type'] == 'ack'
             ok('session start: a shell where terminal_input is granted; refused without it; an agent that quits keeps its shell')
+            # --- Worktree delete (docs/tasks.md "Stale worktrees"): real git worktrees of the design
+            # project. A clean merged one and its sessions go at once; uncommitted work or commits
+            # neither merged nor pushed need the confirmation that names them; the main checkout and a
+            # task's worktree are refused. The browser check's own worktree list is left as it was.
+            def dgit(*arguments, cwd=design):
+                return subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', *arguments],
+                                      cwd=cwd, env=env, check=True, capture_output=True, text=True, timeout=20).stdout
+
+            def resync(extra=()):
+                snap = call('snapshot')['data']
+                specs = [{'name': item['name'], 'path': item['path'], 'worktrees': [
+                    {'path': tree['path'], 'branch': tree['branch']} for tree in snap['worktrees']
+                    if tree['project_id'] == item['id'] and not (Path(tree['path']).name.startswith('wt-') and not Path(tree['path']).exists())] + (
+                    [{'path': str(path), 'branch': branch} for path, branch in extra] if item['name'] == 'design' else [])}
+                    for item in snap['projects']]
+                assert call('synchronize_projects', {'projects': specs})['type'] == 'ack'
+                return {Path(tree['path']).name: tree['id'] for tree in call('snapshot')['data']['worktrees']}
+
+            dgit('commit', '-q', '--allow-empty', '-m', 'start')
+            trees = {}
+            for name in ('wt-clean', 'wt-dirty', 'wt-ahead', 'wt-task'):
+                dgit('worktree', 'add', '-q', '-b', name, str(work / name))
+                trees[name] = work / name
+            (trees['wt-dirty'] / 'mine.txt').write_text('unsaved\n')
+            (trees['wt-ahead'] / 'ahead.txt').write_text('ahead\n')
+            dgit('add', 'ahead.txt', cwd=trees['wt-ahead'])
+            dgit('commit', '-q', '-m', 'ahead', cwd=trees['wt-ahead'])
+            ids = resync((path, name) for name, path in trees.items())
+            delete = lambda name, query='': m2.request('DELETE', '/api/worktrees/%d%s' % (ids[name], query))
+            assert delete('design')[0] == 409 and delete('design')[1]['error']['code'] == 'main_checkout'
+            assert root.request('DELETE', '/api/worktrees/%d' % ids['wt-clean'])[0] == 403, 'files_write is needed'
+            assert m2.request('DELETE', '/api/worktrees/987654')[0] == 404
+            # ^ The loss is named before anything goes.
+            status, loss = m2.request('GET', '/api/worktrees/%d' % ids['wt-dirty'])
+            assert status == 200 and loss['dirty'] == ['mine.txt'] and loss['unmerged'] == 0 and 'mine.txt' in loss['lost'], loss
+            status, loss = m2.request('GET', '/api/worktrees/%d' % ids['wt-ahead'])
+            assert status == 200 and loss['unmerged'] == 1 and loss['dirty_total'] == 0, loss
+            for name in ('wt-dirty', 'wt-ahead'):
+                status, body = delete(name)
+                assert status == 409 and body['error']['code'] == 'needs_confirm', (name, status, body)
+                assert trees[name].is_dir()
+            # ^ A task's session keeps its worktree.
+            status, task = steady(m2, 'POST', '/api/sessions', {'project': projects['design'], 'worktree': ids['wt-task'], 'label': 'task-9'})
+            assert status == 200, task
+            status, body = delete('wt-task')
+            assert status == 409 and body['error']['code'] == 'task_session' and trees['wt-task'].is_dir(), (status, body)
+            # ^ Clean and merged: its session closes with it, and wsxd lists it no more.
+            status, made = steady(m2, 'POST', '/api/sessions', {'project': projects['design'], 'worktree': ids['wt-clean']})
+            assert status == 200, made
+            status, body = delete('wt-clean')
+            assert status == 200 and body['removed'] == ids['wt-clean'], (status, body)
+            assert not trees['wt-clean'].exists() and 'wt-clean' not in resync()
+            assert all(item['id'] != made['session_id'] for item in call('snapshot')['data']['sessions'])
+            for name in ('wt-dirty', 'wt-ahead'):
+                status, body = delete(name, '?confirm=true')
+                assert status == 200 and not trees[name].exists(), (name, status, body)
+            assert 'wt-dirty' not in dgit('branch', '--list') and 'wt-ahead' not in dgit('branch', '--list'), 'a confirmed loss deletes the branch'
+            snap = call('snapshot')['data']
+            for item in snap['sessions']:
+                if item['id'] == task['session_id']:
+                    assert call('session_close', {'session_id': item['id'], 'expected_revision': item['revision']})['type'] == 'ack'
+            dgit('worktree', 'remove', '--force', str(trees['wt-task']))
+            dgit('branch', '-D', 'wt-task')
+            assert not {'wt-clean', 'wt-dirty', 'wt-ahead', 'wt-task'} & set(resync())
+            ok('worktree delete: clean merged goes with its sessions; dirty or unmerged needs the named confirm; main, task and ungranted refused')
             shown = {}
             for role, label in (('blocked', 'Fix the login redirect loop on mobile Safari when third-party cookies are blocked'),
                                 ('permission', 'clean build'),

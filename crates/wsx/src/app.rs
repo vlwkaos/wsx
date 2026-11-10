@@ -40,7 +40,7 @@ use wsx_core::{
     model::workspace::{
         flatten_tree_filtered, FlatEntry, GitInfo, Project, Selection, WorkspaceState,
     },
-    ops, runtime,
+    ops, runtime, stale,
 };
 
 use git_info::FetchOutcome;
@@ -605,6 +605,9 @@ pub enum PendingAction {
     DeleteWorktree {
         project_idx: usize,
         worktree_idx: usize,
+        /// The owner saw the loss (`stale::loss`) and confirmed it: dirty work and unmerged
+        /// commits go too.
+        force: bool,
     },
     DeleteSession {
         project_idx: usize,

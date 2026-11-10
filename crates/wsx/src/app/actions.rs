@@ -700,16 +700,34 @@ impl App {
                     self.set_status("Cannot delete main worktree");
                     return Ok(());
                 }
-                // ^ skip synchronous merge check — always warn; deletion logic is identical
-                let msg = format!(
-                    "Delete worktree '{}'? Branch may have unmerged changes.",
-                    wt.name
+                // ^ The same rule as the web's delete (wsx_core::stale::loss): what the delete
+                // loses is named, and only a confirmed loss forces it.
+                let (main, path, branch, name) = (
+                    self.workspace.projects[pi].path.clone(),
+                    wt.path.clone(),
+                    wt.branch.clone(),
+                    wt.name.clone(),
                 );
+                let loss = stale::loss(&main, &path, &branch).unwrap_or_default();
+                let (message, force) = match loss.is_empty() {
+                    true => (
+                        format!("Delete worktree '{name}'? Its sessions close."),
+                        false,
+                    ),
+                    false => (
+                        format!(
+                            "Delete worktree '{name}' and lose {}?\nIts sessions close.",
+                            loss.words()
+                        ),
+                        true,
+                    ),
+                };
                 self.mode = Mode::Confirm {
-                    message: msg,
+                    message,
                     pending: PendingAction::DeleteWorktree {
                         project_idx: pi,
                         worktree_idx: wi,
+                        force,
                     },
                 };
             }

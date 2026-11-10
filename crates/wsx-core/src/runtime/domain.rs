@@ -470,6 +470,10 @@ pub struct PanePorts {
 pub struct PaneActivity {
     pub pane_id: PaneId,
     pub foreground_job: bool,
+    /// When the pane's program last printed or got input, unix ms: the idle clock of `stale`
+    /// (docs/tasks.md "Stale worktrees"). 0: a daemon that does not say.
+    #[serde(default)]
+    pub last_io_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

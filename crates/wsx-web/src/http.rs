@@ -72,6 +72,10 @@ pub fn router(app: Shared) -> Router {
             .route("/api/projects", post(project_add))
             .route("/api/projects/{project}", delete(project_remove))
             .route("/api/projects/{project}/shell", post(project_shell))
+            .route(
+                "/api/worktrees/{worktree}",
+                get(worktree_loss).delete(worktree_remove),
+            )
             .route("/api/machine", get(machine))
             .route("/api/projects/{project}/panels", get(project_panels))
             .route("/api/projects/{project}/panels/{name}", get(project_panel))
@@ -889,6 +893,42 @@ async fn project_remove(
     Query(query): Query<RemoveQuery>,
 ) -> Outcome<Json<Value>> {
     blocking(|| crate::projects::remove(&app, project, query.halt).map(Json))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorktreeQuery {
+    /// The page named the loss and the owner accepted it (`?confirm=true`).
+    #[serde(default)]
+    confirm: bool,
+}
+
+/// Deleting a worktree removes files, so a site needs both starting sessions and writing files
+/// (docs/web-client.md "Sessions").
+fn may_delete_worktree(app: &App) -> Outcome<()> {
+    need(app, Panel::Chat)?;
+    allow(app, Capability::SessionStart, "deleting a worktree")?;
+    allow(app, Capability::FilesWrite, "deleting a worktree")
+}
+
+/// What deleting a worktree closes and loses.
+async fn worktree_loss(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(worktree): UrlPath<u64>,
+) -> Outcome<Json<Value>> {
+    may_delete_worktree(&app)?;
+    blocking(|| crate::projects::worktree_loss(&app, worktree).map(Json))
+}
+
+async fn worktree_remove(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(worktree): UrlPath<u64>,
+    Query(query): Query<WorktreeQuery>,
+) -> Outcome<Json<Value>> {
+    may_delete_worktree(&app)?;
+    blocking(|| crate::projects::worktree_remove(&app, worktree, query.confirm).map(Json))
 }
 
 /// The project's shell in its main checkout, the one the TUI's `S` opens: the live one, else a

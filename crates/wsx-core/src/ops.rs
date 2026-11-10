@@ -635,14 +635,18 @@ pub fn create_configured_worktree(
 
 /// Close the worktree's sessions and remove it. Uncommitted work refuses before anything
 /// closes; a Rust worktree is `cargo clean`ed first; a branch with unmerged commits stays.
-/// Returns whether the branch was deleted.
+/// `force` is the owner's confirmed loss (`stale::loss`): the uncommitted work and the
+/// unmerged commits go too. Returns whether the branch was deleted.
 pub fn delete_worktree(
     client: &Client,
     repo_path: &Path,
     wt_path: &Path,
     branch: &str,
+    force: bool,
 ) -> Result<bool> {
-    git_worktree::require_clean(wt_path)?;
+    if !force {
+        git_worktree::require_clean(wt_path)?;
+    }
     let snapshot = runtime_snapshot(client)?;
     if let Some(worktree) = snapshot
         .worktrees
@@ -661,7 +665,35 @@ pub fn delete_worktree(
         }
     }
     cargo_clean(wt_path);
-    git_worktree::remove_worktree(repo_path, wt_path, branch)
+    let branch_deleted = git_worktree::remove_worktree(repo_path, wt_path, branch, force)?;
+    forget_worktree(client, wt_path);
+    Ok(branch_deleted)
+}
+
+/// Tell wsxd the folder is gone: its own project list without that worktree, so the row does
+/// not wait for the next client's discovery. Best effort: a client's sync does the same.
+fn forget_worktree(client: &Client, gone: &Path) {
+    let Ok(snapshot) = runtime_snapshot(client) else {
+        return;
+    };
+    let specs = snapshot
+        .projects
+        .iter()
+        .map(|project| ProjectSpec {
+            path: project.path.clone(),
+            name: project.name.clone(),
+            worktrees: snapshot
+                .worktrees
+                .iter()
+                .filter(|worktree| worktree.project_id == project.id && worktree.path != gone)
+                .map(|worktree| WorktreeSpec {
+                    path: worktree.path.clone(),
+                    branch: worktree.branch.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+    let _ = synchronize(client, specs);
 }
 
 /// `cargo clean` a Rust checkout before its folder goes. Best effort: the folder goes either
@@ -1056,6 +1088,7 @@ mod tests {
             pane_activity: vec![runtime::PaneActivity {
                 pane_id: PaneId(6),
                 foreground_job: true,
+                last_io_unix_ms: 0,
             }],
             plugin_sidecars: Vec::new(),
             capabilities: Capabilities::default(),

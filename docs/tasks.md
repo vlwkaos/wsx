@@ -355,7 +355,7 @@ Long work in several steps lands on main once. Any open task becomes a parent wh
 - `deploys`: the `deployed` status, with `configured` per kind (whether its command is set);
 - `routines`: the project's routines (see Routines), at most 20, each `{name, enabled, trigger, next_run_unix_ms, running, last}` with `last` the newest run's `{status, exit, unix_ms, duration_ms}` or `null`; `{error}` when the scheduler does not answer and the project has routines, `[]` when it has none;
 - `main`: the main checkout's path, branch and number of changed files (tracked or new);
-- `stray_worktrees`: the project's worktrees from `git worktree list` and wsxd's state that are neither the main checkout nor an open task's working copy, each `{path, branch, merged_into_main, dirty, missing, sessions}` (`missing`: the folder is gone; `sessions`: wsxd sessions there, 0 when wsxd does not answer), sorted by path, at most 20, the rest counted in `stray_worktrees_omitted`. They are cleanup candidates the manager names to the owner; nothing deletes them.
+- `stray_worktrees`: the project's worktrees from `git worktree list` and wsxd's state that are neither the main checkout nor an open task's working copy, each `{path, branch, merged_into_main, dirty, missing, sessions}` (`missing`: the folder is gone; `sessions`: wsxd sessions there, 0 when wsxd does not answer), sorted by path, at most 20, the rest counted in `stray_worktrees_omitted`. They are cleanup candidates the manager names to the owner; the ledger deletes nothing (the host's sweep removes the clean, merged or pushed, idle ones: "Stale worktrees").
 
 - `notes`: only when git did not answer. Every git call of the ledger waits at most 10 s (`task::copy::READ_TIMEOUT`); a folder whose git timed out is not asked again in that build, its facts are left out (`main.branch` or `changed_files` null, no `land_blocked_by` entries, a stray worktree's flags false) and a line names it ("git did not answer in 10 s in <path>; its facts are left out"). The TUI shows each note under the spend lines in the warning colour.
 
@@ -643,6 +643,22 @@ The project chat also tells when one of the project's own agent sessions needs t
 
 No push is added, and the post is unread as any post is.
 
+## Stale worktrees
+
+Old worktrees and their sessions pile up: the owner opens them by hand when the manager does not work, then goes back to the manager. One rule decides what is stale: `wsx_core::stale`. The manager host's sweep, the web's worktree delete and the TUI's `d` read it and nothing else.
+
+| Case | What happens |
+|---|---|
+| Never judged | The main checkout (its shell session stays), an open task's working copy, a worktree with a task's session, a session with a live agent turn (working or blocked) or a program in the foreground, a session whose clock wsxd does not give (an older daemon), a worktree whose git did not answer in 10 s |
+| Idle | A session is idle when none of its panes printed or got input for `tasks.prune.idleDays` (default 14, a fraction allowed, 0 is off). The clock is `last_io_unix_ms` in wsxd's `pane_activity` (daemon revision 49): a shell or agent that still prints is not idle. A worktree with no session is idle since git last moved its HEAD. A daemon restart starts every clock again |
+| Close | Each idle session of a worktree other than the main checkout is closed. Nothing else is touched |
+| Remove | A worktree idle for `tasks.prune.removeDays` (default 30, 0 is off; at least `idleDays`) that is clean (no tracked or untracked change) and whose branch is merged into the default branch or on a remote (`git rev-list <branch> --not <default> --remotes` is empty) is removed with `ops::delete_worktree`: its sessions close, `git worktree remove` and `git branch -d` run with no force |
+| Flag | An idle worktree with uncommitted files or commits neither merged nor pushed stays. The chat names what it holds, once (again only when the text changes) |
+
+The sweep runs in the manager host, off its loop, at start and every hour (`WSX_TEST_PRUNE_SWEEP_SECS` shortens it for the task scenario), for the host's project. It posts what it did as event lines (`pruned: removed worktree <b> (clean, merged or pushed, idle N days)`, `pruned: closed 2 idle sessions in <b>`, `pruned: worktree <b> is idle and kept: it has 3 uncommitted files (...)`) that start no manager turn (`Short::quiet`, as a landing does): the chat shows them and the manager's next turn lists them. No wsxd, no change.
+
+The owner deletes by hand in the web Sessions tab (`Delete` on a worktree other than the main checkout, with `session_start` and `files_write`; `GET api/worktrees/<id>` names the loss, `DELETE api/worktrees/<id>[?confirm=true]` deletes) and in the TUI (`d` on a worktree). A clean merged or pushed worktree goes after one confirm. Uncommitted files or commits neither merged nor pushed refuse with `needs_confirm` until the confirm names them (`3 uncommitted files (a, b, c) and 2 commits that are not merged or pushed`); the confirmed delete forces the removal and deletes the branch (`git worktree remove --force`, `git branch -D`). The server reads the loss again at the delete. The main checkout, a task's working copy and a worktree with a task's session are refused (409 `main_checkout`, `task_session`). `wsx worktree delete` keeps its rule: it refuses uncommitted work and keeps an unmerged branch. The ledger's `stray_worktrees` lists the same worktrees with their flags.
+
 ## Deploy and release
 
 ```sh
@@ -695,6 +711,7 @@ tasks:
   preview: { command: "npm run serve -- --port $PORT", ready: /health, ports: 9100-9199 }
   manager: { name: Atlas, adapter: claude, model: opus, effort: high, eventModel: off, recapMinutes: 0, reviewMinutes: 30, fallback: [] }   # eventModel: a model or off; rotateTokens: unset is 400000 on Claude (its 1M window), 150000 on Pi
   roles: { max: 2, closeDays: 14 }                               # see Roles
+  prune: { idleDays: 14, removeDays: 30 }                        # see Stale worktrees; 0 is off
 ```
 
 `tasks.manager.name` is the name the owner reads for the manager: the web chat's author and typing bubble ("Atlas is typing"), another project's chat, the TUI row (`task-manager (Atlas)`) and `wsx task manager --json` (`name`). It is trimmed, one line without control characters, at most 64 bytes; empty is no name, and without one the manager reads as its project's name (`task-manager (wsx)`, "wsx is typing"). Inside, the manager stays `manager`: the session label `task-manager`, the provider, `WSX_TASK_ACTOR` and `from: manager:<project>`; the name is not in its instructions. The name is the manager's address for a later talk between managers by name.

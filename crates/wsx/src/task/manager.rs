@@ -25,6 +25,7 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::manager_rotate_limit;
 use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
 use wsx_core::runtime;
+use wsx_core::stale;
 use wsx_core::task::chat;
 use wsx_core::task::manager::{
     asks_owner, decided_request, instructions_digest, pending_approvals, quiet_reply, quoted_id,
@@ -52,6 +53,14 @@ const EVENT_QUIET: Duration = Duration::from_secs(3);
 /// How often the host removes the captures of long-decided "To check" items.
 const CAPTURE_SWEEP: Duration = Duration::from_secs(60 * 60);
 /// How often the host looks at wsxd for sessions that need the owner.
+/// How often the project's stale worktrees are swept, or the seconds in
+/// `WSX_TEST_PRUNE_SWEEP_SECS`: for the task scenario only, which would wait an hour.
+fn prune_sweep() -> Duration {
+    std::env::var("WSX_TEST_PRUNE_SWEEP_SECS")
+        .ok()
+        .and_then(|secs| secs.parse().ok())
+        .map_or(Duration::from_secs(60 * 60), Duration::from_secs)
+}
 const SESSION_LOOK: Duration = Duration::from_secs(2);
 /// What wsx asks after a quiet period. The reply is the recap the owner reads.
 const RECAP_REQUEST: &str = "The project has been quiet. Write the owner a short recap, at most 8 lines: \
@@ -126,6 +135,8 @@ pub(super) enum Event {
     Request(ManagerRequest, Sender<ManagerResponse>),
     Agent(u64, Option<AgentLine>),
     Tick,
+    /// A sweep of stale worktrees and sessions ended: its notes, or why it failed.
+    Pruned(Result<Vec<stale::Note>, String>),
     /// `wsx task new` with `tasks.workflow.idle` ended: when it began, and the task number or
     /// the error.
     IdleStarted(u64, Result<u32, String>),
@@ -195,6 +206,13 @@ struct Manager {
     stall_suspects: BTreeMap<u32, (String, Instant)>,
     stalls_swept: Option<Instant>,
     sessions_looked: Option<Instant>,
+    /// When the last sweep of stale worktrees began, and whether one runs.
+    /// ref: docs/tasks.md "Stale worktrees"
+    pruned: Option<Instant>,
+    pruning: bool,
+    /// The worktrees the last sweep left for the owner, with the text posted: posted again
+    /// only when the text changes.
+    flagged: BTreeMap<PathBuf, String>,
     /// Event lines not yet logged as a message, each with the chat's short form of it, and
     /// when the last one came.
     pending_events: Vec<(String, Short)>,
@@ -312,6 +330,9 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         stall_suspects: BTreeMap::new(),
         stalls_swept: None,
         sessions_looked: None,
+        pruned: None,
+        pruning: false,
+        flagged: BTreeMap::new(),
         pending_events: Vec::new(),
         last_event: None,
         recap_quiet: (settings.manager_recap_secs > 0)
@@ -466,9 +487,11 @@ impl Manager {
                     self.watch_sessions();
                     self.ask_recap();
                     self.sweep_captures();
+                    self.prune_stale();
                     self.close_idle_roles();
                     self.ping();
                 }
+                Event::Pruned(result) => self.pruned_done(result),
                 Event::IdleStarted(began, Ok(id)) => {
                     self.say(&format!("started idle task #{id}"));
                     self.state.idle_task = Some(id);
@@ -943,6 +966,61 @@ impl Manager {
             )),
             Err(error) => self.say(&format!("cannot remove old captures: {error:#}")),
         }
+    }
+
+    /// Once an hour, off the loop: close the project's idle sessions and remove its stale
+    /// worktrees that are clean, merged or pushed (`wsx_core::stale`). ref: docs/tasks.md
+    /// "Stale worktrees"
+    fn prune_stale(&mut self) {
+        if self.pruning || self.pruned.is_some_and(|at| at.elapsed() < prune_sweep()) {
+            return;
+        }
+        self.pruned = Some(Instant::now());
+        let Ok(settings) = load_task_config(&self.main) else {
+            return;
+        };
+        let rules = stale::rules(&settings);
+        if rules.off() {
+            return;
+        }
+        let copies: Vec<PathBuf> = project_tasks(&self.dir.project_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, record)| record.ok())
+            .filter(|record| record.state.is_open())
+            .map(|record| record.working_copy)
+            .collect();
+        self.pruning = true;
+        let (main, events) = (self.main.clone(), self.events.clone());
+        std::thread::spawn(move || {
+            let client = wsx_core::runtime::Client::new(wsx_core::runtime::default_socket_path());
+            let result =
+                stale::sweep(&client, &main, &copies, &rules).map_err(|e| format!("{e:#}"));
+            let _ = events.send(Event::Pruned(result));
+        });
+    }
+
+    /// What a sweep did goes to the chat as events that start no turn, listed with the next one.
+    fn pruned_done(&mut self, result: Result<Vec<stale::Note>, String>) {
+        self.pruning = false;
+        let notes = match result {
+            Ok(notes) => notes,
+            Err(error) => return self.say(&format!("cannot sweep stale worktrees: {error}")),
+        };
+        let left: BTreeMap<PathBuf, String> = notes
+            .iter()
+            .filter(|note| note.flag)
+            .map(|note| (note.path.clone(), note.text.clone()))
+            .collect();
+        for note in notes {
+            if note.flag && self.flagged.get(&note.path) == Some(&note.text) {
+                continue;
+            }
+            let (line, short) = plain_event(format!("pruned: {}", note.text));
+            self.pending_events.push((line, short.quiet()));
+            self.last_event = Some(Instant::now());
+        }
+        self.flagged = left;
     }
 
     /// Turn task state changes into event lines.

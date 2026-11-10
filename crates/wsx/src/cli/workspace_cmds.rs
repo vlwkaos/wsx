@@ -423,6 +423,7 @@ pub(super) fn cmd_worktree_delete(branch: &str, project_name: Option<&str>) -> R
         &project.path,
         &wt.path,
         &wt.branch,
+        false,
     )?;
     println!("deleted worktree: {}", wt.path.display());
     if !branch_deleted {
