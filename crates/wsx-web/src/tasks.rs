@@ -670,6 +670,7 @@ pub fn chat(
     role: Option<&str>,
     (after, find, around): (Option<u64>, Option<&str>, Option<u64>),
     media: &crate::media::Media,
+    granted: &dyn Fn(&str) -> Vec<chat::Attachment>,
 ) -> Outcome<Value> {
     // ^ The name the owner reads (docs/tasks.md "Config"); the role stays `manager` inside.
     let project_manager = manager_name(scope);
@@ -744,7 +745,18 @@ pub fn chat(
         .rows
         .into_iter()
         .map(|row| {
-            let files = row.id.and_then(|id| attachments.get(&id)).cloned();
+            // ^ The files an owner message carries; for any other message, the pictures and
+            // videos it links or shows (docs/web-client.md "Media").
+            let files = row
+                .id
+                .and_then(|id| attachments.get(&id))
+                .cloned()
+                .or_else(|| {
+                    (row.kind == task::chat::RowKind::Message)
+                        .then(|| granted(&row.text))
+                        .filter(|files| !files.is_empty())
+                        .map(|files| json!(files))
+                });
             let mut value = serde_json::to_value(row).unwrap_or_default();
             if let Some(files) = files {
                 value["attachments"] = files;

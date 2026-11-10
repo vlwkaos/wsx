@@ -1158,6 +1158,16 @@ async fn tasks_chat(
             query.role.as_deref(),
             (query.after, query.find.as_deref(), query.around),
             &app.media,
+            &|text| {
+                // ^ Pictures and videos of the main checkout that a message shows.
+                let root = app
+                    .site
+                    .allows(Capability::MediaDownload)
+                    .then(|| app.root(&scope.path).ok())
+                    .flatten();
+                root.map(|root| app.chat.granted_files(text, &root, &app.media))
+                    .unwrap_or_default()
+            },
         )
         .map(Json)
     })

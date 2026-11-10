@@ -45,7 +45,8 @@ pub enum Target {
 }
 
 /// A piece of a message: plain words, or a link `[label](session/<id>)` / `[label](files/<path>)`.
-/// Any other link stays plain words as written.
+/// An image `![alt](files/<path>)` is a link whose label is its address: the TUI shows no
+/// picture. Any other link stays plain words as written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Part<'a> {
     Text(&'a str),
@@ -56,20 +57,7 @@ fn target_of(href: &str) -> Option<Target> {
     if let Some(id) = href.strip_prefix("session/") {
         return id.parse().ok().map(Target::Session);
     }
-    let path = href
-        .strip_prefix("files/")
-        .filter(|path| !path.is_empty())?;
-    // ^ `link_path` in task/manager.rs writes each byte outside a safe set as `%XX`.
-    let (mut bytes, mut at) = (Vec::new(), path.bytes());
-    while let Some(byte) = at.next() {
-        if byte != b'%' {
-            bytes.push(byte);
-            continue;
-        }
-        let hex = [at.next()?, at.next()?];
-        bytes.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
-    }
-    String::from_utf8(bytes).ok().map(Target::File)
+    chat::file_href(href).map(Target::File)
 }
 
 /// `text` as plain words and links, in order.
@@ -80,18 +68,24 @@ pub fn parts(text: &str) -> Vec<Part<'_>> {
         let Some(close) = text[from..].find(']').map(|at| from + at) else {
             break;
         };
-        let label = &text[from..close];
         let Some(href) = text[close + 1..].strip_prefix('(') else {
             continue;
         };
         let Some(end) = href.find(')') else {
             continue;
         };
+        let image = open > 0 && text.as_bytes()[open - 1] == b'!';
+        let label = if image {
+            &href[..end]
+        } else {
+            &text[from..close]
+        };
         let target = target_of(&href[..end]);
         match target {
-            Some(target) if !label.is_empty() && !label.contains(['[', '\n']) => {
-                if plain < open {
-                    out.push(Part::Text(&text[plain..open]));
+            Some(target) if !label.is_empty() && !text[from..close].contains(['[', '\n']) => {
+                let lead = open - usize::from(image);
+                if plain < lead {
+                    out.push(Part::Text(&text[plain..lead]));
                 }
                 out.push(Part::Link { label, target });
                 plain = close + 2 + end + 1;

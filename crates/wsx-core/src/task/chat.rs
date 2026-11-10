@@ -20,6 +20,43 @@ const AROUND_BEFORE: usize = 40;
 /// A question older than this asks no more (docs/tasks.md "Manager").
 pub const ASKS_WITHIN_MS: u64 = 7 * 24 * 3600 * 1000;
 
+/// The path a `files/<path>` link address names, `%XX` decoded (`link_path` in task/manager.rs
+/// writes each byte outside a safe set so). The chats, the web's media grant and the TUI read
+/// the address through it.
+pub fn file_href(href: &str) -> Option<String> {
+    let path = href
+        .strip_prefix("files/")
+        .filter(|path| !path.is_empty() && !path.contains(char::is_whitespace))?;
+    let (mut bytes, mut at) = (Vec::new(), path.bytes());
+    while let Some(byte) = at.next() {
+        if byte != b'%' {
+            bytes.push(byte);
+            continue;
+        }
+        let hex = [at.next()?, at.next()?];
+        bytes.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// Every `files/<path>` a message links or shows as an image (`[x](files/p)`, `![x](files/p)`),
+/// decoded, in order, once each. ref: docs/web-client-chat.md "Markdown"
+pub fn linked_files(text: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find("](") {
+        rest = &rest[open + 2..];
+        let Some(end) = rest.find(')') else { break };
+        if let Some(path) = file_href(&rest[..end]) {
+            if !found.contains(&path) {
+                found.push(path);
+            }
+        }
+        rest = &rest[end + 1..];
+    }
+    found
+}
+
 /// Which part of the log a chat shows (docs/tasks.md "Log window").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Window<'a> {

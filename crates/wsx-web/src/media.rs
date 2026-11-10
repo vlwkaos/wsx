@@ -202,7 +202,18 @@ impl Media {
         })
     }
 
-    pub fn finish(&self, mut upload: Upload, name: &str) -> Result<Entry, MediaError> {
+    pub fn finish(&self, upload: Upload, name: &str) -> Result<Entry, MediaError> {
+        self.finish_if(upload, name, |_| true)
+    }
+
+    /// `finish` for a file whose sniffed mime `accept` takes; another type is refused and the
+    /// upload's partial file goes with it.
+    fn finish_if(
+        &self,
+        mut upload: Upload,
+        name: &str,
+        accept: impl Fn(&str) -> bool,
+    ) -> Result<Entry, MediaError> {
         let file = upload.file.take().ok_or(MediaError::Io)?;
         file.sync_all().map_err(|_| MediaError::Io)?;
         drop(file);
@@ -225,6 +236,9 @@ impl Media {
                 ("txt", "text/plain; charset=utf-8")
             }
         };
+        if !accept(mime) {
+            return Err(MediaError::UnsupportedType);
+        }
         let hash = hex(&upload.hasher.clone().finalize());
         self.sweep();
         let mut index = crate::locked(&self.index);
@@ -334,8 +348,14 @@ impl Media {
         )
     }
 
-    /// Copy an already opened file into the store (agent-produced files).
-    pub fn ingest(&self, mut source: File, name: &str) -> Result<Entry, MediaError> {
+    /// Copy an already opened file into the store (agent-produced files, files a message
+    /// shows); `accept` takes the sniffed mime.
+    pub fn ingest(
+        &self,
+        mut source: File,
+        name: &str,
+        accept: impl Fn(&str) -> bool,
+    ) -> Result<Entry, MediaError> {
         let mut upload = self.begin()?;
         let mut buffer = vec![0u8; 64 * 1024];
         loop {
@@ -345,7 +365,7 @@ impl Media {
             }
             upload.write(&buffer[..read])?;
         }
-        self.finish(upload, name)
+        self.finish_if(upload, name, accept)
     }
 
     /// Look up `<hash>.<ext>`. Returns the entry and the seconds it has left.

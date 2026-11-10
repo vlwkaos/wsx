@@ -28,6 +28,15 @@ export function openViewer(images, index, opener, { dark = true } = {}) {
   render(html`<${Viewer} images=${images} start=${index} dark=${dark} onClosed=${closed} />`, host);
 }
 
+// The tap target of a picture or a video that opens in the viewer: a To check capture (checks.js)
+// and a video a chat message shows (markdown.js). A video shows its `poster` (or a blank frame)
+// with a play mark. `size`: the capture's [width, height], so its box is there before the image.
+export const Capture = ({ href, label, download, video, poster, size }) => html`
+  <a class="check-capture" href=${href} data-view data-download=${download} data-video=${video || undefined} data-poster=${poster} aria-label=${label}>
+    ${video && !poster ? html`<span class="check-frame"></span>` : html`<img src=${poster ?? href} alt="" style=${size && { "--w": size[0], "--h": size[1], "--width": `${size[0]}px` }} />`}
+    ${video && html`<span class="check-play"><${Icon} name="play" /></span>`}
+  </a>`;
+
 // A plain tap on a link marked `data-view` opens its image here, with the other `data-view`
 // links of its closest `data-gallery`; with a modifier key the link opens as a link does.
 export function viewImageLinks() {

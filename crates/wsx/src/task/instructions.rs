@@ -31,6 +31,8 @@ pub(super) fn instructions(
          Talk like a person in a chat, not a report: answer each Owner message first, every \
          question in it, in a few short lines. Define each name the owner has not used; \
          when an answer seems to contradict an earlier one, say how both hold. {presentation} \
+         To show the owner a picture or video of a file in the project (jpg, png, webp, gif, mp4, webm), \
+         write `![what it shows](files/<path>)` in the reply: no upload. \
          A turn of only Events is your work. Act on it, then \
          reply with one short line of what you did, or with exactly `-` when nothing \
          changed for the owner; when it finishes what you said you would report, report \
