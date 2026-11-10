@@ -3324,7 +3324,7 @@ def part_worker(created=None):
     assert tried['control'] == {'runner_denied': False, 'written': True}, tried
     assert not outside.exists()
     denied = wait(lambda: [e for e in log(gated) if e['kind'] == 'agent' and e['text'].startswith('runner denied write ')], 'the runner deny line is logged')
-    assert len(denied) == 1 and not denied[0]['said'] and str(outside) in denied[0]['text'] and 'outside the paths this task may change' in denied[0]['text'], denied
+    assert len(denied) == 1 and not denied[0].get('said') and str(outside) in denied[0]['text'] and 'outside the paths this task may change' in denied[0]['text'], denied
     assert not any('plain stderr line' in e.get('text', '') for e in log(gated)), 'a line that is no runner line is not progress'
     js('task', 'close', gated, '--discard')
     wait(lambda: not Path(runner['path']).exists(), 'the policy file goes with the launch folder')
