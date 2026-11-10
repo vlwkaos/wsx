@@ -609,15 +609,8 @@ impl Manager {
         if self.turn.is_some() {
             return;
         }
-        let due = self
-            .state
-            .checkin
-            .as_ref()
-            .is_some_and(|checkin| checkin.at_ms <= now_unix_ms());
-        if !due {
-            return;
-        }
-        if let Some(checkin) = self.state.checkin.take() {
+        let now = now_unix_ms();
+        if let Some(checkin) = self.state.checkin.take_if(|checkin| checkin.at_ms <= now) {
             self.pending_events
                 .push(plain_event(format!("check-in: {}", checkin.why)));
             self.last_event = Some(Instant::now());
