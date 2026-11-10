@@ -22,7 +22,7 @@ const mobileSource = mobileAudit().source;
 // The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
 const linter = designLint({ evaluate, captures, file: "browser" });
 const LINTED = new Set(["inbox", "inbox-light", "projects", "projects-light", "project", "project-light", "chat-end", "chat-end-light",
-  "files", "files-markdown", "settings", "settings-light", "settings-ui-light", "settings-ui-dark"]);
+  "files", "files-markdown", "settings", "settings-light", "settings-ui-light", "settings-ui-dark", "chat-queue-gaps", "chat-sent-gaps"]);
 const SIZES = [[320, 568, 2], [390, 844, 2], [1280, 800, 1]];
 let size = SIZES[0];
 const phone = () => size[0] < 600;
@@ -89,6 +89,41 @@ async function resize(next) {
   size = next;
   await viewport(...next);
   await pause(250);
+}
+
+// The visible gap between neighbouring controls (docs/web-client-chat.md "Queue and Stop"): an icon or a
+// word with no box of its own counts by its content, as the design lint measures it. `scope` is a
+// selector; the controls of each match are compared in pairs along the row, and none may be closer than
+// the design token space-3 (the gap of .actions and .row-actions). Run at 375, 390 and 1280 px; 390 and
+// 1280 also get the design lint (LINTED). The page's size is back to what it was.
+async function controlGapsAt(name, scope) {
+  const before = size;
+  for (const next of [[375, 812, 2], SIZES[1], SIZES[2]]) {
+    await resize(next);
+    const found = await evaluate(`(() => {
+      const probe = document.createElement('div'); probe.style.width = 'var(--space-3)'; document.body.append(probe);
+      const min = probe.getBoundingClientRect().width; probe.remove();
+      const gaps = [];
+      for (const scope of document.querySelectorAll(${JSON.stringify(scope)})) {
+        const boxes = [...scope.querySelectorAll('button, a')].map((control) => {
+          const range = document.createRange(); range.selectNodeContents(control);
+          const box = range.getBoundingClientRect();
+          return { name: control.title || control.textContent.trim(), left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+        }).filter((box) => box.right > box.left).sort((a, b) => a.top - b.top || a.left - b.left);
+        for (let index = 1; index < boxes.length; index++) {
+          const [a, b] = [boxes[index - 1], boxes[index]];
+          if (Math.min(a.bottom, b.bottom) > Math.max(a.top, b.top)) gaps.push({ pair: a.name + ' | ' + b.name, gap: Math.round((b.left - a.right) * 10) / 10 });
+        }
+      }
+      return { min, gaps };
+    })()`);
+    if (!found.gaps.length) await fail(`${name} at ${next[0]} px: no two controls side by side in ${scope}`);
+    const close = found.gaps.filter((item) => item.gap < found.min);
+    if (close.length) await fail(`${name} at ${next[0]} px: controls closer than space-3 (${found.min} px): ${JSON.stringify(close)}`);
+    console.log(`${name} at ${next[0]} px: ${found.gaps.map((item) => `${item.pair} ${item.gap}`).join("; ")} (space-3 ${found.min})`);
+    await shot(name);
+  }
+  await resize(before);
 }
 
 // The page's root holds the app and nothing else: index.html's "Loading…" placeholder,
@@ -1258,6 +1293,7 @@ await shot("chat-queue-failed");
 await evaluate("document.documentElement.dataset.scheme = 'light'");
 await shot("chat-queue-failed-light");
 await evaluate("delete document.documentElement.dataset.scheme");
+await controlGapsAt("chat-queue-gaps", ".queued[data-failed]");
 await typeInto("Please check the notes");
 await evaluate("document.querySelector('.composer .button-primary').click()");
 // ^ Every message goes through the session's queue: one the agent cannot take waits there,
@@ -1365,6 +1401,16 @@ await until("[...document.querySelectorAll('.chat .queued-text, .chat .message-u
 await until("!!document.querySelector('.chat-error')", "a failed read did not say so");
 await send("Network.setBlockedURLs", { urls: [] });
 await until("!document.querySelector('.chat-error')", "a failed read was not tried again", 60);
+
+// A delivered message the conversation does not show yet (the timeline read is blocked): Copy and
+// Send again under it sit apart.
+await openSession("idle");
+await send("Network.setBlockedURLs", { urls: ["*/timeline*"] });
+await typeInto("sent and not shown yet");
+await evaluate("document.querySelector('.composer .button-primary').click()");
+await until("!!document.querySelector('.message-user[data-pending] .message-actions button + button')", "the idle session did not show a sent message with Copy and Send again");
+await controlGapsAt("chat-sent-gaps", ".message-user[data-pending] .message-actions");
+await send("Network.setBlockedURLs", { urls: [] });
 
 // Sub-path surfaces as the browser resolved them.
 const facts = await evaluate(`(async () => {

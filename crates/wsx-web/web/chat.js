@@ -790,8 +790,10 @@ export function Chat({ session, onModel, finding = false, onFindClose }) {
           <article key=${`sent-${queued.id}`} class="message message-user" data-pending data-key=${`sent-${queued.id}`} data-quote=${queued.quote ?? null}>
             ${queued.text && html`<${Quoted} text=${queued.text} />`}
             <${Attachments} files=${queued.attachments} />
-            ${queued.text && html`<${CopyText} text=${queued.text} label="Copy the sent message" />`}
-            ${can("chat_send") && html`<button class="link-action" type="button" onClick=${() => act(`queue/${queued.id}/retry`)}>Send again</button>`}
+            <div class="message-actions">
+              ${queued.text && html`<${CopyText} text=${queued.text} label="Copy the sent message" />`}
+              ${can("chat_send") && html`<button class="link-action" type="button" onClick=${() => act(`queue/${queued.id}/retry`)}>Send again</button>`}
+            </div>
           </article>`)}
         ${working && html`
           <div class="working" role="status">
