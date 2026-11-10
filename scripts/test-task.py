@@ -2168,7 +2168,7 @@ def part_core(created=None):
         data.update(fields)
         state_file.write_text(json.dumps(data))
 
-    # ^ A decisions.md of 12 KiB leaves context.md its half: its first lines and newest memos.
+    # ^ A decisions.md of 12 KiB takes the start budget except what a short context.md uses.
     (notes / 'context.md').unlink(missing_ok=True)
     (notes / 'context.md').write_text('PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
     (notes / 'decisions.md').write_text(''.join('- decision %03d %s\n' % (n, 'x' * 50) for n in range(200)))
@@ -2340,6 +2340,65 @@ def part_core(created=None):
     assert len([e for e in manager_entries() if e['kind'] == 'rotated']) == rotations
     assert turn_with('WARM CHANGE')['message'].startswith('Your instructions changed'), turn_with('WARM CHANGE')
     (notes / 'decisions.md').write_text('- 2026-10-22 keep the store in sqlite\n')
+    # 21a3. decisions.md over its cap (docs/tasks.md "Notes budget"): the manager gets one request
+    # to rewrite it as the current rules, wsx copies the old lines to decisions-archive.md first,
+    # and a file that stays over its cap shows with the larger part of the start budget.
+    mark('21a3')
+    asked_rewrite = lambda: len([t for t in traces() if t.get('manager') and 'Rewrite it now as the current rules' in str(t.get('message', ''))])
+
+    def rules(count, first=0):
+        return ['- 2026-10-%02d rule %03d: %s' % (1 + n % 28, n, 'owner words ' * 6) for n in range(first, first + count)]
+
+    old_rules = rules(90)
+    old_rules[3] = '- 2026-10-04 rule 003: never render the 3d scene with tessellation'
+    (notes / 'context.md').write_text('PROJECT-SECTION line\n- #1: memo 1\n')
+    (notes / 'decisions.md').write_text('\n'.join(old_rules) + '\n')
+    (notes / 'decisions-archive.md').unlink(missing_ok=True)
+    rewrites = asked_rewrite()
+    reply_to(js('task', 'say', 'RULES one')['id'])
+    wait(lambda: asked_rewrite() == rewrites + 1, 'the decisions request')
+    request = [t for t in traces() if t.get('manager') and 'Rewrite it now as the current rules' in str(t.get('message', ''))][-1]['message']
+    assert re.search(r'/notes/decisions\.md is 90 lines / \d+ bytes; the cap is 4096 bytes.*under 3072 bytes.*Never drop a rule that still holds.*copied the old file to (/\S+/notes/decisions-archive\.md)', request, re.S), request
+    assert 'Compact it now' not in request, request
+    # ^ The archive holds every old line before the rewrite; the file is the fake's short rewrite.
+    wait(lambda: len((notes / 'decisions.md').read_text().encode()) < 3072, 'the rewritten decisions.md')
+    assert (notes / 'decisions-archive.md').read_text().splitlines() == old_rules
+    reply_to(js('task', 'say', 'RULES two')['id'])
+    assert asked_rewrite() == rewrites + 1
+    # ^ A manager that leaves it over the cap is asked once until the owner writes again, and the
+    # archive takes only the lines it does not hold.
+    (notes / 'decisions.md').write_text('\n'.join(['# stubborn'] + rules(50, 200)) + '\n')
+    reply_to(js('task', 'say', 'RULES stubborn')['id'])
+    wait(lambda: asked_rewrite() == rewrites + 2, 'the second decisions request')
+    time.sleep(4)
+    assert asked_rewrite() == rewrites + 2
+    archived = (notes / 'decisions-archive.md').read_text().splitlines()
+    assert len(archived) == len(set(archived)) and archived[:90] == old_rules and archived[90] == '# stubborn' and len(archived) == 141, len(archived)
+    # ^ Between 4 and 6 KiB beside a long context.md: every rule is in the first message.
+    (notes / 'context.md').write_text(pizza('# stubborn'))
+    edit_state(instructions=None)
+    reply_to(js('task', 'say', 'RULES mid')['id'])
+    mid = turn_with('RULES mid')['message']
+    assert 'rule 200' in mid and 'rule 249' in mid and 'NOT SHOWN: decisions.md' not in mid, mid
+    # ^ Still over after the rewrite: the newest rules fill 6 KiB, context.md keeps at least 3.5 KiB,
+    # and what is left out is named with the archive.
+    (notes / 'decisions.md').write_text('\n'.join(['# stubborn'] + rules(110, 300)) + '\n')
+    edit_state(instructions=None)
+    reply_to(js('task', 'say', 'RULES big')['id'])
+    big = turn_with('RULES big')['message'].split('\n\nHandover')[0]
+    shown = big.split('Your project context (context.md):')[0]
+    assert 'rule 409' in shown and 'rule 300' not in shown and 5800 < len(shown.encode()) < 7000, (len(shown), shown[:300])
+    assert re.search(r'NOT SHOWN: decisions\.md lines 1-\d+ of 111 .*Read /\S+/notes/decisions\.md', shown), shown
+    assert re.search(r'Older lines that left decisions\.md for its size are in /\S+/notes/decisions-archive\.md\.', shown), shown
+    context_part = big.split('Your project context (context.md):')[1]
+    assert 'Pizzahouse sells pizza.' in context_part and len(context_part.split('NOT SHOWN')[0].encode()) > 3500, context_part[:200]
+    # ^ An owner message whose rare word is only in an archived rule gets that line.
+    reply_to(js('task', 'say', 'Did we settle tessellation?')['id'])
+    block = turn_with('Did we settle tessellation?')['message'].split('Notes that match this message')[1].split('\n\n')[0]
+    assert 'decisions-archive.md:4: - 2026-10-04 rule 003: never render the 3d scene with tessellation' in block, block
+    (notes / 'decisions.md').write_text('- 2026-10-22 keep the store in sqlite\n')
+    (notes / 'decisions-archive.md').unlink()
+    (notes / 'context.md').write_text('PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
     # ^ The size limit by adapter (docs/tasks.md "Manager"): with no tasks.manager.rotateTokens a
     # manager on Claude keeps its conversation to 400000, one on Pi to 150000; a set value wins.
     # The config is read at the host's start, so each case stops the manager first.
