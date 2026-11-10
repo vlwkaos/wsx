@@ -1439,7 +1439,18 @@ def part_core(created=None):
     sessions_in = lambda name: [s for s in daemon_call('snapshot')['data']['sessions'] if s['label'] == name]
     pruned_events = lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
                              and e['text'].startswith('pruned: ')]
-    wait(lambda: not (base / 'stale-clean').exists(), 'the idle clean merged worktree is removed', 60)
+    def stale_state():
+        # ^ What the sweep sees when it keeps a worktree: shown by a timeout, not asserted.
+        snapshot = daemon_call('snapshot')['data']
+        panes = [p['id'] for p in snapshot['panes'] if p['session_id'] in {s['id'] for s in sessions_in('stale-clean')}]
+        return {'events': [e['text'] for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'][-8:],
+                'sessions': sessions_in('stale-clean'), 'activity': [a for a in snapshot['pane_activity'] if a['pane_id'] in panes],
+                'status': git('status', '--porcelain', cwd=base / 'stale-clean', ok=False) if (base / 'stale-clean').exists() else None,
+                'worktrees': git('worktree', 'list', '--porcelain'), 'now_ms': int(time.time() * 1000)}
+    try:
+        wait(lambda: not (base / 'stale-clean').exists(), 'the idle clean merged worktree is removed', 60)
+    except RuntimeError as error:
+        raise RuntimeError('%s; %s' % (error, stale_state()))
     removed = [e for e in pruned_events() if 'removed worktree stale-clean' in e['text']]
     assert len(removed) == 1 and removed[0]['short'][0]['wakes'] is False, pruned_events()
     assert not sessions_in('stale-clean'), 'the removed worktree keeps no session'
