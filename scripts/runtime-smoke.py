@@ -2291,14 +2291,14 @@ try:
     def open_routine_detail(routine_name):
         # ^ The search selects the routine as it is typed; Enter leaves the search, the next Enter opens the detail.
         remove_tui.send(b"/" + routine_name.encode() + b"\r\r")
-        # ^ "Message:" is the detail's own line; the preview beside the tree has the other lines.
-        wait_for(lambda: f"› {routine_name}" in remove_tui.text() and "Message:" in remove_tui.text(),
+        # ^ "Esc: close" is the detail's own footer hint; the preview beside the tree has the other lines.
+        wait_for(lambda: f"› {routine_name}" in remove_tui.text() and "Esc: close" in remove_tui.text(),
                  lambda: f"Enter on {routine_name} opened no detail:\n{remove_tui.text()}", seconds=60)
     open_routine_detail("quiet")
     assert re.search(r"Last:\s+succeeded\s+\d{4}-\d\d-\d\d", remove_tui.text()), remove_tui.text()
-    assert re.search(r"Message:\s+no message", remove_tui.text()) and "(⏎)message" not in remove_tui.text(), remove_tui.text()
+    assert "Message:" not in remove_tui.text() and "(⏎)message" not in remove_tui.text(), remove_tui.text()
     remove_tui.send(b"\r")
-    wait_for(lambda: "Message:" not in remove_tui.text(), "Enter on a routine with no message did not close its detail", seconds=60)
+    wait_for(lambda: "Esc: close" not in remove_tui.text(), "Enter on a routine with no message did not close its detail", seconds=60)
     open_routine_detail("probe")
     assert re.search(r"Last:\s+found something \(exit 1\)\s+\d{4}-\d\d-\d\d", remove_tui.text()), remove_tui.text()
     assert re.search(r"Message:\s+Enter opens it in the manager chat", remove_tui.text()) and "(⏎)message" in remove_tui.text(), remove_tui.text()

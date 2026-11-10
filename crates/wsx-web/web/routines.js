@@ -64,21 +64,21 @@ export function routineWords({ on, failed, found }) {
 }
 
 // The row's parts for ListRow: a tone dot for the last run, the label, two context lines (the
-// schedule and whether it is on; the last run and whether it has a message), the message to
+// schedule and whether it is on; the last run), the message to
 // open, and the actions.
 export function routineRow(row, now) {
   const last = row.last;
   const tone = !row.enabled ? null : failedRun(last) ? "danger" : foundRun(last) ? "attention" : last?.status === "running" ? "working" : "accent";
   const message = last?.message ?? null;
   const where = `${schedule(row.trigger)}${row.post === false ? ", no chat post" : ""} · ${row.enabled ? "On" : "Off"}`;
-  return { tone, message, context: [where, `${lastRun(last, now)} · ${message != null ? "message" : "no message"}`] };
+  return { tone, message, context: [where, lastRun(last, now)] };
 }
 
 // A routine's actions: turn it on or off, and run it now.
 export function RoutineActions({ row, busy, onAct }) {
   const button = (label, icon, verb) => html`
     <button class="button icon-button need-action" type="button" title=${label} aria-label=${`${label}: ${row.name}`} disabled=${busy} onClick=${() => onAct(verb)}><${Icon} name=${icon} /></button>`;
-  return html`${button(row.enabled ? "Turn off" : "Turn on", row.enabled ? "pause" : "pass", row.enabled ? "disable" : "enable")}${button("Run now", "play", "run")}`;
+  return html`${button(row.enabled ? "Turn off" : "Turn on", row.enabled ? "pause" : "play", row.enabled ? "disable" : "enable")}${button("Run now", "bolt", "run")}`;
 }
 
 export const routineAct = (project, name, verb) => api(`api/tasks/${project}/routines/${encodeURIComponent(name)}/${verb}`, { method: "POST", json: {} });

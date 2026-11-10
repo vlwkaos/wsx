@@ -652,13 +652,10 @@ pub fn render_routine_preview(
             Span::styled("Last:    ", label),
             Span::raw(last_run_words(run)),
         ]));
-        if let Some(message) = message {
+        if matches!(message, Some(Some(_))) {
             lines.push(Line::from(vec![
                 Span::styled("Message: ", label),
-                Span::raw(match message {
-                    Some(_) => "Enter opens it in the manager chat",
-                    None => "no message",
-                }),
+                Span::raw("Enter opens it in the manager chat"),
             ]));
         }
         lines.extend([

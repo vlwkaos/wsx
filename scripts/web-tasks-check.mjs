@@ -1452,7 +1452,7 @@ await closeSheet("the usage sheet", chat);
   await until("!!document.querySelector('.pill[data-kind=routines]')", "the project with routines has no Routines pill", 100);
   const rowsOf = () => evaluate(`[...document.querySelectorAll('.reservoir .need')].map((row) => ({ name: row.querySelector('.row-label').textContent,
     context: [...row.querySelectorAll('.row-context')].map((node) => node.textContent), main: row.querySelector('.row-main').tagName, mark: row.querySelector('.mark')?.dataset.tone ?? null,
-    actions: [...row.querySelectorAll('.need-action')].map((node) => node.title) }))`);
+    actions: [...row.querySelectorAll('.need-action')].map((node) => node.title), icons: [...row.querySelectorAll('.need-action path')].map((node) => node.getAttribute('d')) }))`);
   const pill = () => evaluate(`(() => { const node = document.querySelector('.pill[data-kind=routines]'); return node && { label: node.getAttribute('aria-label'), count: node.querySelector('.pill-count').textContent.trim(), tone: node.dataset.tone ?? null, icon: !!node.querySelector('svg.icon') }; })()`);
   // ^ The list is read as the answer to a fetch of the page: a run's state is set in the answer (the scheduler has no failed run to stage).
   await evaluate(`(() => { window.realFetch ??= window.fetch; window.tweak = null;
@@ -1467,12 +1467,14 @@ await closeSheet("the usage sheet", chat);
     await openReservoir("routines");
     const rows = await rowsOf();
     const by = Object.fromEntries(rows.map((row) => [row.name, row]));
-    if (rows.length !== 3 || by.nightly?.context[0] !== "daily 06:00 · On" || !/^succeeded( now|\b.* ago) · no message$/.test(by.nightly.context[1])
-      || by.weekly?.context[0] !== "Mondays 06:00, no chat post · Off" || !/^found something \(exit 1\)( now|.* ago) · message$/.test(by.weekly.context[1])
-      || by.idle?.context.join("|") !== "daily 07:00 · On|never run · no message"
+    if (rows.length !== 3 || by.nightly?.context[0] !== "daily 06:00 · On" || !/^succeeded( now|\b.* ago)$/.test(by.nightly.context[1])
+      || by.weekly?.context[0] !== "Mondays 06:00, no chat post · Off" || !/^found something \(exit 1\)( now|.* ago)$/.test(by.weekly.context[1])
+      || by.idle?.context.join("|") !== "daily 07:00 · On|never run"
       || by.nightly.main !== "SPAN" || by.idle.main !== "SPAN" || by.weekly.main !== "BUTTON"
       || by.nightly.actions.join() !== "Turn off,Run now" || by.weekly.actions.join() !== "Turn on,Run now" || by.idle.actions.join() !== "Turn off,Run now"
       || by.weekly.mark !== null || by.nightly.mark !== "accent" || by.idle.mark !== "accent") await fail(`the routine rows are ${JSON.stringify(rows)}`);
+    // ^ Turn off, Turn on and Run now are three different icons (the enable action is no check mark next to a done status).
+    if (new Set([by.nightly.icons[0], by.weekly.icons[0], by.weekly.icons[1]]).size !== 3) await fail(`the routine actions share an icon: ${JSON.stringify([by.nightly.icons, by.weekly.icons])}`);
     for (const size of [[375, 812, 2], [1280, 800, 1]]) {
       await resize(size);
       await openReservoir("routines");
@@ -1510,9 +1512,9 @@ await closeSheet("the usage sheet", chat);
     await shot("routines-found-pill", ".composer-send");
     await click(action("weekly", "Turn off"));
     await until("document.querySelector('.pill[data-kind=routines]')?.getAttribute('aria-label') === '2 routines'", "Turn off did not take weekly out of the pill");
-    // Run now: nightly runs (it exits 0 and prints nothing); its last run reads "succeeded now" and the row keeps no message.
+    // Run now: nightly runs (it exits 0 and prints nothing); its last run reads "succeeded now".
     await click(action("nightly", "Run now"));
-    await until("/^succeeded now · no message$/.test([...document.querySelectorAll('.reservoir .need[data-key=\"routine-nightly\"] .row-context')].at(-1)?.textContent ?? '')", "Run now did not show nightly's new run", 300);
+    await until("/^succeeded now$/.test([...document.querySelectorAll('.reservoir .need[data-key=\"routine-nightly\"] .row-context')].at(-1)?.textContent ?? '')", "Run now did not show nightly's new run", 300);
     await closeReservoir();
 
     // A failed last run tints the pill in the danger color.
