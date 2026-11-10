@@ -98,7 +98,10 @@ pub fn check_clone_url(url: &str) -> anyhow::Result<()> {
         && url.split_once(':').is_some_and(|(left, right)| {
             !right.is_empty()
                 && left.split_once('@').is_some_and(|(user, host)| {
-                    !user.is_empty() && !host.is_empty() && !host.contains('/')
+                    !user.is_empty()
+                        && !host.is_empty()
+                        && !host.starts_with('-')
+                        && !host.contains('/')
                 })
         });
     if url.starts_with("https://") || url.starts_with("ssh://") || scp || file {
