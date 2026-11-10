@@ -3101,6 +3101,33 @@ def part_worker(created=None):
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'(?m)^ You +\d\d:\d\d$', b'\x1b'),
         (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')], cols=80)[2]
     assert re.search(r'(?m)^ You +\d\d:\d\d$', narrow) and 'hello from the tui' in narrow, narrow
+    # `/` finds in the chat (docs/tasks.md "TUI"): "quasar" is only in the 1st and 4th of 210 older
+    # turns, past the newest 200 entries, so the find reads the whole log. It starts at the newer
+    # match; `n` goes to the older one, `N` back, `Esc` clears. The older log goes after.
+    old_log = manager_log.with_name('log.1.jsonl')
+    assert not old_log.exists()
+    long_ago = int(time.time() * 1000) - 86_400_000
+    old_log.write_text(''.join(json.dumps(entry) + '\n' for n in range(210) for entry in (
+        {'kind': 'message', 'id': 90001 + 2 * n, 'from': 'owner', 'unix_ms': long_ago + n * 20_000,
+         'text': 'Where did the Quasar notes go?' if n == 0 else 'Older question %d.' % n},
+        {'kind': 'delivered', 'ids': [90001 + 2 * n], 'unix_ms': long_ago + n * 20_000 + 1},
+        {'kind': 'reply', 'id': 90002 + 2 * n, 'to': [90001 + 2 * n], 'unix_ms': long_ago + n * 20_000 + 2000,
+         'text': 'The quasar notes are in docs.' if n == 3 else 'Older answer %d.' % n})))
+    found = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'\(/\)find', b'/'),
+        (r'Enter: keep', b'QUASAR'),
+        (r'(?m)^ /QUASAR 2/2', b'\r'),
+        (r'n: older', b'n'),
+        (r'(?m)^ /QUASAR 1/2', b'N'),
+        (r'(?m)^ /QUASAR 2/2', b'\x1b'),
+        (r'\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+    old_log.unlink()
+    assert 'The quasar notes are in docs.' in found[4], found[4]
+    assert 'Where did the Quasar notes go?' in found[6], found[6]
+    assert '/QUASAR' not in found[8] and 'press i to write' in found[8], found[8]
+    # ^ Esc leaves the whole-log find and reads the newest entries again: the owner's last message
+    # shows, and the two entries only the older log holds do not.
+    assert 'hello from the tui' in found[8] and 'quasar' not in found[8].lower(), found[8]
     # 22c. A reply of only "x" or "ㅌ" to a To check item (docs/tasks.md "To check"): the host skips
     # the item and writes a quiet line, with no manager turn; a closed item is said so; other words
     # go to the manager quoted with the item's check, as does an "x" that quotes a message.
@@ -3146,33 +3173,6 @@ def part_worker(created=None):
     assert manager_turns() == turns + 3
     js('task', 'check', 'skip', third['id'])
 
-    # `/` finds in the chat (docs/tasks.md "TUI"): "quasar" is only in the 1st and 4th of 210 older
-    # turns, past the newest 200 entries, so the find reads the whole log. It starts at the newer
-    # match; `n` goes to the older one, `N` back, `Esc` clears. The older log goes after.
-    old_log = manager_log.with_name('log.1.jsonl')
-    assert not old_log.exists()
-    long_ago = int(time.time() * 1000) - 86_400_000
-    old_log.write_text(''.join(json.dumps(entry) + '\n' for n in range(210) for entry in (
-        {'kind': 'message', 'id': 90001 + 2 * n, 'from': 'owner', 'unix_ms': long_ago + n * 20_000,
-         'text': 'Where did the Quasar notes go?' if n == 0 else 'Older question %d.' % n},
-        {'kind': 'delivered', 'ids': [90001 + 2 * n], 'unix_ms': long_ago + n * 20_000 + 1},
-        {'kind': 'reply', 'id': 90002 + 2 * n, 'to': [90001 + 2 * n], 'unix_ms': long_ago + n * 20_000 + 2000,
-         'text': 'The quasar notes are in docs.' if n == 3 else 'Older answer %d.' % n})))
-    found = tui_screens(wsx, env, project, [
-        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'\(/\)find', b'/'),
-        (r'Enter: keep', b'QUASAR'),
-        (r'(?m)^ /QUASAR 2/2', b'\r'),
-        (r'n: older', b'n'),
-        (r'(?m)^ /QUASAR 1/2', b'N'),
-        (r'(?m)^ /QUASAR 2/2', b'\x1b'),
-        (r'\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
-    old_log.unlink()
-    assert 'The quasar notes are in docs.' in found[4], found[4]
-    assert 'Where did the Quasar notes go?' in found[6], found[6]
-    assert '/QUASAR' not in found[8] and 'press i to write' in found[8], found[8]
-    # ^ Esc leaves the whole-log find and reads the newest entries again: the owner's last message
-    # shows, and the two entries only the older log holds do not.
-    assert 'hello from the tui' in found[8] and 'quasar' not in found[8].lower(), found[8]
     # A quote reaches a message of any age (docs/tasks.md "Log window"): the log rolls to
     # log.1, log.2 and so on, and every file stays. `agent` lines (not in the chat) fill the
     # current log just past the roll size; the host rolls it at its next write. A rotation entry
