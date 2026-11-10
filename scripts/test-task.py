@@ -4636,6 +4636,37 @@ def part_host(created=None):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'no ci log scenarios')
 
+    # 32oc. Two false readings of a ci-scenario log: the env echo `CACHE_ON_FAILURE: false` that every
+    mark('32oc')
+    # log holds is no FAIL line (two runs with other RuntimeError lines share nothing), and the event
+    # shows the line as printed ('60 min', not the digit-collapsed key text).
+    ci_tail = ('web scenario\\tSet up job\\t2026-11-10T01:02:03.123456Z   CACHE_ON_FAILURE: false\\n'
+               'web scenario\\tRun the web scenario\\t2026-11-10T01:09:09.123456Z %s\\n'
+               'web scenario\\tRun the web scenario\\t2026-11-10T01:09:10.123456Z ##[error]Process completed with exit code 1.\\n')
+    ci_sh = work / 'cirun.sh'
+    ci_count = work / 'cirun.count'
+    ci_sh.write_text('echo x >> %s; n=$(wc -l < %s)\n'
+                     'if [ "$n" -eq 1 ]; then m="RuntimeError: the close of the first worker reached the manager timeout"\n'
+                     'elif [ "$n" -eq 2 ]; then m="RuntimeError: the idle clean merged worktree is removed timeout"\n'
+                     'else m="RuntimeError: no job started in 60 min of queue"; fi\n'
+                     'printf "%s" "$m"; exit 1\n' % (ci_count, ci_count, ci_tail))
+    configure(LAND_CONFIG + '  scenarios:\n    cirun: \'sh %s\'\n' % ci_sh, 'ci run scenario')
+    cra, said = shared_run('cirun', 'cr1')
+    crb, said = shared_run('cirun', 'cr2')
+    time.sleep(2)
+    assert 'likely on main' not in said and not events_with('RuntimeError') and not shared_events(), (said, shared_events())
+    crc, said = shared_run('cirun', 'cr3')
+    time.sleep(2)
+    assert 'likely on main' not in said and not shared_events(), (said, shared_events())
+    crd, said = shared_run('cirun', 'cr4')
+    wait(lambda: events_with('no job started'), 'the shared event of the queue line', 30)
+    event = events_with('no job started')[0]['text']
+    assert 'in #%d, #%d, likely on main' % (crc, crd) in event and 'ends with `RuntimeError: no job started in 60 min of queue`' in event, event
+    assert 'in 0 min' not in event, event
+    for n in (cra, crb, crc, crd):
+        js('task', 'close', n, '--discard')
+    configure(LAND_CONFIG, 'no ci run scenarios')
+
     # 32p. A turn with no result (docs/tasks.md "Claude adapter"): Claude's own 0-token turn for
     mark('32p')
     # a background-task notification is ignored; a model turn without a result is asked once.
