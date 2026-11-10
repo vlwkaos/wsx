@@ -615,7 +615,11 @@ impl TaskCmd {
             Self::Close { discard: true, .. } => &[Discard],
             Self::Close { .. } => &[Close],
             Self::Land { .. } => &[Land, LandChild],
-            Self::Trial { .. } | Self::Deploy(_) | Self::Release(_) | Self::Push(_) => &[Deploy],
+            Self::Trial { .. }
+            | Self::Deploy(_)
+            | Self::Release(_)
+            | Self::Push(_)
+            | Self::Project { .. } => &[Deploy],
             Self::Checkin { .. } => &[Routine],
             Self::Routine { action, .. } => match action {
                 RoutineCmd::List { .. } | RoutineCmd::Show { .. } | RoutineCmd::Logs { .. } => {
