@@ -3263,7 +3263,6 @@ def part_worker(created=None):
     assert not any(seen[f'{mode}:connect_{name}'] for mode in ('tool', 'bash', 'python') for name in ('other_port', 'other_host_port')), seen
     assert not sorted(name for name, value in seen.items() if value and not name.startswith('control')), seen
     js('task', 'close', remote, '--discard')
-    models.unlink()
     for path in list(fixtures) + guarded:
         path.unlink(missing_ok=True)
     (base / 'project-t998').rmdir()
@@ -3289,6 +3288,17 @@ def part_worker(created=None):
                   'untrusted manager ' + name)
         return reply_to(js('task', 'say', '\n'.join('RUN ' + line for line in lines))['id'])['text']
 
+    # P6 (manager): an untrusted manager on the remote provider is up and reaches its provider's port and no other.
+    probe = work / 'connect-probe.py'
+    probe.write_text('import socket, sys\ntry:\n    socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=2).close()\n'
+                     'except PermissionError:\n    print("refused")\n    sys.exit(0)\nexcept OSError:\n    pass\nprint("passed")\n')
+    stop_manager_now()
+    configure(LAND_CONFIG + '  manager: { adapter: pi, model: remote/pi-model }\n', 'untrusted manager on a remote provider')
+    said = reply_to(js('task', 'say', '\n'.join('RUN python3 %s %s %d' % (probe, remote_ip, p) for p in (remote_port, remote_port + 1)))['id'])['text']
+    runs = ['ran: ' + part for part in said.split('ran: ')[1:]]
+    assert len(runs) == 2 and '-> 0 passed' in runs[0] and '-> 0 refused' in runs[1], said
+    assert any(t.get('launch') and t.get('model') == 'remote/pi-model' and not t.get('worker') for t in traces()), 'no manager launch on the remote provider'
+    models.unlink()
     ready = js('task', 'new', 'WORK landme.txt')['id']
     assert wait_state(ready, 'ready', 'failed')['state'] == 'ready'
     said = manager_as('m1', 'wsx task land %d -p demo --json' % ready, 'wsx task land %d -p demo --owner-said OWNER_SAID --json' % ready,
