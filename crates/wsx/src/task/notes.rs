@@ -11,16 +11,21 @@ use wsx_core::task::view::clip;
 
 /// The most of both files a fresh conversation's first message carries.
 const MAX_NOTES_BYTES: usize = 10 * 1024;
-/// Each file's own share of that budget; one that is short leaves the rest to the other.
-const CONTEXT_SHARE: usize = 6 * 1024;
-const DECISIONS_SHARE: usize = MAX_NOTES_BYTES - CONTEXT_SHARE;
-/// `context.md` over this many bytes gets the manager one request to compact it to
-/// `CONTEXT_TARGET_BYTES`: the cap is its share of the first message.
-pub(super) const CONTEXT_CAP_BYTES: usize = CONTEXT_SHARE;
+/// What `context.md` keeps of that budget when `decisions.md` is long: the owner's rules come
+/// first, so `decisions.md` takes the rest (6 KiB), and a short file leaves its part to the other.
+const CONTEXT_FLOOR_BYTES: usize = 4 * 1024;
+/// A file over its cap gets the manager one request to compact it to its target. The caps are
+/// what each file may hold and still show whole: `decisions.md` always, `context.md` beside a
+/// `decisions.md` within its cap.
+const CONTEXT_CAP_BYTES: usize = 6 * 1024;
 const CONTEXT_TARGET_BYTES: usize = 4 * 1024;
+const DECISIONS_CAP_BYTES: usize = 4 * 1024;
+const DECISIONS_TARGET_BYTES: usize = 3 * 1024;
 /// Past this many bytes the oldest memo lines move to `ARCHIVE_FILE`.
 const CONTEXT_CEILING_BYTES: usize = 32 * 1024;
 const ARCHIVE_FILE: &str = "context-archive.md";
+/// The old `decisions.md`, copied here before the manager rewrites it.
+const DECISIONS_ARCHIVE_FILE: &str = "decisions-archive.md";
 /// A memo line in `context.md`; the task's full memo stays in its result.
 const MEMO_LINE_CHARS: usize = 240;
 /// The lines and bytes of notes attached to one owner message, and one line's length.
@@ -42,6 +47,8 @@ const STOP_WORDS: &[&str] = &[
 struct View {
     name: &'static str,
     path: PathBuf,
+    /// The file the lines that left this one for its size are in.
+    archive: &'static str,
     lines: Vec<String>,
     /// In display order.
     shown: Vec<usize>,
@@ -117,9 +124,10 @@ fn split(notes: &Path) -> (View, View) {
     // lines (`- #<n>: ...`) are appended and the oldest go first.
     let (memos, section): (Vec<usize>, Vec<usize>) =
         (0..context.len()).partition(|at| context[*at].starts_with("- #"));
-    let decisions_budget =
-        MAX_NOTES_BYTES - CONTEXT_SHARE.min(size(&context, &section) + size(&context, &memos));
-    let context_budget = MAX_NOTES_BYTES - DECISIONS_SHARE.min(size(&decisions, &by_newest));
+    let decisions_budget = MAX_NOTES_BYTES
+        - CONTEXT_FLOOR_BYTES.min(size(&context, &section) + size(&context, &memos));
+    let decisions_shown = fit(&decisions, by_newest.into_iter(), decisions_budget);
+    let context_budget = MAX_NOTES_BYTES - size(&decisions, &decisions_shown);
     let section = fit(&context, section.into_iter(), context_budget / 2);
     let mut memos = fit(
         &context,
@@ -131,12 +139,14 @@ fn split(notes: &Path) -> (View, View) {
         View {
             name: DECISIONS_FILE,
             path: notes.join(DECISIONS_FILE),
-            shown: fit(&decisions, by_newest.into_iter(), decisions_budget),
+            archive: DECISIONS_ARCHIVE_FILE,
+            shown: decisions_shown,
             lines: decisions,
         },
         View {
             name: CONTEXT_FILE,
             path: notes.join(CONTEXT_FILE),
+            archive: ARCHIVE_FILE,
             shown: section.into_iter().chain(memos).collect(),
             lines: context,
         },
@@ -175,39 +185,96 @@ pub(super) fn preamble(notes: &Path) -> String {
                 view.path.display()
             ));
         }
-        if view.name == CONTEXT_FILE {
-            let archive = notes.join(ARCHIVE_FILE);
-            if !read_note(&archive).trim().is_empty() {
-                out.push_str(&format!(
-                    "Older memo lines that left {CONTEXT_FILE} for its size are in {}.\n",
-                    archive.display()
-                ));
-            }
+        let archive = notes.join(view.archive);
+        if !read_note(&archive).trim().is_empty() {
+            out.push_str(&format!(
+                "Older lines that left {} for its size are in {}.\n",
+                view.name,
+                archive.display()
+            ));
         }
         out.push('\n');
     }
     out
 }
 
-/// The request to compact `context.md`. ref: docs/tasks.md "Notes budget"
-pub(super) fn too_long(notes: &Path, bytes: usize, lines: usize) -> String {
-    format!(
-        "{} is {lines} lines / {bytes} bytes; the cap is {CONTEXT_CAP_BYTES} bytes, and a new \
-         conversation shows only part of a longer file. Compact it now to under \
-         {CONTEXT_TARGET_BYTES} bytes: merge lines about the same thing and drop what is stale \
-         or only restates the code. Keep every fact about what you did and what the owner \
-         decided: merge those lines, never drop them. Keep the project section at the top and \
-         the `- #<n>: ...` form of memo lines. Past {CONTEXT_CEILING_BYTES} bytes wsx moves \
-         the oldest memo lines to {}.",
-        notes.join(CONTEXT_FILE).display(),
-        notes.join(ARCHIVE_FILE).display()
-    )
+/// A notes file over its cap: its name, cap, lines and bytes.
+pub(super) struct Over {
+    name: &'static str,
+    cap: usize,
+    lines: usize,
+    bytes: usize,
 }
 
-/// The size of `context.md` when it is over the cap: `(lines, bytes)`.
-pub(super) fn over_cap(notes: &Path) -> Option<(usize, usize)> {
-    let text = read_note(&notes.join(CONTEXT_FILE));
-    (text.len() > CONTEXT_CAP_BYTES).then(|| (text.lines().count(), text.len()))
+/// The notes files over their caps, `decisions.md` first; empty when both are within.
+pub(super) fn over_cap(notes: &Path) -> Vec<Over> {
+    [
+        (DECISIONS_FILE, DECISIONS_CAP_BYTES),
+        (CONTEXT_FILE, CONTEXT_CAP_BYTES),
+    ]
+    .into_iter()
+    .filter_map(|(name, cap)| {
+        let text = read_note(&notes.join(name));
+        (text.len() > cap).then(|| Over {
+            name,
+            cap,
+            lines: text.lines().count(),
+            bytes: text.len(),
+        })
+    })
+    .collect()
+}
+
+/// The one request to compact the files in `over`. A `decisions.md` in it is first copied to
+/// the archive, so the manager's rewrite loses nothing. ref: docs/tasks.md "Notes budget"
+pub(super) fn compaction_request(notes: &Path, over: &[Over]) -> Result<String> {
+    let mut parts = Vec::new();
+    for file in over {
+        let path = notes.join(file.name).display().to_string();
+        let head = format!(
+            "{path} is {} lines / {} bytes; the cap is {} bytes, and a new conversation shows \
+             only part of a longer file.",
+            file.lines, file.bytes, file.cap,
+        );
+        parts.push(if file.name == DECISIONS_FILE {
+            let archive = archive_decisions(notes)?;
+            format!(
+                "{head} Rewrite it now as the current rules, under {DECISIONS_TARGET_BYTES} \
+                 bytes: merge duplicates and drop lines a later decision replaced. Keep each \
+                 rule's date and the owner's own words, in short. Never drop a rule that still \
+                 holds. wsx copied the old file to {}.",
+                archive.display()
+            )
+        } else {
+            format!(
+                "{head} Compact it now to under {CONTEXT_TARGET_BYTES} bytes: merge lines about \
+                 the same thing and drop what is stale or only restates the code. Keep every \
+                 fact about what you did and what the owner decided: merge those lines, never \
+                 drop them. Keep the project section at the top and the `- #<n>: ...` form of \
+                 memo lines. Past {CONTEXT_CEILING_BYTES} bytes wsx moves the oldest memo lines \
+                 to {}.",
+                notes.join(ARCHIVE_FILE).display()
+            )
+        });
+    }
+    Ok(parts.join("\n\n"))
+}
+
+/// Append the lines of `decisions.md` that the archive does not hold to the archive, so a
+/// second request after a failed rewrite adds none twice. Returns the archive's path.
+fn archive_decisions(notes: &Path) -> Result<PathBuf> {
+    let archive = notes.join(DECISIONS_ARCHIVE_FILE);
+    let old = read_note(&archive);
+    let held: BTreeSet<&str> = old.lines().collect();
+    let text = read_note(&notes.join(DECISIONS_FILE));
+    let fresh: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !held.contains(line))
+        .collect();
+    if !fresh.is_empty() {
+        store::write_note(&archive, &format!("{old}{}\n", fresh.join("\n")))?;
+    }
+    Ok(archive)
 }
 
 /// Add a finished task's memo to `context.md` as one line of at most `MEMO_LINE_CHARS`, unless
@@ -255,7 +322,7 @@ fn words(text: &str) -> BTreeSet<String> {
 
 /// The lines of the notes and of earlier conversations that share a rare word with `message`,
 /// that the first message of the conversation did not show: lines it left out of both files,
-/// the archive, and `earlier` (the exchanges before the last rotation). A word is rare when at
+/// their archives, and `earlier` (the exchanges before the last rotation). A word is rare when at
 /// most a quarter of those lines hold it; lines rank by the rarity of the words they share.
 /// At most `MATCH_LINES` lines and `MATCH_BYTES` bytes. Empty when nothing matches.
 /// ref: docs/tasks.md "Notes budget"
@@ -269,7 +336,6 @@ pub(super) fn matching(
         return String::new();
     }
     let (decisions, context) = split(notes);
-    let archive = notes.join(ARCHIVE_FILE);
     let mut pool: Vec<(String, Option<PathBuf>, String)> = Vec::new();
     for view in [&decisions, &context] {
         for at in view.hidden() {
@@ -280,12 +346,15 @@ pub(super) fn matching(
             ));
         }
     }
-    for (at, line) in read_note(&archive).lines().enumerate() {
-        pool.push((
-            format!("{ARCHIVE_FILE}:{}", at + 1),
-            Some(archive.clone()),
-            line.to_string(),
-        ));
+    for view in [&decisions, &context] {
+        let archive = notes.join(view.archive);
+        for (at, line) in read_note(&archive).lines().enumerate() {
+            pool.push((
+                format!("{}:{}", view.archive, at + 1),
+                Some(archive.clone()),
+                line.to_string(),
+            ));
+        }
     }
     for line in earlier() {
         pool.push(("earlier conversation".to_string(), None, line));

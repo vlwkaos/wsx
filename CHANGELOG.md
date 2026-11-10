@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Tasks: a manager no longer forgets an owner rule because `decisions.md` grew. A `decisions.md` over 4096 bytes gets the manager one follow-up turn (with `context.md` over 6144 bytes, the same one) to rewrite it as the current rules under 3072 bytes: merge duplicates, drop lines a later decision replaced, keep each rule's date and the owner's own words, never drop a rule that still holds. wsx first appends the old lines to `notes/decisions-archive.md`. A fresh conversation's start budget (10 KiB) now gives `decisions.md` the larger part, up to 6 KiB with `context.md` keeping at least 4 KiB; what is still left out is named in `NOT SHOWN: decisions.md lines a-b of N`, with the archive. An owner message also matches the lines of `decisions-archive.md`. The wsx manager started with lines 1-94 of 116 hidden ([docs/tasks.md](docs/tasks.md) "Notes budget").
+
 ## [0.43.0] - 2026-11-10
 
 ### Added

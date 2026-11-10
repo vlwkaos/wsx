@@ -239,7 +239,7 @@ struct Manager {
     leaving: bool,
     /// The host asked for a shorter overview since the last owner message or in-cap result.
     overview_asked: bool,
-    /// Like `overview_asked`, for the request to compact `context.md`.
+    /// Like `overview_asked`, for the request to compact `decisions.md` and `context.md`.
     context_asked: bool,
     /// Like `overview_asked`, for the request to write an answer that sat in thinking.
     thought_asked: bool,
@@ -2972,8 +2972,9 @@ impl Manager {
         }
     }
 
-    /// `context.md` over its cap gets one request to compact it, like the overview; no second
-    /// one until the owner writes again. ref: docs/tasks.md "Notes budget"
+    /// `decisions.md` or `context.md` over its cap gets one request to compact it (one request
+    /// for both), like the overview; no second one until the owner writes again.
+    /// ref: docs/tasks.md "Notes budget"
     fn check_context(&mut self) {
         if self.dir.role.is_some() {
             return;
@@ -2981,19 +2982,16 @@ impl Manager {
         let Ok(notes) = self.dir.notes() else {
             return;
         };
-        match notes::over_cap(&notes) {
-            None => self.context_asked = false,
-            Some((lines, bytes)) if !self.context_asked => {
-                self.context_asked = true;
-                if let Err(error) = self.accept(
-                    Author::Recap,
-                    notes::too_long(&notes, bytes, lines),
-                    Vec::new(),
-                ) {
-                    self.say(&format!("cannot ask for a shorter context.md: {error:#}"));
-                }
+        let over = notes::over_cap(&notes);
+        if over.is_empty() {
+            self.context_asked = false;
+        } else if !self.context_asked {
+            self.context_asked = true;
+            if let Err(error) = notes::compaction_request(&notes, &over)
+                .and_then(|text| self.accept(Author::Recap, text, Vec::new()))
+            {
+                self.say(&format!("cannot ask for shorter notes: {error:#}"));
             }
-            Some(_) => {}
         }
     }
 

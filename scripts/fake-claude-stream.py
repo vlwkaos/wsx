@@ -61,6 +61,8 @@ Started with the manager's instructions it is a scripted manager instead: per tu
   (the host's request "<path>/context.md is <n> lines / <n> bytes ...") compact that file to its
                  project section, its lines that name Claude.app and its last 5 memos, unless its
                  first line is "# stubborn"
+  (the host's request "<path>/decisions.md is <n> lines / <n> bytes ...") keep its last 12 lines,
+                 unless its first line is "# stubborn"
   BLOCKS <a>|<b>|...  (a line) say each part as its own assistant line, a part `TOOL` as a tool call,
                  a part `THINK <words>` as a thinking block; the result holds only the last text,
                  as Claude's does. The host's follow-up "...only in your thinking..." then answers
@@ -333,6 +335,14 @@ def manager_turn(text, project, page):
             with open(page, 'w') as out:
                 out.write('# overlong\n' + 'a line of the overview\n' * (int(line.split()[1]) - 1))
             replies.append('I wrote a long overview.')
+    rewrite = re.search(r'^(\S+decisions\.md) is \d+ lines / \d+ bytes', text, re.M)
+    if rewrite:
+        with open(rewrite.group(1)) as notes:
+            lines = notes.read().splitlines()
+        if lines[:1] != ['# stubborn']:
+            with open(rewrite.group(1), 'w') as notes:
+                notes.write('\n'.join(lines[-12:]) + '\n')
+        replies.append('I rewrote decisions.md.')
     compact = re.search(r'^(\S+context\.md) is \d+ lines / \d+ bytes', text, re.M)
     if compact:
         with open(compact.group(1)) as notes:
