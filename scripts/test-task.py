@@ -2891,8 +2891,12 @@ def part_worker(created=None):
     refused = subprocess.run([str(wsx), 'task', 'project', 'add', str(home / 'nofile'), '--clone', clone_url],
                              cwd=project, env=nofile, capture_output=True, text=True, timeout=60)
     assert refused.returncode != 0 and 'is not ssh or https' in refused.stderr and not (home / 'nofile').exists(), refused
-    named_project.append('demo')
-    # ^ `grown` and `owned` are registered now: the sections below name their project.
+    # ^ The sections below run with one project: unregister `grown` and `owned` in the config.
+    registry = work / 'c' / 'wsx' / 'config-v2.toml'
+    blocks = registry.read_text().split('[[projects]]')
+    assert sum('name = "grown"' in b or 'name = "owned"' in b for b in blocks) == 2, blocks
+    registry.write_text('[[projects]]'.join(b for b in blocks if 'name = "grown"' not in b and 'name = "owned"' not in b))
+    js('task', 'ledger')
 
     # 22b. The TUI's manager chat (`t`, then `m`; docs/tasks.md "TUI"): the conversation, the
     # open To check item and the waiting approval; a message goes to the manager's log, `p`
