@@ -832,27 +832,25 @@ def manager_up(created):
     one = js('task', 'say', 'STATUS one owner message')
     own_words = raw_reply(one['id'])
     assert own_words['to'] == [one['id']] and 'quote' not in own_words, own_words
-    # ^ A reply under its one message is no quote; one with a chat item between is. A long turn
-    # lets a task's event come in after the owner message, and its question stays open.
-    def event_of(task):
-        return next((e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
-                     and '#%d ready r1' % task in e['text']), None)
-
+    # ^ A reply under its one message is no quote; one with a chat item between is. A message that
+    # comes in during a long turn waits for the next turn and sits between the first and its reply.
     apart = js('task', 'say', 'ASK LONG apart')
     wait(lambda: any(e['kind'] == 'delivered' and apart['id'] in e['ids'] for e in manager_entries()), 'apart delivered')
-    between = js('task', 'new', 'NOOP between')['id']
-    event = wait(lambda: event_of(between), 'the event during the long turn', 20)
+    second = js('task', 'say', 'STATUS second')
     far = raw_reply(apart['id'])
-    assert event['id'] < far['id'] and far['quote'] == apart['id'], (event, far)
+    assert second['id'] < far['id'] and far['to'] == [apart['id']] and far['quote'] == apart['id'], (second, far)
     assert far['text'].startswith('> ASK LONG apart\n\n') and far.get('asks') is True, far
     assert far['id'] in js('task', 'chat')['asks'], js('task', 'chat')['asks']
     js('task', 'dismiss', str(far['id']))
-    reply_to(event['id'])
-    js('task', 'close', between, '--discard')
+    reply_to(second['id'])
     # ^ A follow-up to the manager's own earlier reply: a reply to an events turn that reports task
     # #n quotes the newest earlier reply that names #n (a promise) when other chat items lie
     # between, and none when the report sits right under it (`chat::quoted_message`). The task
     # waits for a release file, so the promise comes first.
+    def event_of(task):
+        return next((e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
+                     and '#%d ready r1' % task in e['text']), None)
+
     def follow_up(label, between_words):
         release = work / ('release-' + label)
         task = js('task', 'new', 'NOOP ASK WAIT %s' % release)['id']
