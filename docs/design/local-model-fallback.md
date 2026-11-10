@@ -116,6 +116,25 @@ So on this Mac: `llama-server` is the only one of the two that can load Qwen3.6-
 
 Memory and who starts the server: this Mac has 24 GiB (`sysctl hw.memsize`, Apple M4) and 39 GB free disk. There is no other machine: everything is sized for 24 GiB. The dgv3 note's Gemma 4 E4B speed (45 tok/s) was measured on another machine and is not used here. The 9B Q8 or MLX 8-bit models take about 9 to 10 GB. wsx never starts or stops a model server. Each server owns its memory (`llama-server` unloads on idle, measured `is_sleeping`); the owner or, later, Kaos Hub (lease/release, designed not built) starts it. An endpoint that is down counts as limited for 5 minutes (exists), so wsx falls back to the next entry.
 
+### 2.6 Serving recipe (W5, built and measured)
+
+Task #355 built the recipe for LFM3 first. How to run it: [local-model.md](../local-model.md). Every figure below was measured on this Mac (24 GiB, Apple M4, `llama-server` b11960) by `scripts/local-model-proof.py`; the captures are in `.work/local-model/` (not committed).
+
+| Part | Choice | Why or measure |
+|---|---|---|
+| Model | `LiquidAI/LFM3-1.7B-GGUF`, `LFM3-1.7B-Q8_0.gguf`, 1,846,238,496 bytes, sha256 `8f6b24182258205e9e01e21f1f24a1f208c1e8115578825d202ce39976af20b6` | Newest LFM3 text model. The HF API lists no larger LFM3 chat model: the other repos are VL-2B, Omni-2B, Audio-2B (multimodal) and Base. LFM2.5-24B-A2B is the older generation, a 24B-parameter model: too large to sit beside normal work on 24 GiB. The file was already in the HF cache and its hash equals the published `lfs.sha256`, so nothing was downloaded. Publisher: HF API shows author `LiquidAI`, not gated, license `other` (LFM Open License). The `owner:scout` skill was not available; the API is the check |
+| Endpoint | `127.0.0.1:8090`, key in `~/.local/state/local-model/api-key` (mode 600) | 8080 is the owner's own server, 8000 omlx, 8081 the strata test, 8321 Locals |
+| Context | `-c 32768 -np 1` | Footprint of the server process after one prompt that fills the window (`footprint`): 396 MB at 16384, 622 MB at 32768, 1112 MB at 65536, 2019 MB at 131072 (model trains to 262144). The weights, about 1.8 GB, are mapped from the file and come on top. At 32768 the whole server is about 2.4 GB of 24 GiB. 32768 is the floor of 6.3; 65536 adds about 0.5 GB if a larger window is needed. Prompt speed falls with the window: 816, 724, 562 and 380 tok/s |
+| Thinking | `--reasoning off` on the server | Without the flag the same question gave 352 characters of reasoning; with `reasoning_effort: "none"` or `chat_template_kwargs.enable_thinking: false` per request, or with the flag, 0. The flag covers every client. Pi's entry has `reasoning: false` so Pi sends nothing |
+| Cache | prompt cache on (default), `--cache-ram 1024` | 4017-token prompt: cold 4.4 s (905 tok/s); same prefix, new tail: 3500 tokens read from cache, 0.63 s |
+| Speed | decode 42 to 46 tok/s | tool-call call 41.8, 4K cold 43.5, cached 45.5 |
+| Tool call | `--jinja` | One chat call with a `run_wsx(argv[])` tool returned `finish_reason: tool_calls`, `["wsx","task","list"]` |
+| Start | login, plus idle sleep | See below |
+
+Start at login or on demand: login. `llama-server` has no launchd socket activation, so "on demand" would need a wrapper that proxies the first request. `--sleep-idle-seconds 600` already frees the model after 10 idle minutes (measured with a 5 s setting: footprint 523 MB awake, 81 MB asleep; the first request after it took 0.71 s). The launchd job `com.wsx.local-model` (`RunAtLoad`; restarts only after a non-zero exit) runs `scripts/local-model.sh run`; `install` writes it. In this task's boundary `launchctl bootstrap` fails (`Bootstrap failed: 5: Input/output error`, also for a plist that only runs `/usr/bin/true`), so the plist passed `plutil -lint` but was not loaded here.
+
+Pi: a `models.json` provider `llama-wsx` (`openai-completions`, `baseUrl`, `apiKey` as `!cat <key file>` so the key stays in its mode-600 file) and a registry entry are in [local-model.md](../local-model.md). One `pi --mode rpc` run with a `PI_CODING_AGENT_DIR` holding only that `models.json` (what #351 builds per launch) ran the bash tool and settled with the right answer.
+
 ## 3. Models, roles and the evaluation
 
 ### 3.1 Candidates (2026)
@@ -433,7 +452,7 @@ The order is evaluate, tune, assign. W4 is therefore first of the wsx tasks that
 
 | Step | # | Project | Task | Depends | Proof |
 |---|---|---|---|---|---|
-| Serve LFM3 | **W5, #355** | wsx | The LFM3-1.7B serving recipe, first and the primary goal: `llama-server` on LFM3-1.7B-Q8_0 with `-c 32768 -np 1 --jinja`, doc, launchd plist, `models.json` entry, endpoint health check; rule "small server always on" | none | `curl /v1/models`, then a tool-call smoke through Pi (output captured) |
+| Serve LFM3 | **W5, #355** | wsx | The LFM3-1.7B serving recipe, first and the primary goal: `llama-server` on LFM3-1.7B-Q8_0 with `-c 32768 -np 1 --jinja`, doc, launchd plist, `models.json` entry, endpoint health check; rule "small server always on" | none | Done in #355: 2.6, `scripts/local-model.sh`, `scripts/local-model-proof.py`, [local-model.md](../local-model.md); the launchd job is written but loaded by the owner (`local-model.sh install`) |
 | Evaluate | W2 | wsx | Agent entry `extension = "<path>"` becomes `-e <path>`; per-launch `PI_CODING_AGENT_DIR` with `models.json` only; `--no-tools` for a role without tools | none | `fake-pi-rpc.py` records argv; `agent_stream_fakes.rs` unchanged |
 | Evaluate | W7 | wsx | `task::policy` (`Policy::for`), strict Seatbelt renderer, broker class table, `WSX_TASK_TRUST`, wsxd socket deny. Roles feed the command table | none | F1 to F10 in `test-task.py`; `trusted` profile text unchanged (golden compare); `cargo nextest` |
 | Evaluate | P1 | pygmalion | Owner drops the 102 files; branch | owner | `git status` clean |
@@ -457,7 +476,7 @@ Answered by msg 3677 and removed: strata only for models that do not fit in memo
 1. Serving: B first for LFM3-1.7B (recommended; it already runs on this Mac; W5, #355), or wait for `kaos serve`? For the later comparison with Qwen3.5-9B: repair omlx (its Python is missing) and use the MLX copy, or download a GGUF for llama-server? Nothing was downloaded here.
 2. Is installing Locals acceptable if the evaluation shows grammar-forced tool calls matter?
 3. Is the LFM Open License (free below $10M revenue) acceptable? Qwen3.5 and Gemma 4 licenses were not checked.
-4. Is 32k context per slot affordable in memory next to your other work? The memory cost of `-c 32768` was not measured.
+4. Is 32k context per slot affordable in memory next to your other work? Measured in 2.6: about 0.6 GB of process footprint for LFM3-1.7B at `-c 32768`, about 2.4 GB with the weights, and the model sleeps when idle.
 5. Should the `trusted` (Claude) profile also move to the strict file-write and network rules? The design leaves it unchanged. The wsxd socket reach and home writes are open for Claude today.
 6. Should retrospect (`scripts/retrospect.py`, which calls `claude` directly) go through the registry, so a local model could later run it? It is outside the four roles.
 7. Backlog and note-taker write through a new append-only `wsx task note` command (recommended: a weak model cannot cut or rewrite notes), or edit files in `manager/notes/` directly?

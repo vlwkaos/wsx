@@ -58,6 +58,7 @@
 - Tasks: an explicit effort on every worker and manager launch (`tasks.agent.effort`, `tasks.manager.effort`, default `high` on every model; `medium` only by an explicit setting, for opus workers), as Claude's `--effort` or Pi's `--thinking`. The task record keeps it, and the web and TUI show it after the model.
 - Tasks: `wsx task new --after <m> --because <kind>` creates a task that starts no turn until task `m` lands (the kinds of `wsx task after`). A ready event names the landing the task waits for.
 - CI: a `weblinux` scenario runs the web scenario on Ubuntu as a probe, and the scenario jobs share one restore-only build cache that a push to main saves.
+- Local model: `scripts/local-model.sh start|stop|status|health` runs LiquidAI's LFM3-1.7B (Q8_0) on `127.0.0.1:8090` with `llama-server`, an API key in a mode-600 file and tool calls on, and `install` makes it a login launchd job; [docs/local-model.md](docs/local-model.md) has the Pi `models.json` provider and the `[[agents]]` entry for it. `scripts/local-model-proof.py` checks it against the real server. No Rust change.
 
 ### Changed
 
