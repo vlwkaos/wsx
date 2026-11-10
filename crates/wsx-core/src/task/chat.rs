@@ -7,6 +7,7 @@ use super::manager::{
     Short,
 };
 use super::store::{contains_bytes, ManagerDir, FIRST_READ_BYTES};
+use crate::routine::RunRecord;
 use anyhow::{bail, Result};
 use serde::Serialize;
 use std::collections::HashSet;
@@ -117,6 +118,44 @@ pub fn read_chat(dir: &ManagerDir, window: &Window) -> Result<Vec<ManagerEntry>>
                 )
             })
     })
+}
+
+/// The id of the events message that told of each routine run's end, for the chat to open at:
+/// the first Events message at or after the run's end that has the run's result line
+/// (`RunRecord::result_line`) as a line of its `short`. None for a run still going, one that
+/// printed nothing (it makes no event), or one older than the log kept. No agent reads this.
+/// ref: docs/tasks.md "Routines"
+pub fn run_messages(dir: &ManagerDir, runs: &[&RunRecord]) -> Vec<Option<u64>> {
+    let ends: Vec<u64> = runs
+        .iter()
+        .filter_map(|run| run.finished_epoch)
+        .map(|end| end.max(0) as u64 * 1000)
+        .collect();
+    let Some(oldest) = ends.iter().min().copied() else {
+        return vec![None; runs.len()];
+    };
+    let log = dir
+        .read_back(FIRST_READ_BYTES, |log| {
+            log.first().is_some_and(|entry| entry.unix_ms <= oldest)
+        })
+        .unwrap_or_default();
+    runs.iter()
+        .map(|run| {
+            let end = run.finished_epoch?.max(0) as u64 * 1000;
+            let line = Short::plain(&run.result_line()).text;
+            log.iter().find_map(|entry| match &entry.event {
+                ManagerEvent::Message {
+                    id,
+                    from: Author::Events,
+                    short,
+                    ..
+                } if entry.unix_ms >= end && short.iter().any(|each| each.text == line) => {
+                    Some(*id)
+                }
+                _ => None,
+            })
+        })
+        .collect()
 }
 
 /// Whether `log` reaches back past the questions that can still ask at `now`.

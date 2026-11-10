@@ -34,12 +34,12 @@ impl App {
                 self.clamp_selected();
             }
             Selection::Routine(pi, ri) => {
+                let project = &self.workspace.projects[pi];
+                let view = &project.routines[ri];
                 self.mode = Mode::RoutineDetail {
-                    project_path: self.workspace.projects[pi].path.clone(),
-                    routine_name: self.workspace.projects[pi].routines[ri]
-                        .routine
-                        .name
-                        .clone(),
+                    project_path: project.path.clone(),
+                    routine_name: view.routine.name.clone(),
+                    message: crate::task_list::run_message(&project.name, &project.path, view),
                     scroll: 0,
                 };
             }
@@ -613,6 +613,34 @@ impl App {
                 project.path.clone(),
                 all,
             )),
+        };
+    }
+
+    /// Enter in a routine's detail: the manager chat of its project, at the message of the last
+    /// run's end.
+    pub(super) fn open_routine_message(&mut self, project_path: &Path, id: u64) {
+        let Some(project) = self
+            .workspace
+            .projects
+            .iter()
+            .find(|project| project.path == project_path)
+        else {
+            return;
+        };
+        let all = self
+            .workspace
+            .projects
+            .iter()
+            .map(|project| (project.name.clone(), project.path.clone()))
+            .collect();
+        let mut list =
+            crate::task_list::TaskList::new(project.name.clone(), project.path.clone(), all);
+        list.open_chat(None);
+        if let Some(chat) = &mut list.chat {
+            chat.go_to(id);
+        }
+        self.mode = Mode::Tasks {
+            list: Box::new(list),
         };
     }
 

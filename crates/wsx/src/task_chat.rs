@@ -898,6 +898,12 @@ impl ManagerChat {
         }
     }
 
+    /// Open the chat at message `id`, marked, as a tap on a quote of it does (a routine's last
+    /// run: docs/tasks.md "Routines").
+    pub fn go_to(&mut self, id: u64) {
+        self.show_quoted("", Some(id));
+    }
+
     /// Show the quoted message: by `id` when the quote has one (centered and marked, reading the
     /// log around it when the rows lack it), else the newest message above the selected one
     /// whose first line is `line`.

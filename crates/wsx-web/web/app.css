@@ -492,7 +492,7 @@ div.steps .steps-summary { cursor: default; }
   .mark[data-settle] { animation: mark-settle calc(var(--motion-duration) * 4) var(--motion-easing); }
   .bar-state { animation: arrive var(--motion-duration) var(--motion-easing); }
   .tick { animation: tick-in var(--motion-duration) var(--motion-easing); }
-  .log > [data-found] > .bubble-box::after, .check-item[data-found]::after, .reservoir .need[data-found]::after { animation: found-out calc(var(--motion-duration) * 12.5) ease-out forwards; }
+  .log > [data-found] > .bubble-box::after, .check-item[data-found]::after, .reservoir .need[data-found]::after, .status-line[data-found]::after { animation: found-out calc(var(--motion-duration) * 12.5) ease-out forwards; }
   .reservoir-reveal { animation: reveal var(--motion-duration) var(--motion-easing); }
   .reservoir .need { animation: slide-up var(--motion-duration) var(--motion-easing); }
   .reservoir .need[data-leaving] { animation: row-out calc(var(--motion-duration) * 1.25) var(--motion-easing) forwards; }
@@ -563,8 +563,8 @@ div.steps .steps-summary { cursor: default; }
 .note.around { flex: 0 0 auto; display: flex; align-items: center; gap: var(--space-2); margin: 0; padding: var(--space-1) var(--column-inset); border-bottom: var(--border-width) solid var(--color-hairline); color: var(--color-muted); }
 /* A message or item found (reply.js `markFound`): an accent tint over its box for 2 s, no line
    beside the box's own border. It fades out; under reduced motion it stays, then goes. */
-.log > [data-found] > .bubble-box, .check-item[data-found], .reservoir .need[data-found] { position: relative; }
-.log > [data-found] > .bubble-box::after, .check-item[data-found]::after, .reservoir .need[data-found]::after {
+.log > [data-found] > .bubble-box, .check-item[data-found], .reservoir .need[data-found], .status-line[data-found] { position: relative; }
+.log > [data-found] > .bubble-box::after, .check-item[data-found]::after, .reservoir .need[data-found]::after, .status-line[data-found]::after {
   content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--color-accent); opacity: 0.2; pointer-events: none;
 }
 .queue { list-style: none; margin: 0; padding: 0 var(--column-inset); border-top: var(--border-width) solid var(--color-hairline); background: var(--color-surface); }
@@ -844,10 +844,17 @@ body[data-short] .app:not([data-wide]) .slash { max-height: calc(var(--size-cont
 .pill[aria-pressed="true"] { border-color: var(--color-accent); color: var(--color-text); font-weight: var(--font-weight-strong); }
 .pill[data-kind="running"] .icon { color: var(--color-working); }
 .pill[data-kind="needs"] .icon, .pill[data-kind="check"] .icon { color: var(--color-attention); }
+/* Routines: the last run of an enabled routine failed (danger) or found something (attention). */
+.pill[data-tone="danger"] { border-color: var(--color-danger); color: var(--color-danger); }
+.pill[data-tone="attention"] { border-color: var(--color-attention); color: var(--color-attention); }
 /* A device that cannot act has no composer: the pills have a bar of their own. */
 .pill-bar { flex: 0 0 auto; padding: var(--space-2) var(--column-inset); background: var(--color-surface); border-top: var(--border-width) solid var(--color-hairline); }
+/* ^ The label follows the count from 900 px, in the bar of a device that cannot act and in a composer with three pills; with four
+   (Routines too) the composer's row, capped at 72ch, would leave the field under a quarter of it. */
 .pill-label { display: none; }
-.app[data-wide] .pill-label { display: inline; }
+.app[data-wide] .pill-bar .pill-label, .app[data-wide] .pills:not(.pill-bar):not(:has(.pill:nth-child(4))) .pill-label { display: inline; }
+/* ^ Four pills on a 320 px phone: closer padding keeps them between attach and Send on the one row. */
+@media (max-width: 359px) { .pill { padding: 0 calc(var(--space-1) * 1.5); gap: calc(var(--space-1) / 2); } .pills { margin-right: 0; } }
 @media (hover: hover) { .pill:hover { border-color: var(--color-faint); } .pill[aria-pressed="true"]:hover { border-color: var(--color-accent); } }
 /* With the keyboard up the reservoir steps aside while the `#` or `/` list is open. */
 body[data-keyboard] .chat:has(.slash) .reservoir { display: none; }
@@ -1046,21 +1053,6 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .usage-day:not(:disabled) .usage-cost { font-weight: var(--font-weight-medium); }
 .usage-cost { text-align: right; font-variant-numeric: tabular-nums; }
 .usage-parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(calc(var(--space-4) * 9), 1fr)); gap: var(--space-1) var(--space-4); margin: 0 0 var(--space-3); padding-left: calc(calc(var(--space-4) * 4) + var(--space-2)); font-size: var(--font-size-sm); }
-/* The project's routines, read only (routines.js): a name and On/Off, then the schedule, last and next run. */
-.routines { padding: var(--space-3) var(--space-4) var(--space-4); }
-.routine-list { margin: 0; padding: 0; list-style: none; }
-.routine-list li { border-bottom: var(--border-width) solid var(--color-hairline); }
-.routine-list li:last-child { border-bottom: 0; }
-.routine { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-1) var(--space-3); width: 100%; min-height: var(--size-control); padding: var(--space-2) 0; border: 0; background: none; color: var(--color-text); font: inherit; text-align: left; cursor: pointer; }
-.routine-name { font-weight: var(--font-weight-medium); overflow-wrap: anywhere; }
-.routine-state { color: var(--color-muted); }
-.routine-state[data-on] { color: var(--color-text); font-weight: var(--font-weight-medium); }
-.routine-when, .routine-last, .routine-next { color: var(--color-muted); font-size: var(--font-size-sm); }
-.routine-last { grid-column: 1 / -1; }
-.routine-last[data-failed] { color: var(--color-danger); }
-.routine-last[data-found] { color: var(--color-attention); }
-.routine-next { text-align: right; font-variant-numeric: tabular-nums; }
-.routine-argv { display: block; margin: 0 0 var(--space-2); padding: var(--space-2) var(--space-3); border-radius: var(--radius-control); background: var(--color-surface); font-size: var(--font-size-sm); overflow-wrap: anywhere; white-space: pre-wrap; }
 .usage-parts > div { display: flex; justify-content: space-between; gap: var(--space-2); }
 .usage-parts dd { margin: 0; font-variant-numeric: tabular-nums; }
 .timeline-more { grid-column: 2; color: var(--color-muted); overflow-wrap: anywhere; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }

@@ -3,7 +3,7 @@
 // task's or the project overview's sheet over the chat (docs/web-client-tasks.md). Fixed actions
 // go straight to wsx.
 import { api } from "./api.js";
-import { html, Icon, keepIn, plural, readMap, unreadNews, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useRef, useState } from "./lib.js";
+import { html, Icon, keepIn, plural, readMap, unreadNews, useCoalescedLoad, useEffect, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, goBack, leaveFor, shows, state, touch, useEventLoad, useStore } from "./store.js";
 import { Back, MoreMenu, toast } from "./ui.js";
 import { AttachButton, FileChips, grow, isolate, JumpButton, pasteFiles, release, Suggestions, useDraft, useListKeys, useRecent, withNewLine } from "./chat.js";
@@ -14,7 +14,7 @@ import { readTaskAhead, TaskPage } from "./task.js";
 import { ProjectOverview } from "./overview.js";
 import { ChecksPage, decideCheck } from "./checks.js";
 import { UsagePage } from "./usage.js";
-import { RoutinesButton, RoutinesPage } from "./routines.js";
+import { RoutineActions, routineAct, routineCounts, routineRow, routineWords, useRoutines } from "./routines.js";
 import { PanelsButton, PanelsPage } from "./panels.js";
 import { loadTasks, act } from "./task-api.js";
 import { agentWords, calm, KIND_TONE, LEAVE_MS, running, taskLink, taskStage, TaskChip, withChips } from "./task-words.js";
@@ -56,11 +56,11 @@ const actionOf = (key) => {
   return pending.get(key);
 };
 
-// One row of any of the three lists, the same in each: the task's chip (its number and state
-// dot) or, for a row without a task, a tone dot; the label and the context under it; the
-// row's actions. The text opens `href`, or `onOpen` when it is a button.
+// One row of any of the four lists, the same in each: the task's chip (its number and state
+// dot) or, for a row without a task, a tone dot; the label and the context under it (one line,
+// or several); the row's actions. The text opens `href`, or `onOpen` when it is a button.
 function ListRow({ rowKey, leaving, project, task = null, tone, label, context, href, onOpen, openLabel, actions, error }) {
-  const body = html`<span class="row-label">${label}</span>${context && html`<span class="row-context">${context}</span>`}`;
+  const body = html`<span class="row-label">${label}</span>${[context].flat().map((line, at) => line && html`<span class="row-context" key=${at}>${line}</span>`)}`;
   return html`
     <li class="need" data-key=${rowKey} data-leaving=${leaving ? "" : null} inert=${Boolean(leaving)}>
       <div class="row-link">
@@ -171,44 +171,61 @@ function CheckingRow({ project, item, index, onActing, onFailed, onMention, leav
       context=${`Passes if ${item.pass_if}`} href=${`#/p/${project}/checks/${item.id}`} actions=${actions} error=${status.error} />`;
 }
 
-// The three lists over the composer and the pills that open them (docs/web-client-tasks.md
+// The four lists over the composer and the pills that open them (docs/web-client-tasks.md
 // "Project screen"). Each pill is an icon and its count, in the composer row; a count of 0 has no
-// pill. One list is open at a time.
+// pill, except Routines, which shows while the project has any routine (its count is the enabled
+// ones: `counts.routines` is the `routineCounts` of the project). One list is open at a time.
 const TRAYS = [
-  { key: "running", icon: "play", label: "Running", words: () => "running" },
-  { key: "needs", icon: "unchecked", label: "Needs you", words: (count) => count === 1 ? "needs you" : "need you" },
-  { key: "check", icon: "pass", label: "To check", words: () => "to check" },
+  { key: "running", icon: "play", label: "Running", count: (c) => c.running, words: () => "running" },
+  { key: "needs", icon: "unchecked", label: "Needs you", count: (c) => c.needs, words: (count) => count === 1 ? "needs you" : "need you" },
+  { key: "check", icon: "pass", label: "To check", count: (c) => c.check, words: () => "to check" },
+  { key: "routines", icon: "routines", label: "Routines", count: (c) => c.routines.on, shown: (c) => c.routines.total > 0, words: (count, c) => routineWords(c.routines), tone: (c) => c.routines.tone },
 ];
+const present = (counts, tray) => tray.shown ? tray.shown(counts) : tray.count(counts) > 0;
 
 // The open list's name, or null: a list whose count fell to 0 closes. A tap on the open pill
 // closes it; a tap on another pill switches to its list.
 function useTray(counts) {
   const [tray, setTray] = useState(null);
-  const open = tray && counts[tray] ? tray : null;
+  const open = tray && present(counts, TRAYS.find((each) => each.key === tray)) ? tray : null;
   useEffect(() => { if (tray && !open) setTray(null); }, [tray, open]);
   return [open, (key) => setTray(open === key ? null : key), setTray];
 }
 
 // `bar`: a device that cannot act has no composer, so the pills stand in a bar of their own.
 function Pills({ counts, open, onToggle, bar = false }) {
-  const shown = TRAYS.filter((tray) => counts[tray.key]);
+  const shown = TRAYS.filter((tray) => present(counts, tray));
   if (!shown.length) return null;
   return html`
-    <div class=${bar ? "pills pill-bar" : "pills"} role="group" aria-label="Running, needs you, to check">
+    <div class=${bar ? "pills pill-bar" : "pills"} role="group" aria-label="Running, needs you, to check, routines">
       ${shown.map((tray) => html`
-        <button class="pill" type="button" key=${tray.key} data-kind=${tray.key} aria-pressed=${open === tray.key}
-          aria-controls=${open === tray.key ? "reservoir-list" : null} aria-label=${`${counts[tray.key]} ${tray.words(counts[tray.key])}`}
+        <button class="pill" type="button" key=${tray.key} data-kind=${tray.key} data-tone=${tray.tone?.(counts) ?? null} aria-pressed=${open === tray.key}
+          aria-controls=${open === tray.key ? "reservoir-list" : null} aria-label=${tray.key === "routines" ? tray.words(0, counts) : `${tray.count(counts)} ${tray.words(tray.count(counts), counts)}`}
           onClick=${() => onToggle(tray.key)}>
-          <${Icon} name=${tray.icon} /><span class="pill-count"><${Tick} value=${counts[tray.key]} /></span><span class="pill-label" aria-hidden="true">${tray.label}</span>
+          <${Icon} name=${tray.icon} /><span class="pill-count"><${Tick} value=${tray.count(counts)} /></span><span class="pill-label" aria-hidden="true">${tray.label}</span>
         </button>`)}
     </div>`;
 }
 
+// A routine in the Routines list: the schedule, the last run and whether it has a message. A
+// tap on the text of a routine with a message takes the chat to it (`onShow`); the actions turn
+// the routine on or off and run it now, for a device that may act. `onList` takes the list the
+// action answers.
+function RoutineRow({ project, row, now, onList, onShow }) {
+  const [status, doAct] = useRowAction(`${project}/routine-${row.name}`, row.name, 0, () => {}, () => {});
+  const { tone, message, context } = routineRow(row, now);
+  const actions = can("task_act") && html`<${RoutineActions} row=${row} busy=${status.busy} onAct=${(verb) => doAct(async () => onList(await routineAct(project, row.name, verb)))} />`;
+  return html`
+    <${ListRow} rowKey=${`routine-${row.name}`} project=${project} tone=${tone} label=${row.name} context=${context}
+      onOpen=${message != null ? () => onShow(message) : null} openLabel=${`Show the message of ${row.name}'s last run`}
+      actions=${actions} error=${status.error} />`;
+}
+
 // The open list, pinned over the composer: Running (the tasks that work), Needs you (every item
-// that waits for the owner in the server's order, each with its one action) or To check. Done
+// that waits for the owner in the server's order, each with its one action), To check or Routines. Done
 // tasks are in none of them. A cleared row leaves and the focus moves to the next row's action,
 // or to the composer after the last one. Only a question's label moves the chat, to its reply.
-function Reservoir({ project, open, items, tasks, checks, look, onLooked, onMention, onReply, onShow, onClose }) {
+function Reservoir({ project, open, items, tasks, checks, routines, onRoutines, look, onLooked, onMention, onReply, onShow, onClose }) {
   const node = useRef();
   // ^ A focus inside the list would fall to the body when the list goes: it goes to the open pill.
   const close = () => {
@@ -222,6 +239,7 @@ function Reservoir({ project, open, items, tasks, checks, look, onLooked, onMent
   const needRows = useLeaving(items, itemKey);
   const runRows = useLeaving(working, (task) => `run-${task.id}`);
   const checkRows = useLeaving(checks, (item) => item.id);
+  const now = useNow(open === "routines");
   useLayoutEffect(() => {
     const done = cleared.current;
     if (!done || keys.includes(done.key)) return;
@@ -283,6 +301,11 @@ function Reservoir({ project, open, items, tasks, checks, look, onLooked, onMent
             ${open === "check" ? html`
               <ul class="reservoir-list" aria-label="To check">
                 ${checkRows.map(({ item, key, leaving }) => html`<${CheckingRow} key=${key} project=${project} item=${item} index=${checks.indexOf(item)} onActing=${onActing} onFailed=${onFailed} onMention=${onMention} leaving=${leaving} />`)}
+              </ul>` : null}
+            ${open === "routines" ? html`
+              ${routines.error ? html`<p class="error empty" role="alert">${routines.error}</p>` : null}
+              <ul class="reservoir-list" aria-label="Routines">
+                ${routines.routines.map((row) => html`<${RoutineRow} key=${row.name} project=${project} row=${row} now=${now} onList=${onRoutines} onShow=${onShow} />`)}
               </ul>` : null}
           </div>
         </div>
@@ -629,7 +652,6 @@ const SHEETS = {
   overview: { Page: ProjectOverview, label: "Overview", refocus: true },
   checks: { Page: ChecksPage, label: "To check", fit: true, refocus: true },
   usage: { Page: UsagePage, label: "Usage", fit: true },
-  routines: { Page: RoutinesPage, label: "Routines", fit: true },
   panels: { Page: PanelsPage, label: "Panels", fit: true },
 };
 
@@ -789,7 +811,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   const newest = () => { toEnd(); back(); };
   // ^ A message of the rows shows in the middle, marked; false when the rows do not hold it.
   const showRow = (messageId) => {
-    const node = logNode.current?.querySelector(`:scope > [data-id="${messageId}"]`);
+    const node = logNode.current?.querySelector(`[data-id="${messageId}"]`);
     if (!node) return false;
     reveal(node);
     markFound(node);
@@ -812,7 +834,8 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   // ^ What waits for the owner is the needs and the open questions (docs/web-client-tasks.md "Project screen").
   const asking = role ? [] : (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
   const needing = role ? [] : [...(overview?.needs ?? []), ...asking];
-  const counts = { running: role ? 0 : (overview?.tasks ?? []).filter(running).length, needs: needing.length, check: role ? 0 : overview?.to_check ?? 0 };
+  const [routineList, setRoutineList] = useRoutines(id, !role, chat?.rows?.at(-1)?.key);
+  const counts = { running: role ? 0 : (overview?.tasks ?? []).filter(running).length, needs: needing.length, check: role ? 0 : overview?.to_check ?? 0, routines: routineCounts(role ? null : routineList) };
   const [tray, toggleTray, setTray] = useTray(counts);
   const [look, setLook] = useState(null);
   const showNeed = (approval) => { setTray("needs"); setLook(approval); };
@@ -844,9 +867,15 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   const find = () => setFinding(!finding);
   // ^ A question's label: its reply is among the rows and shows marked, else the chat reads
   // around it as a quote jump does (`jump`, a log without it says so in a toast).
+  // A line inside a closed fold opens it (`wanted`, read by `Fold`).
+  const [wanted, setWanted] = useState(null);
   const goToReply = (replyId) => {
-    if (!showRow(replyId)) jump(replyId);
+    setWanted(replyId);
+    if (!showRow(replyId) && !all.some((row) => row.id === replyId)) jump(replyId);
   };
+  useLayoutEffect(() => {
+    if (wanted != null && (showRow(wanted) || (aroundRead && around === wanted))) setWanted(null);
+  }, [wanted, chat, aroundRead]);
   // ^ The typing bubble leaves in the commit that brings the reply: a bubble that stayed to fade
   // out would move the reply down when it went.
   const typing = Boolean(chat?.busy);
@@ -857,12 +886,12 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   const draw = (row, isNew) => row.kind === "message" ? html`<${Bubble} key=${row.key} project=${id} row=${row} words=${words} fresh=${isNew} onNeed=${role ? null : showNeed} />`
     : row.kind === "line" ? html`<${StatusLine} key=${row.key} project=${id} row=${row} fresh=${isNew} />`
     : row.kind === "quiet" ? html`<${QuietReply} key=${row.key} row=${row} fresh=${isNew} />`
-    : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} all=${finding} />`
+    : row.kind === "fold" ? html`<${Fold} key=${row.key} row=${row} render=${show} all=${finding} want=${wanted} />`
     : row.kind === "check" ? html`<${CheckBubble} key=${row.key} project=${id} row=${row} names=${names} fresh=${isNew} onMention=${mention} />`
     : html`<${Note} key=${row.key} row=${row} />`;
   // ^ What the rows read besides their own fields: a new day (a row's time says its day once it is
   // not today's, lib.js `clock`) and the project names (what `<project> #n` reads, `withChips`).
-  const context = `${id} ${finding} ${names.manager} ${store.projects.map((other) => `${other.id}:${other.name}`)} ${new Date().toDateString()}`;
+  const context = `${id} ${finding} ${wanted} ${names.manager} ${store.projects.map((other) => `${other.id}:${other.name}`)} ${new Date().toDateString()}`;
   const show = useRowNodes(rows, { ready, own: (row) => (sent && row.id === sent.id) || row.key === "sending", context, draw });
   // ^ A sheet closes as Back does: to the entry under it, else to this chat.
   const leave = () => goBack(`#/p/${id}`);
@@ -882,7 +911,6 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
         <${FindButton} open=${finding} onClick=${find} />
         ${!role && html`
           <a class="icon-button" href=${`#/p/${id}/page`} aria-label="Overview" title="Overview"><${Icon} name="overview" /></a>
-          <${RoutinesButton} project=${id} />
           <${PanelsButton} project=${id} />
           <${ProjectShell} project=${project} /><${More} project=${project} roles=${chat?.roles} />`}
       </div>
@@ -913,7 +941,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
           <ul class="queue" aria-label=${`Messages waiting for ${role ?? "the manager"}`}>
             ${waiting.map((row) => html`<li key=${row.key} class="queued" data-key=${row.key}><span class="queued-text">${row.text || `${row.attachments?.length ?? 0} files`}</span></li>`)}
           </ul>`}
-        ${!role && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} checks=${overview?.check_items ?? []} onMention=${mention} onReply=${(line, id) => { setReply({ line, id }); field.current?.focus(); }} onShow=${goToReply} />`}
+        ${!role && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} checks=${overview?.check_items ?? []} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${(line, id) => { setReply({ line, id }); field.current?.focus(); }} onShow=${goToReply} />`}
         ${low && header}
         ${!role && !can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
         ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}

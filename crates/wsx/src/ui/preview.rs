@@ -585,11 +585,14 @@ pub fn render_routines_preview(frame: &mut Frame, area: Rect, project: &Project)
     );
 }
 
+/// `message`: for the detail, the message of the last run's end (`Some(None)`: none); the
+/// preview beside the tree passes `None` and shows no message line.
 pub fn render_routine_preview(
     frame: &mut Frame,
     area: Rect,
     project: &Project,
     view: &RoutineView,
+    message: Option<Option<u64>>,
     scroll: u16,
 ) {
     frame.render_widget(Clear, area);
@@ -645,15 +648,20 @@ pub fn render_routine_preview(
     ]));
     lines.push(Line::raw(""));
     if let Some(run) = &view.latest_run {
+        lines.push(Line::from(vec![
+            Span::styled("Last:    ", label),
+            Span::raw(last_run_words(run)),
+        ]));
+        if let Some(message) = message {
+            lines.push(Line::from(vec![
+                Span::styled("Message: ", label),
+                Span::raw(match message {
+                    Some(_) => "Enter opens it in the manager chat",
+                    None => "no message",
+                }),
+            ]));
+        }
         lines.extend([
-            Line::from(vec![
-                Span::styled("Last:    ", label),
-                Span::raw(format!(
-                    "{}  {:?}",
-                    format_epoch(run.started_epoch),
-                    run.status
-                )),
-            ]),
             Line::from(vec![
                 Span::styled("stdout:  ", label),
                 Span::raw(run.stdout_path.to_string_lossy().to_string()),
@@ -702,6 +710,22 @@ pub fn render_routine_preview(
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+/// `failed (exit 1)  2026-11-10 06:00`: the last run's outcome word and when it ended (or began).
+fn last_run_words(run: &wsx_core::routine::RunRecord) -> String {
+    use wsx_core::routine::RunStatus;
+    let exit = match run.status {
+        RunStatus::Failed | RunStatus::Findings => {
+            format!(" ({})", wsx_core::routine::exit_words(run.exit_code))
+        }
+        _ => String::new(),
+    };
+    format!(
+        "{}{exit}  {}",
+        run.status.words(),
+        format_epoch(run.finished_epoch.unwrap_or(run.started_epoch))
+    )
 }
 
 fn format_epoch(epoch: i64) -> String {

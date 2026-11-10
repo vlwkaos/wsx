@@ -538,6 +538,8 @@ pub enum Mode {
     RoutineDetail {
         project_path: PathBuf,
         routine_name: String,
+        /// The events message that told of the last run's end: Enter opens the manager chat there.
+        message: Option<u64>,
         scroll: u16,
     },
     Tasks {

@@ -1,8 +1,7 @@
-// The project's routines, read only, in the sheet the ⋯ menu opens: one row each, a tap shows
-// the command (docs/web-client-tasks.md "Routines").
+// The project's routines: the data the Routines pill and its list read, and the list's rows
+// (docs/web-client-tasks.md "Routines"). The pill and the list are in tasks.js.
 import { api } from "./api.js";
-import { ago, clock, html, Icon, useEffect, useNow, useState } from "./lib.js";
-import { SheetPage, useSheetRead } from "./ui.js";
+import { ago, html, Icon, useCoalescedLoad, useEffect, useState } from "./lib.js";
 
 const DAYS = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];
 
@@ -28,50 +27,57 @@ function lastRun(last, now) {
 const foundRun = (last) => last?.status === "findings";
 const failedRun = (last) => Boolean(last) && last.status !== "succeeded" && last.status !== "running" && !foundRun(last);
 
-// The chat header's Routines button: an icon, with the routines' state in one short word group as its
-// name and title, "retrospect 06:00 ok" for one enabled routine, "3 routines, 1 failed" for several (the
-// worst state wins). A failed last run turns it to the danger color, one that found something to the attention color. A tap opens the Routines sheet.
-// Read again every minute.
-export function RoutinesButton({ project }) {
-  const [rows, setRows] = useState([]);
+// The routines of a project, read now, every minute, and again when `key` changes (the newest
+// chat row: a run's end comes as a message, and it carries the run's message id), and every
+// 2 s while a routine runs. `setList` takes the answer of an action.
+export function useRoutines(project, active, key) {
+  const [list, setList] = useState(null);
+  const read = useCoalescedLoad(async (current) => {
+    const next = await api(`api/tasks/${project}/routines`);
+    if (current()) setList(next);
+  }, () => {}, [project]);
+  // ^ A routine that runs is read again every 2 s, so its end shows without a tap.
+  const running = Boolean(list?.routines?.some((row) => row.running || row.last?.status === "running"));
   useEffect(() => {
-    let live = true;
-    const read = () => api(`api/tasks/${project}/routines`).then((value) => { if (live) setRows((value.routines ?? []).filter((row) => row.enabled)); }, () => {});
+    if (!active) return undefined;
     read();
-    const timer = setInterval(read, 60000);
-    return () => { live = false; clearInterval(timer); };
-  }, [project]);
-  const failed = rows.filter((row) => failedRun(row.last)).length;
-  const found = rows.filter((row) => foundRun(row.last)).length;
-  const word = failed ? "failed" : found ? "found something" : rows.some((row) => row.last?.status === "running") ? "running" : "ok";
-  const [only] = rows;
-  const label = !rows.length ? "Routines"
-    : rows.length === 1 ? `Routines: ${only.name} ${only.next_run_unix_ms ? clock(only.next_run_unix_ms) : "no next run"} ${word}`
-    : `Routines: ${rows.length} routines, ${failed ? `${failed} failed` : found ? `${found} found something` : word}`;
-  return html`<a class="icon-button" href=${`#/p/${project}/routines`} aria-label=${label} title=${label} data-tone=${failed ? "danger" : found ? "attention" : null}><${Icon} name="routines" /></a>`;
+    const timer = setInterval(read, running ? 2000 : 60000);
+    return () => clearInterval(timer);
+  }, [project, active, key, running]);
+  return [list, setList];
 }
 
-export function RoutinesPage({ project, onClose, grip }) {
-  const [list, failure] = useSheetRead(`api/tasks/${project}/routines`);
-  const [open, setOpen] = useState(null);
-  const now = useNow(true);
+// What the pill says: the enabled routines, how many failed or found something on their last
+// run, and the tone that shows (the worst state wins).
+export function routineCounts(list) {
   const rows = list?.routines ?? [];
-  return html`
-    <${SheetPage} grip=${grip} onClose=${onClose} bar=${html`<span class="bar-label">Routines</span>`} className="routines" loaded=${Boolean(list)} failure=${failure}>
-      ${list?.error ? html`<p class="error empty" role="alert">${list.error}</p>`
-        : !rows.length ? html`<p class="empty">No routines</p>`
-        : html`<ul class="routine-list" aria-label="Routines">
-          ${rows.map((row) => html`
-            <li key=${row.name}>
-              <button type="button" class="routine" aria-expanded=${open === row.name} onClick=${() => setOpen(open === row.name ? null : row.name)}>
-                <span class="routine-name">${row.name}</span>
-                <span class="routine-state" data-on=${row.enabled ? "" : null}>${row.enabled ? "On" : "Off"}</span>
-                <span class="routine-when">${schedule(row.trigger)}${row.post === false ? ", not told to you" : ""}</span>
-                <span class="routine-next">${row.next_run_unix_ms ? `next ${clock(row.next_run_unix_ms)}` : "no next run"}</span>
-                <span class="routine-last" data-failed=${failedRun(row.last) ? "" : null} data-found=${foundRun(row.last) ? "" : null}>${lastRun(row.last, now)}</span>
-              </button>
-              ${open === row.name && html`<code class="routine-argv">${row.command.join(" ")}</code>`}
-            </li>`)}
-        </ul>`}
-    </${SheetPage}>`;
+  const on = rows.filter((row) => row.enabled);
+  const failed = on.filter((row) => failedRun(row.last)).length;
+  const found = on.filter((row) => foundRun(row.last)).length;
+  return { total: rows.length, on: on.length, failed, found, tone: failed ? "danger" : found ? "attention" : null };
 }
+
+export function routineWords({ on, failed, found }) {
+  const state = failed ? `, ${failed} failed` : found ? `, ${found} found something` : "";
+  return `${on} ${on === 1 ? "routine" : "routines"}${state}`;
+}
+
+// The row's parts for ListRow: a tone dot for the last run, the label, two context lines (the
+// schedule and whether it is on; the last run and whether it has a message), the message to
+// open, and the actions.
+export function routineRow(row, now) {
+  const last = row.last;
+  const tone = !row.enabled ? null : failedRun(last) ? "danger" : foundRun(last) ? "attention" : last?.status === "running" ? "working" : "accent";
+  const message = last?.message ?? null;
+  const where = `${schedule(row.trigger)}${row.post === false ? ", no chat post" : ""} · ${row.enabled ? "On" : "Off"}`;
+  return { tone, message, context: [where, `${lastRun(last, now)} · ${message != null ? "message" : "no message"}`] };
+}
+
+// A routine's actions: turn it on or off, and run it now.
+export function RoutineActions({ row, busy, onAct }) {
+  const button = (label, icon, verb) => html`
+    <button class="button icon-button need-action" type="button" title=${label} aria-label=${`${label}: ${row.name}`} disabled=${busy} onClick=${() => onAct(verb)}><${Icon} name=${icon} /></button>`;
+  return html`${button(row.enabled ? "Turn off" : "Turn on", row.enabled ? "pause" : "pass", row.enabled ? "disable" : "enable")}${button("Run now", "play", "run")}`;
+}
+
+export const routineAct = (project, name, verb) => api(`api/tasks/${project}/routines/${encodeURIComponent(name)}/${verb}`, { method: "POST", json: {} });

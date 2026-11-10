@@ -2262,6 +2262,57 @@ try:
     wait_for(lambda: "press i to write a message" not in remove_tui.text(), "Esc did not close the manager chat", seconds=60)
     remove_tui.send(b"q")
     wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close keep-me's Tasks view", seconds=60)
+    # A routine's last run and its message in the TUI (docs/tasks.md "Routines", "TUI"): the detail
+    # (Enter on the routine) words the last run, and for a run whose end is a message in the
+    # manager's log, Enter opens the manager chat at that message; a run with none says so.
+    keep_path = str(removal["keep-me"])
+    for routine_name, exit_word in (("probe", "exit 1"), ("quiet", "exit 0")):
+        added = wsx("routine", "add", routine_name, "-p", keep_path, "--cron", "0 3 * * *", "--arg=/bin/sh", "--arg=-c",
+                    f"--arg={exit_word}", "--findings-exit", "1", "--json")
+        assert added.returncode == 0, added.stdout + added.stderr
+        ran = wsx("routine", "run", routine_name, "-p", keep_path, "--json")
+        assert ran.returncode == 0, ran.stdout + ran.stderr
+
+    def routine_run(routine_name):
+        listed = wsx("routine", "list", "-p", keep_path, "--json")
+        if listed.returncode:
+            return None
+        runs = [row["latest_run"] for row in json.loads(listed.stdout)["routines"] if row["routine"]["name"] == routine_name]
+        return runs[0] if runs and runs[0] and runs[0]["finished_epoch"] else None
+    for routine_name in ("probe", "quiet"):
+        wait_for(lambda: routine_run(routine_name), f"the {routine_name} routine did not finish", seconds=60)
+    # ^ The end of probe's run is an events message the manager wrote after it; quiet printed nothing and has none.
+    probe_line = "routine probe found something (exit 1)"
+    with keep_log.open("a") as log_file:
+        log_file.write(json.dumps({"unix_ms": routine_run("probe")["finished_epoch"] * 1000 + 2000, "kind": "message", "id": 900,
+                                   "from": "events", "text": probe_line, "short": [{"text": probe_line}]}) + "\n")
+    wait_for(lambda: "probe" in remove_tui.text() and "quiet" in remove_tui.text(), "the TUI did not list the routines", seconds=120)
+
+    def open_routine_detail(routine_name):
+        # ^ The search selects the routine as it is typed; Enter leaves the search, the next Enter opens the detail.
+        remove_tui.send(b"/" + routine_name.encode() + b"\r\r")
+        # ^ "Message:" is the detail's own line; the preview beside the tree has the other lines.
+        wait_for(lambda: f"{routine_name} ›" in remove_tui.text() and "Message:" in remove_tui.text(),
+                 lambda: f"Enter on {routine_name} opened no detail:\n{remove_tui.text()}", seconds=60)
+    open_routine_detail("quiet")
+    assert re.search(r"Last:\s+succeeded\s+\d{4}-\d\d-\d\d", remove_tui.text()), remove_tui.text()
+    assert re.search(r"Message:\s+no message", remove_tui.text()) and "(⏎)message" not in remove_tui.text(), remove_tui.text()
+    remove_tui.send(b"\r")
+    wait_for(lambda: "Message:" not in remove_tui.text(), "Enter on a routine with no message did not close its detail", seconds=60)
+    open_routine_detail("probe")
+    assert re.search(r"Last:\s+found something \(exit 1\)\s+\d{4}-\d\d-\d\d", remove_tui.text()), remove_tui.text()
+    assert re.search(r"Message:\s+Enter opens it in the manager chat", remove_tui.text()) and "(⏎)message" in remove_tui.text(), remove_tui.text()
+    remove_tui.send(b"\r")
+    # ^ The chat reads around the message ("Esc: newest" in the footer); the first Esc goes to the newest part, the next leaves.
+    wait_for(lambda: probe_line in remove_tui.text() and "Esc: newest" in remove_tui.text() and "Message:" not in remove_tui.text(),
+             lambda: f"Enter on probe did not open the manager chat at its message:\n{remove_tui.text()}", seconds=60)
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "Esc: newest" not in remove_tui.text(), "Esc did not leave the part around the message", seconds=60)
+    time.sleep(0.5)
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "press i to write a message" not in remove_tui.text(), "Esc did not close the chat opened from a routine", seconds=60)
+    remove_tui.send(b"q")
+    wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close the Tasks view opened from a routine", seconds=60)
     # docs/design/tui-health-audit.md #1, #2, #10, #14: the chat of a manager log of about 7.5
     # MiB (the log rolls over at 8 MiB) reads only the end of it, and a 20 KB line in the
     # composer costs the same as a short one. The find in the chat is in scripts/test-task.py.

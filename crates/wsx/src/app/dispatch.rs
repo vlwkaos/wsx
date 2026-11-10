@@ -195,7 +195,18 @@ impl App {
         }
         if matches!(self.mode, Mode::RoutineDetail { .. }) {
             match action {
-                Action::InputEscape | Action::Quit | Action::Select => self.mode = Mode::Workspace,
+                Action::Select => match &self.mode {
+                    Mode::RoutineDetail {
+                        project_path,
+                        message: Some(id),
+                        ..
+                    } => {
+                        let (path, id) = (project_path.clone(), *id);
+                        self.open_routine_message(&path, id);
+                    }
+                    _ => self.mode = Mode::Workspace,
+                },
+                Action::InputEscape | Action::Quit => self.mode = Mode::Workspace,
                 Action::NavigateDown => {
                     if let Mode::RoutineDetail { scroll, .. } = &mut self.mode {
                         *scroll = scroll.saturating_add(1);

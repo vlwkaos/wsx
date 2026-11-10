@@ -242,24 +242,10 @@ pub(super) fn set_routine_enabled(
     json: bool,
 ) -> Result<()> {
     let path = routine_project(project)?;
-    let (current_revision, routines) = fetch_routines(&path)?;
-    let mut routine = routines
-        .into_iter()
-        .find(|view| view.routine.name == name)
-        .map(|view| view.routine)
-        .ok_or_else(|| anyhow::anyhow!("routine '{name}' not found"))?;
-    routine.enabled = enabled;
-    print_routine_response(
-        send_routine(
-            &path,
-            wsx_core::routine::Action::Edit {
-                revision: revision.unwrap_or(current_revision),
-                old_name: name.to_string(),
-                routine,
-            },
-        )?,
-        json,
-    )
+    let client = runtime::Client::local();
+    runtime::ensure_available(&client)?;
+    let response = wsx_core::routine::set_enabled(&client, &path, name, revision, enabled)?;
+    print_routine_response(response, json)
 }
 
 pub(super) fn print_fire_outcome(outcome: &wsx_core::routine::FireOutcome) {

@@ -557,7 +557,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                 let status = view
                     .latest_run
                     .as_ref()
-                    .map(|r| format!(" · {:?}", r.status))
+                    .map(|r| format!(" · {}", r.status.words()))
                     .unwrap_or_default();
                 ListItem::new(routine_tree_label(&view.routine.name, &status)).style(
                     Style::default().fg(if view.running {
