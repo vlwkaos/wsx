@@ -10,7 +10,11 @@ parts' jobs skip. The script waits for the run, prints each job's end, the faile
 failed steps' log tail, downloads the run's `scenario-files*` artifacts (files.tar, paths in this
 checkout such as `.work/web-captures`) into the same paths, deletes the branch and exits 0 only when the run
 passed, 75 (EX_TEMPFAIL) when the run failed for the network or the runner and no scenario step
-failed (the host then keeps no result: the next check-run runs it again). A branch a killed run left behind is deleted by a later run once it is STALE_SECONDS
+failed, or the GitHub token is invalid, or its rate limit resets after the deadline (the host then keeps
+no result: the next check-run runs it again). A rate limit answer is never a failure: the script waits
+for the reset time of `gh api rate_limit` (that endpoint does not count) and goes on. A poll costs one
+request (the run), and the jobs are read when the run's status changes, every JOBS_SECONDS and at the
+end. A branch a killed run left behind is deleted by a later run once it is STALE_SECONDS
 old. The task host runs it outside the slot (docs/tasks.md "Scenarios").
 """
 
@@ -26,7 +30,13 @@ import sys
 import tarfile
 import time
 
-POLL_SECONDS = 10
+POLL_SECONDS = 30
+# ^ A run older than SLOW_AFTER seconds is polled every SLOW_POLL_SECONDS.
+SLOW_AFTER = 10 * 60
+SLOW_POLL_SECONDS = 60
+# ^ The run's status is no sign that its own jobs started (with a part, the other parts' jobs end at
+# once and the run is `in_progress` while the own job still queues): the jobs are read at least this often.
+JOBS_SECONDS = 5 * 60
 FIND_SECONDS = 180
 # ^ A run whose jobs started and have not ended by then hangs (the web scenario's step takes about 26 min
 # with its build): it is cancelled. The time the run waited for a runner does not count (QUEUE_SECONDS).
@@ -41,6 +51,20 @@ STALE_SECONDS = 3 * 3600
 FILES_UNDER = '.work/'
 # ^ Exit status of a failure outside the tree: the host never keeps a result that exits with it.
 TEMPFAIL = 75
+# ^ The script's whole time: the host's `ci:` limit (CI_TIMEOUT in crates/wsx/src/task/host.rs). A rate
+# limit that resets after it is a temporary failure.
+DEADLINE = time.monotonic() + QUEUE_SECONDS + RUN_SECONDS + 5 * 60
+# ^ What the failed `gh` call says. A 429, or a 403 that names the limit, is a rate limit; a 401 is a bad token.
+RATE_LIMITED = re.compile(r'rate limit|abuse detection|HTTP 429', re.IGNORECASE)
+BAD_TOKEN = re.compile(r'HTTP 401|Bad credentials|token .{0,40}invalid|gh auth login', re.IGNORECASE)
+# ^ A call that fails with one of these asks `gh api rate_limit`, which does not count against the limit.
+ASK_LIMIT = re.compile(r'HTTP (401|403|429)|rate limit|abuse detection|Bad credentials|gh auth login', re.IGNORECASE)
+SECONDARY_WAIT = 60
+CALLS = {'gh': 0, 'rate_limit': 0}
+
+
+class TempFail(Exception):
+    """A failure outside the tree (exit 75): the token or the rate limit, not the scenario."""
 # ^ A scenario's own failure: a log with one is never a temporary failure.
 SCENARIO_FAILURE = re.compile(r'\bFAIL\b|AssertionError|Traceback')
 # ^ The one list of network and runner failures; add a line of a new one here (docs/tasks.md "Scenarios").
@@ -57,11 +81,45 @@ def git(*args, env=None):
                           env=env).stdout.rstrip()
 
 
-def gh(*args, check=True):
-    ran = subprocess.run(['gh', *args], capture_output=True, text=True)
-    if check and ran.returncode != 0:
-        raise RuntimeError('gh %s: %s' % (' '.join(args), ran.stderr.strip()))
-    return ran
+def gh(*args, check=True, patient=True):
+    """Run `gh`. A rate limit answer waits for the reset and runs the call again; an invalid token
+    raises TempFail. `patient=False` (the cleanup) never waits."""
+    while True:
+        CALLS['gh'] += 1
+        ran = subprocess.run(['gh', *args], capture_output=True, text=True)
+        if ran.returncode == 0:
+            return ran
+        pause = limit_pause(ran.stderr + ran.stdout) if patient else None
+        if pause is None:
+            if check:
+                raise RuntimeError('gh %s: %s' % (' '.join(args), ran.stderr.strip()))
+            return ran
+        if time.monotonic() + pause > DEADLINE:
+            raise TempFail('GitHub rate limit resets in %d s, after the deadline of this run.' % pause)
+        say('%s  GitHub rate limit: waiting %d s' % (time.strftime('%H:%M:%S'), pause))
+        time.sleep(pause)
+
+
+def limit_pause(text):
+    """Seconds to wait before the failed call runs again, or None when the failure is not the rate
+    limit. The core limit (remaining 0) waits until its reset; a secondary limit (the text says so, or
+    a 429) waits Retry-After, else SECONDARY_WAIT. A bad token raises TempFail."""
+    if not ASK_LIMIT.search(text):
+        return None
+    CALLS['rate_limit'] += 1
+    ran = subprocess.run(['gh', 'api', 'rate_limit'], capture_output=True, text=True)
+    try:
+        core = json.loads(ran.stdout)['resources']['core']
+    except (ValueError, KeyError, TypeError):
+        core = None
+    if core and core['remaining'] == 0:
+        return max(1, int(core['reset'] - time.time()) + 2)
+    if RATE_LIMITED.search(text):
+        found = re.search(r'retry[- ]after:?\s*(\d+)', text, re.IGNORECASE)
+        return int(found.group(1)) + 1 if found else SECONDARY_WAIT
+    if BAD_TOKEN.search(text) or (core is None and 'HTTP 401' in ran.stderr):
+        raise TempFail('The GitHub token is invalid (gh auth login): %s' % text.strip().splitlines()[0][:150])
+    return None
 
 
 def say(text):
@@ -94,13 +152,13 @@ def find_run(repo, commit):
     raise RuntimeError('no CI run started for %s in %d s' % (commit, FIND_SECONDS))
 
 
-def own_jobs(view, part):
+def own_jobs(jobs, part):
     """The run's jobs that matter: with a part, a job named `... (<other part>)` is left out. CI
     starts every part's job on a `--<part>` branch (a job `if` cannot read the matrix) and the
     others end green at once, which would start the run clock and print their ends."""
     if not part:
-        return view['jobs']
-    return [job for job in view['jobs'] if not re.search(r'\((?!%s\)$)[\w-]+\)$' % re.escape(part), job['name'])]
+        return jobs
+    return [job for job in jobs if not re.search(r'\((?!%s\)$)[\w-]+\)$' % re.escape(part), job['name'])]
 
 
 def jobs_started(jobs):
@@ -117,29 +175,34 @@ def overdue(queued, running):
 
 
 def wait_run(repo, run_id, part=None):
-    """The finished run's view; the queue wait is in the first line said when the jobs start."""
+    """The finished run's status, conclusion and jobs; the queue wait is in the first line said when
+    the jobs start. A poll is one request, the run; the jobs are read when its status changes, every
+    JOBS_SECONDS and at the end."""
     said = {}
     begun = time.monotonic()
     started = None
+    status, read_at, jobs = None, None, []
     while True:
-        view = json.loads(gh('run', 'view', str(run_id), '--repo', repo,
-                             '--json', 'status,conclusion,jobs').stdout)
-        jobs = own_jobs(view, part)
-        for job in jobs:
-            state = job['conclusion'] or job['status']
-            if said.get(job['name']) != state and state != 'skipped':
-                say('%s  %s: %s' % (time.strftime('%H:%M:%S'), job['name'], state))
-                said[job['name']] = state
-        if started is None and jobs_started(jobs):
-            started = time.monotonic()
-            say('%s  queued %d min before its jobs started' % (time.strftime('%H:%M:%S'), (started - begun) // 60))
-        if view['status'] == 'completed':
-            return view | {'jobs': jobs}
+        run = json.loads(gh('api', 'repos/%s/actions/runs/%s' % (repo, run_id)).stdout)
         now = time.monotonic()
+        if run['status'] != status or run['status'] == 'completed' or now - read_at >= JOBS_SECONDS:
+            jobs = own_jobs(json.loads(gh('api', 'repos/%s/actions/runs/%s/jobs?per_page=100' % (repo, run_id)).stdout)['jobs'], part)
+            read_at = now
+            for job in jobs:
+                state = job['conclusion'] or job['status']
+                if said.get(job['name']) != state and state != 'skipped':
+                    say('%s  %s: %s' % (time.strftime('%H:%M:%S'), job['name'], state))
+                    said[job['name']] = state
+            if started is None and jobs_started(jobs):
+                started = now
+                say('%s  queued %d min before its jobs started' % (time.strftime('%H:%M:%S'), (started - begun) // 60))
+        status = run['status']
+        if status == 'completed':
+            return {'status': status, 'conclusion': run['conclusion'], 'jobs': jobs}
         late = overdue(now - begun, None if started is None else now - started)
         if late:
             raise RuntimeError('the CI run is cancelled: %s' % late)
-        time.sleep(POLL_SECONDS)
+        time.sleep(SLOW_POLL_SECONDS if now - begun > SLOW_AFTER else POLL_SECONDS)
 
 
 def take_files(repo, run_id, root, scratch):
@@ -259,11 +322,21 @@ def main():
         return 0
     finally:
         if run and not ended:
-            gh('run', 'cancel', str(run['databaseId']), '--repo', repo, check=False)
+            gh('run', 'cancel', str(run['databaseId']), '--repo', repo, check=False, patient=False)
         if branch:
-            gh('api', '-X', 'DELETE', 'repos/%s/git/refs/heads/%s' % (repo, branch), check=False)
+            gh('api', '-X', 'DELETE', 'repos/%s/git/refs/heads/%s' % (repo, branch), check=False, patient=False)
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def run():
+    try:
+        code = main()
+    except TempFail as why:
+        say('%s\na temporary failure: the next check-run runs it again.' % why)
+        code = TEMPFAIL
+    say('gh calls: %(gh)d (and %(rate_limit)d of `gh api rate_limit`, which is free)' % CALLS)
+    return code
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(run())
