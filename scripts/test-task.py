@@ -824,7 +824,7 @@ def manager_up(created):
     assert own['quote'] == promise['id'], own
     assert 'Your last reply: %d.' % promise['id'] in turn_with('QUOTE %d still' % promise['id'])['message']
     # ^ wsx quotes the owner message a reply answers when the reply opens with no quote of its own
-    # and will not sit under it (docs/tasks.md "A quote", `chat::quoted_owner_message`): the turn
+    # and will not sit under it (docs/tasks.md "A quote", `chat::quoted_message`): the turn
     # held several owner messages (the sign-in turn above: the newest), or a chat item was logged
     # after the message. One a manager wrote wins.
     mine = raw_reply(js('task', 'say', 'QUOTE %d keeps mine' % promise['id'])['id'])

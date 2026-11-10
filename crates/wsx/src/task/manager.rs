@@ -2854,9 +2854,10 @@ impl Manager {
         }
     }
 
-    /// A reply that opens with `> message <id>` quotes that message. One that opens with no
-    /// quote and says something quotes the message it relates to when it will not sit under it (`chat::quoted_message`); an owner's own message (`to` empty) only its explicit
-    /// quote. ref: `resolve_quote`, docs/tasks.md "A quote"
+    /// A reply that opens with `> message <id>` quotes that message. One that opens with no quote
+    /// and says something quotes the message it relates to when it will not sit under it
+    /// (`chat::quoted_message`); an owner's own message (`to` empty) only its explicit quote.
+    /// ref: `resolve_quote`, docs/tasks.md "A quote"
     fn quoted(&self, text: String, to: &[u64]) -> (String, Option<u64>) {
         let explicit = text.trim_start().starts_with(QUOTE_REF);
         // ^ A quiet line of an events turn is the manager's own work: a quote would make it a message.
