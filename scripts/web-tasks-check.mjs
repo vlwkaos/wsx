@@ -2597,7 +2597,8 @@ await closeSheet("the To check list after a fail", chat);
 // (docs/web-client-tasks.md "Project screen").
 const checkBubbles = "[...document.querySelectorAll('.log .check-bubble')]";
 // ^ The chat renders its newest rows; these items are older, so show the earlier ones. The wide
-// layout is another page tree, so after a resize past 900 px they are shown again.
+// layout is another page tree, so after a resize past 900 px they are shown again: the wait taps
+// "Show earlier" until the bubble is there, as the log of the other tree comes in late.
 const showEarlier = async () => { for (let n = 0; n < 10 && (await count(".log-earlier")); n++) await click(".log-earlier"); };
 await showEarlier();
 await until(`${checkBubbles}.length >= 3`, "the chat has no To check bubbles", 60);
@@ -2616,14 +2617,12 @@ await shot("to-check-bubble", ".composer-send");
 const bubbleKey = await evaluate(`${bubbleOf(7)}.dataset.key`);
 await viewImages("to-check-bubble", `.log .check-bubble[data-key=${JSON.stringify(bubbleKey)}] .check-capture`, 1, true);
 await resize([1280, 800, 1]);
-await showEarlier();
-await until(`!!${bubbleOf(8)}`, "the wide chat has no To check bubble");
+await until(`(() => { if (!${bubbleOf(8)}) document.querySelector('.log-earlier')?.click(); return !!${bubbleOf(8)}; })()`, "the wide chat has no To check bubble");
 await evaluate(`${bubbleOf(8)}.scrollIntoView({ block: 'center' })`);
 await pause(300);
 await shot("to-check-bubble-wide", ".composer-send");
 await resize([390, 844, 2]);
-await showEarlier();
-await until(`!!${bubbleOf(8)}`, "the chat has no To check bubble after the wide layout");
+await until(`(() => { if (!${bubbleOf(8)}) document.querySelector('.log-earlier')?.click(); return !!${bubbleOf(8)}; })()`, "the chat has no To check bubble after the wide layout");
 // ^ A decision changes the bubble in place: it stays at the time the item was added, so it
 // neither moves to the end nor counts as new (docs/web-client-tasks.md "Project screen").
 const chatPlace = `(() => { const log = document.querySelector('.log'); return { keys: [...log.children].map((node) => node.dataset.key ?? '').join(), at: ${bubbleOf(8)}.dataset.at,
