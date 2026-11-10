@@ -76,7 +76,7 @@ pub fn remove(app: &App, id: u64, halt: bool) -> Outcome<Value> {
 
 /// The granted project and its worktree `id`, refused when the delete is not the page's to
 /// make: the main checkout, a task's working copy or a worktree that holds a task's session.
-/// The same rule as the TUI's `d` (`wsx_core::stale`, docs/tasks.md "Stale worktrees").
+/// ref: `wsx_core::stale`, docs/tasks.md "Stale worktrees"
 fn deletable<'a>(
     app: &App,
     snapshot: &'a wsx_core::runtime::Snapshot,
@@ -96,24 +96,8 @@ fn deletable<'a>(
         return blocked("main_checkout", "the main checkout cannot be deleted");
     }
     let store = wsx_core::task::store::project_id(&project.name, &project.path);
-    let copy = wsx_core::task::view::project_tasks(&store)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|(_, record)| record.ok())
-        .any(|record| record.state.is_open() && record.working_copy == worktree.path);
-    let task_session = snapshot
-        .sessions
-        .iter()
-        .filter(|session| session.worktree_id == worktree.id)
-        .any(|session| {
-            let provider = snapshot
-                .panes
-                .iter()
-                .filter(|pane| pane.session_id == session.id)
-                .find_map(|pane| pane.agent.as_ref())
-                .map(|agent| agent.provider.as_str());
-            wsx_core::task::session_news::is_task_session(&session.label, provider)
-        });
+    let copy = wsx_core::stale::open_copies(&store).contains(&worktree.path);
+    let task_session = wsx_core::stale::holds_task_session(snapshot, worktree.id);
     if copy || task_session {
         return blocked(
             "task_session",

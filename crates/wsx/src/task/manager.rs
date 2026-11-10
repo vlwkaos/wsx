@@ -53,6 +53,7 @@ const EVENT_QUIET: Duration = Duration::from_secs(3);
 /// How often the host removes the captures of long-decided "To check" items.
 const CAPTURE_SWEEP: Duration = Duration::from_secs(60 * 60);
 /// How often the host looks at wsxd for sessions that need the owner.
+const SESSION_LOOK: Duration = Duration::from_secs(2);
 /// How often the project's stale worktrees are swept, or the seconds in
 /// `WSX_TEST_PRUNE_SWEEP_SECS`: for the task scenario only, which would wait an hour.
 fn prune_sweep() -> Duration {
@@ -61,7 +62,6 @@ fn prune_sweep() -> Duration {
         .and_then(|secs| secs.parse().ok())
         .map_or(Duration::from_secs(60 * 60), Duration::from_secs)
 }
-const SESSION_LOOK: Duration = Duration::from_secs(2);
 /// What wsx asks after a quiet period. The reply is the recap the owner reads.
 const RECAP_REQUEST: &str = "The project has been quiet. Write the owner a short recap, at most 8 lines: \
 what landed and is live, what runs, and what waits for the owner and why. Read the ledger for it. Start no \
@@ -983,13 +983,7 @@ impl Manager {
         if rules.off() {
             return;
         }
-        let copies: Vec<PathBuf> = project_tasks(&self.dir.project_id)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(_, record)| record.ok())
-            .filter(|record| record.state.is_open())
-            .map(|record| record.working_copy)
-            .collect();
+        let copies = stale::open_copies(&self.dir.project_id);
         self.pruning = true;
         let (main, events) = (self.main.clone(), self.events.clone());
         std::thread::spawn(move || {
