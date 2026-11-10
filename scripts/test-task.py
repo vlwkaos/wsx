@@ -1455,12 +1455,13 @@ def part_core(created=None):
     ledger = js('task', 'ledger')
     strays = {Path(row['path']).name: row for row in ledger['stray_worktrees']}
     assert set(strays) == {'stray-merged', 'stray-dirty', 'stray-gone'}, ledger['stray_worktrees']
-    flags = lambda name: {k: strays[name][k] for k in ('branch', 'merged_into_main', 'dirty', 'missing', 'sessions')}
-    assert flags('stray-merged') == {'branch': 'stray-merged', 'merged_into_main': True, 'dirty': False,
+    # ^ The sweep's rule (stale::loss): uncommitted files and commits neither merged nor pushed.
+    flags = lambda name: {k: strays[name][k] for k in ('branch', 'dirty', 'unmerged', 'missing', 'sessions')}
+    assert flags('stray-merged') == {'branch': 'stray-merged', 'dirty': 0, 'unmerged': 0,
                                      'missing': False, 'sessions': 0}, strays
-    assert flags('stray-dirty') == {'branch': 'stray-dirty', 'merged_into_main': False, 'dirty': True,
+    assert flags('stray-dirty') == {'branch': 'stray-dirty', 'dirty': 1, 'unmerged': 1,
                                     'missing': False, 'sessions': 0}, strays
-    assert flags('stray-gone') == {'branch': 'stray-gone', 'merged_into_main': True, 'dirty': False,
+    assert flags('stray-gone') == {'branch': 'stray-gone', 'dirty': 0, 'unmerged': 0,
                                    'missing': True, 'sessions': 0}, strays
     assert ledger['stray_worktrees_omitted'] == 0
     for name in ('stray-merged', 'stray-dirty'):

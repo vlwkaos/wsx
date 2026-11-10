@@ -7,6 +7,7 @@
 //! program in the foreground, or a clock wsxd does not give (an older daemon, or git that did
 //! not answer): not knowing is not stale.
 
+use crate::fs_util::same_folder;
 use crate::git::{git_cmd, output_with_timeout};
 use crate::ops;
 use crate::runtime::{AgentState, Client, Request, Response, SessionId, Snapshot};
@@ -167,13 +168,27 @@ pub fn end(facts: &Facts, rules: &Rules, loss: impl FnOnce() -> Option<Loss>) ->
 /// What a delete of `path` on `branch` loses; none when git did not answer. `branch` `HEAD`
 /// is a detached worktree, judged by its own HEAD.
 pub fn loss(main: &Path, path: &Path, branch: &str) -> Option<Loss> {
-    let read = |dir: &Path, args: &[&str]| {
+    loss_with(main, path, branch, &mut |dir, args| {
         output_with_timeout(git_cmd(dir).args(args), READ_TIMEOUT)
             .ok()
             .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+    })
+}
+
+/// `loss` with the caller's way to run git (`read`: stdout of `git args` in a folder, none when
+/// git failed or did not answer), so the ledger keeps its own timeout notes. A folder that is
+/// gone has no uncommitted files. ref: docs/tasks.md "Ledger"
+pub fn loss_with(
+    main: &Path,
+    path: &Path,
+    branch: &str,
+    read: &mut dyn FnMut(&Path, &[&str]) -> Option<String>,
+) -> Option<Loss> {
+    let status = match path.is_dir() {
+        true => read(path, &["status", "--porcelain"])?,
+        false => String::new(),
     };
-    let status = read(path, &["status", "--porcelain"])?;
     let paths: Vec<String> = status
         .lines()
         .filter(|line| line.len() > 3)
@@ -225,7 +240,10 @@ fn git_idle(path: &Path, now_ms: u64) -> Option<u64> {
 
 /// The facts of one worktree from wsxd's snapshot and git.
 pub fn facts(snapshot: &Snapshot, path: &Path, branch: &str, now_ms: u64) -> Facts {
-    let worktree = snapshot.worktrees.iter().find(|w| same(&w.path, path));
+    let worktree = snapshot
+        .worktrees
+        .iter()
+        .find(|w| same_folder(&w.path, path));
     let sessions = snapshot
         .sessions
         .iter()
@@ -300,10 +318,6 @@ pub fn open_copies(project_id: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-fn same(a: &Path, b: &Path) -> bool {
-    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
-}
-
 /// One line for the manager's chat and whether it needs the owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
@@ -323,7 +337,10 @@ pub fn sweep(client: &Client, main: &Path, copies: &[PathBuf], rules: &Rules) ->
     let now = now_unix_ms();
     let mut notes = Vec::new();
     for entry in crate::git::worktree::list_worktrees(main)? {
-        if entry.is_main || same(&entry.path, main) || copies.iter().any(|c| same(c, &entry.path)) {
+        if entry.is_main
+            || same_folder(&entry.path, main)
+            || copies.iter().any(|c| same_folder(c, &entry.path))
+        {
             continue;
         }
         let facts = facts(&snapshot, &entry.path, &entry.branch, now);

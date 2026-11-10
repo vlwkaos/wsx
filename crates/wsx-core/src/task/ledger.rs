@@ -9,7 +9,7 @@ use super::view::{
 use super::{checks, copy, status, store, usage, DeployKind, DeployRecord, TaskRecord, TaskState};
 use crate::config::project::load_task_config;
 use crate::model::workspace::TaskConfig;
-use crate::{ops, runtime};
+use crate::{ops, runtime, stale};
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -326,23 +326,17 @@ fn stray_worktrees(main: &Path, copies: &[&Path], git: &mut Git) -> (Vec<Value>,
     found.retain(|(path, _)| !same(path, main) && !copies.iter().any(|copy| same(path, copy)));
     found.sort();
     let omitted = found.len().saturating_sub(STRAY_WORKTREES);
-    let default = default_ref(main);
     let rows = found
         .into_iter()
         .take(STRAY_WORKTREES)
         .map(|(path, branch)| {
             let missing = !path.is_dir();
-            let mut succeeds = |dir: &Path, args: &[&str]| git.run(dir, args);
-            // ^ A detached worktree is judged by its own HEAD, so it needs its folder.
-            let merged = if branch != "HEAD" {
-                let tip = format!("refs/heads/{branch}");
-                succeeds(main, &["merge-base", "--is-ancestor", &tip, &default]).is_some()
-            } else {
-                !missing
-                    && succeeds(&path, &["merge-base", "--is-ancestor", "HEAD", &default]).is_some()
-            };
-            let dirty = !missing
-                && succeeds(&path, &["status", "--porcelain"]).is_some_and(|out| !out.is_empty());
+            // ^ The sweep's rule (`stale::loss`) with this ledger's git runs, which keep their
+            // timeout notes. Git silent: dirty and unmerged are null.
+            let loss = stale::loss_with(main, &path, &branch, &mut |dir, args| {
+                git.run(dir, args)
+                    .map(|stdout| String::from_utf8_lossy(&stdout).into_owned())
+            });
             let sessions = snapshot.as_ref().map_or(0, |snapshot| {
                 snapshot
                     .worktrees
@@ -360,8 +354,8 @@ fn stray_worktrees(main: &Path, copies: &[&Path], git: &mut Git) -> (Vec<Value>,
             json!({
                 "path": path,
                 "branch": branch,
-                "merged_into_main": merged,
-                "dirty": dirty,
+                "dirty": loss.as_ref().map(|loss| loss.dirty_total),
+                "unmerged": loss.as_ref().map(|loss| loss.unmerged),
                 "missing": missing,
                 "sessions": sessions,
             })
