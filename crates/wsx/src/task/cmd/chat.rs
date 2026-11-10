@@ -7,7 +7,7 @@ use crate::task::args::RoleCmd;
 use crate::task::broker;
 use crate::task::manager;
 use crate::task::{
-    acting_as_manager, actor, launch_manager, not_for_roles, open, print_json, project_entry,
+    acting_as_manager, actor, launch_manager, need, open, print_json, project_entry,
 };
 use anyhow::{bail, Context, Result};
 use serde_json::json;
@@ -17,6 +17,7 @@ use wsx_core::config::project::load_task_config;
 use wsx_core::task::chat::{self, chat_rows, Names, Window};
 use wsx_core::task::manager::{ApprovalAction, ManagerEvent, ManagerRequest, ManagerResponse};
 use wsx_core::task::owner::{self};
+use wsx_core::task::policy::Capability;
 use wsx_core::task::roles;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::MAX_MESSAGE_BYTES;
@@ -325,7 +326,7 @@ pub(crate) fn role(action: RoleCmd) -> Result<()> {
             project,
             json,
         } => {
-            not_for_roles("role new")?;
+            need(Capability::RoleAdmin, "role new")?;
             let (_, project_id, main) = open_project(project.as_deref())?;
             let settings = load_task_config(&main)
                 .map_err(|error| anyhow::anyhow!("{error}; no role was opened"))?;
@@ -389,7 +390,7 @@ pub(crate) fn role(action: RoleCmd) -> Result<()> {
             project,
             json,
         } => {
-            not_for_roles("role close")?;
+            need(Capability::RoleAdmin, "role close")?;
             let (_, project_id, _) = open_project(project.as_deref())?;
             let dir = roles::open_role(&project_id, &name)?;
             roles::close(&dir, &format!("closed by the {}", String::from(actor())))?;
@@ -456,7 +457,7 @@ pub(crate) fn say_command(
 }
 
 /// `wsx task boundary-profile`: the manager's Seatbelt profile (hidden; the boundary scenario).
-pub(crate) fn boundary_profile(project: Option<&str>) -> Result<()> {
+pub(crate) fn boundary_profile(project: Option<&str>, untrusted: bool) -> Result<()> {
     let (name, main) = project_entry(project)?;
-    manager::print_profile(&name, &main)
+    manager::print_profile(&name, &main, untrusted)
 }

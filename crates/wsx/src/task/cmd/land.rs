@@ -2,10 +2,13 @@
 
 use super::approve::{ask_owner, request_of};
 use crate::task::args::OwnerSaid;
-use crate::task::{acting_as_manager, actor, batch, open, open_owned, send};
+use crate::task::{
+    acting_as_manager, actor, asks_owner, batch, may, open, open_owned, owner_said, send,
+};
 use anyhow::{bail, Context, Result};
 use wsx_core::config::project::load_task_config;
 use wsx_core::task::manager::ApprovalAction;
+use wsx_core::task::policy::Capability;
 use wsx_core::task::{AfterKind, HostRequest, TaskState};
 
 /// `land <a> <b>...`: refuse what one land would refuse, then ask the first task's host to
@@ -19,7 +22,7 @@ pub(crate) fn land_batch(
     if tried {
         bail!("--tried passes one trial: land that task alone");
     }
-    if actor().role().is_some() {
+    if !may(Capability::Land) {
         bail!("a role lands only a child into its parent task, one at a time");
     }
     let mut ids = Vec::new();
@@ -43,7 +46,7 @@ pub(crate) fn land_batch(
     let (dir, first) = first.context("no task to land")?;
     let settings = load_task_config(&first.project_path)
         .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
-    if acting_as_manager() && settings.land_approve {
+    if asks_owner(settings.land_approve) {
         bail!("each land needs the owner's approval: land the tasks one at a time");
     }
     send(&dir, HostRequest::LandBatch { tasks: ids }, json)
@@ -105,7 +108,7 @@ pub(crate) fn land_command(
     }
     let record = dir.read_record()?;
     // ^ A role lands only into a parent task; the manager lands onto the default branch.
-    if actor().role().is_some() && record.parent.is_none() {
+    if !may(Capability::Land) && record.parent.is_none() {
         bail!(
             "a role lands only a child into its parent task; #{} lands onto {}, which is the manager's",
             record.id,
@@ -114,12 +117,11 @@ pub(crate) fn land_command(
     }
     let settings = load_task_config(&record.project_path)
         .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
-    if acting_as_manager()
-        && settings.land_approve
+    if asks_owner(settings.land_approve)
         && ask_owner(
             &dir.project_id,
             request_of(ApprovalAction::Land, Some(&record), None, None, None),
-            said.owner_said,
+            owner_said(said.owner_said),
             json,
         )?
     {

@@ -35,6 +35,7 @@ use wsx_core::task::manager::{
     Author, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
     ManagerResponse, ManagerState, Seen, Short,
 };
+use wsx_core::task::policy;
 use wsx_core::task::session_news;
 use wsx_core::task::stall;
 use wsx_core::task::store;
@@ -227,6 +228,8 @@ struct Manager {
     /// When the host last removed old captures; `None` sweeps on the first tick.
     captures_swept: Option<Instant>,
     owed: Owed,
+    /// The policy of the agent that runs now, which the broker checks commands against.
+    policy: broker::SharedPolicy,
     /// When the agent last failed to start a turn; the next try waits `START_RETRY`.
     start_failed: Option<Instant>,
     /// Event lines of tasks a role created, by role, not yet sent to it.
@@ -278,13 +281,21 @@ fn role_preamble(role: &str, project: &str, brief: &str) -> String {
 }
 
 /// The manager's boundary profile as text. ref: scripts/test-manager-boundary.py
-pub fn print_profile(project: &str, main: &Path) -> Result<()> {
+pub fn print_profile(project: &str, main: &Path, untrusted: bool) -> Result<()> {
     let project_id = store::project_id(project, main);
     let dir = ManagerDir::open(&project_id)?;
     let overview = store::ensure_overview(&project_id, project)?;
+    let (trust, adapter) = match untrusted {
+        true => (policy::Trust::Untrusted, "pi"),
+        false => (policy::Trust::Trusted, "claude"),
+    };
+    let policy = policy::Policy::of(trust, policy::Role::Manager, None);
     print!(
         "{}",
-        Boundary::manager(main, &dir.path, &overview)?.profile()
+        Boundary::manager(main, &dir.path, &overview, policy)?
+            .adapter(adapter, None)
+            .broker(&dir.broker_path())
+            .profile()
     );
     Ok(())
 }
@@ -342,6 +353,7 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         reexec: false,
         captures_swept: None,
         owed: Owed::default(),
+        policy: broker::SharedPolicy::default(),
         start_failed: None,
         role_events: BTreeMap::new(),
         roles_swept: None,
@@ -371,6 +383,7 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         events.clone(),
         manager.actor(),
     );
+    let policy = manager.policy.clone();
     std::thread::spawn(move || {
         broker::serve_manager(
             brokered,
@@ -379,6 +392,7 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
             own,
             actor,
             owed,
+            policy,
             move |to, text, reply| {
                 let _ = sent.send(Event::Sent { to, text, reply });
             },
@@ -2099,26 +2113,28 @@ impl Manager {
         }
         self.generation += 1;
         let generation = self.generation;
-        let started = self.launch().and_then(|launch| {
-            let launch = Launch {
-                model: agent.model.clone(),
-                instructions: STAND_IN.into(),
-                plugin_dirs: Vec::new(),
-                minimal: true,
-                ..launch
-            };
-            let mut spawned = Agent::spawn(
-                &agent.adapter,
-                &launch,
-                &new_session_id()?,
-                false,
-                0,
-                self.events.clone(),
-                move |line| Event::Agent(generation, line),
-            )?;
-            spawned.send(prompt.trim_end())?;
-            Ok(spawned)
-        });
+        let started = self
+            .launch_for(&agent.adapter, &agent.model)
+            .and_then(|launch| {
+                let launch = Launch {
+                    model: agent.model.clone(),
+                    instructions: STAND_IN.into(),
+                    plugin_dirs: Vec::new(),
+                    minimal: true,
+                    ..launch
+                };
+                let mut spawned = Agent::spawn(
+                    &agent.adapter,
+                    &launch,
+                    &new_session_id()?,
+                    false,
+                    0,
+                    self.events.clone(),
+                    move |line| Event::Agent(generation, line),
+                )?;
+                spawned.send(prompt.trim_end())?;
+                Ok(spawned)
+            });
         match started {
             Ok(spawned) => {
                 self.agent = Some(spawned);
@@ -2535,14 +2551,45 @@ impl Manager {
         agent.send(text.trim_end())
     }
 
-    /// The manager runs inside its boundary and prompts for nothing. ref: docs/tasks.md "Permissions"
+    /// The launch of the agent that runs now; its policy is the broker's from here on.
     fn launch(&self) -> Result<Launch> {
+        let (adapter, model) = match &self.state.agent {
+            Some(agent) => (agent.adapter.clone(), agent.model.clone()),
+            None => (self.adapter.clone(), self.model.clone()),
+        };
+        let launch = self.launch_for(&adapter, &model)?;
+        self.policy.set(launch.boundary.policy());
+        Ok(launch)
+    }
+
+    /// The manager runs inside its boundary and prompts for nothing. ref: docs/tasks.md "Permissions"
+    fn launch_for(&self, adapter: &str, model: &str) -> Result<Launch> {
         let exe = std::env::current_exe().context("cannot find the wsx binary")?;
         let notes = self.dir.notes()?;
         let broker_socket = self.dir.broker_path();
         let overview = store::ensure_overview(&self.dir.project_id, &self.project)?;
-        let boundary = Boundary::manager(&self.main, &self.dir.path, &overview)?;
         let root = config_root(&self.main)?;
+        let env: Vec<(String, std::ffi::OsString)> = [
+            (
+                broker::BROKER_ENV.into(),
+                broker_socket.clone().into_os_string(),
+            ),
+            (ACTOR_ENV.into(), self.actor().into()),
+            // ^ Its git reads must not take the index lock of the owner's checkout.
+            ("GIT_OPTIONAL_LOCKS".into(), "0".into()),
+        ]
+        .into_iter()
+        .chain(account_env(root.clone()))
+        .collect();
+        let role = match self.dir.role {
+            Some(_) => policy::Role::Area,
+            None => policy::Role::Manager,
+        };
+        let policy = agent::policy(role, adapter, model, &env);
+        let boundary = Boundary::manager(&self.main, &self.dir.path, &overview, policy)?
+            .adapter(adapter, root.as_deref())
+            .reach(adapter, model, &env)
+            .broker(&broker_socket);
         let skills = skills_plugin(&self.dir.path, root.as_deref(), &[])?;
         let workflow = load_task_config(&self.main)
             .map(|settings| settings.workflow)
@@ -2558,7 +2605,7 @@ impl Manager {
             text = role_preamble(role, &self.project, &roles::brief(&self.dir)) + &text;
         }
         // ^ Other adapters list lent skills themselves (pi.rs `--skill`).
-        if self.current_adapter() != "claude" {
+        if adapter != "claude" {
             text = text.replace(
                 &format!("with the Skill tool as `{SKILLS_PLUGIN_NAME}:<name>`"),
                 "in your skills list",
@@ -2569,13 +2616,7 @@ impl Manager {
         launch.plugin_dirs = skills.into_iter().collect();
         // ^ The agent's `wsx task` commands go to this host (broker.rs), which runs them as
         // the manager actor; the actor mark stays for the approval rules.
-        launch.env = vec![
-            (broker::BROKER_ENV.into(), broker_socket.into_os_string()),
-            (ACTOR_ENV.into(), self.actor().into()),
-            // ^ Its git reads must not take the index lock of the owner's checkout.
-            ("GIT_OPTIONAL_LOCKS".into(), "0".into()),
-        ];
-        launch.env.extend(account_env(root));
+        launch.env = env;
         launch.path_prefix = exe.parent().map(Path::to_path_buf);
         Ok(launch)
     }

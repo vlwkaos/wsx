@@ -1,11 +1,12 @@
 //! `digest`, `checkin` and `post`: what a routine does for the chat (docs/tasks.md "Routines").
 
 use crate::cli::RoutineCmd;
-use crate::task::{acting_as_manager, not_for_roles, project_entry};
+use crate::task::{acting_as_manager, need, project_entry};
 use anyhow::{bail, Context, Result};
 use std::time::{Duration, Instant};
 use wsx_core::task::manager::{Author, Level, ManagerEntry, ManagerEvent};
 use wsx_core::task::owner::{self};
+use wsx_core::task::policy::Capability;
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::view::digest_lines;
 use wsx_core::task::{
@@ -54,7 +55,7 @@ pub(crate) fn checkin(
     why: &str,
 ) -> Result<()> {
     use wsx_core::routine::{Action, Routine, Trigger};
-    not_for_roles("a check-in")?;
+    need(Capability::Routine, "a check-in")?;
     let why = why.trim();
     if why.is_empty() || why.chars().count() > CHECKIN_WHY_CHARS {
         bail!("--why must say what to look at, in at most {CHECKIN_WHY_CHARS} characters");
@@ -236,12 +237,12 @@ pub(crate) fn routine_command(action: RoutineCmd, owner_said: Option<u64>) -> Re
     use RoutineCmd::{Add, Delete, Disable, Edit, Enable};
     // ^ A role changes nothing of the project's own (docs/tasks.md "Roles").
     if let Add { .. } | Edit { .. } | Delete { .. } | Enable { .. } | Disable { .. } = &action {
-        not_for_roles("routine changes")?;
+        need(Capability::Routine, "routine changes")?;
     }
     // ^ wsxd runs a routine outside the agent boundary: only the owner writes one.
     if let Add { project, .. } | Edit { project, .. } | Delete { project, .. } = &action {
         if acting_as_manager() {
-            let said = owner_said.context(
+            let said = crate::task::owner_said(owner_said).context(
                 "the owner adds, edits and deletes routines: pass --owner-said <id> \
                  when the owner's message of this turn asks for it; nothing was run",
             )?;

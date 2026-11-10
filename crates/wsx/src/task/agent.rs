@@ -17,7 +17,7 @@ use std::sync::mpsc::{sync_channel, Sender, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 use wsx_core::config::global::Operation;
 use wsx_core::model::workspace::TaskConfig;
-use wsx_core::task::{store, usage, TurnUsage};
+use wsx_core::task::{policy, store, usage, TurnUsage};
 
 /// Ping turns in a row, without a real turn between: three keep a conversation warm for
 /// about 3 h 40 min and cost far less than the one rewrite they save.
@@ -226,6 +226,41 @@ impl Agent {
             Self::Pi(agent) => agent.stop(),
         }
     }
+}
+
+/// What the agent about to start may do (`wsx_core::task::policy`): trust from its adapter and
+/// the `ANTHROPIC_BASE_URL` in its environment `env`; its role's group cut down to the `may`
+/// of each registry entry with its adapter and model (a `minimal` stand-in with none may only
+/// answer; no entry or no list: all of the role's, as before the lists).
+pub fn policy(
+    role: policy::Role,
+    adapter: &str,
+    model: &str,
+    env: &[(String, OsString)],
+) -> policy::Policy {
+    let base_url = env
+        .iter()
+        .find(|(name, _)| name == "ANTHROPIC_BASE_URL")
+        .map(|(_, value)| value.as_os_str());
+    let mut may: Option<Vec<policy::Capability>> = None;
+    let entries = wsx_core::config::global::GlobalConfig::load()
+        .map(|(config, _)| config.agents)
+        .unwrap_or_default();
+    for entry in entries.iter().filter(|entry| {
+        entry.adapter.as_deref() == Some(adapter) && entry.model.as_deref() == Some(model)
+    }) {
+        let list = match (&entry.may, entry.minimal) {
+            (Some(list), _) => list.clone(),
+            (None, true) => vec![policy::Capability::Answer],
+            (None, false) => continue,
+        };
+        // ^ Several entries for one model: it holds only what all of them pass.
+        may = Some(match may {
+            None => list,
+            Some(have) => have.into_iter().filter(|cap| list.contains(cap)).collect(),
+        });
+    }
+    policy::Policy::of(policy::trust(adapter, base_url), role, may.as_deref())
 }
 
 /// A registry agent a host can run headless.
@@ -482,6 +517,13 @@ impl AgentProcess {
         let mut command = launch.boundary.command(program)?;
         command.args(args).env_clear();
         for name in kept {
+            // ^ An untrusted agent holds no model key but its own provider's: `env` would print them.
+            if launch.boundary.policy().strict()
+                && name.ends_with("_API_KEY")
+                && launch.boundary.provider_key() != Some(name)
+            {
+                continue;
+            }
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
             }

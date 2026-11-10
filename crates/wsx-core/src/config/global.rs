@@ -375,6 +375,11 @@ pub struct AgentEntry {
     /// with some it does those roles only. Needs the `pi` adapter. ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roles: Vec<Role>,
+    /// The capabilities this agent passed the test for (`task::policy`); its role's group is
+    /// cut down to them. None: all of the role's, and a `minimal` stand-in only `answer`.
+    /// ref: docs/tasks.md "Permissions"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub may: Option<Vec<crate::task::policy::Capability>>,
 }
 
 impl AgentEntry {

@@ -34,7 +34,7 @@ pub(crate) fn check(action: Option<CheckAction>, project: Option<&str>, json: bo
         Some(CheckAction::Pass { chosen, said }) => {
             // ^ The manager passes only the items it names, on the owner's message of this turn.
             let owner_said = if acting_as_manager() {
-                match said.owner_said {
+                match crate::task::owner_said(said.owner_said) {
                     Some(said) if !chosen.all => {
                         owner::check_owner_said(&project_id, said)?;
                         Some(said)

@@ -8,7 +8,9 @@ Pi adapter's instructions ask; a manager answers "pi answers: <first line>". The
 streams Pi's own events: agent_start, an assistant message_end with usage, agent_settled.
 Launch arguments, the Pi folder (`PI_CODING_AGENT_DIR`: its files and `models.json`) and messages
 go to $FAKE_CLAUDE_TRACE with `adapter: pi`.
-ref: crates/wsx/src/task/pi.rs; Pi docs rpc.md, json.md
+`FORBID <script> <spec> <out>` (a worker) runs scripts/fake-weak-model.py as its own command, as a weak model
+would try forbidden actions; a line `RUN <command>` of a message runs that shell command and quotes its
+answer. ref: crates/wsx/src/task/pi.rs; Pi docs rpc.md, json.md
 """
 import json
 import os
@@ -122,14 +124,33 @@ def main():
                 name = words[words.index('WORK') + 1]
                 with open(name, 'w') as out:
                     out.write('written by the fake pi\n')
-                subprocess.run(['git', 'add', name], check=True)
-                subprocess.run(['git', '-c', 'user.name=fake', '-c', 'user.email=fake@example.invalid',
-                                'commit', '-q', '-m', 'add ' + name], check=True)
+                for git in (['add', name], ['-c', 'user.name=fake', '-c', 'user.email=fake@example.invalid', 'commit', '-q', '-m', 'add ' + name]):
+                    done = subprocess.run(['git'] + git, capture_output=True, text=True)
+                    if done.returncode:
+                        # ^ The reason goes to the trace: the scenario shows it when the task fails.
+                        trace({'session': session, 'git_failed': git[-3:], 'error': done.stderr[-800:]})
+                        sys.exit(1)
+            if 'FORBID' in words:
+                script, spec, out = words[words.index('FORBID') + 1:words.index('FORBID') + 4]
+                # ^ A crash of the script is an answer too: the test reads it from the trace.
+                done = subprocess.run([sys.executable, script, spec, out], capture_output=True, text=True)
+                trace({'session': session, 'forbid_exit': done.returncode, 'forbid_error': done.stderr[-1500:]})
+                if done.returncode == 0:
+                    with open(out) as answer:
+                        trace({'session': session, 'forbid': json.load(answer)})
             result = {'status': 'done', 'summary': 'fake pi finished the turn', 'memo': ''}
             reported = subprocess.run(['wsx', 'task', 'result', '-'], input=json.dumps(result),
                                       capture_output=True, text=True)
             trace({'session': session, 'reported': reported.returncode, 'answer': reported.stdout + reported.stderr})
             answer = 'Done.'
+        elif any(line.startswith('RUN ') for line in text.splitlines()):
+            # ^ As fake-claude-stream.py: the manager's own commands, here through the broker.
+            said = next((line.split('(message ', 1)[1].split(')', 1)[0] for line in text.splitlines()
+                         if line.startswith('Owner (message ')), '0')
+            answer = '\n'.join(
+                'ran: %s -> %d %s' % (line[4:], done.returncode, (done.stdout + done.stderr).strip()[:600])
+                for line in text.splitlines() if line.startswith('RUN ')
+                for done in [subprocess.run(line.replace('OWNER_SAID', said)[4:], shell=True, capture_output=True, text=True)])
         else:
             answer = 'pi answers: ' + text.strip().splitlines()[0]
         emit({'type': 'tool_execution_start', 'toolCallId': 't1', 'toolName': 'bash', 'args': {'command': 'git status'}})

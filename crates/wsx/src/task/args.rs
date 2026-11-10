@@ -4,8 +4,10 @@
 use super::cmd::new::Size;
 use super::cmd::routine::post_key;
 use crate::cli::PromptSource;
+use crate::cli::RoutineCmd;
 use clap::Subcommand;
 use std::path::PathBuf;
+use wsx_core::task::policy::Capability;
 use wsx_core::task::AfterKind;
 
 /// `--owner-said <id>` on an action that needs the owner's approval (docs/tasks.md "Approvals").
@@ -256,7 +258,7 @@ pub enum TaskCmd {
     /// The project's scheduled routines: `wsx routine` (docs/tasks.md "Routines")
     Routine {
         #[command(subcommand)]
-        action: crate::cli::RoutineCmd,
+        action: RoutineCmd,
         /// The manager: the owner's message of this turn that asked to add, edit or delete it
         #[arg(long, value_name = "MESSAGE", global = true)]
         owner_said: Option<u64>,
@@ -395,6 +397,9 @@ pub enum TaskCmd {
     BoundaryProfile {
         #[arg(short, long)]
         project: Option<String>,
+        /// The profile of an untrusted agent (Pi, or Claude on another endpoint)
+        #[arg(long)]
+        untrusted: bool,
     },
     #[command(hide = true)]
     ManagerHost {
@@ -572,6 +577,69 @@ pub enum RoleCmd {
 }
 
 impl TaskCmd {
+    /// The command an agent's argv names, `None` when it parses to no `wsx task` command.
+    pub fn parse_argv(argv: &[String]) -> Option<Self> {
+        use clap::Parser;
+        let args = crate::cli::Args::try_parse_from(
+            std::iter::once("wsx").chain(argv.iter().map(String::as_str)),
+        )
+        .ok()?;
+        match args.command {
+            Some(crate::cli::Command::Task { subcommand }) => Some(subcommand),
+            _ => None,
+        }
+    }
+
+    /// What this command needs, any one of: the broker lets an agent run it only when its
+    /// policy grants one (`wsx_core::task::policy`). One owner of the table: a new subcommand
+    /// does not compile until it says. A command the CLI judges finer (an owner's word, a
+    /// task's creator) is checked again there.
+    pub fn needs(&self) -> &'static [Capability] {
+        use Capability::*;
+        match self {
+            Self::List { .. }
+            | Self::Show { .. }
+            | Self::Ledger { .. }
+            | Self::Deployed { .. }
+            | Self::Chat { .. }
+            | Self::Search { .. }
+            | Self::Check { .. }
+            | Self::Manager { .. } => &[Read],
+            Self::Post { .. } | Self::Digest { .. } | Self::Say { .. } => &[Notify],
+            Self::CheckRun { .. } => &[Result],
+            Self::After { .. } | Self::Hold { .. } => &[Backlog],
+            Self::Steer { .. } | Self::Add { .. } | Self::Stop { .. } | Self::Preview { .. } => {
+                &[Direct]
+            }
+            Self::New(_) => &[CreateTask],
+            Self::Close { discard: true, .. } => &[Discard],
+            Self::Close { .. } => &[Close],
+            Self::Land { .. } => &[Land, LandChild],
+            Self::Trial { .. } | Self::Deploy(_) | Self::Release(_) | Self::Push(_) => &[Deploy],
+            Self::Checkin { .. } => &[Routine],
+            Self::Routine { action, .. } => match action {
+                RoutineCmd::List { .. } | RoutineCmd::Show { .. } | RoutineCmd::Logs { .. } => {
+                    &[Read]
+                }
+                _ => &[Routine],
+            },
+            Self::Role { action } => match action {
+                RoleCmd::List { .. } => &[Read],
+                RoleCmd::New { .. } | RoleCmd::Close { .. } => &[RoleAdmin],
+            },
+            Self::Hand { .. }
+            | Self::Handback { .. }
+            | Self::Dismiss { .. }
+            | Self::Approve { .. }
+            | Self::Deny { .. }
+            | Self::PreviewHost { .. }
+            | Self::LandBatch { .. }
+            | Self::Host { .. }
+            | Self::BoundaryProfile { .. }
+            | Self::ManagerHost { .. } => &[Approve],
+        }
+    }
+
     pub fn json_output(&self) -> bool {
         match self {
             Self::New(NewArgs { json, .. })
