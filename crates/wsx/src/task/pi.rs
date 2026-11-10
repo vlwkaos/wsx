@@ -241,12 +241,16 @@ fn runner_progress(line: &[u8]) -> Option<String> {
     let value: Value = serde_json::from_slice(line).ok()?;
     let field = |name: &str| value.get(name).and_then(Value::as_str).unwrap_or("");
     let text = match value.get("pygmalion")?.as_str()? {
-        "deny" => format!(
-            "runner denied {} {}: {}",
-            field("tool"),
-            clip(field("path"), PROGRESS_CHARS),
-            field("reason")
-        ),
+        "deny" => {
+            // ^ A call without a path (bash) has none in the runner's line.
+            let path = clip(field("path"), PROGRESS_CHARS);
+            let at = if path.is_empty() {
+                String::new()
+            } else {
+                format!(" {path}")
+            };
+            format!("runner denied {}{at}: {}", field("tool"), field("reason"))
+        }
         "policy" => format!("runner policy: {}", field("reason")),
         _ => return None,
     };
