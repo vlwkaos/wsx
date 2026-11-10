@@ -523,15 +523,16 @@ impl Chat {
             let Some(entry) = self.grant(&relative, root, media, false, true) else {
                 continue;
             };
-            let poster = entry.mime.starts_with("video/").then(|| {
+            let poster = if entry.mime.starts_with("video/") {
                 self.grant(&relative.with_extension("jpg"), root, media, false, true)
                     .filter(|poster| poster.is_image())
-            });
+                    .map(|poster| format!("media/{}", poster.file_name()))
+            } else {
+                None
+            };
             let mut file = Attachment::from(entry);
             file.src = Some(path);
-            file.poster = poster
-                .flatten()
-                .map(|poster| format!("media/{}", poster.file_name()));
+            file.poster = poster;
             if !found.iter().any(|existing| existing.hash == file.hash) {
                 found.push(file);
             }

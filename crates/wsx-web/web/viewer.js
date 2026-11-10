@@ -29,7 +29,7 @@ export function openViewer(images, index, opener, { dark = true } = {}) {
 }
 
 // The tap target of a picture or a video that opens in the viewer: a To check capture (checks.js)
-// and a video a chat message shows (markdown.js). A video shows its `poster` (or a blank frame)
+// and a video a chat message shows (chat.js `Attachments`). A video shows its `poster` (or a blank frame)
 // with a play mark. `size`: the capture's [width, height], so its box is there before the image.
 export const Capture = ({ href, label, download, video, poster, size, duration }) => html`
   <a class="check-capture" href=${href} data-view data-download=${download} data-video=${video || undefined} data-poster=${poster} aria-label=${label}>
