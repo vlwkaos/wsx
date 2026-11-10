@@ -1411,6 +1411,11 @@ await send("Network.setBlockedURLs", { urls: ["*/timeline*"] });
 const sentActions = ".message-user[data-pending] .message-actions";
 await controlGapsAt("chat-sent-gaps", sentActions, async () => {
   if (await count(`${sentActions} button + button`)) return;
+  // ^ The mounted-again chat has no data while the timeline is blocked, and a send's answer only adds to data it has:
+  // read the chat once, then block the timeline and send.
+  await send("Network.setBlockedURLs", { urls: [] });
+  await until("!!document.querySelector('.chat .message, .chat .empty') && !document.querySelector('.chat-error')", "the idle session chat did not load again");
+  await send("Network.setBlockedURLs", { urls: ["*/timeline*"] });
   await typeInto("sent and not shown yet");
   await evaluate("document.querySelector('.composer .button-primary').click()");
   // The agent still works on the earlier send: this one waits in the queue, then is delivered.
