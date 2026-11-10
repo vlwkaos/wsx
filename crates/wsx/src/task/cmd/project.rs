@@ -3,10 +3,11 @@
 use super::approve::{ask_covering, request_of};
 use crate::cli::load_config;
 use crate::task::args::ProjectCmd;
-use crate::task::{acting_as_manager, not_for_roles, print_json, project_entry};
+use crate::task::{acting_as_manager, need, print_json, project_entry};
 use anyhow::Result;
 use serde_json::json;
 use wsx_core::task::manager::{ApprovalAction, ApprovalLine};
+use wsx_core::task::policy::Capability;
 use wsx_core::task::store;
 use wsx_core::{ops, runtime};
 
@@ -18,7 +19,7 @@ pub(crate) fn project(action: ProjectCmd) -> Result<()> {
         project,
         json,
     } = action;
-    not_for_roles("project add")?;
+    need(Capability::Deploy, "project add")?;
     let mut config = load_config()?;
     // ^ The refusals come first, so the manager hears them and the owner is never asked for
     // what would be refused.
