@@ -51,3 +51,5 @@ The runner needs Pi on `PATH` and no setup beyond that path: wsx hands it `PYGMA
 ## Check it
 
 `python3 -I scripts/local-model-proof.py` runs against the endpoint (same `LOCAL_MODEL_URL` and `LOCAL_MODEL_KEY_FILE`; `LOCAL_MODEL_ID` names the model, else the first one `/v1/models` lists): `/v1/models` with and without the key, one tool call, decode speed, a 4K prompt cold and cached, and one `pi --mode rpc` round trip (bash tool). It writes `proof.json` and `pi-rpc.jsonl` to `.work/local-model/`, or to the folder given as its argument. It starts and stops no server.
+
+`python3 -B scripts/runner-proof.py` runs the real Pi with the real lean runner through wsx (isolated wsxd, inside the Seatbelt boundary, so not inside another sandbox; build `wsx` and `wsxd` first; `--runner` and `--pi` name the files). Its provider is a scripted server on loopback, so it needs no key and no model: one worker writes outside and inside its working copy (the runner denies the first, with a `runner denied` line in the task log), and one runs on a policy file changed after wsx wrote it (the runner denies every call). It writes `.work/runner-proof/report.json`.

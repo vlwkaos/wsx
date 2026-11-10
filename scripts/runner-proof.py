@@ -44,6 +44,7 @@ tag=$(echo "$model" | tr '/' '_')
 mkdir -p "%(proof)s"
 cp "$PYGMALION_POLICY" "%(proof)s/policy-$tag.json"
 echo "$PYGMALION_POLICY_SHA256" > "%(proof)s/sha-$tag.txt"
+stat -f %%Lp "$PYGMALION_POLICY" > "%(proof)s/mode-$tag.txt"
 case "$model" in */tamper) printf ' ' >> "$PYGMALION_POLICY" ;; esac
 exec "%(pi)s" "$@"
 '''
@@ -229,7 +230,8 @@ def run(wsx, wsxd, pi, runner, node_dir, work, owned):
     git('add', '.')
     git('commit', '-q', '-m', 'start')
 
-    report = {'pi': str(pi), 'runner': str(runner), 'pi_version': subprocess.run(
+    commit = subprocess.run(['git', '-C', str(runner.parent), 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()
+    report = {'pi': str(pi), 'runner': str(runner), 'runner_commit': commit, 'pi_version': subprocess.run(
         [str(pi), '--version'], env=env, capture_output=True, text=True).stdout.strip()}
 
     # 1. A worker whose policy file is as wsx wrote it.
@@ -247,7 +249,7 @@ def run(wsx, wsxd, pi, runner, node_dir, work, owned):
     report['main'] = {
         'task': main, 'state': shown['state'], 'working_copy': str(copy),
         'policy': policy, 'policy_sha256_matches_env': hashlib.sha256(raw).hexdigest() == (proof / 'sha-scripted_main.txt').read_text().strip(),
-        'policy_mode_note': 'the file is written 0600 by wsx (pi.rs write_policy)',
+        'policy_file_mode': (proof / 'mode-scripted_main.txt').read_text().strip(),
         'log_runner_lines': denied + [line for line in logged if line.startswith('runner policy:')],
         'log_all_progress': logged,
         'tool_results_seen_by_the_provider': [r['tool_results'][-1] if r['tool_results'] else None for r in results],
@@ -257,7 +259,7 @@ def run(wsx, wsxd, pi, runner, node_dir, work, owned):
     }
     assert policy['tools'] == ['read', 'bash', 'edit', 'write'] and policy['read'] == ['/'], policy
     assert os.path.realpath(copy) in policy['write'], (copy, policy['write'])
-    assert report['main']['policy_sha256_matches_env'], report['main']
+    assert report['main']['policy_sha256_matches_env'] and report['main']['policy_file_mode'] == '600', report['main']
     assert len(denied) == 1 and 'outside-proof.txt' in denied[0] and denied[0].startswith('runner denied write '), logged
     assert not outside.exists() and not outside_bash.exists(), 'a write outside the working copy worked'
     assert report['main']['inside_file'] == 'inside the copy\n' and 'inside' in report['main']['inside_committed'], report['main']
