@@ -276,11 +276,14 @@ impl From<crate::media::Entry> for Attachment {
     }
 }
 
+/// (path, mtime, size, only pictures and videos) of a project file already copied into the
+/// media store.
+type ProducedKey = (PathBuf, i64, u64, bool);
+
 pub struct Chat {
-    /// (path, mtime, size, only pictures and videos) of a project file already copied into the
-    /// media store.
+    /// Project files already copied into the media store, by `ProducedKey`.
     /// `None` records a file the store refused, so it is not copied again on every read.
-    produced: Mutex<HashMap<(PathBuf, i64, u64, bool), Option<String>>>,
+    produced: Mutex<HashMap<ProducedKey, Option<String>>>,
     /// One delivery at a time: the page's send and the event observer must not both send
     /// the same waiting message.
     delivering: Mutex<()>,
