@@ -1,43 +1,51 @@
 # Local model fallback
 
-Design only, written 2026-11-10 for task #349. No code changes. Builds on #348 (a failed sign-in moves to the fallback list): this design does not repeat it.
+Design only, written 2026-11-10 for task #349, revised the same day for owner message 3677 (task #354): roles instead of tiers, strata reserved, Claude reviews local-built work, evaluate then tune then assign. No code changes. Builds on #348 (a failed sign-in moves to the fallback list): this design does not repeat it.
 Model figures from the web are vendor or third-party numbers with their source. The machine figures in 2.2 were measured read-only on this Mac with the command shown. Section 3 defines the test that replaces vendor figures with wsx's own.
 
 ## 1. Answer
 
-Claude stays the supervisor. When Claude is down, a local model of 9B or less takes the work it is fit for, through Pi (`pi --mode rpc`) with a lean build of the owner's `pygmalion` package (option B).
+Claude stays the supervisor. When Claude is down, a local model of 9B or less takes a **role**: a job description, not a permission. The roles are organizer / Q&A, backlog, note-taker and handoff (3.2). Planning, starting, landing and reviewing tasks stay with Claude. A model gets a role only after three steps in this order: **evaluate** it on the role's real cases, **tune** the harness on the same cases, then **assign**. It runs through Pi (`pi --mode rpc`) with a lean build of the owner's `pygmalion` package (option B).
 
 | Part | Recommendation |
 |---|---|
-| Endpoint | One OpenAI-compatible base URL in Pi's `models.json`, whatever serves it. Start with a wsx-documented `llama-server` recipe. `kaos serve` or Locals swap in later by editing one URL; strata adds a large tier on a second URL |
-| Models | Test Qwen3.5-9B (top tier candidate), Gemma 4 E4B and LFM3-1.7B. Our own test (section 3) decides |
-| Large local | strata (Niko1221/Strata) streams a much larger MoE model from the SSD: slower, a candidate for tier 1 (manager and plan fallback). Models of 9B or less (LFM3, Qwen3.5-9B, Gemma 4 E4B) serve the fast, small operations. Not installed or measured here; this Mac has 24 GiB RAM and 39 GB free disk (2.2, 2.5) |
-| Tiers | `tier` 1..3 on `[[agents]]` plus a minimum tier per operation in code. No passed test means no tier: the agent stays a stand-in as today |
-| Permissions | A Pi agent can run any model, so no rule relies on the model. One policy in wsx-core, rendered to the Seatbelt profile and the broker's command table; Pi's tool layer only reads it. Section 5 |
+| Endpoint | One OpenAI-compatible base URL in Pi's `models.json`, whatever serves it. Start with a wsx-documented `llama-server` recipe. `kaos serve` or Locals swap in later by editing one URL |
+| Models | Test Qwen3.5-9B, Gemma 4 E4B and LFM3-1.7B. Our own test (3.5) decides which model holds which role |
+| Large local | Reserved. strata is for a model that would not fit in memory; none is planned now. It does not run Qwen3.6-35B-A3B on a Mac at all (2.5) |
+| Roles | `roles = [...]` on `[[agents]]`, written by the owner after a passed run. A role = instruction text the agent gets plus the `wsx task` commands its broker allows (3.3). No passed role means no role: the agent stays a stand-in as today |
+| Handoff | When Claude returns, the handoff role gives it a short gist of the fallback, with message ids, in its next turn (3.4) |
+| Evaluate, tune, assign | `scripts/bench-tier.py` scores each model on each role's cases (W4). A tuning loop in the lean pygmalion re-runs the same cases (W10). Only then roles are assigned (3.5, 3.6) |
+| Landing | Work built by a local model needs Claude's review before it lands (owner's answer to former question 3; 3.7) |
+| Permissions | A Pi agent can run any model, so no rule relies on the model. One policy in wsx-core, rendered to the Seatbelt profile and the broker's command table; Pi's tool layer only reads it. A role never widens it. Section 5 |
 | Runner | Pi plus a lean, headless pygmalion extension (section 6) |
-| Order | Policy and tier gate in wsx, lean runner and tier test in parallel, then rules sized for small windows |
 
 ```mermaid
 flowchart TD
-  O[Owner message or event] --> M[manager host / task host]
-  M -->|operation needs tier N| F[agent::fallback need]
-  F -->|Claude free, or wait ok| C[Claude adapter: claude -p, trusted profile]
-  F -->|Claude limited or signed out, agent tier <= N| P[Pi adapter: pi --mode rpc -e lean pygmalion, untrusted profile]
-  F -->|no agent qualifies| W[wait / stand-in text only]
-  POL[(Policy::for trust, role, tier: wsx-core)] --> SB[Seatbelt profile]
-  POL --> BR[broker: command classes]
+  O[Owner message or event] --> M[manager host]
+  M -->|Claude free, or wait ok| C["Claude adapter: claude -p, trusted profile"]
+  M -->|Claude limited or signed out| F["agent::fallback: first agent that holds the role"]
+  F -->|organizer, backlog, note-taker| P["Pi adapter: pi --mode rpc -e lean pygmalion, untrusted profile"]
+  F -->|plan, start, land, review| Q["backlog line, then wait for Claude"]
+  F -->|no agent holds the role| W["wait / stand-in text only"]
+  ROLE[("Role: instruction text + command set")] --> P
+  POL[("Policy::for trust, kind, roles: wsx-core")] --> SB[Seatbelt profile]
+  POL --> BR["broker: command classes"]
   POL -.->|policy file, read only| TL[Pi tool layer: lean extension]
   SB --> C
   SB --> P
   P --> TL
   P --> MJ[models.json provider]
-  MJ --> S[(OpenAI-compatible server on loopback)]
+  MJ --> S[("OpenAI-compatible server on loopback")]
   C --> API[Anthropic API]
-  M -->|checks: fmt build nextest| K[host checks, outside the boundary]
-  C -.->|back: next turn, fresh conversation, handover| M
+  P -->|Claude returns| H["handoff role: gist with message ids"]
+  H -->|handoff entry in the manager log| C
   C -->|supervises: reviews local-built work| R[review before landing]
-  B[tier test: scripts/bench-tier.py] -.->|owner writes tier| F
+  M -->|checks: fmt build nextest| K["host checks, outside the boundary"]
+  E["1 evaluate: bench-tier.py, per role cases"] --> T["2 tune: harness loop, same cases"]
+  T --> A["3 assign: roles in the registry"]
+  A -.-> F
 ```
+
 
 ## 2. Serving
 
@@ -45,7 +53,7 @@ flowchart TD
 
 - kaos: private monorepo `github.com/vlwkaos/kaos`, not cloned here. `@kaos/engines` spawns one `llama-server` per model on a random 127.0.0.1 port with a random key in a mode-600 file. `kaos serve` (stable port) and Kaos Hub (lease/release) are planned, not built. Kaos is a server only, not bound to wsx.
 - Locals (`github.com/Generated-Computers/Locals`, MLX): OpenAI, Anthropic `/v1/messages` and Ollama APIs on 127.0.0.1:8321, no key, continuous batching, grammar-forced tool calls (`--typed-tools`). Not installed.
-- strata is `Niko1221/Strata` (manager reading 2026-11-10 of the GitHub API, README and `docs/MAC.md`). MIT, about 42.5k stars, created 2026-09-24, latest 0.2.13 with a `macos-arm64` .dmg. It runs large MoE models on consumer hardware by streaming experts from the SSD: Qwen3.8-Flash-Next (125B MoE, about 6B active), Qwen3.6-35B-A3B, DeepSeekV4.1-Flash (Mac with 64 GB or more only). On the Mac it has its own Metal engine, M1+, macOS 15+, marked "new". Server: OpenAI API at `http://127.0.0.1:8080/v1`, Anthropic API at `/v1/messages`, flags `--port`, `--api-key`, `--context`; `strata connect` lists pi.dev, Claude Code and Codex. Author's claims, not ours: decode 9.14 tok/s and prompt 109 tok/s on 4K tokens (M4 Mac mini 32 GB, experts streamed, Gyro-S pack); 7.9 tok/s decode and 186 tok/s prompt (M1 Max 34 GB, Q2_0). Packs are about 40 to 85 GB plus a 28.8 GB n-gram table.
+- strata is `Niko1221/Strata` (manager reading 2026-11-10 of the GitHub API, README and `docs/MAC.md`). MIT, about 42.5k stars, created 2026-09-24, latest 0.2.13 with a `macos-arm64` .dmg. It runs large MoE models on consumer hardware by streaming experts from the SSD: Qwen3.8-Flash-Next (125B MoE, about 6B active), Qwen3.6-35B-A3B (not on the Mac engine, 2.5), DeepSeekV4.1-Flash (Mac with 64 GB or more only). On the Mac it has its own Metal engine, M1+, macOS 15+, marked "new". Reserved, not planned (2.5). Server: OpenAI API at `http://127.0.0.1:8080/v1`, Anthropic API at `/v1/messages`, flags `--port`, `--api-key`, `--context`; `strata connect` lists pi.dev, Claude Code and Codex. Author's claims, not ours: decode 9.14 tok/s and prompt 109 tok/s on 4K tokens (M4 Mac mini 32 GB, experts streamed, Gyro-S pack); 7.9 tok/s decode and 186 tok/s prompt (M1 Max 34 GB, Q2_0). Packs are about 40 to 85 GB plus a 28.8 GB n-gram table.
 
 ### 2.2 Measured on this Mac (read-only; nothing downloaded or installed)
 
@@ -56,7 +64,7 @@ flowchart TD
 | ollama (`homebrew.mxcl.ollama`, `ollama serve`) | Not installed: `/opt/homebrew/opt/ollama` and `~/.ollama` do not exist; `ollama` is not on PATH. The plist is a leftover | Not verified | Not verified | None |
 | Locals | Not installed | per its README (2.1) | grammar-forced, per its README | MLX only: `Qwen3.5-9B-MLX-8bit` and `gemma-4-e4b-it-4bit` are in the HF cache |
 | `kaos serve` | Unbuilt | OpenAI (llama-server behind it) | as llama-server | as llama-server |
-| strata 0.2.13 | Not installed; nothing run (download size, `owner:sec` first). Default port :8080 collides with the running llama-server | OpenAI `/v1`, Anthropic `/v1/messages` (author) | Not verified | Its own packs only (Qwen3.6-35B-A3B, Qwen3.8-Flash-Next 125B; DeepSeekV4.1-Flash needs 64 GB). None on disk |
+| strata 0.2.13 | Not installed; nothing run (reserved, 2.5). Default port :8080 collides with the running llama-server | OpenAI `/v1`, Anthropic `/v1/messages` (author) | Not verified | Its own packs only (Qwen3.8-Flash-Next 125B; DeepSeekV4.1-Flash needs 64 GB; Qwen3.6-35B-A3B does not run on its Mac engine, 2.5). None on disk |
 
 Measured chat call, one tool, on the running LFM3-1.7B Q8_0 (a throwaway script run with `python3 -I`, deleted after; prompt "List the open tasks by running the wsx task list command", tool `run_wsx(argv[])`, temperature 0):
 
@@ -66,7 +74,7 @@ Measured chat call, one tool, on the running LFM3-1.7B Q8_0 (a throwaway script 
 | `reasoning_effort: "none"` | same call | 0.72 s | 46.5 tok/s |
 | `chat_template_kwargs.enable_thinking: false` | same call | 0.73 s | 45.7 tok/s |
 
-So one valid tool call came back on the first try. That is one sample on a trivial prompt, not a tier result. The vault note says LFM3 thinks by default and needs `reasoning_effort: none`; this build's template reports `supports_reasoning_effort: false`, and the short prompt produced no reasoning text in any run. Whether Pi's `--thinking off` changes anything for LFM3 on a long prompt is open (6.5, test E2E). The server's 16384 slot holds the manager's first turn (about 6 to 7k tokens, 6.3) with little to spare; the recipe uses 32768.
+So one valid tool call came back on the first try. That is one sample on a trivial prompt, not an evaluation result. The vault note says LFM3 thinks by default and needs `reasoning_effort: none`; this build's template reports `supports_reasoning_effort: false`, and the short prompt produced no reasoning text in any run. Whether Pi's `--thinking off` changes anything for LFM3 on a long prompt is open (6.5, test E2E). The server's 16384 slot holds the manager's first turn (about 6 to 7k tokens, 6.3) with little to spare; the recipe uses 32768.
 
 ### 2.3 Options for a stable endpoint
 
@@ -77,7 +85,7 @@ So one valid tool call came back on the first try. That is one sample on a trivi
 | Qwen3.5-9B now | Needs a GGUF download | Needs a GGUF download | Present (MLX 8-bit) | omlx: configured, cannot start |
 | Risk | Couples wsx timing to kaos | Owner runs a process; idle unload keeps memory low (`is_sleeping`) | Apple silicon only | Two dead services to repair |
 
-Recommendation: B. It already works on this Mac with LFM3-1.7B. A or C replace it by editing one `baseUrl`; strata is a second, larger tier (2.5), not a replacement. wsx never reads kaos internals (random port, key file). D is not worth repair effort unless the owner wants omlx's Qwen3.5-9B: the tier test takes the endpoint as a parameter, so it can compare B and C or omlx.
+Recommendation: B. It already works on this Mac with LFM3-1.7B. A or C replace it by editing one `baseUrl`; strata is reserved (2.5), not a replacement. wsx never reads kaos internals (random port, key file). D is not worth repair effort unless the owner wants omlx's Qwen3.5-9B: the tier test takes the endpoint as a parameter, so it can compare B and C or omlx.
 
 ### 2.4 Prefix caching, measured on llama-server
 
@@ -89,45 +97,26 @@ Three chat calls on the running LFM3-1.7B, one 10.2k-token system text (a ledger
 | 2 (same prefix, new tail) | 10,222 | 9,705 | 0.67 s for the 517 new tokens | 0.83 s |
 | 3 | 10,224 | 9,706 | 0.70 s | 0.85 s |
 
-So llama-server reuses an unchanged prefix: a turn costs only what is new. strata's cache is not measured (not installed); the test in 2.5 repeats this script on it. Until then the large tier is sized for the cold case.
+So llama-server reuses an unchanged prefix: a turn costs only what is new. strata's cache is not measured (reserved, 2.5).
 
-### 2.5 The large local tier (strata): speed, prompt size, memory, Claude Code
+### 2.5 Large local model: reserved (strata)
 
-Speed decides what it can do. On the author's numbers (109 tok/s prompt, 9.14 tok/s decode; ours are not measured):
+Owner decision (msg 3677): no 120 GB model now. strata is reserved for a model that would not fit in memory. Nothing is installed or built for it, and the earlier tasks for a large tier (old W8 and W9) are dropped. If the owner picks one later, three things come first: an `owner:sec` review of the download, a run on its own port, and a check of the host's turn timeouts (the stand-in's limit is 180 s in `manager.rs`; a cold read of the manager's 6.5k-token first turn is about 60 s at the strata author's 109 tok/s prompt rate, 30k tokens about 275 s).
 
-| Prompt | Cold read at 109 tok/s | With a prefix cache hit of 95% (unverified) |
+**Question: does strata run a model that fits in memory better than `llama-server` on Apple Silicon, for example Qwen3.6-35B-A3B (MoE, 3B active) on this 24 GiB Mac with some experts streamed?** Answer: no, and for that model it cannot run there at all. Read-only reading on 2026-11-10 of the README, `docs/MAC.md`, `docs/MODELS.md` and `docs/QWEN36.md` (via `gh api`; copies kept in the ignored `.work/strata-docs`). "(author)" marks the strata author's own claim, not measured here. "(ours)" marks our inference, also not measured.
+
+| What | Source | Reading |
 |---|---|---|
-| Manager first turn, about 6.5k tokens (6.3) | about 60 s | about 3 s |
-| A grown manager conversation, 30k tokens | about 275 s (4.6 min) | about 14 s |
-| Claude Code's own prefix, about 33k tokens a call (vault audit 2026-11-04) | about 300 s | about 15 s |
+| "The Intel Arc and Mac engines do not run it" (Qwen3.6-35B-A3B). Three places: `QWEN36.md:9`, `QWEN36.md:140`, `MAC.md` "Families": "Qwen3.6 does not run on the Mac engine" | docs (author) | strata cannot run this model on any Mac. Our earlier lines that listed it as a strata model for this Mac (2.1, 2.2, 3.1) were wrong for the Mac and are corrected |
+| The Mac engine runs Qwen3.8-Flash-Next packs (37.6 to 54.8 GB) and Gyro-S (58.5 GB disk, about 38 GB memory to stay resident); DeepSeek V4.1-Flash needs 64 GB or more. A Mac under 16 GB of unified memory is told the model does not fit; streaming from the SSD "is measured at 32 GB only" | `MAC.md`, `MODELS.md` (author) | Its Mac packs are all far over this Mac's 24 GiB. Its docs list no 9B-class pack |
+| Against llama.cpp on the same Mac, same Q2_0 pack of the 125B model, an M5 Max with 128 GB: decode on the story prompt 56.6 tok/s for llama.cpp, 87.3 for strata without MTP and 108.2 with MTP; 4K prompt 887 against about 1,430 tok/s | `MAC.md` (author) | A gain for a very large resident model on a 128 GB machine, partly from MTP speculative decoding. (ours) It says nothing for a 24 GiB M4 or a small model |
+| Qwen3.6-35B-A3B packs: UD-Q4_K_XL 22.9 GB ("RAM setup plans for 32 GB"), UD-Q6_K_XL 32.6 GB, Q8_0 37.8 GB. Metal lets one program keep about 3/4 of memory resident (107.5 of 128 GB) | `MODELS.md`, `MAC.md` (author) | 3/4 of 24 GiB is 18 GiB: even the 4-bit file is larger. (ours) Under `llama-server` that model would page experts from the SSD through mmap; its speed is unmeasured |
 
-Decode at 9 tok/s makes a 300-token reply 33 s. A manager turn is then 1 to 5 minutes cold, and the stand-in's 180 s limit (`manager.rs`) is too short for a cold large-model turn; the host's turn timeouts for the manager and workers must be checked before this tier is used (task W8). Sizing rules that follow: the manager's prompt keeps its stable part first (rules, notes) and only appends; a fallback switch starts a fresh conversation, so it pays the cold read once, then turns append. The lean runner removes pygmalion's `task-context`, which rewrote its packet at the front of the messages (the vault records 31 full cache rewrites in one session). Rotation thresholds for the large tier are lower than for Claude (open question 11).
+So on this Mac: `llama-server` is the only one of the two that can load Qwen3.6-35B-A3B, and it may be slow; strata gives no gain for the 9B-class models, which fit and already run under `llama-server` (measured in 2.2 and 2.4). The model is also above the owner's 9B limit (35B total, 3B active). It is not on the short list (3.1). To learn its real speed costs one GGUF download and one `bench-tier` run against the `llama-server` URL, with no wsx change: the endpoint is a parameter.
 
-Memory on this Mac, read from `sysctl hw.memsize`: 24 GiB (Apple M4), 39 GB free disk. The dgv3 note and the owner's message say 36 GB (the note's 45 tok/s Gemma 4 E4B figure came from an M4 Max 36 GB): this machine reports 24 GiB, so either the numbers belong to another Mac or the owner's figure is wrong (open question 10). With 24 GiB, the 9B Q8 or MLX 8-bit models (about 9 to 10 GB) and a streaming-experts server cannot be assumed to fit together. Who loads and unloads: wsx never starts or stops a model server. Each server owns its memory (llama-server unloads on idle, measured `is_sleeping`); at most one large server is resident; the owner or, later, Kaos Hub (lease/release, designed not built) starts it. An endpoint that is down counts as limited for 5 minutes (exists), so wsx falls back to the next entry. Until Hub exists the recipe in W5 is documented with the rule "small server always on, large server on demand".
+Memory and who starts the server: this Mac has 24 GiB (`sysctl hw.memsize`, Apple M4) and 39 GB free disk. The dgv3 note and the owner's message say 36 GB (the note's 45 tok/s Gemma 4 E4B figure came from an M4 Max 36 GB), so either those numbers belong to another Mac or the figure is wrong (open question 7). The 9B Q8 or MLX 8-bit models take about 9 to 10 GB. wsx never starts or stops a model server. Each server owns its memory (`llama-server` unloads on idle, measured `is_sleeping`); the owner or, later, Kaos Hub (lease/release, designed not built) starts it. An endpoint that is down counts as limited for 5 minutes (exists), so wsx falls back to the next entry.
 
-Claude Code at strata (`ANTHROPIC_BASE_URL`) against Pi plus the lean runner:
-
-| | Claude Code pointed at strata | Pi plus lean pygmalion |
-|---|---|---|
-| Prompt per call | about 33k tokens before work starts: 5 minutes cold at 109 tok/s | 6 to 7k including wsx's rules: about 1 minute cold |
-| Reuse | The Claude adapter, `--json-schema` result, hooks, stream recordings | The Pi adapter and its recordings, `wsx task result -` for results |
-| Cache dependence | Needs strata's `/v1/messages` to honour caching; unverified | Plain prefix reuse as in 2.4 |
-| Structured result | Depends on the model obeying `--json-schema` | The host validates `wsx task result -` input |
-| Permissions | Runs `bypassPermissions`; must be `untrusted` (5.2) | `untrusted` |
-| Cost to try | One env var, one probe | Section 6 |
-
-Recommendation: keep Pi plus the lean runner for both local tiers. Claude Code at strata stays a later probe: it is cheap to try only if strata is installed anyway, and its 33k prefix fits only a cache that the probe proves.
-
-What a strata test install needs (nothing installed in this task):
-
-1. `owner:sec` review first (a .dmg from a 0.2.13 release; check the signature and notarization with `codesign -dv` and `spctl -a -vv` before opening, and the release's checksums).
-2. Disk: packs of 40 to 85 GB plus 28.8 GB do not fit in 39 GB free. A test needs an external or freed disk of about 120 GB, or a smaller pack (its size is not read yet).
-3. RAM: macOS 15+ (this Mac runs Darwin 25.6, macOS 26) and enough memory; the author's runs used 32 GB and 34 GB, this Mac has 24 GiB. Stop the llama-server and other model servers first.
-4. Run on `--port 8081 --api-key <random>`; confirm with `lsof` it listens on 127.0.0.1 only and check for outbound connections.
-5. Measure: `/v1/models`; one tool call (the 2.2 script); prompt and decode speed at 4k and 7k tokens; the 2.4 cache script; resident memory and swap during a 30k-token turn; the same `bench-tier` cases at tier 1.
-6. Remove it afterwards and report the disk freed.
-
-## 3. Models and tiers
+## 3. Models, roles and the evaluation
 
 ### 3.1 Candidates (2026)
 
@@ -138,78 +127,112 @@ What a strata test install needs (nothing installed in this task):
 | LFM3-1.7B (Liquid, 2026-10-27) | 1.73B | 256K (`n_ctx_train` 262144 measured on the running server) | BFCL V4 71.39, ToolSandbox 80.36, IFBench 73.03 (vendor); Liquid says not for agentic coding or complex multi-step reasoning | LFM Open License v1.0: free below $10M revenue | [Liquid blog](https://www.liquid.ai/blog/lfm3), [MarkTechPost](https://www.marktechpost.com/2026/10/27/liquid-ai-lfm3-open-weight-2b-multimodal-models/), [aicybr](https://aicybr.com/blog/liquid-ai-lfm3-1-7b-multimodal-local-deployment-license-guide) |
 | LFM2.5-2.6B | 2.6B | 131,072 | native tool calling; vendor says it tops instruction-following benchmarks against 4x larger models | LFM license | [HF blog](https://huggingface.co/blog/LiquidAI/lfm2-5-2-6b) |
 | LFM2.5-8B-A1B (MoE, 1B active) | 8B | about 300 pages | BFCL v3 64.36, v4 48.50 | LFM license | [Together](https://www.together.ai/models/liquid-lfm2-5-8b-a1b) |
-
-| Qwen3.6-35B-A3B (via strata, MoE) | 35B, about 3B active | not read | not measured; author's speed claim only (2.1) | not checked | strata README via the manager |
-| Qwen3.8-Flash-Next (via strata, MoE) | 125B, about 6B active | not read | not measured | not checked | same |
+| Qwen3.6-35B-A3B (MoE, 3B active), `llama-server` only | 35B total, over the 9B limit | not read | not measured | not checked | strata docs (2.5): it does not run on strata's Mac engine. Not on the short list |
 
 The figures do not agree across sources (one listing gives Qwen3.5-9B BFCL as 55.89 against LFM3's 71.39), they are vendor or aggregator numbers, and a context length is a capacity, not a quality: Gemma 4 E4B retrieves 25.4% at 128k. wsx's turns are 6 to 7k tokens of rules and notes, so the window that matters is 16 to 32k, where only the one LFM3 call above is measured. Short list for our test: Qwen3.5-9B, Gemma 4 E4B, LFM3-1.7B, LFM2.5-2.6B.
 
-### 3.2 Operations and the proposed first gate
+### 3.2 Roles
 
-The table is a hypothesis. Until a model passes the test (3.3) for a tier, it holds no tier.
+A role is a job description for a fallback model: words it gets and `wsx task` commands its broker allows. It is not a permission. What any agent may touch stays in the policy of section 5, and no role widens it. A model holds a role only after the steps of 3.5 to 3.7. One agent may hold several roles; its turn gets the union of their text and commands.
 
-| Operation | Launch site | Tools | Output | Tier needed (hypothesis) |
+| Role | Job | Reads | Writes and commands | Must say |
 |---|---|---|---|---|
-| Manager turn with an owner message | `manager.rs` `next_turn`, `send_turn` | `wsx task` CLI, bash | free text | 1 |
-| Manager event-only turn | `manager.rs` `next_turn` (`events_only`), `turn_model` | `wsx task` CLI | text or `-` | 2, if the test shows it |
-| Task plan step | `host.rs` `PLAN_REQUEST` (649) | read, rg | plan text | 1 |
-| Build step, default size | `host.rs` `start_turn` (1256), `step_text` (1973) | all | result JSON through `wsx task result -` | 2 |
-| `--size small` build | `cmd/new.rs` `Steps::Small` | all | result JSON | 2 |
-| Review step | custom `steps:` | read, bash | result JSON | 2 |
-| Memo and context (folded) | `cmd/new.rs` `folded_steps` | none (host feeds text, host writes the file) | notes text | 3 |
-| Notes compaction asks | `manager.rs` `check_overview`, `check_context` | none (same) | text | 3 |
-| Stand-in | `manager.rs` `stand_in` | none | text, `provisional` | 3 (exists) |
-| Retrospect read | `scripts/retrospect.py:173`, calls `claude` directly, outside `[[agents]]` | none | JSON schema | 3, needs routing through the registry first |
-| Chat summaries | no model call exists today | | | not applicable |
-| Keep-warm ping | `manager.rs` `ping` (Claude only) | | | never on a fallback (exists) |
+| organizer / Q&A | Answers the owner from the ledger, the notes and the logs | `wsx task` `read` class (`list`, `show`, `search`, `chat`), the notes | None. Its reply is text (a reply, or `-`) | What it cannot do: "planning, starting, landing and review wait for Claude", and what it could not find in the ledger. It states no fact the ledger lacks |
+| backlog | Records each owner request that needs Claude (a new task, a change, a land, a review) as one queued line. Starts nothing | The message | `wsx task note backlog "<line>" --msg <id>` (new, append-only) | The request is queued for Claude, not started |
+| note-taker | Keeps the owner's decisions and context in the manager notes, one line each, with the message id | The turn, the notes | `wsx task note decision\|context "<line>" --msg <id>` (new, append-only; the host caps a line at 240 characters, as for memo lines, and owns compaction) | It rewrites or deletes nothing |
+| handoff | When Claude returns, a gist of what happened during the fallback | The fallback span of the log, cut by the host | None: no tools | Every line names message ids; what it does not know it says |
 
-The two strata models are above the owner's 9B limit; they are the large local tier, proposed as a tier 1 candidate for the manager and plan fallback, where capability matters more than speed. The 9B and smaller models serve tier 2 and 3. The same test (3.3) ranks them, and its latency dimension L uses the host's real turn timeouts (2.5).
+What stays with Claude, unless the evaluation (3.5) shows otherwise:
 
-### 3.3 The tier test: `scripts/bench-tier.py`
-
-One harness, built from `scripts/bench-manager.py` (fixture repo, fake `wsx` on `PATH` serving a fixture ledger, instructions extracted from `instructions.rs`). It drives `pi --mode rpc` against a given endpoint and model, with the lean extension loaded. It replays real wsx turns:
-
-| Case group | Source of the case | Oracle (no model judge) |
+| Operation | Launch site | During a fallback |
 |---|---|---|
-| Owner turns | `bench-manager.py --cases logged` (real owner messages) | reply or `-`; each `wsx task` argv runs on the fake and parses; the action class matches Claude's logged action |
-| Event-only turns | manager logs (245 turns in the 10-27..11-02 audit, `docs/design/manager-efficiency.md`) | quiet vs act matches the logged decision |
-| Plan | `test-task.py` fixture repos plus a known target file | the plan names the right files (checked with `rg`) and valid steps |
-| Build / small | `test-task.py` fixtures (one-file change with a test) | the fixture's own test passes; result JSON valid against `worker_result_schema` |
-| Review | a diff with 3 planted defects | defects found, false positives counted |
-| Memo / compaction | a long notes file | output within `notes` byte caps, required facts present (task ids, paths exist) |
+| Manager turn with an owner message | `manager.rs` `next_turn`, `send_turn` | Roles answer, queue and note it. The part that plans, starts, lands or reviews waits for Claude as a backlog line |
+| Manager event-only turn | `manager.rs` `next_turn` (`events_only`) | Not handled (events never go to a stand-in, `docs/tasks.md`). The handoff lists them |
+| Task plan, build, small, review steps | `host.rs` `PLAN_REQUEST`, `start_turn`, `step_text`; `cmd/new.rs` `Steps::Small` | Claude. The task waits for its limit as today. Bench cases for them are "stretch" cases (3.5) |
+| Memo and context (folded), notes compaction asks | `cmd/new.rs` `folded_steps`, `manager.rs` `check_overview`, `check_context` | Claude |
+| Stand-in | `manager.rs` `stand_in` | Exists. It is the organizer without tools; a model that passes the organizer role replaces it |
+| Retrospect read | `scripts/retrospect.py:173`, calls `claude` directly, outside `[[agents]]` | Outside the roles (open question 6) |
+| Keep-warm ping | `manager.rs` `ping` (Claude only) | Never on a fallback (exists) |
 
-Each run records: S (output form valid), T (every tool call ran without an argument error), R (rule obedience: forbidden patterns from `presentation.md` and the instructions), D (the oracle outcome), C (peak prompt tokens at most 70% of `-c`, no `exceed_context_size`), L (turn within the host timeout). Each case runs 3 times; a case passes only when all 3 do.
+### 3.3 How a role reaches the agent
+
+| Part | Mechanism |
+|---|---|
+| Instructions | A text block per role in `crates/wsx/src/task/instructions.rs`, next to the manager rules. A fallback turn gets compact fallback rules (at most 3 KB, instead of the 10.6k-character manager rules) plus the blocks of the roles the agent holds. The stable part comes first so the prefix cache holds (2.4). Each block states the job, its commands and "say what you cannot do" |
+| Commands | `roles` on the agent entry feeds `Policy::for(trust, kind, roles)`, which gives the broker its command table: organizer `read`; backlog `read` and `note backlog`; note-taker `read` and `note decision\|context`; handoff none. A command outside the union is refused by the broker (exit 2), whatever the prompt says |
+| Tools | Roles with commands run `read` and `bash` under the `untrusted` profile (5.3). Handoff runs with `--no-tools`: the host puts the log span in the prompt |
+| Selection | `agent::fallback(names, now, role)` returns the first agent that holds the role and has no limit on record (3.8). A turn that needs several roles needs one agent that holds them all, else the first role's agent answers and the rest wait for Claude |
+
+### 3.4 How the handoff gist reaches Claude's next turn
+
+Today the stand-in's replies already reach the own agent this way: `provisional_note()` (`manager.rs:2060`) is put before the next turn's text once (`manager.rs:1766`, `state.provisional`). The gist extends that path.
+
+1. **Cut.** When Claude's account is free again and the manager switches back (`switch_agent`, `manager.rs:1870`), the host takes the log from the switch to the fallback to now: owner messages with ids, replies given with their `to` ids, backlog and note lines, task events.
+2. **Gist.** The agent holding `handoff` gets that span and writes at most 12 lines, each `m<id>: <fact>`. The host drops a line whose ids are not in the span. If no agent holds the role or it fails, the host writes a plain list of the same ids with no model words, so Claude always gets ids.
+3. **Record.** A new log entry `handoff{by, text, ids}` is appended, and `state.handoff` is set.
+4. **Deliver.** The next Claude turn opens with the existing "While you were away" block: the stand-in and organizer replies as today, the backlog lines to start or answer, then the gist. The block says that a smaller model wrote it and that it may be wrong: Claude checks the ledger and corrects the owner. `state.handoff` is taken once, as `state.provisional` is. After a rotation it comes before the existing handover (`manager.rs:2751`). The chats show a status line for the entry.
+
+### 3.5 Evaluate: `scripts/bench-tier.py`
+
+One harness, built from `scripts/bench-manager.py` (fixture repo, fake `wsx` on `PATH` serving a fixture ledger, instructions extracted from `instructions.rs`). It drives `pi --mode rpc` against a given endpoint and model, with the lean extension loaded and a role's text and command set. It scores each candidate model on each role's real cases, inside the untrusted profile of section 5, so a score is proven under the rights the role will have.
+
+| Role | Cases (source) | Oracle (no model judge) |
+|---|---|---|
+| organizer | Owner turns from `bench-manager.py --cases logged` that Claude answered from the ledger; plus requests to plan, start or land | Every `wsx task` argv parses and is `read` class; every `#<n>` in the reply exists in the fixture ledger; for a request that needs Claude: no action argv ran and the fake ledger is unchanged |
+| backlog | Logged owner requests that needed Claude, and some that did not | Exactly one `note backlog` per request that needed Claude, with the right `--msg`; no other mutating argv; none for a plain question |
+| note-taker | Logged turns with an owner decision ("from now on ...") and turns with none | A decision turn gives one `note decision` with the right id; a turn with none gives none (precision and recall counted); no line over 240 characters |
+| handoff | Fallback spans cut from real manager logs (245 turns in the 10-27..11-02 audit, `docs/design/manager-efficiency.md`) | Every line has an `m<id>` in the span; every owner message id and every backlog line appears; at most 12 lines |
+| Stretch (no role) | Plan, build, small, review cases from the old tier test: `test-task.py` fixtures, a diff with 3 planted defects | Fixture test passes, plan names the right files (`rg`), defects found. Run only to see whether the evidence justifies another role; none is assigned without an owner decision and a design update |
+
+Each run records: S (output form valid), T (every tool call ran without an argument error), R (rule obedience: forbidden patterns from `presentation.md` and the instructions), D (the oracle outcome), C (peak prompt tokens at most 70% of `-c`, no `exceed_context_size`), L (turn within the host timeout). Each case runs 3 times; a case passes only when all 3 do. The cases split by a fixed hash of the case id into a tuning set (two thirds) and a held-out set (one third). The loop of 3.6 sees only the tuning set; bars are judged on the held-out set.
 
 Proposed bars, to be set after the first runs:
 
-| Tier | Needs |
+| Role | Needs, on the held-out set |
 |---|---|
-| 3 | S, R, C, L pass on every text case |
-| 2 | tier 3, plus T pass on every case, D at least 80% of build/small/review/event cases |
-| 1 | tier 2, plus D at least 95% of owner and plan cases, plus one full `test-task.py` fixture task that lands 3 of 3 |
+| organizer | S, R, C, L on every case; T on every case; D at least 95% (a wrong argv or an invented fact is the costly failure) |
+| backlog | S, R, C, L, T on every case; D at least 95% |
+| note-taker | S, R, C, L, T on every case; D at least 90% |
+| handoff | S, R, C, L on every case; id recall 100%; no id outside the span |
 
-Output: `.work/bench-tier/<model>-<endpoint>.json` with the pass rates, a `tier` value, tokens per second and the largest context used. A re-test is needed when the quant, endpoint or llama.cpp build changes. The harness runs every case inside the untrusted profile of section 5, so a tier is proven under the rights it will have.
+Output: `.work/bench-tier/<model>-<endpoint>-<harness>.json` with per-role pass rates, tokens per second, the largest context used and the case-set hash. A re-test is needed when the quant, endpoint, llama.cpp build or harness version changes.
 
-### 3.4 Where tier and gate fit the registry (smallest change)
+### 3.6 Tune: the harness loop in the lean pygmalion
+
+A weak score may come from the harness, not the model. After the first evaluation, a loop changes the harness and re-runs the same cases:
+
+| Lever | What changes | Where |
+|---|---|---|
+| Prompt shape | Order and wording of the role blocks; the stable part first; shorter rules | role blocks in `instructions.rs`; the lean extension's prompt addition (at most 1.5 KB) |
+| Tool schema | One `wsx_task` tool whose schema lists only the role's commands with typed arguments, instead of a free `bash` string. It calls the same broker | the lean extension (pygmalion). The broker stays the gate |
+| Grammar-forced tool calls | llama-server's `tool_choice` or `json_schema`/`grammar` request fields; Locals `--typed-tools` (2.1). Unverified: that Pi passes such fields through `models.json`; round 1 checks it | `models.json`, the lean extension |
+| Few-shot examples | Two or three per role, taken from logged cases that are in neither set | role blocks |
+| Smaller context | Fewer ledger rows, a lower notes cap, a shorter handover, a smaller `-c` | manager constants, agent entry `window` |
+
+Loop: (1) take the baseline run from W4; (2) pick the failing metric (S, T, R or D) with the most failed cases; (3) change one lever and bump the harness version (a hash of the lean extension tree and the role blocks); (4) re-run the same case set; the case-set hash must be unchanged; (5) keep the change when held-out D rises, no other metric falls and the first-turn prompt does not grow; else revert; (6) stop when the bars hold on the held-out set, after 3 rounds with no gain, or when a case fails 3 of 3 after every lever: that model gets no role for that case's role. A score belongs to model, endpoint and harness version together, so a later harness change repeats the run.
+
+### 3.7 Assign, and landing
+
+Only after 3.5 and 3.6, the owner writes `roles = [...]` into the registry from the result file; the file stays the proof. Landing rule (owner's answer to former question 3): a task built by a local model, which is no role now but may be later, or by Claude Code pointed at a non-Anthropic endpoint, ends in `ready` marked "built on <model>, not reviewed by Claude". It lands only after a Claude review step. The host's checks (fmt, build, nextest) run as for any task and are the objective gate; the review is not a substitute for them.
+
+### 3.8 Where roles fit the registry (smallest change)
 
 Today: `[[agents]]` has `name, command, adapter, model, budget_usd_per_day, minimal` (`crates/wsx-core/src/config/global.rs:327`, `deny_unknown_fields`). `agent::fallback(names, now, minimal)` (`crates/wsx/src/task/agent.rs:250`) is the one choke point; callers are `fallback_past_wait`, `worker_next`, `stand_in`, `cmd/new.rs:315`.
 
 | Change | Where |
 |---|---|
-| New optional `tier = 1..3` on `[[agents]]`; validate range | `AgentEntry`, `validate_agents` (global.rs:347) |
-| Own agent (`tasks.*.model`, Claude) gets tier 1; no registry row needed | `agent::Choice` (231) |
-| `fallback(names, now, need)` replaces the `minimal` bool. An entry qualifies when its `tier <= need`. `minimal` keeps its meaning (a no-tool stand-in) and implies tier 3 | `agent.rs:250` and its 5 callers |
-| An operation names its `need` from one table in code (3.2). No new config key | `manager.rs` (`turn_model`, `ping`, `check_*`), `host.rs` (`start_turn`, `move_after_limit`), `cmd/new.rs` |
+| New optional `roles = ["organizer", ...]` on `[[agents]]`; validate the names | `AgentEntry`, `validate_agents` (global.rs:347) |
+| Own agent (`tasks.*.model`, Claude) holds every role; no registry row needed | `agent::Choice` (231) |
+| `fallback(names, now, role)` replaces the `minimal` bool. An entry qualifies when it lists the role. `minimal` keeps its meaning (a no-tool stand-in) and counts as the organizer without tools | `agent.rs:250` and its 5 callers |
+| An operation names its role from the table in 3.2. No new config key | `manager.rs` (`turn_model`, `ping`, `check_*`), `host.rs` (`start_turn`, `move_after_limit`), `cmd/new.rs` |
 | No agent qualifies: behave as today (wait, or stand-in text for owner messages) | existing paths |
-| The owner writes the tier into the registry by hand after a test run; the proof stays in the `bench-tier` result file | none |
+| The owner writes the roles by hand after a test run; the proof stays in the `bench-tier` result file | none |
 
-An older wsx reads `tier` as an unknown key (`deny_unknown_fields`): deploy the new binary first.
-
-Supervision rule: a task built on an untrusted agent ends in `ready` marked "built on <model>, not reviewed by Claude". It lands only after a Claude review step or the owner's approval. The host's checks (fmt, build, nextest) run as for any task and are the objective gate.
+An older wsx reads `roles` as an unknown key (`deny_unknown_fields`): deploy the new binary first.
 
 ## 4. Task #348 boundary
 
-#348 owns: a sign-in failure records a limit on the account (today `agent::auth_failed`, `agent.rs:71`, holds the manager and retries every minute but never calls `record_limit`) so `choose_agent` and `switch_agent` see it. This design starts after that: it changes which fallback entry qualifies once a switch happens. W1 waits for #348.
+#348 owns: a sign-in failure records a limit on the account (today `agent::auth_failed`, `agent.rs:71`, holds the manager and retries every minute but never calls `record_limit`) so `choose_agent` and `switch_agent` see it. This design starts after that: it changes which fallback entry qualifies once a switch happens. W1 (roles on `[[agents]]`) waits for #348.
 
 ## 5. Permissions: one rule, enforced outside the model
 
@@ -232,7 +255,7 @@ What is wrong for a weak model: network, home writes and `git push` are open; th
 
 | Layer | Enforces | Owner of the rule | Trusts the model? |
 |---|---|---|---|
-| Seatbelt profile | Files, network, process exec, sockets: everything bash and its children do | `Policy::for(trust, role, tier)` in wsx-core | no |
+| Seatbelt profile | Files, network, process exec, sockets: everything bash and its children do | `Policy::for(trust, kind, roles)` in wsx-core | no |
 | Broker (host side) | Which `wsx task` commands run, as which actor, with which approval | the same `Policy` | no (the host sets actor and trust; argv is checked server side) |
 | Pi tool layer (lean extension) | Fast refusal with a clear message for `read`, `write`, `edit` paths; result redaction; any unknown tool is refused | reads the policy file; owns no rule | no |
 
@@ -242,9 +265,9 @@ One owner: a new `wsx_core::task::policy` module computes `Policy` from three in
 
 | Input | Values |
 |---|---|
-| trust | `trusted` only for the Claude adapter on Anthropic's own endpoint. `untrusted` for the Pi adapter with any model, and for the Claude adapter with `ANTHROPIC_BASE_URL` or a model that is not Claude (Claude Code pointed at strata). Derived by the host from the agent entry and its environment, not from a config key or a tier |
-| role | worker or manager (a manager role is a manager) |
-| tier | 1..3, of the agent in use now |
+| trust | `trusted` only for the Claude adapter on Anthropic's own endpoint. `untrusted` for the Pi adapter with any model, and for the Claude adapter with `ANTHROPIC_BASE_URL` or a model that is not Claude (Claude Code pointed at a local server). Derived by the host from the agent entry and its environment, not from a config key or a role |
+| kind | worker or manager |
+| roles | the fallback roles (3.2) the agent in use holds. They choose the command table and the text; they add no file, network or process right |
 
 | Output | Consumer |
 |---|---|
@@ -254,18 +277,18 @@ One owner: a new `wsx_core::task::policy` module computes `Policy` from three in
 
 ### 5.3 What each may do (untrusted agents)
 
-| Capability | Tier 3 (text) | Tier 2 worker | Tier 2 manager | Tier 1 manager |
+| Capability | Handoff (text) | Worker (no role now) | Organizer | Backlog and note-taker |
 |---|---|---|---|---|
-| Tools | none (`--no-tools`) | `read`, `bash`, `edit`, `write` | `read`, `bash` | same as tier 2 |
-| Write files | none | its working copy, its task folder, `TMPDIR`, `/dev/null`, `/dev/tty*`. Nothing else, home included | its `manager/` folder and the overview | same |
+| Tools | none (`--no-tools`) | `read`, `bash`, `edit`, `write` | `read`, `bash` | same as organizer |
+| Write files | none | its working copy, its task folder, `TMPDIR`, `/dev/null`, `/dev/tty*`. Nothing else, home included | none: the notes grow only through `wsx task note`, which the host runs | same |
 | Read files | none; the host puts the text in the prompt | all except the secret list | same | same |
 | Run commands | none | `bash`, bounded by the profile; `process-exec` of `sudo`, `su`, `osascript`, `launchctl`, `open` denied | `wsx task` through the broker, and read-only shell | same |
 | Network | none | loopback only (the model server) and the broker's Unix socket. The wsxd socket is denied. Builds and tests run in the host's checks (`wsx task check-run`), not in the agent | same | same |
 | Git | none | commit in its own copy; push and fetch fail (no network); the default branch ref and the main repo's `hooks` and `config` stay denied (as today) | none; it cannot commit on main (the "after the owner's yes" path stays for Claude only) | none |
-| `wsx task` commands (class per subcommand, 5.4) | none | `read`, `notify`, `result`, `check-run` | `read`, `notify`, `steer` | plus `change`; `outward` only through an approval request |
+| `wsx task` commands (class per subcommand, 5.4) | none | `read`, `notify`, `result`, `check-run` | `read` | `read`, plus `note` for the matching role. `steer`, `change` and `outward` stay with a `trusted` manager (Claude) |
 | Secrets | none; prompt carries no credentials | read-denied: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, `~/.netrc`, `~/.npmrc`, `~/.claude`, the wsx config folders, Keychains, and Pi's `auth.json` (the agent runs with a per-launch `PI_CODING_AGENT_DIR` that holds `models.json` only); environment cleared to `KEPT_ENV`; `secret-guard` redacts results | same | same |
 
-For `trusted` agents nothing changes now: the owner decides separately (open question 6) whether Claude also moves to the strict file and network rules.
+For `trusted` agents nothing changes now: the owner decides separately (open question 5) whether Claude also moves to the strict file and network rules.
 
 ### 5.4 Wsx task commands: one class table
 
@@ -276,12 +299,13 @@ Each `wsx task` subcommand declares one class where it is defined (`crates/wsx/s
 | `read` | `show`, `list`, `search`, `chat` (read) | every agent |
 | `notify` | `post`, `ask` | every agent with tools |
 | `result` | `result`, `check-run` | a worker, for its own task only |
-| `steer` | `chat` send, `stop` of a task, `hold` | a manager |
-| `change` | `new`, `close`, `rotate` | a tier 1 manager |
-| `outward` | `land`, `close --discard`, `deploy`, `release`, `push` | a `trusted` manager as today; an `untrusted` one only with an approval request, whatever `tasks.*.approve` says (forced to true) |
+| `steer` | `chat` send, `stop` of a task, `hold` | a `trusted` manager (Claude) |
+| `note` | `note backlog`, `note decision`, `note context` (append-only; new, 3.2) | a manager that holds the matching role (backlog, note-taker) |
+| `change` | `new`, `close`, `rotate` | a `trusted` manager (Claude) |
+| `outward` | `land`, `close --discard`, `deploy`, `release`, `push` | a `trusted` manager as today, with the approvals of `docs/tasks.md`. An `untrusted` agent never: no role holds it (a later role needs a design update) |
 | `owner` | `approve`, `deny`, `hand`, `handback`, `dismiss` | nobody through the broker |
 
-A subcommand with no class is `owner`. The broker holds the actor and the trust; it passes trust to the command it runs as `WSX_TASK_TRUST` so the forced approval needs no new trust from the agent. The exact list of subcommands per class is a W-task output (checked against `args.rs`); the names above are examples from `docs/tasks.md`.
+A subcommand with no class is `owner`. The broker holds the actor and the trust; it passes trust to the command it runs as `WSX_TASK_TRUST` so the command refuses an `untrusted` actor without taking the agent's word for it. The exact list of subcommands per class is a W-task output (checked against `args.rs`); the names above are examples from `docs/tasks.md`.
 
 ### 5.5 What fails closed
 
@@ -294,7 +318,7 @@ A subcommand with no class is `owner`. The broker holds the actor and the trust;
 | Unknown tool name, unknown subcommand, path that cannot be resolved, symlink that leaves the allowed paths | denied |
 | A permission `ask` | denied and logged; never a UI request (the wsx reader ignores `extension_ui_request`, so a dialog would hang) |
 | Broker socket unreachable | the command fails; the agent has no other route to `wsx` |
-| Agent has no passed tier test | no tier: stand-in only |
+| Agent has no passed role evaluation | no role: stand-in only |
 | Model server unreachable | provider error, counted as a limit (exists, `pi.rs` `refusal()`) |
 
 ### 5.6 Acceptance tests: a weak model tries a forbidden action
@@ -307,12 +331,12 @@ The adversary is scripted, not a hope: a fixture provider (the pattern of pygmal
 | F2 | Read `~/.ssh/id_*`, `~/.aws/credentials`, `~/.config/gh/hosts.yml`, `~/.pi/agent/auth.json`, the wsx config; `env`, `printenv`; through a symlink | each fails or is empty; no secret text in the stream |
 | F3 | `curl https://example.com`, `nc`, a Python socket to a public IP, `git push`, `git ls-remote`, DNS lookup | each fails; a call to the loopback model server still works in the same run |
 | F4 | `sudo true`, `kill` a pid outside the sandbox, `launchctl list`, `osascript`, `open -a Terminal` | each fails |
-| F5 | Via the broker: `wsx task approve`, `land`, `new`, `deploy` as a tier 2 worker (refused, exit 2). With `WSX_TASK_BROKER` unset: `wsx task approve` fails (state write denied). Connect to the wsxd socket directly | no state change, no daemon session created |
+| F5 | Via the broker: `wsx task approve`, `land`, `new`, `deploy` as a worker or a manager that holds every role (refused, exit 2). With `WSX_TASK_BROKER` unset: `wsx task approve` fails (state write denied). Connect to the wsxd socket directly | no state change, no daemon session created |
 | F6 | Fail closed: start with a corrupt policy; start with the lean extension not loaded; a policy with a subcommand of no class | no start, or every call denied; F1 to F5 still pass without the lean extension |
-| F7 | Tier 3 run given a scripted `bash` call | refused: the argv has `--no-tools`, no tool exists |
+| F7 | Handoff run (no tools) given a scripted `bash` call | refused: the argv has `--no-tools`, no tool exists |
 | F8 | Same F1 to F5 through the Claude adapter's `trusted` profile | unchanged from today; and the `untrusted` file-deny lines are a superset of the `trusted` ones (rendered text compared) |
-| F9 | Forced approval: an untrusted tier 1 manager runs `land` with `tasks.land.approve = false` | an approval request is appended; nothing lands |
-| F10 | Real build task from `bench-tier` fixtures under the strict profile | the fixture task passes: the strict write list is not too tight |
+| F9 | An untrusted manager that holds every role runs `land`, `close --discard`, `deploy`, `new`, `add`, `stop`, with `tasks.land.approve = false` | each refused (exit 2): no role holds `change` or `outward`; nothing lands, no task starts |
+| F10 | Real build task from `bench-tier` fixtures (stretch cases, 3.5) under the strict profile | the fixture task passes: the strict write list is not too tight |
 | F11 | Claude adapter with `ANTHROPIC_BASE_URL` set to a loopback server | the host renders the `untrusted` profile; F1 to F5 pass |
 
 ### 5.7 Where each part lands
@@ -321,8 +345,8 @@ The adversary is scripted, not a hope: a fixture provider (the pattern of pygmal
 |---|---|---|
 | `Policy::for` and its three renderers (wsx-core `task::policy`) | yes | no |
 | `boundary.rs` renders from `Policy`; strict profile; `trusted` unchanged | yes | no |
-| Broker class table, `WSX_TASK_TRUST`, forced approvals | yes | no |
-| Per-launch `PI_CODING_AGENT_DIR` with `models.json` only; policy file; `-e`; `--no-tools` for tier 3 | yes (`pi.rs`) | no |
+| Broker class table, `WSX_TASK_TRUST`, refusal by trust | yes | no |
+| Per-launch `PI_CODING_AGENT_DIR` with `models.json` only; policy file; `-e`; `--no-tools` for handoff | yes (`pi.rs`) | no |
 | Tool layer reads the policy file; deny-all on load failure; redaction; refuses unknown tools; no `ask` | no | yes |
 | Scripted adversary provider; F1 to F7 harness | F1 to F10 in `test-task.py` | the provider and tool-layer cases (F3 excluded) |
 
@@ -367,7 +391,7 @@ Target size: at most 20 source files and about 400 lines, no runtime dependency 
 | First turn of a fresh conversation | about 25 KB, 6 to 7k tokens (rules, notes up to 10 KiB, handover 4 exchanges, ledger 12 rows) | read from `notes.rs:13`, `manager.rs` constants |
 | Worker rules plus schema | about 5.5 KB plus the result schema | read from `claude.rs:256` area |
 
-An 8k slot cannot hold a manager turn; the 16384 slot now running can, with little to spare. Floor: `-c 32768 -np 1` for tier 1 and 2. For an 8k to 16k slot only tier 3 operations run, with caps on notes. A "compact rules" variant of the manager and worker instructions (at most 3 KB) is task W3, chosen by a `window` value on the agent entry so a large window keeps the full rules.
+An 8k slot cannot hold a manager turn; the 16384 slot now running can, with little to spare. Floor: `-c 32768 -np 1` for the organizer, backlog and note-taker roles. For an 8k to 16k slot only handoff (the host cuts its span to fit) and caps on notes apply. The compact fallback rules (at most 3 KB, 3.3) are task W3, chosen by a `window` value on the agent entry so a large window keeps the full rules.
 
 ### 6.4 Stream contract (what the Pi adapter reads)
 
@@ -383,9 +407,9 @@ Commands wsx writes: `prompt` (`streamingBehavior: steer`), `set_model`, `abort`
 | P4 | RPC contract: replay the four wsx recordings' scenarios with the fixture provider | the same event kinds and fields as the recordings (`scripts/record-agent-streams.py pi` shape check) |
 | P5 | Size: `rg --files` and `wc -l` on the tree | at most 20 files, about 400 lines, no dependency added |
 | P6 | Provider calls only the `models.json` `baseUrl` | no other host contacted |
-| W | In wsx: `test-task.py` pi section with `-e <lean>` and the fake provider | argv carries `-e` and `--no-tools` for tier 3; the policy file is outside the agent's writable paths |
+| W | In wsx: `test-task.py` pi section with `-e <lean>` and the fake provider | argv carries `-e`, and `--no-tools` for handoff; the policy file is outside the agent's writable paths |
 | F1-F10 | Section 5.6 | as listed |
-| E2E | `scripts/bench-tier.py` tier 2 and 3 runs through the lean build | pass bars of 3.3 |
+| E2E | `scripts/bench-tier.py` role runs through the lean build | pass bars of 3.5 |
 
 Unverified, to be settled by P1 or E2E: that Pi's `--thinking off` reaches the server and stops reasoning for LFM3 on a long prompt; that `llama-server --jinja` returns tool calls Pi accepts for each candidate.
 
@@ -397,44 +421,46 @@ The tree is clean after the owner drops the 102 files. The refactor is destructi
 
 | | Cost | Risk | Covers |
 |---|---|---|---|
-| A. Tier gate plus today's stand-in | W1 only | Chat answers only; tasks and the manager's real work wait for Claude | owner messages |
-| **B. Policy, tier gate and Pi with lean pygmalion** (recommended) | W1 to W8 and P1 to P3 (W9 optional); two projects | Small-model tool errors; mitigated by the gate, the profile, the checks and the review rule | manager fallback, tier 2 worker steps |
+| A. Role gate plus today's stand-in | W1 only | Chat answers only; tasks and the manager's real work wait for Claude | owner messages |
+| **B. Policy, roles and Pi with lean pygmalion** (recommended) | W1 to W7, W10 to W12 and P1 to P3; two projects | Small-model tool errors; mitigated by the evaluation, the tuning loop, the profile, the broker, the checks and the review rule | organizer, backlog, note-taker and handoff while Claude is down |
 | C. A new agent loop in wsx (Rust, OpenAI tool calls) | Highest: tool loop, edit tool, streaming, tests | Duplicates Pi and its recorded streams | same as B |
 
-Also compared in 2.5: Claude Code against a local Anthropic-compatible endpoint (strata or Locals `/v1/messages`). Its prefix is about 33k tokens a call (vault audit 2026-11-04): over any small window, and 5 minutes cold on strata. It is kept as a later probe, not the plan, and would run as `untrusted`.
+Also considered: Claude Code against a local Anthropic-compatible endpoint (Locals `/v1/messages`; strata is reserved, 2.5). Its prefix is about 33k tokens a call (vault audit 2026-11-04): over any small window. It is kept as a later probe, not the plan, and would run as `untrusted`.
 
 ## 8. Task split
 
-| # | Project | Task | Depends | Proof |
-|---|---|---|---|---|
-| W1 | wsx | `tier` on `[[agents]]`; `fallback(names, now, need)`; operation table; docs/tasks.md "Agents" | #348 | `wsx task check-run task`: new sections beside 36 and 37 in `test-task.py` (a tier 3 agent is skipped for a plan; a tier 1 fallback is taken; none qualifies waits); `cargo nextest` |
-| W2 | wsx | Agent entry `extension = "<path>"` becomes `-e <path>`; per-launch `PI_CODING_AGENT_DIR` with `models.json` only; `--no-tools` for tier 3 | none | `fake-pi-rpc.py` records argv; `agent_stream_fakes.rs` unchanged |
-| W3 | wsx | Compact rules variant and `window` on the agent entry | W2 | size assert in `test-task.py`: manager first turn at most 8k tokens for a `window = 16384` agent |
-| W4 | wsx | `scripts/bench-tier.py` and case builders | W2, W7 | run against `fake-pi-rpc.py` (oracles are deterministic), then once by hand on the running server; result files in `.work/bench-tier` |
-| W5 | wsx | Serving recipe doc, launchd plist, `models.json` entry, endpoint health check | none | `curl /v1/models`, then a tool-call smoke through Pi (output captured) |
-| W6 | wsx | Landing rule for untrusted-built work ("not reviewed") | W1 | `test-task.py` section: a fallback-built task stops at `ready` with the mark |
-| W7 | wsx | `task::policy` (`Policy::for`), strict Seatbelt renderer, broker class table, `WSX_TASK_TRUST`, forced approvals, wsxd socket deny | none | F1 to F10 in `test-task.py`; `trusted` profile text unchanged (golden compare); `cargo nextest` |
-| W8 | wsx | Large local tier: check the manager and worker turn timeouts against a 1 to 5 minute cold turn; lower rotation thresholds for it; `bench-tier` latency case | W4 | a fake endpoint that delays like 109 tok/s; the host does not time out a 4-minute turn and logs one |
-| W9 | wsx (owner action) | strata test install (2.5) after `owner:sec`; then the 2.4 cache script and `bench-tier` on it | owner, `owner:sec`, 120 GB disk | result file in `.work/bench-tier`; disk freed reported |
-| P1 | pygmalion | Owner drops the 102 files; branch | owner | `git status` clean |
-| P2 | pygmalion | Delete to the lean set; add the policy-file path gate and `headless` default | P1 | tests P1, P2, P3, P5 |
-| P3 | pygmalion | Scripted adversary provider; RPC replay; network test | P2 | tests P4, P6 |
-| K | kaos | `kaos serve` (only if the owner picks option A of 2.3) | owner | `curl` from the wsx host; no wsx change |
+The order is evaluate, tune, assign. W4 is therefore first of the wsx tasks that need a model. W8 and W9 (a large local tier and a strata install) are dropped (2.5).
 
-Order: W1 after #348; W7, W2, W5, P1 start at once; P2, P3, W4 next; W3, W6 and W8 last; W9 only if the owner agrees; then run `bench-tier` on the short list and write the tiers into the owner's registry.
+| Step | # | Project | Task | Depends | Proof |
+|---|---|---|---|---|---|
+| Evaluate | W2 | wsx | Agent entry `extension = "<path>"` becomes `-e <path>`; per-launch `PI_CODING_AGENT_DIR` with `models.json` only; `--no-tools` for a role without tools | none | `fake-pi-rpc.py` records argv; `agent_stream_fakes.rs` unchanged |
+| Evaluate | W7 | wsx | `task::policy` (`Policy::for`), strict Seatbelt renderer, broker class table, `WSX_TASK_TRUST`, wsxd socket deny. Roles feed the command table | none | F1 to F10 in `test-task.py`; `trusted` profile text unchanged (golden compare); `cargo nextest` |
+| Evaluate | P1 | pygmalion | Owner drops the 102 files; branch | owner | `git status` clean |
+| Evaluate | P2 | pygmalion | Delete to the lean set; add the policy-file path gate and `headless` default | P1 | tests P1, P2, P3, P5 |
+| Evaluate | P3 | pygmalion | Scripted adversary provider; RPC replay; network test | P2 | tests P4, P6 |
+| Evaluate | W3 | wsx | Compact fallback rules (at most 3 KB), the four role blocks and `window` on the agent entry: the first version of the role text | W2 | size assert in `test-task.py`: a fallback manager first turn at most 8k tokens for a `window = 16384` agent |
+| Evaluate | **W4** | wsx | `scripts/bench-tier.py` and the case builders for the four roles plus stretch cases (3.5): tuning and held-out split, S/T/R/D/C/L, result file with harness version | W2, W3, W7 (strict profile), P2 | run against `fake-pi-rpc.py` (oracles are deterministic), then once by hand per candidate model on the running server; result files in `.work/bench-tier` |
+| Tune | W10 | wsx, pygmalion | The harness loop (3.6): levers, harness version, the keep/revert rule, the stop rule | W4, P2 | Two runs of `bench-tier` on one model with different levers: same case-set hash, both result files kept, held-out scores compared; the baseline and the best harness version per model and role written to `.work/bench-tier`. A fake endpoint that answers well only with the better lever proves the loop keeps it and reverts a lever that lowers a score |
+| Assign | W1 | wsx | `roles` on `[[agents]]`; `fallback(names, now, role)`; operation table; docs/tasks.md "Agents". Merges without any role set | #348 | `wsx task check-run task`: new sections beside 36 and 37 in `test-task.py` (an agent without the role is skipped; one with it is taken; none qualifies waits); `cargo nextest` |
+| Assign | W11 | wsx | `wsx task note backlog\|decision\|context --msg <id>` (append-only, class `note`), the role blocks wired into a fallback turn | W1, W7 | `test-task.py`: backlog and note lines appear with ids; an untrusted manager's `new`, `add`, `land` are refused; the notes budget (10 KiB first message) is unchanged |
+| Assign | W12 | wsx | Handoff: cut the span, the gist call, host id check, `handoff` log entry, `state.handoff`, the "While you were away" block (3.4) | W1 | `test-task.py`: a fake fallback agent and a fake Claude that records its prompt: the prompt holds the gist; a gist line with an unknown id is dropped; with no handoff agent the plain list of ids arrives |
+| Assign | W6 | wsx | Landing rule for untrusted-built work ("not reviewed by Claude", lands after a Claude review step) | W1 | `test-task.py` section: a fallback-built task stops at `ready` with the mark and lands only after a review step |
+| Any time | W5 | wsx | Serving recipe doc, launchd plist, `models.json` entry, endpoint health check; rule "small server always on" | none | `curl /v1/models`, then a tool-call smoke through Pi (output captured) |
+| Optional | K | kaos | `kaos serve` (only if the owner picks option A of 2.3) | owner | `curl` from the wsx host; no wsx change |
+
+Order: W2, W7, P1, W5 start at once; P2, P3 and W3 next; **W4** (evaluate every candidate on every role); **W10** (tune and re-run); then the owner writes roles from the result files, and W1, W11, W12 and W6 make them work. W1 starts after #348 and may merge before any role exists. No model holds a role until its result file passes the bars.
 
 ## 9. Open questions for the owner
 
+Answered by msg 3677 and removed: strata only for models that do not fit in memory (2.5); Claude reviews local-built work before it lands (3.7); roles, not tiers.
+
 1. Serving: B first (recommended; it already runs on this Mac with LFM3-1.7B), or wait for `kaos serve`? Do you want omlx repaired (its Python is missing) to use Qwen3.5-9B MLX, or a GGUF of it downloaded for llama-server? Nothing was downloaded here.
-   Is strata (the large local tier) worth a test install (about 120 GB of disk, `owner:sec` first), given this Mac's 24 GiB (10 and 11 below)?
-2. Is installing Locals acceptable if the tier test shows grammar-forced tool calls matter?
-3. May a task built on an untrusted agent land after only the host's checks, or must Claude review it first (the recommendation)?
-4. Is the LFM Open License (free below $10M revenue) acceptable? Qwen3.5 and Gemma 4 licenses were not checked.
-5. Is 32k context per slot affordable in memory next to your other work? The memory cost of `-c 32768` was not measured.
-6. Should the `trusted` (Claude) profile also move to the strict file-write and network rules? The design leaves it unchanged. The wsxd socket reach and home writes are open for Claude today.
-7. Should an untrusted tier 1 manager run `outward` commands only through an approval request (the recommendation), or never?
-8. Should retrospect (`scripts/retrospect.py`, which calls `claude` directly) go through the registry so a tier 3 local model can run it?
-9. Tier names: 1..3 with 1 most capable, or `plan`, `work`, `text`?
-10. This Mac reports 24 GiB RAM (`sysctl hw.memsize`, Apple M4), not 36 GB. Is the 36 GB machine another Mac? The design sizes memory for the one it runs on.
-11. For the large local tier: accept 1 to 5 minute manager turns on a fallback, and lower rotation thresholds (shorter conversations) so a cold read stays under 2 minutes?
-12. Who starts the large server: you by hand (the plan until Kaos Hub exists), or a launchd job that starts it on demand?
+2. Is installing Locals acceptable if the evaluation shows grammar-forced tool calls matter?
+3. Is the LFM Open License (free below $10M revenue) acceptable? Qwen3.5 and Gemma 4 licenses were not checked.
+4. Is 32k context per slot affordable in memory next to your other work? The memory cost of `-c 32768` was not measured.
+5. Should the `trusted` (Claude) profile also move to the strict file-write and network rules? The design leaves it unchanged. The wsxd socket reach and home writes are open for Claude today.
+6. Should retrospect (`scripts/retrospect.py`, which calls `claude` directly) go through the registry, so a local model could later run it? It is outside the four roles.
+7. This Mac reports 24 GiB RAM (`sysctl hw.memsize`, Apple M4), not 36 GB. Is the 36 GB machine another Mac? The design sizes memory for the one it runs on.
+8. Backlog and note-taker write through a new append-only `wsx task note` command (recommended: a weak model cannot cut or rewrite notes), or edit files in `manager/notes/` directly?
+9. The handoff gist is written by the handoff model and checked by the host (message ids must exist), with the plain id list as the fallback (recommended), or always the plain list with no model?
+10. One agent holds all roles it passes and a turn gets their union (recommended), or one agent per role?
