@@ -498,7 +498,7 @@ fn ready(
         total => format!("checks {passed} of {total} passed"),
     };
     if record.simplify_missing() {
-        checks.push_str("; simplify did not run");
+        checks.push_str(&format!("; {}", super::SIMPLIFY_MISSING));
     }
     let land_auto = load_task_config(&record.project_path).is_ok_and(|s| s.land_auto);
     match record.manager_reviews(land_auto) {

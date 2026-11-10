@@ -589,6 +589,9 @@ pub struct LogEntry {
     pub event: LogEvent,
 }
 
+/// What the ready event and status say of a worker that did not run the simplify skill.
+pub const SIMPLIFY_MISSING: &str = "simplify did not run";
+
 impl TaskRecord {
     /// The worker was sent back to run the simplify skill and still did not.
     /// ref: docs/tasks.md "Workflow"

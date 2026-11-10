@@ -1158,7 +1158,7 @@ impl Manager {
                 // ^ The worker was sent back once and still did not run the simplify skill.
                 // ref: docs/tasks.md "Workflow"
                 if record.state == TaskState::Ready && record.simplify_missing() {
-                    summary.push_str("; simplify did not run");
+                    summary.push_str(&format!("; {}", wsx_core::task::SIMPLIFY_MISSING));
                 }
                 // ^ The worker's memo reaches the manager when its task leaves, never later:
                 // the ledger lists only the last few. ref: docs/tasks.md "Memo"
