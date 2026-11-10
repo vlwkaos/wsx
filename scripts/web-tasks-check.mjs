@@ -3872,67 +3872,99 @@ await closeSheet("the page", `#/p/${plansArg}`);
   await resize(usageSize);
   await openTab("Cost", "[data-chart=cost]");
 }
-// --- Pictures and videos a message shows (docs/web-client-chat.md "Markdown", docs/web-client.md "Media"):
-// `![alt](files/<path>)` and a link to a media file of the main checkout, even in a dot-folder, show as the
-// To check pictures and videos do (same viewer, same player, Range, poster); a secret, a path off the
+// --- Media a message names (docs/web-client-chat.md "Markdown", docs/web-client.md "Media"): `![alt](files/<path>)`
+// and a link to a media file of the main checkout, even in a dot-folder, are attachments of that bubble as the
+// owner's uploads are (one picture large, several in a grid, a video tile with its length), opening the one
+// viewer with swipe between them; the text keeps its words and shows no picture twice. A secret, a path off the
 // checkout and a remote address stay alt text; a link to an HTML file opens its sandboxed view.
 {
   const state = JSON.parse(fs.readFileSync(wsxCli)).env.XDG_STATE_HOME;
   const logFile = fs.readdirSync(state, { recursive: true }).find((file) => /(^|\/)plans-[0-9a-f]{8}\/manager\/log\.jsonl$/.test(file));
   if (!logFile) await fail(`no manager log of plans under ${state}`);
-  const folder = path.join(plansCheckout, ".studio-data", "runs", "one");
+  const base = ".studio-data/runs/one";
+  const folder = path.join(plansCheckout, base);
   fs.mkdirSync(path.join(folder, "thumbs"), { recursive: true });
-  const drawn = await evaluate(`(() => { const canvas = Object.assign(document.createElement('canvas'), { width: 96, height: 64 }); const pen = canvas.getContext('2d');
-    pen.fillStyle = '#282c34'; pen.fillRect(0, 0, 96, 64); pen.fillStyle = '#fac83c'; pen.fillRect(8, 8, 40, 24); return canvas.toDataURL('image/png'); })()`);
-  const picture = Buffer.from(drawn.split(",")[1], "base64");
-  // ^ The files are named for what a studio writes (a jpg thumbnail); the server reads their bytes.
-  fs.writeFileSync(path.join(folder, "thumbs", "trend.jpg"), picture);
-  fs.writeFileSync(path.join(folder, "clip.jpg"), picture);
+  // ^ Four different pictures (the server shows a message's files once by content); the files are named
+  // for what a studio writes (jpg thumbnails), the server reads their bytes.
+  const drawn = [];
+  for (const color of ["#fac83c", "#468cdc", "#e0605b", "#5fb878"]) {
+    const url = await evaluate(`(() => { const canvas = Object.assign(document.createElement('canvas'), { width: 96, height: 64 }); const pen = canvas.getContext('2d');
+      pen.fillStyle = '#282c34'; pen.fillRect(0, 0, 96, 64); pen.fillStyle = '${color}'; pen.fillRect(8, 8, 56, 32); return canvas.toDataURL('image/png'); })()`);
+    drawn.push(Buffer.from(url.split(",")[1], "base64"));
+  }
+  const names = ["thumbs/trend.jpg", "thumbs/b.jpg", "thumbs/c.jpg", "clip.jpg"];
+  names.forEach((name, at) => fs.writeFileSync(path.join(folder, name), drawn[at]));
   fs.copyFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "check-clip.mp4"), path.join(folder, "clip.mp4"));
   fs.writeFileSync(path.join(folder, "report.html"), "<!doctype html><title>studio report</title><p>report</p>\n");
-  fs.writeFileSync(path.join(plansCheckout, ".env"), picture);
-  const base = ".studio-data/runs/one";
-  const text9 = [`![Trend](files/${base}/thumbs/trend.jpg)`, `![Clip](files/${base}/clip.mp4)`, `[the trend link](files/${base}/thumbs/trend.jpg)`,
-    "![Secret](files/.env)", "![Parent](files/../trend.jpg)", "![Remote](https://example.com/trend.jpg)", `[the report](files/${base}/report.html)`].join("\n\n");
-  fs.appendFileSync(path.join(state, logFile), `${JSON.stringify({ unix_ms: Date.now(), kind: "reply", id: 9_500_000, to: [], text: text9, quiet: false })}\n`);
-  const mediaBubble = ".log .bubble:has(a[href$=\"report.html\"])";
+  fs.writeFileSync(path.join(plansCheckout, ".env"), drawn[0]);
+  const reply = (id, text) => fs.appendFileSync(path.join(state, logFile), `${JSON.stringify({ unix_ms: Date.now(), kind: "reply", id, to: [], text, quiet: false })}\n`);
+  reply(9_500_000, `Thumbnail of the trend:\n\n![Trend](files/${base}/thumbs/trend.jpg)`);
+  reply(9_500_001, `Three more:\n\n![One](files/${base}/thumbs/trend.jpg)\n\n![Two](files/${base}/thumbs/b.jpg)\n\n![Three](files/${base}/thumbs/c.jpg)`);
+  reply(9_500_002, [`A clip: ![Clip](files/${base}/clip.mp4)`, "![Secret](files/.env)", "![Parent](files/../trend.jpg)", "![Remote](https://example.com/trend.jpg)",
+    `See [the trend link](files/${base}/thumbs/trend.jpg) and [the report](files/${base}/report.html)`].join("\n\n"));
+  const keys = {};
+  const bubbleOf = (id) => `.log .bubble[data-key=${JSON.stringify(keys[id])}]`;
+  const opened = () => evaluate("[...document.querySelectorAll('.viewer-bar .time')].find((node) => / of /.test(node.textContent))?.textContent ?? ''");
   for (const wide of [false, true]) {
     await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
     await go(`#/p/${plansArg}`);
-    await until(`!!document.querySelector('${mediaBubble} .check-capture')`, "the message with pictures and a video shows no video", 60);
-    await until(`[...document.querySelectorAll('${mediaBubble} img')].every((image) => image.naturalWidth > 0)`, "a picture of the message did not load");
-    const shown = await evaluate(`(() => { const bubble = document.querySelector('${mediaBubble}');
-      return { images: [...bubble.querySelectorAll('.markdown > p > a[data-view] > img')].map((image) => image.alt),
-        video: !!bubble.querySelector('a.check-capture[data-video] .check-play'), poster: bubble.querySelector('a.check-capture[data-video]').dataset.poster ?? '',
-        link: !!bubble.querySelector('a[data-view]:not(.check-capture):not(:has(img))'),
-        alts: [...bubble.querySelectorAll('.image-alt')].map((node) => node.textContent), stray: [...bubble.querySelectorAll('img')].map((image) => image.alt).filter((alt) => /Secret|Parent|Remote/.test(alt)) }; })()`);
-    if (shown.images.join() !== "Trend" || !shown.video || !/\/media\/[0-9a-f]{64}\.png$/.test(shown.poster) || !shown.link
-      || shown.alts.join() !== "Secret,Parent,Remote" || shown.stray.length) await fail(`the media message at ${size[0]} px reads ${JSON.stringify(shown)}`);
-    // ^ Only the two granted files are in the row; the denied paths never reached the server's answer.
-    const granted = await evaluate(`fetch('api/tasks/${plansArg}/chat').then((r) => r.json()).then((data) => data.rows.find((row) => row.id === 9500000).attachments.map((file) => [file.src, file.mime, !!file.poster]))`);
-    if (JSON.stringify(granted) !== JSON.stringify([[`${base}/thumbs/trend.jpg`, "image/png", false], [`${base}/clip.mp4`, "video/mp4", true]])) await fail(`the row grants ${JSON.stringify(granted)}`);
-    await shot(`message-media${wide ? "-wide" : ""}`);
-    // ^ A tap on the picture opens the viewer with the picture; Escape closes it.
-    await click(`${mediaBubble} a[data-view]:has(img)`);
+    // ^ What the server grants: the files of each message, once, with the path they were named by.
+    const rows = await evaluate(`fetch('api/tasks/${plansArg}/chat').then((r) => r.json()).then((data) => data.rows.filter((row) => row.id >= 9500000 && row.id <= 9500002)
+      .map((row) => [row.id, row.key, (row.attachments ?? []).map((file) => [file.src, file.mime, !!file.poster])]))`);
+    for (const [id, key] of rows) keys[id] = key;
+    const base1 = `${base}/thumbs/trend.jpg`;
+    const expected = [[9500000, [[base1, "image/png", false]]], [9500001, [[base1, "image/png", false], [`${base}/thumbs/b.jpg`, "image/png", false], [`${base}/thumbs/c.jpg`, "image/png", false]]],
+      [9500002, [[`${base}/clip.mp4`, "video/mp4", true], [base1, "image/png", false]]]];
+    if (JSON.stringify(rows.map(([id, , files]) => [id, files])) !== JSON.stringify(expected)) await fail(`the rows grant ${JSON.stringify(rows)}`);
+    for (const id of [9500000, 9500001, 9500002]) await until(`!!document.querySelector('${bubbleOf(id)} .attachments')`, `the message ${id} shows no attachments`, 60);
+    await until("[...document.querySelectorAll('.log .attachments img')].every((image) => image.naturalWidth > 0)", "an attachment picture did not load");
+    // ^ The text keeps its words and shows no picture of its own (nor an empty paragraph).
+    const text = (id) => evaluate(`(() => { const bubble = document.querySelector('${bubbleOf(id)}'); const markdown = bubble.querySelector('.markdown');
+      return { words: markdown.textContent.trim(), inline: markdown.querySelectorAll('img, video, .check-capture').length, empty: [...markdown.querySelectorAll('p')].filter((p) => !p.textContent.trim()).length,
+        tiles: [...bubble.querySelectorAll('.attachments li')].length, grid: bubble.querySelector('.attachments').hasAttribute('data-grid') }; })()`);
+    const [one, three, clip] = [await text(9500000), await text(9500001), await text(9500002)];
+    if (one.words !== "Thumbnail of the trend:" || three.words !== "Three more:" || [one, three, clip].some((m) => m.inline || m.empty)
+      || one.tiles !== 1 || one.grid || three.tiles !== 3 || !three.grid || clip.tiles !== 2 || !clip.grid) await fail(`the media messages at ${size[0]} px read ${JSON.stringify([one, three, clip])}`);
+    // ^ One picture is large (not cropped to a square); three are square tiles in two columns.
+    const looks = await evaluate(`(() => { const box = (id) => [...document.querySelectorAll('${bubbleOf(9500000)} .attachments img, ${bubbleOf(9500001)} .attachments img')].map((image) => image.getBoundingClientRect());
+      const [single, ...tiles] = box(); return { single: [Math.round(single.width), Math.round(single.height)], squares: tiles.every((tile) => Math.abs(tile.width - tile.height) <= 1),
+        columns: new Set(tiles.map((tile) => Math.round(tile.left))).size }; })()`);
+    if (looks.single[0] < looks.single[1] || looks.single[0] < 90 || !looks.squares || looks.columns !== 2) await fail(`the tiles at ${size[0]} px read ${JSON.stringify(looks)}`);
+    await shot(`message-media-1${wide ? "-wide" : ""}`);
+    await evaluate(`document.querySelector('${bubbleOf(9500001)}').scrollIntoView({ block: 'center' })`);
+    await shot(`message-media-3${wide ? "-wide" : ""}`);
+    // ^ A tap on the first picture of three opens the viewer; an arrow goes to the next of that bubble only.
+    await click(`${bubbleOf(9500001)} .attachments a[data-view]`);
     await until("!!document.querySelector('dialog.viewer[open] .viewer-stage img:not([data-loading])')", "the picture of the message did not open in the viewer");
+    if ((await opened()) !== "1 of 3") await fail(`the viewer of three pictures reads ${await opened()}`);
+    await key("ArrowRight", 39);
+    await until("[...document.querySelectorAll('.viewer-bar .time')].some((node) => node.textContent === '2 of 3')", async () => `the viewer did not go to the second picture: ${await opened()}`);
     await shot(`message-media-viewer${wide ? "-wide" : ""}`);
     await key("Escape", 27);
     await until("!document.querySelector('dialog.viewer')", "Escape did not close the viewer");
-    // ^ The video: Range answers 206, the viewer's player has the poster and plays.
-    const range = await evaluate(`(async () => { const link = document.querySelector('${mediaBubble} a.check-capture[data-video]'); const got = await fetch(link.href, { headers: { Range: 'bytes=0-99' } });
-      return { status: got.status, type: got.headers.get('content-type'), range: got.headers.get('content-range'), length: (await got.arrayBuffer()).byteLength }; })()`);
-    if (range.status !== 206 || range.type !== "video/mp4" || !/^bytes 0-99\/\d+$/.test(range.range || "") || range.length !== 100) await fail(`the message's video answers ${JSON.stringify(range)}`);
-    await click(`${mediaBubble} a.check-capture[data-video]`);
+    // ^ The video tile: poster, play mark and its length; Range answers 206; the viewer plays it and swipes to the picture.
+    await evaluate(`document.querySelector('${bubbleOf(9500002)}').scrollIntoView({ block: 'center' })`);
+    await until(`/^\\d+:\\d\\d$/.test(document.querySelector('${bubbleOf(9500002)} .check-capture[data-video] .check-duration')?.textContent ?? '')`, "the video tile shows no length");
+    const tile = await evaluate(`(async () => { const link = document.querySelector('${bubbleOf(9500002)} .check-capture[data-video]'); const got = await fetch(link.href, { headers: { Range: 'bytes=0-99' } });
+      return { play: !!link.querySelector('.check-play svg'), poster: /\\/media\\/[0-9a-f]{64}\\.png$/.test(link.dataset.poster ?? ''), status: got.status, type: got.headers.get('content-type'),
+        range: got.headers.get('content-range'), length: (await got.arrayBuffer()).byteLength,
+        alts: [...document.querySelectorAll('${bubbleOf(9500002)} .markdown .image-alt')].map((node) => node.textContent),
+        links: [...document.querySelectorAll('${bubbleOf(9500002)} .markdown a')].map((anchor) => anchor.textContent) }; })()`);
+    if (!tile.play || !tile.poster || tile.status !== 206 || tile.type !== "video/mp4" || !/^bytes 0-99\/\d+$/.test(tile.range || "") || tile.length !== 100
+      || tile.alts.join() !== "Secret,Parent,Remote" || tile.links.join() !== "the report") await fail(`the video message at ${size[0]} px reads ${JSON.stringify(tile)}`);
+    await shot(`message-media-video${wide ? "-wide" : ""}`);
+    await click(`${bubbleOf(9500002)} .check-capture[data-video]`);
     const player = "document.querySelector('dialog.viewer[open] .viewer-stage video')";
     await until(`${player}?.readyState >= 1`, "the message's video did not load in the viewer");
     const played = await evaluate(`(async () => { const video = ${player}; video.muted = true; await video.play(); return { poster: /\\/media\\/[0-9a-f]{64}\\.png$/.test(video.poster), playsinline: video.hasAttribute('playsinline'), size: [video.videoWidth, video.videoHeight] }; })()`);
-    if (!played.poster || !played.playsinline || played.size.join() !== "160,90") await fail(`the message's video in the viewer reads ${JSON.stringify(played)}`);
+    if (!played.poster || !played.playsinline || played.size.join() !== "160,90" || (await opened()) !== "1 of 2") await fail(`the message's video in the viewer reads ${JSON.stringify(played)} ${await opened()}`);
     await until(`${player}.currentTime > 0`, "the message's video did not play");
-    await shot(`message-media-video${wide ? "-wide" : ""}`);
+    await key("ArrowRight", 39);
+    await until("!!document.querySelector('dialog.viewer[open] .viewer-stage img:not([data-loading])') && !document.querySelector('dialog.viewer .viewer-stage video')", "the viewer did not go from the video to the picture");
     await key("Escape", 27);
     await until("!document.querySelector('dialog.viewer')", "Escape did not close the video viewer");
     // ^ A link to an HTML file opens its sandboxed view (docs/web-client.md "Files").
-    await click(`${mediaBubble} a[href$="report.html"]`);
+    await click(`${bubbleOf(9500002)} .markdown a[href$="report.html"]`);
     await until(`location.hash === '#/p/${plansArg}/files/${base}/report.html' && /^view\\/[0-9a-f]{64}\\/report\\.html$/.test(document.querySelector('iframe.file-page')?.getAttribute('src') ?? '')`, "the report link did not open the page view");
     if ((await evaluate("document.querySelector('iframe.file-page').getAttribute('sandbox')")) !== "allow-popups allow-popups-to-escape-sandbox") await fail("the report page is not sandboxed");
   }

@@ -31,11 +31,30 @@ export function openViewer(images, index, opener, { dark = true } = {}) {
 // The tap target of a picture or a video that opens in the viewer: a To check capture (checks.js)
 // and a video a chat message shows (markdown.js). A video shows its `poster` (or a blank frame)
 // with a play mark. `size`: the capture's [width, height], so its box is there before the image.
-export const Capture = ({ href, label, download, video, poster, size }) => html`
+export const Capture = ({ href, label, download, video, poster, size, duration }) => html`
   <a class="check-capture" href=${href} data-view data-download=${download} data-video=${video || undefined} data-poster=${poster} aria-label=${label}>
     ${video && !poster ? html`<span class="check-frame"></span>` : html`<img src=${poster ?? href} alt="" style=${size && { "--w": size[0], "--h": size[1], "--width": `${size[0]}px` }} />`}
     ${video && html`<span class="check-play"><${Icon} name="play" /></span>`}
+    ${duration && html`<span class="check-duration">${duration}</span>`}
   </a>`;
+
+// The length of the video at `href` as m:ss, once its metadata is read ("" before). The browser
+// reads it; no server tool is needed.
+export function useDuration(href) {
+  const [length, setLength] = useState("");
+  useEffect(() => {
+    const probe = document.createElement("video");
+    probe.preload = "metadata";
+    probe.muted = true;
+    probe.onloadedmetadata = () => {
+      const seconds = Math.round(probe.duration);
+      if (Number.isFinite(seconds)) setLength(`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
+    };
+    probe.src = href;
+    return () => { probe.onloadedmetadata = null; probe.removeAttribute("src"); probe.load(); };
+  }, [href]);
+  return length;
+}
 
 // A plain tap on a link marked `data-view` opens its image here, with the other `data-view`
 // links of its closest `data-gallery`; with a modifier key the link opens as a link does.

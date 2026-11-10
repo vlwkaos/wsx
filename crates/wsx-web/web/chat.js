@@ -4,6 +4,7 @@ import { api, resolve } from "./api.js";
 import { bytes, elapsed, html, Icon, keepIn, plural, readMap, useCoalescedLoad, useEffect, useExit, useFollowEnd, useLayoutEffect, useNow, useRef, useState } from "./lib.js";
 import { can, replaceRoute, shows, stateOf, state, touch, useEventLoad } from "./store.js";
 import { Markdown } from "./markdown.js";
+import { Capture, useDuration } from "./viewer.js";
 import { FindBar } from "./find.js";
 import { QuoteChip, Quoted, useReply, withQuote } from "./reply.js";
 
@@ -117,12 +118,23 @@ const DELIVERY_WORDS = {
   target_replaced: "The agent's program was replaced.",
 };
 
+// ^ A video is the To check tile (viewer.js `Capture`) with its length; its poster is the `.jpg` beside it.
+const VideoTile = ({ file }) => {
+  const href = resolve(file.url);
+  const duration = useDuration(href);
+  return html`<${Capture} href=${href} video poster=${file.poster && resolve(file.poster)} duration=${duration} label=${`Video: ${file.name}`} />`;
+};
+
+// A message's files, as a chat app shows them: one picture large, several in a grid (`data-grid`),
+// each opening the viewer with the others of the message. The owner's uploads, the files an
+// agent produced and the files a manager's message names (docs/web-client.md "Media") use it.
 export const Attachments = ({ files }) => files?.length ? html`
-  <ul class="attachments" data-gallery>
+  <ul class="attachments" data-gallery data-grid=${files.filter((file) => file.image || file.mime?.startsWith("video/")).length > 1 ? "" : null}>
     ${files.map((file) => html`
       <li key=${file.hash}>
         ${file.image
           ? html`<a href=${resolve(file.url)} data-view><img src=${resolve(file.url)} alt=${file.name} loading="lazy" /></a>`
+          : file.mime?.startsWith("video/") ? html`<${VideoTile} file=${file} />`
           : html`<a href=${resolve(file.url)} download=${file.name}>${file.name} (${bytes(file.size)})</a>`}
       </li>`)}
   </ul>` : null;
