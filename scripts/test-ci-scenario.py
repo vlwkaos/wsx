@@ -4,7 +4,9 @@
 `python3 -B scripts/test-ci-scenario.py` runs `wait_run` and `gh` through the real code for four
 answers of GitHub: a rate limit that resets soon (the script waits and passes), one that resets after
 the deadline (TempFail, exit 75), an invalid token (TempFail, one line) and a plain run (the request
-count). The fake counts every call in $FAKE_GH_DIR/calls.
+count). It also runs `sweep` (it cancels only the scenario runs older than the script's whole time),
+the cancel of a run through a rate limit, and a run whose jobs never leave the queue (TempFail). The
+fake counts every call in $FAKE_GH_DIR/calls.
 """
 
 import importlib.util
@@ -37,11 +39,25 @@ if args[:2] == ['api', 'rate_limit']:
     sys.exit(0)
 if mode == 'token':
     sys.stderr.write('gh: Bad credentials (HTTP 401)\n'); sys.exit(1)
+if args[-1].endswith('/cancel'):
+    if mode == 'cancel-limit' and bump('cancels') == 1:
+        open(os.path.join(d, 'reset'), 'w').write(str(time.time() + 2))
+        sys.stderr.write('gh: API rate limit exceeded for user ID 1. (HTTP 403)\n'); sys.exit(1)
+    sys.exit(0)
+if args[1].startswith('repos/o/r/git/matching-refs'):
+    print('[]'); sys.exit(0)
+if args[1].startswith('repos/o/r/actions/runs?status='):
+    def run(i, branch, minutes):
+        t = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - minutes * 60))
+        return {'id': i, 'head_branch': branch, 'created_at': t, 'html_url': 'u%d' % i}
+    print(json.dumps({'workflow_runs': [run(1, 'wsx-scenario/web/1-a', 126), run(2, 'wsx-scenario/web/2-b', 124),
+                                        run(3, 'main', 500)] if 'queued' in args[1] else []}))
+    sys.exit(0)
 n = bump('requests')
 if args[1].endswith('/jobs?per_page=100'):
     last = int(open(os.path.join(d, 'runs')).read()) >= 5
     print(json.dumps({'jobs': [
-        {'name': 'web-scenario (chat)', 'status': 'completed' if last else 'in_progress', 'conclusion': 'success' if last else None},
+        {'name': 'web-scenario (chat)', 'status': 'completed' if last else ('queued' if mode == 'idle' else 'in_progress'), 'conclusion': 'success' if last else None},
         {'name': 'web-scenario (tasks)', 'status': 'completed', 'conclusion': 'skipped'}]}))
     sys.exit(0)
 runs = bump('runs')
@@ -83,8 +99,16 @@ def scenario(mode, folder):
     if mode == 'late':
         module.DEADLINE = time.monotonic() + 30
     begun = time.monotonic()
+    if mode == 'idle':
+        module.QUEUE_SECONDS = -1
     try:
-        out = module.wait_run('o/r', 1, 'chat')
+        if mode == 'sweep':
+            module.sweep('o/r')
+            out = None
+        elif mode == 'cancel-limit':
+            out = module.cancel_run('o/r', 7, time.monotonic() + 30)
+        else:
+            out = module.wait_run('o/r', 1, 'chat')
     except module.TempFail as why:
         out = why
     return out, time.monotonic() - begun, (work / 'calls').read_text().splitlines() if (work / 'calls').exists() else [], module
@@ -111,6 +135,17 @@ def main():
 
         out, seconds, calls, module = scenario('token', folder)
         check(isinstance(out, module.TempFail) and 'token is invalid' in str(out) and '\n' not in str(out), 'an invalid token is a one-line TempFail (%s)' % out)
+
+        out, seconds, calls, module = scenario('sweep', folder)
+        cancels = [c for c in calls if c.endswith('/cancel')]
+        check(cancels == ['api -X POST repos/o/r/actions/runs/1/cancel'], 'sweep cancels only the scenario run older than 125 min (%s)' % cancels)
+        check(sum('actions/runs?status=' in c for c in calls) == 2, 'two list requests, not one for each run')
+
+        out, seconds, calls, module = scenario('cancel-limit', folder)
+        check(out is True and seconds >= 2, 'the cancel waits out a rate limit and goes through (%.1f s)' % seconds)
+
+        out, seconds, calls, module = scenario('idle', folder)
+        check(isinstance(out, module.TempFail) and 'no job started' in str(out), 'a run with no job started is a TempFail (%s)' % out)
 
 
 if __name__ == '__main__':

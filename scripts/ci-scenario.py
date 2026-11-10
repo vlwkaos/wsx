@@ -15,10 +15,14 @@ no result: the next check-run runs it again). A rate limit answer is never a fai
 for the reset time of `gh api rate_limit` (that endpoint does not count) and goes on. A poll costs one
 request (the run), and the jobs are read when the run's status changes, every JOBS_SECONDS and at the
 end. A branch a killed run left behind is deleted by a later run once it is STALE_SECONDS
-old. The task host runs it outside the slot (docs/tasks.md "Scenarios").
+old, and it cancels every scenario run still queued or running after the script's whole time (the
+account runs at most 5 macOS jobs at once: an orphan holds a slot and every new run queues behind it). A
+run with no job started after QUEUE_SECONDS is a runner problem, not the tree: it is cancelled and the
+script exits 75. The task host runs it outside the slot (docs/tasks.md "Scenarios").
 """
 
 import argparse
+import calendar
 import json
 import os
 from pathlib import Path
@@ -60,6 +64,8 @@ BAD_TOKEN = re.compile(r'HTTP 401|Bad credentials|token .{0,40}invalid|gh auth l
 # ^ A call that fails with one of these asks `gh api rate_limit`, which does not count against the limit.
 ASK_LIMIT = re.compile(r'HTTP (401|403|429)|rate limit|abuse detection|Bad credentials|gh auth login', re.IGNORECASE)
 SECONDARY_WAIT = 60
+# ^ The cancel of the script's own run waits out a rate limit at most this long (it may be past DEADLINE).
+CANCEL_WAIT_SECONDS = 15 * 60
 CALLS = {'gh': 0, 'rate_limit': 0}
 
 
@@ -81,20 +87,22 @@ def git(*args, env=None):
                           env=env).stdout.rstrip()
 
 
-def gh(*args, check=True, patient=True):
+def gh(*args, check=True, until=None):
     """Run `gh`. A rate limit answer waits for the reset and runs the call again; an invalid token
-    raises TempFail. `patient=False` (the cleanup) never waits."""
+    raises TempFail. A wait that would end after `until` (monotonic seconds, default DEADLINE) raises
+    TempFail; `until=0` never waits (the cleanup's branch delete)."""
+    until = DEADLINE if until is None else until
     while True:
         CALLS['gh'] += 1
         ran = subprocess.run(['gh', *args], capture_output=True, text=True)
         if ran.returncode == 0:
             return ran
-        pause = limit_pause(ran.stderr + ran.stdout) if patient else None
+        pause = limit_pause(ran.stderr + ran.stdout) if until else None
         if pause is None:
             if check:
                 raise RuntimeError('gh %s: %s' % (' '.join(args), ran.stderr.strip()))
             return ran
-        if time.monotonic() + pause > DEADLINE:
+        if time.monotonic() + pause > until:
             raise TempFail('GitHub rate limit resets in %d s, after the deadline of this run.' % pause)
         say('%s  GitHub rate limit: waiting %d s' % (time.strftime('%H:%M:%S'), pause))
         time.sleep(pause)
@@ -201,7 +209,8 @@ def wait_run(repo, run_id, part=None):
             return {'status': status, 'conclusion': run['conclusion'], 'jobs': jobs}
         late = overdue(now - begun, None if started is None else now - started)
         if late:
-            raise RuntimeError('the CI run is cancelled: %s' % late)
+            # ^ No job started: the runners are full, not the tree. The caller's cleanup cancels the run.
+            raise (RuntimeError if started else TempFail)('the CI run is cancelled: %s' % late)
         time.sleep(SLOW_POLL_SECONDS if now - begun > SLOW_AFTER else POLL_SECONDS)
 
 
@@ -240,13 +249,27 @@ def take_files(repo, run_id, root, scratch):
             tar.close()
 
 
+def cancel_run(repo, run_id, until=None):
+    """Cancel a run (one request); False when GitHub refused (a run that ended already)."""
+    return gh('api', '-X', 'POST', 'repos/%s/actions/runs/%s/cancel' % (repo, run_id), check=False, until=until).returncode == 0
+
+
 def sweep(repo):
-    """Delete the scenario branches of killed runs: the name holds when it was pushed."""
+    """Delete the scenario branches of killed runs (the name holds when it was pushed) and cancel the
+    scenario runs older than the script's whole time: no script waits on them any more, and each holds
+    a macOS slot. Two list requests (queued, in progress), one cancel for each orphan."""
     refs = json.loads(gh('api', 'repos/%s/git/matching-refs/heads/wsx-scenario/' % repo, check=False).stdout or '[]')
     for ref in refs if isinstance(refs, list) else []:
         pushed = ref['ref'].rsplit('/', 1)[-1].split('-', 1)[0]
         if pushed.isdigit() and time.time() - int(pushed) > STALE_SECONDS:
             gh('api', '-X', 'DELETE', 'repos/%s/%s' % (repo, ref['ref'].replace('refs/', 'git/refs/', 1)), check=False)
+    for status in ('queued', 'in_progress'):
+        listed = json.loads(gh('api', 'repos/%s/actions/runs?status=%s&per_page=100' % (repo, status), check=False).stdout or '{}')
+        for old in listed.get('workflow_runs', []):
+            created = calendar.timegm(time.strptime(old['created_at'], '%Y-%m-%dT%H:%M:%SZ'))
+            if (old['head_branch'] or '').startswith('wsx-scenario/') and time.time() - created > QUEUE_SECONDS + RUN_SECONDS + 5 * 60:
+                say('cancel %s run %s of %s, older than this script waits: %s' % (status, old['id'], old['head_branch'], old['html_url']))
+                cancel_run(repo, old['id'])
 
 
 def parts_of(workflow, name):
@@ -322,9 +345,13 @@ def main():
         return 0
     finally:
         if run and not ended:
-            gh('run', 'cancel', str(run['databaseId']), '--repo', repo, check=False, patient=False)
+            # ^ Waits out a rate limit (a run left behind holds a slot), but not past CANCEL_WAIT_SECONDS.
+            try:
+                cancel_run(repo, run['databaseId'], time.monotonic() + CANCEL_WAIT_SECONDS)
+            except TempFail as why:
+                say('run %s is not cancelled (%s): the next scenario run cancels it.' % (run['databaseId'], why))
         if branch:
-            gh('api', '-X', 'DELETE', 'repos/%s/git/refs/heads/%s' % (repo, branch), check=False, patient=False)
+            gh('api', '-X', 'DELETE', 'repos/%s/git/refs/heads/%s' % (repo, branch), check=False, until=0)
         shutil.rmtree(scratch, ignore_errors=True)
 
 
