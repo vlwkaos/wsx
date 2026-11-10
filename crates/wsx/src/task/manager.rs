@@ -20,6 +20,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
+use wsx_core::config::global::{Operation, Role};
 use wsx_core::config::project::load_task_config;
 use wsx_core::model::workspace::manager_rotate_limit;
 use wsx_core::routine::{store as routines, RunRecord, RunStatus, Trigger};
@@ -1874,6 +1875,7 @@ impl Manager {
             &settings.manager_fallback,
             settings.max_wait_secs,
             &self.current_account(),
+            Operation::Manager,
             until_ms,
             now,
         ) else {
@@ -1935,7 +1937,11 @@ impl Manager {
         self.stand_in_look = Some(Instant::now());
         let now = now_unix_ms();
         let settings = load_task_config(&self.main).unwrap_or_default();
-        let Some(agent) = agent::fallback(&settings.manager_fallback, now, true) else {
+        let Some(agent) = agent::fallback(
+            &settings.manager_fallback,
+            now,
+            Operation::Role(Role::Organizer),
+        ) else {
             return;
         };
         let account = agent::account(&agent.adapter, &agent.model);
