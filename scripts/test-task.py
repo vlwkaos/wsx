@@ -5217,8 +5217,13 @@ def part_host(created=None):
     with open(config_dir / 'config-v2.toml', 'a') as registry:
         registry.write('[[agents]]\nname = "fake-pi"\ncommand = ["pi"]\nadapter = "pi"\nmodel = "fake/pi-model"\n'
                        'extension = ' + json.dumps(str(lean)) + '\n')
-    configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi]\n    maxWaitMinutes: 1\n'),
-              'fallback agent')
+        # ^ A backlog-role entry comes first in every list below: it is no full fallback and no
+        # stand-in, so a worker, the manager and a stand-in skip it. Were the gate open, the task
+        # would end on its model, fake/backlog.
+        registry.write('[[agents]]\nname = "fake-backlog"\ncommand = ["pi"]\nadapter = "pi"\n'
+                       'model = "fake/backlog"\nroles = ["backlog"]\n')
+    WORKER_FALLBACK = FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-backlog, fake-pi]\n    maxWaitMinutes: 1\n')
+    configure(WORKER_FALLBACK, 'fallback agent')
     # ^ Part 20 ran a Pi manager: only the Pi turns from here on are the worker's.
     traced_before = len(traces())
     switched = js('task', 'new', 'LIMIT 600 WORK fa.txt')['id']
@@ -5255,8 +5260,7 @@ def part_host(created=None):
     restarted = js('task', 'new', 'LIMIT 600 WORK fc.txt')['id']
     wait(lambda: show(restarted)['state'] == 'waiting', 'the worker waits on its own agent')
     assert show(restarted)['record']['adapter'] == 'claude', show(restarted)['record']
-    configure(FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-pi]\n    maxWaitMinutes: 1\n'),
-              'fallback after the limit')
+    configure(WORKER_FALLBACK, 'fallback after the limit')
     project_id = show(restarted)['record']['project_id']
     os.kill(next(int(line.split()[0]) for line in leftovers('task host %s %d' % (project_id, restarted))
                  if line.endswith('task host %s %d' % (project_id, restarted))), 9)
@@ -5287,6 +5291,9 @@ def part_host(created=None):
         # ^ Another model on the paid account sets no budget: the account's budget still holds.
         registry.write('[[agents]]\nname = "fake-paid-other"\ncommand = ["pi"]\nadapter = "pi"\n'
                        'model = "paid/other"\n')
+        # ^ An organizer-role entry is a stand-in too (the organizer without tools), and no full fallback.
+        registry.write('[[agents]]\nname = "fake-organizer"\ncommand = ["pi"]\nadapter = "pi"\n'
+                       'model = "local/organizer"\nroles = ["organizer"]\n')
         registry.write('[[agents]]\nname = "fake-pi2"\ncommand = ["pi"]\nadapter = "pi"\n'
                        'model = "other/pi-model"\n')
     with_fallback = lambda names: FALLBACK_CONFIG.replace(
@@ -5294,7 +5301,7 @@ def part_host(created=None):
         '    model: fake-model\n', '    model: fake-model\n    maxWaitMinutes: 1\n')
     # ^ A short limit is waited out, and the owner still gets words from the stand-in. The message
     # stays due: the own agent answers it after the limit and hears of the stand-in's reply.
-    configure(with_fallback('fake-local, fake-pi'), 'stand-in')
+    configure(with_fallback('fake-backlog, fake-local, fake-pi'), 'stand-in')
     # ^ The earlier fa.txt task's ready event waits for the manager: the fake takes its title
     # (`LIMIT 600 ...`) for no trigger (fake-claude-stream.py own_words), so the limit stays 15 s.
     limit_for(15)
@@ -5321,12 +5328,12 @@ def part_host(created=None):
     refusal.write_text('400 {"type":"error","error":{"type":"invalid_request_error","message":'
                        '"Your credit balance is too low to access the Anthropic API."}}\n')
     # A manager already held at a long limit moves when a fallback comes.
-    configure(with_fallback('fake-local'), 'no fallback for the manager yet')
+    configure(with_fallback('fake-backlog, fake-organizer'), 'no fallback for the manager yet')
     limit_for(600)
     held = js('task', 'say', 'STATUS held')
     wait(lambda: any(e['kind'] == 'reply' and e.get('provisional') and held['id'] in e['to'] for e in chat()),
          'the stand-in answers the held message')
-    configure(with_fallback('fake-local, fake-pi'), 'manager fallback')
+    configure(with_fallback('fake-backlog, fake-organizer, fake-pi'), 'manager fallback')
     on_fallback = js('task', 'say', 'STATUS on the fallback')
     assert reply_to(on_fallback['id'])['text'].startswith('pi answers: '), chat()[-3:]
     assert any(e['kind'] == 'reply' and not e.get('provisional') and held['id'] in e['to']

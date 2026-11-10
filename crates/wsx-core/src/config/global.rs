@@ -311,6 +311,30 @@ pub struct ProfileEntry {
 /// The headless adapters a task host can drive (`crates/wsx/src/task/agent.rs`).
 pub const TASK_ADAPTERS: &[&str] = &["claude", "pi"];
 
+/// A fallback role: a job description a local model may hold, not a permission.
+/// ref: docs/design/local-model-fallback.md 3.2
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Role {
+    Organizer,
+    Backlog,
+    NoteTaker,
+    Handoff,
+}
+
+/// What a headless call asks of a registry agent; `AgentEntry::allows` is the one rule.
+/// ref: docs/tasks.md "Agents"
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operation {
+    /// The manager's turns, after its own agent's limit moved it.
+    Manager,
+    /// A task's steps (plan, build, review), by a new task or after a limit moved it.
+    Worker,
+    /// A job a role describes. The stand-in (an owner message answered during a hold, no tools)
+    /// is the organizer's.
+    Role(Role),
+}
+
 /// An agent's name, and so its account file's: 1 to 64 of letters, digits, `-`, `_` and `.`.
 pub fn is_agent_name(text: &str) -> bool {
     !text.is_empty()
@@ -346,6 +370,24 @@ pub struct AgentEntry {
     /// Needs the `pi` adapter. ref: docs/tasks.md "Pi adapter"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extension: Option<PathBuf>,
+    /// The fallback roles this agent holds (docs/design/local-model-fallback.md 3.2). With none
+    /// it is a full fallback for the manager and for workers (and a stand-in when `minimal`);
+    /// with some it does those roles only. Needs the `pi` adapter. ref: docs/tasks.md "Agents"
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<Role>,
+}
+
+impl AgentEntry {
+    /// Whether a fallback choice may give this agent `operation`.
+    pub fn allows(&self, operation: Operation) -> bool {
+        match (self.roles.is_empty(), operation) {
+            (true, Operation::Role(Role::Organizer)) => self.minimal,
+            (true, Operation::Role(_)) => false,
+            (true, _) => !self.minimal,
+            (false, Operation::Role(role)) => self.roles.contains(&role),
+            (false, _) => false,
+        }
+    }
 }
 
 fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
@@ -405,6 +447,21 @@ fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
                     agent.name
                 ));
             }
+        }
+        if agent.minimal && !agent.roles.is_empty() {
+            return Err(format!(
+                "agent {}: use minimal or roles, not both",
+                agent.name
+            ));
+        }
+        if !agent.roles.is_empty() && agent.adapter.as_deref() != Some("pi") {
+            return Err(format!("agent {}: roles need adapter pi", agent.name));
+        }
+        if let Some(role) = (1..agent.roles.len())
+            .map(|i| agent.roles[i])
+            .find(|role| agent.roles.iter().filter(|r| *r == role).count() > 1)
+        {
+            return Err(format!("agent {}: roles name {:?} twice", agent.name, role));
         }
     }
     Ok(())

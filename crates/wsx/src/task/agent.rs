@@ -15,6 +15,7 @@ use std::process::{Child, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Sender, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
+use wsx_core::config::global::Operation;
 use wsx_core::model::workspace::TaskConfig;
 use wsx_core::task::{store, usage, TurnUsage};
 
@@ -245,16 +246,16 @@ pub fn account(adapter: &str, model: &str) -> String {
 }
 
 /// The first of `names` (the global `[[agents]]`) with a headless adapter and a model, and no
-/// limit on record on its account. `minimal` picks among the stand-ins, else among the others.
-/// A name the registry does not hold is skipped. ref: docs/tasks.md "Agents"
-pub fn fallback(names: &[String], now_ms: u64, minimal: bool) -> Option<Choice> {
+/// limit on record on its account that may do `operation` (`AgentEntry::allows`). A name the
+/// registry does not hold is skipped. ref: docs/tasks.md "Agents"
+pub fn fallback(names: &[String], now_ms: u64, operation: Operation) -> Option<Choice> {
     if names.is_empty() {
         return None;
     }
     let (config, _) = wsx_core::config::global::GlobalConfig::load().ok()?;
     names.iter().find_map(|name| {
         let entry = config.agents.iter().find(|agent| &agent.name == name)?;
-        if entry.minimal != minimal {
+        if !entry.allows(operation) {
             return None;
         }
         let adapter = entry.adapter.clone()?;
@@ -276,6 +277,7 @@ pub fn fallback_past_wait(
     names: &[String],
     max_wait_secs: u64,
     account: &str,
+    operation: Operation,
     until_ms: u64,
     now_ms: u64,
 ) -> Option<Choice> {
@@ -283,7 +285,7 @@ pub fn fallback_past_wait(
     let since_ms =
         store::account_limit(account, now_ms).map_or(now_ms, |limit| limit.since_ms.min(now_ms));
     (until_ms.saturating_sub(since_ms) > max_wait_secs * 1000)
-        .then(|| fallback(names, now_ms, false))
+        .then(|| fallback(names, now_ms, operation))
         .flatten()
 }
 
@@ -310,6 +312,7 @@ pub fn worker_next(
         &settings.fallback,
         settings.max_wait_secs,
         &current,
+        Operation::Worker,
         until_ms,
         now_ms,
     )
