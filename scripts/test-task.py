@@ -2659,7 +2659,7 @@ def part_core(created=None):
     wait_state(asking, 'ready')
     asked = reply_to(wait(lambda: events_with('#%d ready r1' % asking), 'the event of a task that asks')[0]['id'])
     assert asked['text'] == 'Should I land it now?' and asked.get('asks') is True and 'quiet' not in asked, asked
-    assert 'quote' not in raw_reply(asked['id']), 'a turn of only events quotes no owner message'
+    assert 'quote' not in next(e for e in chat(raw=True) if e['id'] == asked['id']), 'a turn of only events quotes no owner message'
     # ^ An open question shows in the next turn's input ("Open questions", docs/tasks.md "Questions"):
     # a message that quotes another message answers none. A dismiss, or an owner message that
     # quotes it, ends it; with none open the section is absent.
