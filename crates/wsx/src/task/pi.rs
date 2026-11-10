@@ -77,9 +77,7 @@ impl LaunchHome {
         }
         Ok(home)
     }
-}
 
-impl LaunchHome {
     /// The lean runner's policy file in the launch folder (mode 600, gone with it): its path
     /// and the hash that goes in the other variable. The agent can write the folder, but a
     /// changed file no longer matches the hash and the runner then denies every call.
@@ -152,10 +150,10 @@ impl PiAgent {
         let dir = home.0.to_str().context("the Pi folder is not UTF-8")?;
         let extension = extension_of(&launch.model)?;
         // ^ The runner and the profile read one set of paths. Without a runner there is no file.
-        let policy = match extension {
-            Some(_) => Some(home.write_policy(&launch.boundary.runner_file(launch.minimal))?),
-            None => None,
-        };
+        let policy = extension
+            .is_some()
+            .then(|| home.write_policy(&launch.boundary.runner_file(launch.minimal)))
+            .transpose()?;
         let mut env = vec![("PI_CACHE_RETENTION", "long"), ("PI_CODING_AGENT_DIR", dir)];
         if let Some((file, hash)) = &policy {
             env.extend([
