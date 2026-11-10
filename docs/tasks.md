@@ -444,7 +444,7 @@ Each also reads back 7 days, for the open questions ("Questions"), and to a repl
 | A task's title and prompt | `task` | `task.json`, the first prompt in the task's `log.jsonl` |
 | A task's latest result: summary, memo, decisions, left open | `result` | `result.json` |
 | A task's story, open or closed: its start (branch), each add and steer, every turn's result summary (not only the latest), each revision, the checks (the failed commands), stops, the landing, the close (discarded or kept) | `history` | the task's `log.jsonl`, one line each (`task::history::line`, also the wording of the history read) |
-| Decisions and memo lines | `decision`, `memo` | `notes/decisions.md`, `notes/context.md`, `notes/context-archive.md`, read as they are now |
+| Decisions and memo lines | `decision`, `memo` | `notes/decisions.md`, `notes/decisions-archive.md`, `notes/context.md`, `notes/context-archive.md`, read as they are now |
 
 Tool steps and agent commands are not indexed. A record keeps at most 4 KiB of text (a `history` line 1 KiB); the log keeps the rest. A turn's summary is in the digest twice when it is the latest: as the `result` and as a `history` line. A quote line at the head of a message is not indexed (it is another message's text).
 

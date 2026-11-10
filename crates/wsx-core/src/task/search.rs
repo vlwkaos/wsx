@@ -640,6 +640,7 @@ fn notes(project_id: &str) -> Vec<Doc> {
     let mut docs = Vec::new();
     for (name, kind) in [
         ("decisions.md", Kind::Decision),
+        ("decisions-archive.md", Kind::Decision),
         ("context.md", Kind::Memo),
         ("context-archive.md", Kind::Memo),
     ] {
