@@ -2399,6 +2399,9 @@ def part_core(created=None):
     reply_to(js('task', 'say', 'Did we settle tessellation?')['id'])
     block = turn_with('Did we settle tessellation?')['message'].split('Notes that match this message')[1].split('\n\n')[0]
     assert 'decisions-archive.md:4: - 2026-10-04 rule 003: never render the 3d scene with tessellation' in block, block
+    # ^ `wsx task search` finds the rule the rewrite moved to the archive.
+    kept = js('task', 'search', '-p', 'demo', 'tessellation')['hits']
+    assert [h['kind'] for h in kept if 'tessellation' in json.dumps(h)] == ['decision'], kept
     (notes / 'decisions.md').write_text('- 2026-10-22 keep the store in sqlite\n')
     (notes / 'decisions-archive.md').unlink()
     (notes / 'context.md').write_text('PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
