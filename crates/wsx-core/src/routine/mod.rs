@@ -1,4 +1,4 @@
-//! Routines: a project's commands that wsxd runs by cron, at one minute, or on an event.
+//! Routines: a project's commands that wsxd runs by cron or on an event.
 //! wsxd's scheduler is the only writer of the store; clients send an [`Action`] through
 //! wsxd's socket ([`request`]) and may read the store ([`store::load`]).
 //! ref: docs/tasks.md "Routines"
@@ -14,13 +14,7 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "snake_case")]
 pub enum Trigger {
     Cron(String),
-    Event {
-        kind: String,
-    },
-    /// One run at this epoch minute; a missed minute runs at the next tick, once.
-    At {
-        epoch_minute: i64,
-    },
+    Event { kind: String },
 }
 
 impl Trigger {
@@ -30,12 +24,6 @@ impl Trigger {
                 *expression = expression.trim().to_string();
                 cron::CronSchedule::parse(expression)?;
             }
-            Self::At { epoch_minute } if *epoch_minute <= 0 => {
-                return Err(RoutineError::validation(
-                    "at must be a positive epoch minute",
-                ));
-            }
-            Self::At { .. } => {}
             Self::Event { kind } => {
                 *kind = kind.trim().to_string();
                 validate_event_kind(kind)?;

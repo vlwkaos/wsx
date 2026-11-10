@@ -31,7 +31,7 @@ use wsx_core::task::manager::{
     resolve_quote, says_nothing, state_wakes, ApprovalLine, QUOTE_REF,
 };
 use wsx_core::task::manager::{
-    Author, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
+    Author, Checkin, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
     ManagerResponse, ManagerState, Seen, Short,
 };
 use wsx_core::task::policy;
@@ -495,6 +495,7 @@ impl Manager {
                 }
                 Event::Tick if self.dir.role.is_some() => self.leave_when_done(),
                 Event::Tick => {
+                    self.fire_checkin();
                     self.watch_tasks();
                     self.watch_stalls();
                     self.watch_sessions();
@@ -588,6 +589,39 @@ impl Manager {
                     message: refusal.unwrap_or("posted to the chat").into(),
                 }
             }
+            ManagerRequest::Checkin { at_ms, why } => {
+                self.state.checkin = Some(Checkin { at_ms, why });
+                self.save();
+                ManagerResponse {
+                    ok: true,
+                    id: None,
+                    busy,
+                    message: "check-in set".into(),
+                }
+            }
+        }
+    }
+
+    /// Make an event of the pending check-in once its time has come, also late after a restart.
+    /// Between turns only: an event inside a running turn would read as its end.
+    /// ref: docs/tasks.md "Check-in"
+    fn fire_checkin(&mut self) {
+        if self.turn.is_some() {
+            return;
+        }
+        let due = self
+            .state
+            .checkin
+            .as_ref()
+            .is_some_and(|checkin| checkin.at_ms <= now_unix_ms());
+        if !due {
+            return;
+        }
+        if let Some(checkin) = self.state.checkin.take() {
+            self.pending_events
+                .push(plain_event(format!("check-in: {}", checkin.why)));
+            self.last_event = Some(Instant::now());
+            self.save();
         }
     }
 
@@ -3018,8 +3052,8 @@ fn stdout_empty(run: &RunRecord) -> bool {
     std::fs::metadata(&run.stdout_path).is_ok_and(|file| file.len() == 0)
 }
 
-/// A routine run that ended as an event line with the end of its output: what a check-in
-/// or any routine that prints wants the manager to read. ref: docs/tasks.md "Routines"
+/// A routine run that ended as an event line with the end of its output: what a routine that
+/// prints wants the manager to read. ref: docs/tasks.md "Routines"
 fn routine_line(run: &RunRecord) -> String {
     format!("{}{}", run.result_line(), output_ends(&run.final_output))
 }

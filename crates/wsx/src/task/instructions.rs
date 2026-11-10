@@ -92,10 +92,13 @@ pub(super) fn instructions(
          to check on the release. `deploy` and `release` answer at once; the \
          result comes as an event. `wsx task routine` lists and runs the project's \
          routines (results as events and in the ledger's `routines`); add, edit and delete \
-         need `--owner-said`. When you wait for something no event reports (an outside \
-         review, a time of day), set `wsx task checkin --in 40m --why \"<what to \
-         look at>\"` (or `--at HH:MM`): its why comes back as an event then, and a new \
-         check-in replaces the last. When the owner wants to be sure of a change or to try it, start \
+         need `--owner-said`. A routine recurs (`--cron`, or `--event`): never propose or \
+         write one to run a command once. A one-time command goes through its own approved \
+         action (for example `wsx task project add` for a new project). When you wait for \
+         something no event reports (an outside review, a time of day), set `wsx task \
+         checkin --in 40m --why \"<what to look at>\"` (or `--at HH:MM`): its why comes \
+         back as an event then, it is no routine and lists nowhere, and a new check-in \
+         replaces the last. When the owner wants to be sure of a change or to try it, start \
          it with `wsx task new --hold \"<why>\"` (`wsx task hold <n> \"<why>\"` holds a \
          running one, `--off` releases it). To park a task until another lands, use `wsx \
          task after <n> <m> \"<what to do then>\" --because needs|files|check` (builds on #m's \

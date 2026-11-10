@@ -104,6 +104,16 @@ pub fn post(
     )
 }
 
+/// Ask the running manager host to send `why` as an event at `at_ms`, in place of the last
+/// check-in. It never starts a host: an error when none answers.
+pub fn checkin(project_id: &str, at_ms: u64, why: String) -> Result<ManagerResponse> {
+    call_socket(
+        &ManagerDir::open(project_id)?.socket_path(),
+        &ManagerRequest::Checkin { at_ms, why },
+        HOST_TIMEOUT,
+    )
+}
+
 pub fn action_name(action: ApprovalAction) -> &'static str {
     match action {
         ApprovalAction::Land => "land",

@@ -374,10 +374,8 @@ fn the_first_start_imports_asched_routines_and_history() {
         .iter()
         .map(|view| view["routine"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["later", "closed", "nightly", "slow"]);
-    let later = install.view("later");
-    assert_eq!(later["routine"]["post"], false);
-    assert_eq!(later["next_run_epoch"], 29979360 * 60);
+    // ^ asched's `later` has an `at` trigger, which routines no longer have: it is left out.
+    assert_eq!(names, ["closed", "nightly", "slow"]);
 
     // Finished runs keep their result and output, now in wsxd's store.
     let nightly = install.view("nightly")["latest_run"].clone();
@@ -497,4 +495,58 @@ fn a_cancel_right_after_the_start_stops_the_command() {
     );
     let runs = install.routine(&["logs", "hold"]);
     assert_eq!(runs["runs"].as_array().unwrap().len(), 8, "{runs}");
+}
+
+#[test]
+fn a_stored_one_shot_routine_is_dropped_and_no_new_one_is_taken() {
+    let install = Install::new();
+    install.routine(&["add", "keep", "--cron", NEVER_DUE, "--arg=true"]);
+    // ^ Routines recur: `--at` is not a trigger any more (docs/tasks.md "Routines").
+    let refused = install.wsx(&[
+        "routine",
+        "add",
+        "once",
+        "--at",
+        "23:59",
+        "--arg=true",
+        "--project",
+        install.project.to_str().unwrap(),
+    ]);
+    assert!(!refused.status.success(), "--at was accepted");
+    // ^ A store an older wsxd wrote, with a one-shot routine and its claim.
+    let projects = install.root.join("state/routines/projects");
+    let file = fs::read_dir(&projects)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut stored: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    let revision = stored["revision"].as_u64().unwrap();
+    stored["routines"].as_array_mut().unwrap().push(serde_json::json!({
+        "name": "once", "trigger": {"at": {"epoch_minute": 1}}, "command": ["true"], "prompt": ""
+    }));
+    stored["claims"]["once"] = 1.into();
+    fs::write(&file, serde_json::to_vec(&stored).unwrap()).unwrap();
+    let names = |list: Value| -> Vec<String> {
+        list["routines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|view| view["routine"]["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    // ^ A reader sees no one-shot, also before wsxd takes the store again.
+    assert_eq!(names(install.routine(&["list"])), ["keep"]);
+    let restarted = install.wsx(&["daemon", "restart", "--json"]);
+    let answer: Value = serde_json::from_slice(&restarted.stdout).unwrap_or_default();
+    assert_eq!(answer["state"], "restarted", "{restarted:?}");
+    assert_eq!(names(install.routine(&["list"])), ["keep"]);
+    let cleaned = fs::read_to_string(&file).unwrap();
+    assert!(
+        !cleaned.contains("\"at\"") && !cleaned.contains("\"once\""),
+        "the file still holds the one-shot: {cleaned}"
+    );
+    let after: Value = serde_json::from_str(&cleaned).unwrap();
+    assert!(after["revision"].as_u64().unwrap() > revision);
 }

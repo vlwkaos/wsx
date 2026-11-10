@@ -37,26 +37,22 @@ pub(crate) fn last_digest_ms(log: &[ManagerEntry]) -> Option<u64> {
     })
 }
 
-/// The routine a check-in writes; one per project, so a manager cannot pile them up.
-pub(crate) const CHECKIN: &str = "checkin";
-
 /// The furthest ahead a check-in may be.
 pub(crate) const CHECKIN_MAX_SECS: i64 = 7 * 24 * 3600;
 
 pub(crate) const CHECKIN_WHY_CHARS: usize = 500;
 
-/// Write routine `checkin`: one run at the chosen minute whose argv wsx fixes (`printf` of
-/// `why`), so it needs no `--owner-said`; its output reaches the manager as the run's event.
-/// ref: docs/tasks.md "Routines"
+/// Set the project manager's one pending check-in: its host sends `why` as an event at the
+/// time, and a new check-in replaces the last. It is no routine and runs no command, so it
+/// needs no `--owner-said`. ref: docs/tasks.md "Check-in"
 pub(crate) fn checkin(
     project: Option<&str>,
     after: Option<&str>,
     at: Option<&str>,
     why: &str,
 ) -> Result<()> {
-    use wsx_core::routine::{Action, Routine, Trigger};
     need(Capability::Routine, "a check-in")?;
-    let why = why.trim();
+    let why = why.split_whitespace().collect::<Vec<_>>().join(" ");
     if why.is_empty() || why.chars().count() > CHECKIN_WHY_CHARS {
         bail!("--why must say what to look at, in at most {CHECKIN_WHY_CHARS} characters");
     }
@@ -71,33 +67,16 @@ pub(crate) fn checkin(
     if at_secs <= now || at_secs - now > CHECKIN_MAX_SECS {
         bail!("a check-in is between 1 minute and 7 days ahead");
     }
-    // ^ The tick runs a minute that has begun: round up, so it never runs early.
-    let epoch_minute = (at_secs + 59) / 60;
-    let path = crate::cli::routine_project(project)?;
-    let (revision, routines) = crate::cli::fetch_routines(&path)?;
-    let routine = Routine {
-        name: CHECKIN.into(),
-        trigger: Trigger::At { epoch_minute },
-        command: vec!["printf".into(), "%s\\n".into(), why.into()],
-        prompt: String::new(),
-        enabled: true,
-        // ^ The why is for the manager, as the run's event; the owner asked for none.
-        post: false,
-        findings_exit: Vec::new(),
+    let (name, main) = project_entry(project)?;
+    let response = owner::checkin(&store::project_id(&name, &main), at_secs as u64 * 1000, why)
+        .with_context(|| format!("the manager host of {name} is not running"))?;
+    if !response.ok {
+        bail!("the check-in was not set: {}", response.message);
     }
-    .validated()?;
-    let action = match routines.iter().any(|view| view.routine.name == CHECKIN) {
-        true => Action::Edit {
-            revision,
-            old_name: CHECKIN.into(),
-            routine,
-        },
-        false => Action::Add { revision, routine },
-    };
-    crate::cli::send_routine(&path, action)?;
+    let stamp = wsx_core::routine::local::local_stamp(at_secs);
     println!(
-        "check-in {}",
-        wsx_core::routine::local::trigger_text(&Trigger::At { epoch_minute })
+        "check-in at {}",
+        stamp.unwrap_or_else(|| at_secs.to_string())
     );
     Ok(())
 }

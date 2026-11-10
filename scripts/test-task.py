@@ -2312,8 +2312,7 @@ def part_core(created=None):
     configure(limit_config, 'manager limit restored')
     reply_to(js('task', 'say', 'STATUS back on claude')['id'])
     # ^ Dynamic routines (docs/tasks.md "Routines"), after the handover above so it lists only
-    # nightly: a check-in needs no owner words, runs once at its minute and its output is the
-    # event; an event routine runs on the task change wsx fires, and `wsx task post` puts its
+    # nightly: an event routine runs on the task change wsx fires, and `wsx task post` puts its
     # output in the chat with no manager turn.
     def posted(title):
         # ^ A post logs its message, then `delivered`, then the reply: match the reply by `to`.
@@ -2323,14 +2322,35 @@ def part_core(created=None):
     for early in ('0m', '8d'):
         text = reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in %s --why "too soon"' % early)['id'])['text']
         assert '-> 1 ' in text and 'between 1 minute and 7 days' in text, text
+    # ^ A check-in is a timer in the manager host's state, not a routine (docs/tasks.md "Check-in"):
+    # a second one replaces the first, nothing is listed in Routines, it fires as an event with its
+    # why, and a host restart keeps one that comes due while the host is down.
+    pending = lambda: json.loads(state_file.read_text()).get('checkin')
+    text = reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in 2h --why "first look"')['id'])['text']
+    assert '-> 0 check-in at ' in text, text
+    first = wait(pending, 'the first check-in is saved')
+    assert first['why'] == 'first look' and first['at_ms'] > time.time() * 1000 + 3600 * 1000, first
     text = reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in 1m --why "look at the nightly failures"')['id'])['text']
-    assert '-> 0 check-in at:' in text, text
-    row = next(r for r in js('task', 'ledger')['routines'] if r['name'] == 'checkin')
-    assert row['trigger'].startswith('at:') and row['next_run_unix_ms'] > time.time() * 1000, row
-    wait(lambda: events_with('routine checkin succeeded after', 'its output ends:\n    look at the nightly failures'),
-         'the check-in event', 150)
-    row = next(r for r in js('task', 'ledger')['routines'] if r['name'] == 'checkin')
-    assert row['next_run_unix_ms'] is None and row['last']['status'] == 'succeeded', row
+    assert '-> 0 check-in at ' in text, text
+    second = pending()
+    assert second['why'] == 'look at the nightly failures' and second['at_ms'] < time.time() * 1000 + 70 * 1000, second
+    assert js('task', 'ledger')['routines'] == [] and js('task', 'routine', 'list')['routines'] == []
+    wait(lambda: events_with('check-in: look at the nightly failures'), 'the check-in event', 150)
+    assert not events_with('first look') and pending() is None, (events_with('first look'), pending())
+    # ^ Due while the host is down: it fires late, once, when the host starts.
+    reply_to(js('task', 'say', 'RUN wsx task checkin -p demo --in 1m --why "came due while down"')['id'])
+    stop_manager()
+    assert pending()['why'] == 'came due while down'
+    wait(lambda: pending()['at_ms'] < time.time() * 1000, 'the check-in is past due', 90)
+    assert not events_with('came due while down')
+    reply_to(js('task', 'say', 'STATUS after the check-in came due')['id'])
+    wait(lambda: events_with('check-in: came due while down'), 'the late check-in event', 30)
+    assert pending() is None and js('task', 'routine', 'list')['routines'] == []
+    # ^ Routines recur: no `--at`, and nothing else names a one-shot.
+    refused = cli('task', 'routine', 'add', 'once', '-p', 'demo', '--at', '23:59', '--arg=true', ok=False)
+    assert 'unexpected argument' in refused.stderr, refused.stderr
+    refused = cli('task', 'checkin', '-p', 'demo', '--in', '1m', '--at', '23:59', '--why', 'x', ok=False)
+    assert 'cannot be used with' in refused.stderr, refused.stderr
     js('task', 'routine', 'add', 'closed', '-p', 'demo', '--event', 'task.closed', '--arg=sh', '--arg=-c',
        '--arg=printf "%%s" "$WSX_EVENT_PAYLOAD" | %s task post -p demo --title closed' % wsx)
     # ^ Only a short reply to events is quiet: one with a table is a message (docs/tasks.md "Manager").
@@ -2489,7 +2509,7 @@ def part_core(created=None):
         assert rgb in bars, 'the %s post has no coloured bar: %s' % (word, bars)
     board.unlink()
     board.parent.rmdir()
-    for name in ('closed', 'retrospect', 'checkin', 'board', 'hushed', 'silent', 'found', 'broke', 'clean'):
+    for name in ('closed', 'retrospect', 'board', 'hushed', 'silent', 'found', 'broke', 'clean'):
         js('task', 'routine', 'delete', name, '-p', 'demo')
     # ^ Session news (docs/tasks.md "Session news"): a project agent session that enters exited,
     # error or blocked is one post with no turn, naming it; a session of a task is no news. A pane

@@ -154,6 +154,7 @@ impl Scheduler {
                 None => private_dir(&self.root)?,
             }
         }
+        self.drop_one_shots();
         let running = |data: &ProjectRoutines| has_running(data).then(|| data.project_path.clone());
         *lock(&self.active) = self.projects().iter().filter_map(running).collect();
         *lock(&self.owned) = Some(file);
@@ -366,7 +367,7 @@ impl Scheduler {
             .collect()
     }
 
-    /// Start the routines whose cron minute or `at` minute is due, each minute once.
+    /// Start the routines whose cron minute is due, each minute once.
     fn tick(&self, minute: i64) {
         let _owned = lock(&self.owned);
         let local = LocalTime::at(minute * 60);
@@ -377,9 +378,6 @@ impl Scheduler {
                     Trigger::Cron(expression) => CronSchedule::parse(expression)
                         .is_ok_and(|schedule| schedule.matches(local))
                         .then_some(minute),
-                    Trigger::At { epoch_minute } => {
-                        (*epoch_minute <= minute).then_some(*epoch_minute)
-                    }
                     Trigger::Event { .. } => None,
                 };
                 let Some(due) = due else { continue };
@@ -400,6 +398,37 @@ impl Scheduler {
                     break;
                 }
             }
+        }
+    }
+
+    /// Remove the one-shot routines (an `at` trigger, which routines no longer have) of every
+    /// project, with their runs and output, and say so once per project: the file is clean after.
+    fn drop_one_shots(&self) {
+        let Ok(entries) = fs::read_dir(self.root.join("projects")) else {
+            return;
+        };
+        for path in entries.flatten().map(|entry| entry.path()) {
+            let Ok(Some((mut data, dropped))) = store::read_dropping(&path) else {
+                continue;
+            };
+            if dropped.is_empty() {
+                continue;
+            }
+            for name in &dropped {
+                cancel(&mut data, name);
+                data.claims.remove(name);
+                for run in data.runs.remove(name).unwrap_or_default() {
+                    remove_run_dir(&self.root, &data.project_path, &run);
+                }
+            }
+            data.revision += 1;
+            save_or_report(&self.root, &data);
+            eprintln!(
+                "wsxd routines: dropped {} one-shot routine(s) of {}: {}",
+                dropped.len(),
+                data.project_path.display(),
+                dropped.join(", ")
+            );
         }
     }
 
@@ -557,11 +586,6 @@ fn views(data: &ProjectRoutines) -> Vec<RoutineView> {
                 Trigger::Cron(expression) => CronSchedule::parse(expression)
                     .ok()
                     .and_then(|schedule| schedule.next_run_after(now)),
-                Trigger::At { epoch_minute } => data
-                    .claims
-                    .get(&routine.name)
-                    .is_none_or(|claimed| claimed < epoch_minute)
-                    .then_some(epoch_minute * 60),
                 Trigger::Event { .. } => None,
             };
             RoutineView {
@@ -892,8 +916,22 @@ fn file_tail(path: &Path) -> String {
 struct AschedProject {
     project_path: PathBuf,
     revision: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "recurring")]
     routines: Vec<Routine>,
+}
+
+/// asched's routines without its one-shots (an `at` trigger), which routines no longer have.
+fn recurring<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Routine>, D::Error> {
+    use serde::de::Error;
+    Vec::<toml::Value>::deserialize(deserializer)?
+        .into_iter()
+        .filter(|routine| {
+            routine
+                .get("trigger")
+                .is_none_or(|trigger| trigger.get("at").is_none())
+        })
+        .map(|routine| routine.try_into().map_err(D::Error::custom))
+        .collect()
 }
 
 #[derive(Deserialize, Default)]

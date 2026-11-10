@@ -475,7 +475,7 @@ pub enum DaemonCmd {
     Recover,
 }
 
-/// A routine's trigger: exactly one of a cron, an event kind or one local time.
+/// A routine's trigger: exactly one of a cron or an event kind.
 #[derive(clap::Args)]
 #[group(required = true, multiple = false)]
 pub struct TriggerArgs {
@@ -485,9 +485,6 @@ pub struct TriggerArgs {
     /// Event kind, such as `task.landed` (docs/tasks.md "Routines")
     #[arg(long)]
     pub event: Option<String>,
-    /// One run at `HH:MM` or `YYYY-MM-DD HH:MM` local time
-    #[arg(long)]
-    pub at: Option<String>,
 }
 
 #[derive(Subcommand)]

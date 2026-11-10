@@ -220,7 +220,7 @@ pub enum TaskCmd {
         since: Option<u64>,
     },
     /// Wake the manager once, `--in` a time or `--at` a local time, with `--why` as its event;
-    /// a new check-in replaces the last one (docs/tasks.md "Routines")
+    /// a new check-in replaces the last one. It is no routine (docs/tasks.md "Check-in")
     Checkin {
         #[arg(short, long)]
         project: Option<String>,

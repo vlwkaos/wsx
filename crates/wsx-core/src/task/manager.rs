@@ -520,6 +520,17 @@ pub struct ManagerState {
     /// A provisional reply the manager's agent has not been told of yet.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub provisional: bool,
+    /// The one pending check-in: the host sends `why` as an event at `at_ms`, also late after
+    /// a restart. ref: docs/tasks.md "Check-in"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkin: Option<Checkin>,
+}
+
+/// A time at which the manager hears `why` as an event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Checkin {
+    pub at_ms: u64,
+    pub why: String,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -716,6 +727,11 @@ pub enum ManagerRequest {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         level: Option<Level>,
+    },
+    /// Set the one pending check-in, replacing the last; accepted also while a turn runs.
+    Checkin {
+        at_ms: u64,
+        why: String,
     },
 }
 

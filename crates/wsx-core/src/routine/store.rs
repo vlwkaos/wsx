@@ -114,15 +114,43 @@ pub fn load(root: &Path, project: &Path) -> Result<ProjectRoutines, RoutineError
 }
 
 pub fn read(path: &Path) -> Result<Option<ProjectRoutines>, RoutineError> {
+    read_dropping(path).map(|read| read.map(|(routines, _)| routines))
+}
+
+/// Like [`read`], with the names of the one-shot routines the file holds: a routine with an
+/// `at` trigger, which no longer exists, is left out here and so for every reader.
+pub fn read_dropping(path: &Path) -> Result<Option<(ProjectRoutines, Vec<String>)>, RoutineError> {
     let Some(bytes) = read_bounded(path)? else {
         return Ok(None);
     };
-    serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+    let corrupt = |error: serde_json::Error| {
         RoutineError::new(
             RoutineErrorKind::Corrupt,
             format!("{}: {error}", path.display()),
         )
-    })
+    };
+    // ^ The usual file parses as it is; only one that fails is read again without its `at`s.
+    let first = match serde_json::from_slice::<ProjectRoutines>(&bytes) {
+        Ok(routines) => return Ok(Some((routines, Vec::new()))),
+        Err(error) => error,
+    };
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).map_err(corrupt)?;
+    let mut dropped = Vec::new();
+    if let Some(routines) = value.get_mut("routines").and_then(|v| v.as_array_mut()) {
+        routines.retain(|routine| {
+            let one_shot = routine["trigger"].get("at").is_some();
+            if one_shot {
+                dropped.push(routine["name"].as_str().unwrap_or_default().to_string());
+            }
+            !one_shot
+        });
+    }
+    if dropped.is_empty() {
+        return Err(corrupt(first));
+    }
+    serde_json::from_value(value)
+        .map(|routines| Some((routines, dropped)))
+        .map_err(corrupt)
 }
 
 pub fn save(root: &Path, routines: &ProjectRoutines) -> Result<(), RoutineError> {

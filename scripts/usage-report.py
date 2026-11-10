@@ -194,7 +194,7 @@ READ_VERBS = ("ledger", "show", "chat", "log", "status")
 
 def event_kind(line):
     """An events line's kind: `ready`, `waiting:owner`, `stopped` (a wait on owner after a stop by
-    request), `deploy succeeded`, `routine checkin failed`, `approval push approved`."""
+    request), `deploy succeeded`, `routine nightly failed`, `approval push approved`."""
     m = re.match(r"#\d+ (\w+) r\d+: ", line)
     if m:
         if m.group(1) != "waiting":

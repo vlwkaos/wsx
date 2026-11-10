@@ -1,32 +1,23 @@
 //! This machine's local clock for routines: the zone's time of a unix second, and the trigger
-//! text a routine shows and takes back (`at:<YYYY-MM-DD HH:MM>`).
+//! text a routine shows and takes back.
 
 use super::Trigger;
 
 /// A routine's trigger as `wsx routine list`, the ledger and the routine editor show it: the
-/// cron, `event:<kind>` or `at:<YYYY-MM-DD HH:MM>` in this machine's zone.
+/// cron or `event:<kind>`.
 pub fn trigger_text(trigger: &Trigger) -> String {
     match trigger {
         Trigger::Cron(cron) => cron.clone(),
         Trigger::Event { kind } => format!("event:{kind}"),
-        Trigger::At { epoch_minute } => match local_stamp(epoch_minute * 60) {
-            Some(stamp) => format!("at:{stamp}"),
-            None => format!("at:{epoch_minute}"),
-        },
     }
 }
 
 /// The trigger `trigger_text` shows, read back.
-pub fn parse_trigger(text: &str, now_secs: i64) -> Result<Trigger, String> {
+pub fn parse_trigger(text: &str) -> Trigger {
     let text = text.trim();
-    if let Some(kind) = text.strip_prefix("event:") {
-        return Ok(Trigger::Event { kind: kind.into() });
-    }
-    match text.strip_prefix("at:") {
-        Some(at) => Ok(Trigger::At {
-            epoch_minute: local_minute(at, now_secs)?,
-        }),
-        None => Ok(Trigger::Cron(text.into())),
+    match text.strip_prefix("event:") {
+        Some(kind) => Trigger::Event { kind: kind.into() },
+        None => Trigger::Cron(text.into()),
     }
 }
 
