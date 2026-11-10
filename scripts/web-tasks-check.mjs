@@ -1472,7 +1472,7 @@ await closeSheet("the usage sheet", chat);
       || by.idle?.context.join("|") !== "daily 07:00 · On|never run · no message"
       || by.nightly.main !== "SPAN" || by.idle.main !== "SPAN" || by.weekly.main !== "BUTTON"
       || by.nightly.actions.join() !== "Turn off,Run now" || by.weekly.actions.join() !== "Turn on,Run now" || by.idle.actions.join() !== "Turn off,Run now"
-      || by.weekly.mark !== "attention" || by.nightly.mark !== "accent" || by.idle.mark !== "accent") await fail(`the routine rows are ${JSON.stringify(rows)}`);
+      || by.weekly.mark !== null || by.nightly.mark !== "accent" || by.idle.mark !== "accent") await fail(`the routine rows are ${JSON.stringify(rows)}`);
     for (const size of [[375, 812, 2], [1280, 800, 1]]) {
       await resize(size);
       await openReservoir("routines");
