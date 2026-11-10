@@ -856,6 +856,49 @@ def manager_up(created):
         return [line for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
                 for line in e['text'].split('\n') if line.startswith('#%d stalled' % n)]
 
+    # 20s. Stale worktrees (docs/tasks.md "Stale worktrees"): the manager host's sweep, every 3 s
+    # here, closes idle sessions and removes an idle worktree that is clean and merged; a dirty
+    # one is only flagged, once; a worktree whose session still prints and the main checkout's
+    # session stay; the news start no turn. Idle is 3 s and removal 6 s (the config says days).
+    mark('20s')
+    manager_config = (project / 'wsx.config.yml').read_text()
+    configure(manager_config + '  prune: { idleDays: 0.00003, removeDays: 0.00007 }\n', 'a quick prune')
+    for name in ('stale-clean', 'stale-dirty', 'stale-busy'):
+        git('worktree', 'add', '-q', '-b', name, str(base / name))
+    (base / 'stale-dirty/edited.txt').write_text('mine\n')
+    keep = js('session', 'create', '--name', 'keep-main', '-p', 'demo')['session_id']
+    for name in ('stale-clean', 'stale-dirty'):
+        js('session', 'create', '--name', name, '--worktree', name, '-p', 'demo')
+    # ^ A background job prints to the terminal: the session is not idle while it does.
+    js('session', 'create', '--name', 'stale-busy', '--worktree', 'stale-busy', '-p', 'demo',
+       '--command', '(while true; do echo tick; sleep 1; done) &')
+    sessions_in = lambda name: [s for s in daemon_call('snapshot')['data']['sessions'] if s['label'] == name]
+    pruned_events = lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
+                             and e['text'].startswith('pruned: ')]
+    wait(lambda: not (base / 'stale-clean').exists(), 'the idle clean merged worktree is removed', 60)
+    removed = [e for e in pruned_events() if 'removed worktree stale-clean' in e['text']]
+    assert len(removed) == 1 and removed[0]['short'][0]['wakes'] is False, pruned_events()
+    assert not sessions_in('stale-clean'), 'the removed worktree keeps no session'
+    wait(lambda: not sessions_in('stale-dirty'), 'the idle session of the dirty worktree is closed', 30)
+    assert (base / 'stale-dirty/edited.txt').read_text() == 'mine\n', 'a dirty worktree is not touched'
+    time.sleep(9)
+    flagged = [e for e in pruned_events() if 'worktree stale-dirty is idle and kept' in e['text']]
+    assert len(flagged) == 1 and '1 uncommitted file (edited.txt)' in flagged[0]['text'], pruned_events()
+    assert flagged[0]['short'][0]['wakes'] is False
+    assert (base / 'stale-busy').is_dir() and sessions_in('stale-busy'), 'a session that prints is not idle'
+    assert [s for s in daemon_call('snapshot')['data']['sessions'] if s['id'] == keep], 'the main checkout keeps its session'
+    ids = {e['id'] for e in pruned_events()}
+    assert not [e for e in manager_entries() if e['kind'] == 'reply' and ids & set(e['to'])], 'the news started a turn'
+    # ^ The ledger lists what is left (docs/tasks.md "Ledger").
+    strays = {Path(row['path']).name for row in js('task', 'ledger')['stray_worktrees']}
+    assert {'stale-dirty', 'stale-busy'} <= strays and 'stale-clean' not in strays, strays
+    configure(manager_config, 'restore the config')
+    for name in ('stale-dirty', 'stale-busy'):
+        for session in sessions_in(name):
+            cli('session', 'delete', name, '-p', 'demo')
+        git('worktree', 'remove', '--force', str(base / name))
+    cli('session', 'delete', 'keep-main', '-p', 'demo')
+    git('branch', '-D', 'stale-clean', 'stale-dirty', 'stale-busy', ok=False)
     globals().update(locals())
 
 
@@ -1421,58 +1464,6 @@ def part_core(created=None):
     git('worktree', 'prune')
     git('branch', '-D', 'stray-merged', 'stray-dirty', 'stray-gone')
     assert js('task', 'ledger')['stray_worktrees'] == []
-    # 14c0. Stale worktrees (docs/tasks.md "Stale worktrees"): the manager host's sweep, every 3 s
-    # here, closes idle sessions and removes an idle worktree that is clean and merged; a dirty
-    # one is only flagged, once; a worktree whose session still prints and the main checkout's
-    # session stay; the news start no turn. Idle is 3 s and removal 6 s (the config says days).
-    mark('14c0')
-    configure(CONFIG + '  prune: { idleDays: 0.00003, removeDays: 0.00007 }\n', 'a quick prune')
-    for name in ('stale-clean', 'stale-dirty', 'stale-busy'):
-        git('worktree', 'add', '-q', '-b', name, str(base / name))
-    (base / 'stale-dirty/edited.txt').write_text('mine\n')
-    keep = js('session', 'create', '--name', 'keep-main', '-p', 'demo')['session_id']
-    for name in ('stale-clean', 'stale-dirty'):
-        js('session', 'create', '--name', name, '--worktree', name, '-p', 'demo')
-    # ^ A background job prints to the terminal: the session is not idle while it does.
-    js('session', 'create', '--name', 'stale-busy', '--worktree', 'stale-busy', '-p', 'demo',
-       '--command', '(while true; do echo tick; sleep 1; done) &')
-    sessions_in = lambda name: [s for s in daemon_call('snapshot')['data']['sessions'] if s['label'] == name]
-    pruned_events = lambda: [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
-                             and e['text'].startswith('pruned: ')]
-    def stale_state():
-        # ^ What the sweep sees when it keeps a worktree: shown by a timeout, not asserted.
-        snapshot = daemon_call('snapshot')['data']
-        panes = [p['id'] for p in snapshot['panes'] if p['session_id'] in {s['id'] for s in sessions_in('stale-clean')}]
-        return {'events': [e['text'] for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'][-8:],
-                'sessions': sessions_in('stale-clean'), 'activity': [a for a in snapshot['pane_activity'] if a['pane_id'] in panes],
-                'status': git('status', '--porcelain', cwd=base / 'stale-clean', ok=False) if (base / 'stale-clean').exists() else None,
-                'worktrees': git('worktree', 'list', '--porcelain'), 'now_ms': int(time.time() * 1000)}
-    try:
-        wait(lambda: not (base / 'stale-clean').exists(), 'the idle clean merged worktree is removed', 60)
-    except RuntimeError as error:
-        raise RuntimeError('%s; %s' % (error, stale_state()))
-    removed = [e for e in pruned_events() if 'removed worktree stale-clean' in e['text']]
-    assert len(removed) == 1 and removed[0]['short'][0]['wakes'] is False, pruned_events()
-    assert not sessions_in('stale-clean'), 'the removed worktree keeps no session'
-    wait(lambda: not sessions_in('stale-dirty'), 'the idle session of the dirty worktree is closed', 30)
-    assert (base / 'stale-dirty/edited.txt').read_text() == 'mine\n', 'a dirty worktree is not touched'
-    time.sleep(9)
-    flagged = [e for e in pruned_events() if 'worktree stale-dirty is idle and kept' in e['text']]
-    assert len(flagged) == 1 and '1 uncommitted file (edited.txt)' in flagged[0]['text'], pruned_events()
-    assert flagged[0]['short'][0]['wakes'] is False
-    assert (base / 'stale-busy').is_dir() and sessions_in('stale-busy'), 'a session that prints is not idle'
-    assert [s for s in daemon_call('snapshot')['data']['sessions'] if s['id'] == keep], 'the main checkout keeps its session'
-    ids = {e['id'] for e in pruned_events()}
-    assert not [e for e in manager_entries() if e['kind'] == 'reply' and ids & set(e['to'])], 'the news started a turn'
-    # ^ The ledger lists what is left (docs/tasks.md "Ledger").
-    assert {Path(row['path']).name for row in js('task', 'ledger')['stray_worktrees']} == {'stale-dirty', 'stale-busy'}
-    configure(CONFIG, 'restore the config')
-    for name in ('stale-dirty', 'stale-busy'):
-        for session in sessions_in(name):
-            cli('session', 'delete', name, '-p', 'demo')
-        git('worktree', 'remove', '--force', str(base / name))
-    cli('session', 'delete', 'keep-main', '-p', 'demo')
-    git('branch', '-D', 'stale-clean', 'stale-dirty', 'stale-busy', ok=False)
     # 14c1. A ledger build parses each task log once: the agent's fallback flag comes with the
     # usage, not from a second read (docs/tasks.md "Agents"). It was two reads per open task.
     mark('14c1')

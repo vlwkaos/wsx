@@ -125,11 +125,9 @@ export function Project({ id, back = "#/projects" }) {
             <section class="group worktree" key=${worktree.id} aria-label=${worktree.branch || "detached"}>
               <div class="group-head">
                 <h2 class="group-name"><span class="group-branch">${worktree.branch || "detached"}</span>${worktree.main ? " · main checkout" : null}</h2>
-                <span class="row-actions">
-                  ${deletable && !worktree.main && html`<button class="link-action" type="button" aria-label=${`Delete worktree ${worktree.branch || "detached"}`}
-                    onClick=${() => setDeleting(worktree)}>Delete</button>`}
-                  <${NewSession} project=${project} worktree=${worktree} />
-                </span>
+                ${deletable && !worktree.main && html`<button class="link-action delete-worktree" type="button" aria-label=${`Delete worktree ${worktree.branch || "detached"}`}
+                  onClick=${() => setDeleting(worktree)}>Delete</button>`}
+                <${NewSession} project=${project} worktree=${worktree} />
               </div>
               ${own.length
                 ? html`<ul class="rows">${own.map((session) => html`
