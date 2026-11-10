@@ -2380,6 +2380,9 @@ def part_core(created=None):
     reply_to(js('task', 'say', 'RULES mid')['id'])
     mid = turn_with('RULES mid')['message']
     assert 'rule 200' in mid and 'rule 249' in mid and 'NOT SHOWN: decisions.md' not in mid, mid
+    # ^ The request that turn leaves is answered before the next fresh start, or it opens that one.
+    wait(lambda: asked_rewrite() == rewrites + 3, 'the third decisions request')
+    wait(manager_idle, 'the manager idle after the request', 60)
     # ^ Still over after the rewrite: the newest rules fill 6 KiB, context.md keeps at least 3.5 KiB,
     # and what is left out is named with the archive.
     (notes / 'decisions.md').write_text('\n'.join(['# stubborn'] + rules(110, 300)) + '\n')
