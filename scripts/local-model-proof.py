@@ -8,7 +8,7 @@ memory  starts the server at each context size, fills the window with one prompt
         process footprint. It stops the server afterwards. Writes <out_dir>/memory.json.
 Output goes to .work/local-model by default. Stdlib only; no mocks.
 """
-import json, os, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import json, os, select, shutil, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, 'scripts', 'local-model.sh')
@@ -79,7 +79,6 @@ def pi_round_trip(out_dir):
     proc.stdin.write(json.dumps({'id': 'p1', 'type': 'prompt', 'message': prompt}) + '\n')
     proc.stdin.flush()
     events, deadline = [], time.time() + 180
-    import select
     while time.time() < deadline:
         if not select.select([proc.stdout], [], [], 5)[0]:
             continue
@@ -92,6 +91,9 @@ def pi_round_trip(out_dir):
     proc.stdin.close()
     proc.terminate()
     err = proc.stderr.read()
+    proc.wait()
+    shutil.rmtree(home, ignore_errors=True)
+    shutil.rmtree(work, ignore_errors=True)
     with open(os.path.join(out_dir, 'pi-rpc.jsonl'), 'w') as f:
         f.writelines(json.dumps(e) + '\n' for e in events)
     kinds = [e.get('type') for e in events]
