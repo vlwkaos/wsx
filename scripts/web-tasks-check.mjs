@@ -1496,6 +1496,7 @@ await closeSheet("the usage sheet", chat);
     await resize([390, 844, 2]);
     // A tap on the routine with no message does nothing.
     await pause(2200);
+    await openReservoir("routines");
     await click(`.reservoir .need[data-key="routine-nightly"] .row-main`);
     await pause(300);
     if (await count("[data-found]")) await fail("a tap on a routine with no message marked something");
