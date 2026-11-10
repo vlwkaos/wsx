@@ -5544,8 +5544,7 @@ def part_host(created=None):
     si_record_ended = lambda: json.loads(si_auth_record.read_text())['until_ms'] < time.time() * 1000
     # ^ Section 37's events name tasks whose title holds PIERROR. The fake Pi would read it as its own
     # refusal and count the fallback as out of credit: the manager takes them on the own agent first.
-    wait(lambda: any(e['kind'] == 'message' and e.get('text', '').startswith('#%s closed' % away) for e in manager_entries()),
-         'the close of the first worker reached the manager')
+    wait(lambda: events_with('#%s ' % away), 'the close of the first worker reached the manager')
     assert reply_to(js('task', 'say', 'STATUS before the sign-in')['id'])['text'].startswith('open: '), chat()[-3:]
     assert 'agent' not in manager_state(), manager_state()
     si_signed_in = work / 'signed-in-fallback'
