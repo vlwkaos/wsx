@@ -4297,7 +4297,9 @@ def part_host(created=None):
         assert waiting['record']['after']['because'] == 'needs' and not waiting['record'].get('agent_session'), waiting
         assert [x['kind'] for x in log(n)].count('after') == 1, log(n)
     time.sleep(3)
-    assert not [t for t in traces()[seen:] if 'ai-f' in t.get('message', '')], 'a waiting task started'
+    # ^ A worker's turn: the manager's event lines name the waiting tasks' titles too.
+    started = [t for t in traces()[seen:] if not t.get('manager') and 'ai-f' in t.get('message', '')]
+    assert not started, ('a waiting task started', started)
     assert js('task', 'after', freed, '--off')['ok']
     assert wait_state(freed, 'ready', 'failed')['state'] == 'ready', log(freed)
     assert land(base_a)['state'] == 'landed'
