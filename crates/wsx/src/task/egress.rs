@@ -4,14 +4,14 @@
 //! this proxy (`HTTPS_PROXY`). It tunnels bytes only (no TLS interception), answers 403 to any
 //! other CONNECT target and to any plain HTTP request, and resolves the name itself: a
 //! name that resolves to a loopback, private or link-local address is refused unless the
-//! provider itself is on such an address. One proxy per agent process; dropping it closes the
+//! provider itself is on such an address (decided without a lookup on the host thread). One proxy per agent process; dropping it closes the
 //! listener, every tunnel and every thread. ref: docs/tasks.md "Permissions"
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 /// Tunnels open at once; the next connection gets 503.
@@ -32,21 +32,23 @@ const STOP_WAIT: Duration = Duration::from_secs(5);
 pub struct Target {
     host: String,
     port: u16,
-    /// The provider itself is on a loopback, private or link-local address (decided when the
-    /// agent starts, from the owner's configuration): its name may resolve there.
-    private_ok: bool,
+    /// The provider itself is on a loopback, private or link-local address, so its name may
+    /// resolve there. Known at once for an IP literal or `localhost`; for any other name the
+    /// first CONNECT decides it from its answer and it stays for the launch. The host thread
+    /// never looks a name up.
+    private_ok: OnceLock<bool>,
 }
 
 impl Target {
     /// `host` is a name or an IP literal without brackets.
     pub fn new(host: &str, port: u16) -> Self {
         let host = host.to_ascii_lowercase();
-        let private_ok = match host.parse::<IpAddr>() {
-            Ok(ip) => !public(ip),
-            Err(_) => (host.as_str(), port)
-                .to_socket_addrs()
-                .is_ok_and(|mut found| found.any(|addr| !public(addr.ip()))),
-        };
+        let private_ok = OnceLock::new();
+        match host.parse::<IpAddr>() {
+            Ok(ip) => drop(private_ok.set(!public(ip))),
+            Err(_) if host == "localhost" => drop(private_ok.set(true)),
+            Err(_) => {}
+        }
         Self {
             host,
             port,
@@ -297,15 +299,23 @@ fn connect_target(head: &str) -> Option<(String, u16)> {
     Some((host.to_ascii_lowercase(), port.parse().ok()?))
 }
 
-/// Resolve the target's name and connect to the first address it may reach.
+/// Resolve the target's name and connect to the first address it may reach. A name with no
+/// public address is a private provider (decided once, here); otherwise its private addresses
+/// are skipped.
 fn dial(target: &Target) -> io::Result<TcpStream> {
     let mut last = io::Error::new(
         io::ErrorKind::PermissionDenied,
         "the name resolves to a loopback or private address",
     );
-    let found = (target.host.as_str(), target.port).to_socket_addrs()?;
+    let found: Vec<SocketAddr> = (target.host.as_str(), target.port)
+        .to_socket_addrs()?
+        .collect();
+    let private_ok = *target
+        .private_ok
+        .get_or_init(|| !found.is_empty() && found.iter().all(|addr| !public(addr.ip())));
     for addr in found
-        .filter(|addr| target.private_ok || public(addr.ip()))
+        .into_iter()
+        .filter(|addr| private_ok || public(addr.ip()))
         .take(4)
     {
         match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
