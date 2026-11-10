@@ -2429,8 +2429,8 @@ def part_core(created=None):
     tabled = js('task', 'new', 'NOOP TABLE')['id']
     wait_state(tabled, 'ready')
     table_reply = reply_to(wait(lambda: events_with('#%d ready r1' % tabled), 'the event of a task that asks for a table')[0]['id'])
-    raw_reply = next(e for e in manager_entries() if e['kind'] == 'reply' and e['id'] == table_reply['id'])
-    assert 'Where things stand' in raw_reply['text'] and 'quiet' not in raw_reply and 'quiet' not in table_reply, raw_reply
+    stored_reply = next(e for e in manager_entries() if e['kind'] == 'reply' and e['id'] == table_reply['id'])
+    assert 'Where things stand' in stored_reply['text'] and 'quiet' not in stored_reply and 'quiet' not in table_reply, stored_reply
     js('task', 'close', tabled)
     closed = wait(lambda: posted('closed'), 'the closed event routine post', 60)[0]
     assert json.loads(closed['text'])['task'] == tabled, closed
@@ -2680,7 +2680,7 @@ def part_core(created=None):
     js('task', 'close', asking)
     question_table = reply_to(js('task', 'say', 'ASK TABLE')['id'])
     assert question_table['text'].startswith('Should I land it now?\nWhere things stand') and 'asks' not in question_table, question_table
-    assert 'asks' not in raw_reply and 'asks' not in event_reply, (raw_reply, event_reply)
+    assert 'asks' not in stored_reply and 'asks' not in event_reply, (raw_reply, event_reply)
     # ^ A question in a last table row with no closing pipe does not ask either.
     question_row = reply_to(js('task', 'say', 'ASKROW')['id'])
     assert question_row['text'].endswith('| #2 | land it?') and 'asks' not in question_row, question_row
