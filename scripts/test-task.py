@@ -3212,9 +3212,20 @@ def part_worker(created=None):
     manager_turns = lambda: len([t for t in traces() if t.get('manager')])
     open_ids = lambda: [i['id'] for i in js('task', 'check')['open'] if i['task'] in replied]
     row_of = lambda item: {r['id']: r for r in (json.loads(line) for line in checks_file.read_text().splitlines() if line.strip())}[item['id']]
+    # ^ The logged message names the item it answers (`check`, next to `quote`), the item names the
+    # message that closed it (`owner_said`) or whose words are its note (`note_said`), and the search
+    # finds the reply by the item's id.
+    logged_message = lambda message_id: next(
+        e for e in (json.loads(line) for line in manager_log.read_text().splitlines())
+        if e.get('kind') == 'message' and e.get('id') == message_id)
+    found_by_item = lambda item, message_id: wait(
+        lambda: any(h['reference'].endswith(':%d' % message_id) for h in js('task', 'search', '-p', 'demo', item['id'])['hits']),
+        'the search finds message %d by %s' % (message_id, item['id']), 30)
     turns = manager_turns()
     for item, words in ((first, ' X '), (second, 'ㅌ')):
         said = js('task', 'say', '> check %s\n\n%s' % (item['id'], words))
+        assert logged_message(said['id'])['check'] == item['id'] and row_of(item)['owner_said'] == said['id'], (logged_message(said['id']), row_of(item))
+        found_by_item(item, said['id'])
         answered = reply_to(said['id'])
         assert answered['post'] and answered['quiet'] and answered['text'] == 'Skipped: ' + item['check'], answered
         assert 'usage' not in answered, answered
@@ -3233,6 +3244,8 @@ def part_worker(created=None):
     reply_to(thanks['id'])
     assert manager_turns() == turns + 1
     assert third['check'] in str(turn_with('looks right, thanks')), traces()[-1]
+    assert logged_message(thanks['id'])['check'] == third['id'] and row_of(third)['note_said'] == thanks['id'], (logged_message(thanks['id']), row_of(third))
+    found_by_item(third, thanks['id'])
     assert row_of(third)['state'] == 'passed' and row_of(third)['note'] == 'looks right, thanks', row_of(third)
     # ^ Fail (the button) closes the item with no fix task; its reply is the note, marked for the manager.
     js('task', 'check', 'fail', fourth['id'])
@@ -3243,16 +3256,20 @@ def part_worker(created=None):
     assert manager_turns() == turns + 2
     assert 'To check %s failed: the text is cut off' % fourth['id'] in str(turn_with('the text is cut off')), traces()[-1]
     assert row_of(fourth)['state'] == 'failed' and row_of(fourth)['note'] == 'the text is cut off' and row_of(fourth).get('fix_task') is None
+    assert logged_message(wrong['id'])['check'] == fourth['id'] and row_of(fourth)['note_said'] == wrong['id'], (logged_message(wrong['id']), row_of(fourth))
+    found_by_item(fourth, wrong['id'])
     # ^ A second reply goes to the manager and leaves the first note.
     more = js('task', 'say', '> check %s\n\nalso on a phone' % fourth['id'])
     reply_to(more['id'])
     assert manager_turns() == turns + 3 and row_of(fourth)['note'] == 'the text is cut off'
+    assert logged_message(more['id'])['check'] == fourth['id'] and row_of(fourth)['note_said'] == wrong['id']
     # ^ Words to an open item, and an x that quotes a message, are the manager's to read; the item stays.
     wordy = js('task', 'say', '> check %s\n\nx marks the spot' % fifth['id'])
     reply_to(wordy['id'])
     assert manager_turns() == turns + 4
     assert fifth['check'] in str(turn_with('x marks the spot')), traces()[-1]
     assert row_of(fifth)['state'] == 'open' and row_of(fifth).get('note') is None
+    assert logged_message(wordy['id'])['check'] == fifth['id'] and 'owner_said' not in row_of(fifth)
     quoting = js('task', 'say', '> message %d\n\nx' % status_reply['id'])
     reply_to(quoting['id'])
     assert manager_turns() == turns + 5
@@ -3260,6 +3277,7 @@ def part_worker(created=None):
     # ^ An item no one knows: the quote line goes and the words stay.
     stray = js('task', 'say', '> check c9999\n\nx')
     reply_to(stray['id'])
+    assert 'check' not in logged_message(stray['id'])
     assert manager_turns() == turns + 6
     js('task', 'check', 'skip', fifth['id'])
 

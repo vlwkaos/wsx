@@ -152,7 +152,7 @@ export function Bubble({ project, row, words: home, fresh, onNeed }) {
   // ^ In a chat's small space the stand-in mark is an icon; an asking reply is set off by its border, and its words are in the aria-label.
   const mark = row.provisional ? ["unchecked", "Stand-in, not checked"] : null;
   // ^ A message quotes an earlier one in the owner's format (docs/tasks.md "Manager").
-  const quoted = row.quoted != null && html`<${Quote} quote=${row.quoted} id=${row.quoted_id} />`;
+  const quoted = row.quoted != null && html`<${Quote} quote=${row.quoted} id=${row.quoted_id} check=${row.quoted_check} project=${project} />`;
   const body = out
     ? html`<div class="bubble-body" id=${id}>${quoted}${row.text && html`<p class="prose">${words ? words(row.text) : row.text}</p>`}</div><${Attachments} files=${row.attachments} />`
     : html`<div class="bubble-body" id=${id}>${quoted}<${Markdown} text=${row.text} files=${row.attachments} words=${words} relative=${relativeOf(project)} prose /></div>

@@ -632,6 +632,7 @@ impl Manager {
             text: event,
             short: Vec::new(),
             quote: None,
+            check: None,
         });
         self.log(ManagerEvent::Delivered { ids: vec![id] });
         let reply = self.next_id();
@@ -1517,13 +1518,26 @@ impl Manager {
     /// Log a message and queue it; owner messages go before events.
     fn accept(&mut self, from: Author, mut text: String, short: Vec<Short>) -> Result<u64> {
         // ^ A reply to a To check item: "x" skips it here and starts no turn; other words go on
-        // with the item's check as their quote. ref: `checks::item_reply`
-        if from == Author::Owner && self.dir.role.is_none() {
-            match checks::item_reply(&self.dir.project_id, &text) {
-                Some(ItemReply::Skip { text, check, was }) => {
-                    return Ok(self.skipped(text, &check, was));
+        // with the item's check as their quote and its id on the message. The item keeps the
+        // message's id, so it is taken first. ref: `checks::item_reply`
+        let mut reserved = None;
+        let mut check = None;
+        if from == Author::Owner
+            && self.dir.role.is_none()
+            && text.trim_start().starts_with(checks::QUOTE_REF)
+        {
+            let message = self.next_id();
+            reserved = Some(message);
+            match checks::item_reply(&self.dir.project_id, &text, message) {
+                Some(ItemReply::Skip {
+                    text,
+                    item,
+                    check,
+                    was,
+                }) => {
+                    return Ok(self.skipped(message, text, item, &check, was));
                 }
-                Some(ItemReply::Words(words)) => text = words,
+                Some(ItemReply::Words { text: words, item }) => (text, check) = (words, item),
                 None => {}
             }
         }
@@ -1538,7 +1552,7 @@ impl Manager {
         if text.len() > MAX_MESSAGE_BYTES {
             anyhow::bail!("the message is larger than the limit of {MAX_MESSAGE_BYTES} bytes");
         }
-        let id = self.next_id();
+        let id = reserved.unwrap_or_else(|| self.next_id());
         let wakes = Short::any_wakes(&short);
         self.dir.append(ManagerEvent::Message {
             id,
@@ -1546,6 +1560,7 @@ impl Manager {
             text: text.clone(),
             short,
             quote,
+            check,
         })?;
         self.last_activity = Instant::now();
         self.overview_asked &= from != Author::Owner;
@@ -1564,14 +1579,21 @@ impl Manager {
 
     /// The owner's "x" on a To check item, logged as delivered, and the muted line that says what
     /// became of the item: no turn reads either. Returns the owner message's id.
-    fn skipped(&mut self, text: String, check: &str, was: Option<CheckState>) -> u64 {
-        let id = self.next_id();
+    fn skipped(
+        &mut self,
+        id: u64,
+        text: String,
+        item: String,
+        check: &str,
+        was: Option<CheckState>,
+    ) -> u64 {
         self.log(ManagerEvent::Message {
             id,
             from: Author::Owner,
             text,
             short: Vec::new(),
             quote: None,
+            check: Some(item),
         });
         self.log(ManagerEvent::Delivered { ids: vec![id] });
         let check = clip(check, 60);
