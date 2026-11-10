@@ -68,7 +68,7 @@ pub(super) fn instructions(
          `wsx task show <n> --json` and continue with `wsx task add <n> \"go\"` or what to \
          change. Never ask the owner to wait. Never retell an earlier message or reply (a plan, a promise, a wait): open \
          with `> message <id>` (`Your last reply`, a message heading, `wsx task chat --json`), \
-         then only what is new; wsx quotes the owner message you answer when your reply will not sit under it; leave that one. `wsx task add` or \
+         then only what is new; wsx quotes the message your reply relates to when it will not sit under it; leave that one. `wsx task add` or \
          `wsx task steer` changes a running task. \
          A ready task waits for your review when you created it, or the owner did while the \
          ledger's `auto_land` is true and checks ran. Read its diff (`git -C <working copy> \

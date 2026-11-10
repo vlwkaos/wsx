@@ -834,10 +834,14 @@ def manager_up(created):
     assert own_words['to'] == [one['id']] and 'quote' not in own_words, own_words
     # ^ A reply under its one message is no quote; one with a chat item between is. A long turn
     # lets a task's event come in after the owner message, and its question stays open.
+    def event_of(task):
+        return next((e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events'
+                     and '#%d ready r1' % task in e['text']), None)
+
     apart = js('task', 'say', 'ASK LONG apart')
     wait(lambda: any(e['kind'] == 'delivered' and apart['id'] in e['ids'] for e in manager_entries()), 'apart delivered')
     between = js('task', 'new', 'NOOP between')['id']
-    event = wait(lambda: events_with('#%d ready r1' % between), 'the event during the long turn', 20)[0]
+    event = wait(lambda: event_of(between), 'the event during the long turn', 20)
     far = raw_reply(apart['id'])
     assert event['id'] < far['id'] and far['quote'] == apart['id'], (event, far)
     assert far['text'].startswith('> ASK LONG apart\n\n') and far.get('asks') is True, far
@@ -845,6 +849,32 @@ def manager_up(created):
     js('task', 'dismiss', str(far['id']))
     reply_to(event['id'])
     js('task', 'close', between, '--discard')
+    # ^ A follow-up to the manager's own earlier reply: a reply to an events turn that reports task
+    # #n quotes the newest earlier reply that names #n (a promise) when other chat items lie
+    # between, and none when the report sits right under it (`chat::quoted_message`). The task
+    # waits for a release file, so the promise comes first.
+    def follow_up(label, between_words):
+        release = work / ('release-' + label)
+        task = js('task', 'new', 'NOOP ASK WAIT %s' % release)['id']
+        pledge = reply_to(js('task', 'say', 'BLOCKS I will land #%d once CI passes.' % task)['id'])
+        assert '#%d once CI passes' % task in pledge['text'], pledge
+        if between_words:
+            reply_to(js('task', 'say', between_words)['id'])
+        release.write_text('go')
+        event = wait(lambda: event_of(task), 'the ready event of the promised task', 60)
+        report = raw_reply(event['id'])
+        assert report.get('asks') is True, report
+        items = [e for e in manager_entries(raw=True)
+                 if pledge['id'] < (e.get('id') or 0) < event['id'] and e['kind'] in ('message', 'reply')]
+        js('task', 'dismiss', str(report['id']))
+        js('task', 'close', task, '--discard')
+        return pledge, report, items
+
+    pledge, report, items = follow_up('direct', None)
+    assert not items and 'quote' not in report, (items, report)
+    pledge, report, items = follow_up('apart', 'QUOTE OWNER_SAID between')
+    assert items and report['quote'] == pledge['id'], (pledge, report)
+    assert report['text'].startswith('> I will land #') and report['text'].endswith('Should I land it now?'), report
     heard = js('task', 'say', 'QUOTE OWNER_SAID noted')
     assert raw_reply(heard['id'])['text'] == '> QUOTE OWNER_SAID noted\n\nnoted'
     # ^ A quote of a quote is the words of that reply, not its quote line.
