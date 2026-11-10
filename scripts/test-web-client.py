@@ -4428,7 +4428,8 @@ merge_seconds = 3
         assert len(replied) == 3, replied
         first, second, third = replied
         manager_chat = lambda: steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]
-        manager_turns = lambda: steady(owner, 'GET', '/api/tasks/%d/usage' % demo)[1]['today']['manager']['turns']
+        # ^ A turn of the fake agent costs 1000 micro USD; the usage `turns` also counts wsx's own posts (usage none).
+        manager_turns = lambda: steady(owner, 'GET', '/api/tasks/%d/usage' % demo)[1]['today']['manager']['cost_micro_usd'] // 1000
 
         def reply_to(item, words):
             status, body = steady(owner, 'POST', '/api/tasks/%d/say' % demo, {'text': '> check %s\n\n%s' % (item['id'], words)})
