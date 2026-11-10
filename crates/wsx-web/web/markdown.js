@@ -8,7 +8,6 @@ import { resolve } from "./api.js";
 import { h } from "./preact.js";
 import { html, useMemo, useState } from "./lib.js";
 import { Diagram } from "./diagram.js";
-import { Capture } from "./viewer.js";
 
 const makeParser = () => {
   const made = globalThis.markdownit({ html: false, linkify: true });
@@ -36,7 +35,6 @@ const grantedFile = (files, href) => {
   }
   return files?.find((file) => file.src === path);
 };
-const isVideo = (file) => file.mime?.startsWith("video/");
 // Fence names people write, as the highlight.js grammar that reads them.
 const LANGUAGES = {
   rust: "rust", rs: "rust", typescript: "typescript", ts: "typescript", tsx: "typescript",
@@ -101,9 +99,9 @@ function inline(tokens, files, words, relative) {
         // `session/<id>`); any other scheme, and another relative address, stays text.
         const file = grantedFile(files, href);
         const page = !file && relative && !href.includes("..") ? relative(href) : null;
-        // A link to a picture or video the server granted opens it in the viewer.
-        push(file ? html`<a href=${resolve(file.url)} data-view data-video=${isVideo(file) || undefined} data-poster=${file.poster && resolve(file.poster)}
-            aria-label=${plain(children) || file.name}>${children}</a>`
+        // ^ A link to a file the server granted keeps its words: the file is an attachment of the
+        // message (chat.js `Attachments`).
+        push(file ? children
           : page ? html`<a href=${page}>${children}</a>`
           : LINK.test(href) ? html`<a href=${href} target="_blank" rel="noopener noreferrer">${children}</a>` : children);
       } else {
@@ -118,20 +116,16 @@ function inline(tokens, files, words, relative) {
     } else if (token.type === "hardbreak") {
       push(html`<br />`);
     } else if (token.type === "image") {
-      // Only a file the server already granted for this message is shown: a picture, or a
-      // video with its poster. A tap opens it full screen (viewer.js), unless it is inside a
-      // link of its own.
+      // ^ A file the server granted by its path is an attachment of the message, shown under it
+      // (chat.js `Attachments`), so the syntax shows nothing here. Any other image is its alt
+      // text, except a picture an agent produced (it has no path): the file of that name.
       const src = token.attrGet("src") ?? "";
+      if (grantedFile(files, src)) continue;
       const name = src.split(/[?#]/)[0].split("/").at(-1);
-      const file = grantedFile(files, src) ?? files?.find((candidate) => !candidate.src && candidate.image && candidate.name === name);
-      if (!file || (linked && isVideo(file))) {
-        push(html`<span class="image-alt">${token.content || "image"}</span>`);
-      } else if (isVideo(file)) {
-        push(html`<${Capture} href=${resolve(file.url)} video poster=${file.poster && resolve(file.poster)} label=${token.content || file.name} />`);
-      } else {
-        const picture = html`<img src=${resolve(file.url)} alt=${token.content} loading="lazy" />`;
-        push(linked ? picture : html`<a href=${resolve(file.url)} data-view>${picture}</a>`);
-      }
+      const file = files?.find((candidate) => !candidate.src && candidate.image && candidate.name === name);
+      const picture = file && html`<img src=${resolve(file.url)} alt=${token.content} loading="lazy" />`;
+      push(file ? (linked ? picture : html`<a href=${resolve(file.url)} data-view>${picture}</a>`)
+        : html`<span class="image-alt">${token.content || "image"}</span>`);
     } else {
       push(token.content);
     }
@@ -169,7 +163,7 @@ function blocks(tokens, files, words, relative) {
       if (tag === "p") {
         // A tight list hides its paragraphs.
         if (open.hidden) push(children);
-        else push(html`<p>${children}</p>`);
+        else if (!children.every((node) => typeof node === "string" && !node.trim())) push(html`<p>${children}</p>`);
       } else if (tag === "li") {
         const done = task(children);
         push(done === null ? html`<li>${children}</li>`

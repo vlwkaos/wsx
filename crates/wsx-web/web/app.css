@@ -423,6 +423,18 @@ a[data-view] { cursor: zoom-in; }
 .message-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
 .attachments { list-style: none; margin: var(--space-2) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); font-size: var(--font-size-sm); }
 .attachments img { display: block; max-width: 100%; max-height: calc(var(--size-rail) * 0.8); border-radius: var(--radius-key); }
+/* ^ Two or more pictures and videos: a grid of square tiles, as a chat app lays them out. */
+.attachments[data-grid] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.attachments[data-grid] li:not(:has(img, .check-capture)) { grid-column: 1 / -1; }
+.attachments[data-grid] :is(img, .check-frame), .attachments[data-grid] .check-capture :is(img, .check-frame) {
+  width: 100%; max-height: none; aspect-ratio: 1; object-fit: cover; border-radius: var(--radius-key);
+}
+.attachments[data-grid] .check-capture { width: 100%; }
+/* The length of a video, over the corner of its tile. */
+.check-duration {
+  position: absolute; right: var(--space-2); bottom: var(--space-2); padding: 0 var(--space-2); border-radius: var(--radius-key);
+  background: var(--color-bg); color: var(--color-text); font-size: var(--font-size-sm); opacity: 0.85; pointer-events: none;
+}
 /* Hook: .summary — a compaction summary. The label says what it is; a hairline at the start
    keeps it apart from the agent's messages. Closed, it shows about eight lines. */
 .summary { max-width: var(--size-prose); min-width: 0; padding-inline-start: var(--space-3); border-inline-start: var(--border-width) solid var(--color-hairline); }
