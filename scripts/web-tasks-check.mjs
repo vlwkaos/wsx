@@ -1468,7 +1468,7 @@ await closeSheet("the usage sheet", chat);
     const rows = await rowsOf();
     const by = Object.fromEntries(rows.map((row) => [row.name, row]));
     if (rows.length !== 3 || by.nightly?.context[0] !== "daily 06:00 · On" || !/^succeeded( now|\b.* ago) · no message$/.test(by.nightly.context[1])
-      || by.weekly?.context[0] !== "Mondays 06:00, no chat post · Off" || !/^found something \(exit 1\)( now|\b.* ago) · message$/.test(by.weekly.context[1])
+      || by.weekly?.context[0] !== "Mondays 06:00, no chat post · Off" || !/^found something \(exit 1\)( now|.* ago) · message$/.test(by.weekly.context[1])
       || by.idle?.context.join("|") !== "daily 07:00 · On|never run · no message"
       || by.nightly.main !== "SPAN" || by.idle.main !== "SPAN" || by.weekly.main !== "BUTTON"
       || by.nightly.actions.join() !== "Turn off,Run now" || by.weekly.actions.join() !== "Turn on,Run now" || by.idle.actions.join() !== "Turn off,Run now"
