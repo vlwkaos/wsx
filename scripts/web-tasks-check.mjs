@@ -1586,6 +1586,7 @@ await closeSheet("the usage sheet", chat);
   if (await evaluate("document.querySelector('input[name=bar]:checked').value") !== "top") await fail("the header setting does not default to top");
   await click("input[name=bar][value=bottom]");
   await until("document.documentElement.dataset.bar === 'bottom'", "the header setting did not take effect");
+  const reload = async (ready) => { await send("Page.reload"); await until(ready, "the page did not come back after a reload"); };
   await reload("document.documentElement.dataset.bar === 'bottom' && !!document.querySelector('input[name=bar]')");
   if (await evaluate("document.querySelector('input[name=bar]:checked').value") !== "bottom") await fail("the header setting did not survive a reload");
   for (const wide of [false, true]) {
