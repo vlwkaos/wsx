@@ -855,7 +855,8 @@ pub fn page(scope: &Scope) -> Outcome<Value> {
 }
 
 /// The project's routines as wsxd's scheduler lists them: `{routines}`, at most 100, each last
-/// run with the id of its events message, or with `error` when the scheduler does not answer. ref: docs/web-client-tasks.md "Routines"
+/// run with the id of its events message, or with `error` when the scheduler does not answer.
+/// ref: docs/web-client-tasks.md "Routines"
 pub fn routines(scope: &Scope) -> Value {
     let dir = ManagerDir::existing(&scope.store).ok().flatten();
     match ledger::routine_rows(&scope.path, MAX_ROUTINES, true, dir.as_ref()) {
