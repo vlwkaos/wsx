@@ -5567,11 +5567,11 @@ def part_host(created=None):
     with open(config_dir / 'config-v2.toml', 'a') as registry:
         registry.write('[[agents]]\nname = "fake-pi"\ncommand = ["pi"]\nadapter = "pi"\nmodel = "fake/pi-model"\n'
                        'extension = ' + json.dumps(str(lean)) + '\n')
-        # ^ A backlog-role entry comes first in every list below: it is no full fallback and no
+        # ^ A scribe-role entry comes first in every list below: it is no full fallback and no
         # stand-in, so a worker, the manager and a stand-in skip it. Were the gate open, the task
         # would end on its model, fake/backlog.
         registry.write('[[agents]]\nname = "fake-backlog"\ncommand = ["pi"]\nadapter = "pi"\n'
-                       'model = "fake/backlog"\nroles = ["backlog"]\n')
+                       'model = "fake/backlog"\nroles = ["scribe"]\n')
     WORKER_FALLBACK = FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-backlog, fake-pi]\n    maxWaitMinutes: 1\n')
     configure(WORKER_FALLBACK, 'fallback agent')
     # ^ Part 20 ran a Pi manager: only the Pi turns from here on are the worker's.
@@ -5635,13 +5635,13 @@ def part_host(created=None):
     limit_for = lambda seconds: limit_file.write_text(json.dumps({'until_ms': int((time.time() + seconds) * 1000)}))
     with open(config_dir / 'config-v2.toml', 'a') as registry:
         registry.write('[[agents]]\nname = "fake-local"\ncommand = ["pi"]\nadapter = "pi"\n'
-                       'model = "local/stand-in"\nminimal = true\n')
+                       'model = "local/stand-in"\nroles = ["organizer"]\nmay = ["answer"]\n')
         registry.write('[[agents]]\nname = "fake-paid"\ncommand = ["pi"]\nadapter = "pi"\n'
                        'model = "paid/model"\nbudget_usd_per_day = 1\n')
         # ^ Another model on the paid account sets no budget: the account's budget still holds.
         registry.write('[[agents]]\nname = "fake-paid-other"\ncommand = ["pi"]\nadapter = "pi"\n'
                        'model = "paid/other"\n')
-        # ^ An organizer-role entry is a stand-in too (the organizer without tools), and no full fallback.
+        # ^ An organizer-role entry with no `may` is a stand-in too, and no full fallback.
         registry.write('[[agents]]\nname = "fake-organizer"\ncommand = ["pi"]\nadapter = "pi"\n'
                        'model = "local/organizer"\nroles = ["organizer"]\n')
         registry.write('[[agents]]\nname = "fake-pi2"\ncommand = ["pi"]\nadapter = "pi"\n'

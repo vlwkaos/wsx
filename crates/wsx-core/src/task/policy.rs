@@ -125,7 +125,9 @@ pub struct RoleInfo {
     pub caps: &'static [Capability],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The one role enum: a launch site's role, and the jobs an `[[agents]]` entry `roles` lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     Manager,
     Area,
@@ -195,6 +197,18 @@ impl Role {
 
     pub fn caps(self) -> Caps {
         Caps::of(self.info().caps)
+    }
+
+    /// Whether an `[[agents]]` entry that lists `listed` fills this role in a fallback choice.
+    /// With none listed it is a full fallback: the manager's turns and a task's steps. The
+    /// organizer (backlog, the stand-in without tools) and the scribe (notes, handoffs) are
+    /// filled only when listed; `area` is the manager's named role, never an entry's.
+    pub fn filled_by(self, listed: &[Role]) -> bool {
+        if listed.is_empty() {
+            matches!(self, Self::Manager | Self::Worker)
+        } else {
+            self != Self::Area && listed.contains(&self)
+        }
     }
 
     /// The role the agent of an actor runs as: the manager host's as `Manager`, a named

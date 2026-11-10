@@ -136,7 +136,7 @@ pub enum ManagerEvent {
         /// until it is answered (`chat::open_asks`, docs/tasks.md "Manager").
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         asks: bool,
-        /// A `minimal` agent wrote this while the manager's agent could not: the agent's name.
+        /// A stand-in (an organizer entry) wrote this while the manager's agent could not: the agent's name.
         /// The manager's agent still answers `to` itself and is told of this reply
         /// (docs/tasks.md "Agents").
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -510,7 +510,7 @@ pub struct ManagerState {
     /// The agent's usage limit: the messages of the turn it ended, answered once it resumes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<LimitHold>,
-    /// The newest owner message a `minimal` agent has answered.
+    /// The newest owner message a stand-in has answered.
     #[serde(skip_serializing_if = "is_zero")]
     pub provisional_to: u64,
     /// The id of the manager's newest reply that says something: the turn text names it, since
