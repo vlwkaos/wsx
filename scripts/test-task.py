@@ -2334,7 +2334,9 @@ def part_core(created=None):
     assert '-> 0 check-in at ' in text, text
     second = pending()
     assert second['why'] == 'look at the nightly failures' and second['at_ms'] < time.time() * 1000 + 70 * 1000, second
-    assert js('task', 'ledger')['routines'] == [] and js('task', 'routine', 'list')['routines'] == []
+    # ^ Only `nightly` is listed: a check-in is no routine.
+    listed = lambda: [r['name'] for r in js('task', 'ledger')['routines']] + [r['routine']['name'] for r in js('task', 'routine', 'list')['routines']]
+    assert listed() == ['nightly', 'nightly'], listed()
     wait(lambda: events_with('check-in: look at the nightly failures'), 'the check-in event', 150)
     assert not events_with('first look') and pending() is None, (events_with('first look'), pending())
     # ^ Due while the host is down: it fires late, once, when the host starts.
@@ -2345,7 +2347,7 @@ def part_core(created=None):
     assert not events_with('came due while down')
     reply_to(js('task', 'say', 'STATUS after the check-in came due')['id'])
     wait(lambda: events_with('check-in: came due while down'), 'the late check-in event', 30)
-    assert pending() is None and js('task', 'routine', 'list')['routines'] == []
+    assert pending() is None and listed() == ['nightly', 'nightly'], (pending(), listed())
     # ^ Routines recur: no `--at`, and nothing else names a one-shot.
     refused = cli('task', 'routine', 'add', 'once', '-p', 'demo', '--at', '23:59', '--arg=true', ok=False)
     assert 'unexpected argument' in refused.stderr, refused.stderr
