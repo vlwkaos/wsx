@@ -770,7 +770,10 @@ def manager_up(created):
     with socket.socket(socket.AF_UNIX) as raw:
         raw.connect(launch['broker'])
         raw.sendall(json.dumps({'argv': ['daemon', 'stop'], 'stdin': None, 'cwd': str(project)}).encode())
-        raw.shutdown(socket.SHUT_WR)
+        try:
+            raw.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass  # ^ The broker refuses at the first line and may close before this half-close (macOS: ENOTCONN).
         direct = json.loads(raw.makefile().read())
     assert direct['code'] == 2 and 'only `wsx task` commands' in direct['stderr'], direct
     assert wait_state(running, 'ready', 'failed')['state'] == 'ready'
