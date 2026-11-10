@@ -4651,13 +4651,15 @@ def part_host(created=None):
                      'else m="RuntimeError: no job started in 60 min of queue"; fi\n'
                      'printf "%s" "$m"; exit 1\n' % (ci_count, ci_count, ci_tail))
     configure(LAND_CONFIG + '  scenarios:\n    cirun: \'sh %s\'\n' % ci_sh, 'ci run scenario')
+    before = len(shared_events())
+    # ^ The events of 32oa and 32ob stay in the manager's log: count from here.
     cra, said = shared_run('cirun', 'cr1')
     crb, said = shared_run('cirun', 'cr2')
     time.sleep(2)
-    assert 'likely on main' not in said and not events_with('RuntimeError') and not shared_events(), (said, shared_events())
+    assert 'likely on main' not in said and not events_with('RuntimeError') and len(shared_events()) == before, (said, shared_events())
     crc, said = shared_run('cirun', 'cr3')
     time.sleep(2)
-    assert 'likely on main' not in said and not shared_events(), (said, shared_events())
+    assert 'likely on main' not in said and len(shared_events()) == before, (said, shared_events())
     crd, said = shared_run('cirun', 'cr4')
     wait(lambda: events_with('no job started'), 'the shared event of the queue line', 30)
     event = events_with('no job started')[0]['text']
