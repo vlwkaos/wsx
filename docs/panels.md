@@ -49,11 +49,11 @@ With `format: json` the command prints one object, and the clients draw it as a 
 
 | Part | Rule |
 |---|---|
-| Items | `gauge` (`label`, `used` >= 0, `total` > 0, `unit?`, `level?`), `stat` (`label`, `value`, `note?`, `level?`), `table` (`columns`, `rows`), `list` (`items`, `level?`) |
+| Items | `gauge` (`label`, `used` >= 0, `total` > 0, `unit?`, `level?`), `stat` (`label`, `value`, `note?`, `level?`), `table` (`columns`, `rows`), `list` (`items`, `level?`), `cards` (`title?`, `items`): see "Cards" |
 | Links | a table cell and a list entry may be `{"text": "...", "url": "..."}` for a string: see "Links" |
 | `level` | `ok`, `warn` or `bad`: the theme's state colours, shown with the word, never by colour alone |
 | Strings | text or a number; cut at 200 characters with `…` |
-| Limits | 12 sections, 50 items per section, a list of 50 entries, a table of 1..=8 columns and 100 rows (rows with another cell count than `columns` skip the table); more is cut and the notice says `cut to the limits: ...` |
+| Limits | 12 sections, 50 items per section, a list of 50 entries, a table of 1..=8 columns and 100 rows, 48 cards per `cards` item (rows with another cell count than `columns` skip the table); more is cut and the notice says `cut to the limits: ...` |
 | Skipped | an unknown `kind`, a bad `level` or a bad value skips that item, one notice line each (5 at most, then `and n more`); an unknown field is ignored, so a script written for a newer wsx keeps its items |
 | Not a document | invalid JSON, a root without `sections`, or no section left: no `doc`; the clients show the text as written with the notice |
 | Age | the run's age as for a text panel (wsxd's clock), not a field of the document |
@@ -74,6 +74,29 @@ Anything else keeps the text and drops the link, with one notice line: `section 
 - The machine card keeps the links of the project panels it merges. A project page link there also names its project (`project`, the project's name), so a client opens it in that project's checkout.
 - Web: an `https` link opens in a new tab (`target="_blank" rel="noopener noreferrer"`). A project page link goes to `#/p/<project>/files/<path>`, the files view, which shows the page in the sandboxed frame (`api/file/page`, `view/<token>/`; [web-client.md](web-client.md) "Files"); a site without the `files_read` right or the files panel shows the text alone.
 - TUI: no terminal link is made. A link shows as `text ↗ target` in the accent colour with an underline; in a table the target is cut with the cell when the width is short, like any cell.
+
+## Cards
+
+A `cards` item shows what a row cannot: a picture with a few words, as a grid of cards.
+
+```json
+{"kind": "cards", "title": "Trending", "items": [
+  {"title": "Cat video", "subtitle": "Channel A", "value": "1.2M", "note": "Rising fast", "image": "media/cat.jpg",
+   "url": "https://www.youtube.com/watch?v=abc", "level": "ok"}]}
+```
+
+| Field | Rule |
+|---|---|
+| `title` | required, a string or number (200 characters, as every string); a card without one skips the item |
+| `subtitle`, `value`, `note` | optional strings |
+| `url` | as for a link ("Links"); a bad one is dropped with a notice and the card stays |
+| `image` | a path in the project's main checkout: `.jpg`, `.jpeg`, `.png`, `.webp` or `.gif`, no leading `/`, no `..`, no dot-folder, no symbolic link on the way, a file of at most 2 MiB. Missing, too large or refused: the card shows without it, one notice line (`card 3 image dropped: the image file is missing`) |
+| `level` | `ok`, `warn` or `bad`, as everywhere: the word beside the value |
+
+- The check happens when the run ends (wsxd, in the project's main checkout); the web reads the file again when it loads the picture. 48 cards at most per item; more is cut (`cut to the limits: cards`).
+- Web: a grid that fills the width (two columns on a phone). A picture is on top in a box of one shape (16:9), loaded when it scrolls near (`loading="lazy"`), from `GET api/file/image?project=&path=` (`files_read` and the files panel, the pinned root without a symbolic link, a picture type, 2 MiB; 400 `not_an_image`). A site without `files_read` shows the cards without pictures. The note is clamped to 3 lines. With a `url` the whole card is the link, as in "Links". The machine card keeps the cards; a card with a picture or a project page names its project (`project`).
+- TUI: one row per card, `title ↗ subtitle  value  word` (title and subtitle give way to the width), the title underlined with the target at the row's end where it fits whole when there is a `url`, and the note dimmed below, cut to the width. No picture.
+- A client from before cards cannot decode a document with one, so the daemon revision is 51 (a wsxd from before it skips a `cards` item with a notice).
 
 ## Machine panels
 
@@ -125,4 +148,4 @@ A project's panel about the machine has `scope: machine`. It is still a project'
 - TUI (`panel_view.rs`, `ui/panels.rs`): `v` on a project opens its panels. `Tab`/`l` and `h` switch, `j`/`k` scroll, `R` runs it now, `Esc`, `q`, `v` and `M` close.
 - A `doc` is drawn in both: web cards per section (`role="meter"` bars, a table that scrolls sideways) and TUI boxed sections with `█░` bars; the notice shows above it.
 
-Daemon revision 44 adds `format`, revision 45 `scope`, revision 46 the built-in panel. Proof: `scripts/runtime-smoke.py` ("panels in wsxd", "panels in the TUI", also `scope` and the `links` panel, the built-in panel against `sysctl` and `statvfs`, and `M` with and without a project's machine panels), `scripts/test-web-client.py --part tasks` (`api/machine`) and `scripts/web-panels-check.mjs` (links on a site with and without `files_read`; the card with a project's text, failing and document panels, and on a site whose project declares none).
+Daemon revision 44 adds `format`, revision 45 `scope`, revision 46 the built-in panel, revision 51 the `cards` item. Proof: `scripts/runtime-smoke.py` ("panels in wsxd", "panels in the TUI", also `scope`, the `links` panel and the `cards` panel, the built-in panel against `sysctl` and `statvfs`, and `M` with and without a project's machine panels), `scripts/test-web-client.py --part tasks` (`api/machine`) and `scripts/web-panels-check.mjs` (links and cards on a site with and without `files_read`; the card with a project's text, failing and document panels, and on a site whose project declares none).

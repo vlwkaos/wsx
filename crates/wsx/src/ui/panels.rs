@@ -12,7 +12,7 @@ use ratatui::{
     widgets::{Clear, Paragraph},
     Frame,
 };
-use wsx_core::panel::{Item, Level, Link, PanelDoc, PanelStatus};
+use wsx_core::panel::{Card, Item, Level, Link, PanelDoc, PanelStatus};
 
 /// "12 s ago", "3 min ago".
 fn age(ms: u64) -> String {
@@ -244,7 +244,78 @@ fn item_rows(items: &[Item], width: usize) -> Vec<Vec<Span<'static>>> {
                     rows.push(row);
                 }
             }
+            Item::Cards { title, items } => {
+                if let Some(title) = title {
+                    rows.push(vec![Span::styled(
+                        truncate_to_width(title, width),
+                        muted.add_modifier(Modifier::BOLD),
+                    )]);
+                }
+                for card in items {
+                    rows.extend(card_rows(card, width));
+                }
+            }
         }
+    }
+    rows
+}
+
+/// One card as a row of title, subtitle and value (the image is the web's), with its level word.
+/// A link marks the title with `↗` and shows its target at the row's end where it fits whole.
+/// The note is dimmed below, cut to the width.
+fn card_rows(card: &Card, width: usize) -> Vec<Vec<Span<'static>>> {
+    let muted = Style::default().fg(theme::TEXT_MUTED);
+    let (word, color) = level_look(card.level);
+    let value = card
+        .value
+        .as_deref()
+        .map_or(String::new(), |v| format!("  {v}"));
+    let word = if word.is_empty() {
+        String::new()
+    } else {
+        format!("  {word}")
+    };
+    let marker = if card.url.is_some() { " ↗" } else { "" };
+    // ^ Title and subtitle give way first; the value and the level word stay.
+    let title = truncate_to_width(
+        &card.title,
+        width.saturating_sub(cells(&value) + cells(&word) + cells(marker)),
+    );
+    let mut left =
+        width.saturating_sub(cells(&title) + cells(marker) + cells(&value) + cells(&word));
+    let subtitle = match card.subtitle.as_deref() {
+        Some(text) if left > 4 => {
+            let text = truncate_to_width(text, left - 2);
+            left -= cells(&text) + 2;
+            format!("  {text}")
+        }
+        _ => String::new(),
+    };
+    let accent = Style::default().fg(theme::ACCENT);
+    let mut row = vec![Span::styled(
+        title,
+        if card.url.is_some() {
+            link_style()
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        },
+    )];
+    row.push(Span::styled(marker.to_string(), accent));
+    row.push(Span::styled(subtitle, muted));
+    row.push(Span::styled(
+        value,
+        Style::default().add_modifier(Modifier::BOLD).fg(color),
+    ));
+    row.push(Span::styled(word, Style::default().fg(color)));
+    if let Some(url) = card.url.as_deref().filter(|url| cells(url) + 2 <= left) {
+        row.push(Span::styled(format!("  {url}"), accent));
+    }
+    let mut rows = vec![row];
+    if let Some(note) = card.note.as_deref().and_then(|note| note.lines().next()) {
+        rows.push(vec![Span::styled(
+            format!("  {}", truncate_to_width(note, width.saturating_sub(2))),
+            muted.add_modifier(Modifier::DIM),
+        )]);
     }
     rows
 }

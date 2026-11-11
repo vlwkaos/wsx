@@ -51,16 +51,22 @@ const Stat = ({ item }) => html`
     ${item.note && html`<span class="panel-note">${item.note}</span>`}<${Level} level=${item.level} />
   </div>`;
 
-// A table cell or list entry: its text, and a link when the document gave one (docs/panels.md "Links").
-// An https link opens in a new tab. A project page opens in the files view of that project, which
-// shows it in the sandboxed frame (docs/web-client.md "Files"); a site that may not read files
-// shows the text alone. The machine card names the project of a page link, a project's page does not.
+// Where a link goes (docs/panels.md "Links"): an https address in a new tab; a project page in the
+// files view of that project, which shows it in the sandboxed frame (docs/web-client.md "Files").
+// A site that may not read files cannot follow a page, so it gets null and shows the text alone.
+// The machine card names the project of a path (`owner`, a project's name); a project's page does not.
+function destination(url, owner, project) {
+  if (/^https?:\/\//.test(url)) return { href: url, web: true };
+  const id = owner ? state.projects.find((candidate) => candidate.name === owner)?.id : project;
+  if (id === undefined || !shows("files") || !can("files_read")) return null;
+  return { href: `#/p/${id}/files/${url.split("/").map(encodeURIComponent).join("/")}`, web: false };
+}
+
+// A table cell or list entry: its text, and a link when the document gave one and the site can follow it.
 function Linked({ text, link, project }) {
-  if (!link) return text;
-  if (/^https?:\/\//.test(link.url)) return html`<a class="panel-link" href=${link.url} target="_blank" rel="noopener noreferrer" title=${link.url}>${text}</a>`;
-  const id = link.project ? state.projects.find((candidate) => candidate.name === link.project)?.id : project;
-  if (id === undefined || !shows("files") || !can("files_read")) return text;
-  return html`<a class="panel-link" href=${`#/p/${id}/files/${link.url.split("/").map(encodeURIComponent).join("/")}`} title=${link.url}>${text}</a>`;
+  const to = link && destination(link.url, link.project, project);
+  if (!to) return text;
+  return html`<a class="panel-link" href=${to.href} target=${to.web ? "_blank" : null} rel=${to.web ? "noopener noreferrer" : null} title=${link.url}>${text}</a>`;
 }
 
 const linkAt = (links, row, col) => links?.find((link) => link.row === row && link.col === col);
@@ -76,7 +82,37 @@ const List = ({ item, project }) => html`
     <ul>${item.items.map((entry, at) => html`<li key=${at}><${Linked} text=${entry} link=${linkAt(item.links, at, 0)} project=${project} /></li>`)}</ul><${Level} level=${item.level} />
   </div>`;
 
-const ITEMS = { gauge: Gauge, stat: Stat, table: Table, list: List };
+// A card's picture comes from the files path (`api/file/image`, the right to read files); a site without it shows the card
+// without the picture. It loads when it scrolls near and sits in a box of fixed shape, so the grid does not jump.
+const imageOf = (card, project) => {
+  if (!card.image || !shows("files") || !can("files_read")) return null;
+  const id = card.project ? state.projects.find((candidate) => candidate.name === card.project)?.id : project;
+  return id === undefined ? null : `api/file/image?project=${id}&path=${encodeURIComponent(card.image)}`;
+};
+
+function Tile({ card, project }) {
+  const to = card.url ? destination(card.url, card.project, project) : null;
+  const src = imageOf(card, project);
+  const body = html`
+    ${src && html`<div class="panel-tile-image"><img src=${src} alt="" loading="lazy" decoding="async" onError=${(event) => { event.target.parentElement.hidden = true; }} /></div>`}
+    <div class="panel-tile-text">
+      <strong class="panel-tile-title">${card.title}</strong>
+      ${card.subtitle && html`<span class="panel-tile-subtitle">${card.subtitle}</span>`}
+      ${(card.value || card.level) && html`<span class="panel-tile-value">${card.value && html`<strong>${card.value}</strong>`}<${Level} level=${card.level} /></span>`}
+      ${card.note && html`<span class="panel-tile-note">${card.note}</span>`}
+    </div>`;
+  return to
+    ? html`<a class="panel-tile" data-level=${card.level ?? null} href=${to.href} target=${to.web ? "_blank" : null} rel=${to.web ? "noopener noreferrer" : null} title=${card.url}>${body}</a>`
+    : html`<div class="panel-tile" data-level=${card.level ?? null}>${body}</div>`;
+}
+
+const Cards = ({ item, project }) => html`
+  <div class="panel-cards-block">
+    ${item.title && html`<h4 class="panel-cards-title">${item.title}</h4>`}
+    <div class="panel-cards">${item.items.map((card, at) => html`<${Tile} key=${at} card=${card} project=${project} />`)}</div>
+  </div>`;
+
+const ITEMS = { gauge: Gauge, stat: Stat, table: Table, list: List, cards: Cards };
 
 // A good document: its title, then a card per section.
 // ^ `doc.level` is set only on the machine card: the worst warn or bad of its items.

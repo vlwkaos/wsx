@@ -125,6 +125,7 @@ pub fn router(app: Shared) -> Router {
                     .layer(DefaultBodyLimit::max(3 * 1024 * 1024)),
             )
             .route("/api/file/page", get(file_page))
+            .route("/api/file/image", get(file_image))
             .route("/api/terminal/{session}/ws", get(terminal_socket))
             .route(
                 "/api/push",
@@ -1819,6 +1820,31 @@ async fn file_page(
         .mint(&device.id, query.project, folder)
         .map_err(|error| Fault::new(500, "randomness", format!("{error:#}")))?;
     Ok(Json(json!({ "token": token })))
+}
+
+/// A picture of a project file for a panel card (docs/panels.md "Cards"): the files path's rule
+/// (`files_read`, the pinned root, no symbolic link), a picture type and at most 2 MiB.
+async fn file_image(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    Query(query): Query<PathQuery>,
+) -> Outcome<Response> {
+    need(&app, Panel::Files)?;
+    allow(&app, Capability::FilesRead, "reading files")?;
+    let path = Path::new(&query.path);
+    let Some(kind) = views::content_type(path).filter(|kind| kind.starts_with("image/")) else {
+        return Err(Fault::new(
+            400,
+            "not_an_image",
+            "only a picture file opens as an image",
+        ));
+    };
+    let bytes = blocking(|| {
+        project_root(&app, query.project)?
+            .read(path, wsx_core::panel::MAX_IMAGE_BYTES)
+            .map_err(sandbox_fault)
+    })?;
+    Ok(([(header::CONTENT_TYPE, kind)], bytes).into_response())
 }
 
 /// One file of a page's folder. The token is the only right: the frame sends no cookie.

@@ -22,6 +22,10 @@ const MAX_COLUMNS: usize = 8;
 const MAX_ROWS: usize = 100;
 const MAX_STRING_CHARS: usize = 200;
 const MAX_URL_BYTES: usize = 2048;
+const MAX_CARDS: usize = 48;
+/// The largest image a card keeps (the web serves it from the files path).
+pub const MAX_IMAGE_BYTES: u64 = 2 * 1024 * 1024;
+const IMAGE_TYPES: [&str; 5] = [".jpg", ".jpeg", ".png", ".webp", ".gif"];
 /// Notice lines shown before "and n more".
 const MAX_NOTICES: usize = 5;
 const MAX_ARGV: usize = 64;
@@ -247,6 +251,44 @@ pub enum Item {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         links: Vec<Link>,
     },
+    /// A grid of cards: a title, a few words, an image, and a link for the whole card.
+    Cards {
+        #[serde(default, deserialize_with = "opt_scalar")]
+        title: Option<String>,
+        items: Vec<Card>,
+    },
+}
+
+/// One card of a `cards` item (docs/panels.md "Cards"). `image` and `url` are checked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Card {
+    #[serde(deserialize_with = "scalar")]
+    pub title: String,
+    #[serde(default, deserialize_with = "opt_scalar")]
+    pub subtitle: Option<String>,
+    #[serde(default, deserialize_with = "opt_scalar")]
+    pub value: Option<String>,
+    #[serde(default, deserialize_with = "opt_scalar")]
+    pub note: Option<String>,
+    /// A path in the project's main checkout.
+    #[serde(default, deserialize_with = "opt_scalar")]
+    pub image: Option<String>,
+    /// As a `Link::url`.
+    #[serde(default, deserialize_with = "opt_scalar")]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub level: Option<Level>,
+    /// Set only on the machine card, for a path (`image`, or a `url` that is no web address): the
+    /// project it is in. A document's own value is dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+impl Card {
+    /// `url` is an absolute address; else a path of the project's main checkout.
+    pub fn is_web(url: &str) -> bool {
+        url.starts_with("https://") || url.starts_with("http://")
+    }
 }
 
 /// The target of one table cell or list entry (docs/panels.md "Links"). A separate list, not a
@@ -272,7 +314,7 @@ impl Link {
 
     /// An absolute URL; else a path of the project's main checkout.
     pub fn is_web(&self) -> bool {
-        self.url.starts_with("https://") || self.url.starts_with("http://")
+        Card::is_web(&self.url)
     }
 }
 
@@ -341,8 +383,8 @@ fn mark(cut: &mut Vec<&'static str>, what: &'static str) {
 }
 
 /// `item` when it is drawable: a gauge needs `total` > 0 and `used` >= 0, a table at most
-/// `MAX_COLUMNS` columns with rows as long as its columns (rows past `MAX_ROWS` are cut and
-/// the list past `MAX_ITEMS`).
+/// `MAX_COLUMNS` columns with rows as long as its columns (rows past `MAX_ROWS` are cut, and
+/// the list past `MAX_ITEMS`, and the cards past `MAX_CARDS`).
 fn checked(mut item: Item, cut: &mut Vec<&'static str>) -> Result<Item, String> {
     match &mut item {
         Item::Gauge { used, total, .. } if !(total.0 > 0.0 && used.0 >= 0.0) => {
@@ -363,6 +405,10 @@ fn checked(mut item: Item, cut: &mut Vec<&'static str>) -> Result<Item, String> 
         Item::List { items, .. } if items.len() > MAX_ITEMS => {
             items.truncate(MAX_ITEMS);
             mark(cut, "list items");
+        }
+        Item::Cards { items, .. } if items.len() > MAX_CARDS => {
+            items.truncate(MAX_CARDS);
+            mark(cut, "cards");
         }
         _ => {}
     }
@@ -427,19 +473,82 @@ fn link_url(url: &Value) -> Result<String, &'static str> {
         };
     }
     let lower = url.to_ascii_lowercase();
-    let parts: Vec<&str> = url.split('/').collect();
+    if (lower.ends_with(".html") || lower.ends_with(".htm")) && project_path(url) {
+        Ok(url.to_string())
+    } else {
+        Err("the url is not an https:// URL or a project .html path")
+    }
+}
+
+/// `path` is a path below the project's main checkout: no leading `/`, no empty part, no `..`,
+/// no dot-folder, no `?`, `#` or `:`.
+fn project_path(path: &str) -> bool {
+    let parts: Vec<&str> = path.split('/').collect();
     let (name, folders) = parts.split_last().unwrap_or((&"", &[]));
-    let page = (lower.ends_with(".html") || lower.ends_with(".htm"))
-        && !url.contains(['?', '#', ':'])
+    !path.contains(['?', '#', ':'])
         && !name.is_empty()
         && *name != ".."
         && folders
             .iter()
-            .all(|part| !part.is_empty() && !part.starts_with('.'));
-    if page {
-        Ok(url.to_string())
-    } else {
-        Err("the url is not an https:// URL or a project .html path")
+            .all(|part| !part.is_empty() && !part.starts_with('.'))
+}
+
+/// `Ok` when `path` of `cwd` may be a card's image: a picture type and a project path, a plain
+/// file (no symbolic link on the way) that is there and at most `MAX_IMAGE_BYTES`.
+fn image_check(cwd: &Path, path: &str) -> Result<(), &'static str> {
+    let lower = path.to_ascii_lowercase();
+    if path.len() > MAX_URL_BYTES
+        || path
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+        || !IMAGE_TYPES.iter().any(|kind| lower.ends_with(kind))
+        || !project_path(path)
+    {
+        return Err("the image is not a project .jpg, .jpeg, .png, .webp or .gif path");
+    }
+    let mut at = cwd.to_path_buf();
+    let mut meta = None;
+    for part in path.split('/') {
+        at.push(part);
+        let seen = std::fs::symlink_metadata(&at).map_err(|_| "the image file is missing")?;
+        if seen.file_type().is_symlink() {
+            return Err("the image path has a symbolic link");
+        }
+        meta = Some(seen);
+    }
+    match meta {
+        Some(seen) if !seen.is_file() => Err("the image is not a file"),
+        Some(seen) if seen.len() > MAX_IMAGE_BYTES => Err("the image is over 2 MiB"),
+        _ => Ok(()),
+    }
+}
+
+/// The cards of `item` checked: a bad `url` or `image` is dropped with a notice line, and the
+/// `project` a document wrote is dropped.
+fn attach_cards(item: &mut Item, cwd: &Path, place: &str, notes: &mut Vec<String>) {
+    let Item::Cards { items, .. } = item else {
+        return;
+    };
+    for (index, card) in items.iter_mut().enumerate() {
+        card.project = None;
+        if let Some(Err(reason)) = card
+            .url
+            .as_ref()
+            .map(|url| link_url(&Value::String(url.clone())))
+        {
+            notes.push(format!(
+                "{place}: card {} link dropped: {reason}",
+                index + 1
+            ));
+            card.url = None;
+        }
+        if let Some(Err(reason)) = card.image.as_ref().map(|image| image_check(cwd, image)) {
+            notes.push(format!(
+                "{place}: card {} image dropped: {reason}",
+                index + 1
+            ));
+            card.image = None;
+        }
     }
 }
 
@@ -479,10 +588,10 @@ fn attach_links(
 }
 
 /// Read `text` (a `format: json` panel's output) as a `PanelDoc`. An unknown kind, a bad level
-/// or value skips that item; a bad link drops only the link; anything over a limit is cut; all
+/// or value skips that item; a bad link or card image drops only that; anything over a limit is cut; all
 /// leave a notice line. Text that
 /// is not a document gives no `doc`, only the notice, so the clients show the text.
-fn parse_doc(text: &str) -> (Option<PanelDoc>, Option<String>) {
+fn parse_doc(text: &str, cwd: &Path) -> (Option<PanelDoc>, Option<String>) {
     let raw = match serde_json::from_str::<RawDoc>(text) {
         Ok(raw) => raw,
         Err(error) => return (None, Some(format!("not a panel document: {error}"))),
@@ -515,6 +624,7 @@ fn parse_doc(text: &str) -> (Option<PanelDoc>, Option<String>) {
             {
                 Ok(mut item) => {
                     attach_links(&mut item, lifted, &place, &mut notes);
+                    attach_cards(&mut item, cwd, &place, &mut notes);
                     items.push(item);
                 }
                 Err(error) => notes.push(format!("{place}: {error}")),
@@ -679,6 +789,7 @@ pub fn machine_view(
             Item::Gauge { level, .. } | Item::Stat { level, .. } | Item::List { level, .. } => {
                 *level
             }
+            Item::Cards { items, .. } => items.iter().filter_map(|card| card.level).max(),
             Item::Table { .. } => None,
         })
         .max()
@@ -791,12 +902,23 @@ fn project_sections(project: &str, name: &str, result: Result<PanelView, String>
     }
 }
 
-/// `item` with the project named in its page links, so the card opens them in that checkout.
+/// `item` with the project named in its page links and card paths, so the card opens them in
+/// that checkout.
 fn in_project(mut item: Item, project: &str) -> Item {
-    if let Item::Table { links, .. } | Item::List { links, .. } = &mut item {
-        for link in links.iter_mut().filter(|link| !link.is_web()) {
-            link.project = Some(project.to_string());
+    match &mut item {
+        Item::Table { links, .. } | Item::List { links, .. } => {
+            for link in links.iter_mut().filter(|link| !link.is_web()) {
+                link.project = Some(project.to_string());
+            }
         }
+        Item::Cards { items, .. } => {
+            for card in items {
+                if card.image.is_some() || card.url.as_deref().is_some_and(|u| !Card::is_web(u)) {
+                    card.project = Some(project.to_string());
+                }
+            }
+        }
+        _ => {}
     }
     item
 }
@@ -882,7 +1004,7 @@ pub fn run(panel: &PanelConfig, cwd: &Path) -> PanelRun {
         output.push_str(&format!("stopped after {} s", panel.timeout));
     }
     let (doc, notice) = if panel.format == PanelFormat::Json && status == PanelStatus::Ok {
-        parse_doc(&output)
+        parse_doc(&output, cwd)
     } else {
         (None, None)
     };
