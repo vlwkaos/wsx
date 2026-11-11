@@ -100,6 +100,8 @@ A task agent calls `wsx memory` through its host's broker (`WSX_TASK_BROKER`), w
 | a `rule` record (add, change, replace) | the manager and a named role: it needs `owner:<id>`, and a worker's call is refused by the store |
 | any write | not an untrusted agent (strict profile): read only |
 
+A read may name any scope, but an agent's search finds the transcripts (chats, task stories, notes) of its own project only; of another project's scope it finds the records. (The host sets `WSX_TASK_FROM` to the agent's project; the owner's own call sets none.)
+
 A refusal exits 2 and names the cause. The host sets `WSX_MEMORY_RULES=deny` for an agent without `decide`; the owner's own call sets none.
 
 ## Proof

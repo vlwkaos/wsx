@@ -267,6 +267,9 @@ def project_scope():
     check(all(0 < h['score'] <= 1 for h in mixed), mixed)
     check([h['slug'] for h in ok('search', 'readme', '--kind', 'decision', scope=pid)] == ['proj:notes/decisions.md'], '--kind decision')
     check([h['slug'] for h in ok('search', 'readme', '--kind', 'fact', scope=pid)] == ['readme'], '--kind fact leaves the transcripts out')
+    # ^ An agent (the broker sets WSX_TASK_FROM to its project) finds transcripts in its own project only.
+    kinds = lambda project: {h['kind'] for h in json.loads(run('search', 'readme', scope=pid, env={'WSX_TASK_FROM': project})[1])}
+    check(kinds(pid) == {'fact', 'decision'} and kinds('other-project') == {'fact'}, 'transcripts are the own project only')
     check(ok('reindex', scope=pid) == {'scope': pid, 'ok': True}, 'reindex of a project scope')
     backend_part()
 

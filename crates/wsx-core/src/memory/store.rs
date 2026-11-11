@@ -106,6 +106,8 @@ pub struct Store {
     root: PathBuf,
     /// Whether a `rule` record may be written or changed (the manager's and a role's).
     rules: bool,
+    /// Whether a search also reads the project's transcripts.
+    transcripts: bool,
 }
 
 impl Store {
@@ -121,6 +123,7 @@ impl Store {
             project: Some((project_id.into(), name.into())),
             root: root.into(),
             rules: true,
+            transcripts: true,
         })
     }
 
@@ -133,6 +136,7 @@ impl Store {
             project: None,
             root: root.into(),
             rules: true,
+            transcripts: true,
         })
     }
 
@@ -140,6 +144,13 @@ impl Store {
     /// give the owner's word. ref: docs/memory.md "Agents"
     pub fn without_rules(mut self) -> Self {
         self.rules = false;
+        self
+    }
+
+    /// A store whose search reads records only: an agent asking about another project's scope
+    /// gets its records, not what was said in that project's chats. ref: docs/memory.md "Agents"
+    pub fn without_transcripts(mut self) -> Self {
+        self.transcripts = false;
         self
     }
 
@@ -173,16 +184,17 @@ impl Store {
             .map(|(id, name)| (id.as_str(), name.as_str()))
     }
 
+    /// The project whose transcripts a search of this store reads, if any.
+    pub fn transcripts_of(&self) -> Option<(&str, &str)> {
+        self.project_ids().filter(|_| self.transcripts)
+    }
+
     fn project_id(&self) -> Option<&str> {
         self.project.as_ref().map(|(id, _)| id.as_str())
     }
 
     /// The file the records live in, as the `path` of a hit.
-    pub fn log_file(&self) -> PathBuf {
-        self.log_path()
-    }
-
-    fn log_path(&self) -> PathBuf {
+    pub fn log_path(&self) -> PathBuf {
         self.dir.join(LOG_FILE)
     }
 

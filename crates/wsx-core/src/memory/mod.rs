@@ -7,6 +7,6 @@ pub mod index;
 mod record;
 mod store;
 
-pub use backend::{Backend, Builtin, Command, Hit, KindFilter, Query};
+pub use backend::{Command, KindFilter, Query};
 pub use record::{Kind, Record, Status};
 pub use store::{known_scopes, validate_scope, Error, NewRecord, Patch, Store};

@@ -237,13 +237,18 @@ fn one(scopes: &[String]) -> MemResult<Store> {
     }
 }
 
-/// The stores of `scoped`, without rules for an agent that may not write one (the broker sets
-/// `policy::RULES_ENV`).
+/// The stores of `scoped`, cut down for an agent (the broker sets `policy::RULES_ENV` and
+/// `FROM_ENV`): no rules unless it may write one, and the transcripts only of its own project.
 fn stores(scopes: &[String]) -> MemResult<Vec<Store>> {
     let rules = std::env::var(wsx_core::task::policy::RULES_ENV).as_deref() != Ok("deny");
+    let own = std::env::var(crate::task::broker::FROM_ENV).ok();
     Ok(scoped(scopes)?
         .into_iter()
         .map(|store| if rules { store } else { store.without_rules() })
+        .map(|store| match (&own, store.project_ids()) {
+            (Some(own), Some((id, _))) if own != id => store.without_transcripts(),
+            _ => store,
+        })
         .collect())
 }
 
