@@ -2,7 +2,7 @@
 
 Status: design only, 2026-11-11. No code. Owner target (iam-studio msg 888): team - goal - manager - projects (several) - members (several). The chat is the top unit; the project is attached to it. Earlier direction (msg 836): rooms are about context, wsx orchestrates cross-project work, the owner does not route it.
 
-Assuming: "team" and "chat" are one thing (the owner's chat with a goal and one manager). `docs/memory.md` is not in this tree (it is on the unlanded branch `wsx/t380`); memory facts below come from [memory-system.md](memory-system.md). Sizes are estimates, marked (est.).
+Assuming: "team" and "chat" are one thing (the owner's chat with a goal and one manager). memory facts below come from [memory.md](../memory.md) (the contract) and [memory-system.md](memory-system.md) (the design). Sizes are estimates, marked (est.).
 
 ## 1. Today
 
@@ -35,7 +35,7 @@ flowchart LR
 | Approvals | `approvals.jsonl` of the project; land, discard, deploy, release, push, role, project add | docs/tasks.md "Approvals" |
 | Deploy, release, push | Per project: its config command, `deploy.lock`, `push.lock`, `trial.json` | `store.rs:770-886`; docs/tasks.md "Deploy and release", "Push" |
 | Routines, panels | Routines by a hash of the project path; panels by `(project path, name)` in wsxd memory | `crates/wsx-core/src/routine/store.rs:75`; `crates/wsx-daemon/src/panel.rs:21` |
-| Memory | Scope = the project's store id; an agent writes only its own project's scope and searches the transcripts of its own project only | [memory-system.md](memory-system.md) |
+| Memory | Scope = the project's store id; `wsx memory` defaults to the folder's project scope; a read may name any scope; `add`, `update` and `supersede` are limited to the agent's own project scope (another is refused); an agent's search finds the transcripts of its own project only; a landed task's memo is captured by the manager host (`fold_memo`) | [memory.md](../memory.md) "Scope", "Agents", "Capture" |
 | Web | Home: one row per granted project. Routes `#/p/<pid>[/t/<n>\|/r/<role>\|/page\|/checks\|/usage\|/panels]`; `pid` is the numeric wsxd project id; API `api/tasks/{project}/...`; the chat already shows `<project> #<n>` chips for another project's task | `crates/wsx-web/web/store.js:179`, `home.js`; `crates/wsx-web/src/tasks.rs:55` |
 | TUI | `t` Tasks view and `m` manager chat act on the selected tree project; Roles section opens a role chat | `crates/wsx/src/app/actions.rs:591`, `task_list.rs:222` |
 
@@ -105,7 +105,7 @@ A member creates tasks in any project of its `projects` and steers only the task
 
 ### Memory
 
-Team scope = the team id; a team's search reads its scope, its projects' scopes (records) and the transcripts of its chat and its projects' task stories. A worker's memo is captured into its task's project scope (paths resolve under that project's root, so a fact about `infra/` is checked against `infra`). Cost: for the main project the team scope and the project scope are the same scope.
+Team scope = the team id. Reads need no change: a read may name any scope, so a team's search names its scope and its projects' scopes. Two rules of memory.md change, in `task::policy` and the store: (1) "own project scope" for a write becomes the team scope for the manager and a role, and the task's project scope for a worker and for `fold_memo`'s capture (paths resolve under that project's root, so a fact about `infra/` is checked against `infra`); (2) "transcripts of its own project" becomes the transcripts of its own team: the chat and the task stories of its projects. A role's task keeps its memo in the role's notes, as today. Cost: for the main project the team scope and the project scope are the same scope.
 
 ### Screen
 
@@ -136,7 +136,7 @@ No `[[teams]]` entry: every project is an implicit team of one; no `team` field 
 | CLI | `-p` accepts an attached project; `team` verbs | `-p` means team; new `--project` | `-p <attached>` for a manager |
 | Web, TUI | Home groups by team; project chips; a route segment | Routes carry a team id, not a project id | A project chips line; Tasks list column |
 | Migration | None: team id = main project's store id; absent field = own | Move each attached project's tasks or leave two stores; renumber risk | None |
-| What breaks | Nothing for projects with no team; a project in two teams has two managers writing one repo (numbers are per project, so branch and copy names do not collide; two lands into one repo are not proven to serialize: S1 checks it) | `wsx/t<n>` and `<repo>-t<n>` collide when two teams touch a repo; about 600 `project_id` sites (`store.rs` 72, `manager.rs` 31, `owner.rs` 31) change meaning | Nothing |
+| What breaks | Nothing for projects with no team; a project in two teams has two managers writing one repo (numbers are per project, so branch and copy names do not collide; two lands into one repo are not proven to serialize: S1 checks it) | `wsx/t<n>` and `<repo>-t<n>` collide when two teams touch a repo; every `project_id` site changes meaning (`rg -o project_id crates --glob '*.rs' | wc -l` counts 754 in 73 files on this tree, tests included) | Nothing |
 | Size (est.) | 8 to 10 tasks | 15 to 20 tasks plus a migration scenario | 2 to 3 tasks for the first visible result |
 
 B is the model the owner draws, but A gives the same screen with no moved data. B's gain (one task counter per team) is bought by ambiguity of branch names and by moving locks back to the project anyway.
@@ -152,7 +152,7 @@ First step with a visible result: one chat attached to two projects. The owner s
 | S1 (2 to 3 tasks) | `[[teams]]` read and checked (name, main, attach; a missing or duplicate project refuses); `TaskRecord.team`; broker `reach()` allows `task new`, `list`, `show` with `-p <attached>` for the manager; the manager host and the ledger read attached stores; chips in the web chat and the TUI list | `scripts/test-task.py`: new core part with two fixture repos; a task in the attached repo lands, its event reaches the main chat and not the attached project's own; the whole existing run unchanged. `web` tasks part: chip and sheet for `<project> #<n>`. `smoke` for the TUI list |
 | S2 (2 tasks) | Home row per team; goal in the manager instructions and chat header; overview with a section per project (deploy facts, branch) | `web` capture of Home and chat with goal; plain project row equal to today's capture |
 | S3 (2 tasks) | Member `projects` filter in the broker; approvals carry `project`; `team attach` as a manager request | `test-task.py`: a role outside its projects is refused; approval of a deploy in the attached project runs there and takes its lock |
-| S4 (1 task) | Team scope in memory search and capture routing | `scripts/test-memory.py` (on `wsx/t380`'s base): scope per project, team search reads both |
+| S4 (1 task) | Team scope in memory search and capture routing | `scripts/test-memory.py` plus `docs/memory.md` "Agents" changed with it: a write to the team scope and to the task's project scope is allowed, another team's is refused; team search reads both |
 | S5 (1 to 2 tasks) | "Add chat" flow: web and TUI form; `team list\|attach\|detach` | `web` form journey and `smoke`; capture for Human Verify |
 
 Each step ships alone and leaves a plain project untouched. One risk S1 must prove: `GlobalConfigWire` (`global.rs:463`) has no `deny_unknown_fields`, so an older wsx reads a config that holds `[[teams]]` and ignores it, but an older wsx that saves the config (project add) would drop the table. The scenario writes a config with `[[teams]]` through the current save and checks that it survives.
