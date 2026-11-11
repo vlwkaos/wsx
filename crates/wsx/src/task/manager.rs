@@ -1279,6 +1279,9 @@ impl Manager {
     fn fold_memo(&self, record: &TaskRecord, dir: &wsx_core::task::store::TaskDir, memo: &str) {
         let task = record.id;
         let landed = wsx_core::memory::manage::landed_commit(dir, record);
+        let landed = landed
+            .as_deref()
+            .map(|commit| (commit, record.paths.as_slice()));
         let Ok(notes) = self.dir.notes() else {
             return;
         };
@@ -1286,23 +1289,13 @@ impl Manager {
             Some(_) => notes::fold_memo(&notes, task, memo),
             None => self
                 .memory_store()
-                .and_then(|store| {
-                    notes::record_memo(
-                        &store,
-                        None,
-                        task,
-                        memo,
-                        landed
-                            .as_deref()
-                            .map(|commit| (commit, record.paths.as_slice())),
-                    )
-                })
+                .and_then(|store| notes::record_memo(&store, None, task, memo, landed))
                 .map(|drift| self.say_drift(&drift)),
         };
         // ^ The manager that ran the task from another project keeps the fact too, in its own
         // scope. ref: docs/memory.md "Capture"
         let done = done.and_then(|()| match record.created_by.origin() {
-            Some(origin) => self.record_memo_at(origin, record, landed.as_deref(), memo),
+            Some(origin) => self.record_memo_at(origin, task, memo, landed),
             None => Ok(()),
         });
         if let Err(error) = done {
@@ -1315,20 +1308,14 @@ impl Manager {
     fn record_memo_at(
         &self,
         origin: &str,
-        record: &TaskRecord,
-        landed: Option<&str>,
+        task: u32,
         memo: &str,
+        landed: Option<(&str, &[String])>,
     ) -> anyhow::Result<()> {
         let (name, main) = super::project_entry(Some(origin))?;
         let store =
             wsx_core::memory::Store::project(&store::project_id(&name, &main), &name, &main)?;
-        notes::record_memo(
-            &store,
-            Some(&self.project),
-            record.id,
-            memo,
-            landed.map(|commit| (commit, record.paths.as_slice())),
-        )?;
+        notes::record_memo(&store, Some(&self.project), task, memo, landed)?;
         Ok(())
     }
 
