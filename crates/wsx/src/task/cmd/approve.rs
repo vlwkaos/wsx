@@ -41,13 +41,23 @@ pub(crate) fn request_of(
         commits: None,
         path: None,
         url: None,
+        after: None,
+        said: None,
         unix_ms: now_unix_ms(),
     }
 }
 
+/// `request` as an action the owner approved that runs when task `after` lands (`--after`).
+pub(crate) fn after_landing(mut request: ApprovalLine, after: Option<u32>) -> ApprovalLine {
+    if let ApprovalLine::Request { after: wait, .. } = &mut request {
+        *wait = after;
+    }
+    request
+}
+
 /// The manager's action that needs the owner: approved by the owner's message `owner_said`
 /// of its running turn (recorded; `false`: run it), else a request (`true`: the owner was
-/// asked). ref: docs/tasks.md "Approvals"
+/// asked); a request with `after` and the message is recorded waiting, and nothing runs now (`true`). ref: docs/tasks.md "Approvals"
 pub(crate) fn ask_owner(
     project_id: &str,
     request: ApprovalLine,
@@ -103,7 +113,7 @@ pub(crate) fn covered_requests(
         copy::resolve_commit(main, commit.as_deref().unwrap_or(&default)).ok()
     };
     let newest = resolve(commit);
-    Ok(wsx_core::task::manager::pending_approvals(&lines)
+    Ok(wsx_core::task::manager::open_requests(&lines)
         .into_iter()
         .filter_map(|old| {
             let ApprovalLine::Request {
@@ -135,13 +145,34 @@ pub(crate) fn covered_requests(
 }
 
 /// Record `request`, or, with `owner_said`, record it approved. Returns its id and whether the
-/// owner was asked.
+/// owner was asked or it waits for its `after` task.
 pub(crate) fn submit(
     project_id: &str,
     request: ApprovalLine,
     owner_said: Option<u64>,
     json: bool,
 ) -> Result<(String, bool)> {
+    if let (
+        Some(said),
+        ApprovalLine::Request {
+            after: Some(after), ..
+        },
+    ) = (owner_said, &request)
+    {
+        let after = *after;
+        let id = owner::approve_after(project_id, request, said)?;
+        let message = format!(
+            "{id}: approved by owner message {said}; it runs when #{after} lands, and its result comes as an event"
+        );
+        if json {
+            print_json(
+                &json!({ "ok": true, "approval": id, "waiting_for": after, "message": message }),
+            )?;
+        } else {
+            println!("{message}");
+        }
+        return Ok((id, true));
+    }
     if let Some(said) = owner_said {
         let id = owner::approve_by_message(project_id, request, said)?;
         if !json {

@@ -1,11 +1,11 @@
 //! `wsx task push`, `deploy`, `release`, `trial` and `deployed` (docs/tasks.md).
 
-use super::approve::{ask_covering, request_of};
+use super::approve::{after_landing, ask_covering, request_of};
 use crate::task::args::{DeployArgs, PushArgs};
 use crate::task::{
     acting_as_manager, actor, ask_host, need, print_json, project_entry, report_response,
 };
-use crate::task::{asks_owner, open};
+use crate::task::{asks_owner, open, outward_said};
 use crate::task::{host, hosting, trial};
 use anyhow::{bail, Context, Result};
 use serde_json::json;
@@ -45,11 +45,8 @@ pub(crate) fn push(args: PushArgs, project: Option<&str>, json: bool) -> Result<
         lease,
         said,
     } = args;
-    let (commit, lease, owner_said) = (
-        commit.as_deref(),
-        lease.as_deref(),
-        crate::task::owner_said(said.owner_said),
-    );
+    let (commit, lease) = (commit.as_deref(), lease.as_deref());
+    let (owner_said, after) = outward_said(&said)?;
     need(Capability::Deploy, "push")?;
     let (project_name, main) = project_entry(project)?;
     let project_id = store::project_id(&project_name, &main);
@@ -58,7 +55,7 @@ pub(crate) fn push(args: PushArgs, project: Option<&str>, json: bool) -> Result<
     let refuse = |error: anyhow::Error| anyhow::anyhow!("{error:#}; nothing was pushed");
     // ^ One approved push of a project at a time, and origin's tip is read under the lock: two
     // approved pushes ran together once and the older won the ref. A request waits for nothing.
-    let asks = acting_as_manager() && owner_said.is_none();
+    let asks = acting_as_manager() && (owner_said.is_none() || after.is_some());
     let _one_at_a_time = if asks {
         None
     } else {
@@ -113,13 +110,20 @@ pub(crate) fn push(args: PushArgs, project: Option<&str>, json: bool) -> Result<
     let lease = force.then(|| remote.clone().unwrap_or_default());
     if acting_as_manager() {
         // ^ The request says what it carries: the landed tasks and the commits origin lacks.
+        // ^ A push that waits for a land names no commit unless the manager did: the default
+        // branch tip is read when it runs.
         let mut request = request_of(
             ApprovalAction::Push,
             None,
-            Some(&target),
+            if after.is_some() {
+                commit
+            } else {
+                Some(&target)
+            },
             None,
             lease.as_deref(),
         );
+        request = after_landing(request, after);
         if let (ApprovalLine::Request { tasks, commits, .. }, Ok((found, count))) = (
             &mut request,
             owner::carried(&project_id, &main, remote.as_deref(), &target),
@@ -209,7 +213,11 @@ pub(crate) fn deploy(
         said,
     } = args;
     let commit = commit.as_deref();
-    let (run_locked, owner_said) = (run.run_locked, crate::task::owner_said(said.owner_said));
+    let run_locked = run.run_locked;
+    let (owner_said, after) = outward_said(&said)?;
+    // ^ The run of an approved `release --after`: the owner's message asked for it, so open To
+    // check items stay on it. The manager cannot pass the flag.
+    let waived = run.checks_waived && kind == DeployKind::Release && !acting_as_manager();
     let by_hand = !if_new && trial.is_none() && run_locked.is_none();
     let name = kind_name(kind);
     need(Capability::Deploy, name)?;
@@ -239,7 +247,7 @@ pub(crate) fn deploy(
     // ref: docs/tasks.md "Deploy and release"
     let open = checks::open_items(&project_id)?;
     let to_check = open.len();
-    if public && to_check > 0 && run_locked.is_none() {
+    if public && to_check > 0 && run_locked.is_none() && !waived {
         match (kind, owner_said) {
             (DeployKind::Release, Some(said)) => owner::check_owner_said(&project_id, said)?,
             _ => bail!(
@@ -248,11 +256,11 @@ pub(crate) fn deploy(
         }
     }
     if run_locked.is_none()
-        && asks_owner(approve)
+        && (after.is_some() || asks_owner(approve))
         && ask_covering(
             &main,
             &project_id,
-            request_of(action, None, commit, None, None),
+            after_landing(request_of(action, None, commit, None, None), after),
             owner_said,
             json,
         )?

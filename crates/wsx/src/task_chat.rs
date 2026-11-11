@@ -19,7 +19,7 @@ use wsx_core::task::{
     call_socket,
     chat::{self, ChatRow, Names, Page, RowKind, Window},
     checks::{self, CheckItem, CheckState},
-    manager::{activity, pending_approvals, ManagerRequest, ManagerResponse},
+    manager::{activity, pending_approvals, waiting_approvals, ManagerRequest, ManagerResponse},
     media::{self, Kind},
     owner,
     store::{self, ManagerDir, Stamp},
@@ -226,6 +226,11 @@ pub enum Item {
         id: String,
         label: String,
     },
+    /// An action the owner approved in the chat that runs when its task lands: nothing to decide.
+    Waiting {
+        id: String,
+        label: String,
+    },
     /// A reply that asks the owner (`chat::open_asks`); `key` is `ask-<id>`.
     Ask {
         id: u64,
@@ -238,7 +243,7 @@ impl Item {
     fn id(&self) -> &str {
         match self {
             Self::Check(item) => &item.id,
-            Self::Approval { id, .. } => id,
+            Self::Approval { id, .. } | Self::Waiting { id, .. } => id,
             Self::Ask { key, .. } => key,
         }
     }
@@ -778,6 +783,14 @@ fn read(
             .map(|line| Item::Approval {
                 id: line.id().to_string(),
                 label: owner::approval_label(line),
+            }),
+    );
+    items.extend(
+        waiting_approvals(&approvals)
+            .into_iter()
+            .map(|line| Item::Waiting {
+                id: line.id().to_string(),
+                label: owner::waiting_label(line),
             }),
     );
     items.extend(asks.into_iter().map(|ask| Item::Ask {

@@ -1,10 +1,10 @@
 //! The commands on one task: list, show, hand, close (docs/tasks.md).
 
-use super::approve::{ask_covering, owner_only, request_of};
+use super::approve::{after_landing, ask_covering, owner_only, request_of};
 use crate::cli::PromptSource;
 use crate::cli::{existing_daemon_snapshot, load_config};
-use crate::task::args::OwnerSaid;
-use crate::task::{acting_as_manager, need, open, open_owned, owner_said, send};
+use crate::task::args::OwnerSaidAfter;
+use crate::task::{acting_as_manager, need, open, open_owned, outward_said, send};
 use crate::task::{ask_host_ok, print_json, project_entry};
 use crate::task::{preview, trial};
 use anyhow::{bail, Context, Result};
@@ -478,10 +478,14 @@ pub(crate) fn stop_command(task: &str, project: Option<&str>, json: bool) -> Res
 pub(crate) fn close_command(
     task: &str,
     discard: bool,
-    said: OwnerSaid,
+    said: OwnerSaidAfter,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
+    let (said, after) = outward_said(&said)?;
+    if after.is_some() && !discard {
+        bail!("--after records an approved close --discard; a close without --discard needs no approval");
+    }
     let dir = open_owned(project, task)?;
     if discard {
         need(Capability::Discard, "close --discard")?;
@@ -494,8 +498,11 @@ pub(crate) fn close_command(
         && ask_covering(
             &record.project_path,
             &dir.project_id,
-            request_of(ApprovalAction::Discard, Some(&record), None, None, None),
-            owner_said(said.owner_said),
+            after_landing(
+                request_of(ApprovalAction::Discard, Some(&record), None, None, None),
+                after,
+            ),
+            said,
             json,
         )?
     {

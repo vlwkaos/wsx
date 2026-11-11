@@ -376,6 +376,17 @@ fn asks_owner(configured: bool) -> bool {
     acting_as_manager() && (configured || Trust::from_env() == Trust::Untrusted)
 }
 
+/// `--owner-said` and `--after` of an action the manager runs: the owner's message (trusted
+/// agents only) and the task whose landing the approved action waits for. `--after` is the
+/// manager's and needs the message. ref: docs/tasks.md "Approvals"
+fn outward_said(said: &args::OwnerSaidAfter) -> Result<(Option<u64>, Option<u32>)> {
+    let owner = owner_said(said.said.owner_said);
+    if said.after.is_some() && !(acting_as_manager() && owner.is_some()) {
+        bail!("--after is the manager's, with --owner-said from a trusted agent; nothing was recorded");
+    }
+    Ok((owner, said.after))
+}
+
 /// The owner's message that approves an action; an untrusted agent has none: a model's word
 /// that the owner asked is no approval.
 fn owner_said(said: Option<u64>) -> Option<u64> {

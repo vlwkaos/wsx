@@ -1,9 +1,9 @@
 //! `wsx task land`, `after` and `hold` (docs/tasks.md "Landing").
 
-use super::approve::{ask_owner, request_of};
-use crate::task::args::OwnerSaid;
+use super::approve::{after_landing, ask_owner, request_of};
+use crate::task::args::OwnerSaidAfter;
 use crate::task::{
-    acting_as_manager, actor, asks_owner, batch, may, open, open_owned, owner_said, send,
+    acting_as_manager, actor, asks_owner, batch, may, open, open_owned, outward_said, send,
 };
 use anyhow::{bail, Context, Result};
 use wsx_core::config::project::load_task_config;
@@ -94,11 +94,15 @@ pub(crate) fn after_command(
 pub(crate) fn land_command(
     task: Vec<String>,
     tried: bool,
-    said: OwnerSaid,
+    said: OwnerSaidAfter,
     project: Option<&str>,
     json: bool,
 ) -> Result<()> {
+    let (said, after) = outward_said(&said)?;
     if task.len() > 1 {
+        if after.is_some() {
+            bail!("--after records one task's land: land the tasks one at a time");
+        }
         return land_batch(project, &task, tried, json);
     }
     let dir = open_owned(project, &task[0])?;
@@ -117,11 +121,14 @@ pub(crate) fn land_command(
     }
     let settings = load_task_config(&record.project_path)
         .map_err(|error| anyhow::anyhow!("{error}; nothing was landed"))?;
-    if asks_owner(settings.land_approve)
+    if (after.is_some() || asks_owner(settings.land_approve))
         && ask_owner(
             &dir.project_id,
-            request_of(ApprovalAction::Land, Some(&record), None, None, None),
-            owner_said(said.owner_said),
+            after_landing(
+                request_of(ApprovalAction::Land, Some(&record), None, None, None),
+                after,
+            ),
+            said,
             json,
         )?
     {

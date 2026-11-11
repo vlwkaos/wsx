@@ -3,7 +3,8 @@
 //! ref: docs/tasks.md "Manager", "Approvals"
 
 use super::manager::{
-    pending_approvals, ApprovalAction, ApprovalLine, ManagerRequest, ManagerResponse,
+    pending_approvals, waiting_approvals, ApprovalAction, ApprovalLine, ManagerRequest,
+    ManagerResponse,
 };
 use super::store::{self, ManagerDir, TaskDir};
 use super::{call_socket, now_unix_ms, MAX_MESSAGE_BYTES};
@@ -180,6 +181,22 @@ pub fn approval_label(request: &ApprovalLine) -> String {
     label
 }
 
+/// A request the owner approved in the chat that waits for task `after` to land, in words:
+/// "release after #382, approved by the owner". ref: docs/tasks.md "Approvals"
+pub fn waiting_label(request: &ApprovalLine) -> String {
+    let after = match request {
+        ApprovalLine::Request {
+            after: Some(after), ..
+        } => *after,
+        _ => return String::new(),
+    };
+    let label = approval_label(request);
+    format!(
+        "{} after #{after}, approved by the owner",
+        label.strip_prefix("Approve ").unwrap_or(&label)
+    )
+}
+
 /// Most task numbers a push label lists before "+n more".
 const MAX_LABEL_TASKS: usize = 8;
 
@@ -261,9 +278,22 @@ pub fn find_request<'a>(lines: &'a [ApprovalLine], id: &str) -> Result<&'a Appro
                 } if decided == id => Some(outcome),
                 _ => None,
             });
-            match decided {
-                Some(outcome) => format!("approval {id} was decided: {outcome}; nothing ran"),
-                None => {
+            let waiting = waiting_approvals(lines)
+                .into_iter()
+                .find_map(|line| match line {
+                    ApprovalLine::Request {
+                        id: waiting,
+                        after: Some(after),
+                        ..
+                    } if waiting == id => Some(*after),
+                    _ => None,
+                });
+            match (decided, waiting) {
+                (_, Some(after)) => format!(
+                    "approval {id} was approved by the owner's message; it runs when #{after} lands"
+                ),
+                (Some(outcome), _) => format!("approval {id} was decided: {outcome}; nothing ran"),
+                (None, _) => {
                     format!("no pending approval {id}; `wsx task ledger` lists the pending ones")
                 }
             }
@@ -284,7 +314,40 @@ pub struct Approved {
 pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved> {
     let project_id = store::project_id(name, main);
     let lines = store::read_approvals(&project_id)?;
+    run_request(name, &project_id, find_request(&lines, id)?.clone(), wsx)
+}
+
+/// Run a request that waited for its `after` task, once that task has landed: the same run
+/// as `approve`, its decision naming the owner's message. Refused while the task is open.
+/// ref: docs/tasks.md "Approvals"
+pub fn approve_waiting(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved> {
+    let project_id = store::project_id(name, main);
+    let lines = store::read_approvals(&project_id)?;
+    let request = waiting_approvals(&lines)
+        .into_iter()
+        .find(|line| line.id() == id)
+        .with_context(|| format!("no waiting approval {id}"))?
+        .clone();
+    if let ApprovalLine::Request {
+        after: Some(after), ..
+    } = &request
+    {
+        let state = TaskDir::open(&project_id, *after)?.read_record()?.state;
+        if state != super::TaskState::Landed {
+            bail!("#{after} is {}, not landed; {id} waits", state.as_str());
+        }
+    }
+    run_request(name, &project_id, request, wsx)
+}
+
+fn run_request(
+    name: &str,
+    project_id: &str,
+    request: ApprovalLine,
+    wsx: &Path,
+) -> Result<Approved> {
     let ApprovalLine::Request {
+        id,
         action,
         task,
         revision,
@@ -296,11 +359,13 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
         lease,
         path,
         url,
+        said: owner_said,
         ..
-    } = find_request(&lines, id)?.clone()
+    } = request
     else {
-        unreachable!("find_request returns requests");
+        unreachable!("only requests run");
     };
+    let id = id.as_str();
     // ^ A role is store files only: no command to run.
     if action == ApprovalAction::Role {
         let role = role.unwrap_or_default();
@@ -308,7 +373,7 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
             .zip(model)
             .map(|(adapter, model)| super::roles::RoleAgent { adapter, model });
         let (ok, outcome) = match super::roles::create(
-            &project_id,
+            project_id,
             &role,
             brief.as_deref().unwrap_or_default(),
             super::roles::Opener::Manager,
@@ -317,7 +382,7 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
             Ok(_) => (true, format!("done: role {role} is open")),
             Err(error) => (false, format!("failed: {error:#}")),
         };
-        decide(&project_id, id, true, None, &outcome)?;
+        decide(project_id, id, true, None, &outcome, owner_said)?;
         return Ok(Approved {
             ok,
             outcome,
@@ -326,10 +391,10 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
     }
     // ^ The owner approves one revision: a task that moved on needs a new request.
     if let (Some(task), Some(revision)) = (task, revision) {
-        let now = TaskDir::open(&project_id, task)?.read_record()?.revision;
+        let now = TaskDir::open(project_id, task)?.read_record()?.revision;
         if now != revision {
             let outcome = format!("not run: #{task} moved from r{revision} to r{now}; ask again");
-            decide(&project_id, id, true, None, &outcome)?;
+            decide(project_id, id, true, None, &outcome, owner_said)?;
             bail!("{outcome}");
         }
     }
@@ -351,7 +416,11 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
             }
         }
         ApprovalAction::Push => {
-            argv.extend(["push".into(), "--commit".into(), commit.unwrap_or_default()]);
+            argv.push("push".into());
+            // ^ No commit: the default branch tip at run time (a push that waited for a land).
+            if let Some(commit) = commit {
+                argv.extend(["--commit".into(), commit]);
+            }
             // ^ The owner approved a rewrite over the origin tip the request saw, no other.
             if let Some(lease) = lease {
                 argv.extend(["--force".into(), format!("--lease={lease}")]);
@@ -361,6 +430,11 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
             argv.push(action_name(action).into());
             if let Some(commit) = commit {
                 argv.extend(["--commit".into(), commit]);
+            }
+            // ^ The owner's message asked for it, as it would a release now: open To check
+            // items stay on the release.
+            if owner_said.is_some() && action == ApprovalAction::Release {
+                argv.push("--checks-waived".into());
             }
         }
     }
@@ -384,7 +458,7 @@ pub fn approve(name: &str, main: &Path, id: &str, wsx: &Path) -> Result<Approved
         .unwrap_or_else(|| String::from_utf8_lossy(&output.stderr).trim().to_string());
     let ok = output.status.success();
     let outcome = format!("{}: {said}", if ok { "done" } else { "failed" });
-    decide(&project_id, id, true, None, &outcome)?;
+    decide(project_id, id, true, None, &outcome, owner_said)?;
     Ok(Approved {
         ok,
         outcome,
@@ -426,13 +500,20 @@ pub fn deny(name: &str, main: &Path, id: &str, note: Option<String>) -> Result<(
     {
         bail!("the note is larger than the limit of {MAX_MESSAGE_BYTES} bytes");
     }
-    decide(&project_id, id, false, note, "denied")
+    decide(&project_id, id, false, note, "denied", None)
 }
 
 /// Settle a pending request that no longer applies, with why; the manager host tells the
 /// manager and the owner in the chat.
 pub fn drop_request(project_id: &str, id: &str, why: &str) -> Result<()> {
-    decide(project_id, id, false, None, &format!("{DROPPED}{why}"))
+    decide(
+        project_id,
+        id,
+        false,
+        None,
+        &format!("{DROPPED}{why}"),
+        None,
+    )
 }
 
 /// Record a request the owner approved by asking for it in the chat: the manager names the
@@ -456,6 +537,40 @@ pub fn approve_by_message(project_id: &str, request: ApprovalLine, said: u64) ->
     Ok(id)
 }
 
+/// Record a request the owner approved in the chat that can run only once task `after` has
+/// landed: `said` is checked now, in the owner's turn, and kept on the request; the manager
+/// host runs it when `after` lands (`approve_waiting`). Nothing is recorded when a check fails.
+/// ref: docs/tasks.md "Approvals"
+pub fn approve_after(project_id: &str, mut request: ApprovalLine, said: u64) -> Result<String> {
+    check_owner_said(project_id, said)?;
+    let ApprovalLine::Request {
+        after: Some(after),
+        task,
+        said: kept,
+        ..
+    } = &mut request
+    else {
+        bail!("only a request that waits is recorded");
+    };
+    if *task == Some(*after) {
+        bail!("--after {after}: a task cannot wait for itself; nothing was recorded");
+    }
+    let state = TaskDir::open(project_id, *after)
+        .and_then(|dir| dir.read_record())
+        .with_context(|| format!("--after {after}: no such task; nothing was recorded"))?
+        .state;
+    if !state.is_open() {
+        bail!(
+            "--after {after}: #{after} is {}, not open; nothing was recorded",
+            state.as_str()
+        );
+    }
+    *kept = Some(said);
+    Ok(store::append_approval(project_id, request)?
+        .id()
+        .to_string())
+}
+
 /// Refuse unless `said` is an owner message of the manager's running turn.
 pub fn check_owner_said(project_id: &str, said: u64) -> Result<()> {
     let manager = ManagerDir::existing(project_id)?
@@ -470,6 +585,7 @@ fn decide(
     approved: bool,
     note: Option<String>,
     outcome: &str,
+    owner_said: Option<u64>,
 ) -> Result<()> {
     store::append_approval(
         project_id,
@@ -478,7 +594,7 @@ fn decide(
             approved,
             note,
             outcome: outcome.chars().take(MAX_OUTCOME_CHARS).collect(),
-            owner_said: None,
+            owner_said,
             unix_ms: now_unix_ms(),
         },
     )
