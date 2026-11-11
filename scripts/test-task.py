@@ -2380,8 +2380,10 @@ def part_core(created=None):
     reply_to(idle_message['id'])
     rotated = [e for e in manager_entries() if e['kind'] == 'rotated']
     assert rotated[-1].get('reason') == 'idle over 60 min with 70k context', rotated
-    idle_launch = [t for t in traces() if t.get('launch') and t.get('manager')][-1]
-    assert not idle_launch['resume'] and 'Handover' in turn_with('IDLE LARGE')['message']
+    # ^ The launch just before the turn that holds the message: a later launch is not the rotation's.
+    idle_turn = turn_with('IDLE LARGE')
+    idle_launch = [t for t in traces()[:traces().index(idle_turn)] if t.get('launch') and t.get('manager')][-1]
+    assert not idle_launch['resume'] and 'Handover' in idle_turn['message'], (idle_launch, idle_turn)
     # ^ An exchange of the conversation before the rotation, older than the handover's, matches too.
     reply_to(js('task', 'say', 'ZEBRAFISH revisit')['id'])
     earlier = turn_with('ZEBRAFISH revisit')['message']
