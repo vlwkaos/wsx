@@ -2902,9 +2902,9 @@ def part_worker(created=None):
     assert record['verified_by'] == 'task:%d' % free and record['source'] == 'task:%d' % free, record
     assert record['paths'] == ['free.txt'] and record['commit'] == landed_tip and not fact.get('stale'), (record, landed_tip)
     # A worker on that file starts with the fact; once main changes the file, the fact is stale: search says so
-    # and the next start set leaves it out, and names that it did.
-    def first_prompt(files):
-        n = js('task', 'new', '--size', 'small', '--files', files, 'NOOP')['id']
+    # and the next start set still shows it, with the mark and the commits since (docs/memory.md "Start set").
+    def first_prompt(files, *title):
+        n = js('task', 'new', '--size', 'small', '--files', files, *title, 'NOOP')['id']
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
         text = next(e for e in log(n) if e['kind'] == 'result')['summary']
         js('task', 'close', n, '--discard')
@@ -2915,7 +2915,23 @@ def part_worker(created=None):
     stale = next(h for h in memory_records(cli('memory', 'search', 'landing brings it', '--json').stdout) if h['slug'] == fact['slug'])
     assert stale.get('stale') is True, stale
     after = first_prompt('free.txt')
-    assert '- %s (' % fact['slug'] not in after and 'Not shown, stale' in after and fact['slug'] in after, after
+    line = next(l for l in after.splitlines() if l.startswith('- %s (' % fact['slug']))
+    assert line.endswith('(files: free.txt) [stale: files changed since %s, 1 commit touches its paths]' % landed_tip[:7]), line
+    assert 'Not shown' not in after and 'A fact marked stale may be old' in after, after
+    # The words of the task's title find a fact no --files glob reaches; the block keeps its budget and names the cut.
+    cli('memory', 'add', '--kind', 'fact', '--slug', 'start-zebra', '--text-file', '-', '--source', 'task:1', '--verified-by', 'wsx.config.yml',
+        '--commit', git('rev-parse', 'HEAD'), '--paths', 'zebra/gate.rs', stdin='The zebra gate keeps its list in gate.rs.')
+    by_title = first_prompt('free.txt', '--title', 'Zebra gate list')
+    zebra = next((l for l in by_title.splitlines() if l.startswith('- start-zebra (fact, ')), '')
+    assert zebra.endswith('(files: zebra/gate.rs)'), by_title
+    for i in range(8):
+        cli('memory', 'add', '--kind', 'fact', '--slug', 'fill-%d' % i, '--text-file', '-', '--source', 'task:1', '--verified-by', 'wsx.config.yml',
+            '--commit', git('rev-parse', 'HEAD'), '--paths', 'free.txt', stdin='Filler %d: ' % i + ' '.join('w%dx%d' % (i, j) for j in range(80)))
+    full = first_prompt('free.txt')
+    block = full[full.index('Records about these files'):full.index('finds them.') + len('finds them.')]
+    assert 'Not shown, over the 4096-byte start budget: ' in block and len(block.encode()) <= 4096, (len(block.encode()), block)
+    for i in range(8):
+        cli('memory', 'update', 'fill-%d' % i, '--status', 'failed', '--lesson', 'filler')
     # Backfill (docs/memory.md "Capture"): a memo imported before paths existed has no commit or paths; the
     # import gives it those of the landed task, once, and a rerun changes nothing.
     store = Path(json.loads(cli('memory', 'status', '--json').stdout)['store'])

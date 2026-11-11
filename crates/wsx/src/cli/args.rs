@@ -945,6 +945,9 @@ pub enum MemoryCmd {
         /// The role that created the task: its brief and rules join the block
         #[arg(long)]
         role: Option<String>,
+        /// The task's title and the first line of its prompt: facts that match these words join the block
+        #[arg(long, default_value = "")]
+        about: String,
     },
     /// Replace the record OLD with the active record NEW
     Supersede {

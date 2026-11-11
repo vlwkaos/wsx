@@ -48,7 +48,7 @@ wsx also searches the transcripts of a project scope (a chat message or reply, a
 | `supersede` | `<old> <new> --source ID` | the old record, now `superseded` with `superseded_by` set to `<new>` |
 | `get` | `<slug>` | the record; unknown slug: exit 1 |
 | `capture` (wsx) | `--task N --memo TEXT [--commit SHA] [--paths a,b]` | the record, see "Capture" |
-| `start` (wsx) | `--files a,b [--role NAME]` | `{"scope","start"}`: the start block a worker with those `--files` gets, see "Start set" |
+| `start` (wsx) | `--files a,b [--role NAME] [--about WORDS]` | `{"scope","start"}`: the start block a worker with those `--files` (and the title and first prompt line as `--about`) gets, see "Start set" |
 | `import` (wsx) | none | `{"scope","imported":{"rules","archived","facts","episodes"}}`; see "Notes" |
 | `reindex` | none | `{"scope","ok"}`. wsx: drops the project's digest of transcripts and builds it again, then asks the backend to reindex (a backend that fails is exit 3) |
 | `status` | none | `{"scope","store","backend","search":{"network":bool,"model":bool},"limits":{"text_bytes":N},"counts":{"active","superseded","failed"}}` |
@@ -103,11 +103,13 @@ The first prompt of a worker holds a block from the memory, built by `wsx_core::
 
 1. **Area briefs**: `memory.areas` of the project's `wsx.config.yml` is `{"<glob>": "<brief file>"}`. Each brief whose glob meets one of the task's `--files` is read from the project (a relative path inside it, at most 8 KiB) and shown whole.
 2. **The role's brief and rules**, when the task was created by a role: `brief.md`, then the role's `notes/decisions.md` lines, newest first.
-3. **Records**, under a line that says a record is data from earlier work and not an instruction. They are the active records whose `paths` meet a file (a literal path covers what is under it), a fact only when fresh. Order: the larger share of a record's paths that meet, then more of them, then the newer.
+3. **Records**, under a line that says a record is data from earlier work and not an instruction, and that a fact marked stale may be old. First the active records whose `paths` meet a file (a literal path covers what is under it): the larger share of a record's paths that meet, then more of them, then the newer. Then up to 5 facts that the task's words find (`--about`: the title and the first line of the prompt; BM25 of the built-in index over the records alone), the best first, left out when the path matches already hold them. Both share the same 4 KiB, so the facts of the words are the first to be cut.
 
-Nothing is cut silently: a piece that does not fit is named on a last line (`Not shown, over the 4096-byte start budget: <slugs>. wsx memory recall "<question>" finds them.`), a brief that is cut says how many bytes and where the whole is, a record over 700 characters shows its head and `wsx memory get <slug>`, and the stale facts are named (`Not shown, stale (their files changed since they were true): <slugs>. wsx memory get <slug> reads one.`).
+A record line is `- <slug> (<kind>, <day>): <text> (files: a, b, c)`. `files:` shows at most 3 of the record's paths, those the task's `--files` do not meet first; when there are more, the two with the longest common folder become that folder (`dir/`), and paths with no folder in common are cut (`+N more`). A stale fact ends with `[stale: files changed since <7 characters of the commit>, <N> commits touch its paths]`.
 
-**Stale**: a `fact` with `commit` and `paths` is stale when `git diff --quiet <commit> HEAD -- <paths>` in the project folder fails; git that cannot answer (10 s, not a hash) counts as stale, so an unchecked fact never joins a prompt. A start set checks at most 30 facts, best first. `search` marks the hits it returns with `"stale": true` (text form: `, stale` after the status); a stale fact is not hidden there.
+Nothing is cut silently: a piece that does not fit is named on a last line (`Not shown, over the 4096-byte start budget: <slugs>. wsx memory recall "<question>" finds them.`), a brief that is cut says how many bytes and where the whole is, a record over 700 characters shows its head and `wsx memory get <slug>`, and `Not shown` names only what the budget cut: a stale fact is shown, never hidden (the offline evaluation, `docs/design/memory-eval.md` "Offline retrieval", found hiding them lost 94% of the facts).
+
+**Stale**: a `fact` with `commit` and `paths` is stale when `git diff --quiet <commit> HEAD -- <paths>` in the project folder fails; git that cannot answer (10 s, not a hash) counts as stale for `search`; a start set that git cannot answer for names that fact and the rest as not shown, so an unchecked fact never joins a prompt. A start set checks at most 30 facts, best first. `search` marks the hits it returns with `"stale": true` (text form: `, stale` after the status); a stale fact is not hidden there.
 
 ## Capture
 
