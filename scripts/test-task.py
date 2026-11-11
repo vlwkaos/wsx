@@ -2688,7 +2688,9 @@ def part_core(created=None):
         (r'(?s)files/\.studio-data/trend\.jpg +\d+/\d+.*image, linked by manager.*file:.*trend\.jpg', b'\x1b'),
         (r'Media +all +all tasks', b'v'), (r'Media +images', b'v'), (r'Media +videos', b'v'),
         (r'Media +all +all tasks', b't'), (r'Media +all +#\d+', b'\x1b'),
-        (r'(?m)^ MANAGER ', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+        (r'\(i\)message', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+    # ^ `(i)message` is in the chat's bar only: the media list's bar also starts with MANAGER, and a second Esc sent
+    # before the chat is drawn joins the first.
     trend.unlink()
     (project / '.studio-data').rmdir()
     everything, only_images, only_videos, one_task = listed[3], listed[8], listed[9], listed[11]
