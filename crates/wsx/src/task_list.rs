@@ -271,12 +271,19 @@ impl TaskList {
         if let Some(chat) = &mut self.chat {
             return chat.poll();
         }
-        let mut changed = false;
-        if let Some(Ok((words, failed))) = self.answer.as_ref().map(mpsc::Receiver::try_recv) {
+        // ^ A thread that died without an answer ends the action too, or no key could run another.
+        let ended = match self.answer.as_ref().map(mpsc::Receiver::try_recv) {
+            Some(Ok(answer)) => Some(answer),
+            Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                Some(("The action ended without an answer".into(), true))
+            }
+            _ => None,
+        };
+        let changed = ended.is_some();
+        if ended.is_some() {
             self.answer = None;
             self.acting = None;
-            self.notice = Some((words, failed));
-            changed = true;
+            self.notice = ended;
         }
         if let Some(rx) = &self.pending {
             return changed
@@ -406,9 +413,7 @@ impl TaskList {
             .flatten()
             .find(|task| task["id"].as_u64() == Some(id))
     }
-}
 
-impl TaskList {
     /// The owner's actions on the task whose detail shows: the web's rule (`owner_actions`),
     /// read off the ledger row, the project's trial and its `tasks.preview`.
     pub fn detail_actions(&self) -> Vec<&'static str> {
@@ -430,7 +435,7 @@ impl TaskList {
             waiting,
             task["status"]["kind"].as_str(),
             stage,
-            ledger["preview"].as_bool() == Some(true),
+            ledger["preview"].as_bool().unwrap_or(false),
         )
     }
 
