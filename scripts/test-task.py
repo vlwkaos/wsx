@@ -3238,11 +3238,10 @@ def part_worker(created=None):
 
     # The Workspace row marks what waits for the owner after the project's name: `!N` tasks and
     # approvals (the ready task and its request, so 2 or more), `✓N` To check items (one), and `n`
-    # from the worktree row reaches the project row, `N` back (docs/tasks.md "TUI").
+    # from the worktree row reaches the project row (docs/tasks.md "TUI"). `N`, not `n`: this
+    # project has agent sessions below its worktrees, which `n` would reach first.
     tui_screens(wsx, env, project, [
         (r'(?s)[▼▶] demo !(?:[2-9]|\d\d) ✓%d\b.*~ main' % len(js('task', 'check')['open']), b'j'),
-        (r'WORKSPACE +\(s\)ession', b'n'),
-        (r'WORKSPACE +\(e\)dit +\(w\)orktree', b'j'),
         (r'WORKSPACE +\(s\)ession', b'N'),
         (r'WORKSPACE +\(e\)dit +\(w\)orktree', b'')])
 
