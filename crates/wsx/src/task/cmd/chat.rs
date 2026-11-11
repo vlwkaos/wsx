@@ -145,10 +145,7 @@ pub(crate) fn chat(
         .manager_shown_name(&name)
         .to_string();
     let own = role.unwrap_or(&shown);
-    let manager = match role {
-        Some(_) => chat::manager_in_role_room(&shown),
-        None => shown.clone(),
-    };
+    let manager = chat::manager_name_in(role, &shown);
     let names = Names {
         own,
         manager: &manager,
