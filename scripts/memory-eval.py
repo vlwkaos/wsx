@@ -11,11 +11,13 @@
 Arms: baseline (what a worker had at the task's start), memory (+ start set, `wsx memory` and a store
 cut at the task's start), memory-cheap (as memory; `recall` asks a cheap model).
 Every run: its own git worktree at the task's base, its own XDG_STATE_HOME with the task store cut at
-the task's start. The real store, the real memory and the real config are only read.
+the task's start; the worktree is the run's project, so a fact is stale against the task's base, not the real
+HEAD. The real store, the real memory and the real config are only read.
 """
 import argparse
 import collections
 import concurrent.futures as cf
+import hashlib
 import importlib.util
 import json
 import os
@@ -83,6 +85,7 @@ class Task:
         self.log = [json.loads(x) for x in self.raw]
         self.t0 = next(e['unix_ms'] for e in self.log if e['kind'] == 'created')
         self.landed_ms = next((e['unix_ms'] for e in self.log if e['kind'] == 'landed'), None)
+        self.landed_commit = next((e['commit'] for e in self.log if e['kind'] == 'landed'), None)  # ^ what the host's capture stores
         self.closed_ms = next((e['unix_ms'] for e in self.log if e['kind'] == 'closed'), None)
         self.end_ms = self.landed_ms or self.closed_ms
         self.prompt = next((e['text'] for e in self.log if e['kind'] == 'message' and e.get('mode') == 'prompt'), '')
@@ -230,9 +233,19 @@ def cut_context(text, n):
     return '\n'.join(out) + '\n'
 
 
-def build_state(t, tasks, home):
-    """XDG_STATE_HOME for one run: the task store as it was at t.t0."""
-    root = home / 'wsx' / 'tasks' / PID
+def project_id(name, path):
+    """crates/wsx-core/src/task/store.rs `project_id`: the store folder of a project is named by its path."""
+    slug = re.sub(r'[^a-z0-9]', '-', name.lower())[:40].strip('-')
+    digest = hashlib.sha256(str(path).encode()).hexdigest()[:8]
+    return f'{slug}-{digest}' if slug else digest
+
+
+def build_state(t, tasks, home, wc):
+    """XDG_STATE_HOME for one run: the task store as it was at t.t0. The run's project is its own worktree `wc`
+    at the task's base, so the stale rule of memory (`git diff <commit> HEAD`) reads the code as the task
+    started, never the real repo's HEAD. Returns (host context lines, the project id of the run)."""
+    pid = project_id('wsx', wc)
+    root = home / 'wsx' / 'tasks' / pid
     for m, o in tasks.items():
         if o.t0 >= t.t0:
             continue
@@ -240,7 +253,7 @@ def build_state(t, tasks, home):
         d.mkdir(parents=True)
         lines = [r for r, e in zip(o.raw, o.log) if e['unix_ms'] < t.t0]
         (d / 'log.jsonl').write_text('\n'.join(lines) + '\n')
-        rec = dict(o.rec)
+        rec = dict(o.rec, project_id=pid, project_path=str(wc))
         rec['state'] = 'landed' if o.end_ms and o.end_ms < t.t0 else 'working'
         (d / 'task.json').write_text(json.dumps(rec))
         if o.end_ms and o.end_ms < t.t0 and (o.dir / 'result.json').exists():
@@ -255,11 +268,16 @@ def build_state(t, tasks, home):
             (notes / name).write_text(cut_notes((manager / 'notes' / name).read_text(), t.n, t.t0))
     ctx = cut_context((manager / 'notes' / 'context.md').read_text(), t.n)
     (notes / 'context.md').write_text(ctx)
-    # ^ `-p wsx` and the project id come from the config: the run's own, never the owner's.
-    (home / 'config' / 'wsx').mkdir(parents=True)
-    (home / 'config' / 'wsx' / 'wsx.config.yml').write_text(
-        f'projects:\n  - name: wsx\n    path: {t.rec["project_path"]}\n    default_branch: main\n')
-    return ctx
+    # ^ The run's own registry of projects: `-p wsx` and the scope `pid` mean the worktree `wc`, never the owner's
+    # checkout. A scope that no registry names is an unbound memory store: no `task:<n>` proof, no git root.
+    for config in (home / 'config' / 'wsx', home / 'Library' / 'Application Support' / 'wsx'):
+        config.mkdir(parents=True)
+        (config / 'config-v2.toml').write_text(f'groups = []\n[[projects]]\nname = "wsx"\npath = "{wc}"\ndefault_branch = "main"\n')
+    # ^ wsx refuses a state folder that others can read.
+    for folder in [home / 'wsx', *(home / 'wsx').rglob('*')]:
+        if folder.is_dir():
+            folder.chmod(0o700)
+    return ctx, pid
 
 
 def meet(a, b):
@@ -320,6 +338,12 @@ def clean_env(**extra):
     return env
 
 
+def wsx_env(home):
+    """The environment of a `wsx` call on a run's state. HOME is the state folder too: `dirs` finds the config folder
+    (the registry of projects) there on macOS. Only wsx gets it, never the agent."""
+    return clean_env(XDG_STATE_HOME=str(home), XDG_CONFIG_HOME=str(home / 'config'), HOME=str(home))
+
+
 def spent():
     p = WORK / 'spend.jsonl'
     return sum(json.loads(x)['usd'] for x in p.read_text().splitlines()) if p.exists() else 0.0
@@ -331,9 +355,9 @@ def spend(kind, ident, usd):
             f.write(json.dumps({'ts': int(time.time()), 'kind': kind, 'id': ident, 'usd': usd}) + '\n')
 
 
-def leak_check(t, tasks, home):
+def leak_check(t, tasks, home, pid):
     """No future in the run's state: every log line, result, memory record and dated note is older than t.t0."""
-    root = home / 'wsx' / 'tasks' / PID
+    root = home / 'wsx' / 'tasks' / pid
     for d in root.iterdir():
         if d.name.isdigit():
             for line in (d / 'log.jsonl').read_text().splitlines():
@@ -341,10 +365,10 @@ def leak_check(t, tasks, home):
             if (d / 'result.json').exists():
                 o = tasks[int(d.name)]
                 assert o.end_ms and o.end_ms < t.t0, f'#{d.name} result is not final at the start of #{t.n}'
-    records = root / 'memory' / 'records.jsonl'
+    records = home / 'wsx' / 'tasks' / pid / 'memory' / 'records.jsonl'
     if records.exists():
         for line in records.read_text().splitlines():
-            m = re.match(r't(\d+)$', json.loads(line).get('slug', ''))
+            m = re.match(r'memo-(\d+)-', json.loads(line).get('slug', ''))
             assert not m or tasks[int(m.group(1))].landed_ms < t.t0, f'record {m.group(0)} lands after the start of #{t.n}'
     for name in ('decisions.md', 'decisions-archive.md'):
         f = root / 'manager' / 'notes' / name
@@ -362,10 +386,10 @@ def memory_gate(args):
                      'the paid memory arm does not run on a stub')
 
 
-def capture_store(t, tasks, home, args):
+def capture_store(t, tasks, home, args, pid):
     """The with-memory store of one run: step 5's capture rule on every task landed before t.t0.
     Returns (records, store bytes). `t` needs t0 only."""
-    env = clean_env(XDG_STATE_HOME=str(home), XDG_CONFIG_HOME=str(home / 'config'))
+    env = wsx_env(home)
     wsx = [args.wsx]
     records = 0
     for m, o in sorted(tasks.items()):
@@ -375,47 +399,74 @@ def capture_store(t, tasks, home, args):
         if not memo.strip():
             continue
         files = o.landed_files()
-        commit = o.revision()['commit']
-        done = sh([*wsx, *CAPTURE_SUB, '--scope', PID, '--task', str(m), '--memo', memo, '--commit', commit,
+        commit = o.landed_commit or o.revision()['commit']
+        done = sh([*wsx, *CAPTURE_SUB, '--scope', pid, '--task', str(m), '--memo', memo, '--commit', commit,
                    '--paths', ','.join(files)], env=env)
         records += done.returncode == 0
     # ^ The rules: decisions dated before t0, already cut into the notes of the state.
-    store = home / 'wsx' / 'tasks' / PID / 'memory'
+    store = home / 'wsx' / 'tasks' / pid / 'memory'
     size = sum(f.stat().st_size for f in store.rglob('*') if f.is_file()) if store.exists() else 0
     return records, size
 
 
-def memory_cut(t, tasks, home, args, ctx):
+def memory_cut(t, tasks, home, args, pid):
     """capture_store plus the start set of the task's files. Returns (start set text, records, store bytes)."""
-    env = clean_env(XDG_STATE_HOME=str(home), XDG_CONFIG_HOME=str(home / 'config'))
+    env = wsx_env(home)
     wsx = [args.wsx]
-    records, size = capture_store(t, tasks, home, args)
+    records, size = capture_store(t, tasks, home, args, pid)
     files = t.rec.get('files') or []
-    start = sh([*wsx, *START_SUB, '--scope', PID, '--files', ','.join(files)], env=env).stdout.strip()
+    start = sh([*wsx, *START_SUB, '--scope', pid, '--files', ','.join(files)], env=env).stdout.strip()
     return start, records, size
 
 
-def shim(run, home, arm, args):
+def base_stale_check(home, args, pid, wc):
+    """Dry runs: the stale rule reads the run's code (`wc`, the task's base), not the real repo's HEAD. Finds a
+    captured fact whose paths changed after the task started (stale at the real HEAD, not at `wc`) and asserts
+    that the start set of its path still holds it. Returns what it found."""
+    def changed(repo, r):
+        return sh(['git', '-C', str(repo), 'diff', '--quiet', r['commit'], 'HEAD', '--', *r['paths']]).returncode != 0
+    log = home / 'wsx' / 'tasks' / pid / 'memory' / 'records.jsonl'
+    facts = {}
+    for line in log.read_text().splitlines() if log.exists() else []:
+        r = json.loads(line)
+        if r.get('kind') == 'fact' and r.get('commit') and r.get('paths'):
+            facts[r['slug']] = r
+    late = [r for r in facts.values() if changed(ROOT, r) and not changed(wc, r)]
+    stale_at_base = sum(changed(wc, r) for r in facts.values())
+    found = {'facts': len(facts), 'stale_at_real_head': sum(changed(ROOT, r) for r in facts.values()), 'stale_at_base': stale_at_base,
+             'changed_after_start': len(late)}
+    if late:
+        r = late[0]
+        env = wsx_env(home)
+        start = sh([args.wsx, *START_SUB, '--scope', pid, '--files', r['paths'][0]], env=env).stdout
+        assert r['slug'] in start and f"stale (their files changed since they were true): {r['slug']}" not in start, \
+            f'{r["slug"]} changed after the start of the task, so it is not stale at the start: {start}'
+        found['proof'] = r['slug']
+    return found
+
+
+def shim(run, home, arm, args, pid):
     """`wsx` on the worker's PATH: `task search` always, `memory ...` in the memory arms only."""
+    h = f'HOME={shlex.quote(str(home))}'
     bin_dir = run / 'bin'
     bin_dir.mkdir()
     me = Path(__file__).resolve()
     real = shlex.quote(args.wsx)
-    recall = (f'exec {shlex.quote(sys.executable)} {shlex.quote(str(me))} recall-cheap --wsx {real} --home {shlex.quote(str(home))} '
+    recall = (f'exec {shlex.quote(sys.executable)} {shlex.quote(str(me))} recall-cheap --wsx {real} --home {shlex.quote(str(home))} --pid {pid} '
               f'--out {shlex.quote(str(run / "recall-cost.jsonl"))} "$@"') if arm == 'memory-cheap' else \
-        f'exec {real} memory recall --scope {PID} "$@"'
+        f'{h} exec {real} memory recall --scope {pid} "$@"'
     memory = '' if arm == 'baseline' else f'''
   memory)
     case "$2" in
       recall) shift 2; {recall} ;;
-      search|status|list) sub=$2; shift 2; exec {real} memory "$sub" --scope {PID} "$@" ;;
+      search|status|list) sub=$2; shift 2; {h} exec {real} memory "$sub" --scope {pid} "$@" ;;
     esac ;;'''
     (bin_dir / 'wsx').write_text(f'''#!/bin/sh
 unset WSX_TASK_BROKER WSX_AGENT_TREE
 export XDG_STATE_HOME={shlex.quote(str(home))} XDG_CONFIG_HOME={shlex.quote(str(home / 'config'))}
 case "$1" in
   task) case "$2" in
-    search) shift 2; exec {real} task search -p wsx "$@" ;;
+    search) shift 2; {h} exec {real} task search -p wsx "$@" ;;
   esac ;;{memory}
 esac
 echo "wsx: only 'wsx task search'{'' if arm == 'baseline' else ' and wsx memory recall|search|status'} run here" >&2
@@ -531,16 +582,19 @@ def one_run(task, tasks, arm, rep, args):
     home = run / 'state'
     wc = run / 'wc'
     try:
-        ctx = build_state(task, tasks, home)
         sh(['git', '-C', str(ROOT), 'worktree', 'add', '--detach', str(wc), task.rec['base']], check=True)
+        wc = wc.resolve()
+        ctx, pid = build_state(task, tasks, home, wc)
         block = host_context(task, tasks, ctx if arm == 'baseline' else '')  # ^ the memory arms' host has no context.md lines: the start set replaces them
         info = {'task': task.n, 'arm': arm, 'rep': rep, 'logged_cost': task.plan['usage']['cost_micro_usd'] / 1e6,
                 'logged_calls': task.plan['usage'].get('calls'), 'model': task.rec.get('model')}
         brief = ''
         if arm != 'baseline':
-            start, records, size = memory_cut(task, tasks, home, args, ctx)
+            start, records, size = memory_cut(task, tasks, home, args, pid)
             block = (block + '\n' + start).strip()
-            leak_check(task, tasks, home)
+            leak_check(task, tasks, home, pid)
+            if args.dry_run:
+                info['base_stale'] = base_stale_check(home, args, pid, wc)
             brief = ' ' + MEMORY_BRIEF
             info.update({'store_records': records, 'store_bytes': size, 'start_bytes': len(start)})
         info['context_bytes'] = len(block)
@@ -549,7 +603,7 @@ def one_run(task, tasks, arm, rep, args):
         text = '\n\n'.join(x for x in [task.prompt, block, f'Step 1 of {len(task.steps)}, {step["name"]}: {step["prompt"]}\n{PLAN_END}'] if x)
         if args.dry_run:
             text += '\nMEMORY'  # ^ the fake runs `wsx memory ...` through the shim and traces each answer
-        bin_dir = shim(run, home, arm, args)
+        bin_dir = shim(run, home, arm, args, pid)
         env = clean_env(XDG_STATE_HOME=str(home), XDG_CONFIG_HOME=str(home / 'config'),
                         PATH=f'{bin_dir}:{os.environ["PATH"]}', CARGO_INCREMENTAL='0',
                         FAKE_CLAUDE_TRACE=str(run / 'fake.trace'))
@@ -614,9 +668,9 @@ def cmd_run(args):
 
 def cmd_recall_cheap(args):
     """`wsx memory recall` with a cheap model: the best 20 hits of a search, the model picks up to 5."""
-    env = clean_env(XDG_STATE_HOME=args.home, XDG_CONFIG_HOME=f'{args.home}/config')
+    env = wsx_env(Path(args.home))
     question = ' '.join(args.question)
-    hits = sh([args.wsx, 'memory', 'search', question, '--scope', PID, '--limit', '20', '--json'], env=env).stdout
+    hits = sh([args.wsx, 'memory', 'search', question, '--scope', args.pid, '--limit', '20', '--json'], env=env).stdout
     prompt = (f'A coding agent asks its project memory: {question}\n\nSearch hits (JSON):\n{hits[:12000]}\n\n'
               'Return the at most 5 hits that help answer the question, best first, as lines "- <slug>: <why it helps, max 20 words>". '
               'Nothing else. If none helps, return "none".')
@@ -965,7 +1019,8 @@ def cmd_mpick(args):
         print(f'reply {r["reply"]} dist {r["distance"]:>3} ${r["logged_cost"]:.2f} {r["text"][:100]!r}')
 
 
-def manager_shim(run, home, args):
+def manager_shim(run, home, args, pid):
+    h = f'HOME={shlex.quote(str(home))}'
     """`wsx` for the replayed manager: read verbs of `task` and `wsx memory recall|search|status` run on the cut state;
     the others only record their command (the replay changes nothing)."""
     bin_dir = run / 'bin'
@@ -975,9 +1030,9 @@ def manager_shim(run, home, args):
 unset WSX_TASK_BROKER WSX_AGENT_TREE
 export XDG_STATE_HOME={shlex.quote(str(home))} XDG_CONFIG_HOME={shlex.quote(str(home / 'config'))}
 case "$1 $2" in
-  "task ledger"|"task show"|"task search"|"task log"|"task status"|"task list") exec {real} "$@" ;;
-  "memory recall") shift 2; exec {real} memory recall --scope {PID} "$@" ;;
-  "memory search"|"memory status") sub=$2; shift 2; exec {real} memory "$sub" --scope {PID} "$@" ;;
+  "task ledger"|"task show"|"task search"|"task log"|"task status"|"task list") {h} exec {real} "$@" ;;
+  "memory recall") shift 2; {h} exec {real} memory recall --scope {pid} "$@" ;;
+  "memory search"|"memory status") sub=$2; shift 2; {h} exec {real} memory "$sub" --scope {pid} "$@" ;;
   "task "*) echo "$@" >> {shlex.quote(str(run / 'commands.txt'))}; echo '{{"ok":true,"note":"replay: not run"}}'; exit 0 ;;
 esac
 echo "wsx: only wsx task and wsx memory recall|search|status run here" >&2
@@ -1020,23 +1075,24 @@ def manager_run(pick, arm, rep, turns, tasks, args):
     run = Path(tempfile.mkdtemp(prefix=f'm-{arm}-{pick["reply"]}-', dir=WORK / 'tmp'))
     home, wc = run / 'state', run / 'wc'
     try:
-        build_state(at, tasks, home)
-        notes_dir = home / 'wsx' / 'tasks' / PID / 'manager' / 'notes'
+        base = max((o for o in tasks.values() if o.t0 < t0), key=lambda o: o.t0).rec['base']
+        sh(['git', '-C', str(ROOT), 'worktree', 'add', '--detach', str(wc), base], check=True)
+        wc = wc.resolve()
+        _, pid = build_state(at, tasks, home, wc)
+        notes_dir = home / 'wsx' / 'tasks' / pid / 'manager' / 'notes'
         notes = ''
         if with_notes:
             notes = '\n\n'.join(f'{name}:\n{(notes_dir / name).read_text()}' for name in ('decisions.md', 'context.md') if (notes_dir / name).exists())
         s_start = g_s[1] if with_notes else g_s[1] - len(notes_of_log(tasks, at)) / NOTE_CHARS_PER_TOKEN + 1000
         k = max(0, int((limit - s_start) // g_s[0]))
-        rec = capture_store(at, tasks, home, args)[0]
-        base = max((o for o in tasks.values() if o.t0 < t0), key=lambda o: o.t0).rec['base']
-        sh(['git', '-C', str(ROOT), 'worktree', 'add', '--detach', str(wc), base], check=True)
+        rec = capture_store(at, tasks, home, args, pid)[0]
         spec = importlib.util.spec_from_file_location('bench_manager', ROOT / 'scripts' / 'bench-manager.py')
         bm = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(bm)
         system = bm.instructions((ROOT / 'crates/wsx/src/task/instructions.rs').read_text(), 'wsx', str(notes_dir), str(home / 'overview.md'))
         system += '\n\nOld conversation is not in your context. Find it with `wsx memory recall "<question>"` or `wsx memory search <words>`: the best records and past messages of this project.'
         text = handover(turns, i, k, notes)
-        bin_dir = manager_shim(run, home, args)
+        bin_dir = manager_shim(run, home, args, pid)
         env = clean_env(XDG_STATE_HOME=str(home), XDG_CONFIG_HOME=str(home / 'config'), PATH=f'{bin_dir}:{os.environ["PATH"]}',
                         FAKE_CLAUDE_TRACE=str(run / 'fake.trace'))
         argv = shlex.split(args.agent) + ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
@@ -1204,6 +1260,7 @@ def main():
     rc = sub.add_parser('recall-cheap')
     rc.add_argument('--wsx', required=True)
     rc.add_argument('--home', required=True)
+    rc.add_argument('--pid', required=True)
     rc.add_argument('--out', required=True)
     rc.add_argument('question', nargs='+')
     rc.set_defaults(fn=cmd_recall_cheap)

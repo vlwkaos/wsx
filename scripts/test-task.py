@@ -239,7 +239,7 @@ def forget_notes(notes):
                 record = json.loads(line)
             except ValueError:
                 continue
-            if record.get('kind') != 'rule' and not record.get('slug', '').startswith(('section-', 'memo-', 'start-', 'rotation-')):
+            if record.get('kind') != 'rule' and not record.get('slug', '').startswith(('section-', 'memo-', 'start-', 'rotation-', 'handover-')):
                 kept.append(line + '\n')
         log.write_text(''.join(kept))
 
@@ -2203,6 +2203,9 @@ def part_core(created=None):
     routines = opened.split('\nRoutine results (')[1].split('\n\n')[0].split('\n')[1:]
     assert routines == ['routine nightly failed (exit 3); 3 failures, never succeeded'], opened
     assert 'keep the store in sqlite' in opened and 'SECRET-OUTSIDE' not in opened, opened
+    # ^ The handover is also an episode of the project's memory, written in that turn (docs/memory.md "Capture").
+    handovers = [h for h in memory_records(cli('memory', 'search', 'Handover new conversation exchanges', '--json').stdout) if h['slug'].startswith('handover-')]
+    assert handovers and handovers[0]['kind'] == 'episode' and 'Handover (this is a new conversation' in handovers[0]['excerpt'], handovers
 
     # Continuity (docs/tasks.md "Manager"): notes share their budget, idle large conversations
     # rotate, and a warm small one takes changed instructions as a message.
@@ -2912,7 +2915,24 @@ def part_worker(created=None):
     stale = next(h for h in memory_records(cli('memory', 'search', 'landing brings it', '--json').stdout) if h['slug'] == fact['slug'])
     assert stale.get('stale') is True, stale
     after = first_prompt('free.txt')
-    assert fact['slug'] not in after and 'Not shown, stale' in after, after
+    assert '- %s (' % fact['slug'] not in after and 'Not shown, stale' in after and fact['slug'] in after, after
+    # Backfill (docs/memory.md "Capture"): a memo imported before paths existed has no commit or paths; the
+    # import gives it those of the landed task, once, and a rerun changes nothing.
+    store = Path(json.loads(cli('memory', 'status', '--json').stdout)['store'])
+    rows = [json.loads(line) for line in (store / 'records.jsonl').read_text().splitlines()]
+    for row in rows:
+        if row['slug'] == fact['slug']:
+            row.pop('commit', None)
+            row.pop('paths', None)
+    (store / 'records.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    (store / 'paths-backfilled').unlink(missing_ok=True)
+    assert 'paths' not in json.loads(cli('memory', 'get', fact['slug'], '--json').stdout)
+    cli('memory', 'import')
+    record = json.loads(cli('memory', 'get', fact['slug'], '--json').stdout)
+    assert record['paths'] == ['free.txt'] and record['commit'] == landed_tip, record
+    size = (store / 'records.jsonl').stat().st_size
+    cli('memory', 'import')
+    assert (store / 'records.jsonl').stat().st_size == size, 'the rerun changed the store'
     configure((project / 'wsx.config.yml').read_text().replace(
         '  land: { auto: false }\n', '  land: { auto: false, approve: true }\n'), 'land asks')
     ap = js('task', 'new', 'WORK ap.txt')['id']
