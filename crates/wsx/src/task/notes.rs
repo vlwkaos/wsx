@@ -7,6 +7,7 @@ use super::manager::{read_note, CONTEXT_FILE, DECISIONS_FILE};
 use anyhow::Result;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use wsx_core::memory::manage::MEMO_LINE_CHARS;
 use wsx_core::task::store;
 use wsx_core::task::view::clip;
 
@@ -20,8 +21,6 @@ const CONTEXT_CEILING_BYTES: usize = 32 * 1024;
 const ARCHIVE_FILE: &str = "context-archive.md";
 /// The rules a later one replaced; a view of the records.
 const DECISIONS_ARCHIVE_FILE: &str = "decisions-archive.md";
-/// A memo line in `context.md`; the task's full memo stays in its result.
-const MEMO_LINE_CHARS: usize = 240;
 /// The lines and bytes of notes attached to one owner message, and one line's length.
 const MATCH_LINES: usize = 5;
 const MATCH_BYTES: usize = 1024;
@@ -193,14 +192,16 @@ pub(super) fn preamble(notes: &Path) -> String {
 }
 
 /// The manager's memo as a record (a line of at most `MEMO_LINE_CHARS`); the views follow.
-/// Returns the views that were edited by hand meanwhile. ref: docs/tasks.md "Memo"
+/// `landed` is the commit and diff paths of a landed task. Returns the views that were edited
+/// by hand meanwhile. ref: docs/tasks.md "Memo"
 pub(super) fn record_memo(
     store: &wsx_core::memory::Store,
     task: u32,
     memo: &str,
+    landed: Option<(&str, &[String])>,
 ) -> Result<Vec<wsx_core::memory::manage::Drift>> {
-    let added = wsx_core::memory::manage::add_memo(store, task, &clip(memo, MEMO_LINE_CHARS))?;
-    Ok(added.drift)
+    let (commit, paths) = landed.map_or((None, &[][..]), |(commit, paths)| (Some(commit), paths));
+    Ok(wsx_core::memory::manage::capture(store, task, memo, commit, paths)?.drift)
 }
 
 /// A role's notes are files of its own, not records: add a finished task's memo to its

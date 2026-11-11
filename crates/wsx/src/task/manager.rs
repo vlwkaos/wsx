@@ -1171,7 +1171,7 @@ impl Manager {
                     let memo = memo.split_whitespace().collect::<Vec<_>>().join(" ");
                     if !memo.is_empty() {
                         let memo = clip(&memo, ledger::MEMO_CHARS);
-                        self.fold_memo(record.id, &memo);
+                        self.fold_memo(&record, &dir, &memo);
                         summary.push_str(&format!("; memo: {memo}"));
                     }
                 }
@@ -1247,9 +1247,19 @@ impl Manager {
         )?)
     }
 
-    /// Add a finished task's memo to the manager's notes: a record, then `notes/context.md`
-    /// from the records. A role's notes stay files. ref: docs/tasks.md "Memo"
-    fn fold_memo(&self, task: u32, memo: &str) {
+    /// Add a finished task's memo to the manager's notes: a record (a landed task's fact holds
+    /// its landed commit and the paths of its diff), then `notes/context.md` from the records.
+    /// A role's notes stay files. ref: docs/tasks.md "Memo", docs/memory.md "Capture"
+    fn fold_memo(&self, record: &TaskRecord, dir: &wsx_core::task::store::TaskDir, memo: &str) {
+        let task = record.id;
+        let landed = dir
+            .last_event(|event| match event {
+                wsx_core::task::LogEvent::Landed { commit } => Some(commit.clone()),
+                _ => None,
+            })
+            .ok()
+            .flatten()
+            .filter(|_| record.state == TaskState::Landed);
         let Ok(notes) = self.dir.notes() else {
             return;
         };
@@ -1257,7 +1267,16 @@ impl Manager {
             Some(_) => notes::fold_memo(&notes, task, memo),
             None => self
                 .memory_store()
-                .and_then(|store| notes::record_memo(&store, task, memo))
+                .and_then(|store| {
+                    notes::record_memo(
+                        &store,
+                        task,
+                        memo,
+                        landed
+                            .as_deref()
+                            .map(|commit| (commit, record.paths.as_slice())),
+                    )
+                })
                 .map(|drift| self.say_drift(&drift)),
         };
         if let Err(error) = done {

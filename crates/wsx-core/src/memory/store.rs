@@ -104,6 +104,8 @@ pub struct NewRecord {
     pub commit: Option<String>,
     pub description: Option<String>,
     pub keywords: Vec<String>,
+    /// The paths or globs the record is about (docs/memory.md "Start set").
+    pub paths: Vec<String>,
     /// A rule's: the owner's words (the caller has checked them against the message).
     pub words: Option<String>,
 }
@@ -195,6 +197,11 @@ impl Store {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Where the project's files are (a project scope), else the folder of the call.
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     /// The most bytes a record's text may hold in this store; `status` declares it, and a
@@ -314,6 +321,7 @@ impl Store {
             .map(check_description)
             .transpose()?;
         let keywords = check_keywords(new.keywords)?;
+        let paths = check_paths(new.paths)?;
         if new.words.is_some() && new.kind != Kind::Rule {
             return usage("the owner's words belong to a rule");
         }
@@ -355,6 +363,7 @@ impl Store {
             lesson: None,
             description,
             keywords,
+            paths,
             words: new.words,
             decided: (new.kind == Kind::Rule).then_some(now),
             extra: Default::default(),
@@ -639,6 +648,9 @@ fn check_source(source: &str) -> Result<()> {
 const MAX_URL_BYTES: usize = 2048;
 const MAX_DESCRIPTION_BYTES: usize = 512;
 const MAX_KEYWORDS: usize = 32;
+/// Paths one record keeps, and their bytes together: a landed task's diff, as `TaskRecord.paths`.
+const MAX_PATHS: usize = 500;
+const MAX_PATH_BYTES: usize = 32 * 1024;
 pub(super) const MAX_KEYWORD_BYTES: usize = 64;
 
 /// An http or https URL with a host name, as text: nothing is fetched. ref: docs/memory.md
@@ -693,6 +705,31 @@ fn check_keywords(words: Vec<String>) -> Result<Vec<String>> {
     }
     match out.len() > MAX_KEYWORDS {
         true => usage("at most 32 keywords"),
+        false => Ok(out),
+    }
+}
+
+/// The paths of a write: relative, no `..`, nothing git would read as an option or a pathspec
+/// magic (`-`, `:`), no repeats, at most `MAX_PATHS` of `MAX_PATH_BYTES` together.
+fn check_paths(paths: Vec<String>) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for path in paths.iter().map(|p| p.trim()).filter(|p| !p.is_empty()) {
+        let bad = path.starts_with(['/', '-', ':'])
+            || path.chars().any(char::is_control)
+            || path.split('/').any(|part| part == "..");
+        if bad {
+            return usage(format!(
+                "path {path:?}: relative to the project, no .., not starting with - or :"
+            ));
+        }
+        if !out.iter().any(|p| p == path) {
+            out.push(path.into());
+        }
+    }
+    match out.len() > MAX_PATHS || out.iter().map(String::len).sum::<usize>() > MAX_PATH_BYTES {
+        true => usage(format!(
+            "at most {MAX_PATHS} paths and {MAX_PATH_BYTES} bytes of them"
+        )),
         false => Ok(out),
     }
 }
