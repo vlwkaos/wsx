@@ -150,7 +150,7 @@ fn listing(listed: bool, found: Vec<(String, String, Source)>, skipped: usize) -
 
 /// The config root of `project`'s profile, else `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
 /// None when the profile's folder is missing or the config does not parse: another
-/// account's skills are never listed. ref: README "Profiles"
+/// account's skills are never listed. ref: docs/configuration.md "Profiles"
 fn claude_home(project: &Path) -> Option<PathBuf> {
     match crate::site::global_config()?.claude_config_dir(project) {
         Ok(Some(root)) => return Some(root),

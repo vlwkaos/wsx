@@ -32,7 +32,7 @@ impl App {
         self.mark_dirty();
     }
 
-    /// `P`: the next profile in config order. ref: README "Profiles"
+    /// `P`: the next profile in config order. ref: docs/configuration.md "Profiles"
     pub(super) fn action_profile_next(&mut self) {
         let names = self.config.profile_names();
         let Some(current) = &self.active_profile else {

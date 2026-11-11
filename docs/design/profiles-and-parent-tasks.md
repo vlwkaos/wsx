@@ -1,6 +1,6 @@
 # Profiles and parent tasks (design)
 
-Status: parent tasks (B) and roles (C) are built ([../tasks.md](../tasks.md) "Parent tasks", "Roles"), and so are profiles (A) ([README](../../README.md#profiles)) without the web Home's rows headed by profile and without `CODEX_HOME`. A project that moves to another profile is not refused. Roles differ here in two points: the TUI keeps `m` for the manager chat (#117), and a role lands a child into its parent. The answer:
+Status: parent tasks (B) and roles (C) are built ([../tasks.md](../tasks.md) "Parent tasks", "Roles"), and so are profiles (A) ([configuration](../configuration.md#profiles)) without the web Home's rows headed by profile and without `CODEX_HOME`. A project that moves to another profile is not refused. Roles differ here in two points: the TUI keeps `m` for the manager chat (#117), and a role lands a child into its parent. The answer:
 
 - **Profile**: a named table in `config-v2.toml`. A project names one profile. The profile chooses the agent account and is a site's grant. The store, the managers and wsxd stay as they are.
 - **Parent task**: an ordinary held task that other tasks name as their land target (`task new --into <p>`). It owns the files and the one land into main.

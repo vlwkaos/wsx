@@ -145,7 +145,7 @@ pub fn install(target: IntegrationTarget) -> io::Result<InstallResult> {
     }
     let mut installed = install_in(target, &root)?;
     if target == IntegrationTarget::Claude {
-        // ^ A profile's agents load their hooks from its own root (README "Profiles").
+        // ^ A profile's agents load their hooks from its own root (docs/configuration.md "Profiles").
         for profile_root in profile_roots()? {
             if profile_root != root {
                 installed

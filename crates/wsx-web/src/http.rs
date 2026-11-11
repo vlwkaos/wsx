@@ -834,7 +834,7 @@ async fn session_start(
         .ok_or_else(Fault::not_found)?;
         // Each start spawns a process on the host.
         start_budget(&app, &device)?;
-        // ^ The agent runs under the account of the project's profile (README "Profiles").
+        // ^ The agent runs under the account of the project's profile (docs/configuration.md "Profiles").
         let config = crate::site::config_or_fault()?;
         // ^ Every session is a login shell; the agent is typed into it, so the pane outlives
         // the agent: chat can resume it, and the terminal can start another (docs/web-client.md).

@@ -870,7 +870,7 @@ pub fn project_shell(client: &Client, config: &GlobalConfig, main: &Path) -> Res
 /// `argv` (empty: the login shell) under the agent account of `project`'s profile:
 /// `env CLAUDE_CONFIG_DIR=<root> <argv>`, so every agent started in the pane uses it and
 /// its reporter records it for a restore. Unchanged when the profile sets no folder.
-/// ref: README "Profiles", docs/agent-orchestration.md "Resumed agents"
+/// ref: docs/configuration.md "Profiles", docs/agent-orchestration.md "Resumed agents"
 pub fn with_account(
     config: &GlobalConfig,
     project: &Path,

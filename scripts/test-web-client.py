@@ -1018,7 +1018,7 @@ def web_journey(args):
         bin_dir = work / 'bin'
         config = (work / 'home/Library/Application Support/wsx' if sys.platform == 'darwin' else work / 'config/wsx')
         config.mkdir(parents=True)
-        # ^ README "Profiles": project2 is in profile work, with its own agent config root.
+        # ^ docs/configuration.md "Profiles": project2 is in profile work, with its own agent config root.
         (work / 'claude-work').mkdir(mode=0o700)
         profile_root = (work / 'claude-work').resolve()
         (profile_root / 'skills/profile-skill').mkdir(parents=True)
@@ -2713,7 +2713,7 @@ capabilities = ["terminal_view"]
         assert b'woff2' not in owner.request('GET', '/sw.js')[1] and b'terminal-fonts.css' in owner.request('GET', '/sw.js')[1]
         ok('watch-only terminal: host size, no resize, no input, no clipboard; projects = "all" reaches every project; terminal fonts served')
 
-        # --- A profile site (README "Profiles"): exactly profile work's projects, also one that
+        # --- A profile site (docs/configuration.md "Profiles"): exactly profile work's projects, also one that
         # joins it later without a restart; its agents start under the profile's config root, and
         # the skills it lists come from that root.
         work_site = sites['work']
