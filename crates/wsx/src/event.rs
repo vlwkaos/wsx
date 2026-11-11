@@ -409,6 +409,7 @@ pub fn poll_event(
                 escape.reset();
                 Action::None
             }
+            Event::Paste(text) if mode == EventMode::Input => Action::Paste(text),
             Event::Paste(_) => Action::None,
             Event::Resize(_, _) if mode == EventMode::Workspace => {
                 escape.reset();
@@ -436,6 +437,8 @@ fn translate_input_key(key: KeyEvent) -> Action {
         KeyCode::Up => Action::NavigateUp,
         KeyCode::Left => Action::NavigateLeft,
         KeyCode::Right => Action::NavigateRight,
+        KeyCode::PageUp => Action::PageUp,
+        KeyCode::PageDown => Action::PageDown,
         KeyCode::Char(c) => Action::InputChar(c),
         _ => Action::None,
     }
@@ -484,6 +487,10 @@ fn translate_key(key: KeyEvent) -> Action {
         (KeyModifiers::NONE, KeyCode::Tab) => Action::InputTab,
         (KeyModifiers::NONE, KeyCode::PageUp) => Action::PageUp,
         (KeyModifiers::NONE, KeyCode::PageDown) => Action::PageDown,
+        (KeyModifiers::SHIFT, KeyCode::Char('G')) | (KeyModifiers::NONE, KeyCode::Char('G')) => {
+            Action::JumpEnd
+        }
+        (KeyModifiers::NONE, KeyCode::Char(' ')) => Action::Toggle,
         (KeyModifiers::NONE, KeyCode::Char('p')) => Action::AddProject,
         (KeyModifiers::NONE, KeyCode::Char('w')) => Action::AddWorktree,
         (KeyModifiers::NONE, KeyCode::Char('s')) => Action::AddSession,

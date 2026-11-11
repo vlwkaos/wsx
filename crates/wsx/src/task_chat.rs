@@ -791,6 +791,19 @@ impl ManagerChat {
     /// One key of the chat (input-mode actions: every character comes as `InputChar`).
     /// False when the chat closes.
     pub fn key(&mut self, action: &Action) -> bool {
+        // ^ A page is the chat's height less a line; it pages in the message line too.
+        if matches!(self.focus, Focus::Chat | Focus::Compose) {
+            let page = i32::from(self.area.get().1).saturating_sub(1).max(1);
+            let delta = match action {
+                Action::PageUp => page,
+                Action::PageDown => -page,
+                _ => 0,
+            };
+            if delta != 0 {
+                self.scroll_by(delta);
+                return true;
+            }
+        }
         match self.focus.clone() {
             Focus::Chat => return self.chat_key(action),
             Focus::Compose => match action {
@@ -865,6 +878,7 @@ impl ManagerChat {
             (Action::InputChar('j') | Action::NavigateDown, _) => self.scroll_by(-1),
             (Action::InputChar('G'), _) if self.around.is_some() => self.newest(),
             (Action::InputChar('G'), _) => self.scroll = 0,
+            (Action::InputChar('g'), _) => self.scroll = self.max_scroll.get(),
             (Action::InputTab, _) => self.select(1),
             (Action::InputBackTab, _) => self.select(-1),
             // ^ Enter on an open question shows its reply, as on a quote with an id.

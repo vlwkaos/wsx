@@ -515,7 +515,7 @@ pub enum Mode {
         worktree_idx: usize,
         session_idx: usize,
     },
-    Help,
+    Help(crate::ui::help::HelpView),
     Search {
         query: String,
         match_idx: usize,
@@ -882,6 +882,13 @@ enum RoutineResultKind {
     },
     Delete {
         name: String,
+    },
+    Run {
+        name: String,
+    },
+    Enable {
+        name: String,
+        enabled: bool,
     },
 }
 

@@ -1638,7 +1638,7 @@ fn explicit_agent_demand_prompts_once_and_decline_is_per_agent() {
 fn delayed_demand_scan_waits_for_active_modal() {
     let target = wsx_core::integration::IntegrationTarget::Pi;
     let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
-    app.mode = Mode::Help;
+    app.mode = Mode::Help(Default::default());
     app.prompt_for_integration_if_needed(target);
 
     app.apply_integration_scan(Ok(vec![integration_metadata(
@@ -1646,7 +1646,7 @@ fn delayed_demand_scan_waits_for_active_modal() {
         true,
         wsx_core::integration::InstallStatus::Missing,
     )]));
-    assert!(matches!(app.mode, Mode::Help));
+    assert!(matches!(app.mode, Mode::Help(_)));
     assert_eq!(app.pending_integration_demand, Some(target));
 
     app.mode = Mode::Workspace;
@@ -1688,14 +1688,14 @@ fn startup_scan_prompts_for_outdated_integrations_despite_prior_dismissal() {
 fn delayed_outdated_scan_waits_for_workspace_and_decline_is_run_local() {
     let target = wsx_core::integration::IntegrationTarget::Claude;
     let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
-    app.mode = Mode::Help;
+    app.mode = Mode::Help(Default::default());
 
     app.apply_integration_scan(Ok(vec![integration_metadata(
         target,
         true,
         wsx_core::integration::InstallStatus::Outdated,
     )]));
-    assert!(matches!(app.mode, Mode::Help));
+    assert!(matches!(app.mode, Mode::Help(_)));
     assert_eq!(app.pending_integration_updates, vec![target]);
 
     app.mode = Mode::Workspace;
@@ -3279,7 +3279,7 @@ fn compact_terminal_sidebar_tiny_height_degrades_without_panicking() {
 #[test]
 fn help_describes_done_acknowledgement_before_mute() {
     let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
-    app.mode = Mode::Help;
+    app.mode = Mode::Help(Default::default());
     let backend = ratatui::backend::TestBackend::new(80, 40);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
@@ -3303,7 +3303,7 @@ fn help_describes_done_acknowledgement_before_mute() {
 #[test]
 fn help_actions_render_on_the_popup_bottom_border() {
     let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
-    app.mode = Mode::Help;
+    app.mode = Mode::Help(Default::default());
     let backend = ratatui::backend::TestBackend::new(40, 12);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
@@ -3332,10 +3332,17 @@ fn help_actions_render_on_the_popup_bottom_border() {
 #[test]
 fn help_advertises_terminal_idle_and_active_iteration() {
     let mut app = make_test_app(GlobalConfig::default(), WorkspaceState::empty(), None);
-    app.mode = Mode::Help;
+    app.mode = Mode::Help(Default::default());
     let backend = ratatui::backend::TestBackend::new(100, 50);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
+    // ^ The popup scrolls: the first frame sets how far, the second shows the Terminal mode section.
+    terminal
+        .draw(|frame| crate::ui::render(frame, &mut app))
+        .unwrap();
+    if let Mode::Help(view) = &mut app.mode {
+        view.scroll = 42;
+    }
     terminal
         .draw(|frame| crate::ui::render(frame, &mut app))
         .unwrap();

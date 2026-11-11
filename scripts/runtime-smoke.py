@@ -2313,6 +2313,78 @@ try:
     wait_for(lambda: "press i to write a message" not in remove_tui.text(), "Esc did not close the chat opened from a routine", seconds=60)
     remove_tui.send(b"q")
     wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close the Tasks view opened from a routine", seconds=60)
+    # docs/design/tui-parity-audit.md gaps 3 to 7: the keys the footers and the help name work in the
+    # real TUI. The help scrolls to its last section at 40 rows; the footers list the project and
+    # routine keys; a bracketed paste lands in the `p` path and the chat line; a routine runs now
+    # and turns off and on from its row; the chat pages. (An Esc followed at once by a key reads as Alt.)
+    def screen_key(keys, found, message, pause=0.5):
+        remove_tui.send(keys)
+        wait_for(lambda: re.search(found, remove_tui.text()), lambda: f"{message}:\n{remove_tui.text()}", seconds=60)
+        time.sleep(pause)
+    select_in_tui("keep-me")
+    footer_row = lambda: next(line for line in reversed(remove_tui.text().splitlines()) if line.startswith(" WORKSPACE"))
+    wait_for(lambda: "(t)asks" in footer_row() and "(v/M)panels" in footer_row(), lambda: f"the project footer lacks the tasks and panels keys:\n{footer_row()}", seconds=60)
+    screen_key(b"?", r"┌ Help ", "? opened no help")
+    assert "Global" not in remove_tui.text() and "j/k PgUp/PgDn g/G scroll" in remove_tui.text(), remove_tui.text()
+    screen_key(b"G", r"Hard quit TUI and wsxd", "G did not reach the last help section")
+    assert "Global" in remove_tui.text() and "Search sessions" not in remove_tui.text(), remove_tui.text()
+    screen_key(b"\x1b[5~", r"Groups \(optional\)", "PgUp did not scroll the help back")
+    screen_key(b"g", r"Search sessions and files", "g did not return to the top of the help")
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "┌ Help " not in remove_tui.text(), "Esc did not close the help", seconds=60)
+    time.sleep(0.5)
+    remove_tui.send(b"p")
+    wait_for(lambda: "project:" in remove_tui.text(), "p opened no path prompt", seconds=60)
+    remove_tui.send(b"\x1b[200~/tmp/pasted\npath\x1b[201~")
+    wait_for(lambda: "project: /tmp/pasted path" in remove_tui.text(), lambda: f"a paste did not land in the path prompt:\n{remove_tui.text()}", seconds=60)
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "project:" not in remove_tui.text(), "Esc did not close the path prompt", seconds=60)
+    time.sleep(0.5)
+    remove_tui.send(b"/quiet\r")
+    wait_for(lambda: "(space)on/off" in footer_row() and "(r)un" in footer_row(), lambda: f"the routine footer lacks run and on/off:\n{footer_row()}", seconds=60)
+    screen_key(b"?", r"┌ Help ", "? opened no help on a routine")
+    screen_key(b"j" * 22, r"Space +Turn it on / off", "the help does not name the routine keys")
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "┌ Help " not in remove_tui.text(), "Esc did not close the help", seconds=60)
+    time.sleep(0.5)
+
+    def routine_state(routine_name):
+        listed = wsx("routine", "list", "-p", keep_path, "--json")
+        rows = [row for row in json.loads(listed.stdout)["routines"] if row["routine"]["name"] == routine_name]
+        return rows[0]
+
+    last_before = routine_state("quiet")["latest_run"]["finished_epoch"]
+    remove_tui.send(b"r")
+    wait_for(lambda: "Started routine 'quiet'" in remove_tui.text(), lambda: f"r did not run the routine:\n{remove_tui.text()}", seconds=60)
+    wait_for(lambda: (routine_state("quiet")["latest_run"] or {}).get("finished_epoch", 0) > last_before,
+             "the run the TUI started did not finish", seconds=60)
+    remove_tui.send(b" ")
+    wait_for(lambda: "Routine 'quiet' is off" in remove_tui.text(), lambda: f"Space did not turn the routine off:\n{remove_tui.text()}", seconds=60)
+    wait_for(lambda: routine_state("quiet")["routine"]["enabled"] is False, "the routine stayed on in the scheduler", seconds=60)
+    time.sleep(1)
+    remove_tui.send(b" ")
+    wait_for(lambda: "Routine 'quiet' is on" in remove_tui.text(), lambda: f"Space did not turn the routine on:\n{remove_tui.text()}", seconds=60)
+    wait_for(lambda: routine_state("quiet")["routine"]["enabled"] is True, "the routine stayed off in the scheduler", seconds=60)
+    select_in_tui("keep-me")
+    remove_tui.send(b"t")
+    wait_for(lambda: "All projects" in remove_tui.text(), "t opened no Tasks view for keep-me", seconds=120)
+    screen_key(b"?", r"Help: Tasks", "? in the Tasks view opened no help for it")
+    assert "Manager chat" in remove_tui.text(), remove_tui.text()
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "Help: Tasks" not in remove_tui.text(), "Esc did not close the Tasks help", seconds=60)
+    time.sleep(0.5)
+    remove_tui.send(b"m")
+    wait_for(lambda: "press i to write a message" in remove_tui.text() or "Press i to write" in remove_tui.text(), "m opened no manager chat", seconds=60)
+    screen_key(b"i?", r"> \?", "? in the message line was not text")
+    assert "Help" not in remove_tui.text(), remove_tui.text()
+    remove_tui.send(b"\x1b[200~one\ntwo\x1b[201~")
+    wait_for(lambda: "> ?one two" in remove_tui.text(), lambda: f"a paste did not land in the chat line:\n{remove_tui.text()}", seconds=60)
+    remove_tui.send(b"\x1b")
+    time.sleep(0.5)
+    remove_tui.send(b"\x1b")
+    wait_for(lambda: "> ?one two" not in remove_tui.text(), "Esc did not leave the chat", seconds=60)
+    remove_tui.send(b"q")
+    wait_for(lambda: "All projects" not in remove_tui.text(), "q did not close keep-me's Tasks view", seconds=60)
     # docs/design/tui-health-audit.md #1, #2, #10, #14: the chat of a manager log of about 7.5
     # MiB (the log rolls over at 8 MiB) reads only the end of it, and a 20 KB line in the
     # composer costs the same as a short one. The find in the chat is in scripts/test-task.py.
@@ -2346,6 +2418,17 @@ try:
     refresh = time.monotonic() - started
     print(f"smoke: the chat of a {halt_log.stat().st_size / MiB:.1f} MiB log refreshed in {refresh:.2f} s", flush=True)
     assert refresh < REFRESH_SECONDS, f"the chat refresh took {refresh:.2f} s"
+    # docs/design/tui-parity-audit.md gap 7: PgUp and PgDn page the chat, `g` goes to the oldest
+    # loaded row and `G` back to the newest.
+    for keys, shown, message in ((b"\x1b[5~", False, "PgUp did not scroll the chat a page"),
+                                 (b"\x1b[6~", True, "PgDn did not scroll the chat back"),
+                                 (b"g", False, "g did not go to the oldest loaded row"),
+                                 (b"G", True, "G did not go to the newest row")):
+        remove_tui.send(keys)
+        wait_for(lambda: ("LAST-ENTRY-1" in remove_tui.text()) == shown, lambda: f"{message}:\n{remove_tui.text()}", seconds=60)
+        time.sleep(0.3)
+        if keys == b"g":
+            assert re.search(r"old-\d{5}", remove_tui.text()), remove_tui.text()
     # ^ A 20 KB line typed (a terminal without bracketed paste sends a paste as keys), in ten
     # parts of 2,000 characters, each ending in a mark that shows when the TUI has taken the
     # part. Each key costs one redraw (the first part sets the cost of that), so the last part

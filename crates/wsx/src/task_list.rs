@@ -116,6 +116,8 @@ pub struct TaskList {
     pub chat: Option<Box<crate::task_chat::ManagerChat>>,
     /// The project's overview, opened with `o` over the list or the chat.
     pub overview: Option<Overview>,
+    /// The `?` popup over the list, the detail or the chat.
+    pub help: Option<crate::ui::help::HelpView>,
     stamp: Option<Stamp>,
     pending: Option<mpsc::Receiver<Read>>,
     last_check: Instant,
@@ -143,6 +145,7 @@ impl TaskList {
             agent: None,
             chat: None,
             overview: None,
+            help: None,
             stamp: None,
             pending: None,
             last_check: Instant::now(),

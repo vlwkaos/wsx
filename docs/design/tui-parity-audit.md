@@ -4,6 +4,8 @@ Rule: a web change keeps TUI parity, where the feature fits a terminal. Audit da
 Assuming: #397's prompt was not readable here. Its scope is read from branch `wsx/t397` (role model in the room heading and Roles row: `task_chat.rs`, `task_list.rs`, `ui/task_chat.rs`) and from the memory note (no role rows in the TUI sidebar, on purpose). Those rows are marked "covered by #397".
 Paths: TUI under `crates/wsx/src/`, web under `crates/wsx-web/web/`. "Driven" = the real TUI run in a PTY by a scratch script on `scripts/tui_pty.py` (isolated HOME, one git project), 40 rows by 120 columns. Gaps 3, 4 and 5 were driven; every other row rests on the cited code.
 
+Status: gaps 3 to 7 are fixed (help scroll and Tasks help in `ui/help.rs`; footers and README; `Action::Paste`; routine `r` run and Space on/off; chat PgUp/PgDn and `g`). Proof: `scripts/runtime-smoke.py`, the block after the routine detail. Gaps 1, 2, 8 and 9 stay open.
+
 ## Gaps
 
 | # | Gap | Web / CLI has it | TUI lacks it | Impact | Fix |

@@ -19,10 +19,20 @@ pub(crate) trait TextForm {
     fn focus_prev(&mut self);
 }
 
+/// A paste as one line of text: the trailing line breaks go, the others and tabs turn into
+/// spaces, and other control characters are dropped.
+pub(crate) fn one_line(text: &str) -> impl Iterator<Item = char> + '_ {
+    text.trim_end_matches(['\n', '\r'])
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
+        .map(|c| if c.is_control() { ' ' } else { c })
+}
+
 /// Applies a text-editing key to `form`. Returns false for every other action.
 pub(crate) fn dispatch_text_edit(form: &mut impl TextForm, action: &Action) -> bool {
     match action {
         Action::InputChar(c) if form.accepts_text() => form.insert(*c),
+        Action::Paste(text) if form.accepts_text() => one_line(text).for_each(|c| form.insert(c)),
         Action::InputBackspace => form.backspace(),
         Action::NavigateLeft => form.cursor_left(),
         Action::NavigateRight => form.cursor_right(),

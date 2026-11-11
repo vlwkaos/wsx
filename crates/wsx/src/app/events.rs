@@ -175,6 +175,39 @@ impl App {
                 }
                 self.restore_failed_routine_delete(project_idx, &name, routine_error_text(&error));
             }
+            (RoutineResultKind::Run { name }, Ok(wsx_core::routine::Response::Ok { .. })) => {
+                self.spawn_routine_project_refresh(
+                    result.project_path,
+                    true,
+                    RoutineSelection::Preserve,
+                );
+                self.set_status(format!("Started routine '{name}'"));
+            }
+            (RoutineResultKind::Enable { name, enabled }, Ok(_)) => {
+                self.spawn_routine_project_refresh(
+                    result.project_path,
+                    true,
+                    RoutineSelection::Preserve,
+                );
+                self.set_status(format!(
+                    "Routine '{name}' is {}",
+                    if enabled { "on" } else { "off" }
+                ));
+            }
+            (
+                RoutineResultKind::Run { name } | RoutineResultKind::Enable { name, .. },
+                Err(error),
+            ) => {
+                if routine_error_kind(&error) == Some(wsx_core::routine::RoutineErrorKind::Conflict)
+                {
+                    self.spawn_routine_project_refresh(
+                        result.project_path,
+                        true,
+                        RoutineSelection::Preserve,
+                    );
+                }
+                self.set_status(format!("Routine '{name}': {}", routine_error_text(&error)));
+            }
             (_, Ok(response)) => self.set_status(format!(
                 "Routine daemon returned an unexpected response: {response:?}"
             )),

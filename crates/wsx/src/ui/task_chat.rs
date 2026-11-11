@@ -315,6 +315,7 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
                 "(j/k)scroll".into(),
                 "(o)verview".into(),
                 "(m)edia".into(),
+                "(?)help".into(),
             ]);
             hints
         }
