@@ -183,7 +183,7 @@ A wrong record is caught three ways: (1) a fact with `commit` and `paths` is sta
 | 3 | Manage and migration: import, render of views with date and words, manager write path, supersede with top-5 check | `memory/manage.rs`, `task/notes.rs`, `task/instructions.rs` | old store imported, rendered rules keep date and words; a drift edit is reported |
 | 4 | Start sets and areas on every adapter; role brief reaches workers | `host.rs task_context`, `config`, `task/roles.rs` | fake Claude, Codex and Pi runs: the first prompt holds the area brief and the matching fact |
 | 5 | Capture: memo to records with paths and commit; rotation episodes; stale-by-commit | `task/host.rs`, `memory/manage.rs` | landed task makes a fact; a later commit on its paths shows `stale` |
-| 6 | Cheap `recall` agent and measurement on the real store | `memory/index.rs`, docs | before/after of plan-step calls on 20 tasks in `docs/design/memory-system.md` |
+| 6 | Measurement on the real store, with and without memory; a cheap-model `recall` arm. Step 8 waits for its verdict | `scripts/memory-eval.py`, [memory-eval.md](memory-eval.md) | replay of 20 landed tasks, plan step, three arms; the verdict rule is fixed before the memory arms run |
 | 7 | Scopes outside projects, `command` delegation, `distill`; dotfiles builds its rows against `scripts/test-memory.py` | `memory/store.rs`, config, `integration/memory.rs` | the contract test runs against the built-in and a fake `command` store; the delegated call passes output and exit code through |
 | 8 | Remove what steps 3 to 6 made dead (matching, ask, caps text) | `notes.rs`, `docs/tasks.md` | `cargo nextest`, task scenario |
 
