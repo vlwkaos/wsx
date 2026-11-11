@@ -3308,7 +3308,8 @@ await until("document.querySelector('.option-status')?.textContent === 'Notifica
   await until(`document.querySelector('.progress-now')?.textContent === 'running ls -la'`, "the sheet never shows what the worker does now", 60);
   await shows(working, "working", { ...workingTop, age: /^(now|\dm ago)$/ });
   // ^ The age is renewed by a timer of 30 s that runs only while the age shows.
-  if ((await timers(30000)) < 1) await fail("a working task's sheet has no age timer");
+  // ^ An effect's timer: waited for, not read once.
+  await until("window.__timers && [...window.__timers.values()].some((delay) => delay === 30000)", "a working task's sheet has no age timer", 20);
   await shot("progress-working", ".composer-send");
   // ^ The word's color moves by a transition: measured once it has settled.
   const signal = () => evaluate(`(async () => { const word = document.querySelector('.progress-health'); await Promise.allSettled(word.getAnimations().map((animation) => animation.finished)); const mark = document.querySelector('.progress-head .mark'), takeOver = [...document.querySelectorAll('.task-sheet button')].find((node) => node.textContent.trim() === 'Take over')?.getBoundingClientRect();
