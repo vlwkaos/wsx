@@ -1,6 +1,6 @@
 # CLI lean: fewer commands in view
 
-Design proposal, no code changed. Counts come from the clap enums in `crates/wsx/src/cli/args.rs` and `crates/wsx/src/task/args.rs`, not from `--help`: inside a task boundary `wsx` runs only `wsx task` (a shim). Caller claims are `rg` lines; `rg` patterns quoted in "Proof".
+Design proposal, no code changed. Counts come from the clap enums in `crates/wsx/src/cli/args.rs` and `crates/wsx/src/task/args.rs` (cited as `cli/args.rs`, `task/args.rs`), not from `--help`: inside a task boundary `wsx` runs only `wsx task` (a shim). Caller claims are `rg` lines; `rg` patterns quoted in "Proof".
 
 ## Who calls what
 
@@ -40,9 +40,9 @@ After: 9 groups, 80 visible level-2 entries; wsx task 29 visible
 
 | # | Change | Callers (file:line) | Saved | Risk | Alias |
 |---|---|---|---|---|---|
-| C1 | `-p` and `--json` global on `wsx task` (`global = true`, already used by `CheckAction`, `args.rs:187`) | 31 `json: bool` and 36 `project` fields in `task/args.rs`; `json_output` `args.rs:647-695`; prompt `instructions.rs:29` lists the commands that lack them | about 70 field lines, the 49-line match, 47 B of manager prompt | low: every old argv still parses; `digest` and `checkin` accept `--json` and ignore it | none |
-| C2 | Hide from help: `task check-run`, `digest`, `post`; `memory capture`, `start`, `import`; `session send-keys` | check-run: CLI body only bails (`task/mod.rs:231`), broker forwards first (`broker.rs:122-127`); digest and post: routines; capture and start: host and eval scripts; send-keys: `args.rs:796` "Deprecated alias", only `docs/cli.md:11` | 7 entries | none: help text only | none |
-| C3 | `steer` becomes `add --now` | `test-task.py:1108`, `test-web-client.py:4169`, `docs/tasks.md:9`, `instructions.rs:47,72,160`; both need `Capability::Direct` (`args.rs:611`) | 1 command, 12 B of prompt | managers with the old prompt still say `steer` | hidden `steer` stays |
+| C1 | `-p` and `--json` global on `wsx task` (`global = true`, already used by `CheckAction`, `task/args.rs:187`) | 31 `json: bool` and 36 `project` fields in `task/args.rs`; `json_output` `task/args.rs:647-695`; prompt `instructions.rs:29` lists the commands that lack them | about 70 field lines, the 49-line match, 47 B of manager prompt | low: every old argv still parses; `digest` and `checkin` accept `--json` and ignore it | none |
+| C2 | Hide from help: `task check-run`, `digest`, `post`; `memory capture`, `start`, `import`; `session send-keys` | check-run: CLI body only bails (`task/mod.rs:231`), broker forwards first (`broker.rs:122-127`); digest and post: routines; capture and start: host and eval scripts; send-keys: `cli/args.rs:796` "Deprecated alias", only `docs/cli.md:11` | 7 entries | none: help text only | none |
+| C3 | `steer` becomes `add --now` | `test-task.py:1108`, `test-web-client.py:4169`, `docs/tasks.md:9`, `instructions.rs:47,72,160`; both need `Capability::Direct` (`task/args.rs:611`) | 1 command, 12 B of prompt | managers with the old prompt still say `steer` | hidden `steer` stays |
 | C4 | `handback` becomes `hand --back` (same shape as `trial --end`, `preview --stop`, `hold --off`) | web builds argv by command name (`tasks.rs:1119-1125`, `http.rs:1386`); hints `cmd/work.rs:199,229` | 1 command | an open hand session prints the old hint | hidden `handback` stays |
 | C5 | `runtime status` becomes `daemon status` | `runtime-smoke.py:1550,1680,1699`; `main.rs:153` (test); `docs/cli.md:23,74` | 1 group | users' scripts | hidden `runtime status` stays |
 | C6 | Hide `group` and `plugin` from `wsx --help` | no caller in `crates/` or `scripts/`; `docs/cli.md:13,22` only | 2 groups | none: still run; the owner may use them by hand | none |
@@ -58,11 +58,11 @@ Manager prompt: 11,567 B now, 11,508 B after C1 and C3 (-59 B, 0.5%). Worker pro
 | Stop / Add | Stop interrupts and the next add resumes; different effect. |
 | Deploy / Release | Different project commands; release refuses while To check is open (`instructions.rs:91-93`); each is its own approval. |
 | Deployed / Ledger | `cmd/deploy.rs:519` and `wsx-core/src/task/ledger.rs:125` build the same `deploy_status`, but the manager never names `deployed`, 10 script lines and the owner hints (`deploy.rs:267,346`) do. Kept. |
-| Approve / Deny / Dismiss | Owner-only (`args.rs:634-643`); web uses them in-process except dismiss. Three id kinds, one visible command saved at most. |
+| Approve / Deny / Dismiss | Owner-only (`task/args.rs:634-643`); web uses them in-process except dismiss. Three id kinds, one visible command saved at most. |
 | List / Show / Ledger | The manager reads ledger and show only; `list` is the owner's table, with 36 script lines. |
 | Check / CheckRun | Different callers and jobs (owner list vs worker run); only check-run is hidden (C2). |
 | Say / Chat / Post / Search | Write, read, wsx's own message, ranked find. Post is hidden (C2), `--find` goes (C7). |
-| `memory search` / `task search` | Overlap (transcript kinds, `args.rs:863`) but `task search` adds `--all`, `--task`, quote lines. Not proven a duplicate; measure first. |
+| `memory search` / `task search` | Overlap (transcript kinds, `cli/args.rs:863`) but `task search` adds `--all`, `--task`, quote lines. Not proven a duplicate; measure first. |
 | `worktree create` / `agent start` | `agent start` adds session and request (`docs/cli.md:56`); `runtime-smoke.py:489-538` tests `worktree create`. |
 | `agent` group | Hooks pin it (contract 2). `inspect`, `continue`, `cancel`, `exchanges` have no script caller but are the documented orchestration API (`docs/agent-orchestration.md`). |
 
