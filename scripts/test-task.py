@@ -3236,6 +3236,16 @@ def part_worker(created=None):
     assert [p['id'] for p in js('task', 'ledger')['approvals']] == [request]
     checks_file = Path(show(seen_item)['report']).parent.parent / 'checks.jsonl'
 
+    # The Workspace row marks what waits for the owner after the project's name: `!N` tasks and
+    # approvals (the ready task and its request, so 2 or more), `✓N` To check items (one), and `n`
+    # from the worktree row reaches the project row, `N` back (docs/tasks.md "TUI").
+    tui_screens(wsx, env, project, [
+        (r'(?s)[▼▶] demo !(?:[2-9]|\d\d) ✓%d\b.*~ main' % len(js('task', 'check')['open']), b'j'),
+        (r'WORKSPACE +\(s\)ession', b'n'),
+        (r'WORKSPACE +\(e\)dit +\(w\)orktree', b'j'),
+        (r'WORKSPACE +\(s\)ession', b'N'),
+        (r'WORKSPACE +\(e\)dit +\(w\)orktree', b'')])
+
     def owner_said(text):
         lines = [json.loads(line) for line in manager_log.read_text().splitlines() if line.strip()]
         return any(e.get('kind') == 'message' and e.get('from') == 'owner' and e.get('text') == text

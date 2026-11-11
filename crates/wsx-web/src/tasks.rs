@@ -23,6 +23,7 @@ use wsx_core::task::{
         activity, decided_request, pending_approvals, ApprovalLine, Author, ManagerEntry,
         ManagerEvent, ManagerRequest, ManagerResponse,
     },
+    needs::{self, NeedKind, Stage, APPROVAL_RANK},
     owner, stall, status,
     store::{self, ManagerDir, TaskDir, REPORT_FILE},
     view, HostRequest, LogEvent, MessageKind, TaskRecord, TaskState, WaitOn, MAX_MESSAGE_BYTES,
@@ -80,24 +81,6 @@ pub fn scope(app: &App, project: u64) -> Outcome<Scope> {
 
 fn internal(error: anyhow::Error) -> Fault {
     Fault::new(500, "task_store", format!("{error:#}"))
-}
-
-/// The three states the owner sees (docs/web-client-tasks.md); the store keeps the rest.
-/// A ready task waits for a land by hand: auto land is off, there are no checks, or it stopped.
-/// One the manager created waits for the manager's review, not the owner. An idle worker whose
-/// task waits for another to land asks nobody either.
-fn stage(dir: &TaskDir, record: &TaskRecord, land_auto: bool) -> &'static str {
-    if record.manager_reviews(land_auto) || status::owner_waits_after(dir, record) {
-        return "working";
-    }
-    match record.state {
-        // ^ The owner works on it: not a need of the owner, and not done.
-        TaskState::Waiting if record.waits_on(WaitOn::Hand) => "working",
-        TaskState::Working | TaskState::Checking => "working",
-        TaskState::Waiting | TaskState::Failed | TaskState::Ready => "needs_you",
-        TaskState::Landed => "done",
-        TaskState::Closed => "closed",
-    }
 }
 
 fn open_task(scope: &Scope, task: u32) -> Outcome<TaskDir> {
@@ -192,7 +175,7 @@ fn build_overview(
             order,
             u64::MAX - record.updated_unix_ms,
             json!({
-                "id": record.id, "title": title, "state": record.state, "stage": stage(dir, record, land_auto),
+                "id": record.id, "title": title, "state": record.state, "stage": needs::stage(dir, record, land_auto).name(),
                 "revision": record.revision, "updated_unix_ms": record.updated_unix_ms,
                 "waiting": record.waiting,
                 "status": status,
@@ -205,16 +188,14 @@ fn build_overview(
                 "revision": record.revision, "unix_ms": record.updated_unix_ms,
             })
         };
-        if stage(dir, record, land_auto) == "working" {
+        if needs::stage(dir, record, land_auto) == Stage::Working {
             working += 1;
             continue;
         }
-        let (rank, mut row) = match record.state {
-            TaskState::Waiting => (0, item("waiting")),
-            TaskState::Failed => (1, item("failed")),
-            TaskState::Ready => (3, item("land")),
-            _ => continue,
+        let Some(kind) = NeedKind::of(record.state) else {
+            continue;
         };
+        let (rank, mut row) = (kind.rank(), item(kind.name()));
         if let Some(waiting) = &record.waiting {
             row["waiting"] = json!(waiting);
         }
@@ -236,7 +217,7 @@ fn build_overview(
             continue;
         };
         needs.push((
-            2,
+            APPROVAL_RANK,
             *unix_ms,
             json!({
                 "kind": "approval", "approval": id, "action": owner::action_name(*action),
@@ -517,7 +498,7 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["goal"] = goal(&dir);
     let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
     summary["agent"] = view::task_agent(&record);
-    summary["stage"] = json!(stage(&dir, &record, land_auto));
+    summary["stage"] = json!(needs::stage(&dir, &record, land_auto).name());
     summary["conflict"] =
         json!(record.state == TaskState::Working && view::resolving_conflict(&dir));
     if record.state == TaskState::Ready {

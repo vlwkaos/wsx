@@ -43,7 +43,7 @@ Details: [tasks](docs/tasks.md), [orchestration](docs/agent-orchestration.md), [
 
 | Workflow | Guide |
 |---|---|
-| **Iterate attention**<br>`a/A` visits active sessions. `n/N` visits sessions that need attention. | ![Blocked Codex session selected by attention iteration](docs/screenshots/02-attention-iteration.png) |
+| **Iterate attention**<br>`a/A` visits active sessions. `n/N` visits sessions that need attention, and projects with a need (`!` waiting for you, `✓` to check). | ![Blocked Codex session selected by attention iteration](docs/screenshots/02-attention-iteration.png) |
 | **Group work**<br>Persistent groups filter projects. Inactive projects remain visible as stale. | ![A group filtered to a stale project](docs/screenshots/03-groups-and-stale.png) |
 | **Use split terminals**<br>Terminal mode shows pane state and foreground jobs. Worktree previews show each session's detected ports. | ![Terminal mode with a split server session](docs/screenshots/04-terminal-and-panes.png) |
 | **Schedule routines**<br>Select an agent template, then edit its visible argv, schedule, and prompt. | ![Pi routine editor](docs/screenshots/05-routine-editor.png) |
@@ -69,7 +69,7 @@ Set up agent hooks with `wsx agent install claude` (or `pi`). See [integrations]
 
 | Context | Keys |
 |---|---|
-| Workspace | `j/k` move, `h/l` fold, `Enter` select, `m` reorder, `[`/`]` project, `i/I` idle, `a/A` active, `n/N` attention |
+| Workspace | `j/k` move, `h/l` fold, `Enter` select, `m` reorder, `[`/`]` project, `i/I` idle, `a/A` active, `n/N` attention (sessions and projects with a need) |
 | Project | `p` add, `d` unregister (`H` also halts), `w` worktree, `u` routine, `e` config, `g` group, `v` panels, `M` this Mac's panels, `t` tasks |
 | Tasks | `m` manager chat, `S` shell, `o` overview, `a` agent, `u` usage; in the chat `i` write, `/` find, `PgUp/PgDn` page, `g/G` oldest or newest, `?` keys |
 | Worktree | `s` session, `r` alias, `d` delete |

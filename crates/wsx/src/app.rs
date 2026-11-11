@@ -41,6 +41,7 @@ use wsx_core::{
         flatten_tree_filtered, FlatEntry, GitInfo, Project, Selection, WorkspaceState,
     },
     ops, runtime, stale,
+    task::{needs::Needs, store},
 };
 
 use git_info::FetchOutcome;
@@ -319,6 +320,24 @@ const FAST_INTERVAL_MS: u64 = 500;
 const GIT_SWEEP_INTERVAL_MS: u64 = 15_000;
 const SLOW_INTERVAL_MS: u64 = 30_000;
 const MANAGER_ASKS_INTERVAL_MS: u64 = 2_000;
+
+/// The need counts by project with the store stamp and `land.auto` they were read at.
+pub(crate) type NeedsCache = HashMap<PathBuf, (store::Stamp, bool, Needs)>;
+
+/// What a project asks of the owner: the Workspace row's accent and marks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectAttention {
+    /// Its manager has an open question.
+    pub asks: bool,
+    pub needs: Needs,
+}
+
+impl ProjectAttention {
+    /// Whether the project is a stop of `n`/`N`.
+    pub fn any(&self) -> bool {
+        self.asks || self.needs.any()
+    }
+}
 const WORKSPACE_SCROLL_LINES: isize = 3;
 const NOTICE_MIN_DWELL: Duration = Duration::from_secs(2);
 const STREAM_REATTACH_WINDOW: Duration = Duration::from_secs(5);
@@ -1291,10 +1310,13 @@ pub struct App {
     routine_tx: mpsc::Sender<RoutineRefreshResult>,
     routine_rx: mpsc::Receiver<RoutineRefreshResult>,
     routine_refresh_generation: HashMap<PathBuf, u64>,
-    /// Projects whose manager's last reply asks the owner, read off the UI thread
-    /// (docs/tasks.md "TUI"); one read at a time.
-    manager_asks: HashSet<PathBuf>,
-    manager_asks_rx: Option<mpsc::Receiver<HashSet<PathBuf>>>,
+    /// What each project asks of the owner (an open question, tasks, approvals, To check items),
+    /// read off the UI thread (docs/tasks.md "TUI"); one read at a time. Projects with none are
+    /// left out.
+    manager_asks: HashMap<PathBuf, ProjectAttention>,
+    manager_asks_rx: Option<mpsc::Receiver<HashMap<PathBuf, ProjectAttention>>>,
+    /// The need counts by project with the store stamp and `land.auto` they were read at.
+    needs_cache: Arc<Mutex<NeedsCache>>,
     manager_asks_timer: Timer,
     integration_scan_rx: mpsc::Receiver<Result<Vec<wsx_core::integration::IntegrationMetadata>>>,
     integration_metadata: Vec<wsx_core::integration::IntegrationMetadata>,
@@ -1535,8 +1557,9 @@ impl App {
             routine_tx,
             routine_rx,
             routine_refresh_generation: HashMap::new(),
-            manager_asks: HashSet::new(),
+            manager_asks: HashMap::new(),
             manager_asks_rx: None,
+            needs_cache: Arc::default(),
             manager_asks_timer: Timer::new(MANAGER_ASKS_INTERVAL_MS),
             integration_scan_rx,
             integration_metadata: Vec::new(),
@@ -1961,7 +1984,7 @@ impl App {
         }
     }
 
-    pub(crate) fn manager_asks(&self) -> &HashSet<PathBuf> {
+    pub(crate) fn manager_asks(&self) -> &HashMap<PathBuf, ProjectAttention> {
         &self.manager_asks
     }
 

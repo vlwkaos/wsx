@@ -1,11 +1,17 @@
 // Left sidebar — 3-level tree (Project -> Worktree -> Session) using ratatui List.
 
-use crate::{app::project_has_active_sessions, session_state};
+use crate::{
+    app::{project_has_active_sessions, ProjectAttention},
+    session_state,
+};
 use ratatui::{
     prelude::*,
     widgets::{List, ListItem, ListState},
 };
-use std::{collections::HashSet, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 use wsx_core::{
     config::global::PortVisibility,
     model::workspace::{FlatEntry, Project, SessionInfo, WorkspaceState},
@@ -162,8 +168,9 @@ pub struct TreeView<'a> {
     pub workspace: &'a WorkspaceState,
     pub flat: &'a [FlatEntry],
     pub stale_projects: &'a HashSet<PathBuf>,
-    /// Projects whose manager's last reply asks the owner: their name takes the accent.
-    pub asking: &'a HashSet<PathBuf>,
+    /// What the projects ask of the owner: a name takes the accent while its manager asks,
+    /// and the marks follow the name.
+    pub attention: &'a HashMap<PathBuf, ProjectAttention>,
     pub selected: usize,
     pub scroll_offset: usize,
     pub is_move_mode: bool,
@@ -177,8 +184,9 @@ pub struct CompactTreeView<'a> {
     pub workspace: &'a WorkspaceState,
     pub flat: &'a [FlatEntry],
     pub stale_projects: &'a HashSet<PathBuf>,
-    /// Projects whose manager's last reply asks the owner: their name takes the accent.
-    pub asking: &'a HashSet<PathBuf>,
+    /// What the projects ask of the owner: a name takes the accent while its manager asks,
+    /// and the marks follow the name.
+    pub attention: &'a HashMap<PathBuf, ProjectAttention>,
     pub selected: usize,
     pub scroll_offset: usize,
     pub animation_frame: usize,
@@ -210,11 +218,37 @@ fn project_style(asks: bool) -> Style {
         .bold()
 }
 
+fn asks(attention: &HashMap<PathBuf, ProjectAttention>, path: &PathBuf) -> bool {
+    attention.get(path).is_some_and(|project| project.asks)
+}
+
+/// The marks after a project's name, each with its count and a space before: `!` for what waits
+/// for the owner (tasks and approvals), `✓` for To check items, `…` for tasks at work
+/// (docs/tasks.md "TUI"). A zero count shows nothing.
+fn need_marks(
+    attention: &HashMap<PathBuf, ProjectAttention>,
+    path: &PathBuf,
+) -> Vec<Span<'static>> {
+    let Some(project) = attention.get(path) else {
+        return Vec::new();
+    };
+    let needs = project.needs;
+    [
+        (needs.owner, "!", theme::WARNING),
+        (needs.to_check, "✓", theme::ACCENT),
+        (needs.working, "…", theme::TEXT_SUBTLE),
+    ]
+    .into_iter()
+    .filter(|(count, _, _)| *count > 0)
+    .map(|(count, mark, color)| Span::styled(format!(" {mark}{count}"), Style::default().fg(color)))
+    .collect()
+}
+
 fn compact_tree_cell(
     workspace: &WorkspaceState,
     entry: &FlatEntry,
     stale_projects: &HashSet<PathBuf>,
-    asking: &HashSet<PathBuf>,
+    attention: &HashMap<PathBuf, ProjectAttention>,
     muted_terminals: &HashSet<String>,
     animation_frame: usize,
 ) -> (&'static str, Style) {
@@ -239,7 +273,7 @@ fn compact_tree_cell(
             } else {
                 (
                     if project.expanded { "▼" } else { "▶" },
-                    project_style(asking.contains(&project.path)),
+                    project_style(asks(attention, &project.path)),
                 )
             }
         }
@@ -326,7 +360,7 @@ pub fn render_compact_tree(frame: &mut Frame, layout: SidebarLayout, view: Compa
                 view.workspace,
                 entry,
                 view.stale_projects,
-                view.asking,
+                view.attention,
                 view.muted_terminals,
                 view.animation_frame,
             );
@@ -355,7 +389,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
         workspace,
         flat,
         stale_projects,
-        asking,
+        attention,
         selected,
         scroll_offset,
         is_move_mode,
@@ -409,10 +443,14 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
                 } else {
                     (
                         format!("{} {}{}", icon, p.name, count),
-                        project_style(asking.contains(&p.path)),
+                        project_style(asks(attention, &p.path)),
                     )
                 };
-                folded_item(Line::from(label), style, badge, width)
+                let mut line = Line::from(label);
+                if !p.missing {
+                    line.spans.extend(need_marks(attention, &p.path));
+                }
+                folded_item(line, style, badge, width)
             }
             FlatEntry::Worktree {
                 project_idx,
@@ -586,7 +624,7 @@ pub fn render_tree(frame: &mut Frame, layout: SidebarLayout, view: TreeView<'_>)
     let mut highlight = theme::selected_row(is_move_mode);
     if let Some(FlatEntry::Project { idx }) = flat.get(selected) {
         let project = &workspace.projects[*idx];
-        if !project.missing && asking.contains(&project.path) {
+        if !project.missing && asks(attention, &project.path) {
             highlight = highlight.fg(theme::ACCENT);
         }
     }
@@ -698,7 +736,10 @@ mod tests {
     use ratatui::{
         backend::TestBackend, style::Modifier, text::Line, widgets::Paragraph, Terminal,
     };
-    use std::{collections::HashSet, path::PathBuf};
+    use std::{
+        collections::{HashMap, HashSet},
+        path::PathBuf,
+    };
     use wsx_core::{
         config::global::PortVisibility,
         model::workspace::{FlatEntry, PaneInfo, Project, SessionInfo, WorkspaceState},
@@ -782,7 +823,7 @@ mod tests {
                             workspace: &workspace,
                             flat: &flat,
                             stale_projects: &HashSet::new(),
-                            asking: &HashSet::new(),
+                            attention: &HashMap::new(),
                             muted_terminals: &HashSet::new(),
                             selected,
                             scroll_offset: offset,
@@ -848,7 +889,7 @@ mod tests {
                         workspace: &workspace,
                         flat: &flat,
                         stale_projects: &stale_projects,
-                        asking: &HashSet::new(),
+                        attention: &HashMap::new(),
                         muted_terminals: &HashSet::new(),
                         selected: 2,
                         scroll_offset: 0,
@@ -888,7 +929,7 @@ mod tests {
                         workspace: &workspace,
                         flat: &flat,
                         stale_projects: &stale_projects,
-                        asking: &HashSet::new(),
+                        attention: &HashMap::new(),
                         muted_terminals: &HashSet::new(),
                         selected: 0,
                         scroll_offset: 0,
@@ -972,7 +1013,7 @@ mod tests {
                                 workspace: &workspace,
                                 flat: &flat,
                                 stale_projects: &stale_projects,
-                                asking: &HashSet::new(),
+                                attention: &HashMap::new(),
                                 muted_terminals: &HashSet::new(),
                                 selected: flat.len() - 1,
                                 scroll_offset: 0,
@@ -1014,7 +1055,7 @@ mod tests {
                     &workspace,
                     entry,
                     &HashSet::from([workspace.projects[0].path.clone()]),
-                    &HashSet::new(),
+                    &HashMap::new(),
                     &HashSet::new(),
                     0
                 )

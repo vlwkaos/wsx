@@ -303,8 +303,10 @@ impl App {
         }
     }
 
-    /// Read each project's manager log tail off the UI thread, every few seconds, for the
-    /// Workspace row's accent (docs/tasks.md "TUI").
+    /// Read each project's open questions and need counts off the UI thread, every few
+    /// seconds, for the Workspace row's accent and marks (docs/tasks.md "TUI"). The counts are
+    /// read again only when the project's store changed (`store::stamp`, which stats files
+    /// and parses none) or its `land.auto` did.
     pub(super) fn spawn_manager_asks(&mut self) {
         if self.manager_asks_rx.is_some() {
             return;
@@ -317,23 +319,38 @@ impl App {
             .collect();
         let (tx, rx) = mpsc::channel();
         self.manager_asks_rx = Some(rx);
+        let cache = Arc::clone(&self.needs_cache);
         std::thread::spawn(move || {
-            let asking = projects
+            let mut cache = cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let now = wsx_core::task::now_unix_ms();
+            let attention: HashMap<PathBuf, ProjectAttention> = projects
                 .into_iter()
-                .filter(|(name, path)| {
-                    wsx_core::task::store::ManagerDir::existing(&wsx_core::task::store::project_id(
-                        name, path,
-                    ))
-                    .ok()
-                    .flatten()
-                    .and_then(|dir| {
-                        wsx_core::task::chat::asking(&dir, wsx_core::task::now_unix_ms()).ok()
-                    })
-                    .is_some_and(|asks| !asks.is_empty())
+                .map(|(name, path)| {
+                    let id = wsx_core::task::store::project_id(&name, &path);
+                    let asks = wsx_core::task::store::ManagerDir::existing(&id)
+                        .ok()
+                        .flatten()
+                        .and_then(|dir| wsx_core::task::chat::asking(&dir, now).ok())
+                        .is_some_and(|asks| !asks.is_empty());
+                    let land_auto = wsx_core::config::project::load_task_config(&path)
+                        .is_ok_and(|config| config.land_auto);
+                    let stamp = wsx_core::task::store::stamp(&id);
+                    let needs = match cache.get(&path) {
+                        Some((kept, auto, needs)) if *kept == stamp && *auto == land_auto => *needs,
+                        _ => {
+                            let needs = wsx_core::task::needs::Needs::read(&id, land_auto)
+                                .unwrap_or_default();
+                            cache.insert(path.clone(), (stamp, land_auto, needs));
+                            needs
+                        }
+                    };
+                    (path, ProjectAttention { asks, needs })
                 })
-                .map(|(_, path)| path)
+                .filter(|(_, attention)| attention.asks || attention.needs != Default::default())
                 .collect();
-            let _ = tx.send(asking);
+            let _ = tx.send(attention);
         });
     }
 
@@ -342,10 +359,10 @@ impl App {
             return;
         };
         match rx.try_recv() {
-            Ok(asking) => {
+            Ok(attention) => {
                 self.manager_asks_rx = None;
-                if asking != self.manager_asks {
-                    self.manager_asks = asking;
+                if attention != self.manager_asks {
+                    self.manager_asks = attention;
                     self.needs_redraw = true;
                 }
             }

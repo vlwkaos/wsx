@@ -1181,6 +1181,25 @@ impl App {
         })
     }
 
+    /// The Project rows that ask the owner: an open question, a task or approval that waits
+    /// for them, a To check item (`n` and `N` stop there, docs/tasks.md "TUI").
+    fn project_attention_candidates(&self) -> Vec<usize> {
+        self.flat()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let FlatEntry::Project { idx } = entry else {
+                    return None;
+                };
+                let path = &self.workspace.projects[*idx].path;
+                self.manager_asks
+                    .get(path)
+                    .is_some_and(ProjectAttention::any)
+                    .then_some(index)
+            })
+            .collect()
+    }
+
     pub(super) fn attention_target(&self, dir: isize) -> Option<usize> {
         if self.config.attention_priority == AttentionPriority::BlockedFirst {
             let blocked = self.blocked_attention_candidates();
@@ -1191,9 +1210,23 @@ impl App {
         self.candidate_target(&self.attention_candidates(), dir)
     }
 
+    /// The target of `n`/`N` in the Workspace: `attention_target`, and the Project rows that
+    /// ask the owner when no blocked session comes first. Terminal mode keeps sessions only.
+    fn workspace_attention_target(&self, dir: isize) -> Option<usize> {
+        if self.config.attention_priority == AttentionPriority::BlockedFirst
+            && !self.blocked_attention_candidates().is_empty()
+        {
+            return self.attention_target(dir);
+        }
+        let mut candidates = self.attention_candidates();
+        candidates.extend(self.project_attention_candidates());
+        candidates.sort_unstable();
+        self.candidate_target(&candidates, dir)
+    }
+
     pub(super) fn action_next_attention(&mut self, dir: isize) {
-        let Some(target) = self.attention_target(dir) else {
-            self.set_status("No sessions need attention");
+        let Some(target) = self.workspace_attention_target(dir) else {
+            self.set_status("Nothing needs attention");
             return;
         };
         self.tree_selected = target;
