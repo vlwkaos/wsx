@@ -84,8 +84,6 @@ goal = "Manage and control this machine"
 | Routines, panels, `wsx.config.yml tasks.*` | | yes |
 | Memory | team scope: goal, decisions, rules the manager records | project scope: facts about the project's files, a landed task's memo |
 
-For the main project the two stores are the same folder, so a plain project keeps one folder as today.
-
 ### A task names its project
 
 A task stays in its project's store, so number, branch `wsx/t<n>`, `<repo>-t<n>`, checks, land target, deploy and boundary are exactly today's. The record gains one field, `team` (the team id; absent = the project's own). `wsx task new -p <project>` run by a manager is allowed for the projects of its own team; the broker sets the team and the new task's `team` from it. The ref in text is `#<n>` for the main project and `<project> #<n>` for an attached one (the web chip exists). One module owns the rule "which team hears this task": `wsx_core::task::team` (new), read by the manager host, the ledger, the web and the TUI.
@@ -100,9 +98,9 @@ A member creates tasks in any project of its `projects` and steers only the task
 
 ### Permissions, approvals
 
-- Capabilities are unchanged (`policy.rs`); the new part is one project filter on a member: the broker refuses a project outside `projects`. One table, one owner.
+- Capabilities are unchanged (`policy.rs`); the new part is one project filter on a member: the broker refuses a project outside `projects`.
 - A worker's Seatbelt profile is built from its task's project and copy: unchanged.
-- An approval request lives in the asking team's store, names its project, and runs `wsx task <action> -p <project>` as today. `deploy`, `release` and `push` stay per project with the project's `tasks.*` and locks, so two teams that touch one project cannot deploy it twice at once.
+- An approval request lives in the asking team's store, names its project, and runs `wsx task <action> -p <project>` as today. `deploy`, `release` and `push` stay per project with the project's `tasks.*` and locks.
 - `team attach` by the manager is an approval request, like `project add`.
 
 ### Memory
@@ -120,7 +118,7 @@ Team scope = the team id; a team's search reads its scope, its projects' scopes 
 | TUI | Tasks view `t`, chat `m` | Same keys on the main project; the tree marks an attached project (`↳ Machine ops`); the task list has a Project column when the team has more than one project |
 | CLI | `wsx task ... -p <project>` | Same; `-p <attached>` acts in that project's store; `wsx task team list\|attach\|detach` |
 
-Web and TUI change together (the task and the shared rule in `wsx-core`; both read `task::team`).
+Web and TUI both read `task::team`, so they change in the same step.
 
 ### The plain case
 
