@@ -2017,7 +2017,7 @@ impl Host {
 
     /// The host's task context for the first turn: the task's files, the open tasks that
     /// share them and the memory's start block (area briefs, the creating role's brief and
-    /// rules, the fresh records about the files), so the worker needs no turn of its own to
+    /// rules, the records about the files and the task's words), so the worker needs no turn of its own to
     /// load context. None when it has nothing. ref: docs/tasks.md "Workflow"
     fn task_context(&self) -> Option<String> {
         let mut out = Vec::new();
