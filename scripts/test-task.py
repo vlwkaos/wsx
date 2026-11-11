@@ -1768,7 +1768,7 @@ def part_core(created=None):
         (r'#%d +waiting' % ask, rows_to(ask)),
         (r'(?m)^ TASK +\(j/k\)scroll +\(S\)hell +\(a\)nswer +\(H\)and +Esc: back', b'L'),
         (r'(?m)^ TASK .*\(a\)nswer', b'a'),
-        (r'(?s)MANAGER.*> #%d\b' % ask, b'')])
+        (r'(?s)> #%d\b.*MANAGER' % ask, b'')])
     assert 'Land #' not in seen[2], seen[2]
     js('task', 'close', ask, '--discard')
 
