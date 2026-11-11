@@ -415,7 +415,7 @@ fn clean_name(name: &str) -> String {
 }
 
 /// Allowlist by content signature. The upload's own name and Content-Type are ignored.
-fn sniff(head: &[u8]) -> Option<(&'static str, &'static str)> {
+pub(crate) fn sniff(head: &[u8]) -> Option<(&'static str, &'static str)> {
     let at = |offset: usize, magic: &[u8]| head.get(offset..offset + magic.len()) == Some(magic);
     if at(0, b"\x89PNG\r\n\x1a\n") {
         Some(("png", "image/png"))

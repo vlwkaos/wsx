@@ -3610,6 +3610,10 @@ def task_journey(args):
                         (folder / 'media').mkdir()
                         (folder / 'media/a.png').write_bytes(png_bytes(64, 36, (200, 60, 60)))
                         (folder / 'media/b.png').write_bytes(png_bytes(36, 64, (60, 60, 200)))
+                        # ^ api/file/image: a real jpg is served; an svg and a jpg whose bytes are HTML are refused.
+                        (folder / 'media/real.jpg').write_bytes(b'\xff\xd8\xff\xe0' + b'\x00' * 32)
+                        (folder / 'media/fake.jpg').write_text('<!doctype html><script>alert(1)</script>\n')
+                        (folder / 'media/vector.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>\n')
                         (folder / 'trends/board').mkdir(parents=True)
                         (folder / 'trends/board/index.html').write_text('<!doctype html><title>Board</title><h1>Trend board page</h1>\n')
                         for script in ('device.sh', 'broken.sh', 'gauges.sh', 'badjson.sh'):
@@ -4020,6 +4024,13 @@ merge_seconds = 3
             # ^ A card with a picture or a page names its project in the card; the missing picture is gone.
             tiles = sections[-1]['items'][2]['items']
             assert [(t['title'], t['image'], t['project']) for t in tiles[:2]] == [('Cat video', 'media/a.png', 'calm'), ('Board', 'media/b.png', 'calm')] and tiles[2]['image'] is None and 'project' not in tiles[2], tiles
+            # ^ The card picture route takes only the card types, by content signature, and sends nosniff.
+            image_of = '/api/file/image?project=%d&path=media/' % calm_id
+            status, headers, body = steady(sites['pager'], 'GET', image_of + 'real.jpg', raw=True)
+            assert status == 200 and headers['content-type'] == 'image/jpeg' and headers['x-content-type-options'] == 'nosniff' and body.startswith(b'\xff\xd8\xff'), (status, headers)
+            for name in ('vector.svg', 'fake.jpg'):
+                status, body = steady(sites['pager'], 'GET', image_of + name)
+                assert 400 <= status < 500 and body['error']['code'] == 'not_an_image', (name, status, body)
             assert 'level' not in mac['run']['doc'] or mac['run']['doc']['level'] in ('warn', 'bad'), mac['run']['doc']
             assert not any(str(title).startswith('calm') for title in [section['title'] for section in mac['run']['doc']['sections']]), 'a project outside the grant is in the card'
             status, body = steady(admin, 'GET', panel_url + '/missing')
