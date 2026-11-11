@@ -5326,6 +5326,85 @@ def part_host(created=None):
     rows = [json.loads(line) for line in (project_store / 'checks.jsonl').read_text().splitlines()]
     assert [(r['state'], r.get('owner_said')) for r in rows if r['id'] == item][-1] == ('passed', said['id']), rows[-3:]
     assert [i['id'] for i in js('task', 'check')['open']] == open_ids[1:]
+    # 32ha. The owner's go outlives its turn when the action can only run after a task lands
+    # (docs/tasks.md "Approvals", "After a landing"): `--owner-said <id> --after <n>` checks the
+    # message now and records the request waiting; the manager host runs it once #n has landed.
+    release_log = base / 'said-release.log'
+
+    def ready_task(work):
+        n = js('task', 'new', work)['id']
+        assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
+        return n
+
+    def manager_says(words, command):
+        said = js('task', 'say', '%s\nRUN wsx task %s OWNER_SAID -p demo --json' % (words, command))
+        return said['id'], reply_to(said['id'])['text']
+
+    def decision_of(request_id):
+        return wait(lambda: next((l for l in approval_lines() if l['kind'] == 'decision' and l['id'] == request_id), None),
+                    'the decision of %s' % request_id, 40)
+
+    aft1 = ready_task('WORK after-first.txt HV')
+    aft_ran = release_log.read_text()
+    lines_before = len(approval_lines())
+    # ^ A message outside the turn, a task that does not exist, one that is the action's own,
+    # and --after with no message refuse with nothing recorded.
+    text = reply_to(js('task', 'say', 'RUN wsx task release --owner-said 1 --after %d -p demo --json' % aft1)['id'])['text']
+    assert 'message 1 is not in the running turn' in text and 'nothing was' in text, text
+    _, text = manager_says('release when it lands', 'release --after 99999 --owner-said')
+    assert '--after 99999: no such task; nothing was recorded' in text, text
+    _, text = manager_says('land it after itself', 'land %d --after %d --owner-said' % (aft1, aft1))
+    assert 'cannot wait for itself; nothing was recorded' in text, text
+    text = reply_to(js('task', 'say', 'RUN wsx task release --after %d -p demo --json' % aft1)['id'])['text']
+    assert 'required arguments' in text and '--owner-said' in text, text
+    assert len(approval_lines()) == lines_before and js('task', 'ledger')['approvals'] == []
+    # ^ The release waits: nothing runs, no card, the ledger says what waits.
+    aft_said, text = manager_says('release once #%d has landed' % aft1, 'release --after %d --owner-said' % aft1)
+    assert 'runs when #%d lands' % aft1 in text and 'owner was asked' not in text, text
+    aft_req = approval_lines()[-1]
+    assert (aft_req['kind'], aft_req['action'], aft_req['after'], aft_req['said']) == ('request', 'release', aft1, aft_said), aft_req
+    assert len(approval_lines()) == lines_before + 1 and release_log.read_text() == aft_ran
+    aft_rows = js('task', 'ledger')['approvals']
+    assert [(r['id'], r['after'], r['label']) for r in aft_rows] == [(aft_req['id'], aft1, 'release after #%d, approved by the owner' % aft1)], aft_rows
+    aft_refused = cli('task', 'approve', aft_req['id'], ok=False).stderr
+    assert 'runs when #%d lands' % aft1 in aft_refused, aft_refused
+    assert not events_with('approval %s' % aft_req['id'])
+    # ^ A later turn: #n lands, the release runs once with the owner's message on its decision,
+    # and the open To check items stay on it.
+    assert land(aft1)['state'] == 'landed'
+    aft_dec = decision_of(aft_req['id'])
+    assert aft_dec['approved'] and aft_dec['owner_said'] == aft_said and aft_dec['outcome'].startswith('done'), aft_dec
+    assert 'still to check on the release' in aft_dec['outcome'], aft_dec
+    wait(lambda: release_log.read_text() == aft_ran + 'released\n' and deploy_lock_free(), 'the release after the land')
+    wait(lambda: events_with('approval %s (release) approved; done' % aft_req['id']), 'the result event')
+    wait_closed(aft1)
+    time.sleep(3)
+    assert release_log.read_text() == aft_ran + 'released\n' and js('task', 'ledger')['approvals'] == []
+    # ^ A land waits as well: the same run as `approve`.
+    aft_head, aft_tail = ready_task('WORK after-head.txt'), ready_task('WORK after-tail.txt')
+    aft_said, text = manager_says('land #%d after #%d' % (aft_tail, aft_head), 'land %d --after %d --owner-said' % (aft_tail, aft_head))
+    aft_req = approval_lines()[-1]
+    assert (aft_req['action'], aft_req['task'], aft_req['after']) == ('land', aft_tail, aft_head) and show(aft_tail)['state'] == 'ready', aft_req
+    assert land(aft_head)['state'] == 'landed'
+    aft_dec = decision_of(aft_req['id'])
+    assert aft_dec['approved'] and aft_dec['owner_said'] == aft_said and aft_dec['outcome'].startswith('done'), aft_dec
+    wait(lambda: show(aft_tail)['state'] == 'landed', 'the land that waited')
+    wait_closed(aft_head)
+    wait_closed(aft_tail)
+    # ^ #n closes without landing: dropped, and the manager hears why. A newer request that
+    # covers it replaces it first.
+    aft_gone, aft_newer = ready_task('WORK after-gone.txt'), ready_task('WORK after-newer.txt')
+    _, text = manager_says('release when #%d lands' % aft_gone, 'release --after %d --owner-said' % aft_gone)
+    aft_old = approval_lines()[-1]
+    _, text = manager_says('rather when #%d lands' % aft_newer, 'release --after %d --owner-said' % aft_newer)
+    aft_cur = approval_lines()[-1]
+    wait(lambda: events_with('approval %s (release) dropped; replaced by %s' % (aft_old['id'], aft_cur['id'])), 'the replaced event')
+    assert [r['id'] for r in js('task', 'ledger')['approvals']] == [aft_cur['id']]
+    js('task', 'close', aft_newer, '--discard')
+    wait(lambda: events_with('approval %s (release) dropped; #%d is closed, so release waits for nothing' % (aft_cur['id'], aft_newer)), 'the dropped event')
+    assert decision_of(aft_cur['id'])['approved'] is False and js('task', 'ledger')['approvals'] == []
+    js('task', 'close', aft_gone, '--discard')
+    assert release_log.read_text() == aft_ran + 'released\n'
     configure(LAND_CONFIG, 'release as before')
     # 32g. A plan first (docs/tasks.md "Workflow"): the first turn of a `--plan` task is told to
     # plan and stop; its result runs no check and waits on plan for the manager, and an add

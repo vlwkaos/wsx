@@ -31,6 +31,8 @@ wsx task new|list|show|add|stop|land|after|hold|trial|close|hand|dismiss|check|d
 
 Hidden from `wsx --help`, still run: `wsx runtime status` (now `wsx daemon status`), `wsx task handback <n>` (now `wsx task hand <n> --back`), `wsx task steer`, `wsx task check-run`, `digest` and `post` (a worker's and the routines' commands), `wsx memory capture|start|import` (the task host's), `wsx session send-keys` (an alias of `send-text`), `wsx group` and `wsx plugin`. A hidden command keeps its argv, so scripts, hooks, stored routines and a running manager's older prompt work without a change.
 
+The manager passes `--after <n>` with `--owner-said <id>` to `wsx task land|close --discard|deploy|release|push`: the owner's go is checked now and the action runs when #n lands ([tasks.md](tasks.md) "Approvals").
+
 ## Worktrees and sessions
 
 `wsx worktree create` starts a new branch from the project's default branch, or from `--from <ref>`. A branch that already exists is checked out as it is, and `--from` is then refused. When git fails, wsx prints git's own error. `--json` prints `worktree`, `branch`, `project`, `session_id` and `pane_id`; the two IDs are `null` when no initial session was created.

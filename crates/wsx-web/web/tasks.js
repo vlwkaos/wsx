@@ -153,6 +153,12 @@ function NeedRow({ project, item, index, onActing, onFailed, onMention, onReply,
       actions=${actions} error=${status.error} />`;
 }
 
+// An action the owner approved in the chat that runs when its task lands: no choice left, so no
+// button (docs/tasks.md "Approvals").
+const WaitingRow = ({ project, item }) => html`
+  <${ListRow} rowKey=${`wait-${item.approval}`} project=${project} label=${item.label}
+    context=${`Runs when #${item.after} lands`} href=${taskLink(project, item.after)} />`;
+
 // A working task in the reservoir: its chip, its title, and its status, wait and agent.
 const RunningRow = ({ project, task, leaving }) => html`
   <${ListRow} rowKey=${`run-${task.id}`} leaving=${leaving} project=${project} task=${task.id} label=${task.title}
@@ -230,7 +236,7 @@ function RoutineRow({ project, row, now, onList, onShow }) {
 // that waits for the owner in the server's order, each with its one action), To check or Routines. Done
 // tasks are in none of them. A cleared row leaves and the focus moves to the next row's action,
 // or to the composer after the last one. Only a question's label moves the chat, to its reply.
-function Reservoir({ project, open, items, tasks, checks, routines, onRoutines, look, onLooked, onMention, onReply, onShow, onClose }) {
+function Reservoir({ project, open, items, tasks, waiting, checks, routines, onRoutines, look, onLooked, onMention, onReply, onShow, onClose }) {
   const node = useRef();
   // ^ A focus inside the list would fall to the body when the list goes: it goes to the open pill.
   const close = () => {
@@ -298,6 +304,7 @@ function Reservoir({ project, open, items, tasks, checks, routines, onRoutines, 
             ${open === "running" ? html`
               <ul class="reservoir-list" aria-label="Running">
                 ${runRows.map(({ item, key, leaving }) => html`<${RunningRow} key=${key} project=${project} task=${item} leaving=${leaving} />`)}
+                ${waiting.map((item) => html`<${WaitingRow} key=${item.approval} project=${project} item=${item} />`)}
               </ul>` : null}
             ${open === "needs" ? html`
               <ul class="reservoir-list" aria-label="Needs you">
@@ -846,7 +853,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   const asking = role ? [] : (overview?.asks ?? []).map((ask) => ({ kind: "ask", id: ask.id, label: ask.quote }));
   const needing = role ? [] : [...(overview?.needs ?? []), ...asking];
   const [routineList, setRoutineList] = useRoutines(id, !role, chat?.rows?.at(-1)?.key);
-  const counts = { running: role ? 0 : (overview?.tasks ?? []).filter(running).length, needs: needing.length, check: role ? 0 : overview?.to_check ?? 0, routines: routineCounts(role ? null : routineList) };
+  const counts = { running: role ? 0 : (overview?.tasks ?? []).filter(running).length + (overview?.waiting?.length ?? 0), needs: needing.length, check: role ? 0 : overview?.to_check ?? 0, routines: routineCounts(role ? null : routineList) };
   const [tray, toggleTray, setTray] = useTray(counts);
   const [look, setLook] = useState(null);
   const showNeed = (approval) => { setTray("needs"); setLook(approval); };
@@ -954,7 +961,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
           <ul class="queue" aria-label=${`Messages waiting for ${role ?? "the manager"}`}>
             ${waiting.map((row) => html`<li key=${row.key} class="queued" data-key=${row.key}><span class="queued-text">${row.text || `${row.attachments?.length ?? 0} files`}</span></li>`)}
           </ul>`}
-        ${!role && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} checks=${overview?.check_items ?? []} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} />`}
+        ${!role && html`<${Reservoir} project=${id} open=${tray} onClose=${() => toggleTray(tray)} look=${look} onLooked=${() => setLook(null)} items=${needing} tasks=${overview?.tasks ?? []} waiting=${role ? [] : overview?.waiting ?? []} checks=${overview?.check_items ?? []} routines=${routineList ?? { routines: [] }} onRoutines=${setRoutineList} onMention=${mention} onReply=${replyTo} onShow=${goToReply} />`}
         ${low && header}
         ${!role && !can("task_act") && html`<${Pills} counts=${counts} open=${tray} onToggle=${toggleTray} bar />`}
         ${can("task_act") && html`<${ManagerComposer} project=${id} role=${role} busy=${typing} field=${field} reply=${reply} onReply=${setReply}

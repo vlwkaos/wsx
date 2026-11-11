@@ -647,6 +647,12 @@ pub enum ApprovalLine {
         path: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
+        /// The owner approved it in the chat (`said`, a message of the turn that asked) and it
+        /// runs once task `after` has landed: no Yes/No card. ref: docs/tasks.md "Approvals"
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        said: Option<u64>,
         unix_ms: u64,
     },
     Decision {
@@ -675,7 +681,7 @@ impl ApprovalLine {
 /// Requests with no decision yet, oldest first. A decision settles the requests of its id
 /// before it: an id reused by an older wsx (which miscounted lines it could not read) is a
 /// new request.
-pub fn pending_approvals(lines: &[ApprovalLine]) -> Vec<&ApprovalLine> {
+pub fn open_requests(lines: &[ApprovalLine]) -> Vec<&ApprovalLine> {
     lines
         .iter()
         .enumerate()
@@ -687,6 +693,25 @@ pub fn pending_approvals(lines: &[ApprovalLine]) -> Vec<&ApprovalLine> {
         })
         .map(|(_, line)| line)
         .collect()
+}
+
+fn waits(line: &ApprovalLine) -> bool {
+    matches!(line, ApprovalLine::Request { after: Some(_), .. })
+}
+
+/// The open requests the owner decides: a Yes/No card each.
+pub fn pending_approvals(lines: &[ApprovalLine]) -> Vec<&ApprovalLine> {
+    let mut open = open_requests(lines);
+    open.retain(|line| !waits(line));
+    open
+}
+
+/// The open requests the owner already approved in the chat, which run when their `after` task
+/// lands.
+pub fn waiting_approvals(lines: &[ApprovalLine]) -> Vec<&ApprovalLine> {
+    let mut open = open_requests(lines);
+    open.retain(|line| waits(line));
+    open
 }
 
 /// The request a decision at `at` settles: the last one of its id before it.

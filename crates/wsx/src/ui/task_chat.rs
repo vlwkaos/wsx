@@ -303,7 +303,7 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
                 Some(Item::Ask { .. }) => {
                     hints.extend(["(r)eply".into(), "(d)ismiss".into(), "Enter: show".into()])
                 }
-                None => {}
+                Some(Item::Waiting { .. }) | None => {}
             }
             if chat.items.len() > 1 {
                 hints.push("(tab)next".into());
@@ -708,6 +708,21 @@ fn item_lines(chat: &ManagerChat, width: usize) -> (Vec<Line<'static>>, Option<u
                     Span::raw(marker),
                     Span::styled(format!("{id:<10}"), Style::default().fg(theme::TEXT_MUTED)),
                     Span::styled(label.clone(), Style::default().fg(theme::BLOCKED)),
+                ])
+                .patch_style(style),
+            ),
+            // ^ Approved in the chat, waiting for a land: the word says it, no key acts on it.
+            Item::Waiting { label, .. } => lines.push(
+                Line::from(vec![
+                    Span::raw(marker),
+                    Span::styled(
+                        format!("{:<10}", "waits"),
+                        Style::default().fg(theme::TEXT_MUTED),
+                    ),
+                    Span::styled(
+                        truncate_to_width(label, width.saturating_sub(12)),
+                        Style::default().fg(theme::TEXT),
+                    ),
                 ])
                 .patch_style(style),
             ),

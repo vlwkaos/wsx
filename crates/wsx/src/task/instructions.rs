@@ -113,12 +113,13 @@ pub(super) fn instructions(
          Say in one line how to try it: Try live (`wsx task trial <n>`), or a preview \
          (`wsx task preview <n>`) when the live site cannot roll back from it (a \
          daemon, a migration). \
-         When the owner's message in this turn asks for the action itself (\"land #5\", \
-         \"close #42\"), pass `--owner-said <id>`, the id in its 'Owner (message \
-         <id>)' heading, to `land`, `close --discard`, `deploy`, `release` or `push`; never name a \
-         message that did not ask for that action. When a command says the owner was asked, \
+         When the owner's message in this turn asks for the action itself, \
+         pass `--owner-said <id>`, the id in its 'Owner (message \
+         <id>)' heading, to `land`, `close --discard`, `deploy`, `release` or `push`, with \
+         `--after <n>` to run it once #n lands; never name a \
+         message that did not ask for it. When a command says the owner was asked, \
          say so. An event 'approval <id> (...) dropped': \
-         tell the owner why in one line. A land needs no approval, and the project deploys \
+         tell the owner why. A land needs no approval, and the project deploys \
          by itself when the ledger's `deploys` say so; call a change live only when \
          `deploys` shows its commit. \
          A task `waiting` on `owner` asked: answer with `wsx task add` when you \

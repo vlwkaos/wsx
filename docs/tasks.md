@@ -9,7 +9,7 @@ wsx task show <n> -p <project> --json            # record, result.json, report p
 wsx task steer <n> "<text>" --json               # into the running turn
 wsx task add <n> "<text>" [--files <glob>]... --json   # after the turn (queued while one runs)
 wsx task stop <n> --json                         # interrupt, and nothing else wakes it (see Host, Stop); the next add resumes the conversation
-wsx task land <n> [--tried] [--owner-said <id>] --json   # rebase, check, fast-forward (see Landing)
+wsx task land <n> [--tried] [--owner-said <id> [--after <m>]] --json   # rebase, check, fast-forward (see Landing)
 wsx task hold <n> "<why>" | --off --json         # the owner tries it before it lands; see Hold and trial
 wsx task after <n> <m> "<then>" --because needs|files|check | <n> --off --json   # park <n> until <m> lands, then add <then>; see After another task
 wsx task trial <n> [--end] --json                # its revision on the live site before it lands
@@ -20,7 +20,7 @@ wsx task check -p <project> [--json]             # the open "To check" items
 wsx task check pass <id>... | --all --json       # owner; the manager: <id>... --owner-said <message>
 wsx task check skip <id>... | --all --json       # owner only; closes without a verdict
 wsx task check fail <id> [--note <text>] --json    # owner only; closes it as failed, with --note also starts a task that fixes it
-wsx task close <n> [--discard] [--owner-said <id>] --json
+wsx task close <n> [--discard] [--owner-said <id> [--after <m>]] --json
 ```
 
 `-p <project>` and `--json` are global: every `wsx task` command takes them, before or after the subcommand (`digest`, `checkin` and `post` ignore `--json`; `ledger` always prints JSON). `-p` may be left out inside a project folder or when one project is registered. A task number is `3` or `t3`. `new --model <name>` picks the worker's model (one word, at most 256 bytes, not starting with `-`); without it the task uses `tasks.agent.model` (default `opus`). The record keeps it.
@@ -612,6 +612,7 @@ For a project with `tasks.preview`, a person can try a task on a link. wsx confi
 Approvals are only for what goes public or is lost. `tasks.land.approve` and `tasks.deploy.approve` (default `false`) and `tasks.release.approve` (default `true`) decide whether the manager may land, deploy or release alone. A `wsx task` command run with `WSX_TASK_ACTOR=manager` (the manager host sets it for its agent) that needs approval does not act: it appends `request{id: a<n>, action, task, revision, commit}` to `tasks/<project-id>/approvals.jsonl` and answers that the owner was asked. `close --discard`, `push` and `project add` by the manager always ask. The ledger lists pending requests under `approvals`. An id is `a<n>` after the highest id of any line, also one this wsx cannot read, and a decision settles only the requests of its id before it: an older wsx counted only the lines it could read, gave a new request the id of a decided one (`a9`, a discard of #42 on 2026-10-25) and so hid it with no outcome.
 
 - **The owner's words.** In a manager turn that began with an owner message, `land`, `close --discard`, `deploy`, `release` and `push` take `--owner-said <id>`, the id in that message's `Owner (message <id>)` heading, when the owner asked for that action ("close #42"). The CLI checks that the last delivered turn of `manager/log.jsonl` has no reply yet and holds that message from the owner, appends the `request` and `decision{approved: true, owner_said: <id>, outcome: "approved by owner message <id>"}`, and runs the action; a message outside the turn refuses with nothing run. Such a decision becomes no event.
+- **After a landing.** The owner may say go before the action can run: a release that needs a task's changelog, a push of a fix still in a worker's hands. The manager passes `--after <n>` with `--owner-said <id>` to `land`, `close --discard`, `deploy`, `release` or `push`. The message is checked now, in the owner's turn, as above (an id outside the turn, a closed, missing or own task as `<n>` refuses with nothing recorded); then the CLI appends `request{after: <n>, said: <id>}` and no decision, and answers that it runs when #n lands. No Yes/No card: the ledger's `approvals` lists it as "release after #382, approved by the owner", the web shows it under Running and the TUI chat as a `waits` line, and `approve` of its id refuses. When #n is `landed`, the manager host runs the action as `approve` would, outside the turn, and records `decision{approved: true, owner_said: <id>}`; the result reaches the manager as the usual `approval <id> (...)` event. A release keeps the open To check items, as `--owner-said` does now; a push, deploy or release with no `--commit` uses the default branch tip at that time. When #n is closed without landing, or a newer request covers it (One request per item), it is dropped: `dropped; #382 is closed, so release waits for nothing`. A land or discard of a task that moved on is dropped as any request is. A host restart while it runs may start it again; the second run refuses (the deploy lock, a task already landed, a commit already on origin).
 - **Project add.** `wsx task project add <path> [--clone <url>]` adds a project the manager's work needs. Run by the manager it appends `request{action: "project", path, url}`; the Needs you card reads "Approve project add <path>" with the URL under it. The owner's approval, or the owner's own run, checks and then runs it in the host, outside the boundary: it refuses a path outside the owner's home (or `..`, or home itself), an existing folder that is not a git repository, a missing folder with no `--clone`, a URL that is not `ssh://`, `https://` or `user@host:path` (`file://` only when `WSX_TEST_ALLOW_FILE_CLONE` is set, for the scenarios), and a project already registered by that path (the answer names it) or that name. The manager's request is refused the same way before the owner is asked. A missing folder is cloned with `git clone` and the login session's ssh agent (as push has it; a failed clone leaves no folder); then `ops::register_project`, the registration of the web's Add project and the TUI's `p`, saves the config and tells wsxd. The decision is `done: project <name> added at <path>`, the manager's event, and `wsx task say -p <name>` then reaches the new project. A new request for the same path replaces the waiting one.
 - **One request per item.** The owner never sees related requests as a list. A new request of the same project replaces each waiting one it covers: a `push`, `deploy` or `release` whose commit contains (or is) the waiting request's commit (no commit means the default branch tip; a push with `--force` covers one without, not the reverse), and a `close --discard` of the same task. The older is settled `decision{approved: false, outcome: "dropped; replaced by a170"}`, the manager hears it as `approval a169 (push) dropped; replaced by a170`, and `approve` of the older id refuses ("approval a169 was decided: dropped; replaced by a170; nothing ran"). Requests that do not cover each other (another line of history, another task) stay separate; one request should do what it can for every open item. A `land` and a role request are never replaced.
 - **Dropped.** The manager host drops a pending request whose task is no longer open or moved past the requested revision: `decision{approved: false, outcome: "dropped; #42 is closed"}`. The event `approval a9 (discard #42) dropped; #42 is closed` tells the manager, and the chat shows the owner "Dropped discard #42: #42 is closed".
@@ -730,8 +731,8 @@ The owner deletes by hand in the web Sessions tab (`Delete` on a worktree other 
 ## Deploy and release
 
 ```sh
-wsx task deploy -p <project> [--commit <ref> | --if-new] [--owner-said <id>] --json    # tasks.deploy.command
-wsx task release -p <project> [--commit <ref>] [--owner-said <id>] --json   # tasks.release.command
+wsx task deploy -p <project> [--commit <ref> | --if-new] [--owner-said <id> [--after <n>]] --json    # tasks.deploy.command
+wsx task release -p <project> [--commit <ref>] [--owner-said <id> [--after <n>]] --json   # tasks.release.command
 wsx task deployed -p <project> --json
 ```
 
@@ -744,7 +745,7 @@ The command runs with `SSH_AUTH_SOCK` from wsx-core `git::ssh_agent`, as a push 
 ## Push
 
 ```sh
-wsx task push -p <project> [--commit <ref>] [--force] [--owner-said <id>] --json
+wsx task push -p <project> [--commit <ref>] [--force] [--owner-said <id> [--after <n>]] --json
 ```
 
 `push` puts the default branch tip, or `--commit`, on `origin`'s default branch and then moves the local default branch there. Nobody inside a boundary can do that: the default branch's ref is the host's, and `~/.ssh` is denied, so an ssh push fails (`known_hosts: Operation not permitted`). The manager's broker runs `push` in the manager host, outside the boundary, with the owner's git config and ssh keys; an approved request runs it from the owner's `wsx task approve` or the web. A worker's broker refuses it like every command but `check-run`, and a role is refused.

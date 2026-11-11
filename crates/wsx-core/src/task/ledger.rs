@@ -73,6 +73,7 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         .collect();
     let approvals = super::store::read_approvals(&project_id).unwrap_or_default();
     let pending = super::manager::pending_approvals(&approvals);
+    let waiting = super::manager::waiting_approvals(&approvals);
     let now = super::now_unix_ms();
     let mut git = Git::default();
     let mut open = Vec::new();
@@ -131,12 +132,16 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         "recent": recent.into_iter().map(|(_, row)| row).collect::<Vec<_>>(),
         "open": open.iter().map(|(_, _, row)| row.clone()).collect::<Vec<_>>(),
         "open_omitted": 0,
-        // ^ Each request in words, as the web and the TUI show it ("Approve push #319 (2 commits)").
+        // ^ Each request in words, as the web and the TUI show it ("Approve push #319 (2 commits)");
+        // one the owner approved in the chat that waits for a land reads "release after #382,
+        // approved by the owner" (docs/tasks.md "Approvals").
         "approvals": pending
             .iter()
-            .map(|line| {
+            .map(|line| (line, super::owner::approval_label(line)))
+            .chain(waiting.iter().map(|line| (line, super::owner::waiting_label(line))))
+            .map(|(line, label)| {
                 let mut row = json!(line);
-                row["label"] = json!(super::owner::approval_label(line));
+                row["label"] = json!(label);
                 row
             })
             .collect::<Vec<_>>(),

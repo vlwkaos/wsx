@@ -19,12 +19,26 @@ pub struct OwnerSaid {
     pub(super) owner_said: Option<u64>,
 }
 
+/// `--owner-said <id>` and `--after <n>` on `land`, `close --discard`, `deploy`, `release` and
+/// `push`: the owner's go of this turn for an action that can run only once #n has landed.
+#[derive(clap::Args)]
+pub struct OwnerSaidAfter {
+    #[command(flatten)]
+    pub(super) said: OwnerSaid,
+    /// The manager: record the approved action to run when this task lands, not now
+    #[arg(long, value_name = "TASK", requires = "owner_said")]
+    pub(super) after: Option<u32>,
+}
+
 /// The detached run that a `deploy` or `release` by hand starts: it holds `deploy.lock` as
 /// this descriptor, and its checks ran before it started (docs/tasks.md "Deploy and release").
 #[derive(clap::Args)]
 pub struct RunLocked {
     #[arg(long, hide = true, value_name = "FD")]
     pub(super) run_locked: Option<i32>,
+    /// A release the owner's message approved (`--after`): open To check items stay on it
+    #[arg(long, hide = true)]
+    pub(super) checks_waived: bool,
 }
 
 /// `-p` and `--json` of every `wsx task` command (`digest`, `checkin`, `post` and the hidden host
@@ -75,7 +89,7 @@ pub enum TaskCmd {
         #[arg(long)]
         tried: bool,
         #[command(flatten)]
-        said: OwnerSaid,
+        said: OwnerSaidAfter,
     },
     /// Park a task until another lands, then add text to it; --off ends the wait
     After {
@@ -122,7 +136,7 @@ pub enum TaskCmd {
         #[arg(long)]
         discard: bool,
         #[command(flatten)]
-        said: OwnerSaid,
+        said: OwnerSaidAfter,
     },
     /// Work on the task by hand in its working copy, with the worker's conversation, or give it
     /// back with --back: its commits are checked as the next revision (owner only)
@@ -382,7 +396,7 @@ pub struct DeployArgs {
     #[command(flatten)]
     pub(crate) run: RunLocked,
     #[command(flatten)]
-    pub(crate) said: OwnerSaid,
+    pub(crate) said: OwnerSaidAfter,
 }
 
 #[derive(clap::Args)]
@@ -393,7 +407,7 @@ pub struct ReleaseArgs {
     #[command(flatten)]
     pub(crate) run: RunLocked,
     #[command(flatten)]
-    pub(crate) said: OwnerSaid,
+    pub(crate) said: OwnerSaidAfter,
 }
 
 #[derive(clap::Args)]
@@ -408,7 +422,7 @@ pub struct PushArgs {
     #[arg(long, hide = true, requires = "force", value_name = "COMMIT")]
     pub(crate) lease: Option<String>,
     #[command(flatten)]
-    pub(crate) said: OwnerSaid,
+    pub(crate) said: OwnerSaidAfter,
 }
 
 #[derive(Subcommand)]

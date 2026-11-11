@@ -28,8 +28,9 @@ use wsx_core::stale;
 use wsx_core::task::chat;
 use wsx_core::task::checks::{CheckState, ItemReply};
 use wsx_core::task::manager::{
-    asks_owner, decided_request, instructions_digest, pending_approvals, quiet_reply, quoted_id,
-    resolve_quote, says_nothing, split_quote, state_wakes, ApprovalLine, QUOTE_REF,
+    asks_owner, decided_request, instructions_digest, open_requests, pending_approvals,
+    quiet_reply, quoted_id, resolve_quote, says_nothing, split_quote, state_wakes, ApprovalLine,
+    QUOTE_REF,
 };
 use wsx_core::task::manager::{
     Author, Checkin, Level, LimitHold, ManagerAgent, ManagerEntry, ManagerEvent, ManagerRequest,
@@ -258,6 +259,8 @@ struct Manager {
     /// Event lines of tasks a role or another project's manager created, by who hears them, not
     /// yet sent.
     role_events: BTreeMap<Hearer, Vec<(String, Short)>>,
+    /// The waiting approvals that run now, by id (`run_waiting`).
+    running_waits: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     roles_swept: Option<Instant>,
     /// A role host that is closed or idle: it leaves.
     leaving: bool,
@@ -390,6 +393,7 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         policy: broker::SharedPolicy::default(),
         start_failed: None,
         role_events: BTreeMap::new(),
+        running_waits: Default::default(),
         roles_swept: None,
         leaving: false,
         overview_asked: false,
@@ -787,26 +791,54 @@ impl Manager {
         store::read_approvals(&self.dir.project_id).unwrap_or_default()
     }
 
-    /// Drop pending requests whose task left or moved on, then turn new decisions into event
-    /// lines, except those the owner's chat message approved: the manager ran them itself.
+    /// Drop open requests whose task left or moved on, or whose `after` task closed without
+    /// landing; run those whose `after` task landed (the owner approved them in the chat); then
+    /// turn new decisions into event lines, except those the owner's chat message approved: the
+    /// manager ran them itself. ref: docs/tasks.md "Approvals"
     fn watch_approvals(&mut self) {
         let project_id = self.dir.project_id.clone();
         let mut lines = self.approval_lines();
-        let stale: Vec<(String, String)> = pending_approvals(&lines)
-            .into_iter()
-            .filter_map(|request| {
-                let ApprovalLine::Request {
-                    task: Some(task), ..
-                } = request
-                else {
-                    return None;
-                };
-                let record = store::TaskDir::open(&project_id, *task)
-                    .and_then(|dir| dir.read_record())
-                    .ok()?;
-                owner::stale_reason(request, &record).map(|why| (request.id().to_string(), why))
-            })
-            .collect();
+        let read =
+            |task: u32| store::TaskDir::open(&project_id, task).and_then(|dir| dir.read_record());
+        let (mut stale, mut due) = (Vec::new(), Vec::new());
+        for request in open_requests(&lines) {
+            let ApprovalLine::Request {
+                id,
+                action,
+                task,
+                after,
+                ..
+            } = request
+            else {
+                continue;
+            };
+            let why = task
+                .and_then(|task| read(task).ok())
+                .and_then(|record| owner::stale_reason(request, &record));
+            let why = match (why, after) {
+                (Some(why), _) => Some(why),
+                (None, Some(after)) => match read(*after) {
+                    Ok(record) if record.state == TaskState::Landed => {
+                        due.push(id.clone());
+                        None
+                    }
+                    Ok(record) if record.state.is_open() => None,
+                    Ok(record) => Some(format!(
+                        "#{after} is {}, so {} waits for nothing",
+                        record.state.as_str(),
+                        owner::action_name(*action)
+                    )),
+                    Err(_) => Some(format!(
+                        "#{after} is gone, so {} waits for nothing",
+                        owner::action_name(*action)
+                    )),
+                },
+                (None, None) => None,
+            };
+            if let Some(why) = why {
+                stale.push((id.clone(), why));
+            }
+        }
         if !stale.is_empty() {
             for (id, why) in stale {
                 if let Err(error) = owner::drop_request(&project_id, &id, &why) {
@@ -814,6 +846,12 @@ impl Manager {
                 }
             }
             lines = self.approval_lines();
+        }
+        for id in due
+            .into_iter()
+            .filter(|id| open_requests(&lines).iter().any(|line| line.id() == id))
+        {
+            self.run_waiting(id);
         }
         let decisions: Vec<usize> = (0..lines.len())
             .filter(|at| matches!(lines[*at], ApprovalLine::Decision { .. }))
@@ -824,13 +862,20 @@ impl Manager {
                 approved,
                 note,
                 outcome,
-                owner_said: None,
+                owner_said,
                 ..
             } = &lines[*at]
             else {
                 continue;
             };
-            let asked = match decided_request(&lines, *at) {
+            let request = decided_request(&lines, *at);
+            // ^ The run of a request that waited for a land is news: the manager did not run it.
+            if owner_said.is_some()
+                && !matches!(request, Some(ApprovalLine::Request { after: Some(_), .. }))
+            {
+                continue;
+            }
+            let asked = match request {
                 Some(ApprovalLine::Request {
                     action,
                     task,
@@ -871,6 +916,47 @@ impl Manager {
             self.last_event = Some(Instant::now());
         }
         self.observed_decisions = decisions.len() as u64;
+    }
+
+    /// Run the waiting request `id` off the loop (a land or a release takes a while), once at a
+    /// time. One that cannot even start is dropped with why, so it does not retry every tick.
+    fn run_waiting(&mut self, id: String) {
+        if !self
+            .running_waits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.clone())
+        {
+            return;
+        }
+        let (name, main, project_id) = (
+            self.project.clone(),
+            self.main.clone(),
+            self.dir.project_id.clone(),
+        );
+        let running = self.running_waits.clone();
+        std::thread::spawn(move || {
+            let run = std::env::current_exe()
+                .context("cannot find the wsx binary")
+                .and_then(|exe| owner::approve_waiting(&name, &main, &id, &exe));
+            if let Err(error) = run {
+                let waiting = store::read_approvals(&project_id).unwrap_or_default();
+                if wsx_core::task::manager::waiting_approvals(&waiting)
+                    .iter()
+                    .any(|line| line.id() == id)
+                {
+                    let _ = owner::drop_request(
+                        &project_id,
+                        &id,
+                        &format!("it did not run: {error:#}"),
+                    );
+                }
+            }
+            running
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
+        });
     }
 
     fn newest_deploy_ms(&self) -> u64 {

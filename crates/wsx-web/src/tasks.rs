@@ -20,8 +20,8 @@ use wsx_core::runtime::Snapshot;
 use wsx_core::task::{
     self, call_socket, call_task_host, checks, copy, ledger,
     manager::{
-        activity, decided_request, pending_approvals, ApprovalLine, Author, ManagerEntry,
-        ManagerEvent, ManagerRequest, ManagerResponse,
+        activity, decided_request, pending_approvals, waiting_approvals, ApprovalLine, Author,
+        ManagerEntry, ManagerEvent, ManagerRequest, ManagerResponse,
     },
     needs::{self, NeedKind, Stage, APPROVAL_RANK},
     owner, stall, status,
@@ -283,6 +283,17 @@ fn build_overview(
         "manager": settings.map_or(scope.name.as_str(), |settings| settings.manager_shown_name(&scope.name)),
         "needs": needs.into_iter().map(|(_, _, row)| row).collect::<Vec<_>>(),
         "working": working,
+        // ^ What the owner approved in the chat that runs when a task lands (docs/tasks.md "Approvals").
+        "waiting": waiting_approvals(&approvals)
+            .into_iter()
+            .filter_map(|line| match line {
+                ApprovalLine::Request { id, action, task, after, .. } => Some(json!({
+                    "approval": id, "action": owner::action_name(*action), "task": task,
+                    "after": after, "label": owner::waiting_label(line),
+                })),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
         // ^ What the owner checks of landed tasks (docs/tasks.md "To check").
         "to_check": open_checks.len(),
         "check_items": open_checks,
