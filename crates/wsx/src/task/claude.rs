@@ -155,7 +155,11 @@ impl Launch {
         let settings = load_task_config(&record.project_path).map_err(anyhow::Error::msg)?;
         let root = config_root(&record.project_path)?;
         let skills = match settings.owner_skills {
-            true => skills_plugin(folder, root.as_deref(), &settings.skills_only)?,
+            true => skills_plugin(
+                folder,
+                root.as_deref(),
+                record.skills.as_ref().unwrap_or(&settings.skills_only),
+            )?,
             false => None,
         };
         let env: Vec<(String, std::ffi::OsString)> = record

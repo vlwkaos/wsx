@@ -28,6 +28,7 @@ pub(crate) fn new(args: NewArgs, project: Option<&str>, json: bool) -> Result<()
         size,
         hold,
         files,
+        skills,
         plan,
         skip,
         no_steps,
@@ -52,6 +53,10 @@ pub(crate) fn new(args: NewArgs, project: Option<&str>, json: bool) -> Result<()
         .map(wsx_core::task::view::checked_hold)
         .transpose()?;
     let files = checked_files(&[], &files)?;
+    let skills = skills
+        .map(wsx_core::config::project::checked_skills)
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("--skills: {error}"))?;
     let after = match (after, because) {
         (Some(task), Some(because)) => Some((store::parse_task_number(&task)?, because)),
         _ => None,
@@ -66,6 +71,7 @@ pub(crate) fn new(args: NewArgs, project: Option<&str>, json: bool) -> Result<()
         fixes: None,
         hold,
         files,
+        skills,
         plan,
         steps,
         project,
@@ -193,6 +199,8 @@ pub(crate) struct NewTask {
     pub(crate) fixes: Option<String>,
     pub(crate) hold: Option<String>,
     pub(crate) files: Vec<String>,
+    /// `--skills`: in place of `tasks.skillsOnly`.
+    pub(crate) skills: Option<Vec<String>>,
     pub(crate) plan: bool,
     pub(crate) steps: Steps,
     pub(crate) project: Option<String>,
@@ -213,6 +221,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         fixes,
         hold,
         files,
+        skills,
         plan,
         steps,
         project,
@@ -221,6 +230,9 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
     let project = resolve_project(&workspace, project.as_deref())?;
     let settings = load_task_config(&project.path)
         .map_err(|error| anyhow::anyhow!("{error}; no task was created"))?;
+    if skills.is_some() && !settings.owner_skills {
+        bail!("--skills: the project lends no skills (tasks.skills is not owner); no task was created");
+    }
     // ^ A missing profile folder would fail the host's start after the ID is taken.
     config
         .claude_config_dir(&project.path)
@@ -355,6 +367,7 @@ pub(crate) fn create(task: NewTask) -> Result<(TaskDir, TaskRecord, Option<TaskS
         after: wait.clone(),
         parent: into,
         plan,
+        skills,
         small,
         simplified: false,
         simplify_asked: false,

@@ -799,6 +799,13 @@ def manager_up(created):
     only_dir = Path(only['plugin_dir']) / 'skills'
     assert only_dir.is_dir() and not only_dir.is_symlink() and sorted(os.listdir(only_dir)) == ['scribe'], os.listdir(only_dir)
     assert os.readlink(only_dir / 'scribe') == str(owner_skills / 'scribe')
+    # ^ `task new --skills` replaces tasks.skillsOnly for one task; `owner:<name>` names it too.
+    picked = js('task', 'new', 'WORK picked.txt', '--skills', 'owner:other')['id']
+    assert wait_state(picked, 'ready', 'failed')['state'] == 'ready'
+    assert show(picked)['record']['skills'] == ['other'], show(picked)['record']
+    picked_dir = Path([t for t in traces() if t.get('launch') and not t.get('manager')][-1]['plugin_dir']) / 'skills'
+    assert sorted(os.listdir(picked_dir)) == ['other'], os.listdir(picked_dir)
+    js('task', 'close', picked, '--discard')
     configure(unrestricted, 'skills all')
     added = js('task', 'say', 'RUN wsx task add %d "WORK s2.txt" -p demo --json' % running)
     assert '-> 0' in reply_to(added['id'])['text']
@@ -6462,11 +6469,11 @@ def part_host(created=None):
     with open(config_dir / 'config-v2.toml', 'a') as registry:
         registry.write('[[agents]]\nname = "fake-pi"\ncommand = ["pi"]\nadapter = "pi"\nmodel = "fake/pi-model"\n'
                        'extension = ' + json.dumps(str(lean)) + '\n')
-        # ^ A scribe-role entry comes first in every list below: it is no full fallback and no
-        # stand-in, so a worker, the manager and a stand-in skip it. Were the gate open, the task
-        # would end on its model, fake/backlog.
+        # ^ An entry whose `may` holds no job's capability comes first in every list below: it is no
+        # full fallback and no stand-in, so a worker, the manager and a stand-in skip it. Were the
+        # gate open, the task would end on its model, fake/backlog.
         registry.write('[[agents]]\nname = "fake-backlog"\ncommand = ["pi"]\nadapter = "pi"\n'
-                       'model = "fake/backlog"\nroles = ["scribe"]\n')
+                       'model = "fake/backlog"\nmay = ["note", "handoff"]\n')
     WORKER_FALLBACK = FALLBACK_CONFIG.replace('    model: fake-model\n', '    model: fake-model\n    fallback: [fake-backlog, fake-pi]\n    maxWaitMinutes: 1\n')
     configure(WORKER_FALLBACK, 'fallback agent')
     # ^ Part 20 ran a Pi manager: only the Pi turns from here on are the worker's.
@@ -6530,15 +6537,15 @@ def part_host(created=None):
     limit_for = lambda seconds: limit_file.write_text(json.dumps({'until_ms': int((time.time() + seconds) * 1000)}))
     with open(config_dir / 'config-v2.toml', 'a') as registry:
         registry.write('[[agents]]\nname = "fake-local"\ncommand = ["pi"]\nadapter = "pi"\n'
-                       'model = "local/stand-in"\nroles = ["organizer"]\nmay = ["answer"]\n')
+                       'model = "local/stand-in"\nmay = ["answer"]\n')
         registry.write('[[agents]]\nname = "fake-paid"\ncommand = ["pi"]\nadapter = "pi"\n'
                        'model = "paid/model"\nbudget_usd_per_day = 1\n')
         # ^ Another model on the paid account sets no budget: the account's budget still holds.
         registry.write('[[agents]]\nname = "fake-paid-other"\ncommand = ["pi"]\nadapter = "pi"\n'
                        'model = "paid/other"\n')
-        # ^ An organizer-role entry with no `may` is a stand-in too, and no full fallback.
+        # ^ An entry with the organizer's group is a stand-in too, and no full fallback.
         registry.write('[[agents]]\nname = "fake-organizer"\ncommand = ["pi"]\nadapter = "pi"\n'
-                       'model = "local/organizer"\nroles = ["organizer"]\n')
+                       'model = "local/organizer"\nmay = ["read", "answer", "backlog", "note"]\n')
         registry.write('[[agents]]\nname = "fake-pi2"\ncommand = ["pi"]\nadapter = "pi"\n'
                        'model = "other/pi-model"\n')
     with_fallback = lambda names: FALLBACK_CONFIG.replace(

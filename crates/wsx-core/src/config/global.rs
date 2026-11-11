@@ -364,21 +364,17 @@ pub struct AgentEntry {
     /// the agent counts as limited until midnight. ref: docs/tasks.md "Agents"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_usd_per_day: Option<u32>,
-    /// Replaced by `roles = ["organizer"]` and `may = ["answer"]`; read only to refuse it
-    /// with that advice. ref: docs/tasks.md "Agents"
-    #[serde(default, skip_serializing)]
-    pub minimal: Option<bool>,
     /// An absolute path the Pi adapter loads as `-e <path>`, the lean runner's extension.
     /// Needs the `pi` adapter. ref: docs/tasks.md "Pi adapter"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extension: Option<PathBuf>,
-    /// The roles this agent fills in a fallback choice (`task::policy::Role::filled_by`).
-    /// With none it is a full fallback for the manager and for workers; with some it does
-    /// those roles only. Needs the `pi` adapter. ref: docs/tasks.md "Agents"
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub roles: Vec<Role>,
+    /// Replaced by `may`, which also picks the jobs a fallback choice gives the agent; read
+    /// only to refuse it with that advice. ref: docs/tasks.md "Agents"
+    #[serde(default, skip_serializing)]
+    pub roles: Option<Vec<String>>,
     /// The capabilities this agent passed the test for (`task::policy`); its role's group is
-    /// cut down to them. None: all of the role's.
+    /// cut down to them, and a fallback choice gives it only the jobs they cover
+    /// (`Role::filled_by`). None: all of the role's, a full fallback.
     /// ref: docs/tasks.md "Permissions"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub may: Option<Vec<crate::task::policy::Capability>>,
@@ -387,7 +383,7 @@ pub struct AgentEntry {
 impl AgentEntry {
     /// Whether a fallback choice may give this agent `role` (`Role::filled_by`).
     pub fn allows(&self, role: Role) -> bool {
-        role.filled_by(&self.roles)
+        role.filled_by(self.may.as_deref())
     }
 }
 
@@ -433,9 +429,9 @@ fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
                 agent.name
             ));
         }
-        if agent.minimal == Some(true) {
+        if agent.roles.is_some() {
             return Err(format!(
-                "agent {}: minimal is replaced by roles = [\"organizer\"] and may = [\"answer\"]",
+                "agent {}: roles is replaced by may: the stand-in is may = [\"answer\"], a worker's job needs \"result\", the manager's \"create_task\"",
                 agent.name
             ));
         }
@@ -451,18 +447,6 @@ fn validate_agents(agents: &[AgentEntry]) -> std::result::Result<(), String> {
                     agent.name
                 ));
             }
-        }
-        if !agent.roles.is_empty() && agent.adapter.as_deref() != Some("pi") {
-            return Err(format!("agent {}: roles need adapter pi", agent.name));
-        }
-        if agent.roles.contains(&Role::Area) {
-            return Err(format!(
-                "agent {}: area is a named role of the manager, not a role of an entry",
-                agent.name
-            ));
-        }
-        if (1..agent.roles.len()).any(|i| agent.roles[..i].contains(&agent.roles[i])) {
-            return Err(format!("agent {}: a role is named twice", agent.name));
         }
     }
     Ok(())

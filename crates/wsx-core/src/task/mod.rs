@@ -316,6 +316,10 @@ pub struct TaskRecord {
     /// `task new --plan`: the first result is a plan, with no checks; set until it arrives.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plan: bool,
+    /// `task new --skills`: the owner's skills its worker gets in place of `tasks.skillsOnly`.
+    /// ref: docs/tasks.md "Workflow"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
     /// `task new --size small`: exempt from the simplify check (docs/tasks.md "Workflow").
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub small: bool,

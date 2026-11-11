@@ -17,7 +17,8 @@ pub(super) fn instructions(
     // ^ No skill is named: the owner's skills are whatever their folder holds.
     let skills = match skills {
         true => format!(
-            "The owner's skills are yours with the Skill tool as `{SKILLS_PLUGIN_NAME}:<name>`. "
+            "The owner's skills are yours with the Skill tool as `{SKILLS_PLUGIN_NAME}:<name>`; \
+             `task new --skills a,b` lends a worker the ones its task needs (default: tasks.skillsOnly). "
         ),
         false => String::new(),
     };

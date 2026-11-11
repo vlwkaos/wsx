@@ -132,6 +132,7 @@ pub(crate) fn fail_check(
         fixes: Some(item.id.clone()),
         hold: None,
         files: Vec::new(),
+        skills: None,
         plan: false,
         steps: Steps::Skip(Vec::new()),
         project: Some(project.to_string()),
