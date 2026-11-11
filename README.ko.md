@@ -141,6 +141,7 @@ wsx session create|current|delete|restart|list|send-keys|send-text|prompt|peek|r
 wsx session current [--json]
 wsx group ls|create|rename|add|remove
 wsx routine ...
+wsx memory search|add|update|supersede|reindex|status|list [--scope <id>] [--json]   # docs/memory.md
 wsx agent install <target>
 wsx agent detach
 wsx agent context [session|pane|label] [--metadata-only] --json [-p <project>] [-w <worktree>]

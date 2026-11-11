@@ -322,12 +322,16 @@ impl Store {
     /// `old` is replaced by the active record `new`.
     pub fn supersede(&self, old: &str, new: &str, source: &str) -> Result<Record> {
         check_source(source)?;
+        if old == new {
+            return usage(format!("{old} cannot replace itself"));
+        }
         let _lock = self.lock(true)?;
-        let mut record = self.find(old)?;
-        let newer = self.find(new)?;
-        if old == new || newer.status != Status::Active || record.status == Status::Superseded {
+        let mut records = self.load()?.records;
+        let mut record = records.remove(old).ok_or_else(|| self.missing(old))?;
+        let newer = records.get(new).ok_or_else(|| self.missing(new))?;
+        if newer.status != Status::Active || record.status == Status::Superseded {
             return usage(format!(
-                "{old} is replaced by {new} only when they differ, {new} is active and {old} is not superseded"
+                "{new} must be active and {old} must not be superseded already"
             ));
         }
         record.status = Status::Superseded;
@@ -342,7 +346,11 @@ impl Store {
         self.load()?
             .records
             .remove(slug)
-            .ok_or_else(|| Error::NotFound(format!("no record {slug} in scope {}", self.scope)))
+            .ok_or_else(|| self.missing(slug))
+    }
+
+    fn missing(&self, slug: &str) -> Error {
+        Error::NotFound(format!("no record {slug} in scope {}", self.scope))
     }
 
     /// Records whose slug, title or text hold a query word, best first; newer first on a tie.
