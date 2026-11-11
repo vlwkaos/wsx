@@ -6,6 +6,7 @@ Each user message is a small script of words:
   NEEDS <rule> deny <rule> and report blocked
   DENIED <rule> deny <rule> but carry on and report done
   WORK <file>  write <file> and commit it
+  PAUSE        end the turn on a status, not a question: report paused
   NOOP         change nothing
   HUGE         first print one 5 MiB stdout line
   HV           return one Human Verify item
@@ -691,7 +692,7 @@ def main():
             subprocess.run(['git', 'commit', '-q', '-am', 'edit ' + name], check=True,
                            env=dict(os.environ, GIT_AUTHOR_NAME='fake', GIT_AUTHOR_EMAIL='fake@example.invalid',
                                     GIT_COMMITTER_NAME='fake', GIT_COMMITTER_EMAIL='fake@example.invalid'))
-        status = 'blocked' if blocked else 'done'
+        status = 'blocked' if blocked else 'paused' if 'PAUSE' in words else 'done'
         # ^ CAPTURE leaves a small PNG for the item; CMDHV names a command and BAREHV is a page
         # without a capture: wsx sends both back.
         verify = []

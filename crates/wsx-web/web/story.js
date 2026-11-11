@@ -76,7 +76,7 @@ function toEnd(event) {
 // A summary is the current word on a task only while no new work runs after it: the worker's
 // answer or result, not an older revision's.
 export const summaryIsCurrent = (detail) => ["ready", "failed", "landed", "closed"].includes(detail.state)
-  || ["owner", "plan"].includes(detail.waiting?.on);
+  || ["owner", "plan", "paused"].includes(detail.waiting?.on);
 
 // ^ How often the age on an open sheet is said again; only the words change, nothing is read.
 const AGE_EVERY_MS = 30_000;

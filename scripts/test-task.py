@@ -5186,6 +5186,37 @@ def part_host(created=None):
     for n in (follower, freed, orphan, base_b):
         js('task', 'close', n, '--discard')
     wait_closed(base_a)
+    # 32aj. A worker whose turn ends on a status (`status: paused`, the fake's PAUSE) asks nobody:
+    # the task reads paused in the event, the ledger count, `show`, `list` and the ledger row, the
+    # agent is idle, and the manager continues it with an add. A worker that asks a real question
+    # (`blocked`) still reads "Waiting for your answer" (docs/tasks.md "Status").
+    mark('32aj')
+    pausing, questioning = manager_new('PAUSE WORK aj-p.txt'), manager_new('NEEDS WebSearch WORK aj-q.txt')
+    for n in (pausing, questioning):
+        wait_state(n, 'waiting')
+    status = show(pausing)['status']
+    assert status['kind'] == 'paused' and status['label'] == 'Paused, the manager continues it', status
+    assert 'Waiting for your answer' not in status['sentence'] and 'nothing is asked of you' in status['sentence'], status
+    assert show(pausing)['record']['waiting']['on'] == 'paused' and show(questioning)['status']['kind'] == 'owner', show(pausing)
+    assert re.search(r'^t%d paused ' % pausing, cli('task', 'show', str(pausing)).stdout), cli('task', 'show', str(pausing)).stdout
+    assert re.search(r'^t%-4d paused ' % pausing, cli('task', 'list').stdout, re.M), cli('task', 'list').stdout
+    assert re.search(r'^t%-4d waiting ' % questioning, cli('task', 'list').stdout, re.M), cli('task', 'list').stdout
+    row_of = {r['id']: r for r in js('task', 'ledger')['open']}
+    assert row_of[pausing]['status']['kind'] == 'paused' and row_of[pausing]['waiting']['on'] == 'paused', row_of[pausing]
+    wait(lambda: (pane_agent(pausing) or {}).get('state') == 'idle', 'the paused worker reports idle')
+    wait(lambda: (pane_agent(questioning) or {}).get('state') == 'blocked', 'the asking worker reports blocked')
+    quiet = wait(lambda: events_with('#%d paused r' % pausing, 'waits on paused: Paused, the manager continues it'), 'the paused event')[0]
+    assert 'waits on owner' not in [x for x in quiet['text'].split('\n') if x.startswith('#%d paused' % pausing)][0], quiet
+    assert [x for x in quiet['short'] if x.get('task') == pausing] == [{'text': '#%d paused' % pausing, 'task': pausing}], quiet
+    loud = wait(lambda: events_with('#%d waiting r' % questioning, 'waits on owner: Waiting for your answer'), 'the question event')[0]
+    assert [x for x in loud['short'] if x.get('task') == questioning] == [{'text': '#%d waiting' % questioning, 'task': questioning}], loud
+    turn = wait(lambda: turn_with('#%d paused r' % pausing), 'the manager turn that read the paused event')
+    assert re.search(r'- open: [^\n]*\b1 paused', turn['message']), turn['message']
+    assert js('task', 'add', pausing, 'WORK aj-p2.txt')['ok']
+    assert wait_state(pausing, 'ready', 'failed')['state'] == 'ready', log(pausing)
+    for n in (pausing, questioning):
+        js('task', 'close', n, '--discard')
+    wait_closed(pausing)
     # 32e. Approval from the owner's words (docs/tasks.md "Approvals"): in a turn that began with
     # an owner message, the manager names that message and the action runs without a new request;
     # approvals.jsonl records it as approved by that message, and no event repeats it. A message

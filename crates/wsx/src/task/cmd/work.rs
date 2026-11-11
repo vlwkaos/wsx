@@ -45,23 +45,27 @@ pub(crate) fn list(project: Option<&str>, all: bool, json: bool) -> Result<()> {
                 if record.state.is_open() {
                     row["overlaps"] = overlaps(record, &records, false);
                 }
-                rows.push(row);
+                rows.push((row, wsx_core::task::status::state_word(record)));
             }
             Ok(_) => {}
-            Err(error) => rows.push(json!({ "id": dir.id, "error": format!("{error:#}") })),
+            Err(error) => rows.push((
+                json!({ "id": dir.id, "error": format!("{error:#}") }),
+                "error",
+            )),
         }
     }
     if json {
+        let rows: Vec<_> = rows.into_iter().map(|(row, _)| row).collect();
         return print_json(&json!({ "project": name, "tasks": rows }));
     }
     if rows.is_empty() {
         println!("no tasks in {name}");
     }
-    for row in rows {
+    for (row, word) in rows {
         println!(
             "t{:<4} {:<9} r{:<3} {}",
             row["id"],
-            row["state"].as_str().unwrap_or("error"),
+            word,
             row["revision"].as_u64().unwrap_or(0),
             row["title"]
                 .as_str()
@@ -127,7 +131,7 @@ pub(crate) fn show(dir: &TaskDir, json: bool) -> Result<()> {
     println!(
         "t{} {}  r{}  {}",
         record.id,
-        record.state.as_str(),
+        wsx_core::task::status::state_word(&record),
         record.revision,
         summary["title"].as_str().unwrap_or_default()
     );

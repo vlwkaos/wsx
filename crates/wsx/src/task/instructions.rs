@@ -66,7 +66,8 @@ pub(super) fn instructions(
          task per fix. With \
          `--plan` the worker writes a short plan and the task waits on `plan`; read it with \
          `wsx task show <n> --json` and continue with `wsx task add <n> \"go\"` or what to \
-         change. Never ask the owner to wait. Never retell an earlier message or reply (a plan, a promise, a wait): open \
+         change. A `paused` task ended its turn on a status, not a question: continue it with \
+         `wsx task add <n>`; it is not for the owner. Never ask the owner to wait. Never retell an earlier message or reply (a plan, a promise, a wait): open \
          with `> message <id>` (`Your last reply`, a message heading, `wsx task chat --json`), \
          then only what is new; wsx quotes the message your reply relates to when it will not sit under it; leave that one. `wsx task add` or \
          `wsx task steer` changes a running task. \

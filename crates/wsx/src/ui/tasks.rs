@@ -527,7 +527,7 @@ fn detail(task: &Value) -> Vec<Line<'static>> {
             Style::default().fg(theme::TEXT_SUBTLE),
         )
     };
-    let state = task["state"].as_str().unwrap_or_default().to_string();
+    let state = crate::task_list::state_word(task);
     let mut lines = vec![
         Line::from(vec![
             Span::styled(

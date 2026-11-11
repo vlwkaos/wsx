@@ -91,6 +91,10 @@ pub enum WaitOn {
     /// The agent's usage limit: the host continues its session at `until_ms`, one task at a
     /// time. ref: docs/tasks.md "Claude adapter"
     Limit,
+    /// The worker's turn ended with `status: paused`: something outside goes on and nothing is
+    /// asked of the owner. The manager continues it with an `add`.
+    /// ref: docs/tasks.md "Status"
+    Paused,
     /// A worker's result waits for its own `check-run`'s answer, at most until `until_ms`
     /// (the run's time limit); the task stays `working`. ref: docs/tasks.md "Check-run"
     CheckRun,
@@ -105,6 +109,7 @@ impl WaitOn {
             Self::Hand => "hand",
             Self::CheckSlot => "check_slot",
             Self::Limit => "limit",
+            Self::Paused => "paused",
             Self::CheckRun => "check_run",
         }
     }
@@ -633,11 +638,12 @@ impl TaskRecord {
     /// project lands by itself (`tasks.land.auto`) and checks prove it: an owner task never
     /// lands by itself. A held one waits for the owner, as does any other ready task; one that
     /// waits for another task (`after`) waits for that task. A plan
-    /// waits for the manager. ref: docs/tasks.md "Landing"
+    /// or a paused worker waits for the manager. ref: docs/tasks.md "Landing"
     pub fn manager_reviews(&self, land_auto: bool) -> bool {
         let reviewed = self.created_by != Actor::Owner || (land_auto && !self.checks.is_empty());
         (self.state == TaskState::Ready && self.hold.is_none() && self.after.is_none() && reviewed)
             || self.waits_on(WaitOn::Plan)
+            || self.waits_on(WaitOn::Paused)
     }
 }
 
@@ -879,7 +885,9 @@ pub fn call_task_host(
         // wait; a task at rest resumes as it was.
         let at_rest = matches!(record.state, TaskState::Ready | TaskState::Failed)
             || (record.state == TaskState::Waiting
-                && (record.waits_on(WaitOn::Owner) || record.waits_on(WaitOn::Plan)));
+                && (record.waits_on(WaitOn::Owner)
+                    || record.waits_on(WaitOn::Plan)
+                    || record.waits_on(WaitOn::Paused)));
         if !at_rest {
             anyhow::bail!(
                 "{error:#}: the host of task t{} started before this wsx and cannot read the request while the task is {}; repeat it when the task is ready or waits for the owner",
@@ -1066,7 +1074,7 @@ pub fn worker_result_schema() -> serde_json::Value {
         "additionalProperties": false,
         "required": ["status", "summary", "decisions", "evidence", "human_verify", "left_open", "notes", "memo"],
         "properties": {
-            "status": { "type": "string", "enum": ["done", "blocked", "failed"] },
+            "status": { "type": "string", "enum": ["done", "blocked", "paused", "failed"] },
             "summary": text,
             "decisions": { "type": "array", "items": pair("choice", "reason") },
             "evidence": { "type": "array", "items": pair("check", "proof") },
