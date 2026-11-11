@@ -69,7 +69,8 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: PluginCmd,
     },
-    /// Inspect the wsx terminal daemon without starting it
+    /// The old name of `daemon status`
+    #[command(hide = true)]
     Runtime {
         #[command(subcommand)]
         subcommand: RuntimeCmd,
@@ -101,6 +102,8 @@ pub enum Command {
     },
     /// Headless worker tasks and the project manager (docs/tasks.md)
     Task {
+        #[command(flatten)]
+        common: crate::task::Common,
         #[command(subcommand)]
         subcommand: crate::task::TaskCmd,
     },
@@ -187,10 +190,12 @@ impl Command {
             }
             Command::Daemon { subcommand } => matches!(
                 subcommand,
-                DaemonCmd::Stop { json: true, .. } | DaemonCmd::Restart { json: true }
+                DaemonCmd::Status { json: true }
+                    | DaemonCmd::Stop { json: true, .. }
+                    | DaemonCmd::Restart { json: true }
             ),
             Command::Routine { subcommand } => subcommand.json(),
-            Command::Task { subcommand } => subcommand.json_output(),
+            Command::Task { common, subcommand } => common.json || subcommand.prints_json(),
             Command::Memory { json, .. } => *json,
             _ => false,
         }
@@ -469,6 +474,11 @@ pub enum RuntimeCmd {
 
 #[derive(Subcommand)]
 pub enum DaemonCmd {
+    /// Report socket, protocol, epoch, revision, and resource counts; never starts wsxd
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     /// Stop wsxd and end the programs running in its sessions; saved session commands restart on next launch
     Stop {
         /// Stop even when sessions are running
@@ -626,6 +636,27 @@ pub enum RoutineCmd {
 }
 
 impl RoutineCmd {
+    /// `wsx task -p <project> --json routine ...`: the group's own `-p` and `--json` win.
+    pub fn inherit(&mut self, project: Option<&str>, json: bool) {
+        let (own_project, own_json) = match self {
+            Self::List { project, json }
+            | Self::Show { project, json, .. }
+            | Self::Add { project, json, .. }
+            | Self::Edit { project, json, .. }
+            | Self::Delete { project, json, .. }
+            | Self::Enable { project, json, .. }
+            | Self::Disable { project, json, .. }
+            | Self::Run { project, json, .. }
+            | Self::Cancel { project, json, .. }
+            | Self::Logs { project, json, .. }
+            | Self::Fire { project, json, .. } => (project, json),
+        };
+        if own_project.is_none() {
+            *own_project = project.map(str::to_string);
+        }
+        *own_json |= json;
+    }
+
     pub fn json(&self) -> bool {
         match self {
             Self::List { json, .. }
@@ -794,6 +825,7 @@ pub enum SessionCmd {
         scope: SessionScope,
     },
     /// Deprecated alias for send-text
+    #[command(hide = true)]
     SendKeys {
         session: String,
         keys: String,
@@ -926,6 +958,7 @@ pub enum MemoryCmd {
     },
     /// Store a finished task's memo as a record: a fact with the landed commit and the paths
     /// of its diff when the task landed, else an episode (what the host does when a task leaves)
+    #[command(hide = true)]
     Capture {
         #[arg(long)]
         task: u32,
@@ -938,6 +971,7 @@ pub enum MemoryCmd {
         paths: Vec<String>,
     },
     /// Print the start block a worker with these files gets in its first prompt
+    #[command(hide = true)]
     Start {
         /// A comma list of the task's --files globs
         #[arg(long, value_delimiter = ',')]
@@ -956,6 +990,7 @@ pub enum MemoryCmd {
     /// One record
     Get { slug: String },
     /// Make records of the manager's old notes files, once (a rerun adds nothing)
+    #[command(hide = true)]
     Import,
     /// Rebuild the index of the scope (the digest of its transcripts, and the backend's own)
     Reindex,

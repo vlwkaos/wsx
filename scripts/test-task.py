@@ -4245,11 +4245,11 @@ def part_worker(created=None):
     hand_copy = Path(show(handed)['record']['working_copy'])
     worker_session = wait(lambda: show(handed)['record']['agent_session'], 'worker session')
     wait(lambda: any(t.get('message', '').startswith('WAIT') for t in traces()), 'the worker turn runs')
-    assert 'only a task worked by hand' in cli('task', 'handback', handed, '--json', ok=False).stderr
+    assert 'only a task worked by hand' in cli('task', 'hand', handed, '--back', '--json', ok=False).stderr
     queued = js('task', 'add', handed, 'WORK queued.txt')
     assert 'queued' in queued['message'], queued
-    for command in ('hand', 'handback'):
-        refused = subprocess.run([str(wsx), 'task', command, str(handed)], cwd=project, env=manager_env,
+    for argv in (('hand',), ('hand', '--back'), ('handback',)):
+        refused = subprocess.run([str(wsx), 'task', argv[0], str(handed), *argv[1:]], cwd=project, env=manager_env,
                                  capture_output=True, text=True)
         assert refused.returncode != 0 and 'for the owner' in refused.stderr, refused.stderr
     worker_transcript = home / '.claude/fake-sessions' / ('%s.jsonl' % worker_session)
@@ -4281,8 +4281,8 @@ def part_worker(created=None):
     # Nothing starts while by hand: messages and land are refused, the old turn's gate
     # opens on no one, and no check runs.
     gate.write_text('open')
-    for argv, word in ((('add', handed, 'WORK no.txt'), 'handback'), (('steer', handed, 'x'), 'handback'),
-                       (('land', handed), 'handback')):
+    for argv, word in ((('add', handed, 'WORK no.txt'), '--back'), (('steer', handed, 'x'), '--back'),
+                       (('land', handed), '--back')):
         refused = cli('task', *argv, '--json', ok=False)
         assert word in refused.stdout + refused.stderr, refused
     time.sleep(1.5)
@@ -4292,13 +4292,13 @@ def part_worker(created=None):
     assert not (hand_copy / 'late.txt').exists()
     # Uncommitted tracked work refuses the handback, and the pane stays.
     (hand_copy / 'README').write_text('by hand\n')
-    refused = cli('task', 'handback', handed, '--json', ok=False)
+    refused = cli('task', 'hand', handed, '--back', '--json', ok=False)
     assert 'uncommitted changes: README' in refused.stderr, refused.stderr
     assert show(handed)['record']['waiting']['on'] == 'hand' and len(hand_sessions()) == 1
     (hand_copy / 'hand.txt').write_text('made by hand\n')
     git('add', 'README', 'hand.txt', cwd=hand_copy)
     git('commit', '-q', '-m', 'by hand', cwd=hand_copy)
-    back = js('task', 'handback', handed)
+    back = js('task', 'handback', handed)  # the hidden old name of `hand --back`
     assert back['ok'] and len(back['sessions_closed']) == 1 and '1 commit' in back['message'], back
     assert not hand_sessions()
     assert [e['commits'] for e in log(handed) if e['kind'] == 'handback'] == [1]

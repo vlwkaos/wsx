@@ -45,7 +45,7 @@ CLI commands show no screen. They keep the one-line notice.
 
 ## A failed handoff
 
-A rolled-back handoff records `last_handoff_error` in the lifecycle status (revision 32 and later): `unix_ms`, the `step` that failed (`validate`, `pause`, `export`, `spawn`, `send`, `publish`, `ready`, `ownership`, `commit` or `owned`) and the `error`. It also goes to the daemon's stderr, which is a log only where something keeps it; a daemon that `wsx` starts sends its stderr nowhere. `wsx runtime status` prints it as "Last handoff failed …", and `wsx daemon restart` names it in its error. An older daemon keeps no reason, so the client says "the running wsxd rolled back the handoff and did not say why".
+A rolled-back handoff records `last_handoff_error` in the lifecycle status (revision 32 and later): `unix_ms`, the `step` that failed (`validate`, `pause`, `export`, `spawn`, `send`, `publish`, `ready`, `ownership`, `commit` or `owned`) and the `error`. It also goes to the daemon's stderr, which is a log only where something keeps it; a daemon that `wsx` starts sends its stderr nowhere. `wsx daemon status` prints it as "Last handoff failed …", and `wsx daemon restart` names it in its error. An older daemon keeps no reason, so the client says "the running wsxd rolled back the handoff and did not say why".
 
 A successor that exits before it takes the handoff ends the wait at once ("the new wsxd exited before it took the handoff (exit status: 3)") instead of after the 30-second timeout.
 

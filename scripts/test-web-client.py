@@ -4225,7 +4225,7 @@ merge_seconds = 3
         handed = steady(owner, 'GET', '/api/tasks/%d/t/4' % demo)[1]
         assert handed['stage'] == 'working' and handed['actions'] == ['handback'], handed['actions']
         assert all(item.get('task') != 4 for item in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['needs'])
-        assert 'handback' in cli('task', 'add', 4, 'NOOP', '-p', 'demo', '--json', expect=1).stdout
+        assert '--back' in cli('task', 'add', 4, 'NOOP', '-p', 'demo', '--json', expect=1).stdout
         status, body = act(4, 'handback', {})
         assert status == 200 and len(body['sessions_closed']) == 1, body
         wait_state(4, 'ready')

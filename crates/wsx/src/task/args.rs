@@ -27,36 +27,34 @@ pub struct RunLocked {
     pub(super) run_locked: Option<i32>,
 }
 
+/// `-p` and `--json` of every `wsx task` command (`digest`, `checkin`, `post` and the hidden host
+/// commands accept `--json` and ignore it; `ledger` always prints JSON).
+#[derive(clap::Args)]
+pub struct Common {
+    /// The project (default: the current folder's, or the only one)
+    #[arg(short, long, global = true)]
+    pub project: Option<String>,
+    /// Print the answer as JSON
+    #[arg(long, global = true)]
+    pub json: bool,
+}
+
 #[derive(Subcommand)]
 pub enum TaskCmd {
     /// Start a worker on a new branch in its own working copy
     New(NewArgs),
     /// List a project's tasks (closed ones with --all)
     List {
-        #[arg(short, long)]
-        project: Option<String>,
         #[arg(long)]
         all: bool,
-        #[arg(long)]
-        json: bool,
     },
     /// Show one task with its latest result
-    Show {
-        task: String,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    Show { task: String },
     /// Send a message into the running turn
     Steer {
         task: String,
         #[command(flatten)]
         text: PromptSource,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     /// Send a message after the current turn
     Add {
@@ -66,19 +64,9 @@ pub enum TaskCmd {
         /// Add a glob of the paths it expects to change (repeatable)
         #[arg(long, value_name = "GLOB")]
         files: Vec<String>,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     /// Interrupt the worker; the next add resumes the same conversation
-    Stop {
-        task: String,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    Stop { task: String },
     /// Bring a ready task onto the default branch; several land as one batch, checked once
     Land {
         #[arg(required = true, num_args = 1..)]
@@ -88,10 +76,6 @@ pub enum TaskCmd {
         tried: bool,
         #[command(flatten)]
         said: OwnerSaid,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     /// Park a task until another lands, then add text to it; --off ends the wait
     After {
@@ -114,10 +98,6 @@ pub enum TaskCmd {
         because: Option<AfterKind>,
         #[arg(long)]
         off: bool,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     /// Hold a task for the owner to try before it lands, or release it with --off
     Hold {
@@ -127,10 +107,6 @@ pub enum TaskCmd {
         reason: Option<String>,
         #[arg(long)]
         off: bool,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     /// Put a ready task's revision on the live site to try before it lands, or end the trial
     Trial {
@@ -138,10 +114,6 @@ pub enum TaskCmd {
         /// End the trial and deploy the default branch again
         #[arg(long)]
         end: bool,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     /// Remove the working copy, session and branch
     Close {
@@ -151,43 +123,24 @@ pub enum TaskCmd {
         discard: bool,
         #[command(flatten)]
         said: OwnerSaid,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
-    /// Work on the task by hand in its working copy, with the worker's conversation (owner only)
+    /// Work on the task by hand in its working copy, with the worker's conversation, or give it
+    /// back with --back: its commits are checked as the next revision (owner only)
     Hand {
         task: String,
-        #[arg(short, long)]
-        project: Option<String>,
+        /// Give the task back
         #[arg(long)]
-        json: bool,
+        back: bool,
     },
-    /// Give a task worked by hand back: its commits are checked as the next revision (owner only)
-    Handback {
-        task: String,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    /// The old name of `hand --back`
+    #[command(hide = true)]
+    Handback { task: String },
     /// The owner dismisses an open question of the manager by its reply id: it asks no more (owner)
-    Dismiss {
-        id: u64,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    Dismiss { id: u64 },
     /// List what the owner has to check of the landed tasks, or pass, skip or fail items (owner; the manager passes with --owner-said)
     Check {
         #[command(subcommand)]
         action: Option<CheckAction>,
-        #[arg(short, long, global = true)]
-        project: Option<String>,
-        #[arg(long, global = true)]
-        json: bool,
     },
     /// Run tasks.deploy.command in a temporary copy of one default-branch commit and record it
     Deploy(DeployArgs),
@@ -196,25 +149,13 @@ pub enum TaskCmd {
     /// Push the default branch, or one commit, to origin's default branch and move the local one there (the manager asks the owner first)
     Push(PushArgs),
     /// Print the bounded project state a manager reads first (JSON, at most 16 KiB)
-    Ledger {
-        #[arg(short, long)]
-        project: Option<String>,
-        /// Accepted like on every task command; the ledger is always JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Ledger,
     /// Show the last deployed and released commits and how far each is behind
-    Deployed {
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    Deployed,
+    #[command(hide = true)]
     /// Post what the project's tasks did since the last digest to its chat, with no manager
     /// turn, and print nothing; a project gets one with a routine (docs/tasks.md "Routines")
     Digest {
-        #[arg(short, long)]
-        project: Option<String>,
         /// Start here (unix seconds) instead of at the last digest, else 24 h back
         #[arg(long, value_name = "SECONDS")]
         since: Option<u64>,
@@ -222,8 +163,6 @@ pub enum TaskCmd {
     /// Wake the manager once, `--in` a time or `--at` a local time, with `--why` as its event;
     /// a new check-in replaces the last one. It is no routine (docs/tasks.md "Check-in")
     Checkin {
-        #[arg(short, long)]
-        project: Option<String>,
         /// `40m`, `2h` or `1d`
         #[arg(
             long = "in",
@@ -239,11 +178,10 @@ pub enum TaskCmd {
         #[arg(long)]
         why: String,
     },
+    #[command(hide = true)]
     /// Post stdin to the project's chat as wsx's message, with no manager turn; nothing when
     /// it is empty. A routine pipes its report here (docs/tasks.md "Routines")
     Post {
-        #[arg(short, long)]
-        project: Option<String>,
         /// The chat's line above the text
         #[arg(long, default_value = "routine")]
         title: String,
@@ -264,12 +202,7 @@ pub enum TaskCmd {
         owner_said: Option<u64>,
     },
     /// Start the project's manager agent, or report the running one
-    Manager {
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    Manager,
     /// The project's roles: named chats like the manager's (docs/tasks.md "Roles")
     Role {
         #[command(subcommand)]
@@ -296,27 +229,16 @@ pub enum TaskCmd {
         /// With --from-manager or --from-role: this answers a message it sent
         #[arg(long)]
         reply: bool,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
-    /// Read the manager conversation, or a role's, after a message id or from the oldest message with some words
+    /// Read the manager conversation, or a role's, after a message id or around one
     Chat {
         #[arg(long, value_name = "ID")]
         after: Option<u64>,
-        /// From the oldest message that shows these words, case-insensitive
-        #[arg(long, value_name = "WORDS", conflicts_with_all = ["after", "around"])]
-        find: Option<String>,
         /// The part of the conversation around message ID, at any age the log keeps
         #[arg(long, value_name = "ID", conflicts_with = "after")]
         around: Option<u64>,
         #[arg(long, value_name = "NAME")]
         role: Option<String>,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     /// Find earlier messages, decisions and task history, ranked: the manager and role chats, the notes and the tasks
     Search {
@@ -335,30 +257,19 @@ pub enum TaskCmd {
         /// Build the index of the searched projects again from their logs and tasks
         #[arg(long)]
         reindex: bool,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     /// Approve a request the manager made, and run its action (owner only)
     Approve {
         /// The request id, such as a3
         id: String,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     /// Deny a request the manager made (owner only)
     Deny {
         id: String,
         #[arg(long)]
         note: Option<String>,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
+    #[command(hide = true)]
     /// From a task's worker: run the project's checks as after its result (all, or by number
     /// or scenario name). `--part` reruns one part of one scenario, such as
     /// `check-run web --part tasks`: the scenario's command gets `WSX_SCENARIO_PART`, and a
@@ -376,27 +287,17 @@ pub enum TaskCmd {
         /// Stop the running preview
         #[arg(long)]
         stop: bool,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     #[command(hide = true)]
     PreviewHost { project_id: String, task: String },
     #[command(hide = true)]
-    LandBatch {
-        tasks: Vec<String>,
-        #[arg(short, long)]
-        project: Option<String>,
-    },
+    LandBatch { tasks: Vec<String> },
     #[command(hide = true)]
     Host { project_id: String, task: String },
     /// Prints the manager's Seatbelt profile; scripts/test-manager-boundary.py starts a second
     /// sandbox with it.
     #[command(hide = true)]
     BoundaryProfile {
-        #[arg(short, long)]
-        project: Option<String>,
         /// The profile of an untrusted agent (Pi, or Claude on another endpoint)
         #[arg(long)]
         untrusted: bool,
@@ -465,10 +366,6 @@ pub struct NewArgs {
     /// One turn without `tasks.workflow.steps`: the manager's idle task
     #[arg(long, hide = true)]
     pub(crate) no_steps: bool,
-    #[arg(short, long)]
-    pub(crate) project: Option<String>,
-    #[arg(long)]
-    pub(crate) json: bool,
 }
 
 #[derive(clap::Args)]
@@ -486,10 +383,6 @@ pub struct DeployArgs {
     pub(crate) run: RunLocked,
     #[command(flatten)]
     pub(crate) said: OwnerSaid,
-    #[arg(short, long)]
-    pub(crate) project: Option<String>,
-    #[arg(long)]
-    pub(crate) json: bool,
 }
 
 #[derive(clap::Args)]
@@ -501,10 +394,6 @@ pub struct ReleaseArgs {
     pub(crate) run: RunLocked,
     #[command(flatten)]
     pub(crate) said: OwnerSaid,
-    #[arg(short, long)]
-    pub(crate) project: Option<String>,
-    #[arg(long)]
-    pub(crate) json: bool,
 }
 
 #[derive(clap::Args)]
@@ -520,10 +409,6 @@ pub struct PushArgs {
     pub(crate) lease: Option<String>,
     #[command(flatten)]
     pub(crate) said: OwnerSaid,
-    #[arg(short, long)]
-    pub(crate) project: Option<String>,
-    #[arg(long)]
-    pub(crate) json: bool,
 }
 
 #[derive(Subcommand)]
@@ -536,11 +421,6 @@ pub enum ProjectCmd {
         clone: Option<String>,
         #[command(flatten)]
         said: OwnerSaid,
-        /// The manager's project that asks (the owner needs none)
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -560,26 +440,11 @@ pub enum RoleCmd {
         adapter: Option<String>,
         #[command(flatten)]
         said: OwnerSaid,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
     },
     /// The roles: open, asked for and closed
-    List {
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    List,
     /// Close a role; its notes stay
-    Close {
-        name: String,
-        #[arg(short, long)]
-        project: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    Close { name: String },
 }
 
 impl TaskCmd {
@@ -591,7 +456,7 @@ impl TaskCmd {
         )
         .ok()?;
         match args.command {
-            Some(crate::cli::Command::Task { subcommand }) => Some(subcommand),
+            Some(crate::cli::Command::Task { subcommand, .. }) => Some(subcommand),
             _ => None,
         }
     }
@@ -605,12 +470,12 @@ impl TaskCmd {
         match self {
             Self::List { .. }
             | Self::Show { .. }
-            | Self::Ledger { .. }
-            | Self::Deployed { .. }
+            | Self::Ledger
+            | Self::Deployed
             | Self::Chat { .. }
             | Self::Search { .. }
             | Self::Check { .. }
-            | Self::Manager { .. } => &[Read],
+            | Self::Manager => &[Read],
             Self::Post { .. } | Self::Digest { .. } | Self::Say { .. } => &[Notify],
             Self::CheckRun { .. } => &[Result],
             Self::After { .. } | Self::Hold { .. } => &[Backlog],
@@ -634,7 +499,7 @@ impl TaskCmd {
                 _ => &[Routine],
             },
             Self::Role { action } => match action {
-                RoleCmd::List { .. } => &[Read],
+                RoleCmd::List => &[Read],
                 RoleCmd::New { .. } | RoleCmd::Close { .. } => &[RoleAdmin],
             },
             Self::Hand { .. }
@@ -650,53 +515,13 @@ impl TaskCmd {
         }
     }
 
-    pub fn json_output(&self) -> bool {
+    /// Whether the command prints JSON whatever `--json` says: the ledger always does; a
+    /// routine command has its own `--json` (`RoutineCmd`).
+    pub fn prints_json(&self) -> bool {
         match self {
-            Self::New(NewArgs { json, .. })
-            | Self::Deploy(DeployArgs { json, .. })
-            | Self::Release(ReleaseArgs { json, .. })
-            | Self::Push(PushArgs { json, .. })
-            | Self::List { json, .. }
-            | Self::Show { json, .. }
-            | Self::Steer { json, .. }
-            | Self::Add { json, .. }
-            | Self::Stop { json, .. }
-            | Self::Land { json, .. }
-            | Self::Hold { json, .. }
-            | Self::After { json, .. }
-            | Self::Trial { json, .. }
-            | Self::Hand { json, .. }
-            | Self::Handback { json, .. }
-            | Self::Check { json, .. }
-            | Self::Close { json, .. }
-            | Self::Deployed { json, .. }
-            | Self::Preview { json, .. } => *json,
-            Self::Role { action } => match action {
-                RoleCmd::New { json, .. }
-                | RoleCmd::List { json, .. }
-                | RoleCmd::Close { json, .. } => *json,
-            },
-            Self::Project { action } => match action {
-                ProjectCmd::Add { json, .. } => *json,
-            },
-            Self::Manager { json, .. }
-            | Self::Say { json, .. }
-            | Self::Chat { json, .. }
-            | Self::Search { json, .. }
-            | Self::Dismiss { json, .. }
-            | Self::Approve { json, .. }
-            | Self::Deny { json, .. } => *json,
-            Self::Ledger { .. } => true,
+            Self::Ledger => true,
             Self::Routine { action, .. } => action.json(),
-            Self::CheckRun { .. }
-            | Self::Digest { .. }
-            | Self::Checkin { .. }
-            | Self::Post { .. }
-            | Self::Host { .. }
-            | Self::ManagerHost { .. }
-            | Self::BoundaryProfile { .. }
-            | Self::PreviewHost { .. }
-            | Self::LandBatch { .. } => false,
+            _ => false,
         }
     }
 
@@ -712,7 +537,7 @@ impl TaskCmd {
                 | Self::Close { .. }
                 | Self::Hand { .. }
                 | Self::Handback { .. }
-                | Self::Manager { .. }
+                | Self::Manager
                 | Self::Say { .. }
                 | Self::Approve { .. }
         )

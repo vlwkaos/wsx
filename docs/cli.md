@@ -8,7 +8,7 @@ Every command, and the details of sessions, worktrees, the daemon and the runtim
 wsx status [--json]
 wsx worktree list|create|delete
 wsx worktree create <branch> [--from <ref>] [--json] [-p <project>]
-wsx session create|current|delete|restart|list|send-keys|send-text|prompt|peek|rename
+wsx session create|current|delete|restart|list|send-text|prompt|peek|rename
 wsx session current [--json]
 wsx group ls|create|rename|add|remove
 wsx routine ...
@@ -20,13 +20,16 @@ wsx agent context [session|pane|label] [--metadata-only] --json [-p <project>] [
 wsx agent start <branch> -p <project> (<prompt>|-|--prompt-file <path>) [--key <text>] [--json]
 wsx agent request|inspect|wait|continue|cancel|exchanges
 wsx plugin list|reload
-wsx runtime status [--json]
+wsx daemon status [--json]
 wsx daemon restart [--json]
 wsx daemon stop [--force] [--json]
 wsx daemon recover
 wsx web serve|pair|devices [<site>]
 wsx web vapid
+wsx task new|list|show|add|stop|land|after|hold|trial|close|hand|dismiss|check|deploy|release|push|ledger|deployed|checkin|routine|manager|role|project|say|chat|search|approve|deny|preview|steer [-p <project>] [--json]
 ```
+
+Hidden from `wsx --help`, still run: `wsx runtime status` (now `wsx daemon status`), `wsx task handback <n>` (now `wsx task hand <n> --back`), `wsx task steer`, `wsx task check-run`, `digest` and `post` (a worker's and the routines' commands), `wsx memory capture|start|import` (the task host's), `wsx session send-keys` (an alias of `send-text`), `wsx group` and `wsx plugin`. A hidden command keeps its argv, so scripts, hooks, stored routines and a running manager's older prompt work without a change.
 
 ## Worktrees and sessions
 
@@ -71,7 +74,7 @@ See [Executable plugins](plugins.md) for the versioned event, Terminal-sidecar, 
 
 ## Daemon
 
-Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed terminal. Explicit subcommands remain available. `wsx runtime status`, `wsx daemon restart` and `wsx daemon stop` never start the daemon. Runtime status distinguishes a stopped daemon from one that is running but incompatible, awaiting an upgrade, deferring replacement, or ready. Its lifecycle output includes the daemon version and revision when the daemon supports them.
+Plain `wsx` and `wsx --mobile` reject nested TUI startup in a wsx-managed terminal. Explicit subcommands remain available. `wsx daemon status`, `wsx daemon restart` and `wsx daemon stop` never start the daemon. Runtime status distinguishes a stopped daemon from one that is running but incompatible, awaiting an upgrade, deferring replacement, or ready. Its lifecycle output includes the daemon version and revision when the daemon supports them.
 
 A wsxd update transfers live terminal ownership to the new daemon without restarting shells, agents, foreground jobs, or listening servers. Open wsx windows stay open: a window whose installed `wsx` was replaced re-executes into it in the same terminal and returns to the same session and mode. Only a window of an older release that cannot talk to the new daemon defers the update.
 

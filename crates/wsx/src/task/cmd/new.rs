@@ -16,7 +16,7 @@ use wsx_core::task::{
 };
 use wsx_core::{ops, runtime};
 
-pub(crate) fn new(args: NewArgs) -> Result<()> {
+pub(crate) fn new(args: NewArgs, project: Option<&str>, json: bool) -> Result<()> {
     let NewArgs {
         prompt,
         from,
@@ -31,9 +31,8 @@ pub(crate) fn new(args: NewArgs) -> Result<()> {
         plan,
         skip,
         no_steps,
-        project,
-        json,
     } = args;
+    let project = project.map(str::to_string);
     let steps = match (no_steps, size) {
         (true, _) => Steps::None,
         (false, Size::Small) => Steps::Small,

@@ -1533,10 +1533,10 @@ profile_status = WORK / "profile-status.json"
 send_shell_command(
     recovery_pane_id,
     f'XDG_STATE_HOME={PROFILE}/state HOME={PROFILE}/home "$WSX_AGENT_REPORT_BIN" '
-    f'runtime status --json > {profile_status}.tmp 2>&1; mv {profile_status}.tmp {profile_status}',
+    f'daemon status --json > {profile_status}.tmp 2>&1; mv {profile_status}.tmp {profile_status}',
     41,
 )
-wait_for(profile_status.exists, "the pane's wsx did not answer runtime status")
+wait_for(profile_status.exists, "the pane's wsx did not answer daemon status")
 profile_text = profile_status.read_text()
 assert not (PROFILE / "state" / "wsx" / "wsx.sock").exists(), ("second wsxd", profile_text)
 assert json.loads(profile_text)["socket"] == str(SOCKET), profile_text
@@ -1547,7 +1547,7 @@ def second_root(extra):
     run = lambda *args: wsx(*args, extra_env={"WSX_DAEMON_BIN": str(DAEMON)} | extra, timeout=30)
     started = run("status", "--json")
     assert started.returncode == 0, ("second root start", extra, started.stdout, started.stderr)
-    status = run("runtime", "status", "--json")
+    status = run("daemon", "status", "--json")
     stop = run("daemon", "stop", "--force")
     assert status.returncode == 0, ("second root", extra, status.stdout, status.stderr)
     assert stop.returncode == 0, ("second root stop", extra, stop.stdout, stop.stderr)
@@ -1677,7 +1677,7 @@ assert "recovered-init" in recovered_text, recovered_text
 shutdown_from_incompatible_client(process)
 
 before = subprocess.run(
-    [str(WSX), "runtime", "status", "--json"],
+    [str(WSX), "daemon", "status", "--json"],
     env=bootstrap_env,
     check=True,
     capture_output=True,
@@ -1696,7 +1696,7 @@ deadline = time.monotonic() + 5
 while time.monotonic() < deadline and not SOCKET.exists():
     time.sleep(0.05)
 after = subprocess.run(
-    [str(WSX), "runtime", "status", "--json"],
+    [str(WSX), "daemon", "status", "--json"],
     env=bootstrap_env,
     check=True,
     capture_output=True,
