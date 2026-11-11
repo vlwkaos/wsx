@@ -5568,6 +5568,9 @@ def part_host(created=None):
     opened = js('task', 'role', 'new', 'billing', '--brief', brief)
     assert opened['state'] == 'open' and (roles_dir / 'billing/brief.md').read_text() == brief.read_text(), opened
     assert 'already open' in cli('task', 'role', 'new', 'billing', '--brief', brief, ok=False).stderr
+    # A new role's room holds none of the project's earlier events, though the project has closed tasks.
+    assert len(js('task', 'list', '--all')['tasks']) > len(js('task', 'list')['tasks'])
+    assert not role_entries('billing') and js('task', 'chat', '--role', 'billing')['entries'] == []
     # The manager's role new is a request: one approval, which counts against the cap.
     asked = js('task', 'say', 'RUN wsx task role new qa --brief %s -p demo --json' % brief)
     text = reply_to(asked['id'])['text']
@@ -5648,6 +5651,10 @@ def part_host(created=None):
     # The TUI's Tasks view lists the open roles under Open; Enter opens a role's chat as `m`
     # opens the manager's (docs/tasks.md "TUI"), without the manager's items.
     below = len(js('task', 'list')['tasks'])
+    # ^ The manager says something in the room: a third speaker next to the owner and the role.
+    with (roles_dir / 'billing/log.jsonl').open('a') as log:
+        log.write(json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 9000001,
+                              'from': 'role:manager', 'text': 'MANAGER PING'}) + '\n')
     for cols in (120, 80):
         shots = tui_screens(wsx, env, project, [
             (r'WORKSPACE', b't'),
@@ -5658,7 +5665,9 @@ def part_host(created=None):
             (r'WORKSPACE', b'')], cols=cols)
         talk = shots[3]
         assert 'to check' not in talk and re.search(r'(?m)^ billing +\d\d:\d\d$', talk), talk
-        assert 'role answer' in talk or 'STATUS' in talk, talk
+        # ^ The title names the project and the role; the manager's message is under "<name> manager", not the bare project name.
+        assert 'demo · billing' in talk and 'MANAGER PING' in talk, talk
+        assert re.search(r'(?m)^ demo manager +\d\d:\d\d$', talk) and not re.search(r'(?m)^ demo +\d\d:\d\d$', talk), talk
     # role close keeps the notes; the role's tasks go back to the manager. A role with no turn for
     # tasks.roles.closeDays is closed by wsx, and the manager hears it.
     (roles_dir / 'billing/notes/context.md').write_text('billing notes\n')

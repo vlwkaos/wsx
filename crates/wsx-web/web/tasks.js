@@ -865,7 +865,8 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
   const waiting = all.filter((row) => row.queued);
   const items = role ? [] : overview?.needs ?? [];
   const words = withChips(id);
-  const rows = ready ? conversation(entries, overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems, chat?.asks ?? []) : [];
+  // ^ A role's room holds its own log only: the project's resolutions are the manager's chat (docs/tasks.md "Roles").
+  const rows = ready ? conversation(entries, role ? [] : overview?.resolutions ?? [], items.filter((item) => item.kind === "approval"), checkItems, chat?.asks ?? []) : [];
   // The sent message shows until the log has it.
   if (sent && !all.some((row) => row.kind === "message" && row.id === sent.id)) {
     const last = rows.at(-1);
@@ -913,7 +914,7 @@ export function Manager({ project: id, sheet = null, task = null, item = null, r
     <header class="bar">
       <${Back} fallback=${role ? `#/p/${id}` : "#/"} />
       <div class="bar-title">
-        <span class="bar-label">${role ?? project.name}</span>
+        <span class="bar-label">${role ? `${project.name} · ${role}` : project.name}</span>
         ${!role && !managerWord && chat?.manager.agent && html`<span class="bar-model" title="Model">${agentWords(chat.manager.agent)}</span>`}
         ${managerWord && html`<span class="bar-state" key=${managerWord} data-tone=${typing ? "working" : "danger"}>${typing
           ? html`<span class="typing-dots"><span class="visually-hidden">typing</span><${Dots} /></span>`

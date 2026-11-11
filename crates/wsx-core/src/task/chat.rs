@@ -430,10 +430,17 @@ impl From<Speaker> for String {
 pub struct Names<'a> {
     /// The chat's other side: the manager's shown name (`manager_shown_name`), or the role's.
     pub own: &'a str,
-    /// The project's manager by its shown name, as a role's chat names it.
+    /// The project's manager, as a role's chat names it (`manager_in_role_room`).
     pub manager: &'a str,
     /// Another project's manager by its shown name.
     pub peer: &'a dyn Fn(&str) -> String,
+}
+
+/// How a role's chat names the project's manager: its shown name and the word `manager`, so the
+/// room has three speakers (the owner, the manager, the role) and the bare project name is none.
+/// ref: docs/tasks.md "Roles"
+pub fn manager_in_role_room(shown: &str) -> String {
+    format!("{shown} manager")
 }
 
 /// One row of the chat.

@@ -33,7 +33,7 @@ const { file: mobilePath, source: mobileSource } = mobileAudit();
 if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_AUDIT`);
 // The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
 const linter = designLint({ evaluate, captures, file: "tasks" });
-const LINTED = new Set(["settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
+const LINTED = new Set(["role-chat", "role-chat-wide", "settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
 const audits = [];
@@ -3461,10 +3461,21 @@ problems.splice(quietFrom);
 // Roles (docs/web-client-tasks.md "Roles"): the ⋯ menu lists the role as a contact, unread
 // until read; it opens the role's chat at #/p/<project>/r/<role>, the same bubbles without the
 // manager's reservoir, and its composer talks to the role.
+// ^ The manager says something in the role's room: three speakers there, the owner, the manager and the role.
+{
+  const state = JSON.parse(fs.readFileSync(wsxCli)).env.XDG_STATE_HOME;
+  const found = fs.readdirSync(state, { recursive: true }).find((file) => file.endsWith(path.join("roles", "billing", "log.jsonl")));
+  if (!found) await fail(`no log of the billing role under ${state}`);
+  fs.appendFileSync(path.join(state, found), `${JSON.stringify({ unix_ms: Date.now(), kind: "message", id: 8990, from: "role:manager", text: "manager asks billing for the numbers" })}\n`);
+}
+const resolved = await evaluate(`fetch('api/tasks/${project}').then((r) => r.json()).then((data) => data.resolutions.length)`);
+if (!resolved) await fail("the fixture project has no resolutions, so the role room check proves nothing");
 for (const wide of [false, true]) {
   await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
   await go(chat);
   await until("!!document.querySelector('.composer-field')", "the chat did not open for Roles");
+  const projectName = (await text(".bar-label"))[0];
+  const shownName = await evaluate(`fetch('api/tasks/${project}/chat').then((r) => r.json()).then((data) => data.manager.name)`);
   await click(".more-button");
   await until("!!document.querySelector('.more-menu .role-contact')", "the ⋯ menu lists no role");
   // ^ The role's reply is news, but this device never opened its chat: as for a project, nothing is new.
@@ -3474,7 +3485,12 @@ for (const wide of [false, true]) {
   await click(".more-menu .role-contact");
   await until(`location.hash === '#/p/${project}/r/billing' && !!document.querySelector('.log .bubble[data-side=in]')`, "the role chat did not open with its reply");
   if (await count(".reservoir")) await fail("a role's chat shows the manager's reservoir");
-  if ((await text(".bar-label"))[0] !== "billing") await fail(`the role chat's title is ${await text(".bar-label")}`);
+  if ((await text(".bar-label"))[0] !== `${projectName} · billing`) await fail(`the role chat's title is ${await text(".bar-label")}`);
+  // ^ The room holds the role's own log: none of the project's resolutions ("#5 was closed") is in it.
+  if (await count(".log .status-line, .log .fold")) await fail(`a role chat shows the project's events: ${await text(".log .status-line, .log .fold")}`);
+  // ^ The speakers: the manager's message is under its name with the word manager, the role's reply under the role's.
+  const speakers = await evaluate(`[...document.querySelectorAll('.log .bubble')].map((node) => node.querySelector('.bubble-author')?.textContent ?? '').filter(Boolean)`);
+  if (!speakers.includes(`${shownName} manager`) || !speakers.includes("billing") || speakers.includes(shownName)) await fail(`the role chat's speakers are ${speakers}`);
   if (!wide) {
     const answered = await count(".log .bubble[data-side=in]");
     await typeInto(".composer-field", "STATUS");
