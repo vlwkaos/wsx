@@ -1,12 +1,11 @@
 //! One record, one log line, and the fold of the log. ref: docs/memory.md "Record"
 
-use super::Error;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::str::FromStr;
 
-pub const MAX_TEXT_BYTES: usize = 4096;
+pub(super) const MAX_TEXT_BYTES: usize = 4096;
 pub const EXCERPT_CHARS: usize = 240;
 /// A new text this close to an active record (Jaccard index of the word sets) is a duplicate.
 const DUPLICATE_JACCARD: f64 = 0.9;
@@ -91,17 +90,6 @@ pub(super) struct Line {
     pub record: Record,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Hit {
-    pub slug: String,
-    pub scope: String,
-    pub path: String,
-    pub kind: Kind,
-    pub status: Status,
-    pub score: f64,
-    pub excerpt: String,
-}
-
 pub(super) struct Folded {
     pub records: BTreeMap<String, Record>,
     /// Lines that did not parse: a write cut short by a crash.
@@ -158,23 +146,4 @@ pub(super) fn duplicate<'a>(
         let union = old.union(&new_words).count();
         union > 0 && old.intersection(&new_words).count() as f64 / union as f64 >= DUPLICATE_JACCARD
     })
-}
-
-/// Share of the query's words that the record's slug, title or text holds; 0 when none.
-pub(super) fn score(record: &Record, query: &HashSet<String>) -> f64 {
-    let held = words(&format!(
-        "{} {} {}",
-        record.slug,
-        record.title.as_deref().unwrap_or(""),
-        record.text
-    ));
-    query.iter().filter(|w| held.contains(*w)).count() as f64 / query.len() as f64
-}
-
-pub(super) fn query_words(query: &str) -> Result<HashSet<String>, Error> {
-    let set = words(query);
-    if set.is_empty() {
-        return Err(Error::Usage("the query has no words".into()));
-    }
-    Ok(set)
 }
