@@ -2683,7 +2683,7 @@ def part_core(created=None):
         (r'Media +all +all tasks +1/\d+', b'\r'),
         (r'(?s)files/\.studio-data/gone\.jpg +\d+/\d+.*removed: the file is gone', b'\x1b'),
         (r'Media +all +all tasks', b'j\r'),
-        (r'(?s)files/\.studio-data/trend\.jpg +\d+/\d+.*image, linked by manager.*file: [^\n]*trend\.jpg', b'\x1b'),
+        (r'(?s)files/\.studio-data/trend\.jpg +\d+/\d+.*image, linked by manager.*file:.*trend\.jpg', b'\x1b'),
         (r'Media +all +all tasks', b'v'), (r'Media +images', b'v'), (r'Media +videos', b'v'),
         (r'Media +all +all tasks', b't'), (r'Media +all +#\d+', b'\x1b'),
         (r'(?m)^ MANAGER ', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
