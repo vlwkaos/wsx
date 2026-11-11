@@ -13,30 +13,39 @@ One command surface for stored knowledge: `wsx memory <command>` (wsx, projects 
 | `slug` | id inside the scope: `a-z`, `0-9`, `-`, 1 to 64 characters |
 | `kind` | `rule` (owner's decision), `fact` (verified about the code), `episode` (what a task did or learned) |
 | `status` | `active` (default), `superseded`, `failed` (with `lesson`) |
-| `text`, `title` | the claim, at most 4096 bytes; optional title, one line |
+| `text`, `title` | the claim, at most `limits.text_bytes` bytes of the store (see "Limits"); optional title, one line |
 | `source` | required on every write: `msg:<id>`, `task:<n>`, `path:<file>`, `transcript:<ref>` |
 | `updated` | unix ms of the last write |
-| `verified_by` | required for `rule` and `fact`, else exit 2. Forms: `owner:<msg id>` (digits), or a relative path with no `..` that exists under the project root. wsx also takes `task:<n>` (a landed task of the project) and `check:<id>` (a passed check item of the project). `episode` needs none |
+| `verified_by` | required for `rule` and `fact`, else exit 2. Forms: `owner:<msg id>` (digits, a wsx message), `owner:transcript:<ref>` (the owner's words outside wsx), or a relative path with no `..` that exists under the project root. wsx also takes `task:<n>` (a landed task of the project) and `check:<id>` (a passed check item of the project). `episode` needs none |
 | `commit` | facts: the commit it was true at |
 | `superseded_by` | slug of the newer record |
 | `lesson` | why a `failed` record failed |
 
 A reader ignores fields it does not know, and a program keeps the fields of its own that it does not own. Root of a relative `verified_by` path: the project path for a project scope, else the current folder.
 
+`owner:transcript:<ref>`: `<ref>` is the path of an existing transcript file (absolute, or relative to that root), optionally followed by `#L<line>` (a number from 1). The program checks that the file exists and is a file; it does not read it. A date or a name alone is no proof (`owner:2026-11-11` is exit 2). `owner:<digits>` stays the form for a wsx message.
+
+## Limits
+
+`status` declares what the store keeps in `limits`: `{"text_bytes": N}`, the most bytes a record's `text` may hold (wsx's built-in store: 4096). A write over it is exit 2 and says the limit. A reader or writer takes N from `status` and never assumes 4096; the vault store may declare another.
+
 ## Hit
 
-`slug`, `scope`, `path` (the file the record lives in), `kind`, `status`, `score` 0..1 (higher is better), `excerpt` (at most 240 characters). wsx adds more keys for chat and task hits; a reader ignores them.
+`slug`, `scope`, `path` (the file the record lives in), `kind`, `status`, `score` 0..1 (higher is better), `excerpt` (at most 240 characters).
+
+wsx also searches the transcripts of a project scope (a chat message or reply, a task's prompt, result and story, the manager's decision and memo lines; "Search" in [tasks.md](tasks.md)) and returns them as hits: `slug` is the line's `reference` (`<project>:<id>`, `<project>#<task>`, `<project>:notes/decisions.md`), `kind` one of `message`, `reply`, `task`, `result`, `history`, `decision`, `memo`, `status` `active`, `path` the log or note file it was read from, and the keys of a `wsx task search` hit (`project`, `role`, `id`, `task`, `unix_ms`, `by`, `reference`, `quote`, `outcome`). A reader ignores the keys it does not know and treats a `kind` it does not know as opaque. `--kind` takes any of these kinds.
 
 ## Commands
 
 | Command | Arguments | Output |
 |---|---|---|
 | `search` | `<query> [--limit 10] [--include-inactive] [--kind k]` | `[hit]` by score, newer first on a tie; nothing found: `[]`, exit 0. Active records only unless `--include-inactive` |
+| `recall` (wsx) | `<question>` | the best 5 `[hit]`: the top 5 by score of a search's top 20 (no model yet) |
 | `add` | `--kind K --slug S --text-file F\|- --source ID [--title T] [--verified-by V] [--commit C]` | the record. A near duplicate returns the old record unchanged (NOOP), exit 0 |
 | `update` | `--slug S [--text-file F\|-] --source ID [--verified-by V] [--commit C] [--status failed --lesson L]` | the record. The old text stays in the log. `--status failed` needs `--lesson` and is INVALIDATE |
 | `supersede` | `<old> <new> --source ID` | the old record, now `superseded` with `superseded_by` set to `<new>` |
-| `reindex` | none | `{"scope","ok"}` |
-| `status` | none | `{"scope","store","backend","search":{"network":bool,"model":bool},"counts":{"active","superseded","failed"}}` |
+| `reindex` | none | `{"scope","ok"}`. wsx: drops the project's digest of transcripts and builds it again, then asks the backend to reindex (a backend that fails is exit 3) |
+| `status` | none | `{"scope","store","backend","search":{"network":bool,"model":bool},"limits":{"text_bytes":N},"counts":{"active","superseded","failed"}}` |
 | `list` | none | `[{"scope","store"}]` |
 
 `add` rules:
@@ -44,7 +53,22 @@ A reader ignores fields it does not know, and a program keeps the fields of its 
 - A slug that exists with different text is exit 2 (use `update`).
 - `update` of an unknown slug and `supersede` of an unknown `<old>` or `<new>` is exit 1. `<new>` must be active, else exit 2.
 
-`search` makes no network or model call unless `status` declares one. The score of the built-in match is the share of query words (lowercased, split on non-alphanumerics) found in the slug, title and text; a hit needs at least one.
+`search` makes no network or model call unless `status` declares one. A hit needs at least one query word. wsx scores with BM25 (k1 1.2, b 0.75) over the lowercase words of a record's slug, title and text and of the project's transcripts, divided by the most a text could score for those words: more of the words, and rarer ones, score higher; the score is in 0..1 whatever else is stored. A run of Han, Kana or Hangul matches by pairs of neighbouring characters. The score of another program is its own, in 0..1.
+
+## Search backend
+
+The built-in index (`wsx_core::memory::index`, the digest of `wsx task search`) is the one backend wsx has. The global config can add one program that follows this contract's `search`, `reindex` and `status` (wsx names no tool):
+
+```toml
+[memory]
+backend = ["python3", "/path/to/ir-memory.py"]   # a program and its arguments; a string is the program alone
+```
+
+- `wsx memory search` runs the built-in, then `<backend> search --scope S --limit N [--include-inactive] [--kind k] --json -- <query>`. The hits of both merge: one hit per `(scope, slug)` with the higher score, best first, at most `--limit`. A hit of the backend with another `kind` than `--kind`, or not `active` without `--include-inactive`, is dropped.
+- The built-in always answers. The backend adds hits; when it exits 3 or any other code than 0, does not answer in 10 s, cannot start or prints no list of hits, wsx prints `wsx: memory backend <command> unavailable (<why>); the built-in answered` on stderr and returns the built-in hits (exit 0, clean JSON on stdout).
+- `status` runs `<backend> status` for its `search` flags and reports `backend` (the command; `builtin` with none) and those flags. A backend that cannot be reached gives `backend_error` and `network` and `model` false: only the built-in answers.
+- `recall` and the broker's `search` use the same merge.
+- A backend runs in the process of `wsx memory` (for an agent, its host) with the owner's rights, not inside the agent's boundary. An agent supplies only the query, which goes after `--` in the arguments with no shell. Set a backend that declares `network` only if the owner wants a strict agent's query to reach it.
 
 ## Exit codes
 
@@ -53,7 +77,7 @@ A reader ignores fields it does not know, and a program keeps the fields of its 
 | 0 | ok (including `[]` and NOOP) |
 | 1 | not found (slug) |
 | 2 | usage, an invalid value, or an invalid `verified_by` |
-| 3 | store or backend unavailable (lock, I/O) |
+| 3 | store unavailable (lock, I/O), or a `reindex` the backend could not do. A backend that cannot `search` is no exit: the built-in answers |
 | 4 | compaction: the recall-query gate refused, the store is untouched, the report names the query |
 | 5 | compaction: the store changed meanwhile |
 
@@ -71,7 +95,7 @@ A task agent calls `wsx memory` through its host's broker (`WSX_TASK_BROKER`), w
 
 | Command | Who |
 |---|---|
-| `search`, `status`, `list` | every agent, also an untrusted one; a read may name any scope |
+| `search`, `recall`, `status`, `list` | every agent, also an untrusted one; a read may name any scope |
 | `add`, `update`, `supersede`, `reindex` | the manager, a named role and a worker, in the agent's own project scope only (`--scope` defaults to it, another one is refused) |
 | a `rule` record (add, change, replace) | the manager and a named role: it needs `owner:<id>`, and a worker's call is refused by the store |
 | any write | not an untrusted agent (strict profile): read only |
@@ -82,4 +106,4 @@ A refusal exits 2 and names the cause. The host sets `WSX_MEMORY_RULES=deny` for
 
 `scripts/test-task.py` sections 23m and 27m run the broker cases (a worker, an untrusted worker, the manager) and the `task:<n>` and `check:<id>` forms of `verified_by` with a landed task and a passed item.
 
-`python3 -B scripts/test-memory.py "<command prefix>"` runs the same scenario against any program, for example `"target/debug/wsx memory"` or `"python3 memory.py"`. It sets `HOME` and `XDG_STATE_HOME` to a temp folder.
+`python3 -B scripts/test-memory.py "<command prefix>"` runs the same scenario against any program, for example `"target/debug/wsx memory"` or `"python3 memory.py"`. It sets `HOME` and `XDG_STATE_HOME` to a temp folder. It checks `limits.text_bytes` (the limit exact, one byte over is exit 2) and the `owner:transcript:` forms for any program. For wsx it also runs the transcripts of a project scope and the backend cases against `scripts/fake-memory-backend.py` (a program that follows `search`, `reindex` and `status` and can exit 3, exit 1, print garbage or hang): merge by score, the kind filter, exit 3, the 10 s stop, `status` flags, `reindex` and `recall`.

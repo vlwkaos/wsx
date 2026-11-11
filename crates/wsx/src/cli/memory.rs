@@ -4,7 +4,7 @@ use super::*;
 use serde_json::{json, Value};
 use std::io::Read;
 use wsx_core::memory::{
-    known_scopes, validate_scope, Error, Hit, NewRecord, Patch, Record, SearchOptions, Store,
+    backend, known_scopes, validate_scope, Command, Error, NewRecord, Patch, Query, Record, Store,
 };
 
 type MemResult<T> = std::result::Result<T, Error>;
@@ -26,32 +26,22 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
             include_inactive,
             kind,
         } => {
-            let options = SearchOptions {
+            let query = Query {
+                words: query,
                 limit,
                 include_inactive,
                 kind,
             };
-            let mut hits: Vec<Hit> = Vec::new();
-            for store in stores(&scopes)? {
-                hits.extend(store.search(&query, &options)?);
-            }
-            // ^ Merged by score; each store's hits already come newer first on a tie.
-            hits.sort_by(|a, b| b.score.total_cmp(&a.score));
-            hits.truncate(limit);
-            if json {
-                return print(&hits);
-            }
-            for hit in &hits {
-                println!(
-                    "{:.2} {}/{} [{}, {}] {}",
-                    hit.score,
-                    hit.scope,
-                    hit.slug,
-                    hit.kind.as_str(),
-                    hit.status.as_str(),
-                    hit.excerpt.replace('\n', " ")
-                );
-            }
+            show_hits(
+                backend::search(&stores(&scopes)?, external().as_ref(), &query)?,
+                json,
+            )?;
+        }
+        MemoryCmd::Recall { question } => {
+            show_hits(
+                backend::recall(&stores(&scopes)?, external().as_ref(), &question)?,
+                json,
+            )?;
         }
         MemoryCmd::Add {
             kind,
@@ -116,8 +106,7 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
         }
         MemoryCmd::Reindex => {
             let store = one(&scopes)?;
-            // ^ The built-in search reads the log itself; this checks that the log folds.
-            store.counts()?;
+            backend::reindex(&store, external().as_ref())?;
             let out = json!({ "scope": store.scope(), "ok": true });
             if json {
                 return print(&out);
@@ -127,24 +116,35 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
         MemoryCmd::Status => {
             let store = one(&scopes)?;
             let [active, superseded, failed] = store.counts()?;
-            let out = json!({
+            let (name, flags, error) = backend::describe(&store, external().as_ref());
+            let mut out = json!({
                 "scope": store.scope(),
                 "store": store.dir(),
-                "backend": "builtin",
-                "search": { "network": false, "model": false },
+                "backend": name,
+                "search": { "network": flags.network, "model": flags.model },
+                "limits": { "text_bytes": store.text_bytes() },
                 "counts": { "active": active, "superseded": superseded, "failed": failed },
             });
+            if let Some(error) = &error {
+                out["backend_error"] = json!(error);
+            }
             if json {
                 return print(&out);
             }
             println!(
-                "{}: {}\nbackend builtin (no network, no model)\n{active} active, {superseded} superseded, {failed} failed",
+                "{}: {}\nbackend {name} (network {}, model {})\ntext up to {} bytes\n{active} active, {superseded} superseded, {failed} failed",
                 store.scope(),
-                store.dir().display()
+                store.dir().display(),
+                flags.network,
+                flags.model,
+                store.text_bytes()
             );
+            if let Some(error) = error {
+                println!("backend unavailable: {error}; the built-in answers");
+            }
         }
         MemoryCmd::List => {
-            let ids: Vec<String> = projects()?.into_iter().map(|(id, _)| id).collect();
+            let ids: Vec<String> = projects()?.into_iter().map(|(id, ..)| id).collect();
             let rows: Vec<Value> = known_scopes(&ids)
                 .into_iter()
                 .map(|(scope, store)| json!({ "scope": scope, "store": store }))
@@ -185,14 +185,47 @@ fn show(record: &Record, json: bool, verb: &str) -> MemResult<()> {
     Ok(())
 }
 
-/// The registered projects as `(task ID, path)`.
-fn projects() -> MemResult<Vec<(String, PathBuf)>> {
+/// The search backend of the global config, when one is set.
+fn external() -> Option<Command> {
+    Command::new(load_config().ok()?.memory.backend)
+}
+
+/// Print the hits (a notice for each failed backend goes to stderr).
+fn show_hits(answer: backend::Answer, json: bool) -> MemResult<()> {
+    for notice in &answer.notices {
+        eprintln!("wsx: {notice}");
+    }
+    if json {
+        return print(&answer.hits);
+    }
+    for hit in &answer.hits {
+        println!(
+            "{:.2} {}/{} [{}, {}] {}",
+            hit.score,
+            hit.scope,
+            hit.slug,
+            hit.kind,
+            hit.status,
+            hit.excerpt.replace('\n', " ")
+        );
+    }
+    Ok(())
+}
+
+/// The registered projects as `(task ID, name, path)`.
+fn projects() -> MemResult<Vec<(String, String, PathBuf)>> {
     let config =
         load_config().map_err(|e| Error::Store(format!("cannot read the config: {e:#}")))?;
     Ok(config
         .projects
         .into_iter()
-        .map(|p| (wsx_core::task::store::project_id(&p.name, &p.path), p.path))
+        .map(|p| {
+            (
+                wsx_core::task::store::project_id(&p.name, &p.path),
+                p.name,
+                p.path,
+            )
+        })
         .collect())
 }
 
@@ -226,21 +259,21 @@ fn scoped(scopes: &[String]) -> MemResult<Vec<Store>> {
         projects()?
     };
     if scopes.is_empty() {
-        let (id, path) = projects
+        let (id, name, path) = projects
             .iter()
-            .filter(|(_, path)| cwd.starts_with(path) || real_path_inside(&cwd, path))
-            .max_by_key(|(_, path)| path.as_os_str().len())
+            .filter(|(.., path)| cwd.starts_with(path) || real_path_inside(&cwd, path))
+            .max_by_key(|(.., path)| path.as_os_str().len())
             .ok_or_else(|| {
                 Error::Usage("the current folder is in no project: give --scope".into())
             })?;
-        return Ok(vec![Store::project(id, path)?]);
+        return Ok(vec![Store::project(id, name, path)?]);
     }
     scopes
         .iter()
         .map(|scope| {
             validate_scope(scope)?;
-            match projects.iter().find(|(id, _)| id == scope) {
-                Some((id, path)) => Store::project(id, path),
+            match projects.iter().find(|(id, ..)| id == scope) {
+                Some((id, name, path)) => Store::project(id, name, path),
                 None => Store::named(scope, &cwd),
             }
         })

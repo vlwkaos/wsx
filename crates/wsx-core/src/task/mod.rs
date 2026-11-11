@@ -17,7 +17,8 @@ pub mod owner;
 pub mod policy;
 pub mod report;
 pub mod roles;
-pub mod search;
+/// `wsx task search` is the built-in index of the memory contract. ref: docs/tasks.md "Search"
+pub use crate::memory::index as search;
 pub mod session_news;
 pub mod stall;
 pub mod status;

@@ -1,8 +1,12 @@
 //! The `memory` contract's built-in store: records in an append-only log, folded into the
-//! current ones. ref: docs/memory.md, docs/design/memory-system.md
+//! current ones, and the index that searches them. ref: docs/memory.md,
+//! docs/design/memory-system.md
 
+pub mod backend;
+pub mod index;
 mod record;
 mod store;
 
-pub use record::{Hit, Kind, Record, Status};
-pub use store::{known_scopes, validate_scope, Error, NewRecord, Patch, SearchOptions, Store};
+pub use backend::{Backend, Builtin, Command, Hit, KindFilter, Query};
+pub use record::{Kind, Record, Status};
+pub use store::{known_scopes, validate_scope, Error, NewRecord, Patch, Store};

@@ -860,9 +860,13 @@ pub enum MemoryCmd {
         limit: usize,
         #[arg(long)]
         include_inactive: bool,
+        /// A record kind (rule, fact, episode) or a transcript kind (message, reply, task, result,
+        /// history, decision, memo)
         #[arg(long)]
-        kind: Option<wsx_core::memory::Kind>,
+        kind: Option<wsx_core::memory::KindFilter>,
     },
+    /// The best five records for a question (top 5 by score of a search's top 20)
+    Recall { question: String },
     /// Store a record; a near duplicate returns the old one
     Add {
         #[arg(long)]
@@ -906,7 +910,7 @@ pub enum MemoryCmd {
         #[arg(long)]
         source: String,
     },
-    /// Rebuild the index of the scope (the built-in store has none)
+    /// Rebuild the index of the scope (the digest of its transcripts, and the backend's own)
     Reindex,
     /// Store folder, search backend and record counts
     Status,
@@ -918,6 +922,7 @@ impl MemoryCmd {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Search { .. } => "search",
+            Self::Recall { .. } => "recall",
             Self::Add { .. } => "add",
             Self::Update { .. } => "update",
             Self::Supersede { .. } => "supersede",
@@ -932,7 +937,7 @@ impl MemoryCmd {
     pub fn needs(&self) -> &'static [wsx_core::task::policy::Capability] {
         use wsx_core::task::policy::Capability::{Recall, Remember};
         match self {
-            Self::Search { .. } | Self::Status | Self::List => &[Recall],
+            Self::Search { .. } | Self::Recall { .. } | Self::Status | Self::List => &[Recall],
             Self::Add { .. } | Self::Update { .. } | Self::Supersede { .. } | Self::Reindex => {
                 &[Remember]
             }

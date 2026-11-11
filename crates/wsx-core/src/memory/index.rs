@@ -1,12 +1,17 @@
-//! Ranked search across projects: the manager chats and role chats, the manager's notes, and
-//! each task's title and results. One digest per project keeps the words of what was said, not
-//! the tool noise; it is built from the logs, caught up on read and rebuilt on request.
-//! ref: docs/tasks.md "Search"
+//! The built-in index: BM25 over what was said. The manager chats and role chats, the manager's
+//! notes and each task's title, story and results. One digest per project keeps the words of
+//! what was said, not the tool noise; it is built from the logs, caught up on read and rebuilt
+//! on request. `wsx task search` is this index alone; `wsx memory search` ranks the memory
+//! records with it (`backend::Builtin`). ref: docs/tasks.md "Search", docs/memory.md "Search"
 
-use super::manager::{says_nothing, split_quote, Author, ManagerEntry, ManagerEvent, QUOTE_REF};
-use super::store::{self, contains_bytes, ManagerDir, TaskDir, FIRST_READ_BYTES, RESULT_FILE};
-use super::text::first_line;
-use super::{history, roles, view};
+use crate::task::manager::{
+    says_nothing, split_quote, Author, ManagerEntry, ManagerEvent, QUOTE_REF,
+};
+use crate::task::store::{
+    self, contains_bytes, ManagerDir, TaskDir, FIRST_READ_BYTES, LOG_FILE, RECORD_FILE, RESULT_FILE,
+};
+use crate::task::text::first_line;
+use crate::task::{history, roles, view};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -51,26 +56,41 @@ pub enum Kind {
     Mark,
 }
 
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::Reply => "reply",
+            Self::Task => "task",
+            Self::Result => "result",
+            Self::History => "history",
+            Self::Decision => "decision",
+            Self::Memo => "memo",
+            Self::Mark => "mark",
+        }
+    }
+}
+
 /// One searchable record, a line of a digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Doc {
-    kind: Kind,
+pub(super) struct Doc {
+    pub kind: Kind,
     /// The role whose chat it is; none is the manager's.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    role: String,
+    pub role: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    id: Option<u64>,
+    pub id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    task: Option<u32>,
-    at: u64,
+    pub task: Option<u32>,
+    pub at: u64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    by: String,
+    pub by: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    text: String,
+    pub text: String,
     /// A `History` line: the byte offset after it in the task's log, so a catch-up reads the log
     /// from the newest one it has.
     #[serde(default, skip_serializing_if = "is_zero")]
-    end: u64,
+    pub end: u64,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -136,16 +156,7 @@ pub fn search(
     reindex: bool,
     only: Option<u32>,
 ) -> Result<Found> {
-    let words = words.to_lowercase();
-    let mut terms: Vec<&str> = Vec::new();
-    each_token(&words, |token| {
-        if !terms.contains(&token) {
-            terms.push(token)
-        }
-    });
-    if terms.is_empty() {
-        bail!("search needs some words");
-    }
+    let terms = terms(words)?;
     let mut found = Found::default();
     let mut docs: Vec<(usize, Doc)> = Vec::new();
     for (at, target) in targets.iter().enumerate() {
@@ -166,49 +177,7 @@ pub fn search(
         bail!("{}", found.problems.join("; "));
     }
     found.docs = docs.len();
-    let index: HashMap<&str, usize> = terms.iter().enumerate().map(|(i, t)| (*t, i)).collect();
-    // ^ First pass: each record's length and its count of every term; the second scores them
-    // with the term frequencies of all projects together.
-    let mut seen: Vec<(usize, usize, Vec<u32>)> = Vec::new();
-    let mut df = vec![0u32; terms.len()];
-    let mut total = 0usize;
-    for (at, (_, doc)) in docs.iter().enumerate() {
-        let lower = doc.text.to_lowercase();
-        let mut counts = vec![0u32; terms.len()];
-        let mut length = 0usize;
-        each_token(&lower, |token| {
-            length += 1;
-            if let Some(&term) = index.get(token) {
-                counts[term] += 1;
-            }
-        });
-        total += length;
-        if counts.iter().any(|count| *count > 0) {
-            for (term, count) in counts.iter().enumerate() {
-                df[term] += u32::from(*count > 0);
-            }
-            seen.push((at, length, counts));
-        }
-    }
-    let count = docs.len() as f64;
-    let average = (total as f64 / count.max(1.0)).max(1.0);
-    let mut scored: Vec<(f64, usize)> = seen
-        .iter()
-        .map(|(at, length, counts)| {
-            let score = counts
-                .iter()
-                .enumerate()
-                .filter(|(_, tf)| **tf > 0)
-                .map(|(term, tf)| {
-                    let (tf, df) = (f64::from(*tf), f64::from(df[term]));
-                    let idf = (1.0 + (count - df + 0.5) / (df + 0.5)).ln();
-                    idf * tf * (BM25_K1 + 1.0)
-                        / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * *length as f64 / average))
-                })
-                .sum();
-            (score, *at)
-        })
-        .collect();
+    let mut scored = rank(docs.iter().map(|(_, doc)| doc.text.as_str()), &terms).scored;
     // ^ Equal scores: the newer first.
     scored.sort_by(|a, b| {
         b.0.total_cmp(&a.0)
@@ -227,13 +196,120 @@ pub fn search(
     Ok(found)
 }
 
+/// The distinct lowercase words of a query.
+pub(super) fn terms(words: &str) -> Result<Vec<String>> {
+    let words = words.to_lowercase();
+    let mut terms: Vec<String> = Vec::new();
+    each_token(&words, |token| {
+        if !terms.iter().any(|t| t == token) {
+            terms.push(token.to_string())
+        }
+    });
+    if terms.is_empty() {
+        bail!("search needs some words");
+    }
+    Ok(terms)
+}
+
+/// The BM25 score of every text that holds a term, as `(score, position)`, unsorted.
+pub(super) struct Ranked {
+    pub scored: Vec<(f64, usize)>,
+    /// What a text could score at most for these terms (the tf limit of every term, length 0):
+    /// a score over it is in 0..1, the same for any corpus the terms are scored in.
+    pub bound: f64,
+}
+
+pub(super) fn rank<'a>(texts: impl Iterator<Item = &'a str>, terms: &[String]) -> Ranked {
+    let index: HashMap<&str, usize> = terms
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.as_str(), i))
+        .collect();
+    // ^ First pass: each text's length and its count of every term; the second scores them
+    // with the term frequencies of all texts together.
+    let mut seen: Vec<(usize, usize, Vec<u32>)> = Vec::new();
+    let mut df = vec![0u32; terms.len()];
+    let mut total = 0usize;
+    let mut texts_seen = 0usize;
+    for (at, text) in texts.enumerate() {
+        texts_seen += 1;
+        let lower = text.to_lowercase();
+        let mut counts = vec![0u32; terms.len()];
+        let mut length = 0usize;
+        each_token(&lower, |token| {
+            length += 1;
+            if let Some(&term) = index.get(token) {
+                counts[term] += 1;
+            }
+        });
+        total += length;
+        if counts.iter().any(|count| *count > 0) {
+            for (term, count) in counts.iter().enumerate() {
+                df[term] += u32::from(*count > 0);
+            }
+            seen.push((at, length, counts));
+        }
+    }
+    let count = texts_seen as f64;
+    let average = (total as f64 / count.max(1.0)).max(1.0);
+    let idf = |df: u32| (1.0 + (count - f64::from(df) + 0.5) / (f64::from(df) + 0.5)).ln();
+    let scored = seen
+        .iter()
+        .map(|(at, length, counts)| {
+            let score = counts
+                .iter()
+                .enumerate()
+                .filter(|(_, tf)| **tf > 0)
+                .map(|(term, tf)| {
+                    let tf = f64::from(*tf);
+                    idf(df[term]) * tf * (BM25_K1 + 1.0)
+                        / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * *length as f64 / average))
+                })
+                .sum();
+            (score, *at)
+        })
+        .collect();
+    let bound = df.iter().map(|df| idf(*df) * (BM25_K1 + 1.0)).sum();
+    Ranked { scored, bound }
+}
+
+/// The file a doc was read from, for the `path` of a memory hit; empty when its folder is gone.
+pub(super) fn source_path(project_id: &str, doc: &Doc) -> String {
+    let path = match (doc.kind, doc.task) {
+        (Kind::Message | Kind::Reply, _) => ManagerDir::existing_as(
+            project_id,
+            Some(doc.role.as_str()).filter(|r| !r.is_empty()),
+        )
+        .ok()
+        .flatten()
+        .map(|dir| dir.path.join(LOG_FILE)),
+        (Kind::Decision | Kind::Memo, _) => {
+            ManagerDir::existing(project_id).ok().flatten().map(|dir| {
+                dir.path.join("notes").join(match doc.kind {
+                    Kind::Decision => "decisions.md",
+                    _ => "context.md",
+                })
+            })
+        }
+        (kind, Some(task)) => TaskDir::open(project_id, task).ok().map(|dir| {
+            dir.file(match kind {
+                Kind::Task => RECORD_FILE,
+                Kind::Result => RESULT_FILE,
+                _ => LOG_FILE,
+            })
+        }),
+        _ => None,
+    };
+    path.map_or_else(String::new, |p| p.display().to_string())
+}
+
 /// Where task `task` is now, for a hit that names it; none when its files are gone.
-fn outcome(target: &Target, task: u32) -> Option<String> {
+pub(super) fn outcome(target: &Target, task: u32) -> Option<String> {
     let dir = TaskDir::open(&target.project_id, task).ok()?;
     Some(history::outcome(&dir, &dir.read_record().ok()?))
 }
 
-fn hit(project: &str, doc: &Doc, score: f64, current: Option<&str>) -> Hit {
+pub(super) fn hit(project: &str, doc: &Doc, score: f64, current: Option<&str>) -> Hit {
     let role = Some(doc.role.clone()).filter(|role| !role.is_empty());
     let reference = match (doc.kind, doc.id, doc.task) {
         (Kind::Message | Kind::Reply, Some(id), _) => match &role {
@@ -317,7 +393,7 @@ fn is_cjk(c: char) -> bool {
 
 /// Every record of the project: its digest, caught up with the logs and the task files, and
 /// its notes. `reindex` drops the digest first.
-fn gather(target: &Target, reindex: bool) -> Result<Vec<Doc>> {
+pub(super) fn gather(target: &Target, reindex: bool) -> Result<Vec<Doc>> {
     let dir = store::project_dir(&target.project_id)?;
     if !std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir()) {
         return Ok(Vec::new());

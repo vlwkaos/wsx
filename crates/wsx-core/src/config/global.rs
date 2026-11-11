@@ -257,6 +257,30 @@ pub struct GlobalConfig {
     pub port_visibility: PortVisibility,
     #[serde(default)]
     pub attention_priority: AttentionPriority,
+    /// ref: docs/memory.md "Search backend"
+    #[serde(default, skip_serializing_if = "MemoryConfig::is_empty")]
+    pub memory: MemoryConfig,
+}
+
+/// The `[memory]` table.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct MemoryConfig {
+    /// The program and arguments of the search backend, which follows the `memory` contract's
+    /// `search`, `reindex` and `status`; empty is the built-in alone.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub backend: Vec<String>,
+}
+
+impl MemoryConfig {
+    fn is_empty(&self) -> bool {
+        self.backend.is_empty()
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct MemoryWire {
+    #[serde(default)]
+    backend: Option<StringList>,
 }
 
 impl Default for GlobalConfig {
@@ -278,6 +302,7 @@ impl Default for GlobalConfig {
             terminal_title_position: TerminalTitlePosition::default(),
             port_visibility: PortVisibility::default(),
             attention_priority: AttentionPriority::default(),
+            memory: MemoryConfig::default(),
         }
     }
 }
@@ -499,6 +524,8 @@ struct GlobalConfigWire {
     port_visibility: PortVisibility,
     #[serde(default)]
     attention_priority: AttentionPriority,
+    #[serde(default)]
+    memory: MemoryWire,
 }
 
 #[derive(Deserialize)]
@@ -636,6 +663,17 @@ impl<'de> Deserialize<'de> for GlobalConfig {
         }
         .validate()
         .map_err(D::Error::custom)?;
+        let backend = wire
+            .memory
+            .backend
+            .map(StringList::into_vec)
+            .unwrap_or_default();
+        if backend
+            .first()
+            .is_some_and(|program| program.trim().is_empty())
+        {
+            return Err(D::Error::custom("memory.backend: the program is empty"));
+        }
         let mut config = Self {
             groups,
             profiles: wire.profiles,
@@ -653,6 +691,7 @@ impl<'de> Deserialize<'de> for GlobalConfig {
             terminal_title_position: wire.terminal_title_position,
             port_visibility: wire.port_visibility,
             attention_priority: wire.attention_priority,
+            memory: MemoryConfig { backend },
         };
         config.migrate_reserved_names();
         Ok(config)

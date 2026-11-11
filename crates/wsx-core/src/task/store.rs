@@ -163,7 +163,7 @@ pub(super) fn ensure_project_dir(project_id: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-pub(super) fn open_nofollow(path: &Path, options: &mut OpenOptions) -> Result<File> {
+pub(crate) fn open_nofollow(path: &Path, options: &mut OpenOptions) -> Result<File> {
     options
         .custom_flags(libc::O_NOFOLLOW)
         .mode(0o600)
@@ -172,7 +172,7 @@ pub(super) fn open_nofollow(path: &Path, options: &mut OpenOptions) -> Result<Fi
 }
 
 /// `open_nofollow`, then an exclusive lock that holds until the file closes.
-pub(super) fn open_locked(path: &Path, options: &mut OpenOptions) -> Result<File> {
+pub(crate) fn open_locked(path: &Path, options: &mut OpenOptions) -> Result<File> {
     let file = open_nofollow(path, options)?;
     crate::fs_util::flock(file.as_raw_fd(), false)
         .with_context(|| format!("cannot lock {}", path.display()))?;
@@ -198,7 +198,7 @@ pub(super) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
 }
 
 /// `read_bounded`, or `None` when `path` does not exist.
-pub(super) fn read_bounded_if_exists(path: &Path, limit: u64) -> Result<Option<Vec<u8>>> {
+pub(crate) fn read_bounded_if_exists(path: &Path, limit: u64) -> Result<Option<Vec<u8>>> {
     open_if_exists(path)?
         .map(|file| read_open_bounded(file, path, limit))
         .transpose()
@@ -1135,7 +1135,7 @@ impl ManagerDir {
 
     /// `read_back` of only the lines `keep` accepts as bytes: a reader that needs few kinds
     /// of entries parses only those.
-    pub(super) fn read_back_where(
+    pub(crate) fn read_back_where(
         &self,
         first: u64,
         keep: impl Fn(&[u8]) -> bool,
@@ -1176,9 +1176,9 @@ impl ManagerDir {
 
 /// A reader of the manager's log (the chat, the search catch-up) reads this much of its end
 /// first, more only when its window needs it (`read_back_where`, docs/tasks.md "Log window").
-pub(super) const FIRST_READ_BYTES: u64 = 256 * 1024;
+pub(crate) const FIRST_READ_BYTES: u64 = 256 * 1024;
 /// Whether `needle` is in `haystack`: the test of a `read_back_where` filter.
-pub(super) fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+pub(crate) fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|at| at == needle)
 }
 

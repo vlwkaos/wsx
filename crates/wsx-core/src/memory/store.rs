@@ -1,9 +1,6 @@
 //! A scope's store: `records.jsonl` and its lock in one folder. ref: docs/memory.md "Store"
 
-use super::record::{
-    duplicate, fold, query_words, score, Folded, Hit, Kind, Line, Record, Status, EXCERPT_CHARS,
-    MAX_TEXT_BYTES,
-};
+use super::record::{duplicate, fold, Folded, Kind, Line, Record, Status, MAX_TEXT_BYTES};
 use crate::task::checks::{self, CheckState};
 use crate::task::store::{self as task_store, TaskDir};
 use crate::task::{now_unix_ms, TaskState};
@@ -99,17 +96,12 @@ pub struct Patch {
     pub fail: Option<String>,
 }
 
-pub struct SearchOptions {
-    pub limit: usize,
-    pub include_inactive: bool,
-    pub kind: Option<Kind>,
-}
-
 pub struct Store {
     scope: String,
     dir: PathBuf,
-    /// A project scope: the task ID, for `task:` and `check:` in `verified_by`.
-    project_id: Option<String>,
+    /// A project scope: the task ID, for `task:` and `check:` in `verified_by`, and the
+    /// registered name, for the references of the project's transcripts.
+    project: Option<(String, String)>,
     /// Where a relative `verified_by` path lives: the project path, else the current folder.
     root: PathBuf,
     /// Whether a `rule` record may be written or changed (the manager's and a role's).
@@ -118,7 +110,7 @@ pub struct Store {
 
 impl Store {
     /// The store of a registered project: `tasks/<project-id>/memory/`.
-    pub fn project(project_id: &str, root: &Path) -> Result<Self> {
+    pub fn project(project_id: &str, name: &str, root: &Path) -> Result<Self> {
         validate_scope(project_id)?;
         let dir = task_store::project_dir(project_id)
             .map_err(|e| Error::Usage(e.to_string()))?
@@ -126,7 +118,7 @@ impl Store {
         Ok(Self {
             scope: project_id.into(),
             dir,
-            project_id: Some(project_id.into()),
+            project: Some((project_id.into(), name.into())),
             root: root.into(),
             rules: true,
         })
@@ -138,7 +130,7 @@ impl Store {
         Ok(Self {
             scope: name.into(),
             dir: memory_root().join(name),
-            project_id: None,
+            project: None,
             root: root.into(),
             rules: true,
         })
@@ -166,6 +158,28 @@ impl Store {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// The most bytes a record's text may hold in this store; `status` declares it, and a
+    /// reader takes it from there. ref: docs/memory.md "Limits"
+    pub const fn text_bytes(&self) -> usize {
+        MAX_TEXT_BYTES
+    }
+
+    /// A project scope: its task ID and its registered name.
+    pub fn project_ids(&self) -> Option<(&str, &str)> {
+        self.project
+            .as_ref()
+            .map(|(id, name)| (id.as_str(), name.as_str()))
+    }
+
+    fn project_id(&self) -> Option<&str> {
+        self.project.as_ref().map(|(id, _)| id.as_str())
+    }
+
+    /// The file the records live in, as the `path` of a hit.
+    pub fn log_file(&self) -> PathBuf {
+        self.log_path()
     }
 
     fn log_path(&self) -> PathBuf {
@@ -257,7 +271,7 @@ impl Store {
         match (&new.verified_by, new.kind) {
             (None, Kind::Rule | Kind::Fact) => {
                 return usage(
-                    "a rule or fact needs --verified-by (owner:<id>, a path, task:<n>, check:<id>)",
+                    "a rule or fact needs --verified-by (owner:<id>, owner:transcript:<file>, a path, task:<n>, check:<id>)",
                 )
             }
             (Some(by), _) => self.check_verified_by(by)?,
@@ -377,36 +391,10 @@ impl Store {
         Error::NotFound(format!("no record {slug} in scope {}", self.scope))
     }
 
-    /// Records whose slug, title or text hold a query word, best first; newer first on a tie.
-    pub fn search(&self, query: &str, options: &SearchOptions) -> Result<Vec<Hit>> {
-        let words = query_words(query)?;
+    /// Every current record, for the index to rank.
+    pub fn records(&self) -> Result<Vec<Record>> {
         let _lock = self.lock(false)?;
-        let path = self.log_path().display().to_string();
-        let mut hits: Vec<(Hit, u64)> = self
-            .load()?
-            .records
-            .into_values()
-            .filter(|r| options.include_inactive || r.status == Status::Active)
-            .filter(|r| options.kind.is_none_or(|k| k == r.kind))
-            .filter_map(|r| {
-                let score = score(&r, &words);
-                (score > 0.0).then(|| {
-                    let hit = Hit {
-                        slug: r.slug,
-                        scope: self.scope.clone(),
-                        path: path.clone(),
-                        kind: r.kind,
-                        status: r.status,
-                        score,
-                        excerpt: r.text.chars().take(EXCERPT_CHARS).collect(),
-                    };
-                    (hit, r.updated)
-                })
-            })
-            .collect();
-        hits.sort_by(|a, b| b.0.score.total_cmp(&a.0.score).then(b.1.cmp(&a.1)));
-        hits.truncate(options.limit);
-        Ok(hits.into_iter().map(|(hit, _)| hit).collect())
+        Ok(self.load()?.records.into_values().collect())
     }
 
     /// The count of records per status.
@@ -423,25 +411,52 @@ impl Store {
         let text = text.trim_end();
         match text.len() {
             0 => usage("the text is empty"),
-            n if n > MAX_TEXT_BYTES => {
-                usage(format!("the text is {n} bytes; at most {MAX_TEXT_BYTES}"))
-            }
+            n if n > self.text_bytes() => usage(format!(
+                "the text is {n} bytes; this store keeps at most {}",
+                self.text_bytes()
+            )),
             _ => Ok(text.into()),
         }
     }
 
-    /// `owner:<digits>`, `task:<n>` of a landed task, `check:<id>` of a passed item (the two
+    /// `owner:transcript:<ref>`: the owner's words outside wsx. `<ref>` is a path to an existing
+    /// transcript file, absolute or relative to the root, with `#L<line>` after it for a
+    /// line. The file is not read: a date or a name alone is no proof.
+    fn check_transcript(&self, reference: &str) -> Result<()> {
+        let (path, line) = match reference.rsplit_once("#L") {
+            Some((path, line)) => (path, Some(line)),
+            None => (reference, None),
+        };
+        if line.is_some_and(|l| l.parse::<u64>().ok().is_none_or(|n| n == 0)) {
+            return usage(format!(
+                "owner:transcript:{reference}: the line is #L<number> from 1"
+            ));
+        }
+        match path.is_empty() || !self.root.join(path).is_file() {
+            true => usage(format!(
+                "owner:transcript:{reference}: no such transcript file (a path, absolute or under {})",
+                self.root.display()
+            )),
+            false => Ok(()),
+        }
+    }
+
+    /// `owner:<digits>` or `owner:transcript:<ref>`, `task:<n>` of a landed task, `check:<id>` of a passed item (the two
     /// need a project scope), or a relative path that exists under the root.
     fn check_verified_by(&self, value: &str) -> Result<()> {
         let project = |what: &str| {
-            self.project_id
-                .as_deref()
+            self.project_id()
                 .map_or_else(|| usage(format!("{what} needs a project scope")), Ok)
         };
+        if let Some(reference) = value.strip_prefix("owner:transcript:") {
+            return self.check_transcript(reference);
+        }
         if let Some(id) = value.strip_prefix("owner:") {
             return match !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
                 true => Ok(()),
-                false => usage(format!("{value:?}: owner:<message id>")),
+                false => usage(format!(
+                    "{value:?}: owner:<message id> or owner:transcript:<file>"
+                )),
             };
         }
         if let Some(number) = value.strip_prefix("task:") {
@@ -476,7 +491,7 @@ impl Store {
                 .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
         if !plain {
             return usage(format!(
-                "{value:?}: use owner:<id>, task:<n>, check:<id> or a relative path without .."
+                "{value:?}: use owner:<id>, owner:transcript:<file>, task:<n>, check:<id> or a relative path without .."
             ));
         }
         // ^ A link under the root may point out of it: compare the real paths.
