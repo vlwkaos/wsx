@@ -1352,7 +1352,7 @@ def part_core(created=None):
     (project / 'wsx.config.yml').write_text(area_text + 'memory:\n  areas:\n    "s.*": briefs/s.md\n    "zz/**": briefs/zz.md\n')
     head = git('rev-parse', 'HEAD')
     for slug, path, text in (('start-s', 's.txt', 'The fixture flag lives in s.txt.'), ('start-other', 'other.rs', 'other.rs is unrelated.')):
-        cli('memory', 'add', '--kind', 'fact', '--slug', slug, '--text-file', '-', '--source', 'task:1', '--verified-by', 's.txt',
+        cli('memory', 'add', '--kind', 'fact', '--slug', slug, '--text-file', '-', '--source', 'task:1', '--verified-by', 'wsx.config.yml',
             '--commit', head, '--paths', path, stdin=text)
     folded = js('task', 'new', '--files', 's.txt', 'NOOP')['id']
     done = wait_state(folded, 'ready', 'failed')
@@ -3537,7 +3537,7 @@ def part_worker(created=None):
     (project / 'briefs').mkdir()
     (project / 'briefs' / 'pi.md').write_text('Pi area brief: the tool gate lives here.\n')
     (project / 'wsx.config.yml').write_text(pi_config + 'memory:\n  areas:\n    "pi-area/**": briefs/pi.md\n')
-    cli('memory', 'add', '--kind', 'fact', '--slug', 'start-pi', '--text-file', '-', '--source', 'task:1', '--verified-by', 'free.txt',
+    cli('memory', 'add', '--kind', 'fact', '--slug', 'start-pi', '--text-file', '-', '--source', 'task:1', '--verified-by', 'wsx.config.yml',
         '--commit', git('rev-parse', 'HEAD'), '--paths', 'pi-area/x.rs', stdin='The Pi gate keeps its list in pi-area/x.rs.')
     seen_messages = len(traces())
     pi_start = js('task', 'new', '--files', 'pi-area/**', 'NOOP')['id']
