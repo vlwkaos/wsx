@@ -112,7 +112,7 @@ impl Backend for Builtin {
             project_id: id.into(),
         });
         let docs = match &target {
-            Some(target) => index::gather(target, false).unwrap_or_else(|error| {
+            Some(target) => index::gather(target, false, true).unwrap_or_else(|error| {
                 eprintln!(
                     "wsx: memory: transcripts of {} not searched: {error:#}",
                     target.name
@@ -169,7 +169,7 @@ impl Backend for Builtin {
                 name: name.into(),
                 project_id: id.into(),
             };
-            index::gather(&target, true).map_err(|e| unavailable(format!("{e:#}")))?;
+            index::gather(&target, true, true).map_err(|e| unavailable(format!("{e:#}")))?;
         }
         Ok(())
     }

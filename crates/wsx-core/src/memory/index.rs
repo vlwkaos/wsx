@@ -161,7 +161,7 @@ pub fn search(
     let mut found = Found::default();
     let mut docs: Vec<(usize, Doc)> = Vec::new();
     for (at, target) in targets.iter().enumerate() {
-        match gather(target, reindex) {
+        match gather(target, reindex, false) {
             Ok(list) => {
                 found.projects += 1;
                 docs.extend(
@@ -394,8 +394,9 @@ fn is_cjk(c: char) -> bool {
 }
 
 /// Every record of the project: its digest, caught up with the logs and the task files, and
-/// its notes. `reindex` drops the digest first.
-pub(super) fn gather(target: &Target, reindex: bool) -> Result<Vec<Doc>> {
+/// its notes. `reindex` drops the digest first. `records_apart`: a notes file that is a view of the
+/// records is left out, as the caller ranks the records itself.
+pub(super) fn gather(target: &Target, reindex: bool, records_apart: bool) -> Result<Vec<Doc>> {
     let dir = store::project_dir(&target.project_id)?;
     if !std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir()) {
         return Ok(Vec::new());
@@ -436,7 +437,7 @@ pub(super) fn gather(target: &Target, reindex: bool) -> Result<Vec<Doc>> {
         supersede(&mut docs);
     }
     docs.retain(|doc| doc.kind != Kind::Mark);
-    docs.extend(notes(&target.project_id));
+    docs.extend(notes(&target.project_id, records_apart));
     Ok(docs)
 }
 
@@ -711,13 +712,16 @@ fn result_text(value: &serde_json::Value) -> String {
 
 /// The manager's decisions and memo lines, read from the notes as they are now: the files stay,
 /// and a line the manager merged or fixed is not found in its old form.
-fn notes(project_id: &str) -> Vec<Doc> {
+fn notes(project_id: &str, records_apart: bool) -> Vec<Doc> {
     let Ok(Some(dir)) = ManagerDir::existing(project_id) else {
         return Vec::new();
     };
     let mut docs = Vec::new();
-    // ^ A file that is a view of the records is searched as records.
-    let views = super::manage::rendered_names(project_id);
+    // ^ A view of the records: `wsx task search` reads its lines, `wsx memory search` the records.
+    let views = match records_apart {
+        true => super::manage::rendered_names(project_id),
+        false => Vec::new(),
+    };
     for (name, kind) in [
         ("decisions.md", Kind::Decision),
         ("decisions-archive.md", Kind::Decision),
