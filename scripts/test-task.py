@@ -5652,8 +5652,8 @@ def part_host(created=None):
     # opens the manager's (docs/tasks.md "TUI"), without the manager's items.
     below = len(js('task', 'list')['tasks'])
     # ^ The manager says something in the room: a third speaker next to the owner and the role.
-    with (roles_dir / 'billing/log.jsonl').open('a') as log:
-        log.write(json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 9000001,
+    with (roles_dir / 'billing/log.jsonl').open('a') as role_log:
+        role_log.write(json.dumps({'unix_ms': int(time.time() * 1000), 'kind': 'message', 'id': 9000001,
                               'from': 'role:manager', 'text': 'MANAGER PING'}) + '\n')
     for cols in (120, 80):
         shots = tui_screens(wsx, env, project, [
