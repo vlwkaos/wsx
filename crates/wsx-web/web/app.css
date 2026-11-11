@@ -1239,7 +1239,8 @@ body[data-keyboard] .task-sheet { padding-bottom: 0; }
 .panel-table table { border-collapse: collapse; width: 100%; font-size: var(--font-size-sm); font-variant-numeric: tabular-nums; }
 .panel-table th, .panel-table td { padding: var(--space-1) var(--space-2); text-align: left; white-space: nowrap; border-bottom: var(--border-width) solid var(--color-hairline); }
 .panel-table th { color: var(--color-muted); font-weight: var(--font-weight-medium); }
-.panel-link { color: var(--color-accent); text-underline-offset: calc(var(--border-width) * 3); }
+/* ^ A link keeps a full-height hit area (the design lint wants 44 px on touch, 24 px with a pointer); its text stays in place. */
+.panel-link { color: var(--color-accent); text-underline-offset: calc(var(--border-width) * 3); display: inline-flex; align-items: center; min-height: var(--size-control); }
 .panel-cards-title { margin: 0 0 var(--space-2); font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); color: var(--color-muted); }
 .panel-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(calc(var(--size-key) * 4), 1fr)); gap: var(--space-2); }
 .panel-tile { display: flex; flex-direction: column; min-width: 0; overflow: hidden; text-decoration: none; color: inherit; border: var(--border-width) solid var(--color-hairline); border-radius: var(--radius-control); background: var(--color-bg); }
