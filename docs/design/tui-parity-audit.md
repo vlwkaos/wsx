@@ -2,7 +2,7 @@
 
 Rule: a web change keeps TUI parity, where the feature fits a terminal. Audit date 2026-11-11, `main` at `a2e3ae38`. Read-only. Complements [tui-parity.md](tui-parity.md) (web changes up to #198), which is still true.
 Assuming: #397's prompt was not readable here. Its scope is read from branch `wsx/t397` (role model in the room heading and Roles row: `task_chat.rs`, `task_list.rs`, `ui/task_chat.rs`) and from the memory note (no role rows in the TUI sidebar, on purpose). Those rows are marked "covered by #397".
-Paths: TUI under `crates/wsx/src/`, web under `crates/wsx-web/web/`. "Driven" = the real TUI run in a PTY by a scratch script on `scripts/tui_pty.py` (isolated HOME, one git project), 40 rows by 120 columns.
+Paths: TUI under `crates/wsx/src/`, web under `crates/wsx-web/web/`. "Driven" = the real TUI run in a PTY by a scratch script on `scripts/tui_pty.py` (isolated HOME, one git project), 40 rows by 120 columns. Gaps 3, 4 and 5 were driven; every other row rests on the cited code.
 
 ## Gaps
 
@@ -38,7 +38,3 @@ Paths: TUI under `crates/wsx/src/`, web under `crates/wsx-web/web/`. "Driven" = 
 3. **Gap 3, scrollable help.** Give `Mode::Help` a scroll (`j/k`, PgUp/PgDn), add `/`, `\|`, `-`, `S`; make `?` open a Tasks-view help. S.
 4. **Gap 5, paste.** Route `Event::Paste` in Input modes to the active field as typed text (newlines to spaces in one-line fields). S.
 5. **Gaps 4 and 6, footer and routine keys.** Add `(t)asks`, `(v)` to the Project footer, `M`, `[`/`]` to README; run now and on/off on a routine row (not `R`: it is Refresh, `event.rs:499`). S.
-
-## Proof limits
-
-Driven: gaps 3, 4, 5 (footer, help height, paste). Code only: 1, 2, 6, 7, 8, 9; each side's line is given. Not driven: the cross-project origin mark.
