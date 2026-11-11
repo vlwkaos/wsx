@@ -6001,6 +6001,8 @@ def part_host(created=None):
     assert show(own_task)['record']['created_by'] == 'manager', show(own_task)['record']
     js('task', 'close', own_task, '--discard')
     js('task', 'role', 'close', 'reachr')
+    reach_task = n
+    # ^ Demo's manager left a landed task in other: the recap and the task counts below include it.
     # 33s. Search (docs/tasks.md "Search"): a manager finds an old decision across projects, ranked,
     mark('33s')
     # and quotes it by id; the digest keeps what was said when the log goes; a hit quotes by id
@@ -6137,7 +6139,7 @@ def part_host(created=None):
     recap = wait(lambda: next(iter(recaps()), None), 'the recap request after a quiet period', 120)
     assert 'at most 8 lines' in recap['text'] and 'Start no' in recap['text'], recap
     assert 'Token cost since the last recap: ' in recap['text'] and 'workers ' in recap['text'], recap
-    assert 'in 1 turn(s) (#%d ' % other_land in recap['text'], recap
+    assert 'in 2 turn(s) (' in recap['text'] and '#%d ' % other_land in recap['text'] and '#%d ' % reach_task in recap['text'], recap
     wait(lambda: next((e for e in other_entries() if e['kind'] == 'reply' and recap['id'] in e['to']), None),
          'the manager answers the recap', 60)
     # 35. Idle task (docs/tasks.md "Workflow"): a quiet period with no change asks for no recap
@@ -6146,7 +6148,7 @@ def part_host(created=None):
     # it starts no idle task and says nothing. A new session note starts one task, as the
     # manager; its close is a change, so one more recap comes, and the older note starts no
     # second idle task.
-    assert [t['id'] for t in other_tasks()] == [other_land], other_tasks()
+    assert sorted(t['id'] for t in other_tasks()) == sorted([other_land, reach_task]), other_tasks()
     idle_text = 'WORK idle.txt MEMO knowledge folded'
     (other / 'wsx.config.yml').write_text(other_config + '  workflow:\n    idle: "%s"\n' % idle_text)
     git('commit', '-q', '-am', 'idle task', cwd=other)
@@ -6173,7 +6175,7 @@ def part_host(created=None):
     notes.mkdir(parents=True)
     (notes / 'session-1.md').write_text('a lesson\n')
     idle = wait(idle_tasks, 'the idle task after a new session note', 150)
-    assert len(idle) == 1 and len(other_tasks()) == 2 and len(recaps()) == 1, (other_tasks(), recaps())
+    assert len(idle) == 1 and len(other_tasks()) == 3 and len(recaps()) == 1, (other_tasks(), recaps())
     idle_shown = other_state(idle[0]['id'], 'ready', 'failed')
     # ^ The manager's own task: it waits for the manager's review, never lands by itself.
     assert idle_shown['state'] == 'ready' and idle_shown['record']['created_by'] == 'manager', idle_shown
@@ -6185,7 +6187,7 @@ def part_host(created=None):
     js('task', 'close', idle[0]['id'], '--discard', '-p', 'other')
     wait(lambda: len(recaps()) == 2, 'the recap after the idle task closed', 150)
     time.sleep(3)
-    assert len(idle_tasks()) == 1 and len(other_tasks()) == 2, other_tasks()
+    assert len(idle_tasks()) == 1 and len(other_tasks()) == 3, other_tasks()
     # 36. Fallback agent (docs/tasks.md "Agents"): a usage limit that lifts after
     mark('36')
     named_project.append('demo')
