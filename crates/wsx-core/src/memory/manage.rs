@@ -22,7 +22,9 @@ const CONTEXT: &str = "context.md";
 const CONTEXT_ARCHIVE: &str = "context-archive.md";
 /// The four files, which a view each: the rules, the replaced rules, the section and memos
 /// that fit the ceiling, and the older memos.
-const VIEWS: [&str; 4] = [DECISIONS, DECISIONS_ARCHIVE, CONTEXT, CONTEXT_ARCHIVE];
+// ^ Each archive comes before its file, so a crash between the two writes shows a memo twice
+// and never loses one.
+const VIEWS: [&str; 4] = [DECISIONS_ARCHIVE, DECISIONS, CONTEXT_ARCHIVE, CONTEXT];
 /// The old notes, copied here once before the first view replaces them.
 const COPY_SUFFIX: &str = ".pre-memory";
 /// A hand-edited view, copied here before it is rewritten from the records.
@@ -177,10 +179,10 @@ fn render_views(records: &[Record]) -> Vec<(&'static str, String)> {
             .collect(),
     );
     vec![
-        (DECISIONS, decisions),
         (DECISIONS_ARCHIVE, archive),
-        (CONTEXT, context),
+        (DECISIONS, decisions),
         (CONTEXT_ARCHIVE, join(memos[..older].to_vec())),
+        (CONTEXT, context),
     ]
 }
 
@@ -201,7 +203,11 @@ fn read_view(path: &Path) -> Result<Option<String>, Error> {
 }
 
 fn read_hashes(store: &Store) -> HashMap<String, String> {
-    read_bounded_if_exists(&store.dir().join(HASHES_FILE), 1 << 16)
+    hashes_in(store.dir())
+}
+
+fn hashes_in(dir: &Path) -> HashMap<String, String> {
+    read_bounded_if_exists(&dir.join(HASHES_FILE), 1 << 16)
         .ok()
         .flatten()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -254,6 +260,14 @@ fn inspect(store: &Store, notes: &Path, records: &[Record]) -> Result<Vec<Seen>,
     Ok(seen)
 }
 
+/// The notes files of a project that are views of its records. The index reads the records for
+/// them, so it leaves their lines out.
+pub(super) fn rendered_names(project_id: &str) -> Vec<String> {
+    crate::task::store::project_dir(project_id)
+        .map(|dir| hashes_in(&dir.join("memory")).into_keys().collect())
+        .unwrap_or_default()
+}
+
 /// The views that were edited by hand since they were rendered; writes nothing.
 pub fn drift(store: &Store) -> Result<Vec<Drift>, Error> {
     let Some(notes) = store.notes_dir() else {
@@ -271,6 +285,10 @@ pub fn render(store: &Store) -> Result<Vec<Drift>, Error> {
     let Some(notes) = store.notes_dir() else {
         return Ok(Vec::new());
     };
+    // ^ Old notes that wait for an import (a writer that may not give rules cannot do it) stay.
+    if pending(store, &notes) {
+        return Ok(Vec::new());
+    }
     store.locked(|records| {
         io(crate::fs_util::private_dir(&notes).map_err(Into::into))?;
         let mut hashes = read_hashes(store);
@@ -301,7 +319,8 @@ pub fn render(store: &Store) -> Result<Vec<Drift>, Error> {
 fn pending(store: &Store, notes: &Path) -> bool {
     let hashes = read_hashes(store);
     VIEWS.iter().any(|name| {
-        notes.join(name).is_file()
+        // ^ A link is no old file: the notes never read one.
+        fs::symlink_metadata(notes.join(name)).is_ok_and(|m| m.is_file())
             && !notes.join(format!("{name}{COPY_SUFFIX}")).exists()
             && !hashes.contains_key(*name)
     })
@@ -522,10 +541,11 @@ pub fn import(store: &Store) -> Result<(Imported, Vec<Drift>), Error> {
 }
 
 fn ensure_imported(store: &Store) -> Result<(), Error> {
-    if store
+    let waits = store
         .notes_dir()
-        .is_some_and(|notes| pending(store, &notes))
-    {
+        .is_some_and(|notes| pending(store, &notes));
+    // ^ Only a writer that may give rules imports; the others leave the notes as they are.
+    if waits && store.may_write(Kind::Rule).is_ok() {
         import(store)?;
     }
     Ok(())

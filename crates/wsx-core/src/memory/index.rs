@@ -48,7 +48,8 @@ pub enum Kind {
     /// A line of a task's story: an add or a steer, a turn's result, a revision, its checks, a
     /// stop, its landing or close (`history::line`); read from the task's log.
     History,
-    /// A line of the manager's `notes/decisions.md`; read from the file, never kept.
+    /// A line of the manager's `notes/decisions.md`; read from the file, never kept. Not while the
+    /// file is a view of the records: they are searched themselves.
     Decision,
     /// A line of the manager's `notes/context.md` or its archive; read from the file.
     Memo,
@@ -715,12 +716,17 @@ fn notes(project_id: &str) -> Vec<Doc> {
         return Vec::new();
     };
     let mut docs = Vec::new();
+    // ^ A file that is a view of the records is searched as records.
+    let views = super::manage::rendered_names(project_id);
     for (name, kind) in [
         ("decisions.md", Kind::Decision),
         ("decisions-archive.md", Kind::Decision),
         ("context.md", Kind::Memo),
         ("context-archive.md", Kind::Memo),
     ] {
+        if views.iter().any(|view| view == name) {
+            continue;
+        }
         let path = dir.path.join("notes").join(name);
         let Ok(Some(bytes)) = store::read_bounded_if_exists(&path, MAX_NOTES_BYTES) else {
             continue;

@@ -222,6 +222,27 @@ def tui_screens(wsx, env, cwd, steps, cols=120, raw=None):
     return screens
 
 
+def forget_notes(notes):
+    """Make the manager's notes folder old notes again (docs/memory.md "Notes"): drop the copies, the copies of
+    hand edits, the hashes of the views and the records the notes made, so a fixture written by hand is
+    imported at the next write. Records of other kinds stay."""
+    for found in list(notes.glob('*.pre-memory')) + list(notes.glob('*.drift')):
+        found.unlink()
+    memory = notes.parent.parent / 'memory'
+    (memory / 'views.json').unlink(missing_ok=True)
+    log = memory / 'records.jsonl'
+    if log.exists():
+        kept = []
+        for line in log.read_text().splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if record.get('kind') != 'rule' and not record.get('slug', '').startswith(('section-', 'memo-')):
+                kept.append(line + '\n')
+        log.write_text(''.join(kept))
+
+
 def memory_records(raw):
     """The records of a `wsx memory search` answer: a project scope also finds the project's transcripts."""
     return [h for h in json.loads(raw) if h['kind'] in ('rule', 'fact', 'episode')]
@@ -1369,6 +1390,7 @@ def part_core(created=None):
         memo_notes.unlink()
     else:
         shutil.rmtree(manager_dir)
+    forget_notes(manager_dir / 'notes')
     # 13r. Context rotation: a step that ends past tasks.agent.rotateTokens writes handoff notes
     # in its conversation; the next step runs in a fresh one that opens with the task's prompt,
     # those notes and the step.
@@ -2147,10 +2169,19 @@ def part_core(created=None):
     # A fresh conversation opens with the notes; a linked notes file is not read.
     notes = manager_log.parent / 'notes'
     notes.mkdir(exist_ok=True)
-    (notes / 'decisions.md').write_text('- 2026-10-22 keep the store in sqlite\n')
+
+    def put(name, text=None):
+        # ^ decisions.md and context.md are views of the records: a fixture is written as old notes (forget_notes).
+        forget_notes(notes)
+        if text is None:
+            (notes / name).unlink(missing_ok=True)
+        else:
+            (notes / name).write_text(text)
+
+    put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
     outside = manager_log.parent.parent / 'outside-context.md'
     outside.write_text('SECRET-OUTSIDE\n')
-    (notes / 'context.md').unlink(missing_ok=True)
+    put('context.md')
     (notes / 'context.md').symlink_to(outside)
     changed = js('task', 'say', 'STATUS after the change')
     reply_to(changed['id'])
@@ -2180,9 +2211,9 @@ def part_core(created=None):
         state_file.write_text(json.dumps(data))
 
     # ^ A decisions.md of 12 KiB takes the start budget except what a short context.md uses.
-    (notes / 'context.md').unlink(missing_ok=True)
-    (notes / 'context.md').write_text('PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
-    (notes / 'decisions.md').write_text(''.join('- decision %03d %s\n' % (n, 'x' * 50) for n in range(200)))
+    put('context.md')
+    put('context.md', 'PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
+    put('decisions.md', ''.join('- decision %03d %s\n' % (n, 'x' * 50) for n in range(200)))
     edit_state(instructions=None)
     notes_message = js('task', 'say', 'NOTES BUDGET')
     reply_to(notes_message['id'])
@@ -2236,15 +2267,13 @@ def part_core(created=None):
                  for n in range(1, 58)]
         return first_line + '\n\nPizzahouse sells pizza.\n' + '\n'.join(memos) + '\n'
 
-    asked_compact = lambda: len([t for t in traces() if t.get('manager') and 'Compact it now to under' in str(t.get('message', ''))])
-    (notes / 'decisions.md').write_text('- 2026-10-22 keep the store in sqlite\n')
-    (notes / 'context.md').unlink(missing_ok=True)
+    put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
+    put('context.md')
     reply_to(js('task', 'say', 'ZEBRAFISH quarterly')['id'])
     edit_state(instructions=None)
-    (notes / 'context.md').write_text(pizza('# pizzahouse'))
+    put('context.md', pizza('# pizzahouse'))
     fixture = (notes / 'context.md').read_text().splitlines()
     assert len(fixture) == 60 and 14000 < len('\n'.join(fixture)) < 17000, len(fixture)
-    before = asked_compact()
     reply_to(js('task', 'say', 'NOTES PIZZA')['id'])
     first_turn = turn_with('NOTES PIZZA')['message']
     reply_to(js('task', 'say', 'STATUS ordinary')['id'])
@@ -2267,26 +2296,10 @@ def part_core(created=None):
     assert notice.group(2) == str((notes / 'context.md').resolve()) or notice.group(2).endswith('/manager/notes/context.md'), notice.group(2)
     # ^ The first message holds at most the 10 KiB budget of the notes.
     assert len(head_text.encode()) < 10 * 1024 + 400, len(head_text)
-    # ^ Over the cap, the manager gets one request to compact it, which keeps what it did and
-    # what the owner decided; the fake compacts, so the file ends within the target.
-    wait(lambda: asked_compact() == before + 1, 'the compaction request')
-    request = [t for t in traces() if t.get('manager') and 'Compact it now to under' in str(t.get('message', ''))][-1]['message']
-    assert 'Keep every fact about what you did and what the owner decided' in request and 'never drop them' in request, request
-    paths = re.search(r'(/\S+/notes/context\.md) is 60 lines / \d+ bytes; the cap is 6144 bytes.*moves the oldest memo lines to (/\S+/notes/context-archive\.md)', request, re.S)
-    assert paths, request
-    wait(lambda: len((notes / 'context.md').read_text().encode()) < 4096, 'the compacted context.md')
-    time.sleep(3)
-    assert asked_compact() == before + 1 and 'Claude.app' in (notes / 'context.md').read_text()
-    # ^ A manager that leaves it over the cap is asked once, not again until the owner writes.
-    (notes / 'context.md').write_text(pizza('# stubborn'))
-    reply_to(js('task', 'say', 'STUBBORN one')['id'])
-    wait(lambda: asked_compact() == before + 2, 'the second request')
-    time.sleep(4)
-    assert asked_compact() == before + 2
     # ^ A fresh conversation, an owner message whose key word matches a line it did not show:
     # that line is attached, and nothing else of the notes. A message with no such word gets none.
     edit_state(instructions=None)
-    (notes / 'context.md').write_text(pizza('# stubborn'))
+    put('context.md', pizza('# stubborn'))
     attached = js('task', 'say', 'Did you restart Claude.app yesterday?')
     reply_to(attached['id'])
     matched = turn_with('Did you restart Claude.app yesterday?')['message']
@@ -2300,9 +2313,8 @@ def part_core(created=None):
     reply_to(js('task', 'say', 'what is %s' % shown_word)['id'])
     assert 'Notes that match' not in turn_with('what is %s' % shown_word)['message']
     # ^ Memo lines: one line of at most 240 characters, no 60-line cap, and past 32 KiB the
-    # oldest go to context-archive.md, which the fresh conversation is told about. The file starts
-    # with # stubborn so a compaction request still in flight leaves it alone.
-    (notes / 'context.md').write_text('# stubborn\n' + ''.join('- #%d: short memo %d\n' % (n, n) for n in range(100, 175)))
+    # oldest go to context-archive.md, which the fresh conversation is told about.
+    put('context.md', '# stubborn\n' + ''.join('- #%d: short memo %d\n' % (n, n) for n in range(100, 175)))
     long_memo = 'x' * 400
     long_task = js('task', 'new', 'WORK long.txt MEMO ' + long_memo)['id']
     assert wait_state(long_task, 'ready', 'failed')['state'] == 'ready'
@@ -2312,7 +2324,7 @@ def part_core(created=None):
     # ^ `view::clip` counts the ellipsis: 239 characters and `…` make the 240.
     assert folded == '- #%d: %s…' % (long_task, 'x' * 239) and len(lines_now) == 77, (folded, len(lines_now))
     assert not (notes / 'context-archive.md').exists()
-    (notes / 'context.md').write_text('# stubborn\n' + ''.join('- #%d: %s %d\n' % (n, 'y' * 230, n) for n in range(1, 140)))
+    put('context.md', '# stubborn\n' + ''.join('- #%d: %s %d\n' % (n, 'y' * 230, n) for n in range(1, 140)))
     big_task = js('task', 'new', 'WORK big.txt MEMO the newest memo')['id']
     assert wait_state(big_task, 'ready', 'failed')['state'] == 'ready'
     js('task', 'close', big_task, '--discard')
@@ -2327,8 +2339,8 @@ def part_core(created=None):
     reply_to(js('task', 'say', 'STATUS after the archive')['id'])
     opened_archive = turn_with('STATUS after the archive')['message']
     assert re.search(r'in (/\S+/notes/context-archive\.md)\.', opened_archive) and 'NOT SHOWN: context.md' in opened_archive, opened_archive
-    (notes / 'context-archive.md').unlink()
-    (notes / 'context.md').write_text('PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
+    put('context-archive.md')
+    put('context.md', 'PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
     # ^ Idle past 60 min with a context over 60k: a fresh conversation, with the reason logged.
     edit_state(last_reply_ms=int((time.time() - 7200) * 1000), context_tokens=70000)
     idle_message = js('task', 'say', 'IDLE LARGE')
@@ -2350,59 +2362,36 @@ def part_core(created=None):
     assert warm_launch['resume'], warm_launch
     assert len([e for e in manager_entries() if e['kind'] == 'rotated']) == rotations
     assert turn_with('WARM CHANGE')['message'].startswith('Your instructions changed'), turn_with('WARM CHANGE')
-    (notes / 'decisions.md').write_text('- 2026-10-22 keep the store in sqlite\n')
-    # 21a3. decisions.md over its cap (docs/tasks.md "Notes budget"): the manager gets one request
-    # to rewrite it as the current rules, wsx copies the old lines to decisions-archive.md first,
-    # and a file that stays over its cap shows with the larger part of the start budget.
+    put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
+    # 21a3. decisions.md over what a fresh conversation shows (docs/tasks.md "Notes budget"): the rules
+    # that fit the larger part of the start budget show, what is left out is named with the archive, and
+    # an owner message whose rare word is only in an archived rule gets that line. wsx asks the manager
+    # to rewrite nothing: the rules are records, and decisions-archive.md holds the replaced ones.
     mark('21a3')
-    asked_rewrite = lambda: len([t for t in traces() if t.get('manager') and 'Rewrite it now as the current rules' in str(t.get('message', ''))])
 
     def rules(count, first=0):
         return ['- 2026-10-%02d rule %03d: %s' % (1 + n % 28, n, 'owner words ' * 6) for n in range(first, first + count)]
 
     old_rules = rules(90)
     old_rules[3] = '- 2026-10-04 rule 003: never render the 3d scene with tessellation'
-    (notes / 'context.md').write_text('PROJECT-SECTION line\n- #1: memo 1\n')
-    (notes / 'decisions.md').write_text('\n'.join(old_rules) + '\n')
-    (notes / 'decisions-archive.md').unlink(missing_ok=True)
-    rewrites = asked_rewrite()
-    reply_to(js('task', 'say', 'RULES one')['id'])
-    wait(lambda: asked_rewrite() == rewrites + 1, 'the decisions request')
-    request = [t for t in traces() if t.get('manager') and 'Rewrite it now as the current rules' in str(t.get('message', ''))][-1]['message']
-    assert re.search(r'/notes/decisions\.md is 90 lines / \d+ bytes; the cap is 4096 bytes.*under 3072 bytes.*Never drop a rule that still holds.*copied the old file to (/\S+/notes/decisions-archive\.md)', request, re.S), request
-    assert 'Compact it now' not in request, request
-    # ^ The archive holds every old line before the rewrite; the file is the fake's short rewrite.
-    wait(lambda: len((notes / 'decisions.md').read_text().encode()) < 3072, 'the rewritten decisions.md')
-    assert (notes / 'decisions-archive.md').read_text().splitlines() == old_rules
-    reply_to(js('task', 'say', 'RULES two')['id'])
-    assert asked_rewrite() == rewrites + 1
-    # ^ A manager that leaves it over the cap is asked once until the owner writes again, and the
-    # archive takes only the lines it does not hold.
-    (notes / 'decisions.md').write_text('\n'.join(['# stubborn'] + rules(50, 200)) + '\n')
-    reply_to(js('task', 'say', 'RULES stubborn')['id'])
-    wait(lambda: asked_rewrite() == rewrites + 2, 'the second decisions request')
-    time.sleep(4)
-    assert asked_rewrite() == rewrites + 2
-    archived = (notes / 'decisions-archive.md').read_text().splitlines()
-    assert len(archived) == len(set(archived)) and archived[:90] == old_rules and archived[90] == '# stubborn' and len(archived) == 141, len(archived)
+    put('context.md', 'PROJECT-SECTION line\n- #1: memo 1\n')
+    put('decisions-archive.md', '\n'.join(old_rules) + '\n')
+    put('decisions.md', '\n'.join(rules(50, 200)) + '\n')
     # ^ Between 4 and 6 KiB beside a long context.md: every rule is in the first message.
-    (notes / 'context.md').write_text(pizza('# stubborn'))
+    put('context.md', pizza('# stubborn'))
     edit_state(instructions=None)
     reply_to(js('task', 'say', 'RULES mid')['id'])
     mid = turn_with('RULES mid')['message']
     assert 'rule 200' in mid and 'rule 249' in mid and 'NOT SHOWN: decisions.md' not in mid, mid
-    # ^ The request that turn leaves is answered before the next fresh start, or it opens that one.
-    wait(lambda: asked_rewrite() == rewrites + 3, 'the third decisions request')
-    wait(manager_idle, 'the manager idle after the request', 60)
     # ^ Still over after the rewrite: the newest rules fill 6 KiB, context.md keeps at least 3.5 KiB,
     # and what is left out is named with the archive.
-    (notes / 'decisions.md').write_text('\n'.join(['# stubborn'] + rules(110, 300)) + '\n')
+    put('decisions.md', '\n'.join(rules(110, 300)) + '\n')
     edit_state(instructions=None)
     reply_to(js('task', 'say', 'RULES big')['id'])
     big = turn_with('RULES big')['message'].split('\n\nHandover')[0]
     shown = big.split('Your project context (context.md):')[0]
     assert 'rule 409' in shown and 'rule 300' not in shown and 5800 < len(shown.encode()) < 7000, (len(shown), shown[:300])
-    assert re.search(r'NOT SHOWN: decisions\.md lines 1-\d+ of 111 .*Read /\S+/notes/decisions\.md', shown), shown
+    assert re.search(r'NOT SHOWN: decisions\.md lines 1-\d+ of 110 .*Read /\S+/notes/decisions\.md', shown), shown
     assert re.search(r'Older lines that left decisions\.md for its size are in /\S+/notes/decisions-archive\.md\.', shown), shown
     context_part = big.split('Your project context (context.md):')[1]
     assert 'Pizzahouse sells pizza.' in context_part and len(context_part.split('NOT SHOWN')[0].encode()) > 3500, context_part[:200]
@@ -2410,12 +2399,12 @@ def part_core(created=None):
     reply_to(js('task', 'say', 'Did we settle tessellation?')['id'])
     block = turn_with('Did we settle tessellation?')['message'].split('Notes that match this message')[1].split('\n\n')[0]
     assert 'decisions-archive.md:4: - 2026-10-04 rule 003: never render the 3d scene with tessellation' in block, block
-    # ^ `wsx task search` finds the rule the rewrite moved to the archive.
+    # ^ `wsx task search` finds the rule of the archive.
     kept = js('task', 'search', '-p', 'demo', 'tessellation')['hits']
     assert [h['kind'] for h in kept if h['by'] == 'notes'] == ['decision'], kept
-    (notes / 'decisions.md').write_text('- 2026-10-22 keep the store in sqlite\n')
-    (notes / 'decisions-archive.md').unlink()
-    (notes / 'context.md').write_text('PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
+    put('decisions.md', '- 2026-10-22 keep the store in sqlite\n')
+    put('decisions-archive.md')
+    put('context.md', 'PROJECT-SECTION line\n' + ''.join('- #%d: memo %d\n' % (n, n) for n in range(1, 31)))
     # ^ The size limit by adapter (docs/tasks.md "Manager"): with no tasks.manager.rotateTokens a
     # manager on Claude keeps its conversation to 400000, one on Pi to 150000; a set value wins.
     # The config is read at the host's start, so each case stops the manager first.
@@ -2760,7 +2749,7 @@ def part_core(created=None):
     # ^ A question in a last table row with no closing pipe does not ask either.
     question_row = reply_to(js('task', 'say', 'ASKROW')['id'])
     assert question_row['text'].endswith('| #2 | land it?') and 'asks' not in question_row, question_row
-    (notes / 'context.md').unlink()
+    put('context.md')
     # ^ The config named no manager model since the restart: the manager defaults to opus.
     assert fresh['model'] == 'opus', fresh
     # ^ Claude's own turn for a notification is no reply (docs/tasks.md "Claude adapter").

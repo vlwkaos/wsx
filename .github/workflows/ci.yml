@@ -118,7 +118,7 @@ jobs:
           AFTER: ${{ github.sha }}
         shell: bash
         run: |
-          paths='crates/wsx/src/task crates/wsx-core/src/task scripts/test-task.py'
+          paths='crates/wsx/src/task crates/wsx-core/src/task crates/wsx-core/src/memory crates/wsx/src/cli/memory.rs scripts/test-task.py scripts/test-memory.py scripts/fake-memory-backend.py'
           # ^ A job `if` cannot read `matrix`: another part's job starts, sees the `--<part>` suffix of
           # a part-only scenario branch and ends green at once. ci-scenario.py ignores such jobs.
           if [[ "$REF_NAME" == wsx-scenario/*--* && "$REF_NAME" != *"--$PART" ]]; then
@@ -155,6 +155,12 @@ jobs:
       - name: Run the task scenario
         if: steps.changed.outputs.run == 'true'
         run: cargo build --locked -p wsx -p wsx-daemon && python3 -B scripts/test-task.py --part ${{ matrix.part }}
+
+      # ^ The memory contract test (scripts/test-memory.py) is part of `core`, so a worker's
+      # `check-run task` and every later memory step prove the contract; the `ci` job runs it too.
+      - name: Run the memory contract test
+        if: steps.changed.outputs.run == 'true' && matrix.part == 'core'
+        run: python3 -B scripts/test-memory.py "target/debug/wsx memory"
 
       - name: Pack the captures
         if: always() && steps.changed.outputs.run == 'true'

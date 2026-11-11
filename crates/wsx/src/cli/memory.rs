@@ -82,13 +82,14 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
                 "no change, same as"
             };
             // ^ The answer stays a record; the close ones ride along as one more key.
-            let mut out =
-                serde_json::to_value(&added.record).map_err(|e| Error::Store(e.to_string()))?;
-            if !added.similar.is_empty() {
-                out["similar"] = json!(added.similar);
-            }
             if json {
-                return print(&out);
+                return match added.similar.is_empty() {
+                    true => print(&added.record),
+                    false => print(&WithSimilar {
+                        record: &added.record,
+                        similar: &added.similar,
+                    }),
+                };
             }
             show(&added.record, false, verb)?;
             for hit in &added.similar {
@@ -230,6 +231,14 @@ fn print(value: &impl serde::Serialize) -> MemResult<()> {
         serde_json::to_string(value).map_err(|e| Error::Store(e.to_string()))?
     );
     Ok(())
+}
+
+/// A record and the active records of its kind that it is close to.
+#[derive(serde::Serialize)]
+struct WithSimilar<'a> {
+    #[serde(flatten)]
+    record: &'a Record,
+    similar: &'a [backend::Hit],
 }
 
 /// A view edited by hand was kept and written again from the records (stderr).

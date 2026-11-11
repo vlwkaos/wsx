@@ -94,7 +94,7 @@ Exit 0 ok, 1 not found, 2 usage or an invalid `verified_by`, 3 backend unavailab
 
 ## Memory outside a wsx project
 
-A scope is bound once in the global config: `memory.scopes.<name>` is `{dir}` (built-in store at `$XDG_STATE_HOME/wsx/memory/<name>/`, the default for an unbound name) or `{command}` (another implementation of the contract). The owner's dgv3 vault is scope `dgv3` with `command` set to dotfiles' `memory.py`. `wsx memory --scope dgv3 ...` runs that command and passes its output through, so wsx holds no copy and the vault markdown is never rewritten. The same `memory.py` runs on its own where wsx is not installed. A Claude session not run by wsx calls `wsx memory` (or `memory.py` directly) with `--scope` from its context script. Each scope has one store, and one program writes it.
+A scope is bound once in the global config: `memory.scopes.<name>` is `{dir}` (built-in store at `$XDG_STATE_HOME/wsx/memory/<name>/`, the default for an unbound name) or `{command}` (another implementation of the contract). The owner's dgv3 vault is not one scope: each vault project folder (`pet_ai_factory`, ...) is one scope named by the folder, each with `command` set to dotfiles' `memory.py`. `wsx memory --scope pet_ai_factory ...` runs that command and passes its output through, so wsx holds no copy and the vault markdown is never rewritten. The same `memory.py` runs on its own where wsx is not installed. A Claude session not run by wsx calls `wsx memory` (or `memory.py` directly) with `--scope` from its context script. Each scope has one store, and one program writes it.
 
 ## Who gets what
 
