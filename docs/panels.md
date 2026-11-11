@@ -50,12 +50,30 @@ With `format: json` the command prints one object, and the clients draw it as a 
 | Part | Rule |
 |---|---|
 | Items | `gauge` (`label`, `used` >= 0, `total` > 0, `unit?`, `level?`), `stat` (`label`, `value`, `note?`, `level?`), `table` (`columns`, `rows`), `list` (`items`, `level?`) |
+| Links | a table cell and a list entry may be `{"text": "...", "url": "..."}` for a string: see "Links" |
 | `level` | `ok`, `warn` or `bad`: the theme's state colours, shown with the word, never by colour alone |
 | Strings | text or a number; cut at 200 characters with `…` |
 | Limits | 12 sections, 50 items per section, a list of 50 entries, a table of 1..=8 columns and 100 rows (rows with another cell count than `columns` skip the table); more is cut and the notice says `cut to the limits: ...` |
 | Skipped | an unknown `kind`, a bad `level` or a bad value skips that item, one notice line each (5 at most, then `and n more`); an unknown field is ignored, so a script written for a newer wsx keeps its items |
 | Not a document | invalid JSON, a root without `sections`, or no section left: no `doc`; the clients show the text as written with the notice |
 | Age | the run's age as for a text panel (wsxd's clock), not a field of the document |
+
+## Links
+
+A table cell and a list entry may be a string or number as above, or an object `{"text": "...", "url": "..."}`. `text` follows the string rule. `url` is one of:
+
+| Kind | Rule |
+|---|---|
+| Absolute | `https://` (also `http://`), a host, no credentials (`user:pw@`) |
+| Project page | a path in the project's main checkout to an `.html` or `.htm` file: no leading `/`, no `..`, no empty part, no dot-folder, no `?`, `#` or `:` |
+| Both | at most 2048 bytes, no space, backslash or control character |
+
+Anything else keeps the text and drops the link, with one notice line: `section 1, item 2: link at row 3, column 1 dropped: <reason>` (a list: `link of entry 2 dropped`). An object with no `url` is its text; with no `text` it is a bad value. Rows cut at the limits take their links with them.
+
+- Wire: the typed cell stays the text in `rows`/`items`; the targets are a sparse `links` list on the `table` and `list` item (`{row, col, url}`, a list entry is `{row: index, col: 0}`), left out when empty. A client from before links reads the text and ignores the field, so the daemon revision stays 50 (`output` still carries the raw document).
+- The machine card keeps the links of the project panels it merges. A project page link there also names its project (`project`, the project's name), so a client opens it in that project's checkout.
+- Web: an `https` link opens in a new tab (`target="_blank" rel="noopener noreferrer"`). A project page link goes to `#/p/<project>/files/<path>`, the files view, which shows the page in the sandboxed frame (`api/file/page`, `view/<token>/`; [web-client.md](web-client.md) "Files"); a site without the `files_read` right or the files panel shows the text alone.
+- TUI: no terminal link is made. A link shows as `text ↗ target` in the accent colour with an underline; in a table the target is cut with the cell when the width is short, like any cell.
 
 ## Machine panels
 
@@ -107,4 +125,4 @@ A project's panel about the machine has `scope: machine`. It is still a project'
 - TUI (`panel_view.rs`, `ui/panels.rs`): `v` on a project opens its panels. `Tab`/`l` and `h` switch, `j`/`k` scroll, `R` runs it now, `Esc`, `q`, `v` and `M` close.
 - A `doc` is drawn in both: web cards per section (`role="meter"` bars, a table that scrolls sideways) and TUI boxed sections with `█░` bars; the notice shows above it.
 
-Daemon revision 44 adds `format`, revision 45 `scope`, revision 46 the built-in panel. Proof: `scripts/runtime-smoke.py` ("panels in wsxd", "panels in the TUI", also `scope`, the built-in panel against `sysctl` and `statvfs`, and `M` with and without a project's machine panels), `scripts/test-web-client.py --part tasks` (`api/machine`) and `scripts/web-panels-check.mjs` (the card with a project's text, failing and document panels, and on a site whose project declares none).
+Daemon revision 44 adds `format`, revision 45 `scope`, revision 46 the built-in panel. Proof: `scripts/runtime-smoke.py` ("panels in wsxd", "panels in the TUI", also `scope` and the `links` panel, the built-in panel against `sysctl` and `statvfs`, and `M` with and without a project's machine panels), `scripts/test-web-client.py --part tasks` (`api/machine`) and `scripts/web-panels-check.mjs` (links on a site with and without `files_read`; the card with a project's text, failing and document panels, and on a site whose project declares none).
