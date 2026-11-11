@@ -527,19 +527,15 @@ def png(size, shade, rgb=None):
 # (docs/web-client.md "Verification").
 RECORD = 'processes'
 STARTED = []
-REAPER = {}
+REAPER = []
 REAPER_LOCK = threading.Lock()
+# The reaper reads one group id per line until the run's pipe ends: `done` means a clean exit.
 REAPER_SOURCE = '''
 import os, signal, sys, time
-if sys.stdin.buffer.read() == b'done':
+words = sys.stdin.read().split()
+if 'done' in words:
     sys.exit()
-groups = []
-try:
-    for line in open(sys.argv[1]).read().splitlines():
-        if line.partition('\\t')[0].isdigit():
-            groups.append(int(line.partition('\\t')[0]))
-except OSError:
-    pass
+groups = [int(word) for word in words]
 def alive(group):
     try:
         os.killpg(group, 0)
@@ -558,23 +554,16 @@ for number, wait in ((signal.SIGTERM, 3), (signal.SIGKILL, 0)):
 '''
 
 
-def reaper(work):
-    """Start the reaper of this work folder once. It holds the read end of a pipe: the run's exit
-    writes `done` (nothing left to end), and any other end, SIGKILL included, is an EOF without it."""
+def tell_reaper(line):
+    """Send the reaper a group id, or `done`. It starts with the first line."""
     with REAPER_LOCK:
-        if work not in REAPER:
-            if not REAPER:
-                atexit.register(release_reaper)
-            REAPER[work] = subprocess.Popen([sys.executable, '-I', '-c', REAPER_SOURCE, str(work / RECORD)],
-                                            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                            stderr=subprocess.DEVNULL, start_new_session=True)
-
-
-def release_reaper():
-    for process in REAPER.values():
+        if not REAPER:
+            REAPER.append(subprocess.Popen([sys.executable, '-I', '-c', REAPER_SOURCE], stdin=subprocess.PIPE,
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True,
+                                           bufsize=1, start_new_session=True))
+            atexit.register(tell_reaper, 'done')
         try:
-            process.stdin.write(b'done')
-            process.stdin.close()
+            REAPER[0].stdin.write(line + '\n')
         except OSError:
             pass
 
@@ -582,8 +571,8 @@ def release_reaper():
 def start(work, args, **options):
     """Start a helper in its own process group and record it. Chrome started by a Node
     check stays in the check's group."""
-    reaper(work)
     process = subprocess.Popen(args, start_new_session=True, **options)
+    tell_reaper(str(process.pid))
     STARTED.append(process)
     with (work / RECORD).open('a') as out:
         out.write('%d\t%s\n' % (process.pid, ' '.join(map(str, args))))
