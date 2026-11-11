@@ -5,6 +5,7 @@ Real wsxd, real PTY fixture agents, three `wsx web serve` processes and a local
 Web Push receiver. Nothing here touches the user's daemon, Tailscale or network.
 """
 import argparse
+import atexit
 import base64
 import contextlib
 import faulthandler
@@ -519,16 +520,69 @@ def png(size, shade, rgb=None):
             + chunk(b'IDAT', zlib.compress(raw, 0)) + chunk(b'IEND', b''))
 
 
-# ^ A run can be killed with SIGKILL (a tool timeout), and then no cleanup runs. So every
-# helper gets its own process group, recorded in the run's work folder, and the next run
-# ends whatever a dead run left (docs/web-client.md "Verification").
+# ^ A run can be killed with SIGKILL (the check runner's timeout kills the run's group that way),
+# and then no cleanup runs. So every helper gets its own process group, recorded in the run's
+# work folder, and a reaper in its own session ends those groups when the run dies without
+# saying `done`. The next run in the checkout also ends what a dead run left (`sweep`)
+# (docs/web-client.md "Verification").
 RECORD = 'processes'
 STARTED = []
+REAPER = {}
+REAPER_LOCK = threading.Lock()
+REAPER_SOURCE = '''
+import os, signal, sys, time
+if sys.stdin.buffer.read() == b'done':
+    sys.exit()
+groups = []
+try:
+    for line in open(sys.argv[1]).read().splitlines():
+        if line.partition('\\t')[0].isdigit():
+            groups.append(int(line.partition('\\t')[0]))
+except OSError:
+    pass
+def alive(group):
+    try:
+        os.killpg(group, 0)
+        return True
+    except OSError:
+        return False
+for number, wait in ((signal.SIGTERM, 3), (signal.SIGKILL, 0)):
+    for group in groups:
+        try:
+            os.killpg(group, number)
+        except OSError:
+            pass
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and any(map(alive, groups)):
+        time.sleep(0.1)
+'''
+
+
+def reaper(work):
+    """Start the reaper of this work folder once. It holds the read end of a pipe: the run's exit
+    writes `done` (nothing left to end), and any other end, SIGKILL included, is an EOF without it."""
+    with REAPER_LOCK:
+        if work not in REAPER:
+            if not REAPER:
+                atexit.register(release_reaper)
+            REAPER[work] = subprocess.Popen([sys.executable, '-I', '-c', REAPER_SOURCE, str(work / RECORD)],
+                                            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def release_reaper():
+    for process in REAPER.values():
+        try:
+            process.stdin.write(b'done')
+            process.stdin.close()
+        except OSError:
+            pass
 
 
 def start(work, args, **options):
     """Start a helper in its own process group and record it. Chrome started by a Node
     check stays in the check's group."""
+    reaper(work)
     process = subprocess.Popen(args, start_new_session=True, **options)
     STARTED.append(process)
     with (work / RECORD).open('a') as out:
@@ -586,6 +640,7 @@ def sweep():
     ended = []
     for folder in (ROOT / '.work').glob('*-*'):
         prefix, _, owner = folder.name.partition('-')
+        owner = owner.removesuffix('t')  # the tasks part's folder is web-<pid>t
         if prefix not in ('web', 'real') or not owner.isdigit() or int(owner) == os.getpid():
             continue
         try:
@@ -902,6 +957,10 @@ def main():
     args = parser.parse_args()
     # ^ Made once for every part: a part run alone (`--part tasks`) writes captures without the chat part's sections.
     args.captures.mkdir(parents=True, exist_ok=True)
+    # A SIGTERM (a tool or CI timeout) still runs each part's cleanup, as an exception does.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    # ^ A run started from a background job of a shell inherits SIGINT as ignored.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     signal.signal(signal.SIGALRM, overdue)
     signal.alarm(RUN_SECONDS)
     if args.part in ('all', 'chat'):
@@ -925,7 +984,7 @@ def watch_wsxd(path, work):
     """When a wsxd call times out, say why: every half second time one snapshot (the state lock),
     one full disk sync in the run's folder (what a state save waits for, under that lock) and one
     short sleep (how starved this machine is), and print the slowest at exit."""
-    import atexit, fcntl
+    import fcntl
     samples, probe = [], work / 'watch-sync'
     # ^ Never made again by this thread: a file made during the cleanup's rmtree fails its rmdir.
     probe.touch()
@@ -998,8 +1057,6 @@ def web_journey(args):
     left = sweep()
     if left:
         print('ended %d processes of earlier runs that were killed' % len(left), file=sys.stderr)
-    # A SIGTERM (a tool or CI timeout) still runs the cleanup below.
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     # Short path: the Unix socket must fit macOS SUN_LEN.
     work = ROOT / '.work' / ('web-' + str(os.getpid()))
     work.parent.mkdir(exist_ok=True)
