@@ -180,12 +180,12 @@ An earlier run on a stub of the start set (before #386) found the same cause: st
 | records useful | 0.83 | 0.76 |
 | stale share of the records shown | 0.92 | 0.94 |
 | records shown | 8.2 | 8.0 |
-| bytes of a block, mean / median / max | 3712 / 3982 / 4089 | 3611 / 3953 / 4087 |
-| of it, `(files: ...)` parts / stale marks (mean) | 478 / 492 | 474 / 490 |
-| recall (a) from the words of the block | 0.29 | 0.23 |
+| bytes of a block, mean / median / max | 3708 / 3980 / 4089 | 3605 / 3940 / 4078 |
+| of it, `(files: ...)` parts / stale marks (mean) | 478 / 491 | 473 / 489 |
+| recall (a) from the words of the block | 0.29 | 0.24 |
 | before (#388): recall (a), useful | 0.07, 0.22 | 0.06, 0.13 |
 
-Per area, recall (a), against the 0.60 target (tasks): tuned cli_tui 0.61 (28), core 0.56 (13), web 0.56 (29), scripts_docs 0.40 (18), daemon 0.18 (4); held out cli_tui 0.48 (18), core 0.29 (9), web 0.40 (6), scripts_docs 0.42 (13). Only tuned cli_tui reaches 0.60.
+Per area, recall (a), against the 0.60 target (tasks): tuned cli_tui 0.62 (28), core 0.56 (13), web 0.56 (29), scripts_docs 0.40 (18), daemon 0.18 (4); held out cli_tui 0.48 (18), core 0.29 (9), web 0.40 (6), scripts_docs 0.42 (13). Only tuned cli_tui reaches 0.60. (A review step changed the `files:` part to the sorted paths, one pass a merge, and the run was repeated: these are that run's numbers.)
 
 Files read by the plan, by why they are not in the block (tuned / held out): new (never in an earlier diff) 0.07 / 0.02, no record 0.11 / 0.07, declared `--files` and the title do not reach it 0.19 / 0.36, cut by the budget 0.18 / 0.23.
 
@@ -194,7 +194,7 @@ Files read by the plan, by why they are not in the block (tuned / held out): new
 1. Hiding was the loss and it is fixed: +0.46 tuned and +0.37 held out over the old 0.07 and 0.05 (hidden, same run).
 2. The change adds nothing over `marked` of the ablation (0.52 / 0.42, same budget): the block carries fewer records (8.2 and 8.0 against 9.4 and 8.8) because the `(files: ...)` parts and the stale marks take 0.12 of the 4096 bytes each (0.24 together). The words of the task add facts, but after the path matches, so they are the first the budget cuts.
 3. The part that misses is the budget and the reach. The exploratory join without a budget scored 0.62 / 0.63 (`none + bm25 title`, 15 records); the real block holds 8, and the files read that the budget cut rose from 0.03 and 0.05 (the old block) to 0.18 and 0.23. The second part is reach: on the held-out third 0.36 of the files read are in no record that the declared `--files` or the words of the title find (the plan reads code the task does not name).
-4. The `(files: ...)` part was meant to carry the paths the score assumes. By the words of the block the recall is 0.29 / 0.23 (before: 0.01 / 0.03), so the paths reach the worker, at the price in point 2.
+4. The `(files: ...)` part was meant to carry the paths the score assumes. By the words of the block the recall is 0.29 / 0.24 (before: 0.01 / 0.03), so the paths reach the worker, at the price in point 2.
 
 Stopped here, as set: nothing is tuned on the held-out third. What the data point to, for the owner to decide and not tried: a shorter line (a clip under 700 characters, the mark as `[stale <7>, N]`, fewer paths) buys back up to 0.24 of the budget; the joint use with `wsx memory recall` mid-task is what the paid replay measures. The held-out third is spent for any new choice; a new rule needs a new split.
 
