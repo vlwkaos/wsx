@@ -64,10 +64,8 @@ pub fn stale(store: &Store, r: &Record) -> bool {
 }
 
 fn stale_of(store: &Store, r: &Record) -> Option<bool> {
-    match (&r.kind, &r.commit) {
-        (Kind::Fact, Some(commit)) if !r.paths.is_empty() => {
-            changed(store.root(), commit, &r.paths)
-        }
+    match &r.commit {
+        Some(commit) if stale_of_needs_git(r) => changed(store.root(), commit, &r.paths),
         _ => Some(false),
     }
 }
