@@ -6,6 +6,7 @@
   judge    score every run blind (cause, traps)              -> .work/memory-eval/judged.json
   report   per-task tables, fidelity, noise, verdict inputs  -> stdout (markdown)
   live     before/after comparison from the real logs (confounded: different tasks)
+  offline  free score of the start set on every landed task, from the logs and the git history (no model call)
   recall-cheap  (internal) the shim's `wsx memory recall` with a cheap model
 
 Arms: baseline (what a worker had at the task's start), memory (+ start set, `wsx memory` and a store
@@ -15,6 +16,7 @@ the task's start. The real store, the real memory and the real config are only r
 """
 import argparse
 import collections
+import fnmatch
 import concurrent.futures as cf
 import importlib.util
 import json
@@ -99,10 +101,12 @@ class Task:
         return revs[-1] if revs else None
 
     def landed_files(self):
-        rev = self.revision()
-        out = subprocess.run(['git', '-C', str(ROOT), 'diff', '--name-only', rev['base'], rev['commit']],
-                             capture_output=True, text=True)
-        return [x for x in out.stdout.split('\n') if x]
+        if not hasattr(self, '_landed'):
+            rev = self.revision()
+            out = subprocess.run(['git', '-C', str(ROOT), 'diff', '--name-only', rev['base'], rev['commit']],
+                                 capture_output=True, text=True)
+            self._landed = [x for x in out.stdout.split('\n') if x]
+        return self._landed
 
     def corrections(self):
         """add/steer messages after the plan result: what a send-back said."""
@@ -379,7 +383,8 @@ def capture_store(t, tasks, home, args):
         files = o.landed_files()
         commit = o.revision()['commit']
         if args.dry_run:  # ^ the stub: dry run only
-            text = (f'{memo.strip()}\nFiles: {", ".join(files[:12])}')[:4000]
+            tail = f'\nFiles: {", ".join(files)}'[:3000]  # ^ offline scores every landed path; memo cut to fit the text limit
+            text = memo.strip()[:4000 - len(tail)] + tail
             done = sh([*wsx, 'memory', 'add', '--scope', PID, '--kind', 'fact', '--slug', f't{m}', '--text-file', '-',
                        '--source', f'task:{m}', '--verified-by', f'task:{m}', '--commit', commit], input=text, env=env)
         else:
@@ -1170,6 +1175,360 @@ def cmd_mreport(args):
     cmd_mproject(args)
 
 
+# ---- offline retrieval: does the start set hold what a plan step read? (docs/design/memory-eval.md "Offline retrieval") ----
+
+READERS = {'rg', 'grep', 'egrep', 'fgrep', 'sed', 'cat', 'head', 'tail', 'awk', 'bat', 'less', 'wc', 'nl'}
+HOME_PREFIX = re.compile(r'(?:~|/Users/[^/\s]+)/ws/wsx(?:-t\d+)?/')
+TRAP_WORDS = 2  # ^ rare words a send-back shares with a memo; both set on the first two thirds (the doc: "Offline retrieval")
+TRAP_RARE = 6  # ^ a word is rare when at most this many memos use it
+START_BYTES = 4096  # ^ the budget of the start block (docs/design/memory-system.md)
+STOP = set('about after again against because before being between could does doing from have into just more most '
+           'must only other should than that their there these they this those through under until what when '
+           'where which while with without would your'.split())
+_cache = {}
+
+
+def tree_of(base):
+    """(files, directories) of the repo at a commit."""
+    if base not in _cache:
+        files = set(sh(['git', '-C', str(ROOT), 'ls-tree', '-r', '--name-only', base]).stdout.split('\n')) - {''}
+        _cache[base] = (files, {d for f in files for d in [f.rsplit('/', 1)[0]] if '/' in f} |
+                        {'/'.join(f.split('/')[:i]) for f in files for i in range(1, f.count('/'))})
+    return _cache[base]
+
+
+def path_tokens(text, tree):
+    """repo files and directories a line names (absolute paths of a working copy are cut to repo paths)."""
+    files, dirs = tree
+    got, seen_dirs = [], []
+    for w in re.findall(r'[\w@+./-]+', HOME_PREFIX.sub('', text)):
+        w = w.strip('.,:;').removeprefix('./')
+        if w in files:
+            got.append(w)
+        elif w.rstrip('/') in dirs:
+            seen_dirs.append(w.rstrip('/'))
+    return got, seen_dirs
+
+
+def read_labels(t, tree):
+    """(a) files the plan step read, from the agent lines before the plan result. The log clips text, so this is a
+    lower bound: `lost` counts the clipped Bash lines and the calls that carry no arguments."""
+    end = t.plan['unix_ms']
+    found, dirs = {}, set()
+    lost = collections.Counter()
+    for i, e in enumerate(t.log):
+        if e['kind'] != 'agent' or e['unix_ms'] >= end:
+            continue
+        text = e['text']
+        head = text.split(' ', 1)[0]
+        if head == 'Read':
+            body = text[5:]
+        elif head == 'Bash':
+            body = text[5:]
+            lost['bash'] += 1
+            if text.endswith('…'):  # ^ cut mid-token: drop the last word, it may be half a path
+                lost['clipped'] += 1
+                body = body.rsplit(None, 1)[0] if ' ' in body else ''
+            if not set(re.split(r'[^\w-]+', body)) & READERS:
+                continue
+        elif head in ('Agent', 'Grep', 'Glob'):
+            lost['no_args'] += 1  # ^ subagent and search calls are logged without their arguments
+            continue
+        else:
+            continue
+        files, ds = path_tokens(body, tree)
+        for f in files:
+            found.setdefault(f, []).append(i)
+        dirs.update(ds)
+    return found, sorted(dirs), dict(lost)
+
+
+def trap_words(text):
+    return {w for w in re.findall(r'[a-z][a-z0-9_]{5,}', text.lower()) if w not in STOP}
+
+
+def trap_stats(tasks):
+    """(words that few memos use, files most tasks change): common words and hot files make every pair match."""
+    if 'trap' not in _cache:
+        memos = [trap_words(o.result.get('memo') or '') for o in tasks.values()]
+        df = collections.Counter(w for m in memos for w in m)
+        landed = [o for o in tasks.values() if o.landed_ms and o.revision()]
+        files = collections.Counter(f for o in landed for f in o.landed_files())
+        _cache['trap'] = ({w for w, c in df.items() if c <= TRAP_RARE}, {f for f, c in files.items() if c > len(landed) * 0.1})
+    return _cache['trap']
+
+
+def trap_pairs(t, tasks, tree, mine):
+    """(c) earlier landed tasks whose memo names a file of this task and which a send-back of this task matches.
+    A send-back is an `add` after the plan that the host did not write (a land notice names no mistake)."""
+    adds = [e['text'] for e in t.log if e['kind'] == 'message' and e.get('mode') == 'add' and e['unix_ms'] > t.plan['unix_ms']
+            and not re.match(r'#\d+ landed on main', e['text'])]
+    if not adds:
+        return []
+    rare, hot = trap_stats(tasks)
+    prompt = trap_words(t.prompt)
+    out = []
+    for m, o in tasks.items():
+        memo = (o.result.get('memo') or '') if o.landed_ms and o.landed_ms < t.t0 else ''
+        named = sorted(set(path_tokens(memo, tree)[0]) & mine - hot)
+        if not named:
+            continue
+        shared = max((trap_words(a) & trap_words(memo) & rare - prompt for a in adds), key=len)
+        if len(shared) >= TRAP_WORDS:
+            out.append({'task': m, 'files': named, 'words': sorted(shared)[:8]})
+    return out
+
+
+# -- the start set -------------------------------------------------------------------------------
+
+def load_records(home):
+    """Active records of the cut store with the files they name: {slug: {slug, task, paths, commit, text, updated}}."""
+    f = home / 'wsx' / 'tasks' / PID / 'memory' / 'records.jsonl'
+    cur = {}
+    for line in f.read_text().splitlines() if f.exists() else []:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        cur[r['slug']] = r
+    out = {}
+    for slug, r in cur.items():
+        if r.get('status', 'active') != 'active':
+            continue
+        text = r.get('text') or ''
+        m = re.search(r'^Files: (.*)$', text, re.M)
+        paths = r.get('paths') or ([x.strip() for x in m.group(1).split(',')] if m else [])
+        n = re.fullmatch(r't(\d+)', slug) or re.fullmatch(r'task:(\d+)', r.get('source') or '')
+        out[slug] = {'slug': slug, 'task': int(n.group(1)) if n else None, 'paths': paths, 'commit': r.get('commit'),
+                     'text': text, 'updated': r.get('updated', 0)}
+    return out
+
+
+def changed(commit, base):
+    """paths that differ between a record's commit and the base."""
+    key = ('changed', commit, base)
+    if key not in _cache:
+        _cache[key] = set(sh(['git', '-C', str(ROOT), 'diff', '--name-only', commit, base]).stdout.split('\n'))
+    return _cache[key]
+
+
+def fresh_paths(rec, base):
+    """the paths of a fact that did not change since its commit (no commit: all of them)."""
+    return [p for p in rec['paths'] if not rec['commit'] or p not in changed(rec['commit'], base)]
+
+
+def stale(rec, base):
+    """docs/design/memory-system.md: a fact is stale when `git diff --quiet <commit> <base> -- <paths>` fails, any path counts."""
+    return len(fresh_paths(rec, base)) < len(rec['paths'])
+
+
+def matches(path, globs):
+    return any(fnmatch.fnmatchcase(path, g) or path.startswith(g.rstrip('/') + '/') for g in globs)
+
+
+def pick_budget(ranked):
+    """the first records that fit the start block's byte budget (the line of a record: slug and up to 400 chars)."""
+    out, used = [], 0
+    for r in ranked:
+        cost = len(r['slug']) + min(len(r['text']), 400) + 4
+        if used + cost > START_BYTES:
+            break
+        out.append(r)
+        used += cost
+    return out
+
+
+def hits_of(wsx, env, sub, opts, query, recs):
+    done = sh([*wsx, 'memory', sub, *opts, '--scope', PID, '--json', '--', query], env=env)
+    try:
+        hits = json.loads(done.stdout)
+    except ValueError:
+        return []
+    return [recs[h['slug']] for h in hits if h['slug'] in recs]
+
+
+def offline_row(t, tasks, args, real):
+    base = t.log[0]['base']  # ^ the plan step worked at the base of `created`; a later rebase moves task.json's base
+    tree = tree_of(base)
+    a, dirs, lost = read_labels(t, tree)
+    b = [f for f in t.landed_files()]
+    declared = t.rec.get('files') or []
+    tmp = Path(tempfile.mkdtemp(prefix=f'off{t.n}-', dir=WORK / 'offline'))
+    wt = None
+    try:
+        build_state(t, tasks, tmp)
+        if real:  # ^ stale and verified-by paths are read at the task's base: a checkout of it is the project path
+            wt = tmp / 'wt'
+            sh(['git', '-C', str(ROOT), 'worktree', 'add', '--detach', str(wt), base])
+            cfg = tmp / 'config' / 'wsx' / 'wsx.config.yml'
+            cfg.write_text(cfg.read_text().replace(t.rec['project_path'], str(wt)))
+        capture_store(t, tasks, tmp, args)
+        recs = load_records(tmp)
+        env = clean_env(XDG_STATE_HOME=str(tmp), XDG_CONFIG_HOME=str(tmp / 'config'))
+        wsx = [args.wsx]
+        keep = [r for r in recs.values() if any(matches(p, declared) or p in a for p in r['paths'])]  # ^ the only ones freshness is read for
+        hit_files = lambda rs: [r for r in rs if any(matches(p, declared) for p in r['paths'])]
+        cands = hit_files(r for r in keep if not stale(r, base))
+        per_path = [{**r, 'paths': fresh_paths(r, base)} for r in keep if fresh_paths(r, base)]
+        by_hits = lambda r: (-sum(matches(p, declared) for p in r['paths']), -r['updated'])
+        title = t.rec.get('title') or ''
+        found = hits_of(wsx, env, 'search', ['--kind', 'fact', '--limit', '50'], title, recs)
+        order = {r['slug']: i for i, r in enumerate(found)}
+        pc = hit_files(per_path)
+        arms = {'paths': pick_budget(sorted(cands, key=by_hits)),
+                'paths, per-file fresh': pick_budget(sorted(pc, key=by_hits)),
+                'paths, per-file fresh, bm25 order': pick_budget(sorted(pc, key=lambda r: (order.get(r['slug'], 99), by_hits(r)))),
+                'bm25 title': found[:5],
+                'bm25 title, per-file fresh': [{**r, 'paths': fresh_paths(r, base)} for r in found[:5]],
+                'paths, stale ignored': pick_budget(sorted(hit_files(keep), key=by_hits)),
+                'recall': hits_of(wsx, env, 'recall', [], title, recs)}
+        if real:
+            out = sh([*wsx, *START_SUB, '--scope', PID, '--files', ','.join(declared)], env=env).stdout
+            arms['start'] = [r for s, r in recs.items() if re.search(r'(?<![\w.-])' + re.escape(s) + r'(?![\w.-])', out)]
+        else:
+            arms['start'] = arms['paths']
+        # misses of (a): why a file read is not in the start set
+        have = {p for r in arms['start'] for p in r['paths']}
+        causes = {}
+        for f in a:
+            if f in have:
+                continue
+            prior = [o for o in tasks.values() if o.landed_ms and o.landed_ms < t.t0 and o.revision() and f in o.landed_files()]
+            holders = [r for r in recs.values() if f in r['paths']]
+            if not prior:
+                causes[f] = 'new'
+            elif not holders:
+                causes[f] = 'no record'
+            elif all(stale(r, base) for r in holders):
+                causes[f] = 'stale, file unchanged' if any(f in fresh_paths(r, base) for r in holders) else 'stale, file changed'
+            elif not any(r in cands for r in holders):
+                causes[f] = 'off files'
+            else:
+                causes[f] = 'cut'
+        traps = trap_pairs(t, tasks, tree, set(b) | {x for x in declared if x in tree[0]})
+    finally:
+        if wt:
+            sh(['git', '-C', str(ROOT), 'worktree', 'remove', '--force', str(wt)])
+        shutil.rmtree(tmp, ignore_errors=True)
+    pack = lambda rs: [{'slug': r['slug'], 'task': r['task'], 'paths': r['paths']} for r in rs]
+    return {'n': t.n, 't0': t.t0, 'title': t.rec.get('title'), 'area': area_of(b), 'a': sorted(a), 'dirs': dirs,
+            'lost': lost, 'b': b, 'records': len(recs), 'declared': declared, 'causes': causes,
+            'traps': traps,
+            'evidence': {f: [(i, t.log[i]['text'][:240]) for i in ix[:2]] for f, ix in a.items()},
+            'arms': {k: pack(v) for k, v in arms.items()}}
+
+
+# -- scoring -------------------------------------------------------------------------------------
+
+def score(row, arm, label):
+    s = {p for r in row['arms'][arm] for p in r['paths']}
+    L = set(row[label])
+    hit = len(s & L)
+    return hit / len(L) if L else None, (hit / len(s) if s else 0.0)
+
+
+def mean(xs):
+    xs = [x for x in xs if x is not None]
+    return statistics.mean(xs) if xs else float('nan')
+
+
+def boot(diffs, reps=2000):
+    """mean of paired differences with a seeded bootstrap 95% interval."""
+    rng = random.Random(388)
+    ms = sorted(mean([rng.choice(diffs) for _ in diffs]) for _ in range(reps))
+    return mean(diffs), ms[int(reps * 0.025)], ms[int(reps * 0.975)]
+
+
+def trap_share(rows, arm):
+    tot = hit = 0
+    for r in rows:
+        got = {x['task'] for x in r['arms'][arm]}
+        for tp in r['traps']:
+            tot += 1
+            hit += tp['task'] in got
+    return hit, tot
+
+
+def offline_report(rows, title, mode):
+    print(f'\n### {title} ({len(rows)} tasks, start set = {mode})\n')
+    arms = ['start', 'paths, per-file fresh', 'paths, per-file fresh, bm25 order', 'bm25 title', 'bm25 title, per-file fresh',
+            'paths, stale ignored', 'recall']
+    print('| arm | recall (a) | precision (a) | recall (b) | precision (b) | empty | traps in set |')
+    print('|---|---|---|---|---|---|---|')
+    for arm in arms:
+        sa = [score(r, arm, 'a') for r in rows]
+        sb = [score(r, arm, 'b') for r in rows]
+        h, n = trap_share(rows, arm)
+        empty = sum(not r['arms'][arm] for r in rows)
+        med = statistics.median([x[0] for x in sa if x[0] is not None] or [float('nan')])
+        print(f'| {arm} | {mean([x[0] for x in sa]):.2f} (median {med:.2f}) | {mean([x[1] for x in sa]):.2f} | '
+              f'{mean([x[0] for x in sb]):.2f} | {mean([x[1] for x in sb]):.2f} | {empty} | {h}/{n} |')
+    print('\nPaired differences of recall (a), per task, with a seeded bootstrap 95% interval (a plan step that read no repo file has no (a)):\n')
+    print('| pair | mean | 95% interval | better / tied / worse |\n|---|---|---|---|')
+    for x, y in (('start', 'recall'), ('paths, per-file fresh', 'start'), ('paths, stale ignored', 'start'), ('bm25 title', 'start')):
+        d = [score(r, x, 'a')[0] - score(r, y, 'a')[0] for r in rows if r['a']]
+        m, lo, hi = boot(d)
+        print(f'| {x} minus {y} | {m:+.3f} | [{lo:+.3f}, {hi:+.3f}] | {sum(v > 0 for v in d)} / {sum(v == 0 for v in d)} / {sum(v < 0 for v in d)} |')
+    print('\n| area | tasks | files read | start recall (a) | start precision (a) | start recall (b) | per-file fresh recall (a) | stale ignored recall (a) | recall-arm recall (a) | traps in start set |')
+    print('|---|---|---|---|---|---|---|---|---|---|')
+    for area in sorted({r['area'] for r in rows}):
+        rs = [r for r in rows if r['area'] == area]
+        h, n = trap_share(rs, 'start')
+        rec = lambda arm, lab='a': mean([score(r, arm, lab)[0] for r in rs])
+        print(f'| {area} | {len(rs)} | {mean([len(r["a"]) for r in rs]):.1f} | {rec("start"):.2f} | '
+              f'{mean([score(r, "start", "a")[1] for r in rs]):.2f} | {rec("start", "b"):.2f} | {rec("paths, per-file fresh"):.2f} | '
+              f'{rec("paths, stale ignored"):.2f} | {rec("recall"):.2f} | {h}/{n} |')
+    causes = collections.Counter(c for r in rows for c in r['causes'].values())
+    total = sum(len(r['a']) for r in rows)
+    covered = total - sum(causes.values())
+    print(f'\nFiles read: {total} (covered by the start set: {covered}). Not covered, by cause:')
+    print('\n| cause | files | share of files read |\n|---|---|---|')
+    for c in ('new', 'no record', 'stale, file unchanged', 'stale, file changed', 'off files', 'cut'):
+        print(f'| {c} | {causes[c]} | {causes[c] / max(total, 1):.2f} |')
+
+
+def cmd_offline(args):
+    global WORK
+    WORK = Path(args.work) if args.work else WORK
+    (WORK / 'offline').mkdir(parents=True, exist_ok=True)
+    rows_file = WORK / 'offline' / 'rows.json'
+    tasks = real_tasks()
+    real = not args.stub and sh([args.wsx, *START_SUB, '--help'], env=clean_env()).returncode == 0
+    args.dry_run = not real  # ^ capture_store's stub, as in the dry run of the paid arms
+    mode = 'wsx memory start' if real else 'STUB: declared-file match of fresh records (wsx memory start is not in this binary)'
+    if args.rows:
+        rows = json.loads(rows_file.read_text())
+    else:
+        pick = sorted(n for n, o in tasks.items() if n >= FIRST_TASK and o.landed_ms and o.plan and o.revision())
+        if args.tasks:
+            pick = [n for n in pick if n in args.tasks]
+        with cf.ThreadPoolExecutor(args.jobs) as ex:
+            rows = list(ex.map(lambda n: offline_row(tasks[n], tasks, args, real), pick))
+        rows.sort(key=lambda r: r['t0'])
+        rows_file.write_text(json.dumps(rows))
+    cut = -(-len(rows) * 2 // 3)
+    tune, held = rows[:cut], rows[cut:]
+    lost = collections.Counter()
+    for r in rows:
+        lost.update(r['lost'])
+    print(f'Labels: {sum(len(r["a"]) for r in rows)} files read in {len(rows)} plan steps; Bash lines {lost["bash"]}, '
+          f'clipped by the log {lost["clipped"]}; Agent/Grep/Glob calls without arguments {lost["no_args"]}.')
+    offline_report(tune, f'tuned on: first {cut} by start time', mode)
+    if args.final:
+        offline_report(held, f'held out: last {len(held)}', mode)
+        m = mean([score(r, 'start', 'a')[0] for r in held])
+        print(f'\nVerdict (held out, mean recall of the start set against the files read): {m:.2f} against 0.60: '
+              f'{"MEETS" if m >= 0.60 else "MISSES"} the target ({mode}).')
+    else:
+        print('\nHeld-out third not shown: rerun with --final once the rules are fixed.')
+    for n in args.show or []:
+        r = next(x for x in rows if x['n'] == n)
+        print(f'\n#{n} {r["title"]} ({r["area"]})\n  read: {len(r["a"])} files, directories only: {r["dirs"]}\n  landed: {r["b"]}')
+        for f, ev in r['evidence'].items():
+            print(f'  {f}: ' + ' | '.join(f'log line {i + 1}: {txt}' for i, txt in ev))
+        print(f'  traps: {r["traps"]}')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -1213,6 +1572,16 @@ def main():
     mrep = sub.add_parser('mreport')
     mrep.add_argument('--recall-uses', type=float, default=1.0)
     mrep.set_defaults(fn=cmd_mreport)
+    of = sub.add_parser('offline', help='free retrieval score of the start set on every landed task')
+    of.add_argument('--wsx', default=str(ROOT / 'target/debug/wsx'))
+    of.add_argument('--work', help='work folder (default .work/memory-eval)')
+    of.add_argument('--tasks', type=int, nargs='*')
+    of.add_argument('--jobs', type=int, default=4)
+    of.add_argument('--stub', action='store_true', help='score the stub even when the binary has `memory start`')
+    of.add_argument('--rows', action='store_true', help='score the saved rows again, build nothing')
+    of.add_argument('--final', action='store_true', help='also show the held-out third and the verdict')
+    of.add_argument('--show', type=int, nargs='*', help='print the labels and the log lines behind them')
+    of.set_defaults(fn=cmd_offline)
     rc = sub.add_parser('recall-cheap')
     rc.add_argument('--wsx', required=True)
     rc.add_argument('--home', required=True)

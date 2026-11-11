@@ -1,10 +1,10 @@
 # Memory evaluation (step 6)
 
-Status: baseline half measured on 2026-11-11 ("Baseline"). The memory half runs after build steps 4 and 5 (`docs/design/memory-system.md`). Question: does memory make a wsx task better and cheaper? Owner decisions: the vault stays in dotfiles `memory.py`; plain Claude chats get no start-up memory load unless this shows a measured gain; step 8 waits for the verdict.
+Status: baseline half measured on 2026-11-11 ("Baseline"); offline retrieval measured the same day with a stub start set ("Offline retrieval"). The memory half runs after build steps 4 and 5 (`docs/design/memory-system.md`). Question: does memory make a wsx task better and cheaper? Owner decisions: the vault stays in dotfiles `memory.py`; plain Claude chats get no start-up memory load unless this shows a measured gain; step 8 waits for the verdict.
 
 ## Method
 
-`python3 -B scripts/memory-eval.py <pick|run|judge|report|live>`. Every number below comes from it. Runs and spend: `.work/memory-eval/` (`runs/<arm>/<task>-<rep>.json`, `judged.json`, `spend.jsonl`).
+`python3 -B scripts/memory-eval.py <pick|run|judge|report|live|offline>`. Every number below comes from it. Runs and spend: `.work/memory-eval/` (`runs/<arm>/<task>-<rep>.json`, `judged.json`, `spend.jsonl`).
 
 | Part | Rule |
 |---|---|
@@ -104,6 +104,66 @@ The cheap-recall arm (10 tasks) is judged against the memory arm on the same tas
 ## Cost of the memory half (estimate)
 
 Baseline: 23 runs $12.86. Memory arm: 20 runs at about +10% for the start set, $12 to $13. Cheap-recall arm: 10 runs plus haiku, $6 to $7. Judge about $1 for 30 runs. Sum with the baseline: about $33 to $35, under the cap of $40 (the script stops at the cap and the cheap arm gets what is left).
+
+## Offline retrieval (free, all landed tasks with a plan step)
+
+Question: does the start set hold the files a plan step reads? Target set by the owner: at least 60%. `python3 -B scripts/memory-eval.py offline [--final] [--show N...]` (no model call; about 8 minutes on 6 jobs). It reads the task store, the git history and `wsx memory`, and writes `.work/memory-eval/offline/rows.json` (`--rows` scores it again). Run on a copy of the store (`MEMORY_EVAL_STORE`), 136 landed tasks #133 to #387 that have a plan result. Split by start time: the first 91 tune, the last 45 are held out; the script prints the held-out third only with `--final`, and it was shown once, after the rules below were fixed.
+
+**Start set used here is a stub.** `wsx memory start` and `capture` (#386) are not on this branch. The stub is the design's rule (`memory-system.md`): the capture rule of the dry run (memo plus all landed paths, commit = landed commit) on every task landed before the start, then the records that have a path matching the task's `--files` and are not stale (`git diff --quiet <commit> <base> -- <paths>`, base = the task's own base, any path counts), most matching paths first, 4 KiB. When #386 lands, the script uses `wsx memory start` by itself and reads its slugs; the stale and ranking columns then describe the real code. The area-brief part is empty by construction: wsx declares no `memory.areas`.
+
+**Labels.** (a) files the plan step read: `Read` paths and every repo file a `rg grep sed cat head tail awk wc` Bash line names, in the agent lines before the plan result, kept only if the file exists at the task's base; a directory argument counts apart (not a file). (b) files of the landed diff. (c) trap: an earlier landed task's memo names a file of this task (not a file most tasks change) and a send-back (`add` after the plan, not a land notice) shares at least 2 rare words (used by at most 6 memos) with it. (c) is rare: 3 pairs in the tuned third, 4 in the held-out one; hand check of the 3 (tuned): 2 are real (#182 effort, #265 tab bar), 1 is weak (#197). Read it as a sign, not a rate.
+
+**What the log loses (so (a) is a lower bound).** Of 3827 Bash lines before a plan result, 2481 (65%) end in a clip mark, and their last word is dropped; the 35 `Agent` calls (Explore) are logged without arguments, and `Grep` and `Glob` are not logged at all. 1508 files read in 136 plan steps (11 per task).
+
+### Result (mean over tasks; start = stub)
+
+| arm | recall (a) tuned / held out | precision (a) | recall (b) | tasks with an empty set (held out) | traps in set (held out) |
+|---|---|---|---|---|---|
+| start (stub) | 0.15 / **0.13** | 0.16 / 0.07 | 0.21 / 0.16 | 17 of 45 | 1/4 |
+| paths, each record cut to the paths unchanged since its commit | 0.50 / 0.43 | 0.09 / 0.12 | 0.50 / 0.44 | 7 | 2/4 |
+| same, ranked by BM25 of the title | 0.39 / 0.40 | 0.09 / 0.13 | 0.38 / 0.44 | 7 | 3/4 |
+| BM25 of the title only (top 5 facts, no paths) | 0.49 / 0.48 | 0.17 / 0.20 | 0.54 / 0.47 | 0 | 3/4 |
+| same, cut to unchanged paths | 0.09 / 0.18 | 0.10 / 0.15 | 0.08 / 0.14 | 0 | 3/4 |
+| paths, stale ignored | **0.74 / 0.65** | 0.08 / 0.07 | 0.71 / 0.67 | 7 | 2/4 |
+| `wsx memory recall "<title>"` (top 5) | 0.03 / 0.08 | 0.07 / 0.11 | 0.04 / 0.09 | 26 | 1/4 |
+
+Paired per task, recall (a), mean and seeded bootstrap 95% interval (tuned / held out): start minus recall +0.118 [+0.068, +0.169] / +0.052 [-0.041, +0.149]; unchanged paths minus start +0.357 [+0.300, +0.421] / +0.302 [+0.200, +0.398]; stale ignored minus start +0.595 [+0.526, +0.660] / +0.521 [+0.398, +0.632].
+
+Per area, recall (a), tuned / held out (tasks: tuned / held out). Terminal: no landed plan task.
+
+| area | tasks | start (stub) | unchanged paths | stale ignored | recall |
+|---|---|---|---|---|---|
+| cli_tui | 28 / 18 | 0.16 / 0.16 | 0.52 / 0.51 | 0.84 / 0.79 | 0.01 / 0.08 |
+| core | 12 / 9 | 0.21 / 0.18 | 0.49 / 0.53 | 0.78 / 0.79 | 0.05 / 0.06 |
+| daemon | 4 / 0 | 0.03 / - | 0.46 / - | 0.72 / - | 0.03 / - |
+| scripts_docs | 18 / 12 | 0.11 / 0.10 | 0.21 / 0.18 | 0.42 / 0.30 | 0.09 / 0.06 |
+| web | 29 / 6 | 0.15 / 0.00 | 0.67 / 0.53 | 0.83 / 0.72 | 0.00 / 0.11 |
+
+Why a file read is not in the start set (share of the files read; tuned 958 files / held out 550):
+
+| cause | tuned | held out |
+|---|---|---|
+| in the start set | 0.14 | 0.10 |
+| stale record, the file itself unchanged since the commit | 0.60 | 0.66 |
+| stale record, the file itself changed | 0.16 | 0.17 |
+| never in an earlier landed diff | 0.07 | 0.02 |
+| no record (the earlier task left no memo) | 0.02 | 0.02 |
+| declared `--files` do not reach it | 0.01 | 0.03 |
+| cut by the 4 KiB budget | 0.00 | 0.00 |
+
+**Verdict: the stub start set MISSES the 60% target: 0.13 held out (0.15 tuned).** This is the design's stale rule, not `wsx memory start`; read the line again with the real code.
+
+From the data: (1) The cause is staleness, not missing paths, ranking or budget. A record carries every path of the landed diff (median 8, mean 11, and `CHANGELOG.md`, `docs/tasks.md` or `scripts/test-task.py` among them), and the rule drops the whole record when any one path changed; 76% to 83% of the files read are in such a record. 60% to 66% of them are files that did not change themselves. (2) Cutting each record to its unchanged paths lifts recall to 0.50 tuned and 0.43 held out: better, still short. (3) Keeping stale records in the set, marked `stale`, reaches 0.74 tuned and 0.65 held out; that is the change that meets 60%, chosen on the tuned third and confirmed once on the held-out one. It is a pointer, not a claim: the record says which files an earlier task touched, and the worker reads them. Precision stays near 0.1 (about a dozen paths per set). (4) The budget never binds (0.00), and the path-first ranking beats BM25 order among the same records (0.50 against 0.39 tuned, 0.43 against 0.40 held out). (5) The title alone finds 0.48 to 0.49 with no path at all, and `recall` finds 0.03 to 0.08, because its top 5 are all transcript hits (a task's story), which carry no paths; a union of both was not measured. (6) `scripts_docs` stays at 0.30 to 0.42 even then: those plans read many files of code that the docs task does not change (17.8 files read, 2.1 landed per task).
+
+**Hand check (3 tuned tasks, labels against the raw `log.jsonl` lines).** `python3 -B scripts/memory-eval.py offline --rows --show 135 141 170` prints the same.
+
+| task | files read by the script | raw lines (plan result at line 11, 18, 32) |
+|---|---|---|
+| #135 cli_tui | `host.rs`, `slot.rs`, `test-task.py` | line 5 `sed -n 80,210p crates/wsx/src/task/host.rs`; line 6 `cat crates/wsx/src/task/slot.rs`, `sed -n 2270,2400p scripts/test-task.py`. The `grep ... -r crates/wsx/src scripts` of line 4 names directories only; the glob `crates/wsx/src/task/*.rs` of line 7 is not expanded: both lost |
+| #141 web | `http.rs`, `lib.js`, `viewer.js`, `web-tasks-check.mjs` | line 5 `sed -n 1175,1230p crates/wsx-web/src/http.rs` and `cat crates/wsx-web/web/viewer.js`; line 7 `sed -n 1,40p crates/wsx-web/web/lib.js`; lines 6 and 15 `scripts/web-tasks-check.mjs`. Line 5 also has `sed -n 85,110p crates/wsx-web/web/che…` (clipped): `checks.js` is a landed file the label misses |
+| #170 scripts_docs | `config/global.rs`, `config/project.rs`, `plugins.rs`, `http.rs`, `docs/plugins.md` | line 5 `cat docs/plugins.md`; line 19 `crates/wsx-daemon/src/plugins.rs`; line 20 `crates/wsx-web/src/http.rs`; line 22 `sed -n 280,300p crates/wsx-core/src/config/global.rs` and `head -15 .../project.rs`. `docs/web-client…` of line 5 is clipped: lost. Knowledge files outside the repo (`dgv3/notes/...`) are not labels |
+
+**Next.** When #386 lands: `python3 -B scripts/memory-eval.py offline --wsx <t380 binary> --final` (the cause table and the verdict then describe `wsx memory start`; capture's own `paths` field is read when it has one, else the `Files:` line). The real branch of the script (a worktree at the task's base as the project path) ran only as a probe on one task.
 
 ## What runs next
 
