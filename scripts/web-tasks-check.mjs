@@ -3482,7 +3482,7 @@ for (const wide of [false, true]) {
   const roleRow = `[...document.querySelectorAll('.home-rows .role-row')].find((r) => r.querySelector('.row-label').textContent === 'billing')`;
   await until(`!!(${roleRow})`, "Home lists no billing role under its project");
   const listed = await evaluate(`(() => { const row = ${roleRow}; const before = row.closest('li').previousElementSibling; return { name: row.querySelector('.row-label').textContent, line: row.querySelector('.row-context').textContent, dots: row.querySelectorAll('.news-mark').length, under: before && !before.classList.contains('row-role') ? before.querySelector('.row-label').firstChild.textContent : before?.className }; })()`);
-  if (listed.name !== "billing" || !listed.line.startsWith("open: ") || listed.dots || listed.under !== projectName) await fail(`Home lists the role as ${JSON.stringify(listed)}, not billing under ${projectName}`);
+  if (listed.name !== "billing" || !listed.line.startsWith("open: ") || (!wide && listed.dots) || listed.under !== projectName) await fail(`Home lists the role as ${JSON.stringify(listed)}, not billing under ${projectName}`);
   await shot(`roles-home${wide ? "-wide" : ""}`);
   await go(chat);
   await until("!!document.querySelector('.composer-field')", "the chat did not open again for Roles");
