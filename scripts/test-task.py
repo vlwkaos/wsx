@@ -5199,8 +5199,8 @@ def part_host(created=None):
     assert 'Waiting for your answer' not in status['sentence'] and 'nothing is asked of you' in status['sentence'], status
     assert show(pausing)['record']['waiting']['on'] == 'paused' and show(questioning)['status']['kind'] == 'owner', show(pausing)
     assert re.search(r'^t%d paused ' % pausing, cli('task', 'show', str(pausing)).stdout), cli('task', 'show', str(pausing)).stdout
-    assert re.search(r'^t%-4d paused ' % pausing, cli('task', 'list').stdout, re.M), cli('task', 'list').stdout
-    assert re.search(r'^t%-4d waiting ' % questioning, cli('task', 'list').stdout, re.M), cli('task', 'list').stdout
+    assert re.search(r'^t%d +paused ' % pausing, cli('task', 'list').stdout, re.M), cli('task', 'list').stdout
+    assert re.search(r'^t%d +waiting ' % questioning, cli('task', 'list').stdout, re.M), cli('task', 'list').stdout
     row_of = {r['id']: r for r in js('task', 'ledger')['open']}
     assert row_of[pausing]['status']['kind'] == 'paused' and row_of[pausing]['waiting']['on'] == 'paused', row_of[pausing]
     wait(lambda: (pane_agent(pausing) or {}).get('state') == 'idle', 'the paused worker reports idle')
