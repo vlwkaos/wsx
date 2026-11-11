@@ -844,7 +844,7 @@ def manager_turns():
     rotated just before it (a `rotated` line after the previous reply: tokens 0 is the idle rotation)."""
     log = [json.loads(x) for x in MANAGER_LOG.read_text().splitlines()]
     msgs = {e['id']: e for e in log if e['kind'] == 'message'}
-    turns, cmds, rot, prev = [], [], None, 0
+    turns, cmds, rot = [], [], None
     for e in log:
         if e['kind'] == 'agent' and not e.get('said'):
             cmds.append(e['text'])
@@ -854,7 +854,7 @@ def manager_turns():
             turns.append({'ms': e['unix_ms'], 'id': e['id'], 'msgs': [msgs[i] for i in e['to'] if i in msgs], 'reply': e['text'],
                           'cmds': cmds, 'usage': e.get('usage'), 'rotated': rot})
             cmds, rot = [], None
-    return log, turns
+    return turns
 
 
 def week(turns):
@@ -883,7 +883,7 @@ def project(turns, idx, limit, start, recall_uses=0.0):
     """Manager dollars of the week if the conversation rotated at `limit` tokens and a fresh one starts at `start` tokens.
     The reads of a reply scale with the context it ran in; new tokens (cache writes), output and calls stay as logged.
     A rotation costs a cold write of `start` tokens. (est.) Size rotations of the log are replaced, idle ones kept."""
-    g, s_log = conv_stats(turns, idx)
+    g = conv_stats(turns, idx)[0]
     total, rotations, ctx, fresh = 0.0, 0, 0, True
     for k, i in enumerate(idx):
         t, u = turns[i], turns[i]['usage']
@@ -909,7 +909,7 @@ def project(turns, idx, limit, start, recall_uses=0.0):
 
 
 def cmd_mproject(args):
-    log, turns = manager_turns()
+    turns = manager_turns()
     idx = week(turns)
     g, s_now = conv_stats(turns, idx)
     notes = sum(len(p.read_text()) for p in [REAL / 'manager' / 'notes' / 'decisions.md', REAL / 'manager' / 'notes' / 'context.md'] if p.exists())
@@ -939,7 +939,7 @@ ASKS = re.compile(r'earlier|before|last time|you said|again|same|that one|those|
 
 
 def cmd_mpick(args):
-    log, turns = manager_turns()
+    turns = manager_turns()
     idx = week(turns)
     g, s_now = conv_stats(turns, idx)
     k150, k60 = int((150_000 - s_now) // g), int((60_000 - s_now) // g)
@@ -1032,14 +1032,14 @@ def manager_run(pick, arm, rep, turns, tasks, args):
     run = Path(tempfile.mkdtemp(prefix=f'm-{arm}-{pick["reply"]}-', dir=WORK / 'tmp'))
     home, wc = run / 'state', run / 'wc'
     try:
-        ctx = build_state(at, tasks, home)
+        build_state(at, tasks, home)
         notes_dir = home / 'wsx' / 'tasks' / PID / 'manager' / 'notes'
         notes = ''
         if with_notes:
             notes = '\n\n'.join(f'{name}:\n{(notes_dir / name).read_text()}' for name in ('decisions.md', 'context.md') if (notes_dir / name).exists())
         s_start = g_s[1] if with_notes else g_s[1] - len(notes_of_log(tasks, at)) / NOTE_CHARS_PER_TOKEN + 1000
         k = max(0, int((limit - s_start) // g_s[0]))
-        rec, size = capture_store(at, tasks, home, args)
+        rec = capture_store(at, tasks, home, args)[0]
         base = max((o for o in tasks.values() if o.t0 < t0), key=lambda o: o.t0).rec['base']
         sh(['git', '-C', str(ROOT), 'worktree', 'add', '--detach', str(wc), base], check=True)
         spec = importlib.util.spec_from_file_location('bench_manager', ROOT / 'scripts' / 'bench-manager.py')
@@ -1081,7 +1081,7 @@ def cmd_mrun(args):
     memory_gate(args)  # ^ the paid manager arms run on the memory code of steps 4 and 5, like the memory arm
     meta = json.loads((WORK / 'manager-picks.json').read_text())
     picks = meta['picks'][:2] if args.dry_run else meta['picks']
-    log, turns = manager_turns()
+    turns = manager_turns()
     tasks = real_tasks()
     (WORK / 'tmp').mkdir(parents=True, exist_ok=True)
     jobs = [(p, 0) for p in picks] + [(p, 1) for p in picks if p['repeat'] and args.arm == 'cut150']
@@ -1109,7 +1109,7 @@ Answer JSON only: {{"score": 0|1|2, "lost": ["..."], "wrong": ["..."], "why": "<
 
 
 def cmd_mjudge(args):
-    log, turns = manager_turns()
+    turns = manager_turns()
     by_reply = {t['id']: t for t in turns}
     path = WORK / 'manager-judged.json'
     judged = json.loads(path.read_text()) if path.exists() else {}
