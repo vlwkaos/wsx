@@ -165,6 +165,10 @@ From the data: (1) The cause is staleness, not missing paths, ranking or budget.
 
 **Next.** When #386 lands: `python3 -B scripts/memory-eval.py offline --wsx <t380 binary> --final` (the cause table and the verdict then describe `wsx memory start`; capture's own `paths` field is read when it has one, else the `Files:` line). The real branch of the script (a worktree at the task's base as the project path) ran only as a probe on one task.
 
+### Stale rule ablation: how the winner is picked (fixed on 2026-11-11, before the run on the real `wsx memory start`)
+
+Variants of the stale rule of `wsx_core::memory::start`, same 4 KiB budget, same order of records: (a) `hidden`: today, a stale fact is only named; (b) `marked`: a stale fact is shown after the fresh ones with `[stale: files changed since <commit>, N commits]`; (c) a fact is stale only if the diff since its commit touches a symbol its text names (`symbols`; a text with no symbol keeps today's rule), or the files of the fact changed by at least K lines (`churn K`, K in 100, 400, 1600); (d) `none`: no stale rule. `hidden` is a port of the scan, checked against `wsx memory start` in every task. A variant **reaches the target** if the tuned mean recall (a) is at least 0.60. Among those, the **winner** has the highest share of shown records that are useful (a record is useful if one of its paths was read in the plan step or changed by the landed diff: a record that is not is a wrong fact in the budget); a tie within 0.03 goes to the variant with fewer stale records shown. The held-out third confirms once (`--final`) and is never used to choose.
+
 ## What runs next
 
 1. Steps 4 and 5 land in `wsx/t380`: the start set command and the capture command. The constants `CAPTURE_SUB` and `START_SUB` in the script name them; change them to the real names.
