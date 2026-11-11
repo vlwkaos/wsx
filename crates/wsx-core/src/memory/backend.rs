@@ -107,7 +107,7 @@ impl Backend for Builtin {
         let terms = index::terms(&query.words)
             .map_err(|_| Error::Usage("the query has no words".into()))?;
         let records = store.records()?;
-        let target = store.project_ids().map(|(id, name)| Target {
+        let target = store.transcripts_of().map(|(id, name)| Target {
             name: name.into(),
             project_id: id.into(),
         });
@@ -134,7 +134,7 @@ impl Backend for Builtin {
             &terms,
         );
         let wanted = query.kind.as_ref().map(|k| k.0.as_str());
-        let path = store.log_file().display().to_string();
+        let path = store.log_path().display().to_string();
         let mut hits: Vec<(Hit, u64)> = Vec::new();
         for (raw, at) in ranked.scored {
             let score = (raw / ranked.bound).clamp(0.0, 1.0);
