@@ -29,11 +29,11 @@ export function openViewer(images, index, opener, { dark = true } = {}) {
 }
 
 // The tap target of a picture or a video that opens in the viewer: a To check capture (checks.js)
-// and a video a chat message shows (chat.js `Attachments`). A video shows its `poster` (or a blank frame)
+// and a video a chat message shows (chat.js `Attachments`). A video shows its `poster` (or its first frame)
 // with a play mark. `size`: the capture's [width, height], so its box is there before the image.
 export const Capture = ({ href, label, download, video, poster, size, duration }) => html`
   <a class="check-capture" href=${href} data-view data-download=${download} data-video=${video || undefined} data-poster=${poster} aria-label=${label}>
-    ${video && !poster ? html`<span class="check-frame"></span>` : html`<img src=${poster ?? href} alt="" style=${size && { "--w": size[0], "--h": size[1], "--width": `${size[0]}px` }} />`}
+    ${video && !poster ? html`<video class="check-frame" src=${`${href}#t=0.001`} preload="metadata" muted playsinline tabindex="-1" aria-hidden="true"></video>` : html`<img src=${poster ?? href} alt="" style=${size && { "--w": size[0], "--h": size[1], "--width": `${size[0]}px` }} />`}
     ${video && html`<span class="check-play"><${Icon} name="play" /></span>`}
     ${duration && html`<span class="check-duration">${duration}</span>`}
   </a>`;

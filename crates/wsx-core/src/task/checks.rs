@@ -20,9 +20,6 @@ pub const MAX_NOTE_BYTES: usize = super::MAX_MESSAGE_BYTES;
 const MAX_IMAGE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_VIDEO_BYTES: u64 = 25 * 1024 * 1024;
 const CAPTURES: &str = "captures";
-/// How long a decided item keeps its capture files: the web media lifetime
-/// (docs/web-client.md "Media", `ttl_seconds = 604800`).
-const CAPTURE_KEPT_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -457,30 +454,44 @@ pub fn capture_removed(dir: &TaskDir, item: &CheckItem) -> bool {
         .is_some_and(|path| !path.exists())
 }
 
-/// Remove the capture files (image, video, poster) of items passed, failed or skipped more
-/// than 7 days ago, under the list's lock; their rows stay. Returns how many files went.
-/// ref: docs/tasks.md "To check"
-pub fn remove_old_captures(project_id: &str) -> Result<usize> {
+/// Keep the project's capture files (images, videos, posters) within `budget_bytes`: while
+/// they take more, remove the files of the oldest decided item, the skipped and failed ones
+/// before the passed ones; an open item's are never removed. Runs under the list's lock; the
+/// rows stay. Returns how many files went. ref: docs/tasks.md "To check"
+pub fn prune_captures(project_id: &str, budget_bytes: u64) -> Result<usize> {
     if !project_dir(project_id)?.join(CHECKS_FILE).exists() {
         return Ok(0);
     }
-    let cutoff = now_unix_ms().saturating_sub(CAPTURE_KEPT_MS);
     let mut removed = 0;
     change(project_id, |items| {
-        // ^ A poster is only kept with a capture.
-        for item in items.iter().filter(|item| {
-            item.state != CheckState::Open && item.unix_ms < cutoff && item.capture.is_some()
-        }) {
+        // ^ (item, its kept files with their sizes); a poster is only kept with a capture.
+        let mut kept: Vec<(&CheckItem, Vec<(std::path::PathBuf, u64)>)> = Vec::new();
+        for item in items.iter().filter(|item| item.capture.is_some()) {
             let Ok(dir) = TaskDir::open(project_id, item.task) else {
                 continue;
             };
-            for path in [&item.capture, &item.poster]
+            let files = [&item.capture, &item.poster]
                 .into_iter()
                 .flatten()
                 .filter_map(|name| capture_path(&dir, name).ok())
-            {
+                .filter_map(|path| Some((path.clone(), path.metadata().ok()?.len())))
+                .collect();
+            kept.push((item, files));
+        }
+        let mut total: u64 = kept.iter().flat_map(|(_, files)| files).map(|f| f.1).sum();
+        let mut decided: Vec<_> = kept
+            .iter()
+            .filter(|(item, _)| item.state != CheckState::Open)
+            .collect();
+        decided.sort_by_key(|(item, _)| (item.state == CheckState::Passed, item.unix_ms));
+        for (_, files) in decided {
+            if total <= budget_bytes {
+                break;
+            }
+            for (path, size) in files {
                 if std::fs::remove_file(path).is_ok() {
                     removed += 1;
+                    total = total.saturating_sub(*size);
                 }
             }
         }

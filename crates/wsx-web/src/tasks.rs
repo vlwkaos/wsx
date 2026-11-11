@@ -562,8 +562,8 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     Ok(summary)
 }
 
-/// This task's items of the project's "To check" list. A decided item's capture goes after 7
-/// days: the row says so (docs/tasks.md "To check").
+/// This task's items of the project's "To check" list. A capture the budget removed: the row
+/// says so (docs/tasks.md "To check").
 fn to_check_rows(dir: &TaskDir, items: &[checks::CheckItem], task: u32) -> Value {
     json!(items
         .iter()
@@ -1042,7 +1042,7 @@ pub fn checks(scope: &Scope) -> Outcome<Value> {
                 .or(item.capture.as_deref())
                 .zip(dir.as_ref())
                 .and_then(|(name, dir)| checks::capture_size(dir, name)));
-            // ^ A decided item's capture goes after 7 days; its chat bubble says so.
+            // ^ A capture the budget removed: its chat bubble says so.
             if dir.is_some_and(|dir| checks::capture_removed(&dir, item)) {
                 row["capture_removed"] = json!(true);
             }
@@ -1726,6 +1726,66 @@ pub fn usage_all(app: &App, filter: &task::usage::Filter) -> Outcome<Value> {
         .map(|scope| (scope.name, scope.store))
         .collect();
     Ok(task::usage::all(&projects, task::now_unix_ms(), filter))
+}
+
+/// One page of the project's media archive, newest first (docs/tasks.md "Media"). A capture
+/// is served by its item's route; a file a message links goes through the chat's grant (it needs
+/// `media_download`, else the item has no `url`); an upload is in the media store or `gone`
+/// (expired).
+pub fn media(app: &App, scope: &Scope, filter: &task::media::Filter) -> Outcome<Value> {
+    let page = task::media::list(&scope.store, filter, Some(&scope.path)).map_err(internal)?;
+    let root = app
+        .site
+        .allows(crate::site::Capability::MediaDownload)
+        .then(|| app.root(&scope.path).ok())
+        .flatten();
+    let rows: Vec<Value> = page
+        .items
+        .iter()
+        .map(|item| {
+            let mut row = json!(item);
+            let shown = match item.source {
+                task::media::Source::Capture => {
+                    item.check.as_deref().filter(|_| !item.gone).map(|id| {
+                        let base = format!("api/tasks/{}/checks/{id}", scope.project);
+                        let poster = item.poster.then(|| format!("{base}/poster"));
+                        (format!("{base}/capture"), poster, None)
+                    })
+                }
+                task::media::Source::File => root
+                    .as_ref()
+                    .filter(|_| !item.gone)
+                    .and_then(|root| {
+                        app.chat
+                            .granted_file(item.path.as_deref()?, root, &app.media)
+                    })
+                    .map(|file| (file.url, file.poster, Some((file.mime, file.size)))),
+                task::media::Source::Upload => item
+                    .path
+                    .as_deref()
+                    .and_then(|file| app.media.get(file))
+                    .map(|(entry, _)| {
+                        (
+                            format!("media/{}", entry.file_name()),
+                            None,
+                            Some((entry.mime, entry.size)),
+                        )
+                    }),
+            };
+            if let Some((url, poster, file)) = shown {
+                row["url"] = json!(url);
+                row["poster_url"] = json!(poster);
+                if let Some((mime, size)) = file {
+                    row["mime"] = json!(mime);
+                    row["size"] = json!(size);
+                }
+            } else if item.source == task::media::Source::Upload {
+                row["gone"] = json!(true);
+            }
+            row
+        })
+        .collect();
+    Ok(json!({ "items": rows, "next": page.next }))
 }
 
 /// One project's spend of `filter` (docs/web-client-tasks.md "Usage").

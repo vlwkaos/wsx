@@ -33,7 +33,7 @@ const { file: mobilePath, source: mobileSource } = mobileAudit();
 if (!mobileSource) await fail(`no mobile audit at ${mobilePath}; set WSX_MOBILE_AUDIT`);
 // The main screens that get the design lint (scripts/design-lint.js), at 390x844 and 1280x800 only.
 const linter = designLint({ evaluate, captures, file: "tasks" });
-const LINTED = new Set(["settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light"]);
+const LINTED = new Set(["settings-usage", "settings-usage-tokens", "settings-usage-projects", "settings-usage-limit-tones", "home", "sessions", "project", "task-sheet", "task-sheet-take-over-1280", "task-sheet-open", "page", "events-dark", "events-light", "media-sheet", "media-sheet-wide"]);
 let size = [390, 844, 2];
 const phone = () => size[0] < 600;
 const audits = [];
@@ -1295,9 +1295,9 @@ if (!(await evaluate("window.answerLine.isConnected"))) await fail("a status lin
 await shot("reservoir-acted", ".composer-send");
 await closeReservoir();
 
-// --- The ⋯ menu: Sessions, Usage and Files (the site reads files); Overview is a header button, Routines a pill (Roles are checked below); the worktree list hides task sessions.
+// --- The ⋯ menu: Sessions, Usage, Media and Files (the site reads files); Overview is a header button, Routines a pill (Roles are checked below); the worktree list hides task sessions.
 await click(".more-button");
-if ((await text(".more-menu a:not(.role-contact)")).join() !== "Sessions,Usage,Files") await fail(`the ⋯ menu offers ${await text(".more-menu a:not(.role-contact)")}`);
+if ((await text(".more-menu a:not(.role-contact)")).join() !== "Sessions,Usage,Media,Files") await fail(`the ⋯ menu offers ${await text(".more-menu a:not(.role-contact)")}`);
 await shot("more-menu", ".composer-send");
 await evaluate("[...document.querySelectorAll('.more-menu a')].find((node) => node.textContent === 'Sessions').click()");
 await until(`location.hash === '#/p/${project}/sessions' && !!document.querySelector('.worktree')`, "Sessions did not open the worktree list");
@@ -4062,6 +4062,83 @@ await closeSheet("the page", `#/p/${plansArg}`);
     await until(`location.hash === '#/p/${plansArg}/files/${base}/report.html' && /^view\\/[0-9a-f]{64}\\/report\\.html$/.test(document.querySelector('iframe.file-page')?.getAttribute('src') ?? '')`, "the report link did not open the page view");
     if ((await evaluate("document.querySelector('iframe.file-page').getAttribute('sandbox')")) !== "allow-popups allow-popups-to-escape-sandbox") await fail("the report page is not sandboxed");
   }
+  // --- The Media sheet (docs/web-client-tasks.md "Media"): the project's captures (a passed image, a skipped
+  // video with a poster, a failed item whose file the budget removed), the files the messages above link (a video
+  // with no jpg beside it shows its first frame; a file gone from the checkout says so) and the owner's uploads (one
+  // the store has, one it no longer has), newest first, with kind and task filters; a tile opens the viewer.
+  const tasksDir = path.dirname(path.dirname(path.join(state, logFile)));
+  const checksFile = path.join(tasksDir, "checks.jsonl");
+  const checksBefore = fs.existsSync(checksFile) ? fs.readFileSync(checksFile) : null;
+  const kept = path.join(tasksDir, "1", "captures");
+  fs.mkdirSync(kept, { recursive: true });
+  fs.writeFileSync(path.join(kept, "r1-1.png"), drawn[1]);
+  fs.copyFileSync(path.join(folder, "clip.mp4"), path.join(kept, "r1-2.mp4"));
+  fs.writeFileSync(path.join(kept, "r1-2.poster.png"), drawn[2]);
+  const now = Date.now();
+  const item = (id, check, state, capture, poster, at) => JSON.stringify({ id, task: 1, revision: 1, commit: "0".repeat(40), check, pass_if: "it reads well", state, capture, ...(poster && { poster }), unix_ms: at });
+  fs.appendFileSync(checksFile, [item("c900", "the chart reads", "passed", "captures/r1-1.png", null, now - 5000), item("c901", "the clip plays", "skipped", "captures/r1-2.mp4", "captures/r1-2.poster.png", now - 4000),
+    item("c902", "the old shot", "failed", "captures/r1-3.png", null, now - 3000)].join("\n") + "\n");
+  fs.copyFileSync(path.join(folder, "clip.mp4"), path.join(folder, "bare.mp4"));
+  reply(9_500_003, `A clip with no picture beside it: ![Bare](files/${base}/bare.mp4)`);
+  reply(9_500_004, `A shot that is gone: ![Gone](files/${base}/gone.jpg)`);
+  const uploaded = await evaluate(`fetch('api/media?name=up.png', { method: 'PUT', body: Uint8Array.from(atob(${JSON.stringify(drawn[3].toString("base64"))}), (c) => c.charCodeAt(0)) }).then((r) => r.json())`);
+  const mediaFile = fs.readdirSync(state, { recursive: true }).find((file) => file.endsWith(`/media/${uploaded.hash}.png`));
+  if (!mediaFile) await fail(`the upload ${uploaded.hash} is in no media folder under ${state}`);
+  const mediaDir = path.join(state, path.dirname(mediaFile));
+  const owner = (id, text) => fs.appendFileSync(path.join(state, logFile), `${JSON.stringify({ unix_ms: Date.now(), kind: "message", id, from: "owner", text })}\n`);
+  owner(9_500_005, `Look at this\n\n[attached files]\n${mediaDir}/${uploaded.hash}.png (up.png)`);
+  owner(9_500_006, `And this\n\n[attached files]\n${mediaDir}/${"a".repeat(64)}.png (old.png)`);
+  const tiles = "document.querySelectorAll('dialog.task-sheet[open] .media-tile')";
+  const sheetTiles = () => evaluate(`[...${tiles}].map((tile) => { const link = tile.querySelector('a.check-capture'); const media = tile.querySelector('img, video'); const box = tile.getBoundingClientRect();
+    return { name: tile.querySelector('.media-name').textContent, facts: tile.querySelector('.media-facts').textContent, task: tile.querySelector('.task-chip')?.textContent ?? '', video: !!link?.hasAttribute('data-video'),
+      poster: link?.dataset.poster ?? '', frame: media?.tagName === 'VIDEO', gap: !link, shown: media ? (media.tagName === 'IMG' ? media.naturalWidth > 0 : media.readyState >= 1 && media.videoWidth > 0) : false,
+      square: media ? Math.abs(media.getBoundingClientRect().width - media.getBoundingClientRect().height) <= 1 : null, inside: box.width > 60 }; })`);
+  for (const wide of [false, true]) {
+    await resize(wide ? [1280, 800, 1] : [390, 844, 2]);
+    await go(`#/p/${plansArg}/media`);
+    await until(`${tiles}.length >= 13`, "the Media sheet did not list the fixtures", 60);
+    await until(`[...document.querySelectorAll('.media-tile img')].every((image) => image.complete)`, "a media picture did not load", 60);
+    await until(`[...document.querySelectorAll('.media-tile video')].every((video) => video.readyState >= 1)`, "a media video shows no first frame", 60);
+    const all = await sheetTiles();
+    const named = (name) => all.filter((tile) => tile.name === name);
+    const [chart] = named("the chart reads"), [clip] = named("the clip plays"), [old] = named("the old shot"), [bare] = named("bare.mp4"), [gone] = named("gone.jpg"), [up] = named("up.png"), [expired] = named("old.png");
+    if (!chart?.shown || !/^Passed/.test(chart.facts) || !/#1$/.test(chart.task) || chart.video) await fail(`the passed capture reads ${JSON.stringify(chart)}`);
+    if (!clip?.video || !/\/checks\/c901\/poster$/.test(clip.poster) || !/^Skipped/.test(clip.facts)) await fail(`the skipped video reads ${JSON.stringify(clip)}`);
+    if (!old?.gap || !/^Removed · Failed/.test(old.facts)) await fail(`the removed capture reads ${JSON.stringify(old)}`);
+    if (!bare?.video || !bare.frame || bare.poster || !bare.shown) await fail(`the video with no poster reads ${JSON.stringify(bare)}`);
+    if (!gone?.gap || !/^Removed/.test(gone.facts)) await fail(`the file gone from the checkout reads ${JSON.stringify(gone)}`);
+    if (!up?.shown || !/^Upload/.test(up.facts) || !expired?.gap || !/^Expired/.test(expired.facts)) await fail(`the uploads read ${JSON.stringify([up, expired])}`);
+    if (all.filter((tile) => tile.name === "trend.jpg").length !== 3 || all.some((tile) => /^\.\.|\.env/.test(tile.name))) await fail(`the linked files read ${JSON.stringify(all.map((tile) => tile.name))}`);
+    // ^ Newest first: the two uploads, the gone shot and the bare clip come before the older replies; the pictures fill square tiles.
+    const order = all.map((tile) => tile.name);
+    if (order.indexOf("old.png") > order.indexOf("up.png") || order.indexOf("up.png") > order.indexOf("gone.jpg") || order.indexOf("gone.jpg") > order.indexOf("bare.mp4") || order.indexOf("bare.mp4") > order.indexOf("the old shot")) await fail(`the Media sheet is not newest first: ${order}`);
+    if (all.filter((tile) => !tile.gap).some((tile) => !tile.square)) await fail(`a media tile is not square at ${size[0]} px: ${JSON.stringify(all)}`);
+    const columns = await evaluate(`new Set([...${tiles}].map((tile) => Math.round(tile.getBoundingClientRect().left))).size`);
+    if (wide ? columns < 3 : columns !== 2) await fail(`the grid has ${columns} columns at ${size[0]} px`);
+    await shot(wide ? "media-sheet-wide" : "media-sheet");
+    // ^ Filters: Videos keeps only videos, Images none, the task keeps the three captures.
+    const chip = (name) => evaluate(`[...document.querySelectorAll('.media-chip')].find((button) => button.textContent === ${JSON.stringify(name)}).click()`);
+    await chip("Videos");
+    await until(`${tiles}.length > 0 && [...${tiles}].every((tile) => tile.querySelector('[data-video]'))`, "the Videos filter shows a picture");
+    await chip("Images");
+    await until(`${tiles}.length > 0 && [...${tiles}].every((tile) => !tile.querySelector('[data-video]'))`, "the Images filter shows a video");
+    await chip("All");
+    await until(`${tiles}.length >= 13`, "All did not bring the list back");
+    await evaluate(`(() => { const select = document.querySelector('.media-task select'); select.value = '1'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    await until(`${tiles}.length === 3 && [...${tiles}].every((tile) => /#1$/.test(tile.querySelector('.task-chip')?.textContent ?? ''))`, "the task filter does not keep the task's three captures");
+    await evaluate(`(() => { const select = document.querySelector('.media-task select'); select.value = ''; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    await until(`${tiles}.length >= 13`, "the task filter did not clear");
+    // ^ A video tile opens the viewer and plays; the poster-less clip plays too.
+    await click("dialog.task-sheet[open] .media-tile .check-capture[data-video]:not([data-poster])");
+    const clipPlayer = "document.querySelector('dialog.viewer[open] .viewer-stage video')";
+    await until(`${clipPlayer}?.readyState >= 1`, "the media video did not load in the viewer");
+    await shot(wide ? "media-sheet-viewer-wide" : "media-sheet-viewer");
+    await key("Escape", 27);
+    await until("!document.querySelector('dialog.viewer')", "Escape did not close the viewer of the media video");
+  }
+  // ^ The fixtures go: the checks list as it was and the task's capture folder.
+  if (checksBefore) fs.writeFileSync(checksFile, checksBefore); else fs.rmSync(checksFile);
+  fs.rmSync(kept, { recursive: true });
   fs.rmSync(path.join(plansCheckout, ".studio-data"), { recursive: true });
   fs.rmSync(path.join(plansCheckout, ".env"));
   await go(`#/p/${plansArg}`);

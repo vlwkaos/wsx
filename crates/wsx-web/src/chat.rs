@@ -24,7 +24,7 @@ use wsx_core::{
         AgentSessionRefKind, AgentState, Client, Pane, PaneId, Project, Request, Response,
         SessionId, Snapshot, WorktreeId,
     },
-    task::now_unix_ms,
+    task::{media::ATTACHMENT_HEADER, now_unix_ms},
 };
 
 const TIMELINE_ITEMS: usize = 400;
@@ -32,7 +32,6 @@ const TIMELINE_BYTES: usize = 256 * 1024;
 const EXCHANGE_TIMEOUT_MS: u64 = 60 * 60 * 1000;
 const MAX_PROMPT_BYTES: usize = 60 * 1024;
 const MAX_ATTACHMENTS: usize = 8;
-const ATTACHMENT_HEADER: &str = "[attached files]";
 
 /// An HTTP-shaped failure: status, stable code, message for the person.
 #[derive(Debug)]
@@ -514,28 +513,9 @@ impl Chat {
     pub fn granted_files(&self, text: &str, root: &Root, media: &Media) -> Vec<Attachment> {
         let mut found: Vec<Attachment> = Vec::new();
         for path in wsx_core::task::chat::linked_files(text) {
-            let relative = PathBuf::from(&path);
-            let shown = relative.extension().is_some_and(|extension| {
-                ["jpg", "jpeg", "png", "webp", "gif", "mp4", "webm"]
-                    .iter()
-                    .any(|kind| extension.eq_ignore_ascii_case(kind))
-            });
-            if !shown {
-                continue;
-            }
-            let Some(entry) = self.grant(&relative, root, media, false, true) else {
+            let Some(file) = self.granted_file(&path, root, media) else {
                 continue;
             };
-            let poster = if entry.mime.starts_with("video/") {
-                self.grant(&relative.with_extension("jpg"), root, media, false, true)
-                    .filter(|poster| poster.is_image())
-                    .map(|poster| format!("media/{}", poster.file_name()))
-            } else {
-                None
-            };
-            let mut file = Attachment::from(entry);
-            file.src = Some(path);
-            file.poster = poster;
             if !found.iter().any(|existing| existing.hash == file.hash) {
                 found.push(file);
             }
@@ -544,6 +524,25 @@ impl Chat {
             }
         }
         found
+    }
+
+    /// One file of `root` that a message names (`granted_files` for a single path): a picture
+    /// or video by its name and its content, else none.
+    pub fn granted_file(&self, path: &str, root: &Root, media: &Media) -> Option<Attachment> {
+        let relative = PathBuf::from(path);
+        wsx_core::task::media::Kind::of(path)?;
+        let entry = self.grant(&relative, root, media, false, true)?;
+        let poster = if entry.mime.starts_with("video/") {
+            self.grant(&relative.with_extension("jpg"), root, media, false, true)
+                .filter(|poster| poster.is_image())
+                .map(|poster| format!("media/{}", poster.file_name()))
+        } else {
+            None
+        };
+        let mut file = Attachment::from(entry);
+        file.src = Some(path.to_string());
+        file.poster = poster;
+        Some(file)
     }
 
     /// One project file, copied into the media store (once per version): the one rule of what

@@ -51,7 +51,7 @@ const MAX_REQUEST_BYTES: u64 = 2 * MAX_MESSAGE_BYTES as u64;
 /// Events within this long of each other, or during a turn, become one message.
 const START_RETRY: Duration = Duration::from_secs(30);
 const EVENT_QUIET: Duration = Duration::from_secs(3);
-/// How often the host removes the captures of long-decided "To check" items.
+/// How often the host keeps the "To check" captures within their budget.
 const CAPTURE_SWEEP: Duration = Duration::from_secs(60 * 60);
 /// How often the host looks at wsxd for sessions that need the owner.
 const SESSION_LOOK: Duration = Duration::from_secs(2);
@@ -996,8 +996,8 @@ impl Manager {
         }
     }
 
-    /// Remove the capture files of items decided more than 7 days ago, at the start and hourly.
-    /// ref: docs/tasks.md "To check"
+    /// Keep the project's captures within `tasks.captureBudgetMb`, at the start and hourly:
+    /// over it the oldest decided items' files go. ref: docs/tasks.md "To check"
     fn sweep_captures(&mut self) {
         if self
             .captures_swept
@@ -1006,12 +1006,17 @@ impl Manager {
             return;
         }
         self.captures_swept = Some(Instant::now());
-        match checks::remove_old_captures(&self.dir.project_id) {
+        // ^ A config that does not parse names no budget, so nothing is removed.
+        let Ok(settings) = load_task_config(&self.main) else {
+            return;
+        };
+        let budget_mb = settings.capture_budget_mb;
+        match checks::prune_captures(&self.dir.project_id, budget_mb.saturating_mul(1 << 20)) {
             Ok(0) => {}
             Ok(removed) => self.say(&format!(
-                "removed {removed} capture file(s) of decided items"
+                "removed {removed} capture file(s) over the {budget_mb} MB capture budget"
             )),
-            Err(error) => self.say(&format!("cannot remove old captures: {error:#}")),
+            Err(error) => self.say(&format!("cannot prune captures: {error:#}")),
         }
     }
 
