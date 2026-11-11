@@ -197,7 +197,7 @@ wsxd update는 shell, agent, foreground job, listening server를 재시작하지
 
 새로 시작한 `wsx`가 이전 wsxd를 발견하면 workspace를 열기 전에 먼저 upgrade합니다. 이때 upgrade 화면에 두 version과 실행 중인 terminal 수를 표시합니다. 다른 창이 update를 지연시키면 어느 창을 종료해야 하는지 알려 주고, update가 끝나면 wsx가 스스로 열립니다. `Enter`는 이전 wsxd에서 바로 열고 `q`는 종료합니다.
 
-`wsx daemon restart`는 같은 방식으로 wsxd를 설치된 build로 교체합니다. 실행 중인 build와 같아도 동작하며 session은 계속 실행됩니다. 이 기능이 없는 이전 wsxd는 요청을 거부하고 아무것도 중지하지 않습니다. `wsx daemon stop`은 모든 session의 program을 종료하므로 실행 중인 session이 있으면 거부하고 `--force`를 요구합니다. 저장된 session command는 다음 실행 때 다시 시작합니다. 자세한 내용은 [Daemon live upgrade](docs/daemon-live-upgrade.md)에 있습니다. Routine 요청도 기존 standalone scheduler를 adjacent wsxd로 자동 교체합니다.
+`wsx daemon restart`는 같은 방식으로 wsxd를 설치된 build로 교체합니다. 실행 중인 build와 같아도 동작하며 session은 계속 실행됩니다. wsxd가 저장된 session을 복구하는 중이면 끝날 때까지 기다리고, 다른 wsx 창을 먼저 닫아야 할 때만 `deferred`로 답합니다. 이 기능이 없는 이전 wsxd는 요청을 거부하고 아무것도 중지하지 않습니다. `wsx daemon stop`은 모든 session의 program을 종료하므로 실행 중인 session이 있으면 거부하고 `--force`를 요구합니다. 저장된 session command는 다음 실행 때 다시 시작합니다. 자세한 내용은 [Daemon live upgrade](docs/daemon-live-upgrade.md)에 있습니다. Routine 요청도 기존 standalone scheduler를 adjacent wsxd로 자동 교체합니다.
 
 ## Runtime과 보안
 
