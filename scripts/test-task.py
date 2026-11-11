@@ -3274,7 +3274,7 @@ def part_worker(created=None):
     tui_screens(wsx, env, project, [
         (r'(?s)[▼▶] demo !(?:[2-9]|\d\d) ✓%d\b.*~ main' % len(js('task', 'check')['open']), b'j'),
         (r'WORKSPACE +\(s\)ession', b'N'),
-        (r'WORKSPACE +\(e\)dit +\(w\)orktree', b'')])
+        (r'WORKSPACE +\(t\)asks +\(e\)dit +\(w\)orktree', b'')])
 
     def owner_said(text):
         lines = [json.loads(line) for line in manager_log.read_text().splitlines() if line.strip()]
