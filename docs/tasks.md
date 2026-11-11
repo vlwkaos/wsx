@@ -561,7 +561,7 @@ The guard is wsx's, not the prompt's:
 3. After the owner denies a role, `role new` of that name refuses for 7 days, also for the owner.
 4. A role with no log entry for `tasks.roles.closeDays` (default 14, a fraction allowed) is closed by the manager host, checked every 10 s, and by `role new` and `role list`; the manager hears `role <name> closed by wsx: ...`. 14 days, because a role exists for work over weeks and its parent task may wait on the owner for more than a week.
 
-The ledger lists `roles`, the open and asked ones. The TUI's Tasks view lists them under *Roles*; `Enter` opens a role's chat, the manager's chat view without its To check items and approvals. A role's room holds its own log only: a new role shows no earlier event of the project. Its title is `<project> · <role>` in the web and the TUI, its own replies are under the role's name, and a message of the project's manager is under `<manager's shown name> manager` (`chat::manager_in_role_room`), never the bare project name.
+The ledger lists `roles`, the open and asked ones. The TUI's Tasks view lists them under *Roles*; `Enter` opens a role's chat, the manager's chat view without its To check items and approvals. A role's room holds its own log only: a new role shows no earlier event of the project. Its title is `<project> · <role>` in the web and the TUI, its own replies are under the role's name, and a message of the project's manager is under `<manager's shown name> manager` (`chat::manager_name_in`), never the bare project name.
 
 ## Recap
 

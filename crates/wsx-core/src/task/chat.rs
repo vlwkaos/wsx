@@ -436,11 +436,14 @@ pub struct Names<'a> {
     pub peer: &'a dyn Fn(&str) -> String,
 }
 
-/// How a role's chat names the project's manager: its shown name and the word `manager`, so the
-/// room has three speakers (the owner, the manager, the role) and the bare project name is none.
-/// ref: docs/tasks.md "Roles"
-pub fn manager_in_role_room(shown: &str) -> String {
-    format!("{shown} manager")
+/// How a chat names the project's manager: its shown name, and in a role's chat (`role`) the word
+/// `manager` after it, so the room has three speakers (the owner, the manager, the role) and the
+/// bare project name is none. ref: docs/tasks.md "Roles"
+pub fn manager_name_in(role: Option<&str>, shown: &str) -> String {
+    match role {
+        Some(_) => format!("{shown} manager"),
+        None => shown.to_string(),
+    }
 }
 
 /// One row of the chat.
