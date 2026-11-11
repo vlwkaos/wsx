@@ -3209,7 +3209,9 @@ def part_worker(created=None):
     by_task = {i['task']: i for i in js('task', 'check')['open']}
     first, second, third, fourth, fifth = (by_task[n] for n in replied)
     reply_to(js('task', 'say', 'STATUS')['id'])  # ^ The landings' events are read by now.
-    manager_turns = lambda: len([t for t in traces() if t.get('manager')])
+    # ^ Only the turns that take an owner message: an event turn (a landed task's ready line) can come
+    # at any time in this section and is not what it counts.
+    manager_turns = lambda: len([t for t in traces() if t.get('manager') and 'Owner (message' in str(t.get('message', ''))])
     open_ids = lambda: [i['id'] for i in js('task', 'check')['open'] if i['task'] in replied]
     row_of = lambda item: {r['id']: r for r in (json.loads(line) for line in checks_file.read_text().splitlines() if line.strip())}[item['id']]
     # ^ The logged message names the item it answers (`check`, next to `quote`), the item names the
@@ -3266,7 +3268,7 @@ def part_worker(created=None):
     # ^ Words to an open item, and an x that quotes a message, are the manager's to read; the item stays.
     wordy = js('task', 'say', '> check %s\n\nx marks the spot' % fifth['id'])
     reply_to(wordy['id'])
-    assert manager_turns() == turns + 4, [(t.get('message') or '')[:90] for t in traces() if t.get('manager')][-8:]
+    assert manager_turns() == turns + 4
     assert fifth['check'] in str(turn_with('x marks the spot')), traces()[-1]
     assert row_of(fifth)['state'] == 'open' and row_of(fifth).get('note') is None
     assert logged_message(wordy['id'])['check'] == fifth['id'] and 'owner_said' not in row_of(fifth)
