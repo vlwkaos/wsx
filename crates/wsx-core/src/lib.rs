@@ -9,6 +9,7 @@ pub mod fs_util;
 pub mod git;
 pub mod hooks;
 pub mod integration;
+pub mod memory;
 pub mod model;
 pub mod ops;
 pub mod panel;

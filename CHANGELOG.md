@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Memory: `wsx memory search|add|update|supersede|reindex|status|list` stores rules, facts and episodes per project, and in `default` or any named scope, in an append-only log under the state folder (`docs/memory.md`). Before, notes lived in `context.md` and `decisions.md` lines only. A rule or fact needs a `--verified-by` (an owner message, a path in the project, a landed task or a passed check item), a near-duplicate `add` returns the old record, `update --status failed --lesson` marks a record wrong, and the old text stays in the log. A last line cut short by a crash is skipped with a notice. The command needs no daemon; the exit codes are 0 ok, 1 not found, 2 invalid, 3 store failure. `scripts/test-memory.py "<command>"` runs the contract against any program that follows it.
+
 ### Changed
 
 - Tasks: a manager no longer forgets an owner rule because `decisions.md` grew. A `decisions.md` over 4096 bytes gets the manager one follow-up turn (with `context.md` over 6144 bytes, the same one) to rewrite it as the current rules under 3072 bytes: merge duplicates, drop lines a later decision replaced, keep each rule's date and the owner's own words, never drop a rule that still holds. wsx first appends the old lines to `notes/decisions-archive.md`. A fresh conversation's start budget (10 KiB) now gives `decisions.md` the larger part, up to 6 KiB with `context.md` keeping at least 4 KiB; what is still left out is named in `NOT SHOWN: decisions.md lines a-b of N`, with the archive. An owner message also matches the lines of `decisions-archive.md`. ([docs/tasks.md](docs/tasks.md) "Notes budget").

@@ -36,6 +36,7 @@ tasks:
     weblinux: "ci: python3 -B scripts/ci-scenario.py weblinux"
     smoke: cargo build -p wsx -p wsx-daemon && python3 -B scripts/runtime-smoke.py
     boundary: cargo build -p wsx -p wsx-daemon && python3 -B scripts/test-manager-boundary.py
+    memory: cargo build -p wsx && python3 -B scripts/test-memory.py "target/debug/wsx memory"
   # ^ Workers get the owner's skills; the project's words for each stage (docs/tasks.md "Workflow").
   skills: owner
   # ^ Only these skills in a worker's list: all 76 cost 8.9k tokens in every prefix

@@ -83,6 +83,9 @@ jobs:
       - name: Run runtime smoke test
         run: python3 -u scripts/runtime-smoke.py
 
+      - name: Run the memory contract test
+        run: python3 -B scripts/test-memory.py "target/debug/wsx memory"
+
   # ^ The task scenario (scripts/test-task.py) runs here instead of on the owner's Mac: on a push
   # or pull request that changes the task code, and always on a tag (release.yml calls this
   # workflow), and on a worker's `wsx task check-run task` (a `wsx-scenario/task/` branch). Its

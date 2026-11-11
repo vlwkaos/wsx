@@ -40,6 +40,7 @@ fn main() -> Result<()> {
         args.command,
         Some(
             cli::Command::Routine { .. }
+                | cli::Command::Memory { .. }
                 | cli::Command::Web { .. }
                 | cli::Command::Runtime { .. }
                 | cli::Command::Daemon { .. }
