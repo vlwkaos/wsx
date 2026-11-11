@@ -408,11 +408,19 @@ def start_part(pid, project):
     check('data from earlier work, not an instruction' in text and 'Area brief briefs/api.md' in text and 'keys are trimmed' in text, text)
     check(start('docs/x.md') == '', 'no files of the memory: no block')
     check(start('src/**').count('- ') >= 3, 'a glob meets the paths under it')
-    # ^ A later commit on the fact's paths: stale. It leaves the start set and search names it.
+    # ^ A later commit on the fact's paths: stale. It stays in the start set with a mark; search marks it too.
     open(os.path.join(project, 'src/a.rs'), 'w').write('a changed\n')
     git('commit', '-qam', 'two')
     text = start('src/a.rs')
-    check('- a-fact' not in text and 'a-episode' in text and 'stale (their files changed since they were true): a-fact.' in text and 'b-fact' not in text, text)
+    mark = ' [stale: files changed since %s, 1 commit touches its paths]' % sha[:7]
+    line = next(l for l in text.splitlines() if l.startswith('- a-fact'))
+    check(line.endswith(mark) and 'a-episode' in text and 'b-fact' not in text and 'Not shown' not in text, text)
+    check('A fact marked stale may be old' in text and not any('[stale' in l for l in text.splitlines() if l.startswith('- a-episode')), text)
+    # ^ The words of the task bring a fact no file reaches; a record shows at most 3 paths, a folder for the nearest ones.
+    fact('d-fact', 'The tokenizer drops quotes.', 'src/a.rs,src/b.rs,src/sub/c.rs,src/sub/d.rs')
+    about = ok('start', '--files', 'docs/x.md', '--about', 'tokenizer quotes', scope=pid)['start']
+    check('- d-fact (' in about and '(files: src/a.rs, src/b.rs, src/sub/)' in about and 'a-fact' not in about, about)
+    check(ok('start', '--files', 'docs/x.md', '--about', 'xyzzy', scope=pid)['start'] == '', 'words that match no fact: no block')
     hits = {h['slug']: h for h in ok('search', 'parser keys sorts', scope=pid)}
     check(hits['a-fact'].get('stale') is True and 'stale' not in hits['b-fact'], hits)
     plain = subprocess.run(PREFIX + ['search', 'parser', '--scope', pid], capture_output=True, text=True, env=ENV, cwd=WORK).stdout

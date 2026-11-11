@@ -2064,10 +2064,20 @@ impl Host {
             if let Err(error) = memory_manage::backfill_once(&store) {
                 self.say(&format!("cannot backfill the memo paths: {error}"));
             }
+            // ^ The words that find facts no `--files` glob reaches: the same two lines the
+            // offline evaluation joined (docs/design/memory-eval.md "Offline retrieval").
+            let about = format!(
+                "{} {}",
+                self.record.title.as_deref().unwrap_or_default(),
+                wsx_core::task::text::first_line(
+                    &self.dir.prompt().ok().flatten().unwrap_or_default()
+                )
+            );
             let start = Start {
                 files: &self.record.files,
                 areas: &areas,
                 role: self.record.created_by.role(),
+                about: &about,
             };
             let block =
                 memory_start::block(&store.without_rules(), &start, memory_start::BUDGET_BYTES);

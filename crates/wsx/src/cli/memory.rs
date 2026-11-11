@@ -160,7 +160,7 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
                 },
             )?;
         }
-        MemoryCmd::Start { files, role } => {
+        MemoryCmd::Start { files, role, about } => {
             let store = one(&scopes)?;
             let areas = match store.project_ids() {
                 Some(_) => load_project_config(store.root()).memory_areas,
@@ -172,6 +172,7 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
                     files: &files,
                     areas: &areas,
                     role: role.as_deref(),
+                    about: &about,
                 },
                 start::BUDGET_BYTES,
             );

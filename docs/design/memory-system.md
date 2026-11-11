@@ -141,7 +141,7 @@ dotfiles builds only its rows and needs nothing from wsx code but the contract t
 | Owner rule | the manager, `wsx memory add --kind rule --source msg:<id> --verified-by owner:<id> --words "<owner text>"`; the host refuses if `words` is not inside that message | 0 |
 | Raw tool transcript or provider history (`integration/memory.rs`) | not by default: `wsx memory distill --task <n>` by the owner or the manager, for a blocked, failed or rotated task | (est.) a 60k-token log read by Sonnet is $0.12, 8% of a $1.56 median task, so it is never automatic |
 
-A wrong record is caught three ways: (1) a fact with `commit` and `paths` is stale when `git diff --quiet <commit> HEAD -- <paths>` fails (one git call, 10 s timeout as in the ledger); a stale fact leaves the start set and shows `stale` in search; (2) `add` of a rule or fact without a valid `verified_by` is refused (exit 2), so only landed-task, owner or checked records reach the start set; (3) a worker or manager that finds one wrong runs `update --status failed --lesson`, and the log keeps both.
+A wrong record is caught three ways: (1) a fact with `commit` and `paths` is stale when `git diff --quiet <commit> HEAD -- <paths>` fails (one git call, 10 s timeout as in the ledger); a stale fact stays in the start set with a `[stale: ...]` mark (hiding it lost 94% of the facts, `memory-eval.md` "Offline retrieval") and shows `stale` in search; (2) `add` of a rule or fact without a valid `verified_by` is refused (exit 2), so only landed-task, owner or checked records reach the start set; (3) a worker or manager that finds one wrong runs `update --status failed --lesson`, and the log keeps both.
 
 ## Decisions stay the owner's words
 
