@@ -219,7 +219,7 @@ A wsxd update transfers live terminal ownership to the new daemon without restar
 
 A starting `wsx` that finds an older wsxd upgrades it before it opens. It shows an upgrade screen with both versions and the number of running terminals. When another window defers the update, the screen says which window to quit, and wsx opens by itself when the update is done. `Enter` opens on the old wsxd at once and `q` quits.
 
-`wsx daemon restart` replaces wsxd with the installed build the same way, also when it is the build that is running. Sessions keep running. An older wsxd that cannot do this refuses and stops nothing. `wsx daemon stop` ends the programs in every session, so it refuses while sessions are running and needs `--force`; saved session commands restart on the next launch. See [Daemon live upgrade](docs/daemon-live-upgrade.md). Routine requests similarly replace legacy standalone schedulers with the adjacent wsxd automatically.
+`wsx daemon restart` replaces wsxd with the installed build the same way, also when it is the build that is running. Sessions keep running. It waits for a wsxd that is still recovering its sessions, and answers `deferred` only when another wsx window must quit first. An older wsxd that cannot do this refuses and stops nothing. `wsx daemon stop` ends the programs in every session, so it refuses while sessions are running and needs `--force`; saved session commands restart on the next launch. See [Daemon live upgrade](docs/daemon-live-upgrade.md). Routine requests similarly replace legacy standalone schedulers with the adjacent wsxd automatically.
 
 ## Runtime and security
 

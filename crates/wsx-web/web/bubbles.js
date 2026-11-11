@@ -152,7 +152,7 @@ export function Bubble({ project, row, words: home, fresh, onNeed }) {
   // ^ In a chat's small space the stand-in mark is an icon; an asking reply is set off by its border, and its words are in the aria-label.
   const mark = row.provisional ? ["unchecked", "Stand-in, not checked"] : null;
   // ^ A message quotes an earlier one in the owner's format (docs/tasks.md "Manager").
-  const quoted = row.quoted != null && html`<${Quote} quote=${row.quoted} id=${row.quoted_id} />`;
+  const quoted = row.quoted != null && html`<${Quote} quote=${row.quoted} id=${row.quoted_id} check=${row.quoted_check} project=${project} />`;
   const body = out
     ? html`<div class="bubble-body" id=${id}>${quoted}${row.text && html`<p class="prose">${words ? words(row.text) : row.text}</p>`}</div><${Attachments} files=${row.attachments} />`
     : html`<div class="bubble-body" id=${id}>${quoted}<${Markdown} text=${row.text} files=${row.attachments} words=${words} relative=${relativeOf(project)} prose /></div>
@@ -173,14 +173,14 @@ export function Bubble({ project, row, words: home, fresh, onNeed }) {
 
 // A To check item in the chat: from the manager, with what to check, its capture and Try, Fail,
 // Skip and Pass, or its result once decided (checks.js `CheckRow`). It counts as a new message.
-export function CheckBubble({ project, row, names, fresh, onMention }) {
+export function CheckBubble({ project, row, names, fresh, onReply }) {
   return html`
     <article class="bubble check-bubble" data-side="in" data-speaker="manager" data-first="" data-last=""
       data-fresh=${fresh ? "" : null} data-at=${row.at} data-key=${row.key} data-in=""
       data-quote=${checkQuote(row.item)} data-id=${row.item.id}
       aria-label=${`${names.manager}, to check, ${clock(row.at)}`}>
       <p class="bubble-author" aria-hidden="true">${names.manager}</p>
-      <div class="bubble-box"><p class="bubble-tag">To check</p><${CheckRow} project=${project} item=${row.item} onMention=${onMention} tag="div" /></div>
+      <div class="bubble-box"><p class="bubble-tag">To check</p><${CheckRow} project=${project} item=${row.item} onReply=${onReply} tag="div" /></div>
       <p class="bubble-time" aria-hidden="true">${clock(row.at)}</p>
     </article>`;
 }

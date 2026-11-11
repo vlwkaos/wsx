@@ -463,6 +463,10 @@ pub struct ChatRow {
     /// The id of the message the leading quote points at: a tap goes to it at any age.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quoted_id: Option<u64>,
+    /// The To check item the leading quote is the check of (`ManagerEvent::Message::check`): a tap
+    /// goes to its bubble, else to the To check list at it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quoted_check: Option<String>,
     /// An event line's leading task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<u32>,
@@ -504,6 +508,7 @@ impl ChatRow {
             text,
             quote: None,
             quoted_id: None,
+            quoted_check: None,
             task: None,
             asks: false,
             post: false,
@@ -525,6 +530,7 @@ impl ChatRow {
             quoted: quoted.map(str::to_string),
             quote,
             quoted_id: entry.quote_id(),
+            quoted_check: entry.check_id().map(str::to_string),
             ..Self::new(RowKind::Message, key, entry, body.trim().to_string())
         }
     }

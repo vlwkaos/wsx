@@ -538,15 +538,21 @@ fn catch_up_chats(project_id: &str, docs: &[Doc], fresh: &mut Vec<Doc>) -> Resul
 /// The record of a chat entry: what the owner, a manager or a role said, and a reply that says
 /// something. Wsx's events, recaps and quiet replies are not conversation.
 fn chat_doc(entry: &ManagerEntry, role: &str) -> Option<Doc> {
-    let (kind, id, by, text) = match &entry.event {
-        ManagerEvent::Message { id, from, text, .. } => {
+    let (kind, id, by, text, check) = match &entry.event {
+        ManagerEvent::Message {
+            id,
+            from,
+            text,
+            check,
+            ..
+        } => {
             let by = match from {
                 Author::Owner => "owner".to_string(),
                 Author::Manager { project, .. } => format!("manager:{project}"),
                 Author::Role { name, .. } => format!("role:{name}"),
                 Author::Events | Author::Recap => return None,
             };
-            (Kind::Message, *id, by, text)
+            (Kind::Message, *id, by, text, check.as_deref())
         }
         ManagerEvent::Reply {
             id,
@@ -557,12 +563,17 @@ fn chat_doc(entry: &ManagerEntry, role: &str) -> Option<Doc> {
             let by = Some(role)
                 .filter(|role| !role.is_empty())
                 .unwrap_or("manager");
-            (Kind::Reply, *id, by.to_string(), text)
+            (Kind::Reply, *id, by.to_string(), text, None)
         }
         _ => return None,
     };
     // ^ The words of the message; the line it quotes is another message's.
+    // The item an owner's reply answers is part of what it says: `c4` finds it.
     let body = split_quote(text).1.trim();
+    let body = &match check {
+        Some(item) if !body.is_empty() => format!("{body} ({item})"),
+        _ => body.to_string(),
+    };
     (!body.is_empty()).then(|| Doc {
         kind,
         role: role.to_string(),

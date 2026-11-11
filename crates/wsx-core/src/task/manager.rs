@@ -119,6 +119,11 @@ pub enum ManagerEvent {
         /// quote opens the chat there. None for a quote written before ids, or by hand.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         quote: Option<u64>,
+        /// The To check item (`c<n>`) an owner's reply to it answers; its leading `> <line>` is the
+        /// item's check (`checks::item_reply`). A tap on the quote opens the item; the search finds
+        /// the message by it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        check: Option<String>,
     },
     /// These messages went to the agent in one turn.
     Delivered { ids: Vec<u64> },
@@ -412,6 +417,14 @@ impl ManagerEntry {
     pub fn quote_id(&self) -> Option<u64> {
         match &self.event {
             ManagerEvent::Message { quote, .. } | ManagerEvent::Reply { quote, .. } => *quote,
+            _ => None,
+        }
+    }
+
+    /// The To check item an owner's message answers (`ManagerEvent::Message::check`).
+    pub fn check_id(&self) -> Option<&str> {
+        match &self.event {
+            ManagerEvent::Message { check, .. } => check.as_deref(),
             _ => None,
         }
     }

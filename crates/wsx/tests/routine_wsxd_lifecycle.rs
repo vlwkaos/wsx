@@ -282,6 +282,83 @@ fn findings_exit_codes_make_a_finished_run_findings_not_failed() {
     }
 }
 
+/// Saved sessions that a fresh wsxd takes back one by one: about a second of recovery, the
+/// time in which it cannot hand off.
+const SAVED_SESSIONS: usize = 30;
+
+#[test]
+fn a_restart_asked_while_wsxd_recovers_its_sessions_waits_and_answers_restarted() {
+    let install = Install::new();
+    // ^ The config folder is `Library/Application Support/wsx` on macOS, `$XDG_CONFIG_HOME/wsx` elsewhere.
+    for folder in ["home/Library/Application Support/wsx", "home/config/wsx"] {
+        fs::create_dir_all(install.root.join(folder)).unwrap();
+        fs::write(
+            install.root.join(folder).join("config-v2.toml"),
+            format!(
+                "resume_agents_on_restore = false\n[[projects]]\nname = \"p\"\npath = {:?}\n",
+                install.project
+            ),
+        )
+        .unwrap();
+    }
+    for args in [
+        &["init", "-q", "."][..],
+        &[
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=a",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "i",
+        ],
+    ] {
+        let git = Command::new("git")
+            .args(args)
+            .current_dir(&install.project)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .unwrap();
+        assert!(git.success(), "git {args:?}");
+    }
+    for number in 0..SAVED_SESSIONS {
+        let name = format!("s{number}");
+        let created = install.wsx(&[
+            "session",
+            "create",
+            "--name",
+            &name,
+            "--project",
+            "p",
+            "--json",
+        ]);
+        assert!(created.status.success(), "{created:?}");
+    }
+    let stopped = install.wsx(&["daemon", "stop", "--force"]);
+    assert!(stopped.status.success(), "{stopped:?}");
+    // ^ This command starts wsxd, which recovers the saved sessions for a while. Three restarts
+    // at once also meet the handoff that the first one leaves pending.
+    install.routine(&["list"]);
+    let answers: Vec<Output> = thread::scope(|scope| {
+        let asks: Vec<_> = (0..3)
+            .map(|number| {
+                let install = &install;
+                scope.spawn(move || {
+                    thread::sleep(Duration::from_millis(40 * number));
+                    install.wsx(&["daemon", "restart", "--json"])
+                })
+            })
+            .collect();
+        asks.into_iter().map(|ask| ask.join().unwrap()).collect()
+    });
+    for restarted in answers {
+        let answer: Value = serde_json::from_slice(&restarted.stdout).unwrap_or_default();
+        assert_eq!(answer["state"], "restarted", "{restarted:?}");
+    }
+}
+
 #[test]
 fn a_run_outlives_a_live_handoff_and_records_its_exit() {
     let install = Install::new();

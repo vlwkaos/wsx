@@ -1075,8 +1075,8 @@ pub fn check_capture(
     Ok((bytes, media, format!("task-{}-{id}{kind}.{ext}", item.task)))
 }
 
-/// Pass, skip or fail an item as the owner, through `wsx task check` so a fail starts its
-/// task the way the CLI does. `all` with `pass` or `skip` closes every open item.
+/// Pass, skip or fail an item as the owner, through `wsx task check`; a fail with a note starts
+/// its task the way the CLI does. `all` with `pass` or `skip` closes every open item.
 pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> Outcome<Value> {
     let valid_id = id == "all"
         || id
@@ -1091,14 +1091,14 @@ pub fn check(scope: &Scope, id: &str, decision: &str, note: Option<String>) -> O
         ("pass" | "skip", id) => argv.extend([decision.into(), id.into()]),
         ("fail", "all") => return Err(Fault::not_found()),
         ("fail", id) => {
-            let note = message(note.as_deref().unwrap_or_default(), "the note").map_err(|_| {
-                Fault::new(
-                    400,
-                    "note_required",
-                    "a fail needs a note that says what is wrong",
-                )
-            })?;
-            argv.extend(["fail".into(), id.into(), "--note".into(), note]);
+            argv.extend(["fail".into(), id.into()]);
+            // ^ A note starts the task that fixes it; none closes the item as failed, and the
+            // owner's reply to the item is the manager's cue.
+            if let Some(note) = note.as_deref().filter(|note| !note.trim().is_empty()) {
+                let note = message(note, "the note")
+                    .map_err(|_| Fault::new(400, "note_invalid", "the note is too large"))?;
+                argv.extend(["--note".into(), note]);
+            }
         }
         _ => return Err(Fault::not_found()),
     }

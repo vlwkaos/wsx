@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 // Real-browser check of a project's panels (docs/panels.md), over the Chrome DevTools Protocol.
 // Called by `test-web-client.py --browser`.
-//   web-panels-check.mjs <admin-url> <admin-code> <owner-url> <owner-code> <capture-dir> <project id> <scoped-url> <scoped-code>
+//   web-panels-check.mjs <admin-url> <admin-code> <owner-url> <owner-code> <capture-dir> <project id> <scoped-url> <scoped-code> <pager-url> <pager-code>
 // The admin site types into a terminal (so runs commands); the owner site has no terminal_input; the
 // scoped site may run commands but grants only a project with no panel.
 // The project declares `device` (refresh 10, prints "device run <n>"), `broken` (exit 2), `gauges`
 // (format json: every kind, a bad level and an unknown kind) and `badjson` (not a document);
 // `device`, `broken` and `gauges` are `scope: machine`: the Machine tab has one card, This Mac, with their
-// sections after its own (docs/panels.md "Machine panels").
+// sections after its own (docs/panels.md "Machine panels"). `gauges` has links (docs/panels.md "Links"): an https
+// one, a project page (trends/board/index.html) and a bad one dropped. The pager site may also read files.
 import { designLint, launch, pair } from "./web-cdp.mjs";
 
-const [adminUrl, adminCode, ownerUrl, ownerCode, captures, project, scopedUrl, scopedCode] = process.argv.slice(2);
+const [adminUrl, adminCode, ownerUrl, ownerCode, captures, project, scopedUrl, scopedCode, pagerUrl, pagerCode] = process.argv.slice(2);
 const cdp = await launch({ captures, prefix: "panels-", timeoutSeconds: 120 });
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = cdp;
 
@@ -76,11 +77,26 @@ const want = (what, ok) => ok || fail(`the json panel: ${what}: ${JSON.stringify
 await want("title", doc.title === "This Mac");
 await want("memory gauge", JSON.stringify(doc.meters[0]) === JSON.stringify(["Memory", "13.6", "16", "13.6 / 16 GB · 85%", 85]));
 await want("swap gauge", doc.meters[1][1] === "0" && doc.meters[1][4] === 0);
-await want("level words", doc.levels.map((level) => level.split(":").slice(0, 2).join(":")).join(",") === "warn:warn,ok:ok,ok:ok,bad:bad");
+await want("level words", doc.levels.map((level) => level.split(":").slice(0, 2).join(":")).join(",") === "warn:warn,ok:ok,ok:ok,bad:bad,ok:ok");
 await want("level colours differ", new Set(doc.levels.map((level) => level.split(":")[2])).size === 3);
 await want("table", doc.cells.join("|") === "Macintosh HD|412 GB|88 GB|Data|12|3" && doc.list.length === 2);
 await want("the notice for the skipped items", /`red`/.test(doc.notice) && /`chart`/.test(doc.notice) && !doc.raw);
 await want("no sideways page scroll", !doc.wide);
+// Links: an https link opens in a new tab and cannot reach the opener; this site may not read files, so a project page and a
+// dropped link are plain text. The notice names the dropped one.
+const links = await evaluate(`({ anchors: [...document.querySelectorAll('.panel-doc a.panel-link')].map((link) => [link.textContent, link.getAttribute('href'), link.target, link.rel]),
+  entry: [...document.querySelectorAll('.panel-list li')].map((item) => item.textContent)[0], dropped: [...document.querySelectorAll('.panel-table td')].some((cell) => cell.textContent === 'Data' && !cell.querySelector('a')) })`);
+await want("the https link", JSON.stringify(links.anchors) === JSON.stringify([["Macintosh HD", "https://example.com/hd", "_blank", "noopener noreferrer"]]));
+await want("a page link without files_read is its text", links.entry === "Time Machine: 2 days ago" && links.dropped && /link at row 2, column 1 dropped/.test(doc.notice));
+// Cards: a grid of tiles; this site may not read files, so no picture is asked for or shown. The https tile is a link to a new
+// tab, the page tile is plain text, the level is a word beside the value, and the note is clamped.
+const tiles = await evaluate(`(() => { const all = [...document.querySelectorAll('.panel-tile')];
+  return { count: all.length, images: document.querySelectorAll('.panel-tile img, .panel-tile-image').length, titles: all.map((tile) => tile.querySelector('.panel-tile-title').textContent).join(),
+    anchors: all.filter((tile) => tile.tagName === 'A').map((tile) => [tile.querySelector('.panel-tile-title').textContent, tile.getAttribute('href'), tile.target, tile.rel]),
+    level: all[0].querySelector('.panel-level')?.textContent, value: all[0].querySelector('.panel-tile-value strong')?.textContent,
+    clamp: getComputedStyle(all[0].querySelector('.panel-tile-note')).webkitLineClamp, wide: document.documentElement.scrollWidth > innerWidth }; })()`);
+await want("the cards", tiles.count === 3 && tiles.titles === "Cat video,Board,Gone" && tiles.images === 0 && tiles.level === "ok" && tiles.value === "1.2M" && tiles.clamp === "3" && !tiles.wide
+  && JSON.stringify(tiles.anchors) === JSON.stringify([["Cat video", "https://example.com/cat", "_blank", "noopener noreferrer"]]));
 await capture("390x844-panel-json");
 // Not a document: the text as written and the notice.
 await tab("badjson");
@@ -167,9 +183,56 @@ await until("[...document.querySelectorAll('.tabbar a')].some((tab) => tab.textC
 if ((await labels()) !== "Home,Sessions,Machine,Settings") await fail(`the bar with no machine panel declared is ${await labels()}`);
 await evaluate("[...document.querySelectorAll('.tabbar a')].find((tab) => tab.textContent === 'Machine').click()");
 await builtin("390x844");
+// A site that may read files: the project page link opens the sandboxed page view of the project's checkout; the machine card
+// names the project of its page link.
+const pageLink = "[...document.querySelectorAll('.panel-doc a.panel-link')].find((link) => link.textContent === 'Time Machine: 2 days ago')";
+const frame = async (where) => {
+  await until("/^#\\/p\\/\\d+\\/files\\/trends\\/board\\/index\\.html$/.test(location.hash) && document.querySelector('iframe.file-page')?.getAttribute('sandbox') === 'allow-popups allow-popups-to-escape-sandbox' && /^view\\/[0-9a-f]{64}\\/index\\.html$/.test(document.querySelector('iframe.file-page').getAttribute('src'))", `the page link did not open the sandboxed view ${where}`);
+  const page = await evaluate("fetch(document.querySelector('iframe.file-page').getAttribute('src')).then((answer) => answer.text())");
+  if (!/Trend board page/.test(page)) await fail(`the page view ${where} shows ${page}`);
+};
+await open(pagerUrl, pagerCode);
+await send("Page.navigate", { url: `${pagerUrl}#/p/${project}/panels` });
+await until("document.querySelectorAll('.panel-tabs [role=tab]').length === 4", "the pager site's panels page did not draw");
+await tab("gauges");
+await until(`!!${pageLink}`, "the pager site shows no page link");
+if (!(await evaluate(`${pageLink}.getAttribute('href') === '#/p/${project}/files/trends/board/index.html' && !${pageLink}.target`))) await fail("the page link is not the project's file route");
+await evaluate(`${pageLink}.click()`);
+await frame("from the project's panels page");
+await capture("390x844-panel-page-link");
+await send("Page.navigate", { url: `${pagerUrl}#/machine` });
+await until("[...document.querySelectorAll('.machine-panel .panel-card h3')].some((card) => card.textContent === 'calm · Storage')", "the pager site's Machine card did not draw");
+await until(`!!${pageLink}`, "the machine card lost the page link");
+await evaluate(`${pageLink}.click()`);
+await frame("from the machine card");
+// The cards on a site that reads files: the pictures load (from the files path) in boxes of one shape, a page tile is a link to
+// the page view, and the grid reflows at 390 and 1280 px.
+const grid = async (where) => {
+  await send("Page.navigate", { url: `${pagerUrl}#/p/${project}/panels` });
+  await until("document.querySelectorAll('.panel-tabs [role=tab]').length === 4", `the pager site's panels page did not draw ${where}`);
+  await tab("gauges");
+  await until("document.querySelectorAll('.panel-tile img').length === 2 && [...document.querySelectorAll('.panel-tile img')].every((img) => img.complete && img.naturalWidth > 0)", `the card pictures did not load ${where}`);
+  const shown = await evaluate(`(() => { const boxes = [...document.querySelectorAll('.panel-tile-image')].map((box) => box.getBoundingClientRect());
+    const tiles = [...document.querySelectorAll('.panel-tile')].map((tile) => tile.getBoundingClientRect());
+    const note = document.querySelector('.panel-tile-note');
+    return { ratios: boxes.map((box) => Math.round(box.width / box.height * 100) / 100), columns: new Set(tiles.map((tile) => Math.round(tile.left))).size, count: tiles.length,
+      lazy: [...document.querySelectorAll('.panel-tile img')].every((img) => img.loading === 'lazy'), clipped: note.scrollHeight > note.clientHeight, wide: document.documentElement.scrollWidth > innerWidth,
+      pages: [...document.querySelectorAll('a.panel-tile')].map((tile) => tile.getAttribute('href')) }; })()`);
+  if (shown.count !== 3 || !shown.ratios.every((ratio) => Math.abs(ratio - 1.78) < 0.02) || !shown.lazy || !shown.clipped || shown.wide
+    || shown.pages.join() !== `https://example.com/cat,#/p/${project}/files/trends/board/index.html` || shown.columns < (where === "at 390 px" ? 2 : 3)) await fail(`the card grid ${where}: ${JSON.stringify(shown)}`);
+};
+await grid("at 390 px");
+await capture("390x844-panel-cards");
+await linter.lint("panel-cards");
+await evaluate("[...document.querySelectorAll('a.panel-tile')].find((tile) => tile.querySelector('.panel-tile-title').textContent === 'Board').click()");
+await frame("from a card");
+await viewport(1280, 800, 1);
+await grid("at 1280 px");
+await capture("1280x800-panel-cards");
+await linter.lint("panel-cards");
 const defects = problems.filter((problem) => !/status of 401/.test(problem));
 if (defects.length) await fail(`page problems: ${defects.join("; ")}`);
 await linter.finish(fail);
-console.log(`panels page: the icon and the Machine tab only with terminal_input, the Machine screen is one This Mac card with the project machine panels as sections, the tab with no machine panel declared, Settings > UI hides the tab, output as written (first run ${first}), refreshes by itself, a failing command shows its exit code, a json panel draws cards, bars and level words`);
+console.log(`panels page: the icon and the Machine tab only with terminal_input, the Machine screen is one This Mac card with the project machine panels as sections, the tab with no machine panel declared, Settings > UI hides the tab, output as written (first run ${first}), refreshes by itself, a failing command shows its exit code, a json panel draws cards, bars and level words, links and cards open in a new tab or the project's page view, card pictures load only with files_read`);
 await cleanup();
 process.exit(0);

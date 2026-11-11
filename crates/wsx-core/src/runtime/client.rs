@@ -1286,6 +1286,36 @@ pub fn restart_daemon() -> io::Result<DaemonRestart> {
 }
 
 fn restart_with_binary(client: &Client, binary: &Path) -> io::Result<DaemonRestart> {
+    // ^ docs/daemon-live-upgrade.md "Restart and stop": a handoff that begins under this call
+    // (a deferred one that went on by itself) closes the listener between the calls. The
+    // connection reads EOF or the socket is gone, and no answer is true until the successor
+    // is up, so wait for it and ask once more. PrepareHandoff for one target is idempotent.
+    match restart_once(client, binary) {
+        Err(error) if lost_to_handoff(&error) => {
+            wait_for_handoff(client.socket(), HANDOFF_WAIT);
+            restart_once(client, binary)
+        }
+        Ok(DaemonRestart::NotRunning) if wait_for_handoff(client.socket(), HANDOFF_WAIT) => {
+            restart_once(client, binary)
+        }
+        result => result,
+    }
+}
+
+fn lost_to_handoff(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::BrokenPipe
+    ) || ["daemon_replacing:", "handoff_in_progress:"]
+        .iter()
+        .any(|code| error.to_string().starts_with(code))
+}
+
+fn restart_once(client: &Client, binary: &Path) -> io::Result<DaemonRestart> {
     wait_for_handoff(client.socket(), HANDOFF_WAIT);
     let _bootstrap = acquire_bootstrap_lock(client.socket())?;
     let status = match lifecycle_status(client) {
@@ -1323,10 +1353,26 @@ fn restart_with_binary(client: &Client, binary: &Path) -> io::Result<DaemonResta
             live_runtimes,
             blockers,
             ..
-        }) => Ok(DaemonRestart::Deferred {
-            live_runtimes,
-            blockers,
-        }),
+        }) => {
+            // ^ A fresh wsxd defers while it recovers its sessions, and goes on by itself
+            // when that ends. Only recovery blocks, no TUI and no pane limit, so wait for it.
+            if blockers == [super::domain::ReplacementBlocker::HandoffUnavailable]
+                && live_runtimes <= super::protocol::MAX_HANDOFF_PANES
+            {
+                match wait_until_restarted(client, status.epoch) {
+                    Ok(()) => {
+                        set_active_protocol(client.socket(), PROTOCOL_VERSION);
+                        return Ok(DaemonRestart::Restarted { live_runtimes });
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(DaemonRestart::Deferred {
+                live_runtimes,
+                blockers,
+            })
+        }
         // An older daemon refuses an equal build or does not know the request.
         Ok(_) | Err(_) if unsupported => Ok(DaemonRestart::Unsupported {
             daemon_version: lifecycle_version(&status),

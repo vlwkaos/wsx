@@ -700,7 +700,7 @@ impl TaskCmd {
             self,
             Self::New(_)
                 | Self::Check {
-                    action: Some(CheckAction::Fail { .. }),
+                    action: Some(CheckAction::Fail { note: Some(_), .. }),
                     ..
                 }
                 | Self::Close { .. }
@@ -724,12 +724,13 @@ pub enum CheckAction {
     },
     /// Close the named items, or every open item with --all, without a verdict: no fix task
     Skip(Chosen),
-    /// The item failed: a new task fixes it, linked to the item
+    /// The item failed. With --note a new task fixes it, linked to the item; without, the item
+    /// only closes as failed (the manager starts the fix from the owner's words)
     Fail {
         id: String,
         /// What is wrong; the new task gets it
         #[arg(long)]
-        note: String,
+        note: Option<String>,
     },
 }
 

@@ -91,7 +91,13 @@ pub const WSX_VERSION: &str = env!("CARGO_PKG_VERSION");
 // of the stale rule (docs/tasks.md "Stale worktrees").
 // Revision 50 has no `at` trigger: the scheduler drops the one-shot routines of every project
 // when it takes the store (docs/tasks.md "Routines").
-pub const DAEMON_REVISION: u32 = 50;
+// Revision 51 adds the `cards` item to a panel document (`Item::Cards`): a client from before it
+// cannot decode a document with one (docs/panels.md "Cards").
+pub const DAEMON_REVISION: u32 = 51;
+
+/// Most panes one live handoff carries. More defer a handoff for good (`HandoffUnavailable`),
+/// so `wsx daemon restart` does not wait for it. ref: docs/daemon-live-upgrade.md "Restart and stop"
+pub const MAX_HANDOFF_PANES: usize = 64;
 // ^ docs/daemon-live-upgrade.md: lifecycle marker written for the socket gap of a live handoff.
 pub const HANDOFF_MARKER_PREFIX: &str = "handoff:";
 

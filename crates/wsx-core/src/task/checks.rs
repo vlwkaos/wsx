@@ -60,9 +60,13 @@ pub struct CheckItem {
     /// The task a fail started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix_task: Option<u32>,
-    /// A pass by the manager: the id of the owner's message it was passed on.
+    /// The owner's message that closed the item: the one a manager passed it on, or the reply
+    /// "x" that skipped it. A button press has none; its note's message is `note_said`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_said: Option<u64>,
+    /// The owner's message whose words are the item's `note`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_said: Option<u64>,
     /// When this row was written: the item was added, passed, skipped or failed.
     pub unix_ms: u64,
     /// When the item was added: its first row's `unix_ms`, set by `fold`. The chat places the
@@ -177,6 +181,7 @@ pub fn collect(
                 note: None,
                 fix_task: None,
                 owner_said: None,
+                note_said: None,
                 unix_ms: now,
                 added_unix_ms: now,
             })
@@ -184,7 +189,7 @@ pub fn collect(
     })
 }
 
-/// Close open items as `state` (passed or skipped): the named ones, or every open one when
+/// Close open items as `state` (passed, failed or skipped): the named ones, or every open one when
 /// `ids` is empty. An unknown id or one that is not open refuses the whole call.
 /// `owner_said` is kept on the row when the manager passed on the owner's message.
 pub fn close(
@@ -230,19 +235,20 @@ pub fn find_open<'a>(items: &'a [CheckItem], id: &str) -> Result<&'a CheckItem> 
 }
 
 /// The first line of an owner reply to a To check item: `> check c12`, then an empty line and the
-/// owner's words. The web's Reply on an item writes it. ref: docs/tasks.md "To check"
+/// owner's words. The web's Reply on an item writes it, as do its Pass and Fail after they close the item. ref: docs/tasks.md "To check"
 pub const QUOTE_REF: &str = "> check ";
 
 /// What the host does with an owner message that quotes a To check item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ItemReply {
-    /// Words for the manager: the quote line is the item's check; none is left when no item
-    /// has that id.
-    Words(String),
+    /// Words for the manager: the quote line is the item's check (`item` is its id, which the
+    /// logged message keeps); none is left when no item has that id.
+    Words { text: String, item: Option<String> },
     /// The reply is just "x": the item is skipped now (`was` none), or was closed before
     /// (`was` its state). `text` is the message as the chat shows it. No turn follows.
     Skip {
         text: String,
+        item: String,
         check: String,
         was: Option<CheckState>,
     },
@@ -253,9 +259,11 @@ fn is_skip_key(words: &str) -> bool {
     matches!(words.trim(), "x" | "X" | "ㅌ")
 }
 
-/// Read an owner message that opens with `> check <id>`. None for any other message. A reply
-/// of only the skip key skips an open item with `close`, as `wsx task check skip` does.
-pub fn item_reply(project_id: &str, text: &str) -> Option<ItemReply> {
+/// Read an owner message that opens with `> check <id>`; `message` is the id it is logged with.
+/// None for any other message. A reply of only the skip key skips an open item with `close`, as
+/// `wsx task check skip` does, and the item keeps `message` as `owner_said`. Other words go to
+/// the manager; on an item that was passed or failed they are also its note (`note_said`).
+pub fn item_reply(project_id: &str, text: &str, message: u64) -> Option<ItemReply> {
     let rest = text.trim_start().strip_prefix(QUOTE_REF)?;
     let (id, words) = rest.split_once('\n').unwrap_or((rest, ""));
     let (id, words) = (id.trim(), words.trim());
@@ -265,24 +273,47 @@ pub fn item_reply(project_id: &str, text: &str) -> Option<ItemReply> {
             .and_then(|items| items.into_iter().find(|item| item.id == id))
     };
     let Some(item) = find() else {
-        return Some(ItemReply::Words(words.to_string()));
+        return Some(ItemReply::Words {
+            text: words.to_string(),
+            item: None,
+        });
     };
-    let text = format!("> {}\n\n{words}", super::manager::quote_of(&item.check));
+    let quote = super::manager::quote_of(&item.check);
+    let text = format!("> {quote}\n\n{words}");
+    let item_id = Some(item.id.clone());
     if !is_skip_key(words) {
-        return Some(ItemReply::Words(text));
+        // ^ Words on an item the owner passed or failed with a button are their note on it, once.
+        let noted = matches!(item.state, CheckState::Passed | CheckState::Failed)
+            && item.note.is_none()
+            && !words.is_empty()
+            && words.len() <= MAX_NOTE_BYTES;
+        if noted {
+            let _ = set_note(project_id, &item.id, words, message);
+        }
+        // ^ A failed item's words go marked as the web's Fail marked its mention: they start the fix.
+        let text = if item.state == CheckState::Failed && !words.is_empty() {
+            format!("> {quote}\n\nTo check {} failed: {words}", item.id)
+        } else {
+            text
+        };
+        return Some(ItemReply::Words {
+            text,
+            item: item_id,
+        });
     }
     if item.state == CheckState::Open {
         if let Some(skipped) = close(
             project_id,
             std::slice::from_ref(&item.id),
             CheckState::Skipped,
-            None,
+            Some(message),
         )
         .ok()
         .and_then(|rows| rows.into_iter().next())
         {
             return Some(ItemReply::Skip {
                 text,
+                item: skipped.id,
                 check: skipped.check,
                 was: None,
             });
@@ -292,13 +323,37 @@ pub fn item_reply(project_id: &str, text: &str) -> Option<ItemReply> {
     // could not be written, and the manager gets the words.
     let now = find().unwrap_or(item);
     Some(match now.state {
-        CheckState::Open => ItemReply::Words(text),
+        CheckState::Open => ItemReply::Words {
+            text,
+            item: item_id,
+        },
         was => ItemReply::Skip {
             text,
+            item: now.id,
             check: now.check,
             was: Some(was),
         },
     })
+}
+
+/// Keep the owner's words on the passed or failed item `id` as its note. The row keeps its
+/// `unix_ms`: the item was decided then, which the capture lifetime counts from.
+fn set_note(project_id: &str, id: &str, note: &str, message: u64) -> Result<()> {
+    change(project_id, |items| {
+        Ok(items
+            .iter()
+            .find(|item| item.id == id && item.note.is_none())
+            .filter(|item| matches!(item.state, CheckState::Passed | CheckState::Failed))
+            .map(|item| {
+                vec![CheckItem {
+                    note: Some(note.to_string()),
+                    note_said: Some(message),
+                    ..item.clone()
+                }]
+            })
+            .unwrap_or_default())
+    })
+    .map(drop)
 }
 
 /// Mark the open item `id` failed with the owner's note and the task that fixes it.
