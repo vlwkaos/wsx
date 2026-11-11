@@ -85,6 +85,6 @@ function MediaView({ project }) {
 }
 
 export const MediaPage = ({ project, onClose, grip }) => html`
-  <${SheetPage} grip=${grip} onClose=${onClose} bar=${html`<span class="bar-label">Media</span>`} className="media">
+  <${SheetPage} grip=${grip} onClose=${onClose} bar=${html`<span class="bar-label">Media</span>`} className="media-page">
     <${MediaView} project=${project} />
   </${SheetPage}>`;
