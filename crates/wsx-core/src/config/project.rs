@@ -604,14 +604,8 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         Some("owner") => true,
         Some(other) => return Err(format!("tasks.skills must be owner or none, not {other:?}")),
     };
-    if let Some(bad) = file
-        .skills_only
-        .iter()
-        .find(|name| name.is_empty() || name.starts_with('.') || name.contains(['/', '\\']))
-    {
-        return Err(format!("tasks.skillsOnly: {bad:?} is not a skill name"));
-    }
-    config.skills_only = file.skills_only;
+    config.skills_only =
+        checked_skills(file.skills_only).map_err(|error| format!("tasks.skillsOnly: {error}"))?;
     if let Some(workflow) = file.workflow {
         let text = |value: Option<String>, field: &str, default: &mut String| {
             let Some(value) = value else { return Ok(()) };
@@ -761,6 +755,21 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
         }
     }
     Ok(config)
+}
+
+/// Names of the owner's skills, as `tasks.skillsOnly` and `task new --skills` give them: a
+/// folder name in the owner's skills folder; `owner:<name>`, as an agent sees a skill, is
+/// that name. ref: docs/tasks.md "Workflow"
+pub fn checked_skills(names: Vec<String>) -> Result<Vec<String>, String> {
+    names
+        .into_iter()
+        .map(|name| match name.strip_prefix("owner:").unwrap_or(&name) {
+            bad if bad.is_empty() || bad.starts_with('.') || bad.contains(['/', '\\', ':']) => {
+                Err(format!("{name:?} is not a skill name"))
+            }
+            good => Ok(good.to_string()),
+        })
+        .collect()
 }
 
 /// `[tasks.agent]`.

@@ -153,23 +153,21 @@ pub struct RoleInfo {
     pub caps: &'static [Capability],
 }
 
-/// The one role enum: a launch site's role, and the jobs an `[[agents]]` entry `roles` lists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+/// The one role enum: a launch site's role, and the job a fallback choice fills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Manager,
     Area,
     Organizer,
-    Scribe,
     Worker,
 }
 
 use Capability::*;
 
-/// The one table of roles. A named role of docs/tasks.md "Roles" is an `Area`; the others are
-/// the jobs the fallback design gives a small model. The rules it holds replace the refusals
-/// that `not_for_roles` once spelled out one by one.
-pub const ROLES: [(Role, RoleInfo); 5] = [
+/// The one table of roles. A named role of docs/tasks.md "Roles" is an `Area`; the organizer is
+/// the stand-in's job. The rules it holds replace the refusals that `not_for_roles` once spelled
+/// out one by one.
+pub const ROLES: [(Role, RoleInfo); 4] = [
     (
         Role::Manager,
         RoleInfo {
@@ -198,14 +196,6 @@ pub const ROLES: [(Role, RoleInfo); 5] = [
         },
     ),
     (
-        Role::Scribe,
-        RoleInfo {
-            name: "scribe",
-            brief: "writes notes and handoffs",
-            caps: &[Note, Handoff, Recall],
-        },
-    ),
-    (
         Role::Worker,
         RoleInfo {
             name: "worker",
@@ -228,16 +218,19 @@ impl Role {
         Caps::of(self.info().caps)
     }
 
-    /// Whether an `[[agents]]` entry that lists `listed` fills this role in a fallback choice.
-    /// With none listed it is a full fallback: the manager's turns and a task's steps. The
-    /// organizer (backlog, the stand-in without tools) and the scribe (notes, handoffs) are
-    /// filled only when listed; `area` is the manager's named role, never an entry's.
-    pub fn filled_by(self, listed: &[Role]) -> bool {
-        if listed.is_empty() {
-            matches!(self, Self::Manager | Self::Worker)
-        } else {
-            self != Self::Area && listed.contains(&self)
-        }
+    /// Whether an `[[agents]]` entry whose `may` is `may` fills this role in a fallback choice:
+    /// with no `may` it is a full fallback (the manager's turns and a task's steps); with one,
+    /// it fills each role whose own capability it lists: `create_task` the manager, `answer`
+    /// the organizer (the stand-in), `result` a worker. `area` is the manager's named role,
+    /// never an entry's. ref: docs/tasks.md "Agents"
+    pub fn filled_by(self, may: Option<&[Capability]>) -> bool {
+        let need = match self {
+            Self::Manager => CreateTask,
+            Self::Organizer => Answer,
+            Self::Worker => Result,
+            Self::Area => return false,
+        };
+        may.map_or(self != Self::Organizer, |may| may.contains(&need))
     }
 
     /// The role the agent of an actor runs as: the manager host's as `Manager`, a named

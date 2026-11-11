@@ -370,6 +370,9 @@ pub struct NewArgs {
     /// A glob of the paths it expects to change, relative to the checkout (repeatable)
     #[arg(long, value_name = "GLOB")]
     pub(crate) files: Vec<String>,
+    /// The owner's skills its worker gets, comma-separated, in place of tasks.skillsOnly
+    #[arg(long, value_name = "NAMES", value_delimiter = ',')]
+    pub(crate) skills: Option<Vec<String>>,
     /// The first turn writes a plan and stops without editing; an `add` continues it
     #[arg(long)]
     pub(crate) plan: bool,
