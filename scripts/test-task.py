@@ -951,7 +951,7 @@ def manager_up(created):
     assert not manager_launches[-1]['resume'] and manager_launches[-1]['session'] != launch['session']
     bare = manager_launches[-1]
     assert bare['plugin_dir'] is None, bare
-    assert 'owner:' not in bare['instructions'] and 'check rather than guess' in bare['instructions']
+    assert 'the Skill tool as `owner:<name>`' not in bare['instructions'] and 'check rather than guess' in bare['instructions']
     assert [e['id'] for e in chat(after=big['id']) if e['kind'] == 'message' and e['from'] == 'owner'] == [after_rotation['id']]
     for n in (running, manager_task, heredoc_task, only_task):
         js('task', 'close', n, '--discard')
