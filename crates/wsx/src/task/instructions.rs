@@ -139,11 +139,14 @@ pub(super) fn instructions(
          A project wsx does not know yet: `wsx task project add <path> [--clone <git url>]` (a \
          folder in the owner's home) asks the owner; the event 'project <name> added' follows. \
          {skills}Use the skills and subagents that fit; check rather than guess. \
-         When the owner decides a rule, a preference or a choice, append one line \
-         `- <YYYY-MM-DD> <decision>` to {decisions} at once. Every new conversation of yours \
-         starts with that file and {context}. wsx adds each \
-         finished task's memo to {context}; fix or merge a line there only when you see it is \
-         wrong. Only events that need you start a turn; a landing, a close, a wait that ends \
+         When the owner decides a rule, a preference or a choice, record it at once: the \
+         decision on stdin to `wsx memory add --kind rule --slug <slug> --text-file - --source \
+         msg:<id> --verified-by owner:<id> --words \"<their words>\"` (<id> is their message; the \
+         words stand in it). It names a close rule; `--supersedes <slug>` replaces one. \
+         {decisions} is written from these records: never edit it. Every new conversation of \
+         yours starts with that file and {context}. wsx adds each \
+         finished task's memo to {context}; fix a line there only when you see it is wrong, \
+         with `wsx memory search` and `wsx memory update --slug`. Only events that need you start a turn; a landing, a close, a wait that ends \
          by itself and an automatic deploy come along with your next turn. The project overview {overview} is the owner's one-screen picture, at most \
          60 lines and 4,000 characters: the goal, open tasks as a mermaid graph, live plans in short, \
          open questions. \

@@ -28,7 +28,10 @@ TMP = tempfile.mkdtemp(prefix='wsx-memory-')
 WORK = os.path.join(TMP, 'work')
 os.makedirs(os.path.join(WORK, 'docs'))
 open(os.path.join(WORK, 'docs', 'note.md'), 'w').write('a note\n')
-ENV = {k: v for k, v in os.environ.items() if k != 'WSX_TASK_BROKER'}
+# ^ Every store runs in the temp home below. The vault root and any wsx state variable of the caller
+# (WSX_TASK_BROKER, WSX_TASK_FROM, WSX_MEMORY_RULES, ...) are dropped: a program under test can never
+# read or write the owner's real vault or project stores. The calls that need one set it themselves.
+ENV = {k: v for k, v in os.environ.items() if k != 'DGV3_ROOT' and not k.startswith('WSX_')}
 ENV.update(HOME=TMP, XDG_STATE_HOME=os.path.join(TMP, 'state'), XDG_CONFIG_HOME=os.path.join(TMP, 'config'))
 SCOPE = 'contract'
 
@@ -165,6 +168,53 @@ exits(2, 'add', '--kind', 'rule', '--slug', 'gone', '--text-file', '-', '--sourc
       'owner:transcript:%s' % os.path.join(TMP, 'missing.jsonl'), text='A transcript that is not there.')
 
 
+# dotfiles #38: a url form, `_` in a scope, description and keywords, `.` inside a slug
+URLS = ('https://example.com/a?b=1#c', 'http://example.org:8080/x', 'https://sub.example.co.kr/')
+for n, url in enumerate(URLS):
+    stored = add('web-%d' % n, 'A page on the web, number %d.' % n, kind='fact', by='url:' + url, source='url:' + url)
+    check(stored['verified_by'] == 'url:' + url and stored['source'] == 'url:' + url, stored)
+for bad in ('ftp://example.com/a', 'https://', 'https:///path', 'https://exa mple.com/', 'javascript:alert(1)', 'https://user@example.com/',
+            'example.com', 'https://example.com:99999999/', 'https://-bad.com/', 'https://example.com/\x01'):
+    exits(2, 'add', '--kind', 'fact', '--slug', 'badurl', '--text-file', '-', '--source', 'task:1', '--verified-by', 'url:' + bad, text='Never stored.')
+    exits(2, 'add', '--kind', 'episode', '--slug', 'badurl', '--text-file', '-', '--source', 'url:' + bad, text='Never stored.')
+check(slugs('badurl') == [], 'a refused url stores nothing')
+# ^ A URL is checked as text and never fetched: this host does not exist, and the add is instant.
+add('no-fetch', 'The page is never fetched.', kind='fact', by='url:https://never-fetched.invalid/page', source='url:https://never-fetched.invalid/page')
+
+ok('add', '--kind', 'fact', '--slug', 'vault-note', '--text-file', '-', '--source', 'task:1', '--verified-by', 'docs/note.md',
+   text='A note in a vault folder.', scope='pet_ai_factory')
+check(ok('status', scope='pet_ai_factory')['scope'] == 'pet_ai_factory' and 'pet_ai_factory' in [r['scope'] for r in ok('list', scope=None)], 'scope with _')
+for bad in ('Pet', 'pet ai', 'pet.ai', 'pet/ai'):
+    exits(2, 'status', scope=bad)
+
+described = ok('add', '--kind', 'fact', '--slug', 'release-0.10.0', '--text-file', '-', '--source', 'task:1', '--verified-by', 'docs/note.md',
+               '--description', 'Notes of the first stable cut', '--keywords', 'changelog, tagging,changelog,,hotfix', text='Version ten shipped on a Friday.')
+check(described['description'] == 'Notes of the first stable cut' and described['keywords'] == ['changelog', 'tagging', 'hotfix'], described)
+got = ok('get', 'release-0.10.0')
+check(got['description'] == described['description'] and got['keywords'] == described['keywords'] and got['text'] == described['text'], got)
+exits(1, 'get', 'no-such-record')
+for word in ('tagging', 'stable', 'friday'):
+    found = ok('search', word)
+    check([h['slug'] for h in found] == ['release-0.10.0'], (word, found))
+check(found[0]['description'] == described['description'] and found[0]['keywords'] == described['keywords'], 'a hit shows description and keywords')
+changed = ok('update', '--slug', 'release-0.10.0', '--keywords', 'hotfix,backport', '--source', 'task:2')
+check(changed['keywords'] == ['hotfix', 'backport'] and changed['description'] == described['description'] and changed['text'] == described['text'], changed)
+check(slugs('tagging') == [] and slugs('backport') == ['release-0.10.0'], 'keywords are searched as they are now')
+check(ok('update', '--slug', 'release-0.10.0', '--description', 'Cut notes', '--source', 'task:2')['description'] == 'Cut notes', 'description alone')
+check(ok('get', 'release-0.10.0')['keywords'] == ['hotfix', 'backport'], 'an update without keywords keeps them')
+exits(2, 'update', '--slug', 'release-0.10.0', '--description', 'two\nlines', '--source', 'task:2')
+exits(2, 'add', '--kind', 'episode', '--slug', 'long-keyword', '--text-file', '-', '--source', 'task:1', '--keywords', 'k' * 65, text='x')
+check(ok('get', 'indent-rule').get('keywords', []) == [] and 'description' not in ok('get', 'indent-rule'), 'a record without them shows none')
+for slug in ('v1.2', 'a.b.c-1'):
+    check(add(slug, 'Dotted slug %s.' % slug)['slug'] == slug, slug)
+for bad in ('.a', 'a.', 'a..b', '-a', 'A.b', 'a_b', 'a b', 'ü'):
+    exits(2, 'add', '--kind', 'episode', '--slug', bad, '--text-file', '-', '--source', 'task:1', text='x')
+exits(2, 'update', '--slug', 'v1.2', '--source', 'task:2')
+
+# a run never reads the caller's WSX_* or DGV3_ROOT (the real vault and stores)
+check('DGV3_ROOT' not in ENV and not [k for k in ENV if k.startswith('WSX_')], 'the call environment is clean')
+
+
 def backend_part():
     """wsx with a search backend (docs/memory.md "Search backend"): hits merge by score, exit 3, a hang
     and bad output fall back to the built-in with a notice on stderr and clean JSON on stdout."""
@@ -232,6 +282,102 @@ def backend_part():
         file.write(text[:text.index('\n[memory]')] + '\n')
 
 
+def notes_part(pid, notes):
+    """The manager's notes of a project (docs/memory.md "Notes"): the old files are imported once, the
+    views are rendered from the records with each rule's date and words, the write path writes the
+    record and then the view, a new rule names the close ones, and a hand edit is reported."""
+    log = os.path.join(os.path.dirname(notes), 'log.jsonl')
+    open(log, 'w').write(json.dumps({'unix_ms': 1, 'kind': 'message', 'id': 7, 'from': 'owner',
+                                     'text': 'From now on, never paste secrets in chat, ever.'}) + '\n'
+                         + json.dumps({'unix_ms': 2, 'kind': 'message', 'id': 8, 'from': 'events', 'text': 'never paste secrets'}) + '\n')
+    # ^ The archive's third line repeats an active rule: one record, shown in decisions.md only.
+    legacy = {
+        'decisions.md': '- 2026-10-22 keep the store in sqlite\n- 2026-10-22 never   paste secrets  in chat\n- 2026-11-01 Always ship small changes with a readme.\n',
+        'decisions-archive.md': '- 2026-09-01 use json files for the store\n- 2026-09-15 use yaml for the store\n- 2026-10-22 keep the store in sqlite\n',
+        'context.md': '# proj\nSection line two.\n- #3: first memo\n- #4: second memo text\n',
+        'context-archive.md': '- #1: oldest memo\n',
+    }
+    for name, text in legacy.items():
+        open(os.path.join(notes, name), 'w').write(text)
+    view = lambda name: open(os.path.join(notes, name)).read()
+    records = os.path.join(ENV['XDG_STATE_HOME'], 'wsx', 'tasks', pid, 'memory', 'records.jsonl')
+    check(ok('status', scope=pid)['drift'] == [], 'old notes are no drift')
+
+    # import: once; a rerun adds nothing; the views keep every line byte for byte
+    first = ok('import', scope=pid)
+    check(first['imported'] == {'rules': 3, 'archived': 2, 'facts': 2, 'episodes': 3}, first)
+    # ^ Memos of the old archive rejoin context.md while the file is under its ceiling.
+    shown = {**legacy, 'decisions-archive.md': ''.join(legacy['decisions-archive.md'].splitlines(True)[:2]),
+             'context.md': '# proj\nSection line two.\n- #1: oldest memo\n- #3: first memo\n- #4: second memo text\n', 'context-archive.md': ''}
+    for name, text in legacy.items():
+        check(view(name) == shown[name], (name, view(name)))
+        check(open(os.path.join(notes, name + '.pre-memory')).read() == text, name + ' copy')
+    lines = len(open(records).readlines())
+    check(ok('import', scope=pid)['imported'] == {'rules': 0, 'archived': 0, 'facts': 0, 'episodes': 0}, 'a rerun adds nothing')
+    check(len(open(records).readlines()) == lines and all(view(n) == t for n, t in shown.items()), 'a rerun writes nothing')
+    rule = next(h for h in ok('search', 'paste secrets', '--kind', 'rule', scope=pid))
+    kept = ok('get', rule['slug'], scope=pid)
+    check(kept['words'] == 'never   paste secrets  in chat' and kept['status'] == 'active' and kept['kind'] == 'rule', kept)
+    check(kept['verified_by'].startswith('owner:transcript:') and kept['source'] == 'path:decisions.md:2', kept)
+
+    # the write path: the record, then the view; the owner's words must stand in their message
+    today = time.strftime('%Y-%m-%d', time.gmtime())
+    new = ['add', '--kind', 'rule', '--slug', 'no-secrets', '--text-file', '-', '--source', 'msg:7', '--verified-by', 'owner:7']
+    added = ok(*new, '--words', 'never paste secrets in chat', text='Never paste secrets into chat messages.', scope=pid)
+    check([h['slug'] for h in added['similar']][:1] == [rule['slug']] and all(0.1 <= h['score'] <= 1 for h in added['similar']), added)
+    check(view('decisions.md') == legacy['decisions.md'] + '- %s never paste secrets in chat\n' % today, view('decisions.md'))
+    base = ['add', '--kind', 'rule', '--slug', 'bad-words', '--text-file', '-']
+    exits(2, *base, '--source', 'msg:7', '--verified-by', 'owner:7', '--words', 'ship secrets in chat', text='x y z', scope=pid)
+    exits(2, *base, '--source', 'msg:7', '--verified-by', 'owner:9', '--words', 'never paste secrets', text='x y z', scope=pid)
+    exits(2, *base, '--source', 'msg:8', '--verified-by', 'owner:8', '--words', 'never paste secrets', text='x y z', scope=pid)  # not the owner's
+    exits(2, *base, '--source', 'msg:99', '--verified-by', 'owner:99', '--words', 'never paste secrets', text='x y z', scope=pid)
+    exits(2, 'add', '--kind', 'fact', '--slug', 'f-words', '--text-file', '-', '--source', 'msg:7', '--verified-by', 'owner:7', '--words', 'never paste',
+          text='x y z', scope=pid)
+    check(view('decisions.md').count('\n') == 4, 'a refused rule writes no line')
+
+    # supersede, by command and in one call with --supersedes: the old line leaves decisions.md for the archive
+    old = ok('supersede', rule['slug'], 'no-secrets', '--source', 'msg:7', scope=pid)
+    check(old['status'] == 'superseded' and old['superseded_by'] == 'no-secrets', old)
+    check('never   paste secrets  in chat' not in view('decisions.md') and view('decisions-archive.md').endswith('- 2026-10-22 never   paste secrets  in chat\n'), 'archive view')
+    again = ok('add', '--kind', 'rule', '--slug', 'no-secrets-2', '--text-file', '-', '--source', 'msg:7', '--verified-by', 'owner:7',
+               '--words', 'never paste secrets', '--supersedes', 'no-secrets', text='Never paste secrets, tokens or keys into chat or logs.', scope=pid)
+    check(again['status'] == 'active' and again['slug'] == 'no-secrets-2', again)
+    check(ok('get', 'no-secrets', scope=pid)['status'] == 'superseded' and view('decisions.md').endswith('- %s never paste secrets\n' % today), view('decisions.md'))
+    check(view('decisions-archive.md').endswith('- %s never paste secrets in chat\n' % today), view('decisions-archive.md'))
+    exits(1, 'add', '--kind', 'rule', '--slug', 'r3', '--text-file', '-', '--source', 'msg:7', '--verified-by', 'owner:7', '--supersedes', 'no-such',
+          text='A third rule.', scope=pid)
+    check(view('decisions.md').count('\n') == 3, 'a refused supersedes stores nothing')
+
+    # memos and the section lines are records too
+    ok('add', '--kind', 'episode', '--slug', 'memo-9-aaaa', '--text-file', '-', '--source', 'task:9', text='fixed the flaky test', scope=pid)
+    check(view('context.md') == shown['context.md'] + '- #9: fixed the flaky test\n', view('context.md'))
+    section = next(h['slug'] for h in ok('search', 'Section line two', '--kind', 'fact', scope=pid))
+    ok('update', '--slug', section, '--text-file', '-', '--source', 'msg:7', text='Section line two, fixed.', scope=pid)
+    check(view('context.md').splitlines()[:2] == ['# proj', 'Section line two, fixed.'], view('context.md'))
+
+    # a hand edit is reported, kept and not merged
+    open(os.path.join(notes, 'decisions.md'), 'a').write('- 2026-11-05 sneaky hand edit\n')
+    state = ok('status', scope=pid)['drift']
+    check(len(state) == 1 and state[0]['view'] == 'decisions.md' and state[0]['added'] == ['- 2026-11-05 sneaky hand edit'] and state[0]['removed'] == [], state)
+    check('sneaky' in view('decisions.md'), 'status writes nothing')
+    code, out, err = run('add', '--kind', 'episode', '--slug', 'after-edit', '--text-file', '-', '--source', 'task:1', text='A write after the edit.', scope=pid)
+    check(code == 0 and 'decisions.md was edited by hand' in err and 'decisions.md.drift' in err, (code, err))
+    check('sneaky' not in view('decisions.md') and '- 2026-11-05 sneaky hand edit' in view('decisions.md.drift'), 'the edit is kept in the .drift file')
+    check(ok('status', scope=pid)['drift'] == [], 'the views are whole again')
+
+    # the context view has a ceiling: the oldest memos show in context-archive.md only
+    text = lambda n: 'memo %03d ' % n + 'word ' * 45
+    with ThreadPoolExecutor(8) as pool:
+        done = list(pool.map(lambda n: run('add', '--kind', 'episode', '--slug', 'memo-%d-x' % (100 + n), '--text-file', '-', '--source', 'task:5',
+                                           text=text(n) + str(n), scope=pid)[0], range(150)))
+    check(set(done) == {0}, done)
+    main, archive = view('context.md'), view('context-archive.md')
+    check(len(main.encode()) <= 32 * 1024 and archive.startswith('- #1: oldest memo\n'), (len(main), archive[:60]))
+    present = [n for n in range(150) if ('- #%d: memo %03d ' % (100 + n, n)) in main + archive]
+    check(present == list(range(150)), 'every memo is in one view')
+    check(not any(('- #%d: memo %03d ' % (100 + n, n)) in main and ('- #%d: memo %03d ' % (100 + n, n)) in archive for n in range(150)), 'in one only')
+
+
 def project_scope():
     """A registered project: --scope defaults to the project of the current folder."""
     import hashlib
@@ -259,6 +405,8 @@ def project_scope():
     # ^ A project scope also searches the project's transcripts; the manager's notes are the simplest to stage.
     notes = os.path.join(ENV['XDG_STATE_HOME'], 'wsx', 'tasks', pid, 'manager', 'notes')
     os.makedirs(notes)
+    for folder in (os.path.dirname(notes), notes):
+        os.chmod(folder, 0o700)  # ^ wsx refuses a state folder others can read.
     open(os.path.join(notes, 'decisions.md'), 'w').write('- 2026-11-01 Always ship small changes with a readme.\n')
     mixed = ok('search', 'readme', scope=pid)
     check([h['slug'] for h in mixed] == ['readme', 'proj:notes/decisions.md'] or {h['slug'] for h in mixed} == {'readme', 'proj:notes/decisions.md'}, mixed)
@@ -271,6 +419,7 @@ def project_scope():
     kinds = lambda project: {h['kind'] for h in json.loads(run('search', 'readme', scope=pid, env={'WSX_TASK_FROM': project})[1])}
     check(kinds(pid) == {'fact', 'decision'} and kinds('other-project') == {'fact'}, 'transcripts are the own project only')
     check(ok('reindex', scope=pid) == {'scope': pid, 'ok': True}, 'reindex of a project scope')
+    notes_part(pid, notes)
     backend_part()
 
 

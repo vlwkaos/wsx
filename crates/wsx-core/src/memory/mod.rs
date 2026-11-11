@@ -4,9 +4,10 @@
 
 pub mod backend;
 pub mod index;
+pub mod manage;
 mod record;
 mod store;
 
 pub use backend::{Command, KindFilter, Query};
 pub use record::{Kind, Record, Status};
-pub use store::{known_scopes, validate_scope, Error, NewRecord, Patch, Store};
+pub use store::{known_scopes, validate_scope, validate_slug, Error, NewRecord, Patch, Store};
