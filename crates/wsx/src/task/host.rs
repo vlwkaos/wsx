@@ -2052,32 +2052,18 @@ impl Host {
                 ));
             }
         }
-        // ^ The memory's records, the area briefs and the role's brief: one rule, in the core.
-        // ref: docs/memory.md "Start set"
+        // ^ The area briefs and the role's brief: one rule, in the core. No fact records: the paid
+        // evaluation found they gave no gain. ref: docs/memory.md "Start set"
         let areas = load_project_config(&self.record.project_path).memory_areas;
         if let Ok(store) = Store::project(
             &self.record.project_id,
             &self.record.project,
             &self.record.project_path,
         ) {
-            // ^ Memos imported before paths existed get theirs once, so they stay in the start set.
-            if let Err(error) = memory_manage::backfill_once(&store) {
-                self.say(&format!("cannot backfill the memo paths: {error}"));
-            }
-            // ^ The words that find facts no `--files` glob reaches: the same two lines the
-            // offline evaluation joined (docs/design/memory-eval.md "Offline retrieval").
-            let about = format!(
-                "{} {}",
-                self.record.title.as_deref().unwrap_or_default(),
-                wsx_core::task::text::first_line(
-                    &self.dir.prompt().ok().flatten().unwrap_or_default()
-                )
-            );
             let start = Start {
                 files: &self.record.files,
                 areas: &areas,
                 role: self.record.created_by.role(),
-                about: &about,
             };
             let block =
                 memory_start::block(&store.without_rules(), &start, memory_start::BUDGET_BYTES);

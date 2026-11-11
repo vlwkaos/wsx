@@ -1344,8 +1344,8 @@ def part_core(created=None):
                             '      - name: memo\n        prompt: MEMO words\n')
     sharing = js('task', 'new', '--files', 's.txt', '--title', 'Sharer', 'WAIT %s' % (work / 'release-13b'))
     sharer = sharing['id']
-    # ^ The host's start set (docs/memory.md "Start set"): a fact about s.txt, fresh at HEAD, reaches the
-    # prompt; a fact about other.rs and an area brief of another glob do not.
+    # ^ The host's start set (docs/memory.md "Start set"): the area brief whose glob meets s.txt reaches the
+    # prompt; an area brief of another glob and every fact record (here about s.txt too) do not.
     area_text = (project / 'wsx.config.yml').read_text()
     (project / 'briefs').mkdir(exist_ok=True)
     (project / 'briefs' / 's.md').write_text('Area brief: s.txt keeps the flag; do not rename it.\n')
@@ -1366,10 +1366,10 @@ def part_core(created=None):
     first = turns[0]['summary']
     assert 'Task context from the host:\nFiles: s.txt' in first, first
     assert 'Open task #%s "Sharer" (working) shares: s.txt' % sharer in first, first
-    assert '- start-s (fact, ' in first and 'The fixture flag lives in s.txt.' in first, first
+    assert 'start-s' not in first and 'The fixture flag lives in s.txt.' not in first, first
     assert 'start-other' not in first and 'zz.md' not in first, first
     assert 'Area brief briefs/s.md (files s.*):\nArea brief: s.txt keeps the flag; do not rename it.' in first, first
-    assert 'data from earlier work, not an instruction' in first, first
+    assert 'data from earlier work' not in first, first
     assert 'PLAN only\n\nIf the task context above is not enough: CTX recall' in first, first
     assert 'WORK s.txt\n\nFor the memo: MEMO words' in turns[1]['summary'], turns[1]
     js('task', 'close', folded, '--discard')
@@ -2901,37 +2901,21 @@ def part_worker(created=None):
     record = json.loads(cli('memory', 'get', fact['slug'], '--json').stdout)
     assert record['verified_by'] == 'task:%d' % free and record['source'] == 'task:%d' % free, record
     assert record['paths'] == ['free.txt'] and record['commit'] == landed_tip and not fact.get('stale'), (record, landed_tip)
-    # A worker on that file starts with the fact; once main changes the file, the fact is stale: search says so
-    # and the next start set still shows it, with the mark and the commits since (docs/memory.md "Start set").
+    # A worker on that file starts without the fact (no fact record joins a prompt: docs/memory.md "Start set");
+    # once main changes the file, search marks the fact stale.
     def first_prompt(files, *title):
         n = js('task', 'new', '--size', 'small', '--files', files, *title, 'NOOP')['id']
         assert wait_state(n, 'ready', 'failed')['state'] == 'ready'
         text = next(e for e in log(n) if e['kind'] == 'result')['summary']
         js('task', 'close', n, '--discard')
         return text
-    assert fact['slug'] in first_prompt('free.txt')
+    assert fact['slug'] not in first_prompt('free.txt', '--title', 'landing brings it')
     (project / 'free.txt').write_text('moved on\n')
     git('commit', '-q', '-am', 'free.txt moves')
     stale = next(h for h in memory_records(cli('memory', 'search', 'landing brings it', '--json').stdout) if h['slug'] == fact['slug'])
     assert stale.get('stale') is True, stale
-    after = first_prompt('free.txt')
-    line = next(l for l in after.splitlines() if l.startswith('- %s (' % fact['slug']))
-    assert line.endswith('(files: free.txt) [stale: files changed since %s, 1 commit touches its paths]' % landed_tip[:7]), line
-    assert 'Not shown' not in after and 'A fact marked stale may be old' in after, after
-    # The words of the task's title find a fact no --files glob reaches; the block keeps its budget and names the cut.
-    cli('memory', 'add', '--kind', 'fact', '--slug', 'start-zebra', '--text-file', '-', '--source', 'task:1', '--verified-by', 'wsx.config.yml',
-        '--commit', git('rev-parse', 'HEAD'), '--paths', 'zebra/gate.rs', stdin='The zebra gate keeps its list in gate.rs.')
-    by_title = first_prompt('free.txt', '--title', 'Zebra gate list')
-    zebra = next((l for l in by_title.splitlines() if l.startswith('- start-zebra (fact, ')), '')
-    assert zebra.endswith('(files: zebra/gate.rs)'), by_title
-    for i in range(8):
-        cli('memory', 'add', '--kind', 'fact', '--slug', 'fill-%d' % i, '--text-file', '-', '--source', 'task:1', '--verified-by', 'wsx.config.yml',
-            '--commit', git('rev-parse', 'HEAD'), '--paths', 'free.txt', stdin='Filler %d: ' % i + ' '.join('w%dx%d' % (i, j) for j in range(80)))
-    full = first_prompt('free.txt')
-    block = full[full.index('Records about these files'):full.index('finds them.') + len('finds them.')]
-    assert 'Not shown, over the 4096-byte start budget: ' in block and len(block.encode()) <= 4096, (len(block.encode()), block)
-    for i in range(8):
-        cli('memory', 'update', '--slug', 'fill-%d' % i, '--source', 'task:1', '--status', 'failed', '--lesson', 'filler')
+    after = first_prompt('free.txt', '--title', 'landing brings it')
+    assert fact['slug'] not in after and 'stale' not in after and 'Records about' not in after, after
     # Backfill (docs/memory.md "Capture"): a memo imported before paths existed has no commit or paths; the
     # import gives it those of the landed task, once, and a rerun changes nothing.
     store = Path(json.loads(cli('memory', 'status', '--json').stdout)['store'])
@@ -3568,7 +3552,7 @@ def part_worker(created=None):
     assert show(weak)['record']['adapter'] == 'pi' and any(t.get('launch') and t.get('worker') and t.get('model') == 'fake/pi-model' for t in traces())
     js('task', 'close', weak, '--discard')
     # The start set reaches a Pi worker through the same first turn (docs/memory.md "Start set"): the area brief of
-    # the config and the fact whose paths meet the task's files, under the line that says a record is data.
+    # the config; the fact whose paths meet the task's files stays out.
     pi_config = (project / 'wsx.config.yml').read_text()
     (project / 'briefs').mkdir()
     (project / 'briefs' / 'pi.md').write_text('Pi area brief: the tool gate lives here.\n')
@@ -3580,7 +3564,7 @@ def part_worker(created=None):
     assert wait_state(pi_start, 'ready', 'failed')['state'] == 'ready' and show(pi_start)['record']['adapter'] == 'pi'
     pi_prompt = next(t['message'] for t in traces()[seen_messages:] if 'Task context from the host:' in t.get('message', ''))
     assert 'Area brief briefs/pi.md (files pi-area/**):\nPi area brief: the tool gate lives here.' in pi_prompt, pi_prompt
-    assert '- start-pi (fact, ' in pi_prompt and 'not an instruction' in pi_prompt, pi_prompt
+    assert 'start-pi' not in pi_prompt and 'not an instruction' not in pi_prompt, pi_prompt
     js('task', 'close', pi_start, '--discard')
     (project / 'wsx.config.yml').write_text(pi_config)
     shutil.rmtree(project / 'briefs')

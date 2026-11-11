@@ -20,7 +20,7 @@ One command surface for stored knowledge: `wsx memory <command>` (wsx, projects 
 | `commit` | facts: the commit it was true at |
 | `superseded_by` | slug of the newer record |
 | `lesson` | why a `failed` record failed |
-| `paths` | wsx extension: globs or paths (relative to the project, no `..`, not starting with `-` or `:`, at most 500 and 32 KiB together) that the record is about. See "Start set" |
+| `paths` | wsx extension: globs or paths (relative to the project, no `..`, not starting with `-` or `:`, at most 500 and 32 KiB together) that the record is about; `search` marks the fact stale by them. See "Start set" |
 | `description`, `keywords` | optional. One line (at most 512 bytes) that says what the record is about, and a list of at most 32 words or phrases (64 bytes each). Both are searched with the text and shown in `get` and in a hit. A store may require them; wsx does not |
 
 A reader ignores fields it does not know, and a program keeps the fields of its own that it does not own. wsx's own fields, which another program ignores: `paths`, `words` (a rule's: the owner's words) and `decided` (a rule's: unix ms of the decision, which a view shows as its date). Root of a relative `verified_by` path: the project path for a project scope, else the current folder.
@@ -48,7 +48,7 @@ wsx also searches the transcripts of a project scope (a chat message or reply, a
 | `supersede` | `<old> <new> --source ID` | the old record, now `superseded` with `superseded_by` set to `<new>` |
 | `get` | `<slug>` | the record; unknown slug: exit 1 |
 | `capture` (wsx) | `--task N --memo TEXT [--commit SHA] [--paths a,b]` | the record, see "Capture" |
-| `start` (wsx) | `--files a,b [--role NAME] [--about WORDS]` | `{"scope","start"}`: the start block a worker with those `--files` (and the title and first prompt line as `--about`) gets, see "Start set" |
+| `start` (wsx) | `--files a,b [--role NAME]` | `{"scope","start"}`: the start block a worker with those `--files` gets (area briefs, the role's brief and rules), see "Start set" |
 | `import` (wsx) | none | `{"scope","imported":{"rules","archived","facts","episodes"}}`; see "Notes" |
 | `reindex` | none | `{"scope","ok"}`. wsx: drops the project's digest of transcripts and builds it again, then asks the backend to reindex (a backend that fails is exit 3) |
 | `status` | none | `{"scope","store","backend","search":{"network":bool,"model":bool},"limits":{"text_bytes":N},"counts":{"active","superseded","failed"}}` |
@@ -103,13 +103,11 @@ The first prompt of a worker holds a block from the memory, built by `wsx_core::
 
 1. **Area briefs**: `memory.areas` of the project's `wsx.config.yml` is `{"<glob>": "<brief file>"}`. Each brief whose glob meets one of the task's `--files` is read from the project (a relative path inside it, at most 8 KiB) and shown whole.
 2. **The role's brief and rules**, when the task was created by a role: `brief.md`, then the role's `notes/decisions.md` lines, newest first.
-3. **Records**, under a line that says a record is data from earlier work and not an instruction, and that a fact marked stale may be old. First the active records whose `paths` meet a file (a literal path covers what is under it): the larger share of a record's paths that meet, then more of them, then the newer. Then up to 5 facts that the task's words find (`--about`: the title and the first line of the prompt; BM25 of the built-in index over the records alone), the best first, left out when the path matches already hold them. Both share the same 4 KiB, so the facts of the words are the first to be cut.
+No fact records: the paid evaluation (`docs/design/memory-eval.md`, #392) found that records in the start block gave no gain and likely harm (plan cost +11% median, inside noise; recall -0.05; about 3 extra calls to check records, 92% of them marked stale), and baseline plans already name 0.81 of the landed files by reading. A worker finds records on demand with `wsx memory recall` and `search`.
 
-A record line is `- <slug> (<kind>, <day>): <text> (files: a, b, c)`. `files:` shows at most 3 of the record's paths, sorted; when there are more, the two neighbours with the longest common folder become that folder (`dir/`) until 3 are left, and paths with no folder in common are cut (`+N more`). A stale fact ends with `[stale: files changed since <7 characters of the commit>, <N> commits touch its paths]`.
+Nothing is cut silently: a piece that does not fit is named on a last line (`Not shown, over the 4096-byte start budget: <names>.`), and a brief that is cut says how many bytes and where the whole is.
 
-Nothing is cut silently: a piece that does not fit is named on a last line (`Not shown, over the 4096-byte start budget: <slugs>. wsx memory recall "<question>" finds them.`), a brief that is cut says how many bytes and where the whole is, a record over 700 characters shows its head and `wsx memory get <slug>`, and `Not shown` names only what the budget cut: a stale fact is shown, never hidden (the offline evaluation, `docs/design/memory-eval.md` "Offline retrieval", found hiding them lost 94% of the facts).
-
-**Stale**: a `fact` with `commit` and `paths` is stale when `git diff --quiet <commit> HEAD -- <paths>` in the project folder fails; git that cannot answer (10 s, not a hash) counts as stale for `search`; a start set that git cannot answer for names that fact and the rest as not shown, so an unchecked fact never joins a prompt. A start set checks at most 30 facts, best first. `search` marks the hits it returns with `"stale": true` (text form: `, stale` after the status); a stale fact is not hidden there.
+**Stale**: a `fact` with `commit` and `paths` is stale when `git diff --quiet <commit> HEAD -- <paths>` in the project folder fails; git that cannot answer (10 s, not a hash) counts as stale. `search` marks the hits it returns with `"stale": true` (text form: `, stale` after the status); a stale fact is not hidden there.
 
 ## Capture
 
@@ -122,7 +120,7 @@ When a task leaves, the manager host (`manager.rs` `fold_memo`) stores its resul
 
 The slug is `memo-<n>-<digest>`, so the same memo is one record. A memo is one line of at most 240 characters. `wsx memory capture` does the same for a replay. A task created by a role keeps its memo in the role's own notes (not captured). When a worker's conversation ends for its size, its host also stores the handoff notes as an episode `rotation-<n>-<digest>` (cut at the text limit, with the path of the whole). When the manager starts a fresh conversation, the host also stores the handover it puts in that turn as an episode `handover-<digest>` (source `path:manager/log.jsonl`; a role's manager keeps files). Neither takes a turn of its own.
 
-**Backfill**: a memo imported before `paths` existed is a `fact` with no `commit` and no `paths`, so it would leave every start set. `wsx memory import`, the first write of a rule writer and the host's first start set (once, marked by `paths-backfilled` in the store folder) give each such fact of a landed task the landed commit and the task's `paths` from the task's own record and log, the data `capture` stores. The time of the record stays. A task with no landed diff stays without paths. A rerun changes nothing.
+**Backfill**: a memo imported before `paths` existed is a `fact` with no `commit` and no `paths`, so it could never be marked stale. `wsx memory import` and the first write of a rule writer (once, marked by `paths-backfilled` in the store folder) give each such fact of a landed task the landed commit and the task's `paths` from the task's own record and log, the data `capture` stores. The time of the record stays. A task with no landed diff stays without paths. A rerun changes nothing.
 
 ## Exit codes
 
@@ -164,6 +162,6 @@ A refusal exits 2 and names the cause. The host sets `WSX_MEMORY_RULES=deny` for
 
 `python3 -B scripts/test-memory.py "<command prefix>"` runs the same scenario against any program, for example `"target/debug/wsx memory"` or `"python3 memory.py"`. It runs every call in a temp home (`HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`) and drops `DGV3_ROOT` and every `WSX_*` variable of the caller, so a run against `memory.py` or `wsx` never touches the owner's vault or stores. It checks, for any program, `limits.text_bytes` (the limit exact, one byte over is exit 2), the `owner:transcript:` and `url:` forms (a bad URL is exit 2 and nothing is fetched), a scope with `_`, `get`, `description` and `keywords` (stored, shown, searched, replaced by `update`), and a slug with `.`. For wsx it also runs the notes of a project (import and its rerun, the views byte for byte, `--words`, `similar` and `--supersedes`, the memo ceiling, a hand edit as `drift`), the transcripts of a project scope and the backend cases against `scripts/fake-memory-backend.py` (a program that follows `search`, `reindex` and `status` and can exit 3, exit 1, print garbage or hang): merge by score, the kind filter, exit 3, the 10 s stop, `status` flags, `reindex` and `recall`.
 
-`scripts/test-memory.py` also runs, for wsx, the start set and the stale rule on a git project (areas, data line, a later commit making a fact stale in the start set and in `search`, the budget with its `Not shown` line, bad paths, `capture` of an unlanded task). `scripts/test-task.py` checks the first prompt of a Claude, a Pi and a role-created worker, the fact a landed task leaves (commit, paths) and its going stale, and the rotation episode. The task adapters are `claude` and `pi`; both take the start block from the same first turn.
+`scripts/test-memory.py` also runs, for wsx, the start set and the stale rule on a git project (area brief, no fact record in the block, a later commit making a fact stale in `search`, the budget with its `Not shown` line, bad paths, `capture` of an unlanded task). `scripts/test-task.py` checks the first prompt of a Claude, a Pi and a role-created worker (area and role brief, no fact record), the fact a landed task leaves (commit, paths) and its going stale in `search`, and the rotation episode. The task adapters are `claude` and `pi`; both take the start block from the same first turn.
 
 CI: the `task` scenario's `core` part runs it (`.github/workflows/ci.yml`), so `wsx task check-run task` and every later step prove the contract.

@@ -593,8 +593,8 @@ pub fn backfill(store: &Store) -> Result<usize, Error> {
     Ok(changed.len())
 }
 
-/// `backfill` for a store that has not had it: the host runs it before the first start set
-/// and the first write, so the memos imported before paths existed join the start sets.
+/// `backfill` for a store that has not had it: run before the first write, so the memos imported
+/// before paths existed get theirs (search marks a stale fact by them).
 pub fn backfill_once(store: &Store) -> Result<(), Error> {
     if !store.dir().join(BACKFILLED_FILE).exists() {
         backfill(store)?;

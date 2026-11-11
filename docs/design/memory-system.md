@@ -101,7 +101,7 @@ A scope is bound once in the global config: `memory.scopes.<name>` is `{dir}` (b
 | Reader | At start (fixed, in the prompt, so on every adapter) | On demand |
 |---|---|---|
 | Manager | active `rule` records (rendered `decisions.md`, about 3 KiB now) and project facts without `paths`; a pointer, not a cut list | `recall`; each owner message gets its top matches (today's `matching`) |
-| Worker | records whose `paths` match `--files` (fresh facts only), area briefs (below), open tasks that share files, the role's brief and rules when `created_by` is a role; 4 KiB as today | `wsx memory recall "<question>"` |
+| Worker | area briefs (below), open tasks that share files, the role's brief and rules when `created_by` is a role; 4 KiB as today. No fact records: the paid evaluation found no gain and likely harm (`memory-eval.md`, #392: plan cost +11% median, CI -4.8%..+21%; recall -0.05; about 3 extra calls checking records) | `wsx memory recall "<question>"` |
 | Role | its `brief.md`, its rules, the project rules | same |
 
 Areas (iam-studio): the project config declares `memory.areas: {"<glob>": "<brief file>"}`. A task whose `--files` match gets those briefs in the same start block, host-built in `host.rs` `task_context`, no skill involved. The brief is a record of kind `fact` with `source: path:<file>`.
@@ -141,7 +141,7 @@ dotfiles builds only its rows and needs nothing from wsx code but the contract t
 | Owner rule | the manager, `wsx memory add --kind rule --source msg:<id> --verified-by owner:<id> --words "<owner text>"`; the host refuses if `words` is not inside that message | 0 |
 | Raw tool transcript or provider history (`integration/memory.rs`) | not by default: `wsx memory distill --task <n>` by the owner or the manager, for a blocked, failed or rotated task | (est.) a 60k-token log read by Sonnet is $0.12, 8% of a $1.56 median task, so it is never automatic |
 
-A wrong record is caught three ways: (1) a fact with `commit` and `paths` is stale when `git diff --quiet <commit> HEAD -- <paths>` fails (one git call, 10 s timeout as in the ledger); a stale fact stays in the start set with a `[stale: ...]` mark (hiding it lost 94% of the facts, `memory-eval.md` "Offline retrieval") and shows `stale` in search; (2) `add` of a rule or fact without a valid `verified_by` is refused (exit 2), so only landed-task, owner or checked records reach the start set; (3) a worker or manager that finds one wrong runs `update --status failed --lesson`, and the log keeps both.
+A wrong record is caught three ways: (1) a fact with `commit` and `paths` is stale when `git diff --quiet <commit> HEAD -- <paths>` fails (one git call, 10 s timeout as in the ledger); a stale fact shows `stale` in search; (2) `add` of a rule or fact without a valid `verified_by` is refused (exit 2), so only landed-task, owner or checked records reach a prompt; (3) a worker or manager that finds one wrong runs `update --status failed --lesson`, and the log keeps both.
 
 ## Decisions stay the owner's words
 
@@ -171,7 +171,7 @@ A wrong record is caught three ways: (1) a fact with `commit` and `paths` is sta
 - Code: one new module set of about 1.5k lines (est.), then 400 lines removed from `notes.rs`.
 - Views and log can drift: render is one-way; hand edits are reported, not merged.
 - A weak `recall` model returns wrong records: it returns slugs only, so excerpts are the stored text, and the no-model path is the default test.
-- Untrusted text (transcripts, workers) enters prompts: records carry `source`, are shown as data, and an unverified one never joins the start set.
+- Untrusted text (transcripts, workers) enters prompts: records carry `source`, are shown as data, and an unverified one never joins a prompt.
 - The estimated gain (5 to 10%) is below the noise of one week's spend; step 6 must measure before step 8 deletes anything.
 
 ## Build tasks, in order
@@ -181,7 +181,7 @@ A wrong record is caught three ways: (1) a fact with `commit` and `paths` is sta
 | 1 | Contract text first (`docs/memory.md`, so dotfiles can start), then record store, fold, ops, CLI, torn-line and lock handling | `docs/memory.md`, `wsx-core/src/memory/{record,store}.rs`, `cli/memory.rs` | new `scripts/test-memory.py` (takes the command as argument): real CLI, temp state; ops, NOOP, `verified_by` refusal, exit codes, torn line |
 | 2 | Retrieve: move the digest to `memory::index`, add transcripts + records, external backend, `recall` without a model | `memory/index.rs`, `task/search.rs` | existing search asserts in `scripts/test-task.py` pass unchanged; fake backend script; exit 3 falls back |
 | 3 | Manage and migration: import, render of views with date and words, manager write path, supersede with top-5 check | `memory/manage.rs`, `task/notes.rs`, `task/instructions.rs` | old store imported, rendered rules keep date and words; a drift edit is reported |
-| 4 | Start sets and areas on every adapter; role brief reaches workers | `host.rs task_context`, `config`, `task/roles.rs` | fake Claude, Codex and Pi runs: the first prompt holds the area brief and the matching fact |
+| 4 | Start sets and areas on every adapter; role brief reaches workers | `host.rs task_context`, `config`, `task/roles.rs` | fake Claude, Codex and Pi runs: the first prompt holds the area brief and no fact record (#393) |
 | 5 | Capture: memo to records with paths and commit; rotation episodes; stale-by-commit | `task/host.rs`, `memory/manage.rs` | landed task makes a fact; a later commit on its paths shows `stale` |
 | 6 | Measurement on the real store, with and without memory; a cheap-model `recall` arm. Step 8 waits for its verdict | `scripts/memory-eval.py`, [memory-eval.md](memory-eval.md) | replay of 20 landed tasks, plan step, three arms; the verdict rule is fixed before the memory arms run |
 | 7 | Scopes outside projects, `command` delegation, `distill`; dotfiles builds its rows against `scripts/test-memory.py` | `memory/store.rs`, config, `integration/memory.rs` | the contract test runs against the built-in and a fake `command` store; the delegated call passes output and exit code through |
