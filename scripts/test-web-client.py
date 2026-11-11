@@ -3513,14 +3513,22 @@ def task_journey(args):
         checks.append(label)
         timed(label)
 
-    def wait(test, label, timeout=20):
+    def wait(test, label, timeout=20, retry=False):
+        # ^ `retry`: an AssertionError of `test` (a CLI call that fails before its file exists) waits for the next try; the last one ends the wait.
         deadline = time.monotonic() + timeout
+        failure = None
         while time.monotonic() < deadline:
-            value = test()
+            try:
+                value = test()
+            except AssertionError as error:
+                if not retry:
+                    raise
+                failure = error
+                value = None
             if value:
                 return value
             time.sleep(0.1)
-        raise AssertionError(label + ' timeout')
+        raise AssertionError(label + ' timeout') from failure
 
     try:
         # ^ Its own TMPDIR: the task host sockets' folder goes away with the run.
@@ -3739,7 +3747,7 @@ def task_journey(args):
             # #6: works until the run ends; its prompt opens as the manager's prompts do.
             long_report = 'WORK c.txt\n' + '\n\n'.join('line %d of the report' % n for n in range(1, 41))
             assert js('task', 'new', long_report, '-p', 'ui')['id'] == 5
-            wait(lambda: js('task', 'show', 5, '-p', 'ui')['state'] == 'ready', 'ui #5')
+            wait(lambda: js('task', 'show', 5, '-p', 'ui')['state'] == 'ready', 'ui #5', retry=True)
             wait(lambda: any('#5 ready r1' in e.get('text', '') for e in js('task', 'chat', '-p', 'ui')['entries']),
                  'the manager heard of #5', timeout=30)
             js('task', 'close', 5, '--discard', '-p', 'ui')
