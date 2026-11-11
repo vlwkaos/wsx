@@ -1,6 +1,6 @@
 # Memory evaluation (step 6)
 
-Status: baseline half measured on 2026-11-11 ("Baseline"); offline retrieval measured the same day on the real `wsx memory start` with a stale rule ablation ("Offline retrieval"). The memory half runs after build steps 4 and 5 (`docs/design/memory-system.md`). Question: does memory make a wsx task better and cheaper? Owner decisions: the vault stays in dotfiles `memory.py`; plain Claude chats get no start-up memory load unless this shows a measured gain; step 8 waits for the verdict.
+Status: baseline half, offline retrieval and the paid memory half measured on 2026-11-11 ("Baseline", "Offline retrieval", "Paid replay"); verdicts: **plan arm harms** (by the fixed rule, within noise), cheap-recall arm kept by the rule but unproven, manager rotation not worth it. The manager replay stopped at the cap ("Manager rotation"). Alternative design: "Alternative design". Question: does memory make a wsx task better and cheaper? Owner decisions: the vault stays in dotfiles `memory.py`; plain Claude chats get no start-up memory load unless this shows a measured gain; step 8 waits for the verdict.
 
 ## Method
 
@@ -198,12 +198,134 @@ Files read by the plan, by why they are not in the block (tuned / held out): new
 
 Stopped here, as set: nothing is tuned on the held-out third. What the data point to, for the owner to decide and not tried: a shorter line (a clip under 700 characters, the mark as `[stale <7>, N]`, fewer paths) buys back up to 0.24 of the budget; the joint use with `wsx memory recall` mid-task is what the paid replay measures. The held-out third is spent for any new choice; a new rule needs a new split.
 
+## Paid replay (2026-11-11, `wsx/t380` at fbc31c72)
+
+Spend: $39.07 of the $40 cap (runs: memory $11.95, cheap-recall $5.91, manager replay $6.85; judges $0.91; the baseline $13.45 booked from the table). Estimates were $12 to $13 and $6 to $7 for the first two; the manager replay cost more than planned (see its section) and stopped the work at the cap.
+
+**What differs from the plan, and why** (none changes a rule):
+
+- **The baseline run files were lost.** `.work/` is git-ignored and #385's working copy was deleted. `memory-eval.py import-baseline` writes the baseline table of this file as run records (cost, calls, explore, recall, precision, cause, trap hits) and books $13.45. The paired comparison needs only those. The cheap and memory arms were judged with the trap lists listed again by the judge; the baseline's trap hits come from the old judge call, so a trap difference carries judge variance that cannot be separated (the listed trap counts agree on 8 of the 9 tasks that have traps; #231 has 3 against 2).
+- `pick --tasks` rebuilt `picks.json` from the 20 tasks of the table (the store has grown since the seed 385 drew them). Areas, logged $ and calls agree with the table.
+- **The start set rule changed after the offline runs.** #391 (stale facts shown with a mark, title-matched facts, files part) was tuned and checked on the offline tuned and held-out thirds; the paid replay did not see those runs. `memory_cut` now passes `--about "<title> <first prompt line>"` as `host.rs` does. The block is the real `wsx memory start` of `wsx/t380`, 3854 bytes on average (4096 budget).
+- The brief added to the worker instructions is the one in the script (`MEMORY_BRIEF`), not the text of the product.
+
+### Plan arm: memory against baseline (20 tasks)
+
+| task | $ base | $ memory | change $ | calls b/m | recall b/m | cause b/m | trap hits b/m | recall calls |
+|---|---|---|---|---|---|---|---|---|
+| #229 | 0.62 | 0.54 | -0.08 | 15/15 | 0.75/0.88 | 2/2 | 0/0 / 0/0 | 1 |
+| #231 | 0.74 | 0.62 | -0.12 | 27/18 | 0.89/0.89 | 2/2 | 0/3 / 0/2 | 0 |
+| #240 | 0.95 | 1.08 | +0.13 | 11/13 | 0.54/0.50 | 2/2 | 0/1 / 0/1 | 0 |
+| #243 | 0.80 | 1.04 | +0.24 | 7/12 | 0.50/0.75 | 2/2 | 0/1 / 1/1 | 4 |
+| #252 | 0.68 | 0.76 | +0.08 | 6/7 | 0.87/0.67 | 2/2 | 0/0 / 0/0 | 0 |
+| #265 | 0.53 | 0.63 | +0.10 | 8/17 | 0.81/0.77 | 2/2 | 0/0 / 0/0 | 1 |
+| #277 | 0.39 | 0.34 | -0.05 | 7/7 | 0.80/0.80 | 2/2 | 0/2 / 2/2 | 0 |
+| #283 | 0.26 | 0.29 | +0.03 | 4/8 | 0.50/0.33 | 2/2 | 1/3 / 3/3 | 0 |
+| #285 | 0.41 | 0.51 | +0.10 | 10/13 | 1.00/0.86 | 2/2 | 0/0 / 0/0 | 1 |
+| #289 | 0.46 | 0.50 | +0.04 | 7/11 | 0.64/0.64 | 2/2 | 0/2 / 1/2 | 0 |
+| #296 | 0.81 | 1.12 | +0.31 | 21/29 | 1.00/1.00 | 2/1 | 0/0 / 0/0 | 0 |
+| #305 | 0.52 | 0.45 | -0.07 | 15/13 | 1.00/1.00 | 2/2 | 0/0 / 0/0 | 0 |
+| #316 | 0.40 | 0.29 | -0.11 | 9/6 | 1.00/1.00 | 2/2 | 0/0 / 0/0 | 0 |
+| #328 | 0.62 | 0.68 | +0.06 | 24/22 | 1.00/0.67 | 1/1 | 1/1 / 0/1 | 1 |
+| #334 | 0.51 | 0.70 | +0.19 | 10/14 | 0.80/0.52 | 2/2 | 0/0 / 0/0 | 0 |
+| #345 | 0.28 | 0.37 | +0.09 | 8/8 | 0.70/0.00 | 2/2 | 0/0 / 0/0 | 2 |
+| #350 | 0.67 | 0.68 | +0.01 | 14/11 | 0.54/0.27 | 1/1 | 4/4 / 4/4 | 0 |
+| #357 | 0.40 | 0.57 | +0.17 | 10/13 | 0.41/0.52 | 2/2 | 0/2 / 1/2 | 1 |
+| #363 | 0.31 | 0.29 | -0.02 | 7/8 | 1.00/1.00 | 2/2 | 0/0 / 0/0 | 0 |
+| #364 | 0.45 | 0.47 | +0.02 | 7/10 | 0.91/0.82 | 2/2 | 0/0 / 0/0 | 2 |
+
+Trap hits are "traps repeated / traps the judge listed". The baseline columns are from the table above.
+
+| measure | baseline | memory | change | limit of the rule |
+|---|---|---|---|---|
+| plan cost, median of the paired change | $0.52 | $0.56 | **+11.2%** | A: at most -15%; B and harms: +10% |
+| plan cost, sum of 20 | $10.81 | $11.95 | +$0.057 per task (mean) | |
+| file recall, median | 0.81 | 0.76 | -0.05 | A: not below -0.08; B: +0.10 |
+| cause, mean | 1.90 | 1.85 | -0.05 | A: not below -0.15 |
+| trap hits, total | 6 | 12 | +6 | A: at most +2; B: -3 |
+| model calls, median | 9.5 | 12.5 | +3 (12 of 20 tasks more) | not in the rule |
+| explore steps, median | 11 | 13.5 | | not in the rule |
+
+**Verdict (rule applied as written): HARMS.** Cost rises by 11.2%, above the 10% limit, without B (recall falls, trap hits rise). A is false twice over (cost, +6 trap hits). **Read it with its noise:** a bootstrap of the 20 paired changes gives a median +11.2% with a 95% interval of -4.8% to +21.4%; 11 tasks cost more than 10% more, 5 cost more than 10% less. The cost alone is inside the noise of the replay; the trap total is the judge-variance case above. The honest reading is *no gain, with a lean to a loss*: no measure moves toward a gain.
+
+At the task level (plan share 33%, median landed task $2.92): **+3.7% of a task, +$0.057 per landed task (mean paired change), +$0.11 at the median landed task**. The threshold for a gain was -$0.15 per landed task.
+
+### Cheap-recall arm (10 tasks) against the memory arm
+
+| task | $ memory | $ cheap (with haiku) | calls m/c | recall m/c | cause m/c | trap hits m/c | recall calls m/c |
+|---|---|---|---|---|---|---|---|
+| #229 | 0.54 | 0.69 | 15/13 | 0.88/1.00 | 2/2 | 0/0 / 0/0 | 1/0 |
+| #240 | 1.08 | 0.88 | 13/9 | 0.50/0.50 | 2/2 | 0/1 / 0/1 | 0/0 |
+| #252 | 0.76 | 0.56 | 7/5 | 0.67/0.87 | 2/2 | 0/0 / 0/0 | 0/0 |
+| #277 | 0.34 | 0.45 | 7/10 | 0.80/0.70 | 2/2 | 2/2 / 0/2 | 0/0 |
+| #285 | 0.51 | 0.34 | 13/9 | 0.86/1.00 | 2/2 | 0/0 / 0/0 | 1/0 |
+| #296 | 1.12 | 1.13 | 29/23 | 1.00/1.00 | 1/1 | 0/0 / 0/0 | 0/0 |
+| #316 | 0.29 | 0.31 | 6/7 | 1.00/1.00 | 2/2 | 0/0 / 0/0 | 0/0 |
+| #334 | 0.70 | 0.50 | 14/10 | 0.52/0.92 | 2/2 | 0/0 / 0/0 | 0/1 |
+| #350 | 0.68 | 0.72 | 11/14 | 0.27/0.69 | 1/2 | 4/4 / 2/4 | 0/0 |
+| #363 | 0.29 | 0.32 | 8/10 | 1.00/1.00 | 2/2 | 0/0 / 0/0 | 0/0 |
+
+
+| measure | memory | cheap | change |
+|---|---|---|---|
+| plan cost with the haiku calls, sum | $6.32 | $5.91 | -$0.041 per task |
+| plan cost, median of the paired change | $0.61 | $0.53 | +3.1% |
+| recall median / cause mean / trap hits | 0.83 / 1.80 / 6 | 0.96 / 1.90 / 2 | +0.13 / +0.10 / -4 |
+
+**Verdict by the rule (kept if cost with the haiku calls is lower and quality is within A): kept**, by the sum of cost (-6.5%) and quality inside the limits. This is not evidence for the model that picks records: **the cheap `recall` ran once in 10 runs** (haiku cost $0.00), the memory arm's `recall` 8 times in 20. The two arms are the same start set; the difference is the noise of a rerun (cost spread 12%, per-run recall spread 0.08). Treat the cheap arm as not shown to matter.
+
+## Alternative design (from the per-task data)
+
+Rebuilt from the start block each memory run got (`memory-eval.py alt`, no model call). A record is right if its paths hold a landed file.
+
+| task | $ base | $ memory | calls b/m | block B | records shown | right | wrong | landed files in right records | named by the plan | ignored | landed files in no shown record | recall b/m | recall calls |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| #229 | 0.62 | 0.54 | 15/15 | 4007 | 9 | 8 | 1 | 6/8 | 6 | 0 | 2 | 0.75/0.88 | 1 |
+| #231 | 0.74 | 0.62 | 27/18 | 3857 | 8 | 8 | 0 | 8/9 | 8 | 0 | 1 | 0.89/0.89 | 0 |
+| #240 | 0.95 | 1.08 | 11/13 | 3901 | 8 | 8 | 0 | 13/24 | 6 | 7 | 11 | 0.54/0.50 | 0 |
+| #243 | 0.80 | 1.04 | 7/12 | 3818 | 8 | 8 | 0 | 6/8 | 5 | 1 | 2 | 0.50/0.75 | 4 |
+| #252 | 0.68 | 0.76 | 6/7 | 3929 | 9 | 4 | 5 | 2/15 | 0 | 2 | 13 | 0.87/0.67 | 0 |
+| #265 | 0.53 | 0.63 | 8/17 | 3956 | 8 | 8 | 0 | 11/26 | 8 | 3 | 15 | 0.81/0.77 | 1 |
+| #277 | 0.39 | 0.34 | 7/7 | 3911 | 9 | 3 | 6 | 5/10 | 4 | 1 | 5 | 0.80/0.80 | 0 |
+| #283 | 0.26 | 0.29 | 4/8 | 4046 | 9 | 9 | 0 | 5/6 | 2 | 3 | 1 | 0.50/0.33 | 0 |
+| #285 | 0.41 | 0.51 | 10/13 | 3921 | 9 | 6 | 3 | 5/7 | 5 | 0 | 2 | 1.00/0.86 | 1 |
+| #289 | 0.46 | 0.50 | 7/11 | 4013 | 9 | 9 | 0 | 9/11 | 6 | 3 | 2 | 0.64/0.64 | 0 |
+| #296 | 0.81 | 1.12 | 21/29 | 2015 | 5 | 0 | 5 | 0/1 | 0 | 0 | 1 | 1.00/1.00 | 0 |
+| #305 | 0.52 | 0.45 | 15/13 | 4047 | 9 | 8 | 1 | 4/6 | 4 | 0 | 2 | 1.00/1.00 | 0 |
+| #316 | 0.40 | 0.29 | 9/6 | 3988 | 9 | 6 | 3 | 4/4 | 4 | 0 | 0 | 1.00/1.00 | 0 |
+| #328 | 0.62 | 0.68 | 24/22 | 4027 | 8 | 1 | 7 | 1/3 | 1 | 0 | 2 | 1.00/0.67 | 1 |
+| #334 | 0.51 | 0.70 | 10/14 | 3807 | 8 | 6 | 2 | 14/25 | 8 | 6 | 11 | 0.80/0.52 | 0 |
+| #345 | 0.28 | 0.37 | 8/8 | 3846 | 8 | 0 | 8 | 0/10 | 0 | 0 | 10 | 0.70/0.00 | 2 |
+| #350 | 0.67 | 0.68 | 14/11 | 4049 | 9 | 8 | 1 | 12/26 | 4 | 8 | 14 | 0.54/0.27 | 0 |
+| #357 | 0.40 | 0.57 | 10/13 | 3850 | 8 | 7 | 1 | 11/27 | 6 | 5 | 16 | 0.41/0.52 | 1 |
+| #363 | 0.31 | 0.29 | 7/8 | 4059 | 9 | 4 | 5 | 1/1 | 1 | 0 | 0 | 1.00/1.00 | 0 |
+| #364 | 0.45 | 0.47 | 7/10 | 4040 | 9 | 9 | 0 | 3/11 | 3 | 0 | 8 | 0.91/0.82 | 2 |
+
+| failure | count | what it cost |
+|---|---|---|
+| **Records add little over reading.** The baseline plan already names 0.81 of the landed files alone (11 explore steps); the block holds 120 of 238 landed files (50%), the plan named 81 of them | 20 of 20 tasks | recall fell in 8 tasks (by 0.05 or more), rose in 3 |
+| **Wrong records** (no landed file in their paths) | 48 of 168 shown (29%); 8 tasks have 3 or more | those 8 tasks: recall -0.17 mean, cost +11% median |
+| **Right records ignored** (landed file in a shown right record, plan did not name it) | 39 files in 20 tasks (#240 7, #350 8, #334 6, #357 5) | the plan reads the file anyway: explore 11 to 13.5 steps |
+| **Start set too big** | 3854 B mean, about 1k tokens, 8 to 9 records, 92% stale marked | the tokens cost little (cache read); the calls do: +3 median (12 of 20 tasks more), the worker checks stale records |
+| **Recall not called, or called late** | called in 8 of 20 runs, 13 calls | runs that called it: +$0.70 total, +21% median cost, +3 calls; runs that did not: +$0.44, +5% |
+
+Where the memory did help: 5 tasks cost more than 10% less (#229 -13%, #231 -16%, #277 -13%, #305 -14%, #316 -26%; -$0.05 to -$0.12; #316 also 20 logged calls to 6). Four of the five blocks held 4 or more landed files in right records with 0 to 3 wrong ones (#277 had 6 wrong). Having right records does not decide it: #240, #243, #265 and #283 had 8 or 9 right records and no wrong one, and cost 12% to 30% more. No task shows the traps falling: baseline repeated 6, memory 12 (see the judge caveat).
+
+**Reading.** On a plan step the work is to find the files and the cause. The worker does that in 11 steps for $0.52 without help, so a record that lists files saves a few reads and costs a few checks. What a worker cannot find by reading code is *why*: what the owner corrected, which approach failed. That is the only thing the data leave for memory to win, and nine tasks in 20 have such a correction.
+
+**Design (est.).** Start from the correction, not from the file list:
+
+1. Capture one short record per send-back (the owner's correction and the paths it concerns), beside the memo. A memo of a clean task adds no record.
+2. At the start, show only those records whose paths meet the task's files, at most 3 lines, with no stale mark and no cutoff list; a stale record is shown if the correction names a file still there (`git cat-file -e`) and dropped if not. No title join, no `(files: ...)` parts, about 500 bytes, not 4 KiB.
+3. `wsx memory recall` stays a tool the worker calls; no push of a full block.
+
+Estimate (est.): a send-back costs a build turn, about 15% of a task, $0.45 at the median task ($2.92, median 1 send-back). Baseline plans repeat 6 trap checks in 20 tasks, 0.3 per task. If the records stopped all of them: 0.3 x $0.45 = $0.13 per landed task, minus about $0.01 for the short block. A realistic half is **$0.06 per landed task**, below the $0.15 gain threshold of this file and about the size of the measured loss of today's design (+$0.057). Verdict on the design: it cannot reach the threshold on plan steps alone. It is worth building only if the owner wants memory for another reason (decisions that outlive tasks, the manager); the data do not show a cost reason. This estimate is not measured; nothing was tuned on the replay.
+
 ## What runs next
 
-1. Steps 4 and 5 land in `wsx/t380`: the start set command and the capture command. The constants `CAPTURE_SUB` and `START_SUB` in the script name them; change them to the real names.
-2. `python3 -B scripts/memory-eval.py run --arm memory --wsx <t380 binary>`, then `--arm memory-cheap`, then `judge` and `report`; add the table and the verdict to this file.
-3. Run `live --cutoff-task 380` again after #380 lands.
-4. If the verdict is no gain, a section "Alternative design" follows here: where it failed per task (wrong records retrieved, right records ignored, start set too big, recall not called), the design and its estimate.
+1. Done: steps 4 and 5 landed in `wsx/t380`; the paid arms ran on it (above).
+2. `live --cutoff-task 380` again after #380 lands.
+3. The owner decides step 8 and whether to build the correction records of "Alternative design". A new start-set rule needs a new split and a new replay (the paid replay is spent: $39.07 of $40).
 
 ## Manager rotation (memory instead of a long conversation)
 
@@ -254,3 +376,40 @@ Spend counts if the projected weekly spend, with the recall calls per reply that
 | Quality fails | spend counts but quality does not hold: recall does not bring back what the cut lost; the lost facts list says which |
 
 What would change the answer is a smaller start (the 55k), not the limit. If the replay shows quality holds at `lean60`, the next step is to measure what fills the start and cut it, then run `mproject` again.
+
+### Replay results (2026-11-11, `memory-eval.py mrun|mjudge|mreport`)
+
+**Stopped by the cap.** The estimate was $3.6 for 18 `cut150` runs; a run cost $0.36 to $0.58 (median $0.41), twice the logged $0.22 for the same replies: a fresh conversation pays a cold write of its first context (47k to 54k tokens measured at the first call, 55k assumed), so the text-only context of the replay was not a floor (the table above said so). `cut150` ran 13 of the 15 picks (3895 and 3903 skipped at the cap) and the 3 repeats ($6.85 with the repeats). `cut60` and `lean60` did not run: 15 runs would cost about $6 and $2.24 was left.
+
+| reply | distance | $ real | $ cut150 | calls | recall calls | score |
+|---|---|---|---|---|---|---|
+| 2668 | 3 | 0.09 | 0.36 | 3 | 0 | 1 |
+| 3286 | 3 | 0.77 | 0.46 | 7 | 3 | 1 |
+| 3592 | 21 | 0.30 | 0.44 | 6 | 0 | 1 |
+| 3653 | 3 | 0.09 | 0.41 | 3 | 1 | 1 |
+| 3664 | 3 | 0.36 | 0.42 | 4 | 0 | 0 |
+| 3665 | 2 | 0.06 | 0.39 | 2 | 0 | 1 |
+| 3678 | 3 | 0.22 | 0.46 | 4 | 3 | 1 |
+| 3719 | 2 | 0.93 | 0.39 | 3 | 0 | 0 |
+| 3720 | 3 | 0.15 | 0.40 | 3 | 0 | 1 |
+| 3722 | 2 | 0.31 | 0.38 | 3 | 0 | 0 |
+| 3821 | 30 | 0.43 | 0.58 | 13 | 2 | 0 |
+| 3822 | 22 | 0.09 | 0.40 | 5 | 1 | 1 |
+| 3891 | 2 | 0.16 | 0.49 | 5 | 0 | 1 |
+| 3895, 3903 | 3, 2 | 0.22, 0.12 | not run | | | |
+
+| measure | `cut150` | rule |
+|---|---|---|
+| score mean (13 replies) | **0.69** of 2 (no reply scores 2; 9 score 1, 4 score 0) | at least 1.6 |
+| replies scoring 0 | **4** of 13 (3664, 3719, 3722, 3821) | at most 2 of 15 |
+| rerun spread of the score (3 replies, twice) | 0.00 (cost 0.09) | quality verdict unreliable above 0.4: reliable, but 3 pairs |
+| recall calls per reply (16 runs) | 0.62 | |
+| projected weekly spend with that (`mproject`) | 150k -6%; 60k +64%; 60k lean (est.) +51%; 100k lean (est.) -6% | at least -15% |
+
+| arm | spend counts | quality holds | verdict |
+|---|---|---|---|
+| `cut150` (150k + recall) | no (-6%) | no (0.69, 4 zeros) | **Not worth it**, and quality fails too |
+| `cut60` (60k + recall) | no (+64%) | not run | **Not worth it** whatever the quality; not replayed |
+| `lean60` | no (+51%, est.) | not run | not worth it on spend; not replayed |
+
+The lost facts (reply 3664 onward in the `mreport` output) are what the cut conversation held and `wsx memory` did not bring back: the numbers of a search done earlier in the same hour, the task a worker was just started on, the reason for a decision in the last turns. 8 of the 13 replies called `recall` or `search` (0.77 per reply on the 13); the records are tasks' memos, which hold no manager conversation. The spend figure does not depend on the replay: the start of a fresh conversation (55k) is what costs. Next step if the owner wants it: measure what fills the 55k and cut that, then run `mproject` again.
