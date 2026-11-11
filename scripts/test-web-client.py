@@ -4275,7 +4275,8 @@ merge_seconds = 3
         events.expect('manager', lambda data: data == {'project': demo, 'role': 'notes'}, timeout=20)
         role_chat = wait(lambda: (lambda data: data if any(manager_said(r) for r in data['rows']) else None)(
             steady(owner, 'GET', '/api/tasks/%d/chat?role=notes' % demo)[1]), 'role reply')
-        assert role_chat['manager'] == {'name': 'notes'} and role_chat['roles'] is None and role_chat['running'], role_chat
+        # ^ A role with no model of its own shows the manager's agent in its room.
+        assert role_chat['manager'] == {'name': 'notes', 'agent': {'adapter': 'claude', 'model': 'fake-manager', 'effort': 'high', 'fallback': False}} and role_chat['roles'] is None and role_chat['running'], role_chat
         contacts = steady(owner, 'GET', '/api/tasks/%d/chat' % demo)[1]['roles']
         assert [(c['name'], c['brief']) for c in contacts] == [('notes', 'Keep the notes.')], contacts
         assert contacts[0]['last_reply'].startswith('open: ') and contacts[0]['news']['text'].startswith('open: ') and contacts[0]['news']['unix_ms'] > 0, contacts
