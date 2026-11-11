@@ -192,16 +192,18 @@ pub(super) fn preamble(notes: &Path) -> String {
 }
 
 /// The manager's memo as a record (a line of at most `MEMO_LINE_CHARS`); the views follow.
-/// `landed` is the commit and diff paths of a landed task. Returns the views that were edited
+/// `landed` is the commit and diff paths of a landed task; `project` the registered project
+/// that ran the task when it is not the store's own. Returns the views that were edited
 /// by hand meanwhile. ref: docs/tasks.md "Memo"
 pub(super) fn record_memo(
     store: &wsx_core::memory::Store,
+    project: Option<&str>,
     task: u32,
     memo: &str,
     landed: Option<(&str, &[String])>,
 ) -> Result<Vec<wsx_core::memory::manage::Drift>> {
     let (commit, paths) = landed.map_or((None, &[][..]), |(commit, paths)| (Some(commit), paths));
-    Ok(wsx_core::memory::manage::capture(store, task, memo, commit, paths)?.drift)
+    Ok(wsx_core::memory::manage::capture(store, project, task, memo, commit, paths)?.drift)
 }
 
 /// A role's notes are files of its own, not records: add a finished task's memo to its

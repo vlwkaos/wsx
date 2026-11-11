@@ -16,7 +16,7 @@ One command surface for stored knowledge: `wsx memory <command>` (wsx, projects 
 | `text`, `title` | the claim, at most `limits.text_bytes` bytes of the store (see "Limits"); optional title, one line |
 | `source` | required on every write: `msg:<id>`, `task:<n>`, `path:<file>`, `url:<URL>`, `transcript:<ref>` |
 | `updated` | unix ms of the last write; a store that has no write time may give its file's time |
-| `verified_by` | required for `rule` and `fact`, else exit 2. Forms: `owner:<msg id>` (digits, a wsx message), `owner:transcript:<ref>` (the owner's words outside wsx), or a relative path with no `..` that exists under the project root. `url:<URL>` (a page that says it: `http` or `https` only, a host name or IPv4 address, no user name, no spaces, at most 2048 bytes; it is checked as text and never fetched). wsx also takes `task:<n>` (a landed task of the project) and `check:<id>` (a passed check item of the project). `episode` needs none |
+| `verified_by` | required for `rule` and `fact`, else exit 2. Forms: `owner:<msg id>` (digits, a wsx message), `owner:transcript:<ref>` (the owner's words outside wsx), or a relative path with no `..` that exists under the project root. `url:<URL>` (a page that says it: `http` or `https` only, a host name or IPv4 address, no user name, no spaces, at most 2048 bytes; it is checked as text and never fetched). wsx also takes `task:<n>` (a landed task of the project), `task:<project>#<n>` (a landed task of another registered project, which the manager of this one ran there) and `check:<id>` (a passed check item of the project). `episode` needs none |
 | `commit` | facts: the commit it was true at |
 | `superseded_by` | slug of the newer record |
 | `lesson` | why a `failed` record failed |
@@ -116,6 +116,7 @@ When a task leaves, the manager host (`manager.rs` `fold_memo`) stores its resul
 | Task | Record |
 |---|---|
 | landed | `fact`, `verified_by` and `source` `task:<n>`, `commit` = the landed commit (the log's `landed`), `paths` = the files of its diff (the task record's `paths`, capped) |
+| landed, run by another project's manager | the same fact in the scope of that manager's project: `verified_by` and `source` `task:<project>#<n>`, slug `memo-in-<project>-<n>-<digest>` (no number, so the notes views skip it). `stale` runs git in the registered folder of `<project>`, not the scope's own, and a project that is no longer registered counts as stale. Its own scope keeps the usual record. |
 | closed or failed | `episode`, no `commit`, no `paths` |
 
 The slug is `memo-<n>-<digest>`, so the same memo is one record. A memo is one line of at most 240 characters. `wsx memory capture` does the same for a replay. A task created by a role keeps its memo in the role's own notes (not captured). When a worker's conversation ends for its size, its host also stores the handoff notes as an episode `rotation-<n>-<digest>` (cut at the text limit, with the path of the whole). When the manager starts a fresh conversation, the host also stores the handover it puts in that turn as an episode `handover-<digest>` (source `path:manager/log.jsonl`; a role's manager keeps files). Neither takes a turn of its own.
@@ -152,7 +153,7 @@ A task agent calls `wsx memory` through its host's broker (`WSX_TASK_BROKER`), w
 | a `rule` record (add, change, replace) | the manager and a named role: it needs `owner:<id>`, and a worker's call is refused by the store |
 | any write | not an untrusted agent (strict profile): read only |
 
-A read may name any scope, but an agent's search finds the transcripts (chats, task stories, notes) of its own project only; of another project's scope it finds the records. (The host sets `WSX_TASK_FROM` to the agent's project; the owner's own call sets none.)
+The host, not the agent, writes the fact of a task that its manager ran in another project, in that manager's scope ("Capture"); an agent's own writes stay in its own scope. A read may name any scope, but an agent's search finds the transcripts (chats, task stories, notes) of its own project only; of another project's scope it finds the records. (The host sets `WSX_TASK_FROM` to the agent's project; the owner's own call sets none.)
 
 A refusal exits 2 and names the cause. The host sets `WSX_MEMORY_RULES=deny` for an agent without `decide`; the owner's own call sets none.
 

@@ -109,6 +109,22 @@ fn memo_slug(task: u32, text: &str) -> String {
     format!("memo-{task}-{}", digest(text))
 }
 
+/// A project name as a part of a slug: `a-z`, `0-9` and `-`, at most 24.
+fn slug_of(name: &str) -> String {
+    let slug: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .take(24)
+        .collect();
+    slug.trim_matches('-').to_string()
+}
+
 fn one_line(text: &str) -> String {
     text.replace(['\r', '\n'], " ")
 }
@@ -731,14 +747,21 @@ pub const MEMO_LINE_CHARS: usize = 240;
 /// A finished task's memo as a record: a fact verified by the task when it landed (with the
 /// landed `commit` and the `paths` of its diff, which `start` and `stale` read), else an
 /// episode with neither. The same memo is one record. ref: docs/memory.md "Capture"
+///
+/// `project` names the registered project that ran the task when it is not the store's own: the
+/// fact is `task:<project>#<task>`, whose paths `stale` checks in that project's folder.
 pub fn capture(
     store: &Store,
+    project: Option<&str>,
     task: u32,
     memo: &str,
     commit: Option<&str>,
     paths: &[String],
 ) -> Result<Added, Error> {
-    let by = format!("task:{task}");
+    let by = match project {
+        Some(project) => format!("task:{project}#{task}"),
+        None => format!("task:{task}"),
+    };
     let landed = store.can_verify(&by);
     let memo = clip(
         &memo.split_whitespace().collect::<Vec<_>>().join(" "),
@@ -748,7 +771,11 @@ pub fn capture(
         store,
         NewRecord {
             kind: if landed { Kind::Fact } else { Kind::Episode },
-            slug: memo_slug(task, &memo),
+            slug: match project {
+                // ^ `in` is no number, so the views of the scope's own tasks skip it (`memo_task`).
+                Some(project) => format!("memo-in-{}-{task}-{}", slug_of(project), digest(&memo)),
+                None => memo_slug(task, &memo),
+            },
             text: memo,
             title: None,
             source: by.clone(),

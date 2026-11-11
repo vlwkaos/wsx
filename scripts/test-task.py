@@ -5604,7 +5604,7 @@ def part_host(created=None):
               'RUN wsx task routine list -p other --json' % (brief, manager_task))
     text = role_reply('billing', talk['id'])['text']
     assert 'role new is not for a role' in text and 'acts only on the tasks it created; #%d is the owner' % manager_task in text, text
-    assert 'deploy is not for a role' in text and 'a manager acts only in its own project' in text, text
+    assert 'deploy is not for a role' in text and "only a project's manager acts in another project" in text, text
     role_task = max(t['id'] for t in js('task', 'list')['tasks'])
     assert show(role_task)['record']['created_by'] == 'role:billing', show(role_task)['record']
     role_launch = next(t for t in traces() if t.get('launch') and t.get('actor') == 'role:billing')
@@ -5899,9 +5899,9 @@ def part_host(created=None):
     assert len(replies) == 1 and replies[0]['text'] == 'first answer', replies
     assert any(e['kind'] == 'sent' and e['to'] == 'other' and 'first answer' in e['text'] for e in manager_entries())
     wait(lambda: turn_with('Manager other replies (message'), 'the reply reaches the demo agent')
-    crossing = js('task', 'say', 'RUN wsx task new "WORK x.txt" -p other --json\nRUN wsx task say -p demo --from-manager hi')
+    crossing = js('task', 'say', 'RUN wsx task deploy -p other --json\nRUN wsx task say -p demo --from-manager hi')
     text = reply_to(crossing['id'])['text']
-    assert 'a manager acts only in its own project' in text and "messages another project's manager" in text, text
+    assert 'a manager acts in another project only with' in text and "messages another project's manager" in text, text
     assert "is for a project's manager" in cli('task', 'say', '-p', 'other', '--from-manager', 'hello', ok=False).stderr
 
     def other_tasks():
@@ -5917,6 +5917,90 @@ def part_host(created=None):
         js('task', 'land', other_land, '-p', 'other')
     wait(lambda: any(e['kind'] == 'message' and e['from'] == 'events' and '#%d landed' % other_land in e['text']
                      and 'memo: other lesson' in e['text'] for e in other_entries()), 'the other land event', 60)
+    # 33r. A manager works in another project (docs/tasks.md "Managers talk"): demo's manager creates
+    mark('33r')
+    # a task in `other`. It runs and lands in other's repo and store, its events reach demo's chat as
+    # `other #<n>` and not other's manager, its memo is a fact in demo's memory whose paths are
+    # checked in other, a role of demo and the approved actions are refused.
+    def other_ids():
+        return {t['id'] for t in other_tasks()}
+
+    def b_show(n):
+        return js('task', 'show', n, '-p', 'other')
+
+    def event_lines():
+        return [e for e in manager_entries() if e['kind'] == 'message' and e['from'] == 'events']
+
+    seen_ids = other_ids()
+    said = js('task', 'say', 'RUN wsx task new "WORK b.txt MEMO reach lesson" -p other --json')
+    assert '"id"' in reply_to(said['id'], 60)['text']
+    reached = wait(lambda: other_ids() - seen_ids, 'the task in other', 60)
+    n = reached.pop()
+    record = b_show(n)['record']
+    assert record['created_by'] == 'manager@demo' and record['project'] == 'other' and record['branch'] == 'wsx/t%d' % n, record
+    assert record['project_id'] == other_id, record
+    assert other_state(n, 'ready', 'failed')['state'] == 'ready', b_show(n)
+    # ^ The creator reviews it: it waits ready, and the event is demo's.
+    wait(lambda: next((e for e in event_lines() if 'other #%d ready' % n in e['text']), None), 'the ready event in demo', 60)
+    landed = js('task', 'say', 'RUN wsx task land %d -p other --json' % n)
+    reply_to(landed['id'], 60)
+    other_state(n, 'landed')
+    git('cat-file', '-e', 'main:b.txt', cwd=other)
+    assert not main_has('b.txt'), 'landed in demo'
+    event = wait(lambda: next((e for e in event_lines() if 'other #%d landed' % n in e['text'] and 'memo: reach lesson' in e['text']), None),
+                 'the land event in demo', 60)
+    assert any(line['text'] == 'other #%d done' % n and 'task' not in line for line in event['short']), event
+    # ^ other's manager never hears of it: its host ran (`new` starts it) and heard its own land event.
+    assert not [e for e in other_entries() if e['kind'] == 'message' and e['from'] == 'events'
+                and '#%d ' % n in e['text'] and 'reach lesson' in e['text']], other_entries()
+    # The TUI draws the same words as the chat entry's short form.
+    tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'),
+        (r'\(m\)anager', b'm'),
+        (r'other #%d done' % n, b'\x1b'),
+        (r'\(m\)anager', b'\x1b'),
+        (r'WORKSPACE', b'')])
+    # Memory: the memo is a fact in demo's scope, verified by other's task, its paths checked in other.
+    hit = wait(lambda: next((h for h in memory_records(cli('memory', 'search', 'reach lesson', '--json').stdout)
+                             if h['kind'] == 'fact'), None), 'the memo as a fact in demo')
+    fact = json.loads(cli('memory', 'get', hit['slug'], '--json').stdout)
+    other_tip = git('rev-parse', 'main', cwd=other)
+    assert fact['verified_by'] == 'task:other#%d' % n and fact['source'] == 'task:other#%d' % n, fact
+    assert fact['paths'] == ['b.txt'] and fact['commit'] == other_tip, (fact, other_tip)
+    assert [h for h in json.loads(cli('memory', 'search', 'reach lesson', '--scope', other_id, '--json').stdout) if h['kind'] == 'fact']
+
+    def stale():
+        found = next(h for h in memory_records(cli('memory', 'search', 'reach lesson', '--json').stdout) if h['slug'] == fact['slug'])
+        return bool(found.get('stale'))
+    # ^ A change in demo to a file of the same name moves nothing; one in other marks the fact stale.
+    assert not stale()
+    (project / 'b.txt').write_text('a\n')
+    git('add', 'b.txt')
+    git('commit', '-q', '-m', 'a b.txt')
+    assert not stale()
+    (other / 'b.txt').write_text('changed\n')
+    git('add', 'b.txt', cwd=other)
+    git('commit', '-q', '-m', 'change b.txt', cwd=other)
+    assert stale()
+    # Refusals: a role of demo, then the manager's discard, deploy and an unregistered project.
+    js('task', 'role', 'new', 'reachr', '--brief', brief)
+    before = other_ids()
+    talk = js('task', 'say', '--role', 'reachr',
+              'RUN wsx task new "WORK z.txt" -p other --json\nRUN wsx task say -p other --from-manager hi')
+    text = role_reply('reachr', talk['id'])['text']
+    assert text.count("only a project's manager acts in another project") == 2, text
+    refused = js('task', 'say', 'RUN wsx task close %d --discard -p other --json\nRUN wsx task deploy -p other --json\n'
+                 'RUN wsx task new "WORK z.txt" -p ghost --json' % n)
+    text = reply_to(refused['id'], 60)['text']
+    assert text.count('a manager acts in another project only with') == 2 and "project 'ghost' not found" in text, text
+    assert other_ids() == before
+    # A task of demo's own by its manager is as before: `manager`, not `manager@`.
+    mine = js('task', 'say', 'RUN wsx task new "WORK own.txt" -p demo --json')
+    reply_to(mine['id'], 60)
+    own_task = max(t['id'] for t in js('task', 'list', '--all')['tasks'])
+    assert show(own_task)['record']['created_by'] == 'manager', show(own_task)['record']
+    js('task', 'close', own_task, '--discard')
+    js('task', 'role', 'close', 'reachr')
     # 33s. Search (docs/tasks.md "Search"): a manager finds an old decision across projects, ranked,
     mark('33s')
     # and quotes it by id; the digest keeps what was said when the log goes; a hit quotes by id

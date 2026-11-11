@@ -168,13 +168,16 @@ pub struct Waiting {
 }
 
 /// Who acted: the owner, the manager's agent (`WSX_TASK_ACTOR=manager`) or a role's
-/// (`role:<name>`). ref: docs/tasks.md "Roles"
+/// (`role:<name>`). `ManagerOf` is only stored, on a task another project's manager created
+/// here (`manager@<project>`): its events go to that manager. ref: docs/tasks.md "Roles",
+/// "Managers talk"
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub enum Actor {
     #[default]
     Owner,
     Manager,
+    ManagerOf(String),
     Role(String),
 }
 
@@ -183,6 +186,7 @@ impl From<Actor> for String {
         match actor {
             Actor::Owner => "owner".into(),
             Actor::Manager => "manager".into(),
+            Actor::ManagerOf(project) => format!("manager@{project}"),
             Actor::Role(name) => format!("role:{name}"),
         }
     }
@@ -195,8 +199,9 @@ impl TryFrom<String> for Actor {
         match text.as_str() {
             "owner" => Ok(Self::Owner),
             "manager" => Ok(Self::Manager),
-            _ => match text.strip_prefix("role:") {
-                Some(name) if !name.is_empty() => Ok(Self::Role(name.into())),
+            _ => match (text.strip_prefix("role:"), text.strip_prefix("manager@")) {
+                (Some(name), _) if !name.is_empty() => Ok(Self::Role(name.into())),
+                (_, Some(project)) if !project.is_empty() => Ok(Self::ManagerOf(project.into())),
                 _ => Err(format!("unknown actor {text}")),
             },
         }
@@ -216,6 +221,14 @@ impl Actor {
     pub fn role(&self) -> Option<&str> {
         match self {
             Self::Role(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// The project whose manager created a task here, if another project's did.
+    pub fn origin(&self) -> Option<&str> {
+        match self {
+            Self::ManagerOf(project) => Some(project),
             _ => None,
         }
     }

@@ -1,5 +1,7 @@
 # Teams: the chat first, projects attached (design)
 
+Status: superseded (2026-11-11). The owner chose the small path: a project's manager works in another registered project directly, and a role stays in its own project (docs/tasks.md "Managers talk", "Roles"), with the role room change; there is no [[teams]]. The rest is kept as history.
+
 Status: design only, 2026-11-11. No code. Owner target (iam-studio msg 888): team - goal - manager - projects (several) - members (several). The chat is the top unit; the project is attached to it. Earlier direction (msg 836): rooms are about context, wsx orchestrates cross-project work, the owner does not route it.
 
 Assuming: "team" and "chat" are one thing (the owner's chat with a goal and one manager). memory facts below come from [memory.md](../memory.md) (the contract) and [memory-system.md](memory-system.md) (the design). Sizes are estimates, marked (est.).

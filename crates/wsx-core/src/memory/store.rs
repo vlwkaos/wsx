@@ -71,6 +71,28 @@ pub fn validate_scope(value: &str) -> Result<()> {
     }
 }
 
+/// `task:<project>#<n>`: a task of another registered project, as the fact of a task that its
+/// manager ran there is verified (docs/memory.md "Capture"). The project's name and the number.
+pub fn foreign_task(value: &str) -> Option<(&str, &str)> {
+    value
+        .strip_prefix("task:")?
+        .rsplit_once('#')
+        .filter(|(name, number)| !name.is_empty() && !number.is_empty())
+}
+
+/// The task store ID and folder of the registered project `name`.
+pub fn registered(name: &str) -> Option<(String, PathBuf)> {
+    let (config, _) = crate::config::global::GlobalConfig::load().ok()?;
+    let project = config
+        .projects
+        .iter()
+        .find(|project| project.name == name)?;
+    Some((
+        task_store::project_id(&project.name, &project.path),
+        project.path.clone(),
+    ))
+}
+
 /// A record slug: `a-z`, `0-9` and `-`, 1 to 64 characters, not starting with `-`; a `.` may
 /// stand inside (`release-0.10.0`), not first or last and not twice in a row.
 pub fn validate_slug(value: &str) -> Result<()> {
@@ -608,9 +630,17 @@ impl Store {
             };
         }
         if let Some(number) = value.strip_prefix("task:") {
-            let project = project("task:<n>")?;
+            let (id, number) = match foreign_task(value) {
+                Some((name, number)) => (
+                    registered(name).map(|(id, _)| id).ok_or_else(|| {
+                        Error::Usage(format!("{value}: no registered project {name}"))
+                    })?,
+                    number,
+                ),
+                None => (project("task:<n>")?.to_string(), number),
+            };
             let landed = task_store::parse_task_number(number)
-                .and_then(|n| TaskDir::open(project, n))
+                .and_then(|n| TaskDir::open(&id, n))
                 .and_then(|dir| dir.read_record())
                 .map_err(|e| Error::Usage(format!("{value}: {e}")))?
                 .state

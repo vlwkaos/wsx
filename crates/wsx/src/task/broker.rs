@@ -196,7 +196,8 @@ pub fn serve_manager(
         if request.argv.first().is_some_and(|first| first == "memory") {
             return run_memory(&exe, request, &fallback_cwd, &project_id, policy);
         }
-        let target = match allowed(&request.argv, policy).and_then(|()| reach(&request.argv, &own))
+        let target = match allowed(&request.argv, policy)
+            .and_then(|()| reach(&request.argv, &own, &actor))
         {
             Ok(target) => target,
             Err(error) => return refused(format!("{error:#}")),
@@ -288,10 +289,18 @@ fn memory_pin(argv: &[String], own_id: &str, policy: Policy) -> Result<bool> {
     Ok(scope.is_empty())
 }
 
-/// The other project a command reaches, which only `ledger` and `say --from-manager` may, or
-/// `role:<name>` for `say --from-role` to a role of its own (`manager` without `--role`);
-/// `None` for anything else of its own. A `--from-manager` message must go to another project.
-fn reach(argv: &[String], own: &str) -> Result<Option<String>> {
+/// The commands a manager may run in another registered project: that project's tasks, in its
+/// store, with its numbers, checks and land target.
+const MANAGER_REACH: [&str; 9] = [
+    "new", "show", "list", "add", "steer", "stop", "hold", "land", "close",
+];
+
+/// The other project a command reaches. A manager may run `MANAGER_REACH` there (the task
+/// lives in that project's store, as the owner's `-p` makes it) and `say --from-manager`; a
+/// role only reads `ledger`. Or `role:<name>` for `say --from-role` to a role of its own
+/// (`manager` without `--role`); `None` for anything else of its own. A `--from-manager`
+/// message must go to another project. ref: docs/tasks.md "Managers talk"
+fn reach(argv: &[String], own: &str, actor: &str) -> Result<Option<String>> {
     let project = argv
         .iter()
         .enumerate()
@@ -305,6 +314,7 @@ fn reach(argv: &[String], own: &str) -> Result<Option<String>> {
     let sub = argv.get(1).map(String::as_str).unwrap_or_default();
     let from_manager = argv.iter().any(|arg| arg == "--from-manager");
     let from_role = argv.iter().any(|arg| arg == "--from-role");
+    let discard = argv.iter().any(|arg| arg == "--discard");
     let role = argv
         .iter()
         .position(|arg| arg == "--role")
@@ -323,9 +333,14 @@ fn reach(argv: &[String], own: &str) -> Result<Option<String>> {
         None => Ok(None),
         // ^ Reading another ledger is not a message; only a sent message is logged.
         Some(_) if sub == "ledger" => Ok(None),
-        Some(other) if sub == "say" && from_manager => Ok(Some(other)),
+        Some(other) if actor == "manager" && sub == "say" && from_manager => Ok(Some(other)),
+        Some(_) if actor == "manager" && MANAGER_REACH.contains(&sub) && !discard => Ok(None),
+        Some(other) if actor == "manager" => bail!(
+            "a manager acts in another project only with {}, never --discard or an approved action; for {other} it may also read `wsx task ledger -p {other}` and `wsx task say -p {other} --from-manager`",
+            MANAGER_REACH.join(", ")
+        ),
         Some(other) => bail!(
-            "a manager acts only in its own project; for {other} it may read `wsx task ledger -p {other}` and `wsx task say -p {other} --from-manager`"
+            "only a project's manager acts in another project; a role stays in its own (for {other} it may read `wsx task ledger -p {other}`)"
         ),
     }
 }

@@ -148,11 +148,34 @@ pub(super) enum Event {
         text: String,
         reply: bool,
     },
-    /// The events of a role's tasks that its host did not take: the manager hears them.
+    /// The events of a task that the host of the role, or the manager of the project, that
+    /// created it did not take: this manager hears them.
     Undelivered {
-        role: String,
+        to: Hearer,
         lines: Vec<(String, Short)>,
     },
+}
+
+/// Who hears the events of a task besides this manager: the open role that created it, or the
+/// manager of the other project that did. ref: docs/tasks.md "Roles", "Managers talk"
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Hearer {
+    Role(String),
+    Project(String),
+}
+
+impl Hearer {
+    /// The head of the events this manager hears when `self` did not take them.
+    fn refusal(&self) -> String {
+        match self {
+            Self::Role(role) => {
+                format!("role {role} did not take the events of its tasks, so they are yours:")
+            }
+            Self::Project(project) => format!(
+                "the manager of {project} did not take the events of its tasks here, so they are yours:"
+            ),
+        }
+    }
 }
 
 /// Answers this manager owes other projects' managers: one per message from one of them
@@ -232,8 +255,9 @@ struct Manager {
     policy: broker::SharedPolicy,
     /// When the agent last failed to start a turn; the next try waits `START_RETRY`.
     start_failed: Option<Instant>,
-    /// Event lines of tasks a role created, by role, not yet sent to it.
-    role_events: BTreeMap<String, Vec<(String, Short)>>,
+    /// Event lines of tasks a role or another project's manager created, by who hears them, not
+    /// yet sent.
+    role_events: BTreeMap<Hearer, Vec<(String, Short)>>,
     roles_swept: Option<Instant>,
     /// A role host that is closed or idle: it leaves.
     leaving: bool,
@@ -523,11 +547,8 @@ impl Manager {
                     self.say(&format!("cannot start the idle task: {error}"))
                 }
                 Event::Sent { to, text, reply } => self.log(ManagerEvent::Sent { to, text, reply }),
-                Event::Undelivered { role, lines } => {
-                    let head = format!(
-                        "role {role} did not take the events of its tasks, so they are yours:"
-                    );
-                    self.pending_events.push(plain_event(head));
+                Event::Undelivered { to, lines } => {
+                    self.pending_events.push(plain_event(to.refusal()));
                     self.pending_events.extend(lines);
                     self.last_event = Some(Instant::now());
                 }
@@ -1268,6 +1289,7 @@ impl Manager {
                 .and_then(|store| {
                     notes::record_memo(
                         &store,
+                        None,
                         task,
                         memo,
                         landed
@@ -1277,9 +1299,37 @@ impl Manager {
                 })
                 .map(|drift| self.say_drift(&drift)),
         };
+        // ^ The manager that ran the task from another project keeps the fact too, in its own
+        // scope. ref: docs/memory.md "Capture"
+        let done = done.and_then(|()| match record.created_by.origin() {
+            Some(origin) => self.record_memo_at(origin, record, landed.as_deref(), memo),
+            None => Ok(()),
+        });
         if let Err(error) = done {
             self.say(&format!("cannot add the memo: {error:#}"));
         }
+    }
+
+    /// The memo of this project's task, as a record in the scope of `origin`, the project whose
+    /// manager created it.
+    fn record_memo_at(
+        &self,
+        origin: &str,
+        record: &TaskRecord,
+        landed: Option<&str>,
+        memo: &str,
+    ) -> anyhow::Result<()> {
+        let (name, main) = super::project_entry(Some(origin))?;
+        let store =
+            wsx_core::memory::Store::project(&store::project_id(&name, &main), &name, &main)?;
+        notes::record_memo(
+            &store,
+            Some(&self.project),
+            record.id,
+            memo,
+            landed.map(|commit| (commit, record.paths.as_slice())),
+        )?;
+        Ok(())
     }
 
     fn say_drift(&self, drift: &[wsx_core::memory::manage::Drift]) {
@@ -1295,25 +1345,38 @@ impl Manager {
             .collect()
     }
 
-    /// Queue a task's event line. Only a task's creator hears of it: an open role, else the
-    /// manager. ref: docs/tasks.md "Roles"
+    /// Queue a task's event line. Only a task's creator hears of it: an open role, the manager
+    /// of the project that created it, else this manager. The other project's manager hears
+    /// the task as `<this project> #<n>`, with no chip, which would link into its own tasks.
+    /// ref: docs/tasks.md "Roles", "Managers talk"
     fn task_event(
         &mut self,
         record: &TaskRecord,
         open_roles: &[String],
         line: String,
-        short: Short,
+        mut short: Short,
     ) {
-        match record
+        let role = record
             .created_by
             .role()
-            .filter(|role| open_roles.iter().any(|open| open == role))
-        {
-            Some(role) => self
-                .role_events
-                .entry(role.to_string())
-                .or_default()
-                .push((line, short)),
+            .filter(|role| open_roles.iter().any(|open| open == role));
+        let to = match (role, record.created_by.origin()) {
+            (Some(role), _) => Some(Hearer::Role(role.to_string())),
+            (None, Some(origin)) => Some(Hearer::Project(origin.to_string())),
+            (None, None) => None,
+        };
+        match to {
+            Some(to) => {
+                let line = match &to {
+                    Hearer::Project(_) => {
+                        short.text = format!("{} {}", self.project, short.text);
+                        short.task = None;
+                        format!("{} {line}", self.project)
+                    }
+                    Hearer::Role(_) => line,
+                };
+                self.role_events.entry(to).or_default().push((line, short));
+            }
             None => self.pending_events.push((line, short)),
         }
         self.last_event = Some(Instant::now());
@@ -1471,13 +1534,14 @@ impl Manager {
         }
     }
 
-    /// Send the role's own events through `say`, which starts its host when it is not
-    /// running; the events of a role whose host does not take them go to the manager.
+    /// Send the events of a role's tasks to the role, and those of another project's manager's
+    /// tasks to that manager, through `say`, which starts its host; the events of one whose
+    /// host does not take them go to this manager.
     fn send_role_events(&mut self) {
         let Ok(exe) = std::env::current_exe() else {
             return;
         };
-        for (role, lines) in std::mem::take(&mut self.role_events) {
+        for (to, lines) in std::mem::take(&mut self.role_events) {
             let (project, main, exe, events) = (
                 self.project.clone(),
                 self.main.clone(),
@@ -1491,18 +1555,34 @@ impl Manager {
                     .collect::<Vec<_>>()
                     .join("\n");
                 let short = lines.iter().map(|(_, short)| short.clone()).collect();
-                let sent = owner::say(
-                    &project,
-                    &main,
-                    &exe,
-                    Some(&role),
-                    super::launch_manager(&main),
-                    text,
-                    Some(Author::Events),
-                    short,
-                );
+                let sent = match &to {
+                    Hearer::Role(role) => owner::say(
+                        &project,
+                        &main,
+                        &exe,
+                        Some(role),
+                        super::launch_manager(&main),
+                        text,
+                        Some(Author::Events),
+                        short,
+                    ),
+                    Hearer::Project(origin) => {
+                        super::project_entry(Some(origin)).and_then(|(name, origin_main)| {
+                            owner::say(
+                                &name,
+                                &origin_main,
+                                &exe,
+                                None,
+                                super::launch_manager(&origin_main),
+                                text,
+                                Some(Author::Events),
+                                short,
+                            )
+                        })
+                    }
+                };
                 if !sent.is_ok_and(|response| response.ok) {
-                    let _ = events.send(Event::Undelivered { role, lines });
+                    let _ = events.send(Event::Undelivered { to, lines });
                 }
             });
         }

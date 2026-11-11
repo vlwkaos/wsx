@@ -148,7 +148,8 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
             commit,
             paths,
         } => {
-            let added = manage::capture(&one(&scopes)?, task, &memo, commit.as_deref(), &paths)?;
+            let added =
+                manage::capture(&one(&scopes)?, None, task, &memo, commit.as_deref(), &paths)?;
             notice_drift(&added.drift);
             show(
                 &added.record,

@@ -245,7 +245,7 @@ impl Role {
     pub fn of_actor(actor: &Actor) -> Option<Self> {
         match actor {
             Actor::Owner => None,
-            Actor::Manager => Some(Self::Manager),
+            Actor::Manager | Actor::ManagerOf(_) => Some(Self::Manager),
             Actor::Role(_) => Some(Self::Area),
         }
     }
