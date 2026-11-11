@@ -12,7 +12,7 @@ const cdp = await launch({ captures, prefix: "projects-", timeoutSeconds: 200 })
 const { send, evaluate, until, viewport, capture, fail, cleanup, problems } = cdp;
 const linter = designLint({ evaluate, captures, file: "projects" });
 const name = path.basename(repo);
-const rows = "[...document.querySelectorAll('.home-rows > .row')]";
+const rows = "[...document.querySelectorAll('.home-rows > .row:not(.row-role)')]";
 const rowOf = (project) => `${rows}.find((row) => row.querySelector('.row-label').firstChild.textContent === ${JSON.stringify(project)})`;
 
 const open = (url, code) => pair(cdp, url, code, { ready: ".home-row" });

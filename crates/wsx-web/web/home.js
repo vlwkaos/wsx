@@ -158,6 +158,23 @@ function RemoveProject({ project, onClose }) {
     </dialog>`;
 }
 
+// An open role of a project: its own row under the project's, as the ⋯ menu lists it (name, a dot
+// while the role's chat has a reply this device has not read, the line of its last reply, else
+// its brief; docs/web-client-tasks.md "Home").
+function RoleRow({ project, role, current }) {
+  const unread = Boolean(unreadNews(`project-${project.id}-r-${role.name}`, role.news));
+  return html`
+    <li class="row row-role" data-key=${`${project.id}/r/${role.name}`}>
+      <a class="row-link role-row" href=${`#/p/${project.id}/r/${encodeURIComponent(role.name)}`} aria-current=${current ? "page" : null}
+        aria-label=${`Role ${role.name} of ${project.name}${unread ? ", unread" : ""}`}>
+        <span class="row-main">
+          <span class="row-work">${unread && html`<span class="news-mark" aria-hidden="true"></span>`}<span class="row-label">${role.name}</span></span>
+          <span class="row-context">${role.last_reply ?? role.brief}</span>
+        </span>
+      </a>
+    </li>`;
+}
+
 export function Home({ rail }) {
   const store = useStore();
   // ^ The chat keeps what it read as it goes, and as it closes, which is after this list drew.
@@ -174,7 +191,8 @@ export function Home({ rail }) {
   const live = Object.values(store.tasks).some((overview) => overview?.working > 0)
     || sessions.some((session) => stateOf(session).key === "working");
   const now = useNow(true, live ? 1000 : 60_000);
-  const [, kind, open] = location.hash.split("/");
+  const [, kind, open, place, roleName] = location.hash.split("/");
+  const inRole = place === "r" ? decodeURIComponent(roleName ?? "") : null;
   const list = useRef();
   useFlip(list);
   const [adding, setAdding] = useState(false);
@@ -193,9 +211,9 @@ export function Home({ rail }) {
           const working = row.overview?.working ?? 0;
           const last = row.last;
           const news = row.news;
-          return html`
+          return [html`
             <li class=${manage ? "row row-slide" : "row"} onScroll=${manage ? slid : null} key=${row.project.id} data-key=${row.project.id} data-news=${news ? "" : null}>
-              <a class="row-link home-row" href=${`#/p/${row.project.id}`} aria-current=${rail && Number(open) === row.project.id ? "page" : null}>
+              <a class="row-link home-row" href=${`#/p/${row.project.id}`} aria-current=${rail && Number(open) === row.project.id && inRole === null ? "page" : null}>
                 <span class="row-main">
                   <span class="row-work">
                     ${news ? html`<span class="news-mark" role="img" aria-label="New message"></span>` : null}<span class="row-label" data-tone=${row.overview?.asks?.length ? "accent" : null}>${row.project.name}${row.overview?.asks?.length ? html`<span class="visually-hidden">, Asks you</span>` : null}</span>
@@ -214,7 +232,8 @@ export function Home({ rail }) {
               </a>
               ${manage && html`<button class="row-remove" type="button" onClick=${() => setRemoving(row.project)}
                 aria-label=${`Remove project ${row.project.name}`} title="Remove"><${Icon} name="fail" /></button>`}
-            </li>`;
+            </li>`, ...(row.overview?.roles ?? []).map((role) => html`<${RoleRow} key=${`${row.project.id}/r/${role.name}`} project=${row.project} role=${role}
+              current=${rail && Number(open) === row.project.id && inRole === role.name} />`)];
         })}
       </ul>`;
   }

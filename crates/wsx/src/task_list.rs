@@ -418,7 +418,16 @@ pub fn rows(ledger: &Value) -> Vec<TaskRow> {
         id: 0,
         title: role["name"].as_str().unwrap_or_default().to_string(),
         state: role["state"].as_str().unwrap_or_default().to_string(),
-        status: role["brief"].as_str().unwrap_or_default().to_string(),
+        // ^ The role's own model first, as the room's heading shows it.
+        status: [
+            wsx_core::task::view::agent_label(role),
+            role["brief"].as_str().map(str::to_string),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · "),
         section: Section::Roles,
     };
     open.iter()

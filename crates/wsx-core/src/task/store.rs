@@ -1216,7 +1216,11 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
     ];
     for role in super::roles::names(project_id) {
         let role = dir.join(ROLES_DIR).join(role);
-        files.extend([role.join(MANAGER_LOG), role.join(super::roles::CLOSED_FILE)]);
+        files.extend([
+            role.join(MANAGER_LOG),
+            role.join(super::roles::CLOSED_FILE),
+            role.join(super::roles::ROLE_FILE),
+        ]);
     }
     for id in task_numbers(project_id)? {
         let task = dir.join(id.to_string());

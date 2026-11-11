@@ -18,7 +18,7 @@ use wsx_core::task::chat::{self, chat_rows, Names, Window};
 use wsx_core::task::manager::{ApprovalAction, ManagerEvent, ManagerRequest, ManagerResponse};
 use wsx_core::task::owner::{self};
 use wsx_core::task::policy::Capability;
-use wsx_core::task::roles;
+use wsx_core::task::roles::{self, Opener, RoleAgent};
 use wsx_core::task::store::ManagerDir;
 use wsx_core::task::MAX_MESSAGE_BYTES;
 use wsx_core::task::{search, text};
@@ -323,11 +323,14 @@ pub(crate) fn role(action: RoleCmd) -> Result<()> {
         RoleCmd::New {
             name,
             brief,
+            model,
+            adapter,
             said,
             project,
             json,
         } => {
             need(Capability::RoleAdmin, "role new")?;
+            let agent = RoleAgent::checked(adapter.as_deref(), model.as_deref())?;
             let (_, project_id, main) = open_project(project.as_deref())?;
             let settings = load_task_config(&main)
                 .map_err(|error| anyhow::anyhow!("{error}; no role was opened"))?;
@@ -341,7 +344,7 @@ pub(crate) fn role(action: RoleCmd) -> Result<()> {
                         ApprovalAction::Role,
                         None,
                         None,
-                        Some((&name, &brief)),
+                        Some((&name, &brief, agent.as_ref())),
                         None,
                     ),
                     said.owner_said,
@@ -350,7 +353,11 @@ pub(crate) fn role(action: RoleCmd) -> Result<()> {
             {
                 return Ok(());
             }
-            roles::create(&project_id, &name, &brief)?;
+            let by = match actor() {
+                Actor::Manager => Opener::Manager,
+                _ => Opener::Owner,
+            };
+            roles::create(&project_id, &name, &brief, by, agent)?;
             let message = format!("role {name} is open; `wsx task say --role {name}` talks to it");
             if json {
                 return print_json(&json!({ "role": name, "state": "open", "message": message }));
@@ -379,9 +386,12 @@ pub(crate) fn role(action: RoleCmd) -> Result<()> {
             }
             for row in &rows {
                 println!(
-                    "{} {}",
+                    "{} {}{}",
                     row["name"].as_str().unwrap_or_default(),
-                    row["state"].as_str().unwrap_or_default()
+                    row["state"].as_str().unwrap_or_default(),
+                    row["model"]
+                        .as_str()
+                        .map_or(String::new(), |model| format!(" {model}"))
                 );
             }
             Ok(())

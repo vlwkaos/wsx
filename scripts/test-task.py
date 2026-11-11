@@ -5565,18 +5565,26 @@ def part_host(created=None):
     assert 'lowercase letter' in cli('task', 'role', 'new', 'Bad_Name', '--brief', brief, ok=False).stderr
     assert 'not a role to create' in cli('task', 'role', 'new', 'manager', '--brief', brief, ok=False).stderr
     # The owner opens a role at once.
-    opened = js('task', 'role', 'new', 'billing', '--brief', brief)
+    # ^ A role's agent is checked as task new checks a model; --adapter needs its --model.
+    assert 'must be one of: claude, pi' in cli('task', 'role', 'new', 'odd', '--brief', brief, '--model', 'x', '--adapter', 'nope', ok=False).stderr
+    assert 'the model must be one word' in cli('task', 'role', 'new', 'odd', '--brief', brief, '--model', 'two words', ok=False).stderr
+    assert '--model' in cli('task', 'role', 'new', 'odd', '--brief', brief, '--adapter', 'pi', ok=False).stderr
+    assert not (roles_dir / 'odd').exists()
+    opened = js('task', 'role', 'new', 'billing', '--brief', brief, '--model', 'haiku')
     assert opened['state'] == 'open' and (roles_dir / 'billing/brief.md').read_text() == brief.read_text(), opened
     assert 'already open' in cli('task', 'role', 'new', 'billing', '--brief', brief, ok=False).stderr
     # A new role's room holds none of the project's earlier events, though the project has closed tasks.
     assert len(js('task', 'list', '--all')['tasks']) > len(js('task', 'list')['tasks'])
     assert not role_entries('billing') and js('task', 'chat', '--role', 'billing')['entries'] == []
     # The manager's role new is a request: one approval, which counts against the cap.
-    asked = js('task', 'say', 'RUN wsx task role new qa --brief %s -p demo --json' % brief)
+    asked = js('task', 'say', 'RUN wsx task role new qa --brief %s --model sonnet -p demo --json' % brief)
     text = reply_to(asked['id'])['text']
     assert 'role new qa needs the owner' in text and 'the owner was asked (a' in text, text
     pending = [a for a in js('task', 'ledger')['approvals'] if a['action'] == 'role']
     assert [(a['role'], a['brief']) for a in pending] == [('qa', brief.read_text())], pending
+    # ^ The card names the model; the asked row of the ledger and `role list` carries it.
+    assert (pending[0]['model'], pending[0]['adapter'], pending[0]['label']) == ('sonnet', 'claude', 'Approve role qa (sonnet)'), pending
+    assert roles()['qa']['model'] == 'sonnet', roles()
     qa_request = pending[0]['id']
     assert roles()['qa']['state'] == 'asked' and not (roles_dir / 'qa').exists(), roles()
     capped = cli('task', 'role', 'new', 'docs', '--brief', brief, ok=False).stderr
@@ -5610,8 +5618,13 @@ def part_host(created=None):
     role_launch = next(t for t in traces() if t.get('launch') and t.get('actor') == 'role:billing')
     assert role_launch['instructions'].startswith('You are billing, a role in the project demo'), role_launch
     assert 'Drive the billing rewrite.' in role_launch['instructions'] and '/roles/billing/notes' in role_launch['instructions']
+    assert role_launch['model'] == 'haiku', role_launch
     assert role_launch['wsx_env'] == ['WSX_AGENT_TREE', 'WSX_TASK_ACTOR', 'WSX_TASK_BROKER'], role_launch
     assert roles()['billing']['running'], roles()
+    # ^ role list and the ledger show the role's own agent and who opened it; the owner's role is owner-opened.
+    assert (roles()['billing']['model'], roles()['billing']['adapter'], roles()['billing']['by']) == ('haiku', 'claude', 'owner'), roles()
+    assert next(r for r in js('task', 'ledger')['roles'] if r['name'] == 'billing')['model'] == 'haiku'
+    assert 'billing open haiku' in cli('task', 'role', 'list').stdout
     # Only the creating role hears its task's events; the manager hears its own.
     assert wait_state(role_task, 'ready', 'failed')['state'] == 'ready'
     # ^ The first prompt of a task a role created holds the role's brief (docs/memory.md "Start set").
@@ -5658,7 +5671,7 @@ def part_host(created=None):
     for cols in (120, 80):
         shots = tui_screens(wsx, env, project, [
             (r'WORKSPACE', b't'),
-            (r'(?ms)^ Roles$.*^ billing +open +Drive the billing', b'j' * below),
+            (r'(?ms)^ Roles$.*^ billing +open +haiku · Drive the billing', b'j' * below),
             (r'\(enter\)chat', b'\r'),
             (r'(?ms)^ billing +\d\d:\d\d$.*ROLE', b'\x1b'),
             (r'\(m\)anager', b'\x1b'),
@@ -5666,7 +5679,7 @@ def part_host(created=None):
         talk = shots[3]
         assert 'to check' not in talk and re.search(r'(?m)^ billing +\d\d:\d\d$', talk), talk
         # ^ The title names the project and the role; the manager's message is under "<name> manager", not the bare project name.
-        assert 'demo · billing' in talk and 'MANAGER PING' in talk, talk
+        assert 'demo · billing · haiku' in talk and 'MANAGER PING' in talk, talk
         assert re.search(r'(?m)^ demo manager +\d\d:\d\d$', talk) and not re.search(r'(?m)^ demo +\d\d:\d\d$', talk), talk
     # role close keeps the notes; the role's tasks go back to the manager. A role with no turn for
     # tasks.roles.closeDays is closed by wsx, and the manager hears it.
@@ -5677,10 +5690,15 @@ def part_host(created=None):
     assert 'no open role billing' in cli('task', 'say', '--role', 'billing', 'hi', ok=False).stderr
     js('task', 'add', role_task, 'WORK role2.txt')
     wait(lambda: events_with('#%d ready r2' % role_task), 'a closed role\'s task reaches the manager', 60)
+    # ^ A role the owner opened stays open past closeDays; the manager's (docs, by the owner's word) closes.
+    assert js('task', 'role', 'new', 'keep', '--brief', brief)['state'] == 'open'
+    assert (roles()['keep']['by'], roles()['docs']['by']) == ('owner', 'manager'), roles()
     configure(LAND_CONFIG + '  roles: { max: 2, closeDays: 0.0001 }\n', 'idle roles close')
     wait(lambda: events_with('role docs closed by wsx: no turn for tasks.roles.closeDays; its notes are kept'),
          'the idle role closes', 60)
-    assert roles()['docs']['state'] == 'closed', roles()
+    assert roles()['docs']['state'] == 'closed' and roles()['keep']['state'] == 'open', roles()
+    assert not events_with('role keep closed by wsx'), 'the owner-opened role was closed by wsx'
+    js('task', 'role', 'close', 'keep')
     for n in (manager_task, role_task):
         js('task', 'close', n, '--discard')
     configure(LAND_CONFIG, 'no roles')

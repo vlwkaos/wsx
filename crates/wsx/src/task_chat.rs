@@ -268,7 +268,7 @@ struct View {
     name: String,
     items: Vec<Item>,
     activity: Option<String>,
-    /// The manager's agent in use, as `view::agent_label` writes it; none for a role.
+    /// The agent in use, as `view::agent_label` writes it.
     agent: Option<String>,
 }
 
@@ -749,13 +749,17 @@ fn read(
         )?,
         None => Page::default(),
     };
+    // ^ A fallback's while one runs, else the role's own or the manager's (docs/tasks.md "Agents").
+    let agent = dir
+        .map(|dir| view::manager_agent(dir, &settings))
+        .and_then(|agent| view::agent_label(&agent));
     if role.is_some() {
         return Ok(View {
             rows,
             name,
             items: Vec::new(),
             activity: activity(&log).map(str::to_string),
-            agent: None,
+            agent,
         });
     }
     let mut items: Vec<Item> = checks::open_items(store)?
@@ -780,10 +784,7 @@ fn read(
         name,
         items,
         activity: activity(&log).map(str::to_string),
-        // ^ A fallback's while one runs (docs/tasks.md "Agents").
-        agent: dir
-            .map(|dir| view::manager_agent(dir, &settings))
-            .and_then(|agent| view::agent_label(&agent)),
+        agent,
     })
 }
 

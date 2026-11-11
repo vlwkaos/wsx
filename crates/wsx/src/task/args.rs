@@ -552,6 +552,12 @@ pub enum RoleCmd {
         /// The role's brief, a file or - for standard input
         #[arg(long, value_name = "FILE")]
         brief: PathBuf,
+        /// The role's model; default: the manager's (tasks.manager.model)
+        #[arg(long, value_name = "NAME")]
+        model: Option<String>,
+        /// The role's adapter (claude or pi), with --model; default: claude
+        #[arg(long, value_name = "NAME", requires = "model")]
+        adapter: Option<String>,
         #[command(flatten)]
         said: OwnerSaid,
         #[arg(short, long)]

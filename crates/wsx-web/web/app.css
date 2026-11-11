@@ -165,6 +165,10 @@ button.row-open { padding: 0; border: 0; background: none; text-align: left; }
 .news-mark { flex: none; align-self: center; width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-accent); }
 .row-news { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-sm); color: var(--color-text); }
 .row-context:empty { display: none; }
+/* Hook: .row-role — an open role under its project's row on Home: the row's text and hairline
+   start one step in. */
+.row-role { --row-inset: calc(var(--space-4) * 2); }
+.row-role > .row-link { padding-left: calc(var(--space-4) * 2); }
 .row-state {
   flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end;
   font-size: var(--font-size-sm); color: var(--color-muted);

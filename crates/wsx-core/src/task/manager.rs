@@ -627,6 +627,11 @@ pub enum ApprovalLine {
         role: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         brief: Option<String>,
+        /// A role request: the agent it asks for (both set, or the manager's).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        adapter: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
         /// A forced push: origin's tip the request saw, which the push leases (empty: origin
         /// had no such branch).
         #[serde(default, skip_serializing_if = "Option::is_none")]

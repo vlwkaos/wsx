@@ -310,6 +310,8 @@ fn build_overview(
         "resolutions": resolutions(&check_items, &tasks, &approvals, now),
         "last_reply": last_reply.map(|(_, text)| text),
         "news": news,
+        // ^ The open roles under the project's home row (docs/web-client-tasks.md "Home").
+        "roles": role_contacts(scope),
         "asks": asks,
         "last_unix_ms": last_unix_ms,
         // ^ Tasks can be tried on a preview link (docs/tasks.md "Preview").
@@ -695,11 +697,9 @@ pub fn chat(
             json!({ "rows": [], "skipped": 0, "asks": [], "running": false, "busy": false, "manager": manager, "roles": roles }),
         );
     };
-    // ^ The agent in use now, a fallback's while one runs; a role's has none shown.
-    if role.is_none() {
-        manager["agent"] =
-            view::manager_agent(&dir, &load_task_config(&scope.path).unwrap_or_default());
-    }
+    // ^ The agent in use now, a fallback's while one runs; a role's own, else the manager's.
+    manager["agent"] =
+        view::manager_agent(&dir, &load_task_config(&scope.path).unwrap_or_default());
     // ^ Another project's manager by its set name, read only from granted projects.
     let peer = |project: &str| {
         scopes

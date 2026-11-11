@@ -361,7 +361,7 @@ fn heading(chat: &ManagerChat, width: usize) -> Line<'static> {
         .map_or(String::new(), |agent| format!(" · {agent}"));
     let project = truncate_to_width(
         &match chat.role {
-            Some(_) => String::new(),
+            Some(_) => agent.clone(),
             None => format!(" {}{agent}", chat.project),
         },
         width.saturating_sub(Line::from(who.as_str()).width() + counts.len() + 2),

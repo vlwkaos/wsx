@@ -335,18 +335,27 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
     let listener = hosting::bind(&dir.socket_path())?;
     let brokered = hosting::bind(&dir.broker_path())?;
     let state = dir.read_state()?;
+    // ^ A role with its own agent runs it; the event model names one of the manager's models.
+    let (adapter, model, event_model) = match roles::agent(&dir) {
+        Some(own) => (own.adapter, own.model, None),
+        None => (
+            settings.manager_adapter,
+            settings.manager_model,
+            settings.manager_event_model,
+        ),
+    };
     let (events, receiver) = channel();
     let mut manager = Manager {
         dir,
         project,
         main,
-        adapter: settings.manager_adapter,
+        adapter,
         deploy_auto: settings.deploy_auto,
         stand_in: None,
         stand_in_look: None,
-        model: settings.manager_model,
+        model,
         effort: settings.manager_effort,
-        event_model: settings.manager_event_model,
+        event_model,
         agent_model: String::new(),
         rotate_tokens: settings.manager_rotate_tokens,
         state,
