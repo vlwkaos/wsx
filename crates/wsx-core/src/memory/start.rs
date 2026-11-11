@@ -265,7 +265,7 @@ fn records(
     let mut lines = Vec::new();
     let (mut checks, mut unknown) = (0, false);
     for r in found {
-        let line = record_line(r, start.files);
+        let line = record_line(r);
         let needs = stale_of_needs_git(r);
         if !fits(&line, *room) || unknown || (checks >= MAX_CHECKS && needs) {
             left.push(r.slug.clone());
@@ -347,33 +347,32 @@ fn stale_mark(root: &Path, r: &Record) -> String {
     }
 }
 
-/// At most `MAX_FILES` entries of a record's paths: while there are more, the two entries with
-/// the longest common folder become that folder (`dir/`); paths with no folder in common are
-/// cut and counted.
+/// At most `MAX_FILES` entries of a record's paths, sorted: while there are more, the two
+/// neighbours with the longest common folder become that folder (`dir/`; the longest pair of
+/// a sorted list is always a pair of neighbours, so it costs one pass a merge, and a record may
+/// hold 500 paths). Paths with no folder in common are cut and counted.
 fn files_part(paths: &[String]) -> String {
-    let folder = |e: &str| e.split('/').map(str::to_string).collect::<Vec<_>>();
     let common = |a: &str, b: &str| {
-        let (a, b) = (folder(a), folder(b));
-        let n = a.len().min(b.len()).saturating_sub(1);
-        a.iter().zip(&b).take(n).take_while(|(x, y)| x == y).count()
+        let n = a.split('/').count().min(b.split('/').count()) - 1;
+        a.split('/')
+            .zip(b.split('/'))
+            .take(n)
+            .take_while(|(x, y)| x == y)
+            .count()
     };
     let mut entries: Vec<String> = paths.to_vec();
+    entries.sort();
     while entries.len() > MAX_FILES {
-        let mut best = (0, 0, 0);
-        for i in 0..entries.len() {
-            for j in i + 1..entries.len() {
-                let n = common(&entries[i], &entries[j]);
-                if n > best.0 {
-                    best = (n, i, j);
-                }
-            }
-        }
-        if best.0 == 0 {
+        let (n, at) = (1..entries.len())
+            .map(|i| (common(&entries[i - 1], &entries[i]), i))
+            .max_by_key(|(n, i)| (*n, std::cmp::Reverse(*i)))
+            .unwrap_or_default();
+        if n == 0 {
             break;
         }
-        let dir = folder(&entries[best.1])[..best.0].join("/");
-        entries.remove(best.2);
-        entries[best.1] = format!("{dir}/");
+        let dir = entries[at].split('/').take(n).collect::<Vec<_>>().join("/");
+        entries.remove(at);
+        entries[at - 1] = format!("{dir}/");
     }
     let more = entries.len().saturating_sub(MAX_FILES);
     entries.truncate(MAX_FILES);
@@ -383,9 +382,7 @@ fn files_part(paths: &[String]) -> String {
     }
 }
 
-/// The line of a record. `files` are the task's own: a record path that meets one is no news,
-/// so the paths that do not meet come first.
-fn record_line(r: &Record, files: &[String]) -> String {
+fn record_line(r: &Record) -> String {
     let text = r.text.split_whitespace().collect::<Vec<_>>().join(" ");
     let text = match text.chars().count() > RECORD_CLIP {
         true => format!(
@@ -395,11 +392,9 @@ fn record_line(r: &Record, files: &[String]) -> String {
         ),
         false => text,
     };
-    let mut paths = r.paths.clone();
-    paths.sort_by_key(|p| files.iter().any(|f| meet(p, f)));
-    let shown = match paths.is_empty() {
+    let shown = match r.paths.is_empty() {
         true => String::new(),
-        false => format!(" (files: {})", files_part(&paths)),
+        false => format!(" (files: {})", files_part(&r.paths)),
     };
     format!(
         "- {} ({}, {}): {text}{shown}",
