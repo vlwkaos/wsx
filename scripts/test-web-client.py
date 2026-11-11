@@ -4115,7 +4115,7 @@ merge_seconds = 3
         everything = steady(owner, 'GET', '/api/tasks')[1]
         assert sorted(item['project'] for item in everything) == sorted(ids.values()), everything
         detail = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
-        assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'hand'], detail['actions']
+        assert detail['state'] == 'ready' and detail['stage'] == 'needs_you' and detail['actions'] == ['land', 'hand', 'try'], detail['actions']
         assert re.match(r'Ready, waiting for you to land it for [^:]+: checks 1 of 1 passed\. Land it to put it on main\.$', detail['status']['sentence']), detail['status']
         assert detail['to_check'] == [] and detail['fixes'] is None, detail
         assert detail['result']['human_verify'] == [{'check': 'open the file', 'where': 'a real device', 'capture': '', 'poster': '', 'pass_if': 'it has text'}]
@@ -4168,7 +4168,7 @@ merge_seconds = 3
         held = steady(trier, 'GET', '/api/tasks/%d/t/2' % demo)[1]
         assert held['hold'] == 'the owner holds it' and held['status']['label'] == 'Held', held
         assert held['status']['sentence'].endswith(': the owner holds it. It lands only when you say so, or after a trial you pass.'), held['status']
-        assert held['actions'] == ['land', 'hand'] and held['trial'] is None, held['actions']
+        assert held['actions'] == ['land', 'hand', 'try'] and held['trial'] is None, held['actions']
         overview = steady(trier, 'GET', '/api/tasks/%d' % demo)[1]
         assert overview['try_live'] is True and overview['trial'] is None, overview
         assert act(2, 'trial', {}, site=trier)[0] == 200
@@ -4200,7 +4200,7 @@ merge_seconds = 3
         assert steady(owner, 'GET', '/api/tasks/%d/checks/c1/capture' % demo)[0] == 404
         assert steady(owner, 'GET', '/api/tasks/%d/checks/c99/capture' % demo)[0] == 404
         landed = steady(owner, 'GET', '/api/tasks/%d/t/2' % demo)[1]
-        assert landed['stage'] == 'done' and [i['id'] for i in landed['to_check']] == ['c1'] and landed['actions'] == [], landed
+        assert landed['stage'] == 'done' and [i['id'] for i in landed['to_check']] == ['c1'] and landed['actions'] == ['try'], landed
         js('task', 'add', 1, 'NOOP', '-p', 'demo')
         wait_state(1, 'ready')
         js('task', 'add', 1, 'NOOP and again', '-p', 'demo')
@@ -4234,7 +4234,7 @@ merge_seconds = 3
         status, body = act(4, 'hand', {})
         assert status == 200 and body['state'] == 'waiting' and body['session'] == 'task-4-hand', body
         handed = steady(owner, 'GET', '/api/tasks/%d/t/4' % demo)[1]
-        assert handed['stage'] == 'working' and handed['actions'] == ['handback'], handed['actions']
+        assert handed['stage'] == 'working' and handed['actions'] == ['handback', 'try'], handed['actions']
         assert all(item.get('task') != 4 for item in steady(owner, 'GET', '/api/tasks/%d' % demo)[1]['needs'])
         assert '--back' in cli('task', 'add', 4, 'NOOP', '-p', 'demo', '--json', expect=1).stdout
         status, body = act(4, 'handback', {})
@@ -4634,14 +4634,14 @@ merge_seconds = 3
         assert [row['name'] for row in steady(viewer, 'GET', '/api/tasks/usage')[1]['projects']] == ['demo']
         ok('brief: the ledger with deploys and the main checkout; refusals: task_act and task_view per site, ungranted project 404, actions hidden without task_act')
 
-        # --- A task that waits for the owner's answer: the need, its actions, and an add that
+        # --- A task that waits for the owner's answer: the need, its actions (`owner_actions`: answer, hand, try), and an add that
         # resumes it. No brief and no start route are left.
         planned = ids['plans']
         view = steady(owner, 'GET', '/api/tasks/%d' % planned)[1]
         assert [(item['kind'], item['task']) for item in view['needs']] == [('waiting', 1), ('land', 2)], view['needs']
         assert view['needs'][0]['waiting']['on'] == 'owner', view['needs'][0]
         detail = steady(owner, 'GET', '/api/tasks/%d/t/1' % planned)[1]
-        assert detail['actions'] == ['hand'] and detail['talk'] == [] and 'brief' not in detail and 'phase' not in detail, detail
+        assert detail['actions'] == ['answer', 'hand', 'try'] and detail['talk'] == [] and 'brief' not in detail and 'phase' not in detail, detail
         assert steady(owner, 'POST', '/api/tasks/%d/t/1/start' % planned, {})[0] == 404
         ok('a waiting task: its need and reason, hand, no brief or start')
         # ^ Three holds of one reason with nothing shown between them are one row with the count, the newest
