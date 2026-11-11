@@ -222,6 +222,11 @@ def tui_screens(wsx, env, cwd, steps, cols=120, raw=None):
     return screens
 
 
+def memory_records(raw):
+    """The records of a `wsx memory search` answer: a project scope also finds the project's transcripts."""
+    return [h for h in json.loads(raw) if h['kind'] in ('rule', 'fact', 'episode')]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wsx', type=Path, default=ROOT / 'target/debug/wsx')
@@ -794,7 +799,7 @@ def manager_up(created):
     text = reply_to(js('task', 'say', 'RUN wsx memory add --kind rule --slug manager-rule --text-file %s --source msg:1 '
                        '--verified-by owner:1 --json' % (work / 'manager-rule.txt'))['id'])['text']
     assert '-> 0 {"slug":"manager-rule","kind":"rule"' in text, text
-    assert [h['slug'] for h in json.loads(cli('memory', 'search', 'rules', '--json').stdout)] == ['manager-rule']
+    assert [h['slug'] for h in memory_records(cli('memory', 'search', 'rules', '--json').stdout)] == ['manager-rule']
     with socket.socket(socket.AF_UNIX) as raw:
         raw.connect(launch['broker'])
         raw.sendall(json.dumps({'argv': ['daemon', 'stop'], 'stdin': None, 'cwd': str(project)}).encode())
@@ -3546,10 +3551,10 @@ def part_worker(created=None):
     pi_memory = js('task', 'new', 'MEMORY WORK pimemory.txt')['id']
     assert wait_state(pi_memory, 'ready', 'failed')['state'] == 'ready', show(pi_memory)
     answers = next(t['memory'] for t in traces() if 'memory' in t and 'session' in t)
-    assert answers['search'][0] == 0 and [h['slug'] for h in json.loads(answers['search'][1])] == ['seed-rule'], answers
+    assert answers['search'][0] == 0 and [h['slug'] for h in memory_records(answers['search'][1])] == ['seed-rule'], answers
     for name in ('add_episode', 'add_rule', 'update_rule', 'supersede_rule'):
         assert answers[name][0] == 2 and 'reads memory and writes none' in answers[name][1], (name, answers)
-    assert json.loads(cli('memory', 'search', 'worker', '--json').stdout) == [], 'the untrusted agent wrote nothing'
+    assert memory_records(cli('memory', 'search', 'worker', '--json').stdout) == [], 'the untrusted agent wrote nothing'
     js('task', 'close', pi_memory, '--discard')
     models = home / '.pi/agent/models.json'
     models.write_text(json.dumps({'providers': {'remote': {'baseUrl': 'http://%s:%d/v1' % (lan, provider_port), 'api': 'openai-completions',
@@ -3806,12 +3811,12 @@ def part_worker(created=None):
     mem = js('task', 'new', 'MEMORY WORK mem.txt')['id']
     assert wait_state(mem, 'ready', 'failed')['state'] == 'ready', show(mem)
     answers = next(t['memory'] for t in traces() if 'memory' in t and 'session' not in t)
-    assert answers['search'][0] == 0 and [h['slug'] for h in json.loads(answers['search'][1])] == ['seed-rule'], answers
+    assert answers['search'][0] == 0 and [h['slug'] for h in memory_records(answers['search'][1])] == ['seed-rule'], answers
     assert answers['add_episode'][0] == 0 and json.loads(answers['add_episode'][1])['slug'] == 'worker-note', answers
     for name in ('add_rule', 'update_rule', 'supersede_rule'):
         assert answers[name][0] == 2 and 'a rule needs the owner' in answers[name][1], (name, answers)
     assert answers['other_scope'][0] == 2 and "only in its own project's scope" in answers['other_scope'][1], answers
-    stored = {h['slug']: h for h in json.loads(cli('memory', 'search', 'rule worker', '--json').stdout)}
+    stored = {h['slug']: h for h in memory_records(cli('memory', 'search', 'rule worker', '--json').stdout)}
     assert {'seed-rule', 'worker-note'} <= set(stored) and 'worker-rule' not in stored, stored
     assert stored['seed-rule']['excerpt'] == 'Seed rule for the memory probes.', stored
     # `verified_by` task:<n> needs a landed task and check:<id> a passed item (docs/memory.md "Record").
