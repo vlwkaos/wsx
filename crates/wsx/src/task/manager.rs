@@ -239,8 +239,9 @@ struct Manager {
     leaving: bool,
     /// The host asked for a shorter overview since the last owner message or in-cap result.
     overview_asked: bool,
-    /// Like `overview_asked`, for the request to compact `decisions.md` and `context.md`.
-    context_asked: bool,
+    /// A hand edit of `decisions.md` or `context.md` was said once; no second notice until the
+    /// owner writes again or the views are whole.
+    drift_said: bool,
     /// Like `overview_asked`, for the request to write an answer that sat in thinking.
     thought_asked: bool,
     /// Ping turns since the last real turn, and whether the running turn is one.
@@ -359,7 +360,7 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
         roles_swept: None,
         leaving: false,
         overview_asked: false,
-        context_asked: false,
+        drift_said: false,
         thought_asked: false,
         pings: 0,
         pinging: false,
@@ -1236,13 +1237,36 @@ impl Manager {
             .unwrap_or_default()
     }
 
-    /// Add a finished task's memo to `notes/context.md`. ref: docs/tasks.md "Memo"
+    /// The project's memory store, which holds the manager's notes as records.
+    fn memory_store(&self) -> anyhow::Result<wsx_core::memory::Store> {
+        Ok(wsx_core::memory::Store::project(
+            &self.dir.project_id,
+            &self.project,
+            &self.main,
+        )?)
+    }
+
+    /// Add a finished task's memo to the manager's notes: a record, then `notes/context.md`
+    /// from the records. A role's notes stay files. ref: docs/tasks.md "Memo"
     fn fold_memo(&self, task: u32, memo: &str) {
         let Ok(notes) = self.dir.notes() else {
             return;
         };
-        if let Err(error) = notes::fold_memo(&notes, task, memo) {
+        let done = match self.dir.role {
+            Some(_) => notes::fold_memo(&notes, task, memo),
+            None => self
+                .memory_store()
+                .and_then(|store| notes::record_memo(&store, task, memo))
+                .map(|drift| self.say_drift(&drift)),
+        };
+        if let Err(error) = done {
             self.say(&format!("cannot add the memo: {error:#}"));
+        }
+    }
+
+    fn say_drift(&self, drift: &[wsx_core::memory::manage::Drift]) {
+        for d in drift {
+            self.say(&d.notice(true));
         }
     }
 
@@ -1551,7 +1575,7 @@ impl Manager {
         })?;
         self.last_activity = Instant::now();
         self.overview_asked &= from != Author::Owner;
-        self.context_asked &= from != Author::Owner;
+        self.drift_said &= from != Author::Owner;
         self.thought_asked &= from != Author::Owner;
         // ^ The owner may have just signed in again: a sign-in hold tries at once.
         if from == Author::Owner {
@@ -2892,7 +2916,7 @@ impl Manager {
         }
         self.report(runtime::AgentState::Done);
         self.check_overview();
-        self.check_context();
+        self.check_views();
         self.check_thought(in_thinking);
     }
 
@@ -2974,25 +2998,24 @@ impl Manager {
         }
     }
 
-    /// `decisions.md` or `context.md` over its cap gets one request to compact it (one request
-    /// for both), like the overview; no second one until the owner writes again.
+    /// A hand edit of `decisions.md` or `context.md` (the records do not hold it) is said once;
+    /// the next write of a record keeps the edited file as `<file>.drift` and renders again.
     /// ref: docs/tasks.md "Notes budget"
-    fn check_context(&mut self) {
+    fn check_views(&mut self) {
         if self.dir.role.is_some() {
             return;
         }
-        let Ok(notes) = self.dir.notes() else {
-            return;
-        };
-        let over = notes::over_cap(&notes);
-        if over.is_empty() {
-            self.context_asked = false;
-        } else if !self.context_asked {
-            self.context_asked = true;
-            if let Err(error) = notes::compaction_request(&notes, &over)
-                .and_then(|text| self.accept(Author::Recap, text, Vec::new()))
-            {
-                self.say(&format!("cannot ask for shorter notes: {error:#}"));
+        let drift = self
+            .memory_store()
+            .ok()
+            .and_then(|store| wsx_core::memory::manage::drift(&store).ok())
+            .unwrap_or_default();
+        if drift.is_empty() {
+            self.drift_said = false;
+        } else if !self.drift_said {
+            self.drift_said = true;
+            for d in &drift {
+                self.say(&d.notice(false));
             }
         }
     }

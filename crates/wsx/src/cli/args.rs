@@ -884,6 +884,18 @@ pub enum MemoryCmd {
         verified_by: Option<String>,
         #[arg(long)]
         commit: Option<String>,
+        /// One line about the record; searched with the text
+        #[arg(long)]
+        description: Option<String>,
+        /// A comma list; searched with the text
+        #[arg(long, value_delimiter = ',')]
+        keywords: Vec<String>,
+        /// A rule's: the owner's words, which must stand in the message of --source msg:<id>
+        #[arg(long)]
+        words: Option<String>,
+        /// Replace this rule or fact by the new record in the same call
+        #[arg(long)]
+        supersedes: Option<String>,
     },
     /// Change a record; the old text stays in the log
     Update {
@@ -897,6 +909,11 @@ pub enum MemoryCmd {
         verified_by: Option<String>,
         #[arg(long)]
         commit: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        /// A comma list; replaces the keywords
+        #[arg(long, value_delimiter = ',')]
+        keywords: Option<Vec<String>>,
         /// `failed` marks the record wrong; --lesson says why
         #[arg(long, value_parser = ["failed"])]
         status: Option<String>,
@@ -910,6 +927,10 @@ pub enum MemoryCmd {
         #[arg(long)]
         source: String,
     },
+    /// One record
+    Get { slug: String },
+    /// Make records of the manager's old notes files, once (a rerun adds nothing)
+    Import,
     /// Rebuild the index of the scope (the digest of its transcripts, and the backend's own)
     Reindex,
     /// Store folder, search backend and record counts
@@ -927,6 +948,8 @@ impl MemoryCmd {
             Self::Update { .. } => "update",
             Self::Supersede { .. } => "supersede",
             Self::Reindex => "reindex",
+            Self::Get { .. } => "get",
+            Self::Import => "import",
             Self::Status => "status",
             Self::List => "list",
         }
@@ -937,10 +960,16 @@ impl MemoryCmd {
     pub fn needs(&self) -> &'static [wsx_core::task::policy::Capability] {
         use wsx_core::task::policy::Capability::{Recall, Remember};
         match self {
-            Self::Search { .. } | Self::Recall { .. } | Self::Status | Self::List => &[Recall],
-            Self::Add { .. } | Self::Update { .. } | Self::Supersede { .. } | Self::Reindex => {
-                &[Remember]
-            }
+            Self::Search { .. }
+            | Self::Recall { .. }
+            | Self::Get { .. }
+            | Self::Status
+            | Self::List => &[Recall],
+            Self::Add { .. }
+            | Self::Update { .. }
+            | Self::Supersede { .. }
+            | Self::Import
+            | Self::Reindex => &[Remember],
         }
     }
 }

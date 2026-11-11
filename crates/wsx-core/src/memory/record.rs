@@ -78,6 +78,18 @@ pub struct Record {
     pub superseded_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lesson: Option<String>,
+    /// One line that says what the record is about; searched with the text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
+    /// wsx extension, a `rule`'s: unix ms of the decision, which a view shows as its date. It
+    /// stays when the rule is replaced or its text changes; `updated` moves with each write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided: Option<u64>,
+    /// wsx extension, a `rule`'s: the owner's own words, which a view shows in place of `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<String>,
     /// Fields of another writer that this one does not know; kept on every rewrite.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

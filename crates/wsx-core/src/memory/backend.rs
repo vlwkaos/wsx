@@ -5,7 +5,7 @@
 //! ref: docs/memory.md "Search backend", docs/design/memory-system.md "Retrieve"
 
 use super::index::{self, Target};
-use super::record::{Status, EXCERPT_CHARS};
+use super::record::{Record, Status, EXCERPT_CHARS};
 use super::store::{Error, Store};
 use crate::process::{run_bounded, Bound, Options, Stderr};
 use serde::{Deserialize, Serialize};
@@ -121,11 +121,7 @@ impl Backend for Builtin {
             }),
             None => Vec::new(),
         };
-        // ^ A record is ranked by its slug, title and text together.
-        let texts: Vec<String> = records
-            .iter()
-            .map(|r| format!("{} {} {}", r.slug, r.title.as_deref().unwrap_or(""), r.text))
-            .collect();
+        let texts: Vec<String> = records.iter().map(searchable).collect();
         let ranked = index::rank(
             texts
                 .iter()
@@ -134,7 +130,6 @@ impl Backend for Builtin {
             &terms,
         );
         let wanted = query.kind.as_ref().map(|k| k.0.as_str());
-        let path = store.log_path().display().to_string();
         let mut hits: Vec<(Hit, u64)> = Vec::new();
         for (raw, at) in ranked.scored {
             let score = (raw / ranked.bound).clamp(0.0, 1.0);
@@ -145,17 +140,7 @@ impl Backend for Builtin {
                     {
                         continue;
                     }
-                    let hit = Hit {
-                        slug: r.slug.clone(),
-                        scope: store.scope().into(),
-                        path: path.clone(),
-                        kind: r.kind.as_str().into(),
-                        status: r.status.as_str().into(),
-                        score,
-                        excerpt: r.text.chars().take(EXCERPT_CHARS).collect(),
-                        extra: Map::new(),
-                    };
-                    (hit, r.updated)
+                    (record_hit(store, r, score), r.updated)
                 }
                 None => {
                     let (doc, target) = (&docs[at - records.len()], target.as_ref());
@@ -191,6 +176,39 @@ impl Backend for Builtin {
 
     fn flags(&self, _: &Store) -> Result<Flags, Error> {
         Ok(Flags::default())
+    }
+}
+
+/// What a record is ranked by: its slug, title, description, keywords and text together.
+pub(super) fn searchable(r: &Record) -> String {
+    format!(
+        "{} {} {} {} {}",
+        r.slug,
+        r.title.as_deref().unwrap_or(""),
+        r.description.as_deref().unwrap_or(""),
+        r.keywords.join(" "),
+        r.text
+    )
+}
+
+/// A record as a hit; its description and keywords ride along when it has them.
+pub(super) fn record_hit(store: &Store, r: &Record, score: f64) -> Hit {
+    let mut extra = Map::new();
+    if let Some(description) = &r.description {
+        extra.insert("description".into(), Value::from(description.as_str()));
+    }
+    if !r.keywords.is_empty() {
+        extra.insert("keywords".into(), Value::from(r.keywords.clone()));
+    }
+    Hit {
+        slug: r.slug.clone(),
+        scope: store.scope().into(),
+        path: store.log_path().display().to_string(),
+        kind: r.kind.as_str().into(),
+        status: r.status.as_str().into(),
+        score,
+        excerpt: r.text.chars().take(EXCERPT_CHARS).collect(),
+        extra,
     }
 }
 

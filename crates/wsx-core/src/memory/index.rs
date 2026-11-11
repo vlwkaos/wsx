@@ -214,8 +214,9 @@ pub(super) fn terms(words: &str) -> Result<Vec<String>> {
 /// The BM25 score of every text that holds a term, as `(score, position)`, unsorted.
 pub(super) struct Ranked {
     pub scored: Vec<(f64, usize)>,
-    /// What a text could score at most for these terms (the tf limit of every term, length 0):
-    /// a score over it is in 0..1, the same for any corpus the terms are scored in.
+    /// What a text could score at most for these terms in this corpus (the tf limit of every
+    /// term, length 0). A score over it is in 0..1; the idf of a term depends on the corpus, so
+    /// the bound of one corpus is no bound of another.
     pub bound: f64,
 }
 
@@ -753,7 +754,7 @@ fn notes(project_id: &str) -> Vec<Doc> {
 }
 
 /// `YYYY-MM-DD` as the unix ms of that day's start (UTC).
-fn day_ms(date: &str) -> Option<u64> {
+pub(super) fn day_ms(date: &str) -> Option<u64> {
     let mut parts = date.splitn(3, '-');
     let year: i64 = parts.next()?.parse().ok()?;
     let month: i64 = parts.next()?.parse().ok()?;

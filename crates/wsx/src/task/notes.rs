@@ -1,6 +1,7 @@
 //! The manager's notes (`manager/notes/`): what a fresh conversation opens with, what it is
 //! told is missing, the lines of the notes that match an owner's message, and how a finished
-//! task's memo joins `context.md`. ref: docs/tasks.md "Notes budget"
+//! task's memo joins `context.md`. For the manager the files are views of the records
+//! (`wsx_core::memory::manage`). ref: docs/tasks.md "Notes budget"
 
 use super::manager::{read_note, CONTEXT_FILE, DECISIONS_FILE};
 use anyhow::Result;
@@ -14,17 +15,10 @@ const MAX_NOTES_BYTES: usize = 10 * 1024;
 /// What `context.md` keeps of that budget when `decisions.md` is long: the owner's rules come
 /// first, so `decisions.md` takes the rest (6 KiB), and a short file leaves its part to the other.
 const CONTEXT_FLOOR_BYTES: usize = 4 * 1024;
-/// A file over its cap gets the manager one request to compact it to its target. The caps are
-/// what each file may hold and still show whole: `decisions.md` always, `context.md` beside a
-/// `decisions.md` within its cap.
-const CONTEXT_CAP_BYTES: usize = 6 * 1024;
-const CONTEXT_TARGET_BYTES: usize = 4 * 1024;
-const DECISIONS_CAP_BYTES: usize = 4 * 1024;
-const DECISIONS_TARGET_BYTES: usize = 3 * 1024;
 /// Past this many bytes the oldest memo lines move to `ARCHIVE_FILE`.
 const CONTEXT_CEILING_BYTES: usize = 32 * 1024;
 const ARCHIVE_FILE: &str = "context-archive.md";
-/// The old `decisions.md`, copied here before the manager rewrites it.
+/// The rules a later one replaced; a view of the records.
 const DECISIONS_ARCHIVE_FILE: &str = "decisions-archive.md";
 /// A memo line in `context.md`; the task's full memo stays in its result.
 const MEMO_LINE_CHARS: usize = 240;
@@ -198,86 +192,19 @@ pub(super) fn preamble(notes: &Path) -> String {
     out
 }
 
-/// A notes file over its cap: its name, cap, lines and bytes.
-pub(super) struct Over {
-    name: &'static str,
-    cap: usize,
-    lines: usize,
-    bytes: usize,
+/// The manager's memo as a record (a line of at most `MEMO_LINE_CHARS`); the views follow.
+/// Returns the views that were edited by hand meanwhile. ref: docs/tasks.md "Memo"
+pub(super) fn record_memo(
+    store: &wsx_core::memory::Store,
+    task: u32,
+    memo: &str,
+) -> Result<Vec<wsx_core::memory::manage::Drift>> {
+    let added = wsx_core::memory::manage::add_memo(store, task, &clip(memo, MEMO_LINE_CHARS))?;
+    Ok(added.drift)
 }
 
-/// The notes files over their caps, `decisions.md` first; empty when both are within.
-pub(super) fn over_cap(notes: &Path) -> Vec<Over> {
-    [
-        (DECISIONS_FILE, DECISIONS_CAP_BYTES),
-        (CONTEXT_FILE, CONTEXT_CAP_BYTES),
-    ]
-    .into_iter()
-    .filter_map(|(name, cap)| {
-        let text = read_note(&notes.join(name));
-        (text.len() > cap).then(|| Over {
-            name,
-            cap,
-            lines: text.lines().count(),
-            bytes: text.len(),
-        })
-    })
-    .collect()
-}
-
-/// The one request to compact the files in `over`. A `decisions.md` in it is first copied to
-/// the archive, so the manager's rewrite loses nothing. ref: docs/tasks.md "Notes budget"
-pub(super) fn compaction_request(notes: &Path, over: &[Over]) -> Result<String> {
-    let mut parts = Vec::new();
-    for file in over {
-        let path = notes.join(file.name).display().to_string();
-        let head = format!(
-            "{path} is {} lines / {} bytes; the cap is {} bytes, and a new conversation shows \
-             only part of a longer file.",
-            file.lines, file.bytes, file.cap,
-        );
-        parts.push(if file.name == DECISIONS_FILE {
-            let archive = archive_decisions(notes)?;
-            format!(
-                "{head} Rewrite it now as the current rules, under {DECISIONS_TARGET_BYTES} \
-                 bytes: merge duplicates and drop lines a later decision replaced. Keep each \
-                 rule's date and the owner's own words, in short. Never drop a rule that still \
-                 holds. wsx copied the old file to {}.",
-                archive.display()
-            )
-        } else {
-            format!(
-                "{head} Compact it now to under {CONTEXT_TARGET_BYTES} bytes: merge lines about \
-                 the same thing and drop what is stale or only restates the code. Keep every \
-                 fact about what you did and what the owner decided: merge those lines, never \
-                 drop them. Keep the project section at the top and the `- #<n>: ...` form of \
-                 memo lines. Past {CONTEXT_CEILING_BYTES} bytes wsx moves the oldest memo lines \
-                 to {}.",
-                notes.join(ARCHIVE_FILE).display()
-            )
-        });
-    }
-    Ok(parts.join("\n\n"))
-}
-
-/// Append the lines of `decisions.md` that the archive does not hold to the archive, so a
-/// second request after a failed rewrite adds none twice. Returns the archive's path.
-fn archive_decisions(notes: &Path) -> Result<PathBuf> {
-    let archive = notes.join(DECISIONS_ARCHIVE_FILE);
-    let old = read_note(&archive);
-    let held: BTreeSet<&str> = old.lines().collect();
-    let text = read_note(&notes.join(DECISIONS_FILE));
-    let fresh: Vec<&str> = text
-        .lines()
-        .filter(|line| !line.trim().is_empty() && !held.contains(line))
-        .collect();
-    if !fresh.is_empty() {
-        store::write_note(&archive, &format!("{old}{}\n", fresh.join("\n")))?;
-    }
-    Ok(archive)
-}
-
-/// Add a finished task's memo to `context.md` as one line of at most `MEMO_LINE_CHARS`, unless
+/// A role's notes are files of its own, not records: add a finished task's memo to its
+/// `context.md` as one line of at most `MEMO_LINE_CHARS`, unless
 /// the file holds it. Past `CONTEXT_CEILING_BYTES` the oldest memo lines move to the archive
 /// (written first, so a failed write loses none); the manager's own lines stay.
 /// ref: docs/tasks.md "Memo"

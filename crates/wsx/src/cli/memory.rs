@@ -3,6 +3,7 @@
 use super::*;
 use serde_json::{json, Value};
 use std::io::Read;
+use wsx_core::memory::manage::{self, Drift};
 use wsx_core::memory::{
     backend, known_scopes, validate_scope, Command, Error, NewRecord, Patch, Query, Record, Store,
 };
@@ -51,27 +52,55 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
             title,
             verified_by,
             commit,
+            description,
+            keywords,
+            words,
+            supersedes,
         } => {
             let store = one(&scopes)?;
             let text = read_text(&text_file)?;
-            let (record, written) = store.add(NewRecord {
-                kind,
-                slug,
-                text,
-                title,
-                source,
-                verified_by,
-                commit,
-            })?;
-            show(
-                &record,
-                json,
-                if written {
-                    "added"
-                } else {
-                    "no change, same as"
+            let added = manage::add(
+                &store,
+                NewRecord {
+                    kind,
+                    slug,
+                    text,
+                    title,
+                    source,
+                    verified_by,
+                    commit,
+                    description,
+                    keywords,
+                    words,
                 },
+                supersedes.as_deref(),
             )?;
+            notice_drift(&added.drift);
+            let verb = if added.written {
+                "added"
+            } else {
+                "no change, same as"
+            };
+            // ^ The answer stays a record; the close ones ride along as one more key.
+            let mut out =
+                serde_json::to_value(&added.record).map_err(|e| Error::Store(e.to_string()))?;
+            if !added.similar.is_empty() {
+                out["similar"] = json!(added.similar);
+            }
+            if json {
+                return print(&out);
+            }
+            show(&added.record, false, verb)?;
+            for hit in &added.similar {
+                println!(
+                    "close to {} [{:.2}]: {} (replace it with `supersede {} {}`, or add with --supersedes)",
+                    hit.slug,
+                    hit.score,
+                    hit.excerpt.replace('\n', " "),
+                    hit.slug,
+                    added.record.slug
+                );
+            }
         }
         MemoryCmd::Update {
             slug,
@@ -79,6 +108,8 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
             source,
             verified_by,
             commit,
+            description,
+            keywords,
             status,
             lesson,
         } => {
@@ -90,19 +121,45 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
             if status.is_some() && lesson.is_none() {
                 return Err(Error::Usage("--status failed needs a --lesson".into()));
             }
-            let record = store.update(Patch {
-                slug,
-                text,
-                source,
-                verified_by,
-                commit,
-                fail: lesson,
-            })?;
+            let (record, drift) = manage::update(
+                &store,
+                Patch {
+                    slug,
+                    text,
+                    source,
+                    verified_by,
+                    commit,
+                    description,
+                    keywords,
+                    fail: lesson,
+                },
+            )?;
+            notice_drift(&drift);
             show(&record, json, "updated")?;
         }
         MemoryCmd::Supersede { old, new, source } => {
-            let record = one(&scopes)?.supersede(&old, &new, &source)?;
+            let (record, drift) = manage::supersede(&one(&scopes)?, &old, &new, &source)?;
+            notice_drift(&drift);
             show(&record, json, "superseded")?;
+        }
+        MemoryCmd::Get { slug } => {
+            show(&one(&scopes)?.get(&slug)?, json, "record")?;
+        }
+        MemoryCmd::Import => {
+            let store = one(&scopes)?;
+            let (imported, drift) = manage::import(&store)?;
+            notice_drift(&drift);
+            if json {
+                return print(&json!({ "scope": store.scope(), "imported": imported }));
+            }
+            println!(
+                "{}: imported {} rules, {} replaced rules, {} facts, {} episodes",
+                store.scope(),
+                imported.rules,
+                imported.archived,
+                imported.facts,
+                imported.episodes
+            );
         }
         MemoryCmd::Reindex => {
             let store = one(&scopes)?;
@@ -127,6 +184,9 @@ fn run_memory(command: MemoryCmd, scopes: Vec<String>, json: bool) -> MemResult<
             });
             if let Some(error) = &error {
                 out["backend_error"] = json!(error);
+            }
+            if store.project_ids().is_some() {
+                out["drift"] = json!(manage::drift(&store)?);
             }
             if json {
                 return print(&out);
@@ -172,6 +232,13 @@ fn print(value: &impl serde::Serialize) -> MemResult<()> {
     Ok(())
 }
 
+/// A view edited by hand was kept and written again from the records (stderr).
+fn notice_drift(drift: &[Drift]) {
+    for d in drift {
+        eprintln!("wsx: memory: {}", d.notice(true));
+    }
+}
+
 fn show(record: &Record, json: bool, verb: &str) -> MemResult<()> {
     if json {
         return print(record);
@@ -185,9 +252,16 @@ fn show(record: &Record, json: bool, verb: &str) -> MemResult<()> {
     Ok(())
 }
 
-/// The search backend of the global config, when one is set.
+/// The search backend of the global config, when one is set. A config that cannot be read is
+/// said on stderr, and the built-in answers.
 fn external() -> Option<Command> {
-    Command::new(load_config().ok()?.memory.backend)
+    match load_config() {
+        Ok(config) => Command::new(config.memory.backend),
+        Err(error) => {
+            eprintln!("wsx: cannot read the config ({error:#}); the built-in index answers");
+            None
+        }
+    }
 }
 
 /// Print the hits (a notice for each failed backend goes to stderr).

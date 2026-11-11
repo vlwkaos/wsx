@@ -2,7 +2,7 @@
 
 use super::record::{duplicate, fold, Folded, Kind, Line, Record, Status, MAX_TEXT_BYTES};
 use crate::task::checks::{self, CheckState};
-use crate::task::store::{self as task_store, TaskDir};
+use crate::task::store::{self as task_store, ManagerDir, TaskDir};
 use crate::task::{now_unix_ms, TaskState};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -55,18 +55,37 @@ fn usage<T>(message: impl Into<String>) -> Result<T> {
     Err(Error::Usage(message.into()))
 }
 
-/// A scope or record name: `a-z`, `0-9` and `-`, 1 to 64 characters, not starting with `-`.
+/// A scope name: `a-z`, `0-9`, `-` and `_`, 1 to 64 characters, not starting with `-`.
 pub fn validate_scope(value: &str) -> Result<()> {
     let valid = !value.is_empty()
         && value.len() <= MAX_SCOPE_BYTES
         && !value.starts_with('-')
         && value
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
     match valid {
         true => Ok(()),
         false => usage(format!(
-            "{value:?}: use 1 to 64 of a-z, 0-9 and -, not first -"
+            "{value:?}: use 1 to 64 of a-z, 0-9, - and _, not first -"
+        )),
+    }
+}
+
+/// A record slug: `a-z`, `0-9` and `-`, 1 to 64 characters, not starting with `-`; a `.` may
+/// stand inside (`release-0.10.0`), not first or last and not twice in a row.
+pub fn validate_slug(value: &str) -> Result<()> {
+    let valid = !value.is_empty()
+        && value.len() <= MAX_SCOPE_BYTES
+        && !value.starts_with(['-', '.'])
+        && !value.ends_with('.')
+        && !value.contains("..")
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.');
+    match valid {
+        true => Ok(()),
+        false => usage(format!(
+            "slug {value:?}: use 1 to 64 of a-z, 0-9, - and . (. inside only, not twice), not first -"
         )),
     }
 }
@@ -83,6 +102,10 @@ pub struct NewRecord {
     pub source: String,
     pub verified_by: Option<String>,
     pub commit: Option<String>,
+    pub description: Option<String>,
+    pub keywords: Vec<String>,
+    /// A rule's: the owner's words (the caller has checked them against the message).
+    pub words: Option<String>,
 }
 
 #[derive(Default)]
@@ -92,6 +115,9 @@ pub struct Patch {
     pub source: String,
     pub verified_by: Option<String>,
     pub commit: Option<String>,
+    pub description: Option<String>,
+    /// Replaces the keywords when given.
+    pub keywords: Option<Vec<String>>,
     /// The lesson of a `--status failed` update (INVALIDATE).
     pub fail: Option<String>,
 }
@@ -154,7 +180,7 @@ impl Store {
         self
     }
 
-    fn may_write(&self, kind: Kind) -> Result<()> {
+    pub(super) fn may_write(&self, kind: Kind) -> Result<()> {
         match kind == Kind::Rule && !self.rules {
             true => {
                 usage("a rule needs the owner's word, so only the manager or a role writes one")
@@ -244,6 +270,10 @@ impl Store {
     /// Append `record` as the state after `op`. A last line cut short by a crash gets its
     /// newline first, so the new line is not glued to it. One `write` under the lock.
     fn append(&self, op: &str, record: &Record) -> Result<()> {
+        self.append_all(op, std::slice::from_ref(record))
+    }
+
+    fn append_all(&self, op: &str, records: &[Record]) -> Result<()> {
         let mut file = open(
             &self.log_path(),
             OpenOptions::new().read(true).append(true).create(true),
@@ -258,12 +288,14 @@ impl Store {
                 bytes.push(b'\n');
             }
         }
-        let line = Line {
-            op: op.into(),
-            record: record.clone(),
-        };
-        bytes.extend(serde_json::to_vec(&line).map_err(|e| Error::Store(e.to_string()))?);
-        bytes.push(b'\n');
+        for record in records {
+            let line = Line {
+                op: op.into(),
+                record: record.clone(),
+            };
+            bytes.extend(serde_json::to_vec(&line).map_err(|e| Error::Store(e.to_string()))?);
+            bytes.push(b'\n');
+        }
         file.write_all(&bytes)?;
         file.sync_data()?;
         Ok(())
@@ -272,11 +304,19 @@ impl Store {
     /// Add a record. A near duplicate returns the old record, and the flag is false: nothing
     /// was written.
     pub fn add(&self, new: NewRecord) -> Result<(Record, bool)> {
-        validate_scope(&new.slug)
-            .map_err(|_| Error::Usage(format!("slug {:?}: use a-z, 0-9 and -", new.slug)))?;
+        validate_slug(&new.slug)?;
         self.may_write(new.kind)?;
         let text = self.check_text(&new.text)?;
         check_source(&new.source)?;
+        let description = new
+            .description
+            .as_deref()
+            .map(check_description)
+            .transpose()?;
+        let keywords = check_keywords(new.keywords)?;
+        if new.words.is_some() && new.kind != Kind::Rule {
+            return usage("the owner's words belong to a rule");
+        }
         if matches!(new.title.as_deref(), Some(t) if t.contains('\n')) {
             return usage("the title is one line");
         }
@@ -300,6 +340,7 @@ impl Store {
                 new.slug
             ));
         }
+        let now = now_unix_ms();
         let record = Record {
             slug: new.slug,
             kind: new.kind,
@@ -307,11 +348,15 @@ impl Store {
             text,
             title: new.title,
             source: new.source,
-            updated: now_unix_ms(),
+            updated: now,
             verified_by: new.verified_by,
             commit: new.commit,
             superseded_by: None,
             lesson: None,
+            description,
+            keywords,
+            words: new.words,
+            decided: (new.kind == Kind::Rule).then_some(now),
             extra: Default::default(),
         };
         self.append("add", &record)?;
@@ -326,13 +371,21 @@ impl Store {
             .as_deref()
             .map(|t| self.check_text(t))
             .transpose()?;
+        let description = patch
+            .description
+            .as_deref()
+            .map(check_description)
+            .transpose()?;
+        let keywords = patch.keywords.map(check_keywords).transpose()?;
         if text.is_none()
             && patch.verified_by.is_none()
             && patch.commit.is_none()
             && patch.fail.is_none()
+            && description.is_none()
+            && keywords.is_none()
         {
             return usage(
-                "nothing to update: give --text-file, --verified-by, --commit or --status failed",
+                "nothing to update: give --text-file, --verified-by, --commit, --description, --keywords or --status failed",
             );
         }
         if let Some(by) = &patch.verified_by {
@@ -353,6 +406,8 @@ impl Store {
         record.text = text.unwrap_or(record.text);
         record.verified_by = patch.verified_by.or(record.verified_by);
         record.commit = patch.commit.or(record.commit);
+        record.description = description.or(record.description);
+        record.keywords = keywords.unwrap_or(record.keywords);
         record.source = patch.source;
         record.updated = now_unix_ms();
         let op = match patch.fail {
@@ -390,6 +445,47 @@ impl Store {
         record.updated = now_unix_ms();
         self.append("supersede", &record)?;
         Ok(record)
+    }
+
+    /// Add the records whose slug the log does not hold, in one write under the lock; the slugs
+    /// added. A rerun adds none. ref: docs/memory.md "Import"
+    pub fn import(&self, records: Vec<Record>) -> Result<Vec<String>> {
+        let _lock = self.lock(true)?;
+        let held = self.load()?.records;
+        let mut seen = std::collections::HashSet::new();
+        let fresh: Vec<Record> = records
+            .into_iter()
+            .filter(|r| !held.contains_key(&r.slug) && seen.insert(r.slug.clone()))
+            .collect();
+        if !fresh.is_empty() {
+            self.append_all("import", &fresh)?;
+        }
+        Ok(fresh.into_iter().map(|r| r.slug).collect())
+    }
+
+    /// Run `f` on the current records with the store locked, so no write lands meanwhile.
+    pub fn locked<T>(&self, f: impl FnOnce(&[Record]) -> Result<T>) -> Result<T> {
+        let _lock = self.lock(true)?;
+        let records: Vec<Record> = self.load()?.records.into_values().collect();
+        f(&records)
+    }
+
+    /// Whether `by` would pass as a `verified_by` here.
+    pub fn can_verify(&self, by: &str) -> bool {
+        self.check_verified_by(by).is_ok()
+    }
+
+    /// A project scope: the manager's `notes/` folder, when the project has a manager.
+    pub fn notes_dir(&self) -> Option<PathBuf> {
+        let id = self.project_id()?;
+        let dir = ManagerDir::existing(id).ok().flatten()?;
+        Some(dir.path.join("notes"))
+    }
+
+    /// One record by slug.
+    pub fn get(&self, slug: &str) -> Result<Record> {
+        let _lock = self.lock(false)?;
+        self.find(slug)
     }
 
     fn find(&self, slug: &str) -> Result<Record> {
@@ -460,6 +556,9 @@ impl Store {
             self.project_id()
                 .map_or_else(|| usage(format!("{what} needs a project scope")), Ok)
         };
+        if let Some(url) = value.strip_prefix("url:") {
+            return check_url(url);
+        }
         if let Some(reference) = value.strip_prefix("owner:transcript:") {
             return self.check_transcript(reference);
         }
@@ -503,7 +602,7 @@ impl Store {
                 .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
         if !plain {
             return usage(format!(
-                "{value:?}: use owner:<id>, owner:transcript:<file>, task:<n>, check:<id> or a relative path without .."
+                "{value:?}: use owner:<id>, owner:transcript:<file>, task:<n>, check:<id>, url:<https URL> or a relative path without .."
             ));
         }
         // ^ A link under the root may point out of it: compare the real paths.
@@ -521,6 +620,9 @@ impl Store {
 }
 
 fn check_source(source: &str) -> Result<()> {
+    if let Some(url) = source.strip_prefix("url:") {
+        return check_url(url);
+    }
     let ok = ["msg:", "task:", "path:", "transcript:"].iter().any(|p| {
         source
             .strip_prefix(p)
@@ -529,8 +631,69 @@ fn check_source(source: &str) -> Result<()> {
     match ok && !source.contains('\n') {
         true => Ok(()),
         false => usage(format!(
-            "source {source:?}: use msg:<id>, task:<n>, path:<file> or transcript:<ref>"
+            "source {source:?}: use msg:<id>, task:<n>, path:<file>, url:<https URL> or transcript:<ref>"
         )),
+    }
+}
+
+const MAX_URL_BYTES: usize = 2048;
+const MAX_DESCRIPTION_BYTES: usize = 512;
+const MAX_KEYWORDS: usize = 32;
+const MAX_KEYWORD_BYTES: usize = 64;
+
+/// An http or https URL with a host name, as text: nothing is fetched. ref: docs/memory.md
+fn check_url(url: &str) -> Result<()> {
+    let bad = |why: &str| usage(format!("url:{url}: {why}"));
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return bad("only http and https");
+    };
+    if url.len() > MAX_URL_BYTES || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return bad("no spaces, no control characters, at most 2048 bytes");
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    let host_ok = !host.is_empty()
+        && !host.starts_with(['.', '-'])
+        && !host.ends_with(['.', '-'])
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    let port_ok =
+        port.is_none_or(|p| (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()));
+    match host_ok && port_ok {
+        true => Ok(()),
+        false => bad("no valid host (a name or an IPv4 address, no user name)"),
+    }
+}
+
+fn check_description(text: &str) -> Result<String> {
+    let text = text.trim();
+    match text.is_empty() || text.contains('\n') || text.len() > MAX_DESCRIPTION_BYTES {
+        true => usage("the description is one line of 1 to 512 bytes"),
+        false => Ok(text.into()),
+    }
+}
+
+/// The keywords of a write: trimmed, empty ones dropped, no repeats.
+fn check_keywords(words: Vec<String>) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for word in words.iter().map(|w| w.trim()).filter(|w| !w.is_empty()) {
+        if word.len() > MAX_KEYWORD_BYTES || word.contains('\n') {
+            return usage("a keyword is one line of at most 64 bytes");
+        }
+        if !out.iter().any(|k| k == word) {
+            out.push(word.into());
+        }
+    }
+    match out.len() > MAX_KEYWORDS {
+        true => usage("at most 32 keywords"),
+        false => Ok(out),
     }
 }
 
