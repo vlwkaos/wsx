@@ -5216,7 +5216,8 @@ def part_host(created=None):
     assert wait_state(pausing, 'ready', 'failed')['state'] == 'ready', log(pausing)
     for n in (pausing, questioning):
         js('task', 'close', n, '--discard')
-    wait_closed(pausing)
+    for n in (pausing, questioning):
+        wait_state(n, 'closed')
     # 32e. Approval from the owner's words (docs/tasks.md "Approvals"): in a turn that began with
     # an owner message, the manager names that message and the action runs without a new request;
     # approvals.jsonl records it as approved by that message, and no event repeats it. A message
