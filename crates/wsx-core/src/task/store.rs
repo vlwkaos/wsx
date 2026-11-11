@@ -1213,6 +1213,8 @@ pub fn watched_files(project_id: &str) -> Result<Vec<PathBuf>> {
         dir.join(OVERVIEW_FILE),
         dir.join(super::checks::CHECKS_FILE),
         dir.join(TRIAL_FILE),
+        // ^ A trial goes live when its deploy is recorded here.
+        dir.join(DEPLOYS_FILE),
     ];
     for role in super::roles::names(project_id) {
         let role = dir.join(ROLES_DIR).join(role);

@@ -179,21 +179,21 @@ export function TaskPage({ project, task, onClose, onMention, onReply, grip }) {
     // ^ A trial: this revision on the live site before it lands (docs/tasks.md "Hold and trial").
     // Pass lands it; a message to the worker, through the manager, fails it; End only frees the live site.
     trial && html`<p class="task-approval" role="status">${TRIAL_WORDS[trial.stage]}</p>`,
-    trial?.stage === "live" && actions.includes("land") && button(action.busy === "pass" ? "Landing…" : "Pass and land", () => action.run("pass"), {}, "pass"),
-    trial && button(action.busy === "trial_end" ? "Ending…" : "End trial", () => action.run("trial_end")),
+    actions.includes("pass") && button(action.busy === "pass" ? "Landing…" : "Pass and land", () => action.run("pass"), {}, "pass"),
+    actions.includes("trial_end") && button(action.busy === "trial_end" ? "Ending…" : "End trial", () => action.run("trial_end")),
     // ^ The owner talks to the manager: the composer gets the mention, and the dialog closes in
     // the tap, since a modal dialog makes the composer inert and a phone raises its keyboard
     // only for a focus in the tap (docs/web-client-tasks.md "Task sheet").
-    ((detail.waiting?.on === "owner" && detail.status?.kind !== "after") || detail.state === "failed") && button("Answer", (event) => {
+    actions.includes("answer") && button("Answer", (event) => {
       event.currentTarget.closest("dialog").close();
       onMention(task);
     }, { "aria-label": `Answer #${task}: mention it to the manager` }, "reply"),
-    !trial && actions.includes("land") && button(action.busy === "land" ? "Landing…" : "Land", () => action.run("land"), {}, "land"),
+    actions.includes("land") && button(action.busy === "land" ? "Landing…" : "Land", () => action.run("land"), {}, "land"),
     // ^ By hand: the owner's own session in the task's copy, with the worker's conversation.
     // ^ Its name says what happens; the line under the buttons says the rest (docs/web-client-tasks.md "Task sheet").
     actions.includes("hand") && button(action.busy === "hand" ? "Taking over…" : "Take over", () => action.run("hand"), { "aria-describedby": "hand-hint" }),
     actions.includes("handback") && button(action.busy === "handback" ? "Handing back…" : "Hand back", () => action.run("handback")),
-    store.tasks[project]?.preview && detail.state !== "closed" && html`<${TryButton} project=${project} task=${task} />`,
+    actions.includes("try") && html`<${TryButton} project=${project} task=${task} />`,
   ].filter(Boolean) : [];
   // ^ The main checkout's changed files this land would overwrite, said before the press
   // (docs/tasks.md "Landing"); Land stays, it refuses until they are committed or stashed.

@@ -671,6 +671,12 @@ impl ManagerChat {
         );
     }
 
+    /// The message line, focused, starting with `#id `: the owner answers about that task.
+    pub fn mention(&mut self, id: u64) {
+        self.composer = InputState::with_value("> ", format!("#{id} "));
+        self.focus = Focus::Compose;
+    }
+
     /// Approve or deny request `id` as `wsx task approve` and `deny` do.
     pub fn decide(&mut self, id: String, approve: bool) {
         self.focus = Focus::Chat;

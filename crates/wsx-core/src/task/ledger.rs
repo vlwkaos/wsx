@@ -115,6 +115,8 @@ pub fn build(project_name: &str, main: &Path) -> Result<Value> {
         "project": project_name,
         // ^ A ready task lands by itself unless this is false (docs/tasks.md "Landing").
         "auto_land": settings.land_auto,
+        // ^ Whether a task can be tried on a preview: the owner's Try (docs/tasks.md "Preview").
+        "preview": settings.preview.is_some(),
         // ^ Open "To check" items: a release waits for them (docs/tasks.md "To check").
         "to_check": checks::open_items(&project_id).map_or(0, |items| items.len()),
         // ^ Spend today and in 7 days, workers and manager apart (docs/tasks.md "Usage").

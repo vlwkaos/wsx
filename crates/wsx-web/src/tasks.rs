@@ -496,7 +496,8 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     let stuck = stall::stuck(&dir, &record, now);
     summary["progress"] = progress(&dir, &record, &log, stuck.as_deref());
     summary["goal"] = goal(&dir);
-    let land_auto = load_task_config(&scope.path).is_ok_and(|settings| settings.land_auto);
+    let settings = load_task_config(&scope.path);
+    let land_auto = settings.as_ref().is_ok_and(|settings| settings.land_auto);
     summary["agent"] = view::task_agent(&record);
     summary["stage"] = json!(needs::stage(&dir, &record, land_auto).name());
     summary["conflict"] =
@@ -538,7 +539,16 @@ pub fn detail(scope: &Scope, task: u32, can_act: bool) -> Outcome<Value> {
     summary["landed_commit"] = json!(landed);
     summary["approvals"] = approval_rows(&approvals);
     summary["actions"] = if can_act {
-        json!(actions(&record))
+        let on = record.waiting.as_ref().map(|waiting| waiting.on);
+        json!(view::owner_actions(
+            record.state,
+            on,
+            summary["status"]["kind"].as_str(),
+            summary["trial"]["stage"].as_str(),
+            settings
+                .as_ref()
+                .is_ok_and(|settings| settings.preview.is_some()),
+        ))
     } else {
         json!([])
     };
@@ -613,20 +623,6 @@ fn goal(dir: &TaskDir) -> Value {
         .unwrap_or_default()
         .replace('\n', " ");
     json!(Some(view::clip(paragraph.trim(), 400)).filter(|text| !text.is_empty()))
-}
-
-/// The actions a task's state allows. The host still decides; this only picks buttons.
-/// `hand` takes a build over in its working copy (docs/tasks.md "By hand").
-fn actions(record: &TaskRecord) -> Vec<&'static str> {
-    let on = record.waiting.as_ref().map(|waiting| waiting.on);
-    // ^ Hold and trial stay commands for the manager; the owner's buttons are land and hand: a message to
-    // the worker goes through the manager (docs/web-client-tasks.md "Task sheet").
-    match (record.state, on) {
-        (TaskState::Waiting, Some(WaitOn::Hand)) => vec!["handback"],
-        (TaskState::Ready, _) => vec!["land", "hand"],
-        (TaskState::Working | TaskState::Waiting | TaskState::Failed, _) => vec!["hand"],
-        (TaskState::Checking | TaskState::Landed | TaskState::Closed, _) => vec![],
-    }
 }
 
 /// The messages the owner or the manager added or steered after the prompt, in order.
@@ -1114,22 +1110,10 @@ pub fn run_task(scope: &Scope, command: &str, task: u32) -> Outcome<Value> {
 }
 
 /// Run `wsx <argv> -p <project> --json` as the owner and return its JSON answer.
-fn run_wsx(scope: &Scope, mut argv: Vec<String>) -> Outcome<Value> {
-    argv.extend(["-p".into(), scope.name.clone(), "--json".into()]);
+fn run_wsx(scope: &Scope, argv: Vec<String>) -> Outcome<Value> {
     let wsx = std::env::current_exe().map_err(|error| internal(error.into()))?;
-    let output = std::process::Command::new(wsx)
-        .args(&argv)
-        .env_remove(owner::ACTOR_ENV)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|error| internal(error.into()))?;
-    if !output.status.success() {
-        let said = String::from_utf8_lossy(&output.stderr);
-        let said = said.trim().trim_start_matches("Error: ");
-        return Err(Fault::new(409, "refused", view::clip(said, SUMMARY_CHARS)));
-    }
-    serde_json::from_slice(&output.stdout)
-        .map_err(|_| internal(anyhow::anyhow!("wsx {} did not print JSON", argv[1])))
+    owner::run_as_owner(&wsx, &scope.name, argv)
+        .map_err(|said| Fault::new(409, "refused", view::clip(&said, SUMMARY_CHARS)))
 }
 
 /// Give the manager, or the open role `role`, an owner message, starting it when it does not
