@@ -57,7 +57,8 @@ pub(crate) fn after_landing(mut request: ApprovalLine, after: Option<u32>) -> Ap
 
 /// The manager's action that needs the owner: approved by the owner's message `owner_said`
 /// of its running turn (recorded; `false`: run it), else a request (`true`: the owner was
-/// asked); a request with `after` and the message is recorded waiting, and nothing runs now (`true`). ref: docs/tasks.md "Approvals"
+/// asked); a request with `after` and the message is recorded waiting, and nothing runs now
+/// (`true`). ref: docs/tasks.md "Approvals"
 pub(crate) fn ask_owner(
     project_id: &str,
     request: ApprovalLine,
