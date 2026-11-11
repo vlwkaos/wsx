@@ -18,6 +18,7 @@ mod args;
 mod daemon;
 mod exchange;
 mod group;
+mod memory;
 mod routine;
 mod session;
 mod workspace_cmds;
@@ -27,6 +28,7 @@ pub use args::*;
 use daemon::*;
 use exchange::*;
 use group::*;
+use memory::cmd_memory;
 pub(crate) use routine::*;
 use session::*;
 pub(crate) use workspace_cmds::*;
@@ -288,6 +290,11 @@ pub fn run(cmd: Command) -> Result<()> {
             DaemonCmd::Recover => cmd_daemon_recover(),
         },
         Command::Routine { subcommand } => cmd_routine(subcommand),
+        Command::Memory {
+            subcommand,
+            scope,
+            json,
+        } => cmd_memory(subcommand, scope, json),
         Command::Task { subcommand } => crate::task::run(subcommand),
         Command::Web { subcommand } => match subcommand {
             WebCmd::Serve { site } => wsx_web::serve(site.named()),

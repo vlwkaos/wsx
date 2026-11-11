@@ -89,6 +89,16 @@ pub enum Command {
         #[command(subcommand)]
         subcommand: WebCmd,
     },
+    /// Stored knowledge: records of rules, facts and episodes (docs/memory.md)
+    Memory {
+        #[command(subcommand)]
+        subcommand: MemoryCmd,
+        /// A project's task ID, `default` or another name; the project of the current folder if none
+        #[arg(long, global = true)]
+        scope: Vec<String>,
+        #[arg(long, global = true)]
+        json: bool,
+    },
     /// Headless worker tasks and the project manager (docs/tasks.md)
     Task {
         #[command(subcommand)]
@@ -181,6 +191,7 @@ impl Command {
             ),
             Command::Routine { subcommand } => subcommand.json(),
             Command::Task { subcommand } => subcommand.json_output(),
+            Command::Memory { json, .. } => *json,
             _ => false,
         }
     }
@@ -837,4 +848,68 @@ pub enum SessionCmd {
         #[command(flatten)]
         output: ListOutput,
     },
+}
+
+/// ref: docs/memory.md "Commands"
+#[derive(Subcommand)]
+pub enum MemoryCmd {
+    /// Find records by their words
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        #[arg(long)]
+        include_inactive: bool,
+        #[arg(long)]
+        kind: Option<wsx_core::memory::Kind>,
+    },
+    /// Store a record; a near duplicate returns the old one
+    Add {
+        #[arg(long)]
+        kind: wsx_core::memory::Kind,
+        #[arg(long)]
+        slug: String,
+        /// A file, or - for stdin
+        #[arg(long)]
+        text_file: String,
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        verified_by: Option<String>,
+        #[arg(long)]
+        commit: Option<String>,
+    },
+    /// Change a record; the old text stays in the log
+    Update {
+        #[arg(long)]
+        slug: String,
+        #[arg(long)]
+        text_file: Option<String>,
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        verified_by: Option<String>,
+        #[arg(long)]
+        commit: Option<String>,
+        /// `failed` marks the record wrong; --lesson says why
+        #[arg(long, value_parser = ["failed"])]
+        status: Option<String>,
+        #[arg(long)]
+        lesson: Option<String>,
+    },
+    /// Replace the record OLD with the active record NEW
+    Supersede {
+        old: String,
+        new: String,
+        #[arg(long)]
+        source: String,
+    },
+    /// Rebuild the index of the scope (the built-in store has none)
+    Reindex,
+    /// Store folder, search backend and record counts
+    Status,
+    /// The scopes on this machine and their folders
+    List,
 }

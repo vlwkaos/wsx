@@ -142,7 +142,7 @@ fn require_real_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn project_dir(project_id: &str) -> Result<PathBuf> {
+pub(crate) fn project_dir(project_id: &str) -> Result<PathBuf> {
     validate_project_id(project_id)?;
     Ok(tasks_root().join(project_id))
 }
