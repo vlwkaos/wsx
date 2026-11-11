@@ -21,6 +21,7 @@ const MAX_ITEMS: usize = 50;
 const MAX_COLUMNS: usize = 8;
 const MAX_ROWS: usize = 100;
 const MAX_STRING_CHARS: usize = 200;
+const MAX_URL_BYTES: usize = 2048;
 /// Notice lines shown before "and n more".
 const MAX_NOTICES: usize = 5;
 const MAX_ARGV: usize = 64;
@@ -229,18 +230,50 @@ pub enum Item {
         #[serde(default)]
         level: Option<Level>,
     },
+    /// A cell that is a link keeps its text in `rows` and its target in `links`.
     Table {
         #[serde(deserialize_with = "scalars")]
         columns: Vec<String>,
         #[serde(deserialize_with = "scalar_rows")]
         rows: Vec<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        links: Vec<Link>,
     },
     List {
         #[serde(deserialize_with = "scalars")]
         items: Vec<String>,
         #[serde(default)]
         level: Option<Level>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        links: Vec<Link>,
     },
+}
+
+/// The target of one table cell or list entry (docs/panels.md "Links"). A separate list, not a
+/// cell type, so a client from before links reads the text and ignores the field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Link {
+    /// A table's row; a list's entry.
+    pub row: usize,
+    /// A table's column; 0 in a list.
+    pub col: usize,
+    /// Checked: an `https://` or `http://` URL, or a project-relative `.html`/`.htm` path.
+    pub url: String,
+    /// Set only on the machine card, for a project-relative path: the project it is in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+impl Link {
+    /// The link of the cell `(row, col)` in `links`.
+    pub fn at(links: &[Link], row: usize, col: usize) -> Option<&Link> {
+        links.iter().find(|l| l.row == row && l.col == col)
+    }
+
+    /// An absolute URL; else a path of the project's main checkout.
+    pub fn is_web(&self) -> bool {
+        self.url.starts_with("https://") || self.url.starts_with("http://")
+    }
 }
 
 #[derive(Deserialize)]
@@ -315,7 +348,7 @@ fn checked(mut item: Item, cut: &mut Vec<&'static str>) -> Result<Item, String> 
         Item::Gauge { used, total, .. } if !(total.0 > 0.0 && used.0 >= 0.0) => {
             return Err("a gauge needs total > 0 and used >= 0".into());
         }
-        Item::Table { columns, rows } => {
+        Item::Table { columns, rows, .. } => {
             if columns.is_empty() || columns.len() > MAX_COLUMNS {
                 return Err(format!("a table has 1..={MAX_COLUMNS} columns"));
             }
@@ -336,8 +369,118 @@ fn checked(mut item: Item, cut: &mut Vec<&'static str>) -> Result<Item, String> 
     Ok(item)
 }
 
+/// The cells of a table and the entries of a list written as `{"text", "url"}`: each such object
+/// becomes its `text` in `item`, and its `url`, as found, goes to the result with the place of the
+/// cell (a list entry is `(index, 0)`).
+fn lift_links(item: &mut Value) -> Vec<(usize, usize, Value)> {
+    let mut found = Vec::new();
+    let mut lift = |cell: &mut Value, row: usize, col: usize| {
+        if let Value::Object(map) = cell {
+            if let Some(text) = map.remove("text") {
+                let url = map.remove("url").filter(|url| !url.is_null());
+                *cell = text;
+                found.extend(url.map(|url| (row, col, url)));
+            }
+        }
+    };
+    match item.get("kind").and_then(Value::as_str) {
+        Some("table") => {
+            let rows = item.get_mut("rows").and_then(Value::as_array_mut);
+            for (row, cells) in rows.into_iter().flatten().enumerate() {
+                for (col, cell) in cells.as_array_mut().into_iter().flatten().enumerate() {
+                    lift(cell, row, col);
+                }
+            }
+        }
+        Some("list") => {
+            let entries = item.get_mut("items").and_then(Value::as_array_mut);
+            for (at, cell) in entries.into_iter().flatten().enumerate() {
+                lift(cell, at, 0);
+            }
+        }
+        _ => {}
+    }
+    found
+}
+
+/// `url` when it is a link a client may open (docs/panels.md "Links"), else why not.
+fn link_url(url: &Value) -> Result<String, &'static str> {
+    let Some(url) = url.as_str() else {
+        return Err("the url is not a string");
+    };
+    if url.len() > MAX_URL_BYTES
+        || url
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+    {
+        return Err("the url is over 2048 bytes or has a space, backslash or control character");
+    }
+    if let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    {
+        let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        return if host.is_empty() || host.contains('@') {
+            Err("the url has no host or has credentials")
+        } else {
+            Ok(url.to_string())
+        };
+    }
+    let lower = url.to_ascii_lowercase();
+    let parts: Vec<&str> = url.split('/').collect();
+    let (name, folders) = parts.split_last().unwrap_or((&"", &[]));
+    let page = (lower.ends_with(".html") || lower.ends_with(".htm"))
+        && !url.contains(['?', '#', ':'])
+        && !name.is_empty()
+        && *name != ".."
+        && folders
+            .iter()
+            .all(|part| !part.is_empty() && !part.starts_with('.'));
+    if page {
+        Ok(url.to_string())
+    } else {
+        Err("the url is not an https:// URL or a project .html path")
+    }
+}
+
+/// Set `item`'s links from the `lifted` ones that are good: a cut row has none, a bad one is a
+/// notice line. A `links` written in the document is replaced.
+fn attach_links(
+    item: &mut Item,
+    lifted: Vec<(usize, usize, Value)>,
+    place: &str,
+    notes: &mut Vec<String>,
+) {
+    let (links, count, table) = match item {
+        Item::Table { rows, links, .. } => (links, rows.len(), true),
+        Item::List { items, links, .. } => (links, items.len(), false),
+        _ => return,
+    };
+    links.clear();
+    for (row, col, url) in lifted.into_iter().filter(|(row, ..)| *row < count) {
+        match link_url(&url) {
+            Ok(url) => links.push(Link {
+                row,
+                col,
+                url,
+                project: None,
+            }),
+            Err(reason) => notes.push(if table {
+                format!(
+                    "{place}: link at row {}, column {} dropped: {reason}",
+                    row + 1,
+                    col + 1
+                )
+            } else {
+                format!("{place}: link of entry {} dropped: {reason}", row + 1)
+            }),
+        }
+    }
+}
+
 /// Read `text` (a `format: json` panel's output) as a `PanelDoc`. An unknown kind, a bad level
-/// or value skips that item; anything over a limit is cut; both leave a notice line. Text that
+/// or value skips that item; a bad link drops only the link; anything over a limit is cut; all
+/// leave a notice line. Text that
 /// is not a document gives no `doc`, only the notice, so the clients show the text.
 fn parse_doc(text: &str) -> (Option<PanelDoc>, Option<String>) {
     let raw = match serde_json::from_str::<RawDoc>(text) {
@@ -363,13 +506,18 @@ fn parse_doc(text: &str) -> (Option<PanelDoc>, Option<String>) {
             mark(&mut cut, "items");
         }
         let mut items = Vec::new();
-        for (index, item) in section.items.into_iter().take(MAX_ITEMS).enumerate() {
+        for (index, mut item) in section.items.into_iter().take(MAX_ITEMS).enumerate() {
+            let place = format!("section {at}, item {}", index + 1);
+            let lifted = lift_links(&mut item);
             match serde_json::from_value::<Item>(item)
                 .map_err(|error| error.to_string())
                 .and_then(|item| checked(item, &mut cut))
             {
-                Ok(item) => items.push(item),
-                Err(error) => notes.push(format!("section {at}, item {}: {error}", index + 1)),
+                Ok(mut item) => {
+                    attach_links(&mut item, lifted, &place, &mut notes);
+                    items.push(item);
+                }
+                Err(error) => notes.push(format!("{place}: {error}")),
             }
         }
         sections.push(Section {
@@ -577,6 +725,7 @@ fn project_sections(project: &str, name: &str, result: Result<PanelView, String>
             items: vec![Item::List {
                 items: vec![clip(&text, MAX_STRING_CHARS)],
                 level,
+                links: Vec::new(),
             }],
         }]
     };
@@ -608,7 +757,11 @@ fn project_sections(project: &str, name: &str, result: Result<PanelView, String>
                 .into_iter()
                 .map(|section| Section {
                     title: Some(head(section.title)),
-                    items: section.items,
+                    items: section
+                        .items
+                        .into_iter()
+                        .map(|item| in_project(item, project))
+                        .collect(),
                 })
                 .collect(),
             None => {
@@ -630,11 +783,22 @@ fn project_sections(project: &str, name: &str, result: Result<PanelView, String>
                     items: vec![Item::List {
                         items: lines,
                         level: None,
+                        links: Vec::new(),
                     }],
                 }]
             }
         },
     }
+}
+
+/// `item` with the project named in its page links, so the card opens them in that checkout.
+fn in_project(mut item: Item, project: &str) -> Item {
+    if let Item::Table { links, .. } | Item::List { links, .. } = &mut item {
+        for link in links.iter_mut().filter(|link| !link.is_web()) {
+            link.project = Some(project.to_string());
+        }
+    }
+    item
 }
 
 /// `text` cut to `max` characters, with `…` where it was cut.

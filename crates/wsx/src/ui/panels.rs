@@ -12,7 +12,7 @@ use ratatui::{
     widgets::{Clear, Paragraph},
     Frame,
 };
-use wsx_core::panel::{Item, Level, PanelDoc, PanelStatus};
+use wsx_core::panel::{Item, Level, Link, PanelDoc, PanelStatus};
 
 /// "12 s ago", "3 min ago".
 fn age(ms: u64) -> String {
@@ -59,6 +59,18 @@ fn level_look(level: Option<Level>) -> (&'static str, Color) {
 fn number(value: f64) -> String {
     let text = format!("{value:.1}");
     text.strip_suffix(".0").map_or(text.clone(), str::to_string)
+}
+
+/// A link's look: the accent and an underline, with `↗` and the target after the text, so it is
+/// marked by more than colour and reachable where no terminal link is made (docs/panels.md "Links").
+fn link_style() -> Style {
+    Style::default()
+        .fg(theme::ACCENT)
+        .add_modifier(Modifier::UNDERLINED)
+}
+
+fn link_text(text: &str, link: &Link) -> String {
+    format!("{text} ↗ {}", link.url)
 }
 
 /// One section's rows (without the box), `width` cells wide at most.
@@ -152,11 +164,17 @@ fn item_rows(items: &[Item], width: usize) -> Vec<Vec<Span<'static>>> {
             Item::Table {
                 columns,
                 rows: body,
+                links,
             } => {
+                // ^ A link cell reads `text ↗ target`; the cut below takes the target's end first.
+                let cell = |r: usize, c: usize| match Link::at(links, r, c) {
+                    Some(link) => (link_text(&body[r][c], link), true),
+                    None => (body[r][c].clone(), false),
+                };
                 let mut widths: Vec<usize> = (0..columns.len())
                     .map(|c| {
-                        body.iter()
-                            .map(|row| cells(&row[c]))
+                        (0..body.len())
+                            .map(|r| cells(&cell(r, c).0))
                             .chain([cells(&columns[c])])
                             .max()
                             .unwrap_or(0)
@@ -169,32 +187,59 @@ fn item_rows(items: &[Item], width: usize) -> Vec<Vec<Span<'static>>> {
                     };
                     *widest -= 1;
                 }
-                let line = |texts: &[String], style: Style| {
-                    let text: Vec<String> = texts
-                        .iter()
-                        .zip(&widths)
-                        .map(|(text, w)| fit(text, *w))
-                        .collect();
-                    vec![Span::styled(text.join("  "), style)]
+                let line = |texts: Vec<(String, bool)>, style: Style| {
+                    let mut spans = Vec::new();
+                    for (index, ((text, linked), w)) in texts.iter().zip(&widths).enumerate() {
+                        if index > 0 {
+                            spans.push(Span::raw("  "));
+                        }
+                        let shown = fit(text, *w);
+                        if *linked {
+                            let body = shown.trim_end();
+                            spans.push(Span::styled(body.to_string(), link_style()));
+                            spans.push(Span::raw(shown[body.len()..].to_string()));
+                        } else {
+                            spans.push(Span::styled(shown, style));
+                        }
+                    }
+                    spans
                 };
-                rows.push(line(columns, muted.add_modifier(Modifier::BOLD)));
-                rows.extend(body.iter().map(|row| line(row, Style::default())));
+                rows.push(line(
+                    columns.iter().map(|c| (c.clone(), false)).collect(),
+                    muted.add_modifier(Modifier::BOLD),
+                ));
+                rows.extend((0..body.len()).map(|r| {
+                    line(
+                        (0..columns.len()).map(|c| cell(r, c)).collect(),
+                        Style::default(),
+                    )
+                }));
             }
             Item::List {
                 items: entries,
                 level,
+                links,
             } => {
                 let (word, color) = level_look(*level);
                 for (index, entry) in entries.iter().enumerate() {
-                    let mut row = vec![
-                        Span::styled("• ", Style::default().fg(color)),
-                        Span::raw(entry.clone()),
-                    ];
-                    if index == 0 && !word.is_empty() {
-                        row.push(Span::styled(
-                            format!("  {word}"),
-                            Style::default().fg(color),
-                        ));
+                    let mut row = vec![Span::styled("• ", Style::default().fg(color))];
+                    let tail = if index == 0 && !word.is_empty() {
+                        format!("  {word}")
+                    } else {
+                        String::new()
+                    };
+                    match Link::at(links, index, 0) {
+                        Some(link) => row.push(Span::styled(
+                            truncate_to_width(
+                                &link_text(entry, link),
+                                width.saturating_sub(2 + cells(&tail)),
+                            ),
+                            link_style(),
+                        )),
+                        None => row.push(Span::raw(entry.clone())),
+                    }
+                    if !tail.is_empty() {
+                        row.push(Span::styled(tail, Style::default().fg(color)));
                     }
                     rows.push(row);
                 }

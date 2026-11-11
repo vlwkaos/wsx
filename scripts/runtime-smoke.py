@@ -2425,7 +2425,21 @@ PANEL_LIMITS = {"sections": [{"title": "s0", "items": [
     {"kind": "table", "columns": ["n"], "rows": [[r] for r in range(101)]},
     {"kind": "stat", "label": "x" * 300, "value": "v"}] + [{"kind": "stat", "label": "a", "value": "v"}] * 50}
 ] + [{"title": f"s{n}", "items": [{"kind": "list", "items": ["a"]}]} for n in range(1, 13)]}
-for name, body in {"json.json": PANEL_DOC, "limits.json": PANEL_LIMITS}.items():
+# ^ Links (docs/panels.md "Links"): a link cell, a project page entry, a cell with text and no url, and
+# five dropped links (a scheme, credentials, a path off the folder, a dot-folder, a url that is no string).
+PANEL_LINKS = {"title": "Trend board", "sections": [{"title": "Board", "items": [
+    {"kind": "table", "columns": ["Title", "Views"], "rows": [
+        [{"text": "Cat video", "url": "https://www.youtube.com/watch?v=abc"}, 120],
+        [{"text": "Scheme", "url": "javascript:alert(1)"}, 3],
+        [{"text": "Creds", "url": "https://user:pw@example.com/x"}, 4],
+        [{"text": "Escape", "url": "../secret.html"}, 5],
+        [{"text": "No link"}, 6]]},
+    {"kind": "list", "items": [
+        {"text": "Open board", "url": "trends/board/index.html"},
+        {"text": "Hidden", "url": ".git/x.html"},
+        {"text": "Number", "url": 5},
+        "Plain"]}]}]}
+for name, body in {"json.json": PANEL_DOC, "limits.json": PANEL_LIMITS, "links.json": PANEL_LINKS}.items():
     (PANEL_SCRIPTS / name).write_text(json.dumps(body))
 for script, body in {
     "device-status.sh": "echo x >> ok.log\nprintf '\\033[32mdevice-ok\\033[0m\\r\\n'\npwd -P\n",
@@ -2437,6 +2451,7 @@ for script, body in {
     "badjson.sh": "echo '{oops'\n",
     "limits.sh": "cat scripts/limits.json\n",
     "machine.sh": "echo machine-ok\n",
+    "links.sh": "cat scripts/links.json\n",
 }.items():
     (PANEL_SCRIPTS / script).write_text("#!/bin/sh\n" + body)
     (PANEL_SCRIPTS / script).chmod(0o755)
@@ -2451,6 +2466,7 @@ PANEL_CONFIG = (
     "  - name: tick\n    command: [scripts/tick.sh]\n    refresh: 10\n"
     "  - name: limits\n    command: [scripts/limits.sh]\n    format: json\n"
     "  - name: machine\n    command: [scripts/machine.sh]\n    scope: machine\n"
+    "  - name: links\n    command: [scripts/links.sh]\n    format: json\n"
 )
 (PROJECT / "wsx.config.yml").write_text(PANEL_CONFIG)
 assert call("synchronize_projects", {"projects": [
@@ -2485,7 +2501,7 @@ def log_lines(name):
 
 
 listed = panel_call(PROJECT, {"action": "list"})
-assert [item["name"] for item in listed["data"]["panels"]] == ["ok", "fail", "json", "badjson", "big", "slow", "tick", "limits", "machine"], listed
+assert [item["name"] for item in listed["data"]["panels"]] == ["ok", "fail", "json", "badjson", "big", "slow", "tick", "limits", "machine", "links"], listed
 # ^ The scope is in the list: only `machine` is machine-scoped (docs/panels.md "Machine panels").
 assert {item["name"]: item["scope"] for item in listed["data"]["panels"]}["machine"] == "machine", listed
 assert [item["name"] for item in listed["data"]["panels"] if item["scope"] == "machine"] == ["machine"], listed
@@ -2557,6 +2573,19 @@ assert len(limits["sections"][0]["items"][0]["rows"]) == 100, "rows are cut at 1
 label = limits["sections"][0]["items"][1]["label"]
 assert len(label) == 200 and label.endswith("…"), label
 assert limits_run["notice"] == "cut to the limits: sections, items, table rows", limits_run["notice"]
+# Links: the text stays in the cell, the checked target is in `links`, each bad one is a notice line.
+links_run = panel_finished("links")["run"]
+board = links_run["doc"]["sections"][0]["items"]
+assert board[0]["rows"] == [["Cat video", "120"], ["Scheme", "3"], ["Creds", "4"], ["Escape", "5"], ["No link", "6"]], board[0]
+assert board[0]["links"] == [{"row": 0, "col": 0, "url": "https://www.youtube.com/watch?v=abc"}], board[0]
+assert board[1]["items"] == ["Open board", "Hidden", "Number", "Plain"], board[1]
+assert board[1]["links"] == [{"row": 0, "col": 0, "url": "trends/board/index.html"}], board[1]
+link_notes = links_run["notice"].splitlines()
+assert [line.split(": link ")[1].split(" dropped")[0] for line in link_notes] == [
+    "at row 2, column 1", "at row 3, column 1", "at row 4, column 1", "of entry 2", "of entry 3"], link_notes
+assert "not a string" in link_notes[4] and "credentials" in link_notes[1], link_notes
+# A panel before links has no `links` field: the document without one reads as before.
+assert "links" not in panel_finished("json")["run"]["doc"]["sections"][1]["items"][0], "a table without links carries none"
 # Over 16 KiB: the last 16 KiB stay.
 big = panel_finished("big")["run"]
 assert len(big["output"].encode()) <= 16 * 1024 and big["truncated"] and "line 2999 " in big["output"], big["truncated"]
@@ -2659,6 +2688,16 @@ try:
     panel_tui.send(b"\t")
     wait_for(lambda: b"oops" in panel_tui.raw and b"document:" in panel_tui.raw,
              "the TUI did not show the broken json panel's text and notice", 20)
+    # Links (docs/panels.md "Links"): `h` wraps from the first panel to the last. The text, `↗` and the target
+    # show, a dropped link is named in the notice, and the cell without a link stays plain.
+    for _ in range(4):
+        panel_tui.send(b"h")
+    wait_for(lambda: "Cat video ↗ https://www.youtube.com/watch?v=abc" in panel_tui.text(),
+             lambda: "the TUI did not show the link cell with its target:\n" + panel_tui.text(), 20)
+    linked = panel_tui.text()
+    assert "Open board ↗ trends/board/index.html" in linked, linked
+    assert "link at row 2, column 1 dropped" in linked and "No link" in linked, linked
+    assert "Scheme ↗" not in linked and "Hidden ↗" not in linked and "No link ↗" not in linked, linked
     panel_tui.send(b"\x1b")
     wait_for(lambda: panel_tui.raw.rfind(b"WORKSPACE") > panel_tui.raw.rfind(b"PANELS"), "Esc did not leave the panels")
     # `M` with no project declaring a machine panel: wsxd's built-in panel alone, drawn as a document.

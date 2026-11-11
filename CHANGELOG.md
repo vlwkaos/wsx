@@ -3,6 +3,10 @@
 ## [0.43.0] - 2026-11-11
 ## [Unreleased]
 
+### Added
+
+- Panels: a table cell and a list entry of a `format: json` panel may be a link, `{"text": "...", "url": "..."}`, where `url` is an `https://` (or `http://`) URL or a path to an `.html` file in the project's main checkout. On the web an `https` link opens in a new tab and a project page opens in the files view's sandboxed page frame (a site without `files_read` shows the text); the machine card keeps the links of project panels. The TUI shows `text ↗ target`, underlined in the accent colour. A bad url (another scheme, credentials, `..`, a dot-folder, over 2048 bytes) keeps the text, drops the link and adds a notice line. Older clients read the text; the daemon revision does not change ([docs/panels.md](docs/panels.md) "Links").
+
 ### Changed
 
 - Tasks: the web's *Fail* on a To check item now closes it as failed at once, as *Pass* closes it as passed, and both then open the manager's composer as a reply to the item (`> check <id>`). Before, Fail only put the task's number in the composer and the item stayed open until the manager ran `wsx task check fail`. What the owner writes in that reply is their note on the verdict: the host keeps it on the item (the web shows "Failed: <note>" and "Passed: <note>") and sends it to the manager quoted with the check, marked `To check <id> failed:` for a failed item, so the manager starts or adds the fix; sending nothing leaves the verdict without a note. A reply to an open item with no button press is unchanged (to the manager, the item stays open), except `x`, which skips it. `wsx task check fail <id>` without `--note` only closes the item (with `--note` it still starts the fix task), and the web route `.../checks/<id>/fail` takes no note ([docs/tasks.md](docs/tasks.md) "To check"). A reply to an item now keeps the link in the records: the logged message has `check: "c<n>"` next to `quote`, so a tap on its quote goes to the item (its chat bubble, else the To check list; the TUI selects it) and `wsx task search c<n>` finds the reply; the item names the message that skipped it (`owner_said`) and the one whose words are its note (`note_said`).

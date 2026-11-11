@@ -3447,7 +3447,8 @@ PANEL_CONFIG = '''panels:
     format: json
 '''
 # ^ docs/panels.md "JSON panels": every kind, a bad level and an unknown kind (each skipped with a
-# notice), and a number cell; `badjson` is not a document.
+# notice), a number cell, and the links of docs/panels.md "Links" (an https one, a project page, a bad one
+# dropped with a notice); `badjson` is not a document.
 PANEL_DOC = {
     'title': 'This Mac',
     'sections': [
@@ -3458,8 +3459,9 @@ PANEL_DOC = {
             {'kind': 'stat', 'label': 'Disk', 'value': 'full', 'level': 'red'},
         ]},
         {'title': 'Storage', 'items': [
-            {'kind': 'table', 'columns': ['Volume', 'Used', 'Free'], 'rows': [['Macintosh HD', '412 GB', '88 GB'], ['Data', 12, 3]]},
-            {'kind': 'list', 'items': ['Time Machine: 2 days ago', 'Spotlight idle'], 'level': 'bad'},
+            {'kind': 'table', 'columns': ['Volume', 'Used', 'Free'], 'rows': [
+                [{'text': 'Macintosh HD', 'url': 'https://example.com/hd'}, '412 GB', '88 GB'], [{'text': 'Data', 'url': 'javascript:alert(1)'}, 12, 3]]},
+            {'kind': 'list', 'items': [{'text': 'Time Machine: 2 days ago', 'url': 'trends/board/index.html'}, 'Spotlight idle'], 'level': 'bad'},
             {'kind': 'chart', 'label': 'x'},
         ]},
     ],
@@ -3584,6 +3586,8 @@ def task_journey(args):
                         (folder / 'scripts/gauges.json').write_text(json.dumps(PANEL_DOC))
                         (folder / 'scripts/gauges.sh').write_text('#!/bin/sh\ncat scripts/gauges.json\n')
                         (folder / 'scripts/badjson.sh').write_text("#!/bin/sh\necho '{oops'\n")
+                        (folder / 'trends/board').mkdir(parents=True)
+                        (folder / 'trends/board/index.html').write_text('<!doctype html><title>Board</title><h1>Trend board page</h1>\n')
                         for script in ('device.sh', 'broken.sh', 'gauges.sh', 'badjson.sh'):
                             (folder / 'scripts' / script).chmod(0o755)
                     (folder / 'README').write_text('fixture\n')
@@ -3851,9 +3855,9 @@ def task_journey(args):
         push_origin = 'http://127.0.0.1:%d' % receiver['port']
         vapid = cli('web', 'vapid').stdout
         private_key = next(line.split('"')[1] for line in vapid.splitlines() if line.startswith('private_key'))
-        ports = {name: free_port() for name in ('owner', 'viewer', 'plain', 'admin', 'scoped', 'relay')}
+        ports = {name: free_port() for name in ('owner', 'viewer', 'plain', 'admin', 'scoped', 'pager', 'relay')}
         # ^ The browser reaches the owner's site through `Relay`, so its public origin is the relay's.
-        public = {name: 'http://127.0.0.1:%d' % ports['relay' if name == 'owner' else name] for name in ('owner', 'viewer', 'plain', 'admin', 'scoped')}
+        public = {name: 'http://127.0.0.1:%d' % ports['relay' if name == 'owner' else name] for name in ('owner', 'viewer', 'plain', 'admin', 'scoped', 'pager')}
         grants = {
             'owner': ('"all"', '"task_view", "task_act", "push", "media_upload", "media_download", "files_read"'),
             'viewer': (json.dumps([str(project)]), '"task_view", "push"'),
@@ -3862,9 +3866,11 @@ def task_journey(args):
             'admin': ('"all"', '"task_view", "terminal_view", "terminal_input", "push"'),
             # ^ Reads panels, but only of `other`, which declares none (docs/panels.md "Machine panels").
             'scoped': (json.dumps([str(other)]), '"task_view", "terminal_view", "terminal_input", "push"'),
+            # ^ Runs panels and reads files: a project page link in a panel opens (docs/panels.md "Links").
+            'pager': ('"all"', '"task_view", "terminal_view", "terminal_input", "files_read", "push"'),
         }
         # ^ The owner reads files too: a `files/<path>` link in a manager message opens that file's page.
-        panels = {'owner': '"chat", "files"', 'admin': '"chat", "terminal"', 'scoped': '"chat", "terminal"'}
+        panels = {'owner': '"chat", "files"', 'admin': '"chat", "terminal"', 'scoped': '"chat", "terminal"', 'pager': '"chat", "files", "terminal"'}
         files, sites, servers = {}, {}, {}
         for name, (projects_value, capabilities) in grants.items():
             files[name] = work / (name + '.toml')
@@ -3959,7 +3965,10 @@ merge_seconds = 3
             gauges = panel_shown('gauges', run=True)['run']
             assert gauges['doc']['title'] == 'This Mac' and [i['kind'] for i in gauges['doc']['sections'][0]['items']] == ['gauge', 'gauge', 'stat'], gauges
             assert gauges['doc']['sections'][1]['items'][0]['rows'][1] == ['Data', '12', '3'], gauges
-            assert gauges['notice'].count('\n') == 1 and '`red`' in gauges['notice'] and '`chart`' in gauges['notice'], gauges['notice']
+            assert gauges['notice'].count('\n') == 2 and '`red`' in gauges['notice'] and '`chart`' in gauges['notice'] and 'link at row 2, column 1 dropped' in gauges['notice'], gauges['notice']
+            # ^ The links: the text stays in the cell, the good targets are in `links`, the bad one is gone.
+            storage = gauges['doc']['sections'][1]['items']
+            assert storage[0]['links'] == [{'row': 0, 'col': 0, 'url': 'https://example.com/hd'}] and storage[1]['links'] == [{'row': 0, 'col': 0, 'url': 'trends/board/index.html'}], storage
             badjson = panel_shown('badjson', run=True)['run']
             assert badjson['doc'] is None and badjson['output'] == '{oops\n' and badjson['notice'].startswith('not a panel document'), badjson
             # The admin site is granted `calm`: its device (text), broken (fails) and gauges (document) joined This Mac's.
@@ -3981,6 +3990,9 @@ merge_seconds = 3
             # ^ A failing project panel is one line, level bad, in its place; the card's state is the worst level.
             assert sections[-3]['items'] == [{'kind': 'list', 'items': ['broken: failed (exit 2)'], 'level': 'bad'}], sections[-3]
             assert [item['kind'] for item in sections[-2]['items']] == ['gauge', 'gauge', 'stat'] and card['run']['doc']['level'] == 'bad', card['run']['doc']
+            # ^ The card keeps the links; a project page names its project, an https one does not.
+            assert sections[-1]['items'][0]['links'] == [{'row': 0, 'col': 0, 'url': 'https://example.com/hd'}], sections[-1]
+            assert sections[-1]['items'][1]['links'] == [{'row': 0, 'col': 0, 'url': 'trends/board/index.html', 'project': 'calm'}], sections[-1]
             assert 'level' not in mac['run']['doc'] or mac['run']['doc']['level'] in ('warn', 'bad'), mac['run']['doc']
             assert not any(str(title).startswith('calm') for title in [section['title'] for section in mac['run']['doc']['sections']]), 'a project outside the grant is in the card'
             status, body = steady(admin, 'GET', panel_url + '/missing')
@@ -3991,7 +4003,8 @@ merge_seconds = 3
                 checked = check(work, [node, str(ROOT / 'scripts/web-panels-check.mjs'), admin.origin + '/', cli('web', 'pair', '--site', files['admin']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                        owner.origin + '/', cli('web', 'pair', '--site', files['owner']).stdout.splitlines()[0].rsplit(' ', 1)[1],
                                        str(args.captures), str(calm_id),
-                                       sites['scoped'].origin + '/', cli('web', 'pair', '--site', files['scoped']).stdout.splitlines()[0].rsplit(' ', 1)[1]], timeout=240)
+                                       sites['scoped'].origin + '/', cli('web', 'pair', '--site', files['scoped']).stdout.splitlines()[0].rsplit(' ', 1)[1],
+                                       sites['pager'].origin + '/', cli('web', 'pair', '--site', files['pager']).stdout.splitlines()[0].rsplit(' ', 1)[1]], timeout=240)
                 assert checked.returncode == 0, checked.stdout + checked.stderr
                 ok('real browser, ' + checked.stdout.strip().splitlines()[-1])
         panels_journey(sites['admin'])
