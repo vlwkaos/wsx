@@ -787,8 +787,14 @@ def manager_up(created):
     # Under the broker no other command runs, neither in the CLI nor at the host.
     refused = js('task', 'say', 'RUN wsx --version\nRUN wsx task host %s 1' % launch['cwd'])
     text = reply_to(refused['id'])['text']
-    assert 'ran: wsx --version -> 2 wsx: only `wsx task` commands run here' in text, text
+    assert 'ran: wsx --version -> 2 wsx: only `wsx task` and `wsx memory` commands run here' in text, text
     assert 'ran: wsx task host' in text and "-> 2 wsx: `wsx task host` is not for the manager" in text, text
+    # The manager's `wsx memory` runs at its host too (docs/memory.md "Agents"): a rule with the owner's word is its own.
+    (work / 'manager-rule.txt').write_text('The manager writes the rules.\n')
+    text = reply_to(js('task', 'say', 'RUN wsx memory add --kind rule --slug manager-rule --text-file %s --source msg:1 '
+                       '--verified-by owner:1 --json' % (work / 'manager-rule.txt'))['id'])['text']
+    assert '-> 0 {"slug":"manager-rule","kind":"rule"' in text, text
+    assert [h['slug'] for h in json.loads(cli('memory', 'search', 'rules', '--json').stdout)] == ['manager-rule']
     with socket.socket(socket.AF_UNIX) as raw:
         raw.connect(launch['broker'])
         raw.sendall(json.dumps({'argv': ['daemon', 'stop'], 'stdin': None, 'cwd': str(project)}).encode())
@@ -3533,6 +3539,18 @@ def part_worker(created=None):
     assert not any('plain stderr line' in e.get('text', '') for e in log(gated)), 'a line that is no runner line is not progress'
     js('task', 'close', gated, '--discard')
     wait(lambda: not Path(runner['path']).exists(), 'the policy file goes with the launch folder')
+    # 23m. An untrusted agent's memory is read only (docs/memory.md "Agents"): its search works, every write is refused
+    # through its host's broker with the reason, and the store keeps the owner's rule as it was.
+    cli('memory', 'add', '--kind', 'rule', '--slug', 'seed-rule', '--text-file', '-', '--source', 'msg:1', '--verified-by', 'owner:1',
+        stdin='Seed rule for the memory probes.')
+    pi_memory = js('task', 'new', 'MEMORY WORK pimemory.txt')['id']
+    assert wait_state(pi_memory, 'ready', 'failed')['state'] == 'ready', show(pi_memory)
+    answers = next(t['memory'] for t in traces() if 'memory' in t and 'session' in t)
+    assert answers['search'][0] == 0 and [h['slug'] for h in json.loads(answers['search'][1])] == ['seed-rule'], answers
+    for name in ('add_episode', 'add_rule', 'update_rule', 'supersede_rule'):
+        assert answers[name][0] == 2 and 'reads memory and writes none' in answers[name][1], (name, answers)
+    assert json.loads(cli('memory', 'search', 'worker', '--json').stdout) == [], 'the untrusted agent wrote nothing'
+    js('task', 'close', pi_memory, '--discard')
     models = home / '.pi/agent/models.json'
     models.write_text(json.dumps({'providers': {'remote': {'baseUrl': 'http://%s:%d/v1' % (lan, provider_port), 'api': 'openai-completions',
                                                            'apiKey': 'none', 'models': [{'id': 'pi-model'}]}}}))
@@ -3782,6 +3800,37 @@ def part_worker(created=None):
     assert all(c['exit'] == 0 for c in show(cr)['result']['checks']), show(cr)['result']
     assert 'WSX_TASK_BROKER' in worker_launch['wsx_env'], worker_launch['wsx_env']
     js('task', 'close', cr, '--discard')
+    # 27m. Memory through the worker's broker (docs/memory.md "Agents"): search and an episode work; a rule, a change
+    # of the owner's rule and a scope of another project are refused with the reason.
+    mark('27m')
+    mem = js('task', 'new', 'MEMORY WORK mem.txt')['id']
+    assert wait_state(mem, 'ready', 'failed')['state'] == 'ready', show(mem)
+    answers = next(t['memory'] for t in traces() if 'memory' in t and 'session' not in t)
+    assert answers['search'][0] == 0 and [h['slug'] for h in json.loads(answers['search'][1])] == ['seed-rule'], answers
+    assert answers['add_episode'][0] == 0 and json.loads(answers['add_episode'][1])['slug'] == 'worker-note', answers
+    for name in ('add_rule', 'update_rule', 'supersede_rule'):
+        assert answers[name][0] == 2 and 'a rule needs the owner' in answers[name][1], (name, answers)
+    assert answers['other_scope'][0] == 2 and "only in its own project's scope" in answers['other_scope'][1], answers
+    stored = {h['slug']: h for h in json.loads(cli('memory', 'search', 'rule worker', '--json').stdout)}
+    assert {'seed-rule', 'worker-note'} <= set(stored) and 'worker-rule' not in stored, stored
+    assert stored['seed-rule']['excerpt'] == 'Seed rule for the memory probes.', stored
+    # `verified_by` task:<n> needs a landed task and check:<id> a passed item (docs/memory.md "Record").
+    refused = subprocess.run([str(wsx), 'memory', 'add', '--kind', 'fact', '--slug', 'early', '--text-file', '-', '--source', 'task:%s' % mem,
+                              '--verified-by', 'task:%s' % mem], cwd=project, env=env, input='Too early.', capture_output=True, text=True)
+    assert refused.returncode == 2 and 'has not landed' in refused.stderr, refused
+    assert js('task', 'land', mem)['state'] == 'landed'
+    cli('memory', 'add', '--kind', 'fact', '--slug', 'landed-fact', '--text-file', '-', '--source', 'task:%s' % mem,
+        '--verified-by', 'task:%s' % mem, stdin='A landed task verifies this.')
+    item_task = js('task', 'new', 'WORK item27.txt HV')['id']
+    assert wait_state(item_task, 'ready', 'failed')['state'] == 'ready'
+    assert js('task', 'land', item_task)['state'] == 'landed'
+    item = next(i for i in js('task', 'check')['open'] if i['task'] == item_task)['id']
+    unpassed = subprocess.run([str(wsx), 'memory', 'add', '--kind', 'fact', '--slug', 'unpassed', '--text-file', '-', '--source', 'task:%s' % mem,
+                               '--verified-by', 'check:' + item], cwd=project, env=env, input='Not yet.', capture_output=True, text=True)
+    assert unpassed.returncode == 2 and 'no passed check item' in unpassed.stderr, unpassed
+    js('task', 'check', 'pass', item)
+    cli('memory', 'add', '--kind', 'fact', '--slug', 'passed-fact', '--text-file', '-', '--source', 'task:%s' % mem,
+        '--verified-by', 'check:' + item, stdin='A passed item verifies this.')
     # Below tasks.minFreeGb a task waits, says why, and goes on by itself without a retry.
     configure(LAND_CONFIG.replace('minFreeGb: 0', 'minFreeGb: 100000'), 'no disk')
     dw = js('task', 'new', 'WORK dw.txt')['id']

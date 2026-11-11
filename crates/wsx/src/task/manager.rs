@@ -377,8 +377,9 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
     });
     let exe = std::env::current_exe().context("cannot find the wsx binary")?;
     let folder = manager.main.clone();
-    let (own, owed, sent, actor) = (
+    let (own, project_id, owed, sent, actor) = (
         manager.project.clone(),
+        manager.dir.project_id.clone(),
         manager.owed.clone(),
         events.clone(),
         manager.actor(),
@@ -391,6 +392,7 @@ pub fn run(project_id: &str, role: Option<&str>) -> Result<()> {
                 exe,
                 fallback_cwd: folder,
                 own,
+                project_id,
                 actor,
                 owed,
                 policy,

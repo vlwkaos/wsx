@@ -16,6 +16,9 @@ pub const TRUST_ENV: &str = "WSX_TASK_TRUST";
 /// `runner/README.md`); without both the runner denies every tool call.
 pub const RUNNER_POLICY_ENV: &str = "PYGMALION_POLICY";
 pub const RUNNER_POLICY_SHA_ENV: &str = "PYGMALION_POLICY_SHA256";
+/// Set by the broker on each `wsx memory` command it runs: `deny` when the agent may not write a
+/// rule. A missing value is the owner's own call, which may.
+pub const RULES_ENV: &str = "WSX_MEMORY_RULES";
 /// Programs the strict profile refuses to start: privilege, UI scripting and the service manager.
 pub const DENIED_EXEC: [&str; 5] = [
     "/usr/bin/sudo",
@@ -66,10 +69,17 @@ pub enum Capability {
     Approve,
     /// A worker's `result` and `check-run`.
     Result,
+    /// `wsx memory search|status|list`: every role has it, whatever `may` lists.
+    Recall,
+    /// `wsx memory add|update|supersede|reindex` in the agent's own project. Never an
+    /// untrusted agent's: its memory is read only.
+    Remember,
+    /// Write a `rule` record, which needs the owner's word (`owner:<id>`).
+    Decide,
 }
 
 /// Every capability, in bit order.
-pub const ALL: [Capability; 17] = [
+pub const ALL: [Capability; 20] = [
     Capability::Read,
     Capability::Notify,
     Capability::Answer,
@@ -87,7 +97,13 @@ pub const ALL: [Capability; 17] = [
     Capability::RoleAdmin,
     Capability::Approve,
     Capability::Result,
+    Capability::Recall,
+    Capability::Remember,
+    Capability::Decide,
 ];
+
+/// What the strict profile takes from an untrusted agent: it reads memory and writes none.
+const MEMORY_WRITES: [Capability; 2] = [Capability::Remember, Capability::Decide];
 
 impl Capability {
     fn bit(self) -> u32 {
@@ -119,6 +135,14 @@ impl Caps {
 
     pub fn and(self, other: Self) -> Self {
         Self(self.0 & other.0)
+    }
+
+    pub fn or(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub fn minus(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
     }
 }
 
@@ -161,6 +185,7 @@ pub const ROLES: [(Role, RoleInfo); 5] = [
             brief: "a named role for one area: its own tasks and their children, no approvals, deploys, routines or roles",
             caps: &[
                 Read, Notify, Answer, Backlog, Note, Handoff, CreateTask, Direct, Close, LandChild,
+                Recall, Remember, Decide,
             ],
         },
     ),
@@ -169,7 +194,7 @@ pub const ROLES: [(Role, RoleInfo); 5] = [
         RoleInfo {
             name: "organizer",
             brief: "reads, answers the owner, keeps the backlog and the notes",
-            caps: &[Read, Answer, Backlog, Note],
+            caps: &[Read, Answer, Backlog, Note, Recall],
         },
     ),
     (
@@ -177,7 +202,7 @@ pub const ROLES: [(Role, RoleInfo); 5] = [
         RoleInfo {
             name: "scribe",
             brief: "writes notes and handoffs",
-            caps: &[Note, Handoff],
+            caps: &[Note, Handoff, Recall],
         },
     ),
     (
@@ -185,7 +210,7 @@ pub const ROLES: [(Role, RoleInfo); 5] = [
         RoleInfo {
             name: "worker",
             brief: "builds in its own copy and reports its result and checks",
-            caps: &[Result],
+            caps: &[Result, Recall, Remember],
         },
     ),
 ];
@@ -273,12 +298,18 @@ pub struct Policy {
 
 impl Policy {
     /// `may`: the capabilities the agent passed; `None` is today's behavior, all of the
-    /// role's. (Rust's `for` is a keyword: this is the design's `Policy::for`.)
+    /// role's. (Rust's `for` is a keyword: this is the design's `Policy::for`.) Reading memory
+    /// needs no `may`, and an untrusted agent writes none. ref: docs/memory.md "Agents"
     pub fn of(trust: Trust, role: Role, may: Option<&[Capability]>) -> Self {
+        let passed = role.caps().and(may.map_or(Caps::ALL, Caps::of));
+        let granted = passed.or(Caps::of(&[Capability::Recall]).and(role.caps()));
         Self {
             trust,
             role,
-            granted: role.caps().and(may.map_or(Caps::ALL, Caps::of)),
+            granted: match trust {
+                Trust::Trusted => granted,
+                Trust::Untrusted => granted.minus(Caps::of(&MEMORY_WRITES)),
+            },
         }
     }
 
@@ -300,6 +331,9 @@ impl Policy {
     pub fn refusal(&self, what: &str, needs: &[Capability]) -> String {
         if !needs.iter().any(|cap| self.role.caps().has(*cap)) {
             return role_refusal(self.role, what);
+        }
+        if self.strict() && needs.iter().any(|cap| MEMORY_WRITES.contains(cap)) {
+            return format!("{what} is refused: an agent on a model wsx does not trust reads memory and writes none");
         }
         let passed: Vec<String> = ALL
             .iter()
