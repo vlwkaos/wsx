@@ -312,7 +312,7 @@ const focused = () => evaluate(`(() => { const node = document.activeElement; co
 // composer after the last row). The
 // row is known by its item (`blocked-1`): the same task may come back as another item (#1
 // under Running, then `land-1`). `attempts` are of 100 ms, as in `until`.
-async function clearRow(label, action, attempts = 300) {
+async function clearRow(label, action, attempts = 300, toComposer = false) {
   const key = await evaluate(`${rowOf(label)}.dataset.key`);
   if (!key) await fail(`the row ${label} has no item key`);
   // ^ As a pointer or a key press does, the button takes the focus before it acts.
@@ -320,7 +320,9 @@ async function clearRow(label, action, attempts = 300) {
     button.focus(); button.click(); })()`);
   await until(`!document.querySelector('.reservoir .need[data-key=${JSON.stringify(key)}]')`, `${action} did not clear the row ${label} (${key})`, attempts);
   // ^ After the last row the list closes; no text field takes the focus (a phone's keyboard would open).
-  const inList = "!!document.activeElement?.closest('.reservoir .need .need-action, .reservoir .need .row-open, .pill[aria-pressed=true]') || (!document.querySelector('.reservoir') && !document.activeElement?.matches('textarea, input'))";
+  // ^ Pass and Fail in a To check row quote the item in the composer for the owner's note: the focus is there.
+  const inList = toComposer ? "document.activeElement === document.querySelector('.composer-field')"
+    : "!!document.activeElement?.closest('.reservoir .need .need-action, .reservoir .need .row-open, .pill[aria-pressed=true]') || (!document.querySelector('.reservoir') && !document.activeElement?.matches('textarea, input'))";
   for (let attempt = 0; attempt < 100 && !(await evaluate(inList)); attempt++) await pause(100);
   if (!(await evaluate(inList))) await fail(`after ${action} on ${label} the focus is on ${JSON.stringify(await focused())}, not on the next row`);
   const now = await focused();
@@ -2633,9 +2635,9 @@ await until(`(() => { if (!${bubbleOf(8)}) document.querySelector('.log-earlier'
 const chatPlace = `(() => { const log = document.querySelector('.log'); return { keys: [...log.children].map((node) => node.dataset.key ?? '').join(), at: ${bubbleOf(8)}.dataset.at,
   jump: document.querySelector('.jump')?.textContent ?? '', fresh: ${bubbleOf(8)}.hasAttribute('data-fresh') }; })()`;
 const beforePass = await evaluate(chatPlace);
-// ^ Pass in the reservoir's To check row: the row leaves, the focus moves to the next row's action, and the bubble settles.
+// ^ Pass in the reservoir's To check row: the row leaves, the composer quotes the item with the focus, and the bubble settles.
 await openReservoir("check");
-await clearRow("#8", "Works: close this check");
+await clearRow("#8", "Works: close this check", 300, true);
 await closeReservoir();
 await until(`(${bubbleOf(8)}?.querySelector('.check-state')?.textContent ?? '') === 'Passed' && !${bubbleOf(8)}.querySelector('.check-acts')`, "Pass in the To check row did not settle the bubble", 60);
 await pause(500);
