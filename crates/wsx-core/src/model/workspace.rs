@@ -63,6 +63,8 @@ pub struct ProjectConfig {
 }
 
 pub(crate) const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 20 * 60;
+/// 1 GiB: about 17 times the largest project's captures when measured (2026-11-11, 58 MB).
+const DEFAULT_CAPTURE_BUDGET_MB: u64 = 1024;
 
 /// The `tasks:` section of `wsx.config.yml` (docs/tasks.md).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +113,9 @@ pub struct TaskConfig {
     /// Free disk a task needs before an agent turn or its checks; below it the task waits
     /// (docs/tasks.md "Checks, revisions and report").
     pub min_free_gb: u64,
+    /// `tasks.captureBudgetMb`: the most a project's kept To check captures may take; over it the
+    /// manager host removes the oldest decided ones (docs/tasks.md "To check").
+    pub capture_budget_mb: u64,
     /// Whether the manager's land, deploy and release need the owner's approval (only a
     /// release does by default: docs/tasks.md "Approvals").
     pub land_approve: bool,
@@ -264,6 +269,7 @@ impl Default for TaskConfig {
             env: Default::default(),
             check_timeout_secs: DEFAULT_CHECK_TIMEOUT_SECS,
             min_free_gb: 5,
+            capture_budget_mb: DEFAULT_CAPTURE_BUDGET_MB,
             land_approve: false,
             land_auto: true,
             deploy_approve: false,

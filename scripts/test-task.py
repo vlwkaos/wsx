@@ -2121,22 +2121,26 @@ def part_core(created=None):
     assert owner_turn['model'] == 'fake-manager' and owner_turn['session'] == event_turn['session'], owner_turn
     switches = [t['set_model'] for t in traces() if 'set_model' in t and t['session'] == event_turn['session']]
     assert switches[-2:] == ['fake-events', 'fake-manager'], switches
-    # A decided item's capture files go 7 days after the decision, when the manager starts and
-    # hourly; its row stays. Staged: the video item skipped 8 days ago, #recent's item open for 8
-    # days; the shot item was passed just now (docs/tasks.md "To check").
+    # A decided item's capture files stay however old it is; only the project's byte budget
+    # (`tasks.captureBudgetMb`) removes them, skipped and failed items before passed ones, oldest
+    # first, never an open item's (docs/tasks.md "To check"). Staged: the video item skipped 8
+    # days ago, the shot item passed 9 days ago, #recent's item open for 8 days.
     checks_file = Path(show(video)['report']).parent.parent / 'checks.jsonl'
     current = {}
     for line in checks_file.read_text().splitlines():
         current[json.loads(line)['id']] = json.loads(line)
-    video_item, recent_item = (next(r for r in current.values() if r['task'] == n and r.get('capture')) for n in (video, recent))
-    eight_days_ago = int(time.time() * 1000) - 8 * 24 * 3600 * 1000
+    video_item, recent_item, shot_item = (next(r for r in current.values() if r['task'] == n and r.get('capture')) for n in (video, recent, shot))
+    assert shot_item['state'] == 'passed' and video_item['state'] == 'skipped', (shot_item, video_item)
+    day_ms = 24 * 3600 * 1000
+    eight_days_ago = int(time.time() * 1000) - 8 * day_ms
 
     def append_rows(*rows):
         with open(checks_file, 'a') as out:
             fcntl.flock(out, fcntl.LOCK_EX)
             out.write(''.join(json.dumps(row) + '\n' for row in rows))
 
-    append_rows(dict(video_item, unix_ms=eight_days_ago), dict(recent_item, state='open', unix_ms=eight_days_ago))
+    append_rows(dict(video_item, unix_ms=eight_days_ago), dict(recent_item, state='open', unix_ms=eight_days_ago),
+                dict(shot_item, unix_ms=eight_days_ago - day_ms))
     captures_of = {n: Path(show(n)['report']).parent / 'captures' for n in (video, recent, shot)}
     assert sorted(p.name for p in captures_of[video].iterdir()) == ['r1-1.mp4', 'r1-1.poster.png']
     # Stop the manager host, finish a task while it is down, start it again.
@@ -2148,17 +2152,36 @@ def part_core(created=None):
     unseen = js('task', 'new', 'WORK late.txt')['id']
     wait_state(unseen, 'ready', 'failed')
     assert js('task', 'manager')['state'] == 'started'
-    wait(lambda: not any(captures_of[video].iterdir()), 'the decided video capture removed', 30)
+    append_rows(dict(recent_item, unix_ms=int(time.time() * 1000)))
+    late = wait(lambda: events_with('#%d ready r1' % unseen), 'event after restart')
+    # ^ The restart swept (the default budget is 1 GiB): nothing decided 8 or 9 days ago went.
+    assert sorted(p.name for p in captures_of[video].iterdir()) == ['r1-1.mp4', 'r1-1.poster.png']
     assert [p.name for p in captures_of[recent].iterdir()] == ['r1-1.png'] and [p.name for p in captures_of[shot].iterdir()] == ['r1-1.png']
     after_sweep = [json.loads(line) for line in checks_file.read_text().splitlines()]
     assert [r for r in after_sweep if r['id'] == video_item['id']][-1]['capture'] == 'captures/r1-1.mp4', after_sweep
-    append_rows(dict(recent_item, unix_ms=int(time.time() * 1000)))
-    late = wait(lambda: events_with('#%d ready r1' % unseen), 'event after restart')
     late_reply = reply_to(late[0]['id'])
     assert 'noted events' in late_reply['text']
     # ^ The resumed process restored the session's spend: the reply still costs only its own turn.
     resumed_usage = late_reply['usage']
     assert resumed_usage['cost_micro_usd'] == 1000 and resumed_usage['session_cost_micro_usd'] > 5000, resumed_usage
+    # Over the budget the sweep removes the oldest decided captures: padded to 400 KiB each,
+    # the three take 1.2 MB of the 1 MB budget. The skipped video (8 days old) goes before the
+    # passed shot (9 days old, older), which stays with the open item's capture, as the files
+    # left fit the budget.
+    for n, name in ((video, 'r1-1.mp4'), (recent, 'r1-1.png'), (shot, 'r1-1.png')):
+        with open(captures_of[n] / name, 'ab') as pad:
+            pad.write(b'\0' * (400 * 1024))
+    plain_config = (project / 'wsx.config.yml').read_text()
+    configure(plain_config.replace('  minFreeGb: 0\n', '  minFreeGb: 0\n  captureBudgetMb: 1\n'), 'capture budget')
+    manager_socket = js('task', 'manager')['socket']
+    cli('session', 'delete', 'task-manager', '-p', 'demo')
+    wait(lambda: not Path(manager_socket).exists() or
+         subprocess.run(['nc', '-zU', manager_socket]).returncode != 0, 'manager down')
+    reply_to(js('task', 'say', 'STATUS budget')['id'])
+    wait(lambda: not any(captures_of[video].iterdir()), 'the skipped video capture removed over the budget', 30)
+    assert [p.name for p in captures_of[recent].iterdir()] == ['r1-1.png'] and [p.name for p in captures_of[shot].iterdir()] == ['r1-1.png']
+    assert (captures_of[recent] / 'r1-1.png').stat().st_size > 400 * 1024
+    configure(plain_config, 'capture budget done')
     # The same instructions resume the conversation; other ones start a new conversation that
     # opens with the last exchanges (Claude keeps a conversation's first system prompt). A
     # state written by a host from before the instructions digest stands for changed ones.
@@ -2646,6 +2669,33 @@ def part_core(created=None):
         (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'),
         (r'Thumbnail: files/\.studio-data/trend\.jpg', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
     assert '![' not in pictured[2] and '(files/' not in pictured[2], pictured[2]
+    # ^ `m` in the chat lists the project's media (docs/tasks.md "TUI", "Media"): the To check captures
+    # and the pictures and videos the posts link, newest first. Enter shows an item's details and where
+    # its file is, `v` steps through all, images and videos, `t` through the tasks. A file gone from the
+    # checkout (and a capture the budget removed) says "removed".
+    trend = project / '.studio-data' / 'trend.jpg'
+    trend.parent.mkdir(exist_ok=True)
+    trend.write_bytes(b'\x89PNG\r\n\x1a\n' + b'\0' * 32)
+    subprocess.run([str(wsx), 'task', 'post', '-p', 'demo', '--title', 'studio missing'], env=env, cwd=project,
+                   input='Missing: ![gone](files/.studio-data/gone.jpg)\n', text=True, check=True)
+    listed = tui_screens(wsx, env, project, [
+        (r'WORKSPACE', b't'), (r'\(m\)anager', b'm'), (r'\(m\)edia', b'm'),
+        (r'Media +all +all tasks +1/\d+', b'\r'),
+        (r'(?s)files/\.studio-data/gone\.jpg +\d+/\d+.*removed: the file is gone', b'\x1b'),
+        (r'Media +all +all tasks', b'j\r'),
+        (r'(?s)files/\.studio-data/trend\.jpg +\d+/\d+.*image, linked by manager.*file: [^\n]*trend\.jpg', b'\x1b'),
+        (r'Media +all +all tasks', b'v'), (r'Media +images', b'v'), (r'Media +videos', b'v'),
+        (r'Media +all +all tasks', b't'), (r'Media +all +#\d+', b'\x1b'),
+        (r'(?m)^ MANAGER ', b'\x1b'), (r'\(m\)anager', b'\x1b'), (r'WORKSPACE', b'')])
+    trend.unlink()
+    (project / '.studio-data').rmdir()
+    everything, only_images, only_videos, one_task = listed[3], listed[8], listed[9], listed[11]
+    assert re.search(r'img +- +removed +\.studio-data/gone\.jpg', everything) and re.search(r'img +- +manager +\.studio-data/trend\.jpg', everything), everything
+    assert re.search(r'img +#%d +passed' % shot, everything) and re.search(r'vid +#%d +removed' % video, everything), everything
+    assert 'img ' in only_images and 'vid ' not in only_images, only_images
+    assert 'vid ' in only_videos and 'img ' not in only_videos, only_videos
+    tasks_shown = set(re.findall(r'(?m)(?:img|vid) +(\S+)', one_task)) - {'-'}
+    assert len(tasks_shown) == 1 and re.search(r'(?m)(?:img|vid) +#\d+ ', one_task), one_task
     # ^ The terminal output sets a colour only when it changes, so a bar after the heading in the same colour has
     # no escape of its own: the colour of a bar is the last one set before it.
     bars, last = set(), None

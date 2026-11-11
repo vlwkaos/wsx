@@ -42,6 +42,9 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
     if let Some(file) = &chat.file {
         return render_file(frame, inner, file, top);
     }
+    if let Some(list) = &chat.media {
+        return render_media(frame, inner, list, top);
+    }
     let (lines, _) = chat.wrapped(width);
     let matches = chat.matches();
     // ^ Only the lines in view are copied and marked; the scroll is a `usize`, as a whole-log
@@ -98,6 +101,93 @@ pub fn render(frame: &mut Frame, area: Rect, chat: &ManagerChat) {
     if let Some(column) = cursor {
         frame.set_cursor_position((inner.x + column.min(inner.width - 1), composer_y));
     }
+}
+
+/// The media list in place of the chat: the filters on the line under the heading, then a row
+/// for each item (kind, task, verdict or poster, age, text), the selected one marked.
+fn render_media(
+    frame: &mut Frame,
+    inner: Rect,
+    list: &crate::task_chat::MediaList,
+    mut top: Vec<Line<'static>>,
+) {
+    let width = inner.width as usize;
+    let height = usize::from(inner.height.saturating_sub(top.len() as u16));
+    let kind = match list.kind {
+        None => "all",
+        Some(wsx_core::task::media::Kind::Image) => "images",
+        Some(wsx_core::task::media::Kind::Video) => "videos",
+    };
+    let task = list
+        .task
+        .map_or("all tasks".to_string(), |task| format!("#{task}"));
+    let more = if list.next.is_some() { "+" } else { "" };
+    top[1] = Line::styled(
+        truncate_to_width(
+            &format!(
+                "Media  {kind}  {task}  {}/{}{more}",
+                (list.selected + 1).min(list.items.len()),
+                list.items.len()
+            ),
+            width,
+        ),
+        Style::default().fg(theme::TEXT_MUTED),
+    );
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(error) = &list.error {
+        lines.push(Line::styled(
+            truncate_to_width(error, width),
+            Style::default().fg(theme::ERROR),
+        ));
+    } else if list.items.is_empty() {
+        lines.push(Line::styled(
+            "No media",
+            Style::default().fg(theme::TEXT_MUTED),
+        ));
+    }
+    // ^ The selected row stays in view: the window ends at it once it is past the first screen.
+    let first = (list.selected + 1).saturating_sub(height);
+    for (index, item) in list.items.iter().enumerate().skip(first).take(height) {
+        let selected = index == list.selected;
+        let marker = if selected { "▸ " } else { "  " };
+        let kind = match item.kind {
+            wsx_core::task::media::Kind::Image => "img",
+            wsx_core::task::media::Kind::Video => "vid",
+        };
+        let state = if item.gone {
+            "removed".to_string()
+        } else if let Some(verdict) = item.verdict {
+            format!("{verdict:?}").to_lowercase()
+        } else {
+            item.who.clone()
+        };
+        let task = item.task.map_or("-".to_string(), |task| format!("#{task}"));
+        let head = format!("{marker}{kind} {task:<5} {state:<9} ");
+        let text = truncate_to_width(&item.text, width.saturating_sub(head.chars().count()));
+        let style = if selected {
+            theme::selected_row(false)
+        } else if item.gone {
+            Style::default().fg(theme::TEXT_MUTED)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::styled(format!("{head}{text}"), style));
+    }
+    frame.render_widget(
+        Paragraph::new(top.clone()),
+        Rect {
+            height: top.len() as u16,
+            ..inner
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(lines),
+        Rect {
+            y: inner.y + top.len() as u16,
+            height: height as u16,
+            ..inner
+        },
+    );
 }
 
 /// A link's file in place of the chat, from its scroll; the name and the position on the line
@@ -163,6 +253,14 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
             "(g/G)top/end".into(),
             "Esc: back".into(),
         ],
+        Focus::Media => {
+            let mut hints = vec!["Enter: details".into(), "(v)kind".into(), "(t)ask".into()];
+            if chat.media.as_ref().is_some_and(|list| list.next.is_some()) {
+                hints.push("n: more".into());
+            }
+            hints.extend(["(j/k)select".into(), "Esc: back".into()]);
+            hints
+        }
         Focus::Fail(_) => vec!["Enter: fail it".into(), "Esc: cancel".into()],
         Focus::Confirm { .. } => vec!["(y)es".into(), "(n)o".into()],
         Focus::Chat => {
@@ -216,6 +314,7 @@ pub fn hints(chat: &ManagerChat) -> Vec<String> {
                 "Esc: back".into(),
                 "(j/k)scroll".into(),
                 "(o)verview".into(),
+                "(m)edia".into(),
             ]);
             hints
         }
@@ -688,7 +787,7 @@ fn composer(chat: &ManagerChat, width: usize) -> (Line<'static>, Option<u16>) {
             ]),
             None,
         ),
-        Focus::File => (Line::raw(""), None),
+        Focus::File | Focus::Media => (Line::raw(""), None),
         Focus::Fail(_) => typed(&chat.note),
         Focus::Confirm { label, approve, .. } => {
             let words = if *approve {

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub(crate) const MAX_MIN_FREE_GB: u64 = 100_000;
+const MAX_CAPTURE_BUDGET_MB: u64 = 1_048_576;
 
 /// `tasks.preview` checked: a command, a path that answers 200, a port range above 1023 and
 /// whether it stays local.
@@ -148,6 +149,8 @@ struct TasksFile {
     check_timeout_seconds: Option<u64>,
     #[serde(rename = "minFreeGb", skip_serializing_if = "Option::is_none")]
     min_free_gb: Option<u64>,
+    #[serde(rename = "captureBudgetMb", skip_serializing_if = "Option::is_none")]
+    capture_budget_mb: Option<u64>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     scenarios: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -640,6 +643,14 @@ fn validate_tasks(file: Option<TasksFile>) -> Result<TaskConfig, String> {
             return Err(format!("tasks.minFreeGb must be 0..={MAX_MIN_FREE_GB}"));
         }
         config.min_free_gb = gb;
+    }
+    if let Some(mb) = file.capture_budget_mb {
+        if !(1..=MAX_CAPTURE_BUDGET_MB).contains(&mb) {
+            return Err(format!(
+                "tasks.captureBudgetMb must be 1..={MAX_CAPTURE_BUDGET_MB}"
+            ));
+        }
+        config.capture_budget_mb = mb;
     }
     if let Some(seconds) = file.check_timeout_seconds {
         if !(1..=MAX_CHECK_TIMEOUT_SECS).contains(&seconds) {

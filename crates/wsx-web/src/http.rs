@@ -101,6 +101,7 @@ pub fn router(app: Shared) -> Router {
                 post(tasks_routine_act),
             )
             .route("/api/tasks/{project}/usage", get(tasks_project_usage))
+            .route("/api/tasks/{project}/media", get(tasks_media))
             .route("/api/tasks/{project}/say", post(tasks_say))
             .route("/api/tasks/{project}/t/{task}", get(task_detail))
             .route("/api/tasks/{project}/t/{task}/{action}", post(task_act))
@@ -1154,6 +1155,45 @@ async fn tasks_project_usage(
     tasks_allowed(&app, false)?;
     with_scope(&app, project, |scope| {
         Ok(crate::tasks::usage(scope, &filter))
+    })
+    .map(Json)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MediaQuery {
+    task: Option<u32>,
+    /// `image` or `video`.
+    kind: Option<String>,
+    /// The previous page's `next`.
+    before: Option<String>,
+}
+
+/// One page of the project's media archive (docs/tasks.md "Media").
+async fn tasks_media(
+    State(app): State<Shared>,
+    Paired(_): Paired,
+    UrlPath(project): UrlPath<u64>,
+    Query(query): Query<MediaQuery>,
+) -> Outcome<Json<Value>> {
+    tasks_allowed(&app, false)?;
+    let kind = match query.kind.as_deref() {
+        None => None,
+        Some(word) => Some(
+            wsx_core::task::media::Kind::parse(word)
+                .ok_or_else(|| Fault::new(400, "bad_kind", "kind is image or video"))?,
+        ),
+    };
+    let filter = wsx_core::task::media::Filter {
+        task: query.task,
+        kind,
+        before: query.before,
+        limit: 0,
+        with_uploads: true,
+    };
+    let shared = app.clone();
+    with_scope(&app, project, move |scope| {
+        crate::tasks::media(&shared, scope, &filter)
     })
     .map(Json)
 }

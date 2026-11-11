@@ -1122,13 +1122,27 @@ impl ManagerDir {
         first: u64,
         enough: impl Fn(&[super::manager::ManagerEntry]) -> bool,
     ) -> Result<Vec<super::manager::ManagerEntry>> {
+        self.read_all_where(first, |_| true, enough)
+    }
+
+    /// `read_around` of only the lines `keep` accepts as bytes (the media list parses the
+    /// few lines that name a file).
+    pub fn read_all_where(
+        &self,
+        first: u64,
+        keep: impl Fn(&[u8]) -> bool,
+        enough: impl Fn(&[super::manager::ManagerEntry]) -> bool,
+    ) -> Result<Vec<super::manager::ManagerEntry>> {
         let mut files: Vec<PathBuf> = self.old_logs().into_iter().map(|(_, path)| path).collect();
         files.push(self.path.join(MANAGER_LOG));
         read_back(
             &files,
             first,
             u64::MAX,
-            super::manager::ManagerEntry::read,
+            |line| match keep(line) {
+                true => super::manager::ManagerEntry::read(line),
+                false => None,
+            },
             enough,
         )
     }

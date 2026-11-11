@@ -20,6 +20,7 @@ use wsx_core::task::{
     chat::{self, ChatRow, Names, Page, RowKind, Window},
     checks::{self, CheckItem, CheckState},
     manager::{activity, pending_approvals, ManagerRequest, ManagerResponse},
+    media::{self, Kind},
     owner,
     store::{self, ManagerDir, Stamp},
     view,
@@ -131,6 +132,43 @@ pub fn links(rows: &[ChatRow]) -> Vec<(u64, usize, Target)> {
     found
 }
 
+/// The project's media archive in place of the chat (`wsx_core::task::media`): one page after
+/// another, newest first, filtered by kind and task. Uploads are the web's.
+#[derive(Default)]
+pub struct MediaList {
+    pub items: Vec<media::Item>,
+    pub selected: usize,
+    pub kind: Option<Kind>,
+    pub task: Option<u32>,
+    /// The tasks the list has shown, newest first: the task filter steps through them.
+    pub tasks: Vec<u32>,
+    /// The cursor of the next page, if there is one.
+    pub next: Option<String>,
+    pub error: Option<String>,
+}
+
+impl MediaList {
+    /// `t`: the next task of `tasks`, then all again.
+    fn step_task(&mut self) {
+        self.task = match self.task {
+            None => self.tasks.first().copied(),
+            Some(current) => {
+                let at = self.tasks.iter().position(|task| *task == current);
+                at.and_then(|at| self.tasks.get(at + 1)).copied()
+            }
+        };
+    }
+
+    /// `v`: all, images, videos, all.
+    fn step_kind(&mut self) {
+        self.kind = match self.kind {
+            None => Some(Kind::Image),
+            Some(Kind::Image) => Some(Kind::Video),
+            Some(Kind::Video) => None,
+        };
+    }
+}
+
 /// A file shown in place of the chat, from its top.
 pub struct FileView {
     pub name: String,
@@ -214,6 +252,8 @@ pub enum Focus {
     Find,
     /// A file of a link, in place of the chat.
     File,
+    /// The project's media list, in place of the chat (`ManagerChat::media`).
+    Media,
     Fail(String),
     Confirm {
         id: String,
@@ -271,6 +311,7 @@ pub struct ManagerChat {
     /// A session the owner opened by its link: the app enters it and clears this.
     pub session: Option<u64>,
     pub file: Option<FileView>,
+    pub media: Option<MediaList>,
     pub composer: InputState,
     pub note: InputState,
     /// What `/` finds in the conversation, case-insensitive; empty when no find is on.
@@ -353,6 +394,7 @@ impl ManagerChat {
             link: None,
             session: None,
             file: None,
+            media: None,
             composer: InputState::new("> "),
             note: InputState::new(""),
             find: InputState::new("/"),
@@ -776,6 +818,7 @@ impl ManagerChat {
                     }
                 }
             },
+            Focus::Media => self.media_key(action),
             Focus::File => match action {
                 Action::InputEscape => self.close_file(),
                 Action::InputChar('j') | Action::NavigateDown => self.scroll_file(1),
@@ -810,6 +853,7 @@ impl ManagerChat {
             (Action::InputEscape, _) if self.around.is_some() => self.newest(),
             (Action::InputEscape, _) => return false,
             (Action::InputChar('/'), _) => self.open_find(),
+            (Action::InputChar('m'), _) => self.open_media(),
             (Action::InputChar('['), _) => self.step_link(-1),
             (Action::InputChar(']'), _) => self.step_link(1),
             (Action::Select, _) if self.link.is_some() => self.open_link(),
@@ -997,7 +1041,139 @@ impl ManagerChat {
 
     fn close_file(&mut self) {
         self.file = None;
-        self.focus = Focus::Chat;
+        // ^ A file opened from the media list returns to it.
+        self.focus = if self.media.is_some() {
+            Focus::Media
+        } else {
+            Focus::Chat
+        };
+    }
+
+    /// Show the project's media in place of the chat (`m`).
+    fn open_media(&mut self) {
+        self.media = Some(MediaList::default());
+        self.focus = Focus::Media;
+        self.read_media(false);
+    }
+
+    /// Read the list's first page again, or with `more` the next one after the last shown. The
+    /// read is bounded (one page; the logs are read from their end) and runs on the key.
+    fn read_media(&mut self, more: bool) {
+        let Some(list) = &mut self.media else { return };
+        let filter = media::Filter {
+            task: list.task,
+            kind: list.kind,
+            before: more.then(|| list.next.clone()).flatten(),
+            limit: 0,
+            with_uploads: false,
+        };
+        match media::list(&self.store, &filter, Some(&self.main)) {
+            Ok(page) => {
+                if !more {
+                    list.items.clear();
+                    list.selected = 0;
+                }
+                for task in page.items.iter().filter_map(|item| item.task) {
+                    if !list.tasks.contains(&task) {
+                        list.tasks.push(task);
+                    }
+                }
+                list.tasks.sort_unstable_by(|a, b| b.cmp(a));
+                list.items.extend(page.items);
+                list.next = page.next;
+                list.error = None;
+            }
+            Err(error) => list.error = Some(format!("{error:#}")),
+        }
+    }
+
+    fn media_key(&mut self, action: &Action) {
+        let Some(list) = &mut self.media else {
+            self.focus = Focus::Chat;
+            return;
+        };
+        let last = list.items.len().saturating_sub(1);
+        match action {
+            Action::InputEscape => {
+                self.media = None;
+                self.focus = Focus::Chat;
+            }
+            Action::InputChar('j') | Action::NavigateDown => {
+                list.selected = (list.selected + 1).min(last)
+            }
+            Action::InputChar('k') | Action::NavigateUp => {
+                list.selected = list.selected.saturating_sub(1)
+            }
+            Action::InputChar('G') => list.selected = last,
+            Action::InputChar('g') => list.selected = 0,
+            Action::InputChar('v') => {
+                list.step_kind();
+                self.read_media(false);
+            }
+            Action::InputChar('t') => {
+                list.step_task();
+                self.read_media(false);
+            }
+            Action::InputChar('n') if list.next.is_some() => self.read_media(true),
+            Action::Select => self.open_media_item(),
+            _ => {}
+        }
+    }
+
+    /// Enter: the selected item's details in place of the list, where its file is.
+    fn open_media_item(&mut self) {
+        let Some(item) = self
+            .media
+            .as_ref()
+            .and_then(|list| list.items.get(list.selected))
+        else {
+            return;
+        };
+        let lines = self.media_details(item);
+        self.file = Some(FileView {
+            name: item.path.clone().unwrap_or_else(|| item.text.clone()),
+            lines,
+            scroll: 0,
+            max_scroll: Cell::new(0),
+        });
+        self.focus = Focus::File;
+    }
+
+    /// What a media item is and where its file is: the TUI shows no pixels, so the path is the
+    /// way to the file.
+    fn media_details(&self, item: &media::Item) -> Vec<String> {
+        let mut lines = vec![item.text.clone(), String::new()];
+        let kind = match item.kind {
+            Kind::Image => "image",
+            Kind::Video => "video",
+        };
+        let from = match item.source {
+            media::Source::Capture => format!(
+                "To check {}{}",
+                item.check.as_deref().unwrap_or_default(),
+                item.task
+                    .map_or(String::new(), |task| format!(" of task #{task}")),
+            ),
+            media::Source::File => format!("linked by {}", item.who),
+            media::Source::Upload => format!("uploaded by {}", item.who),
+        };
+        lines.push(format!("{kind}, {from}"));
+        if let Some(verdict) = item.verdict {
+            lines.push(format!("verdict: {verdict:?}").to_lowercase());
+        }
+        lines.push(format!("posted {} ago", age(item.unix_ms)));
+        let path = item.path.as_deref().and_then(|path| match item.source {
+            media::Source::Capture => store::TaskDir::open(&self.store, item.task?)
+                .ok()
+                .map(|dir| dir.file(path)),
+            _ => Some(self.main.join(path)),
+        });
+        match (path, item.gone) {
+            (Some(path), false) => lines.push(format!("file: {}", path.display())),
+            (_, true) => lines.push("removed: the file is gone".into()),
+            _ => {}
+        }
+        lines
     }
 
     fn scroll_file(&mut self, delta: i32) {
@@ -1111,5 +1287,15 @@ impl ManagerChat {
         let below = total.saturating_sub(line + 1);
         let scroll = below.saturating_sub(height / 2);
         self.scroll = scroll.min(total.saturating_sub(height));
+    }
+}
+
+/// How long ago `unix_ms` was, in one short word: 5m, 3h, 2d.
+fn age(unix_ms: u64) -> String {
+    let minutes = wsx_core::task::now_unix_ms().saturating_sub(unix_ms) / 60_000;
+    match minutes {
+        0..=59 => format!("{minutes}m"),
+        60..=2879 => format!("{}h", minutes / 60),
+        _ => format!("{}d", minutes / 1440),
     }
 }

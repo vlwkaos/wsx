@@ -14,6 +14,7 @@ import { readTaskAhead, TaskPage } from "./task.js";
 import { ProjectOverview } from "./overview.js";
 import { checkQuote, ChecksPage, decideCheck } from "./checks.js";
 import { UsagePage } from "./usage.js";
+import { MediaPage } from "./media.js";
 import { RoutineActions, routineAct, routineCounts, routineRow, routineWords, useRoutines } from "./routines.js";
 import { PanelsButton, PanelsPage } from "./panels.js";
 import { loadTasks, act } from "./task-api.js";
@@ -590,6 +591,7 @@ function More({ project, roles }) {
     <${MoreMenu}>
       <a role="menuitem" href=${`#/p/${project.id}/sessions`}>Sessions</a>
       <a role="menuitem" href=${`#/p/${project.id}/usage`}>Usage</a>
+      <a role="menuitem" href=${`#/p/${project.id}/media`}>Media</a>
       ${files && html`<a role="menuitem" href=${`#/p/${project.id}/files`}>Files</a>`}
       ${roles?.length > 0 && html`
         <p class="more-heading" aria-hidden="true">Roles</p>
@@ -657,6 +659,7 @@ const SHEETS = {
   checks: { Page: ChecksPage, label: "To check", fit: true, refocus: true },
   usage: { Page: UsagePage, label: "Usage", fit: true },
   panels: { Page: PanelsPage, label: "Panels", fit: true },
+  media: { Page: MediaPage, label: "Media" },
 };
 
 // ^ The conversation of a manager (or a role) as the rows the page holds. A read asks after the
