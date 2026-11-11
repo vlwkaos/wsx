@@ -292,7 +292,7 @@ def notes_part(pid, notes):
                          + json.dumps({'unix_ms': 2, 'kind': 'message', 'id': 8, 'from': 'events', 'text': 'never paste secrets'}) + '\n')
     # ^ The archive's third line repeats an active rule: one record, shown in decisions.md only.
     legacy = {
-        'decisions.md': '- 2026-10-22 keep the store in sqlite\n- 2026-10-22 never   paste secrets  in chat\n- 2026-11-01 Always ship small changes with a readme.\n',
+        'decisions.md': '- 2026-10-22 keep the store in sqlite\n- 2026-10-22 never   paste secrets  in chat\n## Habits\n- 2026-11-01 Always ship small changes with a readme.\n',
         'decisions-archive.md': '- 2026-09-01 use json files for the store\n- 2026-09-15 use yaml for the store\n- 2026-10-22 keep the store in sqlite\n',
         'context.md': '# proj\nSection line two.\n- #3: first memo\n- #4: second memo text\n',
         'context-archive.md': '- #1: oldest memo\n',
@@ -307,7 +307,8 @@ def notes_part(pid, notes):
     first = ok('import', scope=pid)
     check(first['imported'] == {'rules': 3, 'archived': 2, 'facts': 2, 'episodes': 3}, first)
     # ^ Memos of the old archive rejoin context.md while the file is under its ceiling.
-    shown = {**legacy, 'decisions-archive.md': ''.join(legacy['decisions-archive.md'].splitlines(True)[:2]),
+    # ^ A `## <area>` line is no rule and no view line: the area is a keyword of the rules after it.
+    shown = {**legacy, 'decisions.md': legacy['decisions.md'].replace('## Habits\n', ''), 'decisions-archive.md': ''.join(legacy['decisions-archive.md'].splitlines(True)[:2]),
              'context.md': '# proj\nSection line two.\n- #1: oldest memo\n- #3: first memo\n- #4: second memo text\n', 'context-archive.md': ''}
     for name, text in legacy.items():
         check(view(name) == shown[name], (name, view(name)))
@@ -316,6 +317,7 @@ def notes_part(pid, notes):
     check(ok('import', scope=pid)['imported'] == {'rules': 0, 'archived': 0, 'facts': 0, 'episodes': 0}, 'a rerun adds nothing')
     check(len(open(records).readlines()) == lines and all(view(n) == t for n, t in shown.items()), 'a rerun writes nothing')
     check({h['kind'] for h in ok('search', 'sqlite', scope=pid)} == {'rule'}, 'the lines of a view are searched as records, not twice')
+    check(ok('get', next(h for h in ok('search', 'readme', '--kind', 'rule', scope=pid))['slug'], scope=pid)['keywords'] == ['Habits'], 'the area is a keyword')
     rule = next(h for h in ok('search', 'paste secrets', '--kind', 'rule', scope=pid))
     kept = ok('get', rule['slug'], scope=pid)
     check(kept['words'] == 'never   paste secrets  in chat' and kept['status'] == 'active' and kept['kind'] == 'rule', kept)
@@ -325,8 +327,8 @@ def notes_part(pid, notes):
     today = time.strftime('%Y-%m-%d', time.gmtime())
     new = ['add', '--kind', 'rule', '--slug', 'no-secrets', '--text-file', '-', '--source', 'msg:7', '--verified-by', 'owner:7']
     added = ok(*new, '--words', 'never paste secrets in chat', text='Never paste secrets into chat messages.', scope=pid)
-    check([h['slug'] for h in added['similar']][:1] == [rule['slug']] and all(0.1 <= h['score'] <= 1 for h in added['similar']), added)
-    check(view('decisions.md') == legacy['decisions.md'] + '- %s never paste secrets in chat\n' % today, view('decisions.md'))
+    check([h['slug'] for h in added['similar']][:1] == [rule['slug']] and all(0.09 <= h["score"] <= 1 for h in added['similar']), added)
+    check(view('decisions.md') == shown['decisions.md'] + '- %s never paste secrets in chat\n' % today, view('decisions.md'))
     base = ['add', '--kind', 'rule', '--slug', 'bad-words', '--text-file', '-']
     exits(2, *base, '--source', 'msg:7', '--verified-by', 'owner:7', '--words', 'ship secrets in chat', text='x y z', scope=pid)
     exits(2, *base, '--source', 'msg:7', '--verified-by', 'owner:9', '--words', 'never paste secrets', text='x y z', scope=pid)

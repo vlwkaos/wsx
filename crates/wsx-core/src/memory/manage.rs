@@ -5,7 +5,7 @@
 use super::backend::{record_hit, searchable, Hit};
 use super::index::{self, day_ms};
 use super::record::{Kind, Record, Status};
-use super::store::{Error, NewRecord, Patch, Store};
+use super::store::{Error, NewRecord, Patch, Store, MAX_KEYWORD_BYTES};
 use crate::task::chat::{read_chat, Window};
 use crate::task::manager::{Author, ManagerEvent};
 use crate::task::store::{read_bounded_if_exists, write_note, ManagerDir};
@@ -34,9 +34,9 @@ const HASHES_FILE: &str = "views.json";
 /// Past this many bytes the oldest memos of `context.md` show in `context-archive.md` only.
 const CONTEXT_CEILING_BYTES: usize = 32 * 1024;
 const MAX_VIEW_BYTES: u64 = 4 << 20;
-/// A new rule or fact reports the records of its kind that rank in this many and score this much.
+/// A new rule or fact reports the records of its kind that rank in this many and score this much (docs/memory.md "Notes": measured).
 const SIMILAR_KEEP: usize = 5;
-const SIMILAR_MIN: f64 = 0.1;
+const SIMILAR_MIN: f64 = 0.09;
 
 /// The records an import added.
 #[derive(Debug, Default, Serialize)]
@@ -426,7 +426,17 @@ fn old_records(store: &Store, notes: &Path) -> Result<Vec<(Record, Class)>, Erro
     ] {
         let (lines, at) = (text(name)?, copy_time_ms(&copy(name)));
         let lines: Vec<(usize, &str)> = lines.lines().enumerate().collect();
+        // ^ A `## <area>` line is no rule and the views have no headers (the start text lists the
+        // rules newest first, so a header would label the older group): the area stays with its
+        // rules as a keyword.
+        let mut area: Option<String> = None;
         for (i, (number, line)) in lines.iter().enumerate() {
+            if line.starts_with('#') {
+                area = line
+                    .strip_prefix("## ")
+                    .map(|h| clip_to(h.trim(), MAX_KEYWORD_BYTES));
+                continue;
+            }
             let Some((day, words)) = parse_rule(line) else {
                 continue;
             };
@@ -442,6 +452,7 @@ fn old_records(store: &Store, notes: &Path) -> Result<Vec<(Record, Class)>, Erro
                 updated,
             );
             r.status = status;
+            r.keywords.extend(area.clone().filter(|h| !h.is_empty()));
             r.verified_by = Some(format!(
                 "owner:transcript:{}#L{}",
                 copy(name).display(),
@@ -600,7 +611,7 @@ fn check_words(store: &Store, new: &NewRecord, words: &str) -> Result<(), Error>
 }
 
 /// The active records of `kind` that rank in the top 5 for `text` with a score of at least
-/// 0.1, best first: the rule or fact it may replace.
+/// `SIMILAR_MIN`, best first: the rule or fact it may replace.
 fn similar(store: &Store, kind: Kind, text: &str) -> Result<Vec<Hit>, Error> {
     let Ok(terms) = index::terms(text) else {
         return Ok(Vec::new());

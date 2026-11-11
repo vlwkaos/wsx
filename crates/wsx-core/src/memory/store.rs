@@ -639,7 +639,7 @@ fn check_source(source: &str) -> Result<()> {
 const MAX_URL_BYTES: usize = 2048;
 const MAX_DESCRIPTION_BYTES: usize = 512;
 const MAX_KEYWORDS: usize = 32;
-const MAX_KEYWORD_BYTES: usize = 64;
+pub(super) const MAX_KEYWORD_BYTES: usize = 64;
 
 /// An http or https URL with a host name, as text: nothing is fetched. ref: docs/memory.md
 fn check_url(url: &str) -> Result<()> {
