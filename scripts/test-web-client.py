@@ -3462,10 +3462,23 @@ PANEL_DOC = {
             {'kind': 'table', 'columns': ['Volume', 'Used', 'Free'], 'rows': [
                 [{'text': 'Macintosh HD', 'url': 'https://example.com/hd'}, '412 GB', '88 GB'], [{'text': 'Data', 'url': 'javascript:alert(1)'}, 12, 3]]},
             {'kind': 'list', 'items': [{'text': 'Time Machine: 2 days ago', 'url': 'trends/board/index.html'}, 'Spotlight idle'], 'level': 'bad'},
+            {'kind': 'cards', 'title': 'Trending', 'items': [
+                {'title': 'Cat video', 'subtitle': 'Channel A', 'value': '1.2M', 'note': 'Rising fast. ' * 12, 'image': 'media/a.png', 'url': 'https://example.com/cat', 'level': 'ok'},
+                {'title': 'Board', 'subtitle': 'Channel B', 'value': '800k', 'image': 'media/b.png', 'url': 'trends/board/index.html'},
+                {'title': 'Gone', 'image': 'media/missing.png'},
+            ]},
             {'kind': 'chart', 'label': 'x'},
         ]},
     ],
 }
+
+
+def png_bytes(width, height, rgb):
+    # ^ A real picture: a browser checks each chunk's CRC.
+    import struct, zlib
+    chunk = lambda kind, data: struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    rows = b''.join(b'\x00' + bytes(rgb) * width for _ in range(height))
+    return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b'')
 LONG_NAME = 'notes-about-jumping-between-projects-from-the-keyboard-and-back.txt'
 TASK_CONFIG = '''tasks:
   minFreeGb: 0
@@ -3594,6 +3607,9 @@ def task_journey(args):
                         (folder / 'scripts/gauges.json').write_text(json.dumps(PANEL_DOC))
                         (folder / 'scripts/gauges.sh').write_text('#!/bin/sh\ncat scripts/gauges.json\n')
                         (folder / 'scripts/badjson.sh').write_text("#!/bin/sh\necho '{oops'\n")
+                        (folder / 'media').mkdir()
+                        (folder / 'media/a.png').write_bytes(png_bytes(64, 36, (200, 60, 60)))
+                        (folder / 'media/b.png').write_bytes(png_bytes(36, 64, (60, 60, 200)))
                         (folder / 'trends/board').mkdir(parents=True)
                         (folder / 'trends/board/index.html').write_text('<!doctype html><title>Board</title><h1>Trend board page</h1>\n')
                         for script in ('device.sh', 'broken.sh', 'gauges.sh', 'badjson.sh'):
@@ -3973,7 +3989,7 @@ merge_seconds = 3
             gauges = panel_shown('gauges', run=True)['run']
             assert gauges['doc']['title'] == 'This Mac' and [i['kind'] for i in gauges['doc']['sections'][0]['items']] == ['gauge', 'gauge', 'stat'], gauges
             assert gauges['doc']['sections'][1]['items'][0]['rows'][1] == ['Data', '12', '3'], gauges
-            assert gauges['notice'].count('\n') == 2 and '`red`' in gauges['notice'] and '`chart`' in gauges['notice'] and 'link at row 2, column 1 dropped' in gauges['notice'], gauges['notice']
+            assert gauges['notice'].count('\n') == 3 and 'card 3 image dropped: the image file is missing' in gauges['notice'] and '`red`' in gauges['notice'] and '`chart`' in gauges['notice'] and 'link at row 2, column 1 dropped' in gauges['notice'], gauges['notice']
             # ^ The links: the text stays in the cell, the good targets are in `links`, the bad one is gone.
             storage = gauges['doc']['sections'][1]['items']
             assert storage[0]['links'] == [{'row': 0, 'col': 0, 'url': 'https://example.com/hd'}] and storage[1]['links'] == [{'row': 0, 'col': 0, 'url': 'trends/board/index.html'}], storage
@@ -4001,6 +4017,9 @@ merge_seconds = 3
             # ^ The card keeps the links; a project page names its project, an https one does not.
             assert sections[-1]['items'][0]['links'] == [{'row': 0, 'col': 0, 'url': 'https://example.com/hd'}], sections[-1]
             assert sections[-1]['items'][1]['links'] == [{'row': 0, 'col': 0, 'url': 'trends/board/index.html', 'project': 'calm'}], sections[-1]
+            # ^ A card with a picture or a page names its project in the card; the missing picture is gone.
+            tiles = sections[-1]['items'][2]['items']
+            assert [(t['title'], t['image'], t['project']) for t in tiles[:2]] == [('Cat video', 'media/a.png', 'calm'), ('Board', 'media/b.png', 'calm')] and tiles[2]['image'] is None and 'project' not in tiles[2], tiles
             assert 'level' not in mac['run']['doc'] or mac['run']['doc']['level'] in ('warn', 'bad'), mac['run']['doc']
             assert not any(str(title).startswith('calm') for title in [section['title'] for section in mac['run']['doc']['sections']]), 'a project outside the grant is in the card'
             status, body = steady(admin, 'GET', panel_url + '/missing')

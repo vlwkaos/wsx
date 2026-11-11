@@ -2439,7 +2439,30 @@ PANEL_LINKS = {"title": "Trend board", "sections": [{"title": "Board", "items": 
         {"text": "Hidden", "url": ".git/x.html"},
         {"text": "Number", "url": 5},
         "Plain"]}]}]}
-for name, body in {"json.json": PANEL_DOC, "limits.json": PANEL_LIMITS, "links.json": PANEL_LINKS}.items():
+# ^ Cards (docs/panels.md "Cards"): a good card with a picture, a link and a level; then a picture over 2 MiB, one in a
+# dot-folder, a missing one, one behind a symbolic link (each drops its image) and a bad url (drops the link): five notices.
+PANEL_MEDIA = PROJECT / "media"
+PANEL_MEDIA.mkdir()
+import struct, zlib
+def png_bytes(width, height, rgb):
+    # ^ A real picture: a browser checks each chunk's CRC.
+    chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    rows = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+(PANEL_MEDIA / "good.png").write_bytes(png_bytes(4, 3, (200, 60, 60)))
+with open(PANEL_MEDIA / "big.png", "wb") as big_image:
+    big_image.truncate(2 * 1024 * 1024 + 1)
+(PROJECT / ".hidden").mkdir()
+(PROJECT / ".hidden/x.png").write_bytes((PANEL_MEDIA / "good.png").read_bytes())
+os.symlink("good.png", PANEL_MEDIA / "link.png")
+PANEL_CARDS = {"sections": [{"title": "Trending", "items": [{"kind": "cards", "title": "Videos", "items": [
+    {"title": "Good", "subtitle": "ch A", "value": "1.2M", "note": "Rising fast", "image": "media/good.png", "url": "https://www.youtube.com/watch?v=abc", "level": "ok"},
+    {"title": "Big", "image": "media/big.png"},
+    {"title": "Dot", "image": ".hidden/x.png"},
+    {"title": "Missing", "image": "media/nope.png", "url": "trends/board/index.html"},
+    {"title": "Linked", "image": "media/link.png"},
+    {"title": "Bad", "url": "ftp://x"}]}]}]}
+for name, body in {"json.json": PANEL_DOC, "limits.json": PANEL_LIMITS, "links.json": PANEL_LINKS, "cards.json": PANEL_CARDS}.items():
     (PANEL_SCRIPTS / name).write_text(json.dumps(body))
 for script, body in {
     "device-status.sh": "echo x >> ok.log\nprintf '\\033[32mdevice-ok\\033[0m\\r\\n'\npwd -P\n",
@@ -2452,6 +2475,7 @@ for script, body in {
     "limits.sh": "cat scripts/limits.json\n",
     "machine.sh": "echo machine-ok\n",
     "links.sh": "cat scripts/links.json\n",
+    "cards.sh": "cat scripts/cards.json\n",
 }.items():
     (PANEL_SCRIPTS / script).write_text("#!/bin/sh\n" + body)
     (PANEL_SCRIPTS / script).chmod(0o755)
@@ -2467,6 +2491,7 @@ PANEL_CONFIG = (
     "  - name: limits\n    command: [scripts/limits.sh]\n    format: json\n"
     "  - name: machine\n    command: [scripts/machine.sh]\n    scope: machine\n"
     "  - name: links\n    command: [scripts/links.sh]\n    format: json\n"
+    "  - name: cards\n    command: [scripts/cards.sh]\n    format: json\n"
 )
 (PROJECT / "wsx.config.yml").write_text(PANEL_CONFIG)
 assert call("synchronize_projects", {"projects": [
@@ -2501,7 +2526,7 @@ def log_lines(name):
 
 
 listed = panel_call(PROJECT, {"action": "list"})
-assert [item["name"] for item in listed["data"]["panels"]] == ["ok", "fail", "json", "badjson", "big", "slow", "tick", "limits", "machine", "links"], listed
+assert [item["name"] for item in listed["data"]["panels"]] == ["ok", "fail", "json", "badjson", "big", "slow", "tick", "limits", "machine", "links", "cards"], listed
 # ^ The scope is in the list: only `machine` is machine-scoped (docs/panels.md "Machine panels").
 assert {item["name"]: item["scope"] for item in listed["data"]["panels"]}["machine"] == "machine", listed
 assert [item["name"] for item in listed["data"]["panels"] if item["scope"] == "machine"] == ["machine"], listed
@@ -2584,6 +2609,20 @@ link_notes = links_run["notice"].splitlines()
 assert [line.split(": link ")[1].split(" dropped")[0] for line in link_notes] == [
     "at row 2, column 1", "at row 3, column 1", "at row 4, column 1", "of entry 2", "of entry 3"], link_notes
 assert "not a string" in link_notes[4] and "credentials" in link_notes[1], link_notes
+# Cards: the checked fields stay, each bad image or url is dropped with a notice naming the card.
+cards_run = panel_finished("cards")["run"]
+cards = cards_run["doc"]["sections"][0]["items"][0]
+assert cards["kind"] == "cards" and cards["title"] == "Videos" and [card["title"] for card in cards["items"]] == ["Good", "Big", "Dot", "Missing", "Linked", "Bad"], cards
+assert [card["image"] for card in cards["items"]] == ["media/good.png", None, None, None, None, None], cards
+assert [card["url"] for card in cards["items"]] == ["https://www.youtube.com/watch?v=abc", None, None, "trends/board/index.html", None, None], cards
+assert cards["items"][0]["level"] == "ok" and cards["items"][0]["note"] == "Rising fast", cards
+card_notes = cards_run["notice"].splitlines()
+assert [line.split(": ", 1)[1] for line in card_notes] == [
+    "card 2 image dropped: the image is over 2 MiB",
+    "card 3 image dropped: the image is not a project .jpg, .jpeg, .png, .webp or .gif path",
+    "card 4 image dropped: the image file is missing",
+    "card 5 image dropped: the image path has a symbolic link",
+    "card 6 link dropped: the url is not an https:// URL or a project .html path"], card_notes
 # A panel before links has no `links` field: the document without one reads as before.
 assert "links" not in panel_finished("json")["run"]["doc"]["sections"][1]["items"][0], "a table without links carries none"
 # Over 16 KiB: the last 16 KiB stay.
@@ -2690,7 +2729,7 @@ try:
              "the TUI did not show the broken json panel's text and notice", 20)
     # Links (docs/panels.md "Links"): `h` wraps from the first panel to the last. The text, `↗` and the target
     # show, a dropped link is named in the notice, and the cell without a link stays plain.
-    for _ in range(4):
+    for _ in range(5):
         panel_tui.send(b"h")
     wait_for(lambda: "Cat video ↗ https://www.youtube.com/watch?v=abc" in panel_tui.text(),
              lambda: "the TUI did not show the link cell with its target:\n" + panel_tui.text(), 20)
@@ -2698,6 +2737,15 @@ try:
     assert "Open board ↗ trends/board/index.html" in linked, linked
     assert "link at row 2, column 1 dropped" in linked and "No link" in linked, linked
     assert "Scheme ↗" not in linked and "Hidden ↗" not in linked and "No link ↗" not in linked, linked
+    # Cards: a row per card (title, subtitle, value, level word), the link marked and its target at the row's end, the note
+    # dimmed below, and the dropped images and link named in the notice.
+    panel_tui.send(b"\t")
+    wait_for(lambda: "Videos" in panel_tui.text() and "Rising fast" in panel_tui.text(),
+             lambda: "the TUI did not draw the cards:\n" + panel_tui.text(), 20)
+    drawn = panel_tui.text()
+    assert re.search(r"Good ↗ +ch A +1\.2M +ok +https://www\.youtube\.com/watch\?v=abc", drawn), drawn
+    assert re.search(r"Missing ↗", drawn) and "Big" in drawn and "Dot" in drawn, drawn
+    assert "card 2 image dropped: the image is over 2 MiB" in drawn and "card 6 link dropped" in drawn, drawn
     panel_tui.send(b"\x1b")
     wait_for(lambda: panel_tui.raw.rfind(b"WORKSPACE") > panel_tui.raw.rfind(b"PANELS"), "Esc did not leave the panels")
     # `M` with no project declaring a machine panel: wsxd's built-in panel alone, drawn as a document.
@@ -2746,6 +2794,8 @@ finally:
     f"path = {json.dumps(str(PROJECT))}\n"
 )
 shutil.rmtree(PANEL_SCRIPTS)
+shutil.rmtree(PANEL_MEDIA)
+shutil.rmtree(PROJECT / ".hidden")
 for leftover in ("wsx.config.yml", "ok.log", "tick.log", "slow.pid"):
     (PROJECT / leftover).unlink(missing_ok=True)
 shutdown(panel_daemon)
