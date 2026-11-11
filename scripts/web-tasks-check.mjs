@@ -3659,7 +3659,7 @@ await sayAgain("the plan is on the overview");
 await until("[...document.querySelectorAll('.log .bubble[data-side=out]')].some((node) => node.textContent.includes('the plan is on the overview'))", "the message to be quoted did not show");
 const planId = (await chatRows()).filter((row) => row.kind === "message" && row.author === "owner" && row.text === "the plan is on the overview").at(-1).id;
 await sayAgain(`QUOTE ${planId} still waiting on #8`);
-await until("!!document.querySelector('.log .bubble[data-side=in] button.quote') && !document.querySelector('.log .typing')", "the manager's quote did not show", 120);
+await until("[...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1)?.textContent === 'the plan is on the overview' && !document.querySelector('.log .typing')", "the manager's quote did not show", 120);
 const quoted = await evaluate(`(() => { const button = [...document.querySelectorAll('.log .bubble[data-side=in] button.quote')].at(-1);
   // ^ Muted words after an accent edge, the owner's quote look: each colour read back from a probe that names the token.
   const paint = (name) => { const probe = document.createElement('span'); probe.style.color = 'var(--' + name + ')'; document.body.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; };
