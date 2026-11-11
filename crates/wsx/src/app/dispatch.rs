@@ -131,6 +131,25 @@ impl App {
                 self.needs_redraw = true;
                 return Ok(());
             }
+            if let Some(help) = &mut list.help {
+                if !help.key(&action) {
+                    list.help = None;
+                }
+                self.needs_redraw = true;
+                return Ok(());
+            }
+            // ^ `?` is text in the message line: it opens the help only where the chat types nothing.
+            let help = match &list.chat {
+                Some(chat) => {
+                    chat.focus == crate::task_chat::Focus::Chat && action == Action::InputChar('?')
+                }
+                None => action == Action::Help,
+            };
+            if help {
+                list.help = Some(Default::default());
+                self.needs_redraw = true;
+                return Ok(());
+            }
             let shell = match &list.chat {
                 // ^ The chat takes characters; `S` is the shell only where it types nothing.
                 Some(chat) => {
@@ -256,9 +275,11 @@ impl App {
             Mode::Terminal { .. } => unreachable!(),
             Mode::Input { .. } => self.dispatch_input(action, terminal)?,
             Mode::Confirm { .. } => self.dispatch_confirm(action, terminal)?,
-            Mode::Help => {
-                if matches!(action, Action::InputEscape | Action::Quit | Action::Help) {
-                    self.mode = Mode::Workspace;
+            Mode::Help(_) => {
+                if let Mode::Help(view) = &mut self.mode {
+                    if !view.key(&action) {
+                        self.mode = Mode::Workspace;
+                    }
                 }
             }
             Mode::Search { .. } => self.dispatch_search(action, terminal)?,
@@ -488,6 +509,7 @@ impl App {
                 self.action_split_pane(runtime::SplitAxis::Horizontal)?
             }
             Action::AddRoutine => self.action_add_routine()?,
+            Action::Toggle => self.action_toggle_routine(),
             Action::Delete => self.action_delete()?,
             Action::Edit => self.action_edit()?,
             Action::EditGlobalConfig => self.action_edit_global_config(terminal),
@@ -500,9 +522,7 @@ impl App {
                 self.force_terminal_redraw = true;
                 self.needs_redraw = true;
             }
-            Action::Help => {
-                self.mode = Mode::Help;
-            }
+            Action::Help => self.mode = Mode::Help(Default::default()),
             Action::NextAttention => self.action_next_attention(1),
             Action::PrevAttention => self.action_next_attention(-1),
             Action::DismissAttention => self.action_dismiss_attention(),
@@ -756,6 +776,17 @@ impl App {
                 } = self.mode
                 {
                     query.pop();
+                    *match_idx = 0;
+                }
+                self.search_apply();
+            }
+            Action::Paste(text) => {
+                if let Mode::Search {
+                    ref mut query,
+                    ref mut match_idx,
+                } = self.mode
+                {
+                    query.extend(crate::ui::text_form::one_line(&text));
                     *match_idx = 0;
                 }
                 self.search_apply();

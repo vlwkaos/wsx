@@ -1521,6 +1521,35 @@ impl App {
         self.set_status("No session selected");
     }
 
+    /// Space on a routine row: turn it on or off, the stored routine with `enabled` flipped, as
+    /// `wsx routine enable|disable` sends it.
+    pub(super) fn action_toggle_routine(&mut self) {
+        let Selection::Routine(pi, ri) = self.current_selection() else {
+            return;
+        };
+        let project = &self.workspace.projects[pi];
+        let mut routine = project.routines[ri].routine.clone();
+        let name = routine.name.clone();
+        routine.enabled = !routine.enabled;
+        let enabled = routine.enabled;
+        self.spawn_routine_request(
+            project.path.clone(),
+            wsx_core::routine::Action::Edit {
+                revision: project.routine_revision,
+                old_name: name.clone(),
+                routine,
+            },
+            RoutineResultKind::Enable {
+                name: name.clone(),
+                enabled,
+            },
+        );
+        self.set_status(format!(
+            "Turning routine '{name}' {}…",
+            if enabled { "on" } else { "off" }
+        ));
+    }
+
     pub(super) fn action_set_alias(&mut self) -> Result<()> {
         match self.current_selection() {
             Selection::Worktree(pi, wi) => {
@@ -1548,6 +1577,17 @@ impl App {
                     },
                     state: InputState::with_value("name: ", current),
                 };
+            }
+            // ^ On a routine row `r` runs it now, as `wsx routine run` does.
+            Selection::Routine(pi, ri) => {
+                let project = &self.workspace.projects[pi];
+                let name = project.routines[ri].routine.name.clone();
+                self.spawn_routine_request(
+                    project.path.clone(),
+                    wsx_core::routine::Action::Run { name: name.clone() },
+                    RoutineResultKind::Run { name: name.clone() },
+                );
+                self.set_status(format!("Starting routine '{name}'…"));
             }
             _ => {
                 self.set_status("Select a worktree or session");

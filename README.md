@@ -69,12 +69,14 @@ Set up agent hooks with `wsx agent install claude` (or `pi`). See [integrations]
 
 | Context | Keys |
 |---|---|
-| Workspace | `j/k` move, `h/l` fold, `Enter` select, `m` reorder, `i/I` idle, `a/A` active, `n/N` attention |
-| Project | `p` add, `d` unregister, `w` worktree, `u` routine, `e` config, `g` group, `v` panels, `t` tasks (then `m` manager chat) |
+| Workspace | `j/k` move, `h/l` fold, `Enter` select, `m` reorder, `[`/`]` project, `i/I` idle, `a/A` active, `n/N` attention |
+| Project | `p` add, `d` unregister (`H` also halts), `w` worktree, `u` routine, `e` config, `g` group, `v` panels, `M` this Mac's panels, `t` tasks |
+| Tasks | `m` manager chat, `S` shell, `o` overview, `a` agent, `u` usage; in the chat `i` write, `/` find, `PgUp/PgDn` page, `g/G` oldest or newest, `?` keys |
 | Worktree | `s` session, `r` alias, `d` delete |
 | Session or pane | `Enter` terminal, `x` acknowledge or mute, `C` interrupt, `\|` split right, `-` split down |
+| Routine | `Enter` run history, `r` run now, `Space` on or off, `e` edit, `d` delete |
 | Groups and profiles | `T` manage, `{`/`}` switch, `P` next profile |
-| Global | `/` search, `,` settings, `R` refresh, `?` help, `q` quit TUI, `Q` stop wsxd and quit |
+| Global | `/` search, `,` settings, `R` refresh, `?` help (scrolls), `q` quit TUI, `Q` stop wsxd and quit |
 
 In a terminal, the prefix is `Ctrl+A`. Prefix then `h/l` moves between the project's sessions. More keys: [terminal context](docs/terminal-context.md). The `?` help lists the rest.
 

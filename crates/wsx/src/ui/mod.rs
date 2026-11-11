@@ -4,6 +4,7 @@ pub mod config_modal;
 pub mod confirm;
 pub mod global_settings;
 pub mod group_manager;
+pub mod help;
 pub mod input;
 pub mod integration_manager;
 pub mod layout;
@@ -515,7 +516,7 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
         Mode::IntegrationManager { manager, .. } => {
             integration_manager::render(frame, area, manager)
         }
-        Mode::Help => render_help(frame, area, app),
+        Mode::Help(_) => {}
         Mode::RoutinePresetPicker { selected, .. } => {
             routine_editor::render_preset_picker(frame, area, *selected)
         }
@@ -570,6 +571,7 @@ fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
         | Mode::Search { .. }
         | Mode::GroupManager { .. } => {}
     }
+    help::render(frame, area, app);
 }
 
 pub(crate) const IDLE_ITERATION_HINT: &str = "(i/I)idle";
@@ -602,19 +604,23 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
         Mode::Workspace => {
             let mut hints = match app.current_selection() {
                 Selection::Project(_) if app.config.groups.is_empty() => vec![
+                    "(t)asks",
                     "(e)dit",
                     "(w)orktree",
                     "(u)routine",
-                    "(T)groups",
                     "(d)unregister",
+                    "(v/M)panels",
+                    "(T)groups",
                 ],
                 Selection::Project(_) => vec![
+                    "(t)asks",
                     "(e)dit",
                     "(w)orktree",
                     "(u)routine",
+                    "(d)unregister",
+                    "(v/M)panels",
                     "(m)ove",
                     "(g)roup",
-                    "(d)unregister",
                 ],
                 Selection::Worktree(..) => {
                     if let Some(review) = &app.review {
@@ -644,6 +650,7 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
                 }
                 Selection::Session(..) => vec![
                     "(C)interrupt",
+                    "(|/-)split",
                     "(u)routine",
                     "(m)ove",
                     "(d)close",
@@ -657,7 +664,9 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
                     "(d)close",
                 ],
                 Selection::RoutinesHeader(_) => vec!["(u)new", "(?)help"],
-                Selection::Routine(..) => vec!["(e)dit", "(d)elete", "(?)help"],
+                Selection::Routine(..) => {
+                    vec!["(r)un", "(space)on/off", "(e)dit", "(d)elete", "(?)help"]
+                }
                 Selection::None => vec!["(p)add project", "(?)help"],
             }
             .into_iter()
@@ -683,7 +692,7 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
             theme::ModeBadge::Move,
             vec!["(j/k)reorder".into(), "Esc: done".into()],
         ),
-        Mode::Help => ("HELP", theme::ModeBadge::Info, Vec::new()),
+        Mode::Help(_) => ("HELP", theme::ModeBadge::Info, Vec::new()),
         Mode::Search { .. } => (
             "SEARCH",
             theme::ModeBadge::Input,
@@ -760,7 +769,7 @@ fn status_bar_view(app: &App, content_height: u16) -> StatusBarView {
                 },
                 "(m)anager".into(),
             ];
-            hints.extend(["(S)hell".into(), "Esc: close".into()]);
+            hints.extend(["(S)hell".into(), "Esc: close".into(), "(?)help".into()]);
             // ^ The agent the spend counts; its name is on the spend line.
             hints.push("(a)gent".into());
             // ^ Last, so a narrow footer drops it first; only while the day rows show.
@@ -981,214 +990,6 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App, view: &StatusBarV
             Paragraph::new(release).alignment(Alignment::Right),
             release_area,
         );
-    }
-}
-
-fn render_help(frame: &mut Frame, area: Rect, app: &App) {
-    let width = area.width.clamp(40, 64);
-    let height = area.height.clamp(12, 42);
-    let popup = popup_center(area, width, height);
-
-    frame.render_widget(Clear, popup);
-
-    const ENTRIES: &[&str] = &[
-        " Navigation",
-        "  j/k / ↑↓     Navigate tree",
-        "  h/l / ←→     Collapse/expand",
-        "  Enter         Project/Worktree: toggle  |  Session: Terminal mode",
-        "",
-        " Project",
-        "  p             Add project (path: prompt)",
-        "  u             Create routine",
-        "  m             Move project (reorder list)",
-        "  g             Assign project group",
-        "  d             Unregister project (H: also halt its sessions)",
-        "  e             View/edit wsx.config.yml",
-        "  t             Tasks (Enter detail, m chat, S shell,",
-        "                o view, u usage, a agent)",
-        "  v / M         Panels (M: this Mac with the machine panels)",
-        "",
-        " Worktree",
-        "  w             Add worktree (branch: prompt)",
-        "  s             New persistent session (optional init command)",
-        "  r             Set alias",
-        "  m             Move worktree (reorder project list)",
-        "  d             Delete worktree + kill all sessions",
-        "  e             View/edit wsx.config.yml",
-        "",
-        " Session",
-        "  Enter         Enter Terminal mode",
-        "  C             Send Ctrl+C to session",
-        "  r             Rename",
-        "  m             Move session (reorder worktree list)",
-        "  d             Kill session",
-        "  x             Acknowledge done, otherwise toggle ⊘ mute",
-        "",
-        " Terminal mode",
-        "$terminal_escape",
-        "$terminal_quit",
-        "$terminal_session",
-        "$terminal_group",
-        "$terminal_idle",
-        "$terminal_active",
-        "$terminal_attention",
-        "$terminal_sidebar",
-        "$terminal_literal",
-        "",
-        " Groups (optional)",
-        "  T             Open scrollable Groups sidebar",
-        "  { / }         Switch to previous/next group",
-        "  g             Assign selected project to a group",
-        "  a/r/d, J/K    Add, rename, delete, reorder in Groups",
-        "  P             Next profile (with [[profiles]] in the config)",
-        "",
-        " Global",
-        "  [ / ]         Jump to prev / next project",
-        "  i / I         Jump to next / prev idle session (○)",
-        "  a / A         Jump to next / prev active session (◉)",
-        "  n / N         Jump to next / prev attention session (◐ ✓)",
-        "  R             Refresh",
-        "  ,             Open global settings",
-        "  ?             Help",
-        "  q             Quit TUI",
-        "  Q             Hard quit TUI and wsxd",
-    ];
-
-    let inner_width = (width as usize).saturating_sub(2);
-    let lines: Vec<Line> = ENTRIES
-        .iter()
-        .flat_map(|entry| {
-            let text = match *entry {
-                "$terminal_escape" => Some(format!(
-                    "  {:<14} Focus Workspace",
-                    app.terminal_escape_label()
-                )),
-                "$terminal_quit" => app
-                    .terminal_quit_label()
-                    .map(|label| format!("  {label:<14} Quit TUI")),
-                "$terminal_session" => app.terminal_quit_label().map(|_| {
-                    format!(
-                        "  Prefix+{} or ←/→  Previous / next project session",
-                        app.terminal_session_navigation_label()
-                    )
-                }),
-                "$terminal_group" => app
-                    .terminal_quit_label()
-                    .map(|_| "  Prefix+{ / }  Previous / next group target".into()),
-                "$terminal_idle" => app
-                    .terminal_quit_label()
-                    .map(|_| "  Prefix+I / i  Previous / next idle session".into()),
-                "$terminal_active" => app
-                    .terminal_quit_label()
-                    .map(|_| "  Prefix+A / a  Previous / next active session".into()),
-                "$terminal_attention" => app
-                    .terminal_quit_label()
-                    .map(|_| "  Prefix+N / n  Previous / next session needing attention".into()),
-                "$terminal_sidebar" => app
-                    .terminal_sidebar_hint()
-                    .map(|_| "  Prefix+B      Toggle Terminal sidebar".into()),
-                "$terminal_literal" => Some(format!(
-                    "  {:<14} Send literal prefix",
-                    app.terminal_literal_escape_label()
-                )),
-                other => Some(other.to_string()),
-            };
-            text.map_or_else(Vec::new, |text| help_wrap_line(&text, inner_width))
-        })
-        .collect();
-
-    let block = popup_block(
-        Line::from(" Help "),
-        Line::styled(" Esc close ", Style::default().fg(theme::TEXT_MUTED)),
-        Style::default().fg(theme::ACCENT),
-    );
-    let para = Paragraph::new(lines).block(block);
-    frame.render_widget(para, popup);
-}
-
-/// Wrap a help entry, indenting continuation lines to align with the description column.
-fn help_wrap_line(line: &str, width: usize) -> Vec<Line<'static>> {
-    // Find where the description starts: first run of 2+ spaces after a non-space char
-    // (following the 2-char indent). Key lines look like "  key     description".
-    let desc_col = if line.starts_with("  ") && !line[2..].starts_with(' ') {
-        let rest = &line[2..];
-        let mut found = None;
-        let mut in_spaces = false;
-        let mut space_start = 0;
-        for (i, c) in rest.char_indices() {
-            if c == ' ' {
-                if !in_spaces {
-                    space_start = i;
-                    in_spaces = true;
-                }
-            } else {
-                if in_spaces && i - space_start >= 2 {
-                    found = Some(i);
-                    break;
-                }
-                in_spaces = false;
-            }
-        }
-        found.map(|i| 2 + i) // byte offset of description start
-    } else {
-        None
-    };
-
-    let Some(desc_byte) = desc_col else {
-        return vec![Line::from(line.to_owned())];
-    };
-
-    // Measure key column display width (chars, treating all as 1-wide)
-    let key_display: usize = line[..desc_byte].chars().count();
-    let desc_text = &line[desc_byte..];
-    let desc_width = width.saturating_sub(key_display);
-
-    if desc_text.len() <= desc_width {
-        return vec![Line::from(line.to_owned())];
-    }
-
-    // Word-wrap the description
-    let indent = " ".repeat(key_display);
-    let key_part = line[..desc_byte].to_owned();
-    let mut result = Vec::new();
-    let mut remaining = desc_text;
-    let mut first = true;
-
-    while !remaining.is_empty() {
-        let avail = if first {
-            desc_width
-        } else {
-            width.saturating_sub(key_display)
-        };
-        let (chunk, rest) = split_at_word(remaining, avail);
-        if first {
-            result.push(Line::from(format!("{}{}", key_part, chunk)));
-            first = false;
-        } else {
-            result.push(Line::from(format!("{}{}", indent, chunk)));
-        }
-        remaining = rest.trim_start();
-    }
-    result
-}
-
-/// Split `s` at a word boundary no longer than `max_chars`. Returns (chunk, remainder).
-fn split_at_word(s: &str, max_chars: usize) -> (&str, &str) {
-    let char_count = s.chars().count();
-    if char_count <= max_chars {
-        return (s, "");
-    }
-    // Find byte offset of max_chars-th char
-    let end_byte = s
-        .char_indices()
-        .nth(max_chars)
-        .map(|(i, _)| i)
-        .unwrap_or(s.len());
-    // Walk back to last space
-    if let Some(space) = s[..end_byte].rfind(' ') {
-        (&s[..space], &s[space..])
-    } else {
-        (&s[..end_byte], &s[end_byte..])
     }
 }
 
