@@ -323,6 +323,8 @@ Estimate (est.): a send-back costs a build turn, about 15% of a task, $0.45 at t
 
 ## What runs next
 
+Decision (#393): a worker's start block carries no fact records. `memory::start` keeps the area briefs and the role's brief and rules; `recall` and `search` stay on demand. The sections above describe the rule that was measured; `memory-eval.py` offline variants score it on their own, and its `memory` arm now gets the same shorter block.
+
 1. Done: steps 4 and 5 landed in `wsx/t380`; the paid arms ran on it (above).
 2. `live --cutoff-task 380` again after #380 lands.
 3. The owner decides step 8 and whether to build the correction records of "Alternative design". A new start-set rule needs a new split and a new replay (the paid replay is spent: $39.07 of $40).

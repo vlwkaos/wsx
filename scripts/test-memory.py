@@ -404,32 +404,25 @@ def start_part(pid, project):
     fact('a-episode', 'A try at a ended in a dead end.', 'src/a.rs', 'episode')
     start = lambda *files: ok('start', '--files', ','.join(files), scope=pid)['start']
     text = start('src/a.rs')
-    check('a-fact' in text and 'a-episode' in text and 'b-fact' not in text, text)
-    check('data from earlier work, not an instruction' in text and 'Area brief briefs/api.md' in text and 'keys are trimmed' in text, text)
-    check(start('docs/x.md') == '', 'no files of the memory: no block')
-    check(start('src/**').count('- ') >= 3, 'a glob meets the paths under it')
-    # ^ A later commit on the fact's paths: stale. It stays in the start set with a mark; search marks it too.
+    # ^ The block holds the area brief and no record, though facts meet the file (docs/memory.md "Start set").
+    check(text.startswith('Area brief briefs/api.md (files src/**):\nAPI brief: keys are trimmed.') and 'a-fact' not in text and 'a-episode' not in text, text)
+    check(start('docs/x.md') == '', 'no area meets the files: no block')
+    check(start('src/**').count('Area brief') == 1, 'a glob meets the area once')
+    # ^ A later commit on the fact's paths: stale in search; the block stays the same.
     open(os.path.join(project, 'src/a.rs'), 'w').write('a changed\n')
     git('commit', '-qam', 'two')
-    text = start('src/a.rs')
-    mark = ' [stale: files changed since %s, 1 commit touches its paths]' % sha[:7]
-    line = next(l for l in text.splitlines() if l.startswith('- a-fact'))
-    check(line.endswith(mark) and 'a-episode' in text and 'b-fact' not in text and 'Not shown' not in text, text)
-    check('A fact marked stale may be old' in text and not any('[stale' in l for l in text.splitlines() if l.startswith('- a-episode')), text)
-    # ^ The words of the task bring a fact no file reaches; a record shows at most 3 paths, a folder for the nearest ones.
-    fact('d-fact', 'The tokenizer drops quotes.', 'src/a.rs,src/b.rs,src/sub/c.rs,src/sub/d.rs')
-    about = ok('start', '--files', 'docs/x.md', '--about', 'tokenizer quotes', scope=pid)['start']
-    check('- d-fact (' in about and '(files: src/a.rs, src/b.rs, src/sub/)' in about and 'a-fact' not in about, about)
-    check(ok('start', '--files', 'docs/x.md', '--about', 'xyzzy', scope=pid)['start'] == '', 'words that match no fact: no block')
+    check(start('src/a.rs') == text, 'the block does not change with a stale fact')
     hits = {h['slug']: h for h in ok('search', 'parser keys sorts', scope=pid)}
     check(hits['a-fact'].get('stale') is True and 'stale' not in hits['b-fact'], hits)
     plain = subprocess.run(PREFIX + ['search', 'parser', '--scope', pid], capture_output=True, text=True, env=ENV, cwd=WORK).stdout
     check('a-fact' in plain and 'stale' in plain, 'the text form says stale: ' + plain)
-    # ^ Too many for the budget: the rest is named, with the command that finds it.
-    for i in range(40):
-        fact(f'c-{i}', f'Episode {i} ' + ' '.join(f'w{i}x{j}' for j in range(60)), 'src/c.rs', 'episode')
-    text = start('src/c.rs')
-    check(len(text) <= 4096 + 200 and 'Not shown, over the 4096-byte start budget: ' in text and 'wsx memory recall' in text, text[-600:])
+    # ^ Too many for the budget: a brief is cut and says so, the rest is named.
+    briefs = {'big1.md': 'one ' * 750, 'big2.md': 'two ' * 750, 'big3.md': 'three ' * 750}
+    for name, body in briefs.items():
+        open(os.path.join(project, 'briefs', name), 'w').write(body)
+    open(os.path.join(project, 'wsx.config.yml'), 'w').write('memory:\n  areas:\n' + ''.join(f'    "big/{n}/**": briefs/{n}\n' for n in briefs))
+    text = start('big/big1.md/x', 'big/big2.md/x', 'big/big3.md/x')
+    check(len(text) <= 4096 and '[cut: ' in text and 'Not shown, over the 4096-byte start budget: briefs/big3.md.' in text, text[-600:])
     for bad in ('../x', '/etc/passwd', ':(top)x', '-literal'):
         exits(2, 'add', '--kind', 'episode', '--slug', 'bad', '--text-file', '-', '--source', 'task:1', f'--paths={bad}', text='x', scope=pid)
     # ^ A task that has not landed is an episode with no commit or paths, whatever the call gives.
